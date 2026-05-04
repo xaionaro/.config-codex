@@ -108,6 +108,18 @@ json_field_contains() {
   esac
 }
 
+json_field_not_contains() {
+  local file="$1"
+  local expr="$2"
+  local needle="$3"
+  local got
+  got="$(jq -r "$expr" "$file" 2>/dev/null || true)"
+  case "$got" in
+    *"$needle"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 run_hook() {
   local outfile="$1"
   local script="$2"
@@ -163,6 +175,123 @@ make_git_repo() {
   git -C "$repo" add file.txt || return 1
   git -C "$repo" commit -qm "initial" || return 1
   printf '%s\n' "$repo"
+}
+
+test_prompt_task_reminder_emits_user_prompt_json() {
+  local proof_root out
+  proof_root="$(fresh_proof_root prompt-json)"
+  out="$TMP_ROOT/prompt-json.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  json_field_equals "$out" '.hookSpecificOutput.hookEventName // empty' "UserPromptSubmit" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "update_plan" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "spawn_agent" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "T1-T5" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "no codex-as-role"
+}
+
+test_prompt_task_reminder_records_head_and_clears_bypass() {
+  local proof_root out expected
+  proof_root="$(fresh_proof_root prompt-head)"
+  mkdir -p "$proof_root/reviewer/t00-session" "$proof_root/pre-reviewer/t00-session"
+  touch "$proof_root/reviewer/t00-session/bypass" "$proof_root/pre-reviewer/t00-session/bypass"
+  expected="$(git -C "$ROOT" rev-parse HEAD)"
+  out="$TMP_ROOT/prompt-head.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  [ "$(cat "$proof_root/reviewer/t00-session/prompt_head" 2>/dev/null || true)" = "$expected" ] &&
+    [ ! -e "$proof_root/reviewer/t00-session/bypass" ] &&
+    [ ! -e "$proof_root/pre-reviewer/t00-session/bypass" ]
+}
+
+test_prompt_task_reminder_surfaces_eci_marker() {
+  local proof_root out
+  proof_root="$(fresh_proof_root prompt-eci)"
+  mkdir -p "$proof_root/eci/sessions/t00-session"
+  {
+    printf 'scope: prompt hook test\n'
+    printf 'cwd: %s\n' "$ROOT"
+  } >"$proof_root/eci/sessions/t00-session/eci_active"
+  out="$TMP_ROOT/prompt-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "ECI active" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "scope: prompt hook test" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "main thread must not edit code directly"
+}
+
+test_prompt_task_reminder_skips_state_for_invalid_session() {
+  local proof_root out
+  proof_root="$(fresh_proof_root prompt-invalid)"
+  out="$TMP_ROOT/prompt-invalid.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-invalid-session.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  json_field_equals "$out" '.hookSpecificOutput.hookEventName // empty' "UserPromptSubmit" &&
+    [ ! -e "$proof_root/reviewer/../bad/prompt_head" ] &&
+    [ "$(find "$proof_root/reviewer" -name prompt_head 2>/dev/null | wc -l)" -eq 0 ]
+}
+
+test_prompt_task_reminder_ignores_codex_role_prompt_behavior() {
+  local proof_root out with_role
+  proof_root="$(fresh_proof_root prompt-role)"
+  out="$TMP_ROOT/prompt-role.out"
+  with_role="$TMP_ROOT/prompt-role-env.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$with_role" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+    CODEX_PROOF_ROOT="$proof_root" CODEX_ROLE=explorer CLAUDE_ROLE=explorer || return 1
+
+  cmp -s "$out" "$with_role" &&
+    json_field_not_contains "$with_role" '.hookSpecificOutput.additionalContext // empty' "CODEX_ROLE" &&
+    json_field_not_contains "$with_role" '.hookSpecificOutput.additionalContext // empty' "CLAUDE_ROLE"
+}
+
+test_prompt_task_reminder_config_is_wired_without_probe() {
+  jq -e '
+    ([.hooks.UserPromptSubmit[]?.hooks[]?.command]
+      | any(. == "/home/streaming/.codex/hooks/prompt-task-reminder.sh")) and
+    ([.hooks.PostToolUse[]?.hooks[]?.command] | length == 0) and
+    ([.. | objects | .command? // empty]
+      | all(contains("/hooks/tests/hook-event-probe.sh") | not))
+  ' "$ROOT/hooks.json" >/dev/null
+}
+
+test_runtime_hook_probe_evidence_is_sanitized_and_wired() {
+  jq -e -s '
+    length == 2 and
+    all(type == "object") and
+    all(keys_unsorted | all(IN("hook_event_name", "session_id", "cwd", "tool_name", "tool_input_keys", "observed"))) and
+    any(
+      .hook_event_name == "UserPromptSubmit" and
+      .cwd == "/home/streaming/.codex" and
+      (.session_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+    ) and
+    any(
+      .hook_event_name == "PostToolUse" and
+      .tool_name == "Bash" and
+      (.tool_input_keys | type == "array" and index("command") != null)
+    ) and
+    ([
+      paths(scalars) as $p
+      | {
+          key: ($p[-1] | tostring),
+          value: (getpath($p) | tostring)
+        }
+      | select(
+          (.key | test("(?i)(password|passwd|secret|token|api[_-]?key|access[_-]?key|credential|auth|bearer|cookie|private[_-]?key)")) or
+          (.value | test("(?i)(sk-[A-Za-z0-9]|ghp_|xox[baprs]-|AKIA[0-9A-Z]{16}|BEGIN (RSA |OPENSSH |DSA |EC |)PRIVATE KEY|Bearer[[:space:]]+[A-Za-z0-9._=-]+|password|passwd|secret|token|api[_-]?key|access[_-]?key|credential|cookie)"))
+        )
+    ] | length == 0)
+  ' "$FIXTURES/runtime-hook-probe-evidence.jsonl" >/dev/null
 }
 
 test_session_snapshot_saves_baseline_and_clears_legacy_skip() {
@@ -728,6 +857,20 @@ test_skip_stop_uses_cwd_state_without_session() {
     grep -q "Stop hook bypass enabled: $proof_root/skip-stop/cwd/" "$out"
 }
 
+run_case "prompt reminder emits UserPromptSubmit JSON" \
+  test_prompt_task_reminder_emits_user_prompt_json
+run_case "prompt reminder records HEAD and clears reviewer bypass" \
+  test_prompt_task_reminder_records_head_and_clears_bypass
+run_case "prompt reminder surfaces active ECI marker" \
+  test_prompt_task_reminder_surfaces_eci_marker
+run_case "prompt reminder skips state writes for invalid session" \
+  test_prompt_task_reminder_skips_state_for_invalid_session
+run_case "prompt reminder ignores CODEX_ROLE/CLAUDE_ROLE behavior" \
+  test_prompt_task_reminder_ignores_codex_role_prompt_behavior
+run_case "prompt reminder config is wired without temporary probe" \
+  test_prompt_task_reminder_config_is_wired_without_probe
+run_case "runtime hook probe evidence is sanitized and wired" \
+  test_runtime_hook_probe_evidence_is_sanitized_and_wired
 run_case "session snapshot saves baseline and clears legacy skip_stop" \
   test_session_snapshot_saves_baseline_and_clears_legacy_skip
 run_case "session snapshot preserves fresh markers in old state dirs" \
