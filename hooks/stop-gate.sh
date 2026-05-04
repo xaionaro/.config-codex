@@ -97,25 +97,28 @@ if codex_hook_is_subagent_context "$input"; then
 fi
 
 root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+repo="${cwd:-$PWD}"
+side_stop=$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)
+
+if [ -n "$side_stop" ] && [ -f "$side_stop" ] &&
+  [ -n "$(find "$side_stop" -mmin -60 -print 2>/dev/null)" ] &&
+  codex_side_stop_applies_to_session "$side_stop" "$session_id"; then
+  json_continue
+  exit 0
+fi
+
 proof_dir="$root/$session_id"
 proof="$proof_dir/proof.md"
 summary="$proof_dir/summary-to-print.md"
 instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
 skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
-side_stop=$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)
 eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
-repo="${cwd:-$PWD}"
 change_summary="$(git_change_summary "$repo" "$baseline" || true)"
 changed=false
 [ -n "$change_summary" ] && changed=true
 
 mkdir -p "$proof_dir"
-
-if [ -n "$side_stop" ] && [ -f "$side_stop" ] && [ -n "$(find "$side_stop" -mmin -60 -print 2>/dev/null)" ]; then
-  json_continue
-  exit 0
-fi
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
   codex_note_state_session_id "$eci_active" "$session_id" || true

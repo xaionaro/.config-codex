@@ -183,7 +183,7 @@ test_prompt_state_is_silent_records_head_and_clears_bypass() {
 }
 
 test_prompt_state_marks_side_prompt() {
-  local proof_root out marker
+  local proof_root out marker cwd_marker_count cwd_marker
   proof_root="$(fresh_proof_root prompt-side)"
   out="$TMP_ROOT/prompt-side.out"
 
@@ -191,9 +191,15 @@ test_prompt_state_marks_side_prompt() {
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   marker="$proof_root/side-stop/sessions/t00-session/side_stop"
+  cwd_marker_count=$(find "$proof_root/side-stop/cwd" -mindepth 2 -maxdepth 2 -name side_stop 2>/dev/null | wc -l)
+  cwd_marker=$(find "$proof_root/side-stop/cwd" -mindepth 2 -maxdepth 2 -name side_stop 2>/dev/null | head -n1)
   expect_no_output "$out" &&
     [ -f "$marker" ] &&
-    grep -q '^command: /side$' "$marker"
+    grep -q '^command: /side$' "$marker" &&
+    grep -q '^parent_session_id: t00-session$' "$marker" &&
+    [ "$cwd_marker_count" -eq 1 ] &&
+    grep -q '^command: /side$' "$cwd_marker" &&
+    grep -q '^parent_session_id: t00-session$' "$cwd_marker"
 }
 
 test_prompt_state_skips_state_for_invalid_session() {
@@ -215,28 +221,50 @@ test_prompt_state_config_is_wired_without_probe() {
       | any(. == "/home/streaming/.codex/hooks/prompt-task-reminder.sh")) and
     ([.hooks.PostToolUse[]?.hooks[]?.command] | length == 0) and
     ([.. | objects | .command? // empty]
-      | all(contains("/hooks/tests/hook-event-probe.sh") | not))
+      | all(contains("/hooks/tests/skill-event-probe.sh") | not))
   ' "$ROOT/hooks.json" >/dev/null
 }
 
 test_stop_gate_allows_side_prompt_before_eci_state() {
-  local proof_root prompt_out input out
+  local proof_root prompt_out prompt_input input out
   proof_root="$(fresh_proof_root stop-side-eci)"
   prompt_out="$TMP_ROOT/stop-side-prompt.out"
+  prompt_input="$TMP_ROOT/stop-side-prompt.json"
 
-  run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-side.json" \
+  jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/user-prompt-side.json" >"$prompt_input"
+  run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
-  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-eci-on.out" 2>&1 || return 1
+  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-eci-on.out" 2>&1 || return 1
 
   input="$TMP_ROOT/stop-side-eci.json"
-  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  jq --arg cwd "$ROOT" '.session_id = "t00-side" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
   out="$TMP_ROOT/stop-side-eci.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   json_field_equals "$out" '.continue // false' "true"
 }
 
-test_runtime_hook_probe_evidence_is_sanitized_and_wired() {
+test_stop_gate_blocks_side_parent_session_with_eci_state() {
+  local proof_root prompt_out prompt_input input out
+  proof_root="$(fresh_proof_root stop-side-parent-eci)"
+  prompt_out="$TMP_ROOT/stop-side-parent-prompt.out"
+  prompt_input="$TMP_ROOT/stop-side-parent-prompt.json"
+
+  jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/user-prompt-side.json" >"$prompt_input"
+  run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-parent-eci-on.out" 2>&1 || return 1
+
+  input="$TMP_ROOT/stop-side-parent-eci.json"
+  jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-side-parent-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active"
+}
+
+test_runtime_hook_probe_historical_evidence_is_sanitized() {
   jq -e -s '
     length == 2 and
     all(type == "object") and
@@ -836,8 +864,8 @@ run_case "prompt state skips state writes for invalid session" \
   test_prompt_state_skips_state_for_invalid_session
 run_case "prompt state config is wired without temporary probe" \
   test_prompt_state_config_is_wired_without_probe
-run_case "runtime hook probe evidence is sanitized and wired" \
-  test_runtime_hook_probe_evidence_is_sanitized_and_wired
+run_case "runtime hook probe historical evidence is sanitized" \
+  test_runtime_hook_probe_historical_evidence_is_sanitized
 run_case "session snapshot saves baseline and clears legacy skip_stop" \
   test_session_snapshot_saves_baseline_and_clears_legacy_skip
 run_case "session snapshot preserves fresh markers in old state dirs" \
@@ -898,6 +926,8 @@ run_case "stop gate blocks CODEX_ROLE spoof with ECI state" \
   test_stop_gate_blocks_codex_role_spoof_with_eci_state
 run_case "stop gate allows /side before ECI state" \
   test_stop_gate_allows_side_prompt_before_eci_state
+run_case "stop gate blocks /side parent session with ECI state" \
+  test_stop_gate_blocks_side_parent_session_with_eci_state
 run_case "stop gate allows spawned-agent transcript without proof state" \
   test_stop_gate_allows_spawned_agent_transcript_without_proof_state
 run_case "stop gate blocks main transcript with ECI state" \

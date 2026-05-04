@@ -126,6 +126,30 @@ codex_note_state_session_id() {
   printf 'session_id: %s\n' "$session_id" >>"$file"
 }
 
+codex_state_value() {
+  local file="$1"
+  local key="$2"
+  awk -F':[[:space:]]*' -v key="$key" '$1 == key { print $2; exit }' "$file" 2>/dev/null
+}
+
+codex_side_stop_applies_to_session() {
+  local file="$1"
+  local session_id="$2"
+  local command parent_session_id
+
+  [ -f "$file" ] || return 1
+  command="$(codex_state_value "$file" command || true)"
+  [ "$command" = "/side" ] || return 1
+
+  parent_session_id="$(codex_state_value "$file" parent_session_id || true)"
+  if codex_valid_session_id "$parent_session_id"; then
+    [ "$parent_session_id" != "$session_id" ]
+    return
+  fi
+
+  return 0
+}
+
 codex_hook_is_subagent_context() {
   local input="${1:-}"
   local transcript_path first_event

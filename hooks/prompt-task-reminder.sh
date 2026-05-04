@@ -12,6 +12,17 @@ cwd=$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else
 prompt=$(printf '%s' "$input" | jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' 2>/dev/null || true)
 root="$(codex_proof_root)"
 
+write_side_stop_marker() {
+  local dir="$1"
+  mkdir -p "$dir"
+  {
+    printf 'command: /side\n'
+    printf 'parent_session_id: %s\n' "$session_id"
+    [ -n "$cwd" ] && printf 'cwd: %s\n' "$cwd"
+    date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
+  } >"$dir/side_stop"
+}
+
 if codex_valid_session_id "$session_id"; then
   reviewer_dir="$root/reviewer/$session_id"
   mkdir -p "$reviewer_dir"
@@ -22,12 +33,10 @@ if codex_valid_session_id "$session_id"; then
   rm -f "$reviewer_dir/bypass" "$root/pre-reviewer/$session_id/bypass"
 
   if printf '%s\n' "$prompt" | grep -Eq '^[[:space:]]*/side([[:space:]]|$)'; then
-    side_dir="$root/side-stop/sessions/$session_id"
-    mkdir -p "$side_dir"
-    {
-      printf 'command: /side\n'
-      [ -n "$cwd" ] && printf 'cwd: %s\n' "$cwd"
-      date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
-    } >"$side_dir/side_stop"
+    write_side_stop_marker "$root/side-stop/sessions/$session_id"
+    if [ -n "$cwd" ]; then
+      side_dir="$(codex_ensure_cwd_state_dir side-stop "$cwd" 2>/dev/null || true)"
+      [ -n "$side_dir" ] && write_side_stop_marker "$side_dir"
+    fi
   fi
 fi
