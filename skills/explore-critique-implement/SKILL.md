@@ -130,6 +130,8 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
 
+**No mid-work polling.** After assigning a role, wait for completion with `wait_agent`; do not `send_input` status/checkpoint/report requests while the agent is in progress. A role is not stale until 30+ minutes pass with no assignment/output/process/file/git activity. Before then, inspect passively only. Interrupt only for explicit user stop, destructive/wrong-scope action, wrong worktree, policy/security violation, or 30+ minute confirmed no-progress stall.
+
 ## Step 1: Explore
 
 Send the assignment to the `explorer` role. Each message/prompt must include:

@@ -371,10 +371,12 @@ Round = one rejection (initial submission is not a round).
 
 ### Crash Recovery
 
+**Stale floor:** A teammate is not stale until at least 30 minutes have passed since its last assignment, output, file/git activity, or observed process activity. Before 30 minutes: no status requests, no checkpoint prompts, no "are you blocked?" messages, no interruption for progress.
+
 **Not responding to messages ≠ dead.** Coordinator must investigate before declaring unresponsive:
 1. Check: does the teammate have an active running process? (compilation, test suite, build, context compaction) → working, not hung.
 2. Check: are files or git state changing in their worktree? → working, not hung.
-3. If no active process and no file/git activity: **interrupt first** — send a message asking for status, then interrupt if the tool surface supports it. Wait for response.
+3. If 30+ minutes elapsed with no active process and no file/git activity: **interrupt first** — send a message asking for status, then interrupt if the tool surface supports it. Wait for response.
 4. Only if no response after interrupt → confirmed unresponsive.
 Skipping any step = false positive. Coordinator must document evidence of all checks before requesting re-spawn.
 
@@ -481,7 +483,7 @@ Review independently first — no reading peer findings before writing your own.
 3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description must include: "Tag all factual claims: `[T<tier>: source, confidence]`."
 4. **Assign file ownership** per design doc. **Create git worktrees** for 2+ parallel executors.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise. Identify what's missing, what could be wrong, what needs verification. Route findings to a second agent for independent verification before acting on them.
-6. **Monitor progress.** Stale task = investigate per Crash Recovery: check for active process and file/git activity in their worktree. If confirmed unresponsive, follow the respawn sequence.
+6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, investigate per Crash Recovery. If confirmed unresponsive, follow the respawn sequence.
 7. **Handle "submitted" tasks.** When a task is submitted: verify Stop Checklist items (changes committed, claims tagged, critique log exists). Bounce back immediately if incomplete — don't waste reviewer time. If checklist passes, route to paired reviewer. After reviewer approves, route to test pipeline (code tasks) or verifier (non-code tasks).
 8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks. After ALL tasks tested → spawn QA. Record checkpoint per task: what was produced, who approved, git SHA.
 9. **Budget context** -- summaries, not raw output (see below).
@@ -648,7 +650,8 @@ Compliance:
 | Untagged factual claims in deliverable | Reviewer rejects |
 | Spawn prompt uses `[LIST APPLICABLE SKILLS]` placeholder | Replace with exact skill names from Mandatory Skills table |
 | 11th rejection in same pair | Escalate: replace or re-scope |
-| Teammate seems slow or won't respond | Not unresponsive. Coordinator checks for active process and file/git activity — a running build means they're working |
+| Teammate seems slow or won't respond before 30 minutes | Not stale. Do not message or interrupt for status |
+| Teammate seems slow or won't respond after 30+ minutes | Check active process and file/git activity; a running build means they're working |
 | Non-executor confirmed unresponsive | Re-spawn immediately |
 | Executor confirmed unresponsive | Review its changes first (paired reviewer), then re-spawn for remaining work |
 | No critique log | Reviewer rejects |
