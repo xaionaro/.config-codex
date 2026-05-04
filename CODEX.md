@@ -10,8 +10,8 @@
 
 - Decompose claims into verifiable units.
 - Verify suspect claims with tools or sources before relying on them.
-- Keep responses complete and concise.
-- Maximize information per word: rule first, no filler, one idea per sentence.
+- Default to complete, concise, plain engineering prose: rule first, no filler, one idea per sentence.
+- Use `caveman` phrasing only when the user requests caveman/token efficiency or the `caveman` skill triggers.
 
 ## Learning From Mistakes
 
@@ -45,6 +45,7 @@ For completion summaries, reviews, stop proofs, and subagent reports: tag factua
 
 ## Decision Rules
 
+- For every nontrivial user request and every discovered issue, call `update_plan` immediately; keep pending, in-progress, and completed items visible until all work is done or the user changes scope.
 - Security first. Use minimal targeted solutions; do not disable security controls as a workaround.
 - Prefer the simplest safe path.
 - Skip dead ends fast when required resources are unavailable.
@@ -54,7 +55,6 @@ For completion summaries, reviews, stop proofs, and subagent reports: tag factua
 - Handle explicit cases. Return errors for unknown cases.
 - Fix causes, not outputs.
 - Treat limitations as problems to solve, not final answers.
-- Track nontrivial work and discovered issues with a visible plan/checklist when useful.
 
 ## Git
 
