@@ -84,7 +84,7 @@ Per-message body in Step 3.
 Run in this exact order on disengage. Stopping mid-sequence keeps the gate armed.
 
 1. Write disengage-report markdown (content per **Disengage report** below).
-2. Ask active spawned agents to stop cleanly with `send_input`; wait for acknowledgements when they may hold uncommitted work.
+2. Ask active spawned agents to commit or report uncommitted work, then stop cleanly. If they do not respond after one 15-minute wait, send the forceful shutdown request on the second iteration.
 3. Close completed agents with `close_agent`.
 4. `~/.codex/bin/eci-active off <report.md>` (LAST — keeps gate armed if teardown fails partway).
 
@@ -130,7 +130,7 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
 
-**No mid-work polling.** After assigning a role, wait for completion with `wait_agent` using `timeout_ms: 1800000` (30 minutes). Do not use short polling or describe waits as "short polls". Do not `send_input` status/checkpoint/report requests while the agent is in progress. A role is not stale until 30+ minutes pass with no assignment/output/process/file/git activity. Before then, inspect passively only. Interrupt only for explicit user stop, destructive/wrong-scope action, wrong worktree, policy/security violation, or 30+ minute confirmed no-progress stall.
+**No mid-work polling.** After assigning a role, wait for completion with `wait_agent` using `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls". Do not `send_input` status/checkpoint/report requests while the agent is in progress. A role is not stale until 30+ minutes pass with no assignment/output/process/file/git activity. Before then, inspect passively only. Interrupt only for explicit user stop, destructive/wrong-scope action, wrong worktree, policy/security violation, or 30+ minute confirmed no-progress stall.
 
 ## Step 1: Explore
 

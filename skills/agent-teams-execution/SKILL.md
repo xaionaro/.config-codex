@@ -11,7 +11,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 
 - Start this pipeline only when the user explicitly requested subagents, delegation, or parallel agent work.
 - Use `spawn_agent`, `send_input`, and `wait_agent` for role execution.
-- When waiting on teammates, call `wait_agent` with `timeout_ms: 1800000` (30 minutes). Do not use short polling or describe waits as "short polls".
+- When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
@@ -580,7 +580,7 @@ Downstream agents get **structured summaries**, not raw upstream output.
 
 Re-entry: original designer handles Phase 2 re-entry directly — full context preserved.
 
-**Shutdown procedure:** Always prefer graceful: ask the agent to commit or report any uncommitted work, then request shutdown. If the agent is mid-turn, interrupt when available, then re-send the shutdown request.
+**Shutdown procedure:** Always prefer graceful. First request: ask the agent to commit or report any uncommitted work, then stop cleanly. If the agent does not respond after one 15-minute wait, second request: interrupt when available and send the forceful shutdown request, e.g. "Stand down immediately."
 
 If graceful shutdown fails, escalate to the user before terminating work. After a spawned agent is complete, use `close_agent` so future coordination does not wait on a stale agent.
 
