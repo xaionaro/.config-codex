@@ -529,12 +529,12 @@ test_eci_gate_blocks_multiedit_stdin() {
 
 eci_gate_matcher() {
   jq -er '
-    first(
+    [
       .hooks.PreToolUse[]?
       | select(any(.hooks[]?; (.command // "") | endswith("/eci-active-gate.sh")))
       | .matcher
       | strings
-    )
+    ] | join("|")
   ' "$ROOT/hooks.json"
 }
 
@@ -568,6 +568,97 @@ test_validate_apply_patch_blocks_plan_move_destination() {
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
 }
 
+test_validate_edit_write_blocks_direct_edit_plan_path() {
+  local out
+  out="$TMP_ROOT/edit-write-plan-edit.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-plan-edit.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
+}
+
+test_validate_edit_write_blocks_direct_write_plan_path() {
+  local out
+  out="$TMP_ROOT/edit-write-plan-write.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-plan-write.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
+}
+
+test_validate_edit_write_blocks_direct_multiedit_plan_path() {
+  local out
+  out="$TMP_ROOT/edit-write-plan-multiedit.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-plan-multiedit.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
+}
+
+test_validate_edit_write_blocks_direct_edit_local_gomod_replace() {
+  local out
+  out="$TMP_ROOT/edit-write-gomod-edit.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-gomod-local-edit.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_validate_edit_write_blocks_direct_write_local_gomod_replace() {
+  local out
+  out="$TMP_ROOT/edit-write-gomod-write.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-gomod-local-write.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_validate_edit_write_blocks_direct_multiedit_local_gomod_replace() {
+  local out
+  out="$TMP_ROOT/edit-write-gomod-multiedit.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-gomod-local-multiedit.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_validate_edit_write_allows_unrelated_non_plan_edit() {
+  local out
+  out="$TMP_ROOT/edit-write-allow-unrelated.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-allow-unrelated-edit.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_edit_write_allows_remote_write_gomod_replace() {
+  local out
+  out="$TMP_ROOT/edit-write-allow-remote-write.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-allow-remote-write.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_edit_write_allows_remote_multiedit_gomod_replace() {
+  local out
+  out="$TMP_ROOT/edit-write-allow-remote-multiedit.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-allow-remote-multiedit.json" || return 1
+  expect_no_output "$out"
+}
+
+test_edit_write_hook_config_is_split_and_preserves_gates() {
+  jq -e '
+    def commands_for($matcher):
+      [.hooks.PreToolUse[]? | select(.matcher == $matcher) | .hooks[]?.command];
+    def has($commands; $suffix):
+      any($commands[]?; endswith($suffix));
+
+    (commands_for("^apply_patch$") as $apply
+      | commands_for("^(Edit|Write|MultiEdit)$") as $direct
+      | has($apply; "/validate-apply-patch.sh") and
+        (has($apply; "/validate-edit-write.sh") | not) and
+        has($apply; "/security-reminder.py") and
+        has($apply; "/eci-active-gate.sh") and
+        has($apply; "/ate-orchestrator-gate.sh") and
+        has($direct; "/validate-edit-write.sh") and
+        (has($direct; "/validate-apply-patch.sh") | not) and
+        has($direct; "/security-reminder.py") and
+        has($direct; "/eci-active-gate.sh") and
+        has($direct; "/ate-orchestrator-gate.sh"))
+  ' "$ROOT/hooks.json" >/dev/null
+}
+
 test_ate_gate_denies_markdown_edits_for_lead() {
   local out
   out="$TMP_ROOT/ate-markdown-lead.out"
@@ -598,6 +689,58 @@ test_validate_apply_patch_blocks_local_gomod_replace_on_move_destination() {
   run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-gomod-move.json" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_validate_apply_patch_blocks_block_form_local_gomod_replace() {
+  local out
+  out="$TMP_ROOT/apply-patch-gomod-block.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-gomod-block.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_validate_apply_patch_allows_remote_gomod_replace() {
+  local out
+  out="$TMP_ROOT/apply-patch-gomod-remote.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-gomod-remote.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_apply_patch_allows_unrelated_non_plan_edit() {
+  local out
+  out="$TMP_ROOT/apply-patch-unrelated.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-unrelated.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_blocks_bare_go_test() {
+  local out
+  out="$TMP_ROOT/bash-go-test-bare.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-go-test-bare.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "captured to a file"
+}
+
+test_validate_bash_blocks_go_test_count_one() {
+  local out
+  out="$TMP_ROOT/bash-go-test-count.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-go-test-count.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "-count=1"
+}
+
+test_validate_bash_allows_redirected_go_test() {
+  local out
+  out="$TMP_ROOT/bash-go-test-redirect.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-go-test-redirect.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_go_test_tee() {
+  local out
+  out="$TMP_ROOT/bash-go-test-tee.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-go-test-tee.json" || return 1
+  expect_no_output "$out"
 }
 
 test_security_reminder_sees_workflow_move_destination() {
@@ -896,6 +1039,8 @@ run_case "ECI gate blocks MultiEdit JSON stdin when marker exists" \
   test_eci_gate_blocks_multiedit_stdin
 run_case "hooks.json edit matcher includes MultiEdit" \
   test_multiedit_hook_config_is_wired
+run_case "hooks.json splits apply_patch and direct edit validators while preserving gates" \
+  test_edit_write_hook_config_is_split_and_preserves_gates
 run_case "ATE gate denies markdown edits for lead role" \
   test_ate_gate_denies_markdown_edits_for_lead
 run_case "ATE gate denies markdown edits for coordinator role" \
@@ -904,10 +1049,42 @@ run_case "validate-apply-patch parses tool_input.input plan paths" \
   test_validate_apply_patch_blocks_plan_paths_from_input
 run_case "validate-apply-patch blocks Move to plan paths" \
   test_validate_apply_patch_blocks_plan_move_destination
+run_case "validate-edit-write blocks direct Edit plan paths" \
+  test_validate_edit_write_blocks_direct_edit_plan_path
+run_case "validate-edit-write blocks direct Write plan paths" \
+  test_validate_edit_write_blocks_direct_write_plan_path
+run_case "validate-edit-write blocks direct MultiEdit plan paths" \
+  test_validate_edit_write_blocks_direct_multiedit_plan_path
+run_case "validate-edit-write blocks direct Edit go.mod local replace" \
+  test_validate_edit_write_blocks_direct_edit_local_gomod_replace
+run_case "validate-edit-write blocks direct Write go.mod local replace" \
+  test_validate_edit_write_blocks_direct_write_local_gomod_replace
+run_case "validate-edit-write blocks direct MultiEdit go.mod local replace" \
+  test_validate_edit_write_blocks_direct_multiedit_local_gomod_replace
+run_case "validate-edit-write allows unrelated non-plan Edit" \
+  test_validate_edit_write_allows_unrelated_non_plan_edit
+run_case "validate-edit-write allows remote Write go.mod replace" \
+  test_validate_edit_write_allows_remote_write_gomod_replace
+run_case "validate-edit-write allows remote MultiEdit go.mod replace" \
+  test_validate_edit_write_allows_remote_multiedit_gomod_replace
 run_case "validate-apply-patch parses tool_input.patch go.mod replaces" \
   test_validate_apply_patch_blocks_local_gomod_replace_from_patch
 run_case "validate-apply-patch blocks go.mod replace on Move to destination" \
   test_validate_apply_patch_blocks_local_gomod_replace_on_move_destination
+run_case "validate-apply-patch blocks block-form go.mod local replace" \
+  test_validate_apply_patch_blocks_block_form_local_gomod_replace
+run_case "validate-apply-patch allows remote go.mod replace" \
+  test_validate_apply_patch_allows_remote_gomod_replace
+run_case "validate-apply-patch allows unrelated non-plan edit" \
+  test_validate_apply_patch_allows_unrelated_non_plan_edit
+run_case "validate-bash blocks bare go test" \
+  test_validate_bash_blocks_bare_go_test
+run_case "validate-bash blocks go test -count=1" \
+  test_validate_bash_blocks_go_test_count_one
+run_case "validate-bash allows redirected go test" \
+  test_validate_bash_allows_redirected_go_test
+run_case "validate-bash allows go test piped to tee" \
+  test_validate_bash_allows_go_test_tee
 run_case "security reminder sees workflow Move to destination" \
   test_security_reminder_sees_workflow_move_destination
 run_case "stop gate blocks proof missing required sections" \

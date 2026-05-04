@@ -1,0 +1,12 @@
+{
+  "tool_name": "MultiEdit",
+  "tool_input": {
+    "file_path": "docs/superpowers/plans/t02.md",
+    "edits": [
+      {
+        "old_string": "old",
+        "new_string": "new"
+      }
+    ]
+  }
+}

@@ -35,11 +35,36 @@
         ]
       },
       {
-        "matcher": "apply_patch|Edit|Write|MultiEdit",
+        "matcher": "^apply_patch$",
         "hooks": [
           {
             "type": "command",
             "command": "/home/streaming/.codex/hooks/validate-apply-patch.sh",
+            "statusMessage": "Checking file edit"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/security-reminder.py",
+            "statusMessage": "Checking security-sensitive edit"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/eci-active-gate.sh",
+            "statusMessage": "Checking ECI gate"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/ate-orchestrator-gate.sh",
+            "statusMessage": "Checking role gate"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Edit|Write|MultiEdit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/validate-edit-write.sh",
             "statusMessage": "Checking file edit"
           },
           {

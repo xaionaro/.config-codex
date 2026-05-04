@@ -35,6 +35,6 @@ if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)docs/(superpowers/)?plans/'; th
 fi
 
 if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)go\.mod$' &&
-   printf '%s\n' "$patch_text" | grep -Eq '^\+replace[[:space:]].*=>[[:space:]]*(\.\./|\./)'; then
+   printf '%s\n' "$patch_text" | grep -Eq '^\+.*=>[[:space:]]*(\.\./|\./)'; then
   deny 'Do not add local relative replace directives to go.mod. Use a workspace, module proxy, or explicit user-approved local override.'
 fi
