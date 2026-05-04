@@ -1,0 +1,50 @@
+{
+  "port": "claude-to-codex",
+  "scope": "skill-marker-non-port",
+  "source_root": "/home/streaming/.claude",
+  "target_root": "/home/streaming/.codex",
+  "decisions": [
+    {
+      "feature": "skill-marker-hooks",
+      "status": "not_ported",
+      "source_files": [
+        "/home/streaming/.claude/settings.json",
+        "/home/streaming/.claude/hooks/skill-marker-record.sh",
+        "/home/streaming/.claude/hooks/skill-marker-gate.sh"
+      ],
+      "target_behavior": "instruction-only skill routing through CODEX.md, developer instructions, and skill trigger metadata",
+      "failed_probes": [
+        {
+          "artifact": "/home/streaming/.cache/codex-proof/skill-event-probes/*.jsonl",
+          "row_count_policy": "omitted because probe cache totals can change",
+          "tool_names": [
+            "Bash",
+            "apply_patch"
+          ],
+          "tool_input_key_sets": [
+            [
+              "command"
+            ]
+          ],
+          "redacted_value_keys": []
+        },
+        {
+          "artifact": "/home/streaming/.codex/hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl",
+          "status": "historical_sanitized_fixture",
+          "active_wiring": false
+        }
+      ],
+      "missing_event_fields": [
+        "tool_input.skill",
+        "tool_input.name",
+        "tool_input.skill_name",
+        "tool_input.skill_id",
+        "path",
+        "file_path",
+        "source_path",
+        "uri"
+      ],
+      "guardrail": "Do not add Codex skill-marker-record scripts unless a real Codex Skill hook payload is captured through standard tooling and committed as sanitized evidence. Do not add a Codex PreToolUse skill-marker gate unless real sanitized Codex payload evidence captures the skill identity and edit target path fields needed to enforce it."
+    }
+  ]
+}
