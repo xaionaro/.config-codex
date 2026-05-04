@@ -9,4 +9,6 @@ description: Use when working with Android phones or tablets — fastboot, adb, 
 
 ## Device Health
 
+Handle health checks and routine fixes in-place in the current session; they generally do not need a separate agent.
+
 Before calling a device healthy, check for crash handlers: `adb shell pgrep -a crash_dump64` (or `adb shell ps -A | grep '[c]rash_dump64'` if `pgrep` is unavailable). Any running `crash_dump64` process means the device is unhealthy; investigate crashes before flashing, benchmarking, or reporting success.
