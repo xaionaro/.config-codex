@@ -18,6 +18,49 @@ case "${CODEX_ROLE:-}" in
   eci-implementer|executor|test-executor) exit 0 ;;
 esac
 
+tool_paths() {
+  case "$tool_name" in
+    apply_patch)
+      printf '%s' "$input" |
+        jq -r '.tool_input.command // .tool_input.patch // .tool_input.input // empty' 2>/dev/null |
+        awk '
+          /^\*\*\* (Add|Update|Delete) File: / {
+            sub(/^\*\*\* (Add|Update|Delete) File: /, "")
+            print
+          }
+          /^\*\*\* Move to: / {
+            sub(/^\*\*\* Move to: /, "")
+            print
+          }
+        '
+      ;;
+    Edit|Write|MultiEdit)
+      printf '%s' "$input" |
+        jq -r '.tool_input.file_path // .tool_input.path // .tool_input.target_file // empty' 2>/dev/null
+      ;;
+  esac
+}
+
+markdown_only_edit() {
+  local path
+  local seen=false
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    seen=true
+    case "$path" in
+      *.[mM][dD]|*.[mM][aA][rR][kK][dD][oO][wW][nN]) ;;
+      *) return 1 ;;
+    esac
+  done
+
+  [ "$seen" = "true" ]
+}
+
+if tool_paths | markdown_only_edit; then
+  exit 0
+fi
+
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"

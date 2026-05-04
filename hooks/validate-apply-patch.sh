@@ -19,11 +19,22 @@ deny() {
   exit 0
 }
 
-if printf '%s\n' "$patch_text" | grep -Eq '^\*\*\* (Add|Update|Delete) File: .*/?docs/(superpowers/)?plans/'; then
+patch_paths=$(printf '%s\n' "$patch_text" | awk '
+  /^\*\*\* (Add|Update|Delete) File: / {
+    sub(/^\*\*\* (Add|Update|Delete) File: /, "")
+    print
+  }
+  /^\*\*\* Move to: / {
+    sub(/^\*\*\* Move to: /, "")
+    print
+  }
+')
+
+if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)docs/(superpowers/)?plans/'; then
   deny 'Do not edit plan files under docs/plans or docs/superpowers/plans from normal implementation flow. Use the active plan/checklist instead.'
 fi
 
-if printf '%s\n' "$patch_text" | grep -Eq '^\*\*\* (Add|Update) File: .*go\.mod$' &&
+if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)go\.mod$' &&
    printf '%s\n' "$patch_text" | grep -Eq '^\+replace[[:space:]].*=>[[:space:]]*(\.\./|\./)'; then
   deny 'Do not add local relative replace directives to go.mod. Use a workspace, module proxy, or explicit user-approved local override.'
 fi

@@ -24,7 +24,7 @@
         ]
       },
       {
-        "matcher": "apply_patch|Edit|Write",
+        "matcher": "apply_patch|Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",

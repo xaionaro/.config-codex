@@ -121,7 +121,7 @@ def tool_content(tool_name: str, tool_input) -> tuple[str, str]:
 def patch_paths(content: str) -> list[str]:
     paths: list[str] = []
     for line in content.splitlines():
-        for prefix in ("*** Add File: ", "*** Update File: ", "*** Delete File: "):
+        for prefix in ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "):
             if line.startswith(prefix):
                 paths.append(line[len(prefix) :].strip())
     return paths

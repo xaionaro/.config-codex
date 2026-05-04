@@ -1,0 +1,6 @@
+{
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "input": "*** Begin Patch\n*** Update File: notes/source.md\n*** Move to: docs/plans/t99.md\n@@\n-old\n+new\n*** End Patch\n"
+  }
+}

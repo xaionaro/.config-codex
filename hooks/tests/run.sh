@@ -255,15 +255,45 @@ test_eci_gate_allows_markdown_only_apply_patch() {
   expect_no_output "$out"
 }
 
-current_bad_eci_gate_denies_markdown_only_apply_patch() {
+test_eci_gate_allows_markdown_only_edit_payloads() {
   local proof_root out
-  proof_root="$(fresh_proof_root eci-markdown-bad)"
+  proof_root="$(fresh_proof_root eci-markdown-edit)"
   mkdir -p "$proof_root/t00-session"
   printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
-  out="$TMP_ROOT/eci-markdown-bad.out"
 
-  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-markdown.json" \
-    CODEX_PROOF_ROOT="$proof_root"
+  out="$TMP_ROOT/eci-edit-markdown.out"
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-edit-markdown.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
+
+  out="$TMP_ROOT/eci-multiedit-markdown.out"
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-multiedit-markdown.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
+}
+
+test_eci_gate_allows_markdown_only_write_payload() {
+  local proof_root out
+  proof_root="$(fresh_proof_root eci-markdown-write)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/eci-write-markdown.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-write-markdown.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out"
+}
+
+test_eci_gate_denies_code_write_payload() {
+  local proof_root out
+  proof_root="$(fresh_proof_root eci-code-write)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/eci-write-code.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-write-code.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
 
   is_pretool_deny "$out"
 }
@@ -319,15 +349,6 @@ test_multiedit_hook_config_is_wired() {
   matcher_has_tool "$matcher" "MultiEdit"
 }
 
-current_bad_multiedit_hook_config_is_missing() {
-  local matcher
-  matcher="$(eci_gate_matcher)" || return 1
-  matcher_has_tool "$matcher" "apply_patch" || return 1
-  matcher_has_tool "$matcher" "Edit" || return 1
-  matcher_has_tool "$matcher" "Write" || return 1
-  ! matcher_has_tool "$matcher" "MultiEdit"
-}
-
 test_validate_apply_patch_blocks_plan_paths_from_input() {
   local out
   out="$TMP_ROOT/apply-patch-plan.out"
@@ -336,12 +357,53 @@ test_validate_apply_patch_blocks_plan_paths_from_input() {
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
 }
 
+test_validate_apply_patch_blocks_plan_move_destination() {
+  local out
+  out="$TMP_ROOT/apply-patch-plan-move.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-plan-move.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
+}
+
+test_ate_gate_denies_markdown_edits_for_lead() {
+  local out
+  out="$TMP_ROOT/ate-markdown-lead.out"
+  run_hook "$out" "$ROOT/hooks/ate-orchestrator-gate.sh" "$FIXTURES/eci-apply-patch-markdown.json" \
+    CODEX_ROLE=lead || return 1
+  is_pretool_deny "$out"
+}
+
+test_ate_gate_denies_markdown_edits_for_coordinator() {
+  local out
+  out="$TMP_ROOT/ate-markdown-coordinator.out"
+  run_hook "$out" "$ROOT/hooks/ate-orchestrator-gate.sh" "$FIXTURES/eci-apply-patch-markdown.json" \
+    CODEX_ROLE=coordinator || return 1
+  is_pretool_deny "$out"
+}
+
 test_validate_apply_patch_blocks_local_gomod_replace_from_patch() {
   local out
   out="$TMP_ROOT/apply-patch-gomod.out"
   run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-gomod.json" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_validate_apply_patch_blocks_local_gomod_replace_on_move_destination() {
+  local out
+  out="$TMP_ROOT/apply-patch-gomod-move.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-gomod-move.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "local relative replace"
+}
+
+test_security_reminder_sees_workflow_move_destination() {
+  local proof_root out
+  proof_root="$(fresh_proof_root security-workflow-move)"
+  out="$TMP_ROOT/security-workflow-move.out"
+  env -u CODEX_ROLE CODEX_PROOF_ROOT="$proof_root" "$ROOT/hooks/security-reminder.py" \
+    <"$FIXTURES/security-workflow-move.json" >"$out" 2>"$out.err" || return 1
+  json_field_contains "$out" '.systemMessage // empty' "GitHub Actions workflow"
 }
 
 test_stop_gate_blocks_missing_proof_sections() {
@@ -535,20 +597,34 @@ run_case "ECI gate blocks code apply_patch from session marker" \
   test_eci_gate_blocks_code_apply_patch_from_session_state
 run_case "ECI gate allows implementer role through marker" \
   test_eci_gate_allows_implementer_role
-run_xfail "ECI gate allows markdown-only apply_patch while marker exists" \
-  test_eci_gate_allows_markdown_only_apply_patch \
-  current_bad_eci_gate_denies_markdown_only_apply_patch
+run_case "ECI gate allows markdown-only apply_patch while marker exists" \
+  test_eci_gate_allows_markdown_only_apply_patch
+run_case "ECI gate allows markdown-only Edit and MultiEdit payloads" \
+  test_eci_gate_allows_markdown_only_edit_payloads
+run_case "ECI gate allows markdown-only Write payload" \
+  test_eci_gate_allows_markdown_only_write_payload
+run_case "ECI gate denies code Write payload" \
+  test_eci_gate_denies_code_write_payload
 run_case "ECI gate denies mixed markdown/code apply_patch" \
   test_eci_gate_denies_mixed_markdown_code_patch
 run_case "ECI gate blocks MultiEdit JSON stdin when marker exists" \
   test_eci_gate_blocks_multiedit_stdin
-run_xfail "hooks.json edit matcher includes MultiEdit" \
-  test_multiedit_hook_config_is_wired \
-  current_bad_multiedit_hook_config_is_missing
+run_case "hooks.json edit matcher includes MultiEdit" \
+  test_multiedit_hook_config_is_wired
+run_case "ATE gate denies markdown edits for lead role" \
+  test_ate_gate_denies_markdown_edits_for_lead
+run_case "ATE gate denies markdown edits for coordinator role" \
+  test_ate_gate_denies_markdown_edits_for_coordinator
 run_case "validate-apply-patch parses tool_input.input plan paths" \
   test_validate_apply_patch_blocks_plan_paths_from_input
+run_case "validate-apply-patch blocks Move to plan paths" \
+  test_validate_apply_patch_blocks_plan_move_destination
 run_case "validate-apply-patch parses tool_input.patch go.mod replaces" \
   test_validate_apply_patch_blocks_local_gomod_replace_from_patch
+run_case "validate-apply-patch blocks go.mod replace on Move to destination" \
+  test_validate_apply_patch_blocks_local_gomod_replace_on_move_destination
+run_case "security reminder sees workflow Move to destination" \
+  test_security_reminder_sees_workflow_move_destination
 run_case "stop gate blocks proof missing required sections" \
   test_stop_gate_blocks_missing_proof_sections
 run_case "stop gate accepts complete proof fixture" \
