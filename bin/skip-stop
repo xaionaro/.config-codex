@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Manage the stop-hook bypass marker for the current Codex session.
+# Manage the stop-hook bypass marker for the current Codex session or cwd.
 
 set -euo pipefail
 
-root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$base_dir/hooks/lib/codex-proof-state.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -13,43 +14,32 @@ Usage:
   skip-stop status
 
 Set CODEX_SESSION_ID to target a specific session. Without it, the newest
-session directory under ~/.cache/codex-proof is used.
+proof directory is never guessed; state is scoped to the current cwd.
 EOF
-}
-
-session_dir() {
-  if [ -n "${CODEX_SESSION_ID:-}" ]; then
-    case "$CODEX_SESSION_ID" in
-      *[!A-Za-z0-9_-]*) return 1 ;;
-    esac
-    printf '%s/%s\n' "$root" "$CODEX_SESSION_ID"
-    return 0
-  fi
-
-  find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null |
-    sort -rn |
-    awk 'NR == 1 {print $2}'
 }
 
 cmd="${1:-}"
 case "$cmd" in
   on)
-    dir=$(session_dir)
-    [ -n "$dir" ] || { echo "No Codex proof session found; set CODEX_SESSION_ID." >&2; exit 1; }
-    mkdir -p "$dir"
-    date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ' >"$dir/skip_stop"
-    printf 'Stop hook bypass enabled: %s/skip_stop\n' "$dir"
+    marker=$(codex_cli_state_file skip-stop skip_stop true) || {
+      echo "Invalid CODEX_SESSION_ID; use only letters, digits, '_' or '-'." >&2
+      exit 1
+    }
+    date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ' >"$marker"
+    printf 'Stop hook bypass enabled: %s\n' "$marker"
     ;;
   off)
-    dir=$(session_dir)
-    [ -n "$dir" ] || { echo "No Codex proof session found; set CODEX_SESSION_ID." >&2; exit 1; }
-    rm -f "$dir/skip_stop"
+    marker=$(codex_cli_state_file skip-stop skip_stop false) || {
+      echo "Invalid CODEX_SESSION_ID; use only letters, digits, '_' or '-'." >&2
+      exit 1
+    }
+    rm -f "$marker"
     printf 'Stop hook bypass disabled\n'
     ;;
   status)
-    dir=$(session_dir || true)
-    if [ -n "${dir:-}" ] && [ -f "$dir/skip_stop" ]; then
-      cat "$dir/skip_stop"
+    marker=$(codex_cli_state_file skip-stop skip_stop false 2>/dev/null || true)
+    if [ -n "${marker:-}" ] && [ -f "$marker" ]; then
+      cat "$marker"
     else
       echo "Stop hook bypass inactive"
     fi

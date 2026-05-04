@@ -3,10 +3,14 @@
 
 set -euo pipefail
 
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HOOK_DIR/lib/codex-proof-state.sh"
+
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
 stop_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
+[ -z "$cwd" ] && cwd="$PWD"
 
 json_continue() {
   jq -n '{continue: true}'
@@ -67,8 +71,8 @@ proof="$proof_dir/proof.md"
 summary="$proof_dir/summary-to-print.md"
 instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
-skip="$proof_dir/skip_stop"
-eci_active="$proof_dir/eci_active"
+skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
+eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
 
 mkdir -p "$proof_dir"
 
@@ -79,12 +83,13 @@ case "${CODEX_ROLE:-}" in
     ;;
 esac
 
-if [ -f "$eci_active" ]; then
+if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
+  codex_note_state_session_id "$eci_active" "$session_id" || true
   json_block "ECI is active for this session. Complete the ECI task, hard-escalate it, or disengage through ~/.codex/bin/eci-active off <disengage-report.md> before stopping."
   exit 0
 fi
 
-if [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/dev/null)" ]; then
+if [ -n "$skip" ] && [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/dev/null)" ]; then
   json_continue
   exit 0
 fi

@@ -3,6 +3,9 @@
 
 set -euo pipefail
 
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HOOK_DIR/lib/codex-proof-state.sh"
+
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
 
@@ -22,8 +25,36 @@ fi
 
 rm -f "$proof_dir/skip_stop"
 
-find "$root" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
+prune_marker_dirs() {
+  local state_root="$1"
+  local marker_name="$2"
+  local dir marker
+
+  [ -d "$state_root" ] || return 0
+  find "$state_root" -mindepth 1 -maxdepth 1 -type d -mtime +30 -print 2>/dev/null |
+    while IFS= read -r dir; do
+      marker="$dir/$marker_name"
+      if [ -f "$marker" ]; then
+        case "$marker_name" in
+          eci_active) continue ;;
+          skip_stop)
+            [ -n "$(find "$marker" -mmin -60 -print 2>/dev/null)" ] && continue
+            ;;
+        esac
+      fi
+      rm -rf "$dir"
+    done
+}
+
+find "$root" -mindepth 1 -maxdepth 1 -type d -name '019*' -mtime +30 -exec rm -rf {} + 2>/dev/null || true
 find "$root/history" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
+for state_root in skills audit reviewer reviewer-dumps; do
+  find "$root/$state_root" -mindepth 1 -maxdepth 1 -mtime +30 -exec rm -rf {} + 2>/dev/null || true
+done
+prune_marker_dirs "$root/eci/sessions" eci_active
+prune_marker_dirs "$root/eci/cwd" eci_active
+prune_marker_dirs "$root/skip-stop/sessions" skip_stop
+prune_marker_dirs "$root/skip-stop/cwd" skip_stop
 
 jq -n --arg ctx 'Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.' '{
   hookSpecificOutput: {
