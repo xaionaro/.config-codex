@@ -12,8 +12,9 @@ Separate the hand that builds from the hand that tears down. The builder cannot 
 - Use `spawn_agent` only when the user explicitly requested subagents, delegation, or parallel agent work.
 - Use `explorer` agents for research/critique and `worker` agents for implementation.
 - Launch every spawned agent with `reasoning_effort: "xhigh"`. Launch every independent Codex teammate with `-c 'model_reasoning_effort="xhigh"'`.
-- If delegation is not authorized, run the explore, critique, and implementation phases locally with separate written artifacts for each role.
-- Use `~/.codex/bin/eci-active` only for intentionally gated delegated sessions; it blocks main-thread edits while the marker is on.
+- When ECI is invoked, the orchestrator engages `~/.codex/bin/eci-active on "<task + scope>"` before Step 1 and keeps it active until teardown.
+- If delegation is not authorized or available, run the explore, critique, and implementation phases locally with separate written artifacts for each role.
+- When delegation/agents are authorized, Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, and verifier/E2E roles must be dedicated spawned agents or independent Codex role processes, never main-thread persona critique.
 
 ## When to use
 
@@ -30,24 +31,24 @@ Coding task? Every subagent prompt (explorer, critic, implementer) must include:
 
 ## Engagement marker
 
-The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write/MultiEdit on the main thread while engaged. Every code change must flow through a subagent or teammate. Subagents and teammates write from their own session — the marker is keyed to the orchestrator's session and is absent in theirs, so neither trips this gate. The Stop hook exemption for `eci-implementer` uses a different scope — see `hooks/stop-gate.sh`.
+The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write/MultiEdit on the main thread while engaged. When delegation/agents are authorized, every code change must flow through a subagent or teammate. Subagents and teammates write from their own session — the marker is keyed to the orchestrator's session and is absent in theirs, so neither trips this gate. The Stop hook exemption for `eci-implementer` uses a different scope — see `hooks/stop-gate.sh`.
 
 | Step | Command | When |
 |------|---------|------|
 | Engage | `~/.codex/bin/eci-active on "<task + scope>"` | Before Step 1 of the first iteration |
 | Disengage | See Teardown sequence below | Clean pass landed, hard escalate, or user confirms scope closed |
 
-Do not disengage mid-task to escape the gate. If a hand-edit feels necessary, send the change request to the implementer role.
+Do not disengage mid-task to escape the gate. When delegation/agents are authorized, every code change flows through a subagent or teammate. If no-delegation fallback cannot proceed with the marker active, hard-escalate instead of removing the marker.
 
 ## Team setup
 
-Reuse an existing spawned agent with `send_input` when the role needs continuity and delegation is authorized. Otherwise, spawn a bounded `explorer` or `worker` for the role.
+Reuse an existing spawned agent with `send_input` when the role needs continuity and delegation is authorized. Otherwise, spawn a bounded `explorer` or `worker` for the role. If delegation is unavailable, use the local-artifact fallback and label critic artifacts `no-delegation fallback`.
 
-Persistent role instances handle Step 1 (explorer) and Step 3 (implementer) across iterations when the environment supports reuse. Critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker) must still be separate from the explorer and implementer. The producer must never act as critic.
+Persistent role instances handle Step 1 (explorer) and Step 3 (implementer) across iterations when the environment supports reuse. Critic/verifier work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, verifier/E2E) must still be separate from the explorer and implementer. The producer must never act as critic.
 
 **"Persistent" != "carries cross-iteration context".** The role prompt baseline requires fresh-assignment treatment each message (re-read referenced files, no prior-turn trust). Reuse role continuity when useful, but require fresh file reads every assignment. The producer-vs-critic split is about agent identity for adversarial separation, not context staleness.
 
-**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, and loop-breaker use separate role instances from producer roles. Adversarial separation = identity rule (critic != producer). Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or spawning a new bounded reviewer. Do not rely on prior context carrying over.
+**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, and verifier/E2E use separate role instances from producer roles. Adversarial separation = identity rule (critic != producer). When delegation/agents are authorized, those roles must be dedicated spawned agents or independent Codex role processes, never main-thread persona critique. Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or spawning a new bounded reviewer. Do not rely on prior context carrying over.
 
 CODEX_ROLE must be set in the teammate's *process env* for independent codex CLI processes. Use `codex-as-role <role>` (or `CODEX_ROLE=<role> codex ...`) when launching. Setting CODEX_ROLE inside a prompt has no effect; that is text the agent reads, not process environment.
 
@@ -113,6 +114,9 @@ If the orchestrator's next Stop blocks for proof, copy the disengage report to `
 `~/.codex/bin/eci-active off` requires a markdown report walking the stop checklist (`~/.codex/hooks/stop-checklist.md`) and critically analyzing items that could not be fully complied with during the ECI scope. Required sections:
 
 ```
+## ECI completion certificate
+<exactly one of: clean-pass: <evidence> | hard-escalation: <evidence> | user-closed: <evidence>>
+
 ## Stop checklist walkthrough
 - Questions: pass/fail/N-A — <one-line evidence>
 - Git: pass/fail/N-A — <one-line evidence>
@@ -129,7 +133,7 @@ If the orchestrator's next Stop blocks for proof, copy the disengage report to `
 fully-compliant: <reason rule-by-rule>   # only if no incomplete items
 ```
 
-The bin rejects reports missing either header or with an empty walkthrough. Validation is a content gate, not a wordcount — write substance, not boilerplate.
+The bin rejects reports missing `## Stop checklist walkthrough`, `## Incomplete compliance`, non-empty bodies, and exactly one terminal verdict marker: `clean-pass:`, `hard-escalation:`, or `user-closed:`. Include either all full Codex stop-proof sections or `## ECI completion certificate`. Validation is a content gate, not a wordcount — write substance, not boilerplate.
 
 ## Loop structure
 
@@ -157,7 +161,7 @@ Send the assignment to the `explorer` role. Each message/prompt must include:
 
 ## Step 2: Critique explorations
 
-Use a different agent or local role — not the explorer, not the implementer, not the main implementation role. Each new round starts with clean context. Do not reuse the explorer or implementer for critic work.
+When delegation/agents are authorized, use a dedicated critic agent or independent Codex role process — not the explorer, not the implementer, not the main thread. Local artifact critique is allowed only in no-delegation fallback and must be labeled `no-delegation fallback`. Each new round starts with clean context. Do not reuse the explorer or implementer for critic work.
 
 The critic's prompt must include:
 - **Original user requirements verbatim.** The critic must verify options against what the user actually asked for, not just technical soundness.

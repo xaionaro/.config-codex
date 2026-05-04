@@ -16,6 +16,47 @@ json_block() {
   jq -n --arg reason "$1" '{decision: "block", reason: $reason}'
 }
 
+section_has_body() {
+  local file="$1"
+  local target="$2"
+
+  awk -v target="$target" '
+    BEGIN { target = tolower(target) }
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    /^##[[:space:]]*/ {
+      heading = $0
+      sub(/^##[[:space:]]*/, "", heading)
+      heading = tolower(trim(heading))
+      if (in_section) exit
+      if (heading == target) {
+        in_section = 1
+        next
+      }
+    }
+    in_section {
+      line = trim($0)
+      if (line != "") found = 1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$file"
+}
+
+terminal_verdict_count() {
+  awk '
+    {
+      line = tolower($0)
+      while (match(line, /(^|[^[:alnum:]_-])(clean-pass|hard-escalation|user-closed):/)) {
+        count++
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+    END { print count + 0 }
+  ' "$1"
+}
+
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
 esac
@@ -27,6 +68,7 @@ summary="$proof_dir/summary-to-print.md"
 instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
 skip="$proof_dir/skip_stop"
+eci_active="$proof_dir/eci_active"
 
 mkdir -p "$proof_dir"
 
@@ -36,6 +78,11 @@ case "${CODEX_ROLE:-}" in
     exit 0
     ;;
 esac
+
+if [ -f "$eci_active" ]; then
+  json_block "ECI is active for this session. Complete the ECI task, hard-escalate it, or disengage through ~/.codex/bin/eci-active off <disengage-report.md> before stopping."
+  exit 0
+fi
 
 if [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/dev/null)" ]; then
   json_continue
@@ -48,7 +95,18 @@ if [ "$stop_active" = "true" ]; then
 fi
 
 if [ -f "$proof" ]; then
-  if ! grep -qiE 'fast.exit|fast exit' "$proof"; then
+  if section_has_body "$proof" "ECI completion certificate"; then
+    if ! section_has_body "$proof" "Stop checklist walkthrough" || ! section_has_body "$proof" "Incomplete compliance"; then
+      json_block "ECI completion proof must include non-empty Stop checklist walkthrough and Incomplete compliance sections."
+      exit 0
+    fi
+
+    verdicts=$(terminal_verdict_count "$proof")
+    if [ "$verdicts" -ne 1 ]; then
+      json_block "ECI completion proof must include exactly one terminal verdict marker: clean-pass:, hard-escalation:, or user-closed:."
+      exit 0
+    fi
+  elif ! grep -qiE 'fast.exit|fast exit' "$proof"; then
     missing=""
     grep -qi '^##[[:space:]]*Summary' "$proof" || missing="$missing Summary"
     grep -qi '^##[[:space:]]*Verification' "$proof" || missing="$missing Verification"
