@@ -65,6 +65,11 @@ case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
 esac
 
+if codex_hook_is_subagent_context "$input"; then
+  json_continue
+  exit 0
+fi
+
 root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
 proof_dir="$root/$session_id"
 proof="$proof_dir/proof.md"
@@ -75,13 +80,6 @@ skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev
 eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
 
 mkdir -p "$proof_dir"
-
-case "${CODEX_ROLE:-}" in
-  snitch|explorer|brainstormer|designer|reviewer|test-designer|test-reviewer|verifier|qa|eci-implementer|executor|test-executor)
-    json_continue
-    exit 0
-    ;;
-esac
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
   codex_note_state_session_id "$eci_active" "$session_id" || true

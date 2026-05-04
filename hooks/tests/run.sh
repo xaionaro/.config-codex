@@ -19,6 +19,7 @@ TODO_COUNT=0
 
 cleanup() {
   if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
+    rm -f "$(subagent_transcript_path 2>/dev/null || true)" 2>/dev/null || true
     rm -rf "$TMP_ROOT"
   fi
 }
@@ -134,6 +135,10 @@ fresh_proof_root() {
   printf '%s\n' "$root"
 }
 
+subagent_transcript_path() {
+  printf '%s/home/.codex/sessions/codex-hooks-test-subagent.jsonl\n' "$TMP_ROOT"
+}
+
 with_cwd_fixture() {
   local src="$1"
   local dst="$2"
@@ -229,17 +234,67 @@ test_eci_gate_blocks_code_apply_patch_from_session_state() {
   is_pretool_deny "$out"
 }
 
-test_eci_gate_allows_implementer_role() {
+test_eci_gate_blocks_codex_role_spoof() {
   local proof_root out
-  proof_root="$(fresh_proof_root eci-role)"
+  proof_root="$(fresh_proof_root eci-role-spoof)"
   mkdir -p "$proof_root/t00-session"
   printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
-  out="$TMP_ROOT/eci-role.out"
+  out="$TMP_ROOT/eci-role-spoof.out"
 
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
     CODEX_PROOF_ROOT="$proof_root" CODEX_ROLE="eci-implementer" || return 1
 
+  is_pretool_deny "$out"
+}
+
+write_subagent_transcript() {
+  local path="$1"
+  mkdir -p "$(dirname "$path")" || return 1
+  cat >"$path" <<'JSON'
+{"timestamp":"2026-05-04T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}
+JSON
+}
+
+write_main_transcript() {
+  local path="$1"
+  mkdir -p "$(dirname "$path")" || return 1
+  cat >"$path" <<'JSON'
+{"timestamp":"2026-05-04T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":"cli"}}
+JSON
+}
+
+test_eci_gate_allows_spawned_agent_transcript_payload() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root eci-subagent-transcript)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/eci-subagent-transcript.json"
+  jq --arg transcript "$transcript" '.transcript_path = $transcript' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-subagent-transcript.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
   expect_no_output "$out"
+}
+
+test_eci_gate_blocks_main_transcript_payload() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root eci-main-transcript)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-main.jsonl"
+  write_main_transcript "$transcript" || return 1
+  input="$TMP_ROOT/eci-main-transcript.json"
+  jq --arg transcript "$transcript" '.transcript_path = $transcript' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-main-transcript.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_pretool_deny "$out"
 }
 
 test_eci_gate_allows_markdown_only_apply_patch() {
@@ -481,6 +536,55 @@ test_stop_gate_blocks_session_eci_state() {
     json_field_contains "$out" '.reason // empty' "ECI is active"
 }
 
+test_stop_gate_blocks_codex_role_spoof_with_eci_state() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-role-spoof)"
+  out="$TMP_ROOT/stop-role-spoof-eci-active.out"
+  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+
+  input="$TMP_ROOT/stop-role-spoof.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-role-spoof.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" CODEX_ROLE=explorer || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active"
+}
+
+test_stop_gate_allows_spawned_agent_transcript_without_proof_state() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-subagent-transcript)"
+  out="$TMP_ROOT/stop-subagent-transcript-eci-active.out"
+  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/stop-subagent-transcript.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-subagent-transcript.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session" ]
+}
+
+test_stop_gate_blocks_main_transcript_with_eci_state() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-main-transcript)"
+  out="$TMP_ROOT/stop-main-transcript-eci-active.out"
+  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+
+  transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-main.jsonl"
+  write_main_transcript "$transcript" || return 1
+  input="$TMP_ROOT/stop-main-transcript.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-main-transcript.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active"
+}
+
 test_stop_gate_allows_session_skip_state() {
   local proof_root input out
   proof_root="$(fresh_proof_root stop-session-skip)"
@@ -595,8 +699,12 @@ run_case "ECI gate blocks code apply_patch from cwd marker" \
   test_eci_gate_blocks_code_apply_patch_from_cwd_state
 run_case "ECI gate blocks code apply_patch from session marker" \
   test_eci_gate_blocks_code_apply_patch_from_session_state
-run_case "ECI gate allows implementer role through marker" \
-  test_eci_gate_allows_implementer_role
+run_case "ECI gate blocks CODEX_ROLE spoof through marker" \
+  test_eci_gate_blocks_codex_role_spoof
+run_case "ECI gate allows spawned-agent transcript payload" \
+  test_eci_gate_allows_spawned_agent_transcript_payload
+run_case "ECI gate blocks main transcript payload" \
+  test_eci_gate_blocks_main_transcript_payload
 run_case "ECI gate allows markdown-only apply_patch while marker exists" \
   test_eci_gate_allows_markdown_only_apply_patch
 run_case "ECI gate allows markdown-only Edit and MultiEdit payloads" \
@@ -635,6 +743,12 @@ run_case "stop gate blocks cwd-scoped ECI marker without cwd field" \
   test_stop_gate_blocks_cwd_eci_state_without_cwd_field
 run_case "stop gate blocks session-scoped ECI marker" \
   test_stop_gate_blocks_session_eci_state
+run_case "stop gate blocks CODEX_ROLE spoof with ECI state" \
+  test_stop_gate_blocks_codex_role_spoof_with_eci_state
+run_case "stop gate allows spawned-agent transcript without proof state" \
+  test_stop_gate_allows_spawned_agent_transcript_without_proof_state
+run_case "stop gate blocks main transcript with ECI state" \
+  test_stop_gate_blocks_main_transcript_with_eci_state
 run_case "stop gate allows session-scoped skip marker" \
   test_stop_gate_allows_session_skip_state
 run_case "stop gate allows cwd-scoped skip marker" \

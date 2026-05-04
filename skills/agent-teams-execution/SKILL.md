@@ -14,11 +14,12 @@ Phased agent team with adversarial review loops and tiered information trust.
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
-- `CODEX_ROLE` gates independent Codex CLI sessions launched through `~/.codex/bin/codex-as-role`.
+- If standard agent tools are unavailable, do not run this pipeline; hard-escalate instead of launching shell-based Codex sessions.
+- `CODEX_ROLE` is legacy hook metadata. Do not use it to launch teammates.
 
 **Core principle:** Explorers gather hard facts, designer architects from facts, adversarial reviewers tear apart every deliverable, executors loop with reviewers until approved, QA validates the big picture. Coordinator manages logistics, lead audits rule compliance. Neither implements.
 
-The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdit when `CODEX_ROLE` is `lead` or `coordinator`. If the gate fires, spawn the appropriate teammate and assign the task — do not unset `CODEX_ROLE` to bypass it.
+The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdit when legacy `CODEX_ROLE` is `lead` or `coordinator`. If the gate fires, spawn the appropriate teammate and assign the task — do not unset `CODEX_ROLE` to bypass it.
 
 Lead and coordinator stops go through the standard stop-checklist proof flow (`stop-gate.sh` does NOT exempt them). The proof must walk `~/.codex/hooks/stop-checklist.md` and critically analyze items that could not be fully complied with during the role's tenure. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
 
@@ -27,7 +28,7 @@ Lead and coordinator stops go through the standard stop-checklist proof flow (`s
 **No urgency. Infinite time.** Never prioritize speed over discipline. Every shortcut, skipped review, or "good enough" degrades the final result. Do it right, every time.
 
 <CRITICAL>
-When delegation is authorized, spawn bounded Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
+When delegation is authorized, spawn bounded standard Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
 
 Example authorized mapping: one `explorer` for each independent research slice, one `worker` for implementation ownership, and one `explorer` or `default` reviewer for critique.
 
@@ -93,7 +94,7 @@ One executor pair per independent unit of work. ~4 agents per phase before coord
 
 ### Model and Effort Level
 
-All teammates: configured Codex model, xhigh effort. Spawn every teammate with `reasoning_effort: "xhigh"` and omit model overrides unless the user explicitly requested one. Launch every independent Codex teammate with `-c 'model_reasoning_effort="xhigh"'`.
+All teammates: configured Codex model, xhigh effort. Spawn every teammate with `reasoning_effort: "xhigh"` and omit model overrides unless the user explicitly requested one.
 
 ### Critical Analysis of All Inputs
 
@@ -522,7 +523,7 @@ Review independently first — no reading peer findings before writing your own.
 | CCed blocker claim received | Verify the blocker claim is substantiated. If evidence is thin, remind coordinator to launch verification (explorer) before accepting |
 | Reviewer/verifier/QA approves | Scrutinize the approval: does it cite specific evidence? Does it address all scrutiny rules? A shallow "LGTM" is not an approval — send back with specific areas to examine |
 | Any agent ignores reminder (3+ on same rule) | Misbehavior Recovery: force `/compact`, re-read skill, continue. If still misbehaving, escalate to user |
-| Coordinator not responding | Check tmux panes to see what's happening. Still thinking/processing = acceptable (up to 1 hour). Stuck > 1 hour = re-spawn. Max 2 re-spawns, then escalate to user |
+| Coordinator not responding | Check spawned-agent status and last `wait_agent`/`send_input` result. Still thinking/processing = acceptable (up to 1 hour). Stuck > 1 hour = re-spawn. Max 2 re-spawns, then escalate to user |
 | Coordinator declares mission accomplished without explicit user confirmation | Reject. Force coordinator to report verdict + evidence to user and wait |
 | Coordinator initiates shutdown without explicit user request | Reject. Team stays alive for followups |
 | Coordinator skips pipeline stages on user followup | Verify against User Followups table. Demand justification or reject |
@@ -541,7 +542,7 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Reviewer/verifier spawns include: executor's original objective with full context, and all scrutiny rules (coding style, claim tagging, OWASP, semantic integrity, etc.)
 - [ ] Execution reviewer spawns include: explicit "Load the `<language>-coding-style` skill via skill instructions" instruction + shared concerns register
 - [ ] Preemptive warnings included: coordinator anticipates the most likely mistakes this agent could make given the specific task and explicitly warns against them in the spawn prompt
-- [ ] Launched via `codex-as-role <role>` (or env-prefixed `CODEX_ROLE=<role> codex ...`) so the teammate's *process env* carries CODEX_ROLE. Setting CODEX_ROLE inside the spawn-prompt body does NOT propagate — the prompt is text the agent reads, not env. Allowed roles: coordinator, explorer, designer, reviewer, executor, test-designer, test-executor, test-reviewer, verifier, qa, brainstormer, snitch.
+- [ ] Standard path: spawned with `spawn_agent`/`send_input`, correct agent type, role prompt, and `reasoning_effort: "xhigh"`.
 
 Lead rejects spawn if any item unchecked.
 
@@ -578,7 +579,7 @@ Re-entry: original designer handles Phase 2 re-entry directly — full context p
 
 **Shutdown procedure:** Always prefer graceful: ask the agent to commit or report any uncommitted work, then request shutdown. If the agent is mid-turn, interrupt when available, then re-send the shutdown request.
 
-If graceful shutdown fails, escalate to the user before terminating independent processes. After a spawned agent is complete, use `close_agent` so future coordination does not wait on a stale agent.
+If graceful shutdown fails, escalate to the user before terminating work. After a spawned agent is complete, use `close_agent` so future coordination does not wait on a stale agent.
 
 ### Spawn Prompt Template
 
@@ -628,7 +629,8 @@ Compliance:
 | Spawning without a skill-defined role, ownership, or stop condition | STOP. Use bounded Codex agents with explicit role, ownership, and expected output |
 | Work without corresponding task | Create task immediately |
 | Task waiting for other tasks before testing | Pipelines are per-task. Code approved + test specs ready → start testing immediately |
-| Spawning custom-named teammates outside defined roles | Unbounded growth. Use role names: executor-N, explorer-N. Reassign idle teammates. |
+| Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`, or hard-escalate if unavailable. |
+| Spawning custom-named teammates outside defined roles | Unbounded growth. Use role names in prompts and roster mapping: executor-N, explorer-N. Reassign idle teammates. |
 | Executor assigned new task with unreviewed previous work | STOP. Assign to a different executor/reviewer pair instead. This executor waits for its reviewer |
 | Executor spawned without paired reviewer already alive | STOP. Batch-spawn all reviewers, confirm all alive, then batch-spawn executors |
 | Executor using workaround without notifying coordinator | STOP. Executor reports broken infra to coordinator first |

@@ -9,12 +9,13 @@ Separate the hand that builds from the hand that tears down. The builder cannot 
 
 ## Execution Rules
 
-- Use `spawn_agent` only when the user explicitly requested subagents, delegation, or parallel agent work.
+- Use `spawn_agent` only when the user explicitly requested subagents, delegation, parallel agent work, or dedicated agents.
 - Use `explorer` agents for research/critique and `worker` agents for implementation.
-- Launch every spawned agent with `reasoning_effort: "xhigh"`. Launch every independent Codex teammate with `-c 'model_reasoning_effort="xhigh"'`.
+- Launch every spawned agent with `reasoning_effort: "xhigh"`.
 - When ECI is invoked, the orchestrator engages `~/.codex/bin/eci-active on "<task + scope>"` before Step 1 and keeps it active until teardown.
-- If delegation is not authorized or available, run the explore, critique, and implementation phases locally with separate written artifacts for each role.
-- When delegation/agents are authorized, Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, and verifier/E2E roles must be dedicated spawned agents or independent Codex role processes, never main-thread persona critique.
+- Use standard agent management tools only. Do not launch Codex agents through shell wrappers or separate CLI processes.
+- If delegation is not authorized or standard agent tools are unavailable, run the explore, critique, and implementation phases locally with separate written artifacts for each role. If the user explicitly required dedicated agents and standard agent tools are unavailable, hard-escalate instead of substituting local artifacts.
+- When delegation/agents are authorized, Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, and verifier/E2E roles must be dedicated spawned agents, never main-thread persona critique.
 
 ## When to use
 
@@ -31,7 +32,7 @@ Coding task? Every subagent prompt (explorer, critic, implementer) must include:
 
 ## Engagement marker
 
-The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write/MultiEdit on the main thread while engaged. When delegation/agents are authorized, every code change must flow through a subagent or teammate. Subagents and teammates write from their own session — the marker is keyed to the orchestrator's session and is absent in theirs, so neither trips this gate. The Stop hook exemption for `eci-implementer` uses a different scope — see `hooks/stop-gate.sh`.
+The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write/MultiEdit on the main thread while engaged. When delegation/agents are authorized, every code change must flow through a spawned agent. The hook must exempt spawned-agent metadata; if spawned agents trip the gate, fix the hook instead of using shell-env role workarounds.
 
 | Step | Command | When |
 |------|---------|------|
@@ -42,24 +43,20 @@ Do not disengage mid-task to escape the gate. When delegation/agents are authori
 
 ## Team setup
 
-Reuse an existing spawned agent with `send_input` when the role needs continuity and delegation is authorized. Otherwise, spawn a bounded `explorer` or `worker` for the role. If delegation is unavailable, use the local-artifact fallback and label critic artifacts `no-delegation fallback`.
+Reuse an existing spawned agent with `send_input` when the role needs continuity and delegation is authorized. Otherwise, spawn a bounded `explorer` or `worker` for the role. If standard agent tools are unavailable, use the local-artifact fallback and label critic artifacts `no-delegation fallback`; do not use local fallback when the user explicitly required dedicated agents.
 
 Persistent role instances handle Step 1 (explorer) and Step 3 (implementer) across iterations when the environment supports reuse. Critic/verifier work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, verifier/E2E) must still be separate from the explorer and implementer. The producer must never act as critic.
 
 **"Persistent" != "carries cross-iteration context".** The role prompt baseline requires fresh-assignment treatment each message (re-read referenced files, no prior-turn trust). Reuse role continuity when useful, but require fresh file reads every assignment. The producer-vs-critic split is about agent identity for adversarial separation, not context staleness.
 
-**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, and verifier/E2E use separate role instances from producer roles. Adversarial separation = identity rule (critic != producer). When delegation/agents are authorized, those roles must be dedicated spawned agents or independent Codex role processes, never main-thread persona critique. Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or spawning a new bounded reviewer. Do not rely on prior context carrying over.
-
-CODEX_ROLE must be set in the teammate's *process env* for independent codex CLI processes. Use `codex-as-role <role>` (or `CODEX_ROLE=<role> codex ...`) when launching. Setting CODEX_ROLE inside a prompt has no effect; that is text the agent reads, not process environment.
+**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker, and verifier/E2E use separate role instances from producer roles. Adversarial separation = identity rule (critic != producer). When delegation/agents are authorized, those roles must be dedicated spawned agents, never main-thread persona critique. Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or spawning a new bounded reviewer. Do not rely on prior context carrying over.
 
 ### Spawning
 
 | Action | Command |
 |--------|---------|
 | Spawn explorer | `spawn_agent` with `agent_type: "explorer"`, `reasoning_effort: "xhigh"` |
-| Spawn explorer (persistent, independent process) | tmux pane: `codex-as-role explorer -c 'model_reasoning_effort="xhigh"' ...` |
 | Spawn implementer | `spawn_agent` with `agent_type: "worker"`, `reasoning_effort: "xhigh"`, and explicit file/module ownership |
-| Spawn implementer (persistent, independent process) | tmux pane: `codex-as-role eci-implementer -c 'model_reasoning_effort="xhigh"' ...` |
 | Spawn Step 2 critic | `spawn_agent` with `agent_type: "explorer"` or `default`; prompt as `critic-r<N>` |
 | Spawn Step 4 critic-A / critic-B | parallel `spawn_agent` calls with separate critic prompts |
 | Spawn E2E agent | `spawn_agent` with `agent_type: "worker"` or `default` for verification |
@@ -68,31 +65,16 @@ CODEX_ROLE must be set in the teammate's *process env* for independent codex CLI
 
 Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel.
 
-### CODEX_ROLE per role (canonical)
-
-Stop-hook role allowlist references this table. Keep `hooks/stop-gate.sh` case statement and `bin/codex-as-role` allowlist in sync.
-
-| Role | CODEX_ROLE | Persistence |
-|------|-------------|-------------|
-| Explorer | `explorer` | Persistent teammate |
-| Implementer | `eci-implementer` | Persistent teammate |
-| Step 2 critic | `reviewer` | Persistent teammate (per-round identity refresh via `/clear` or shutdown+respawn) |
-| Critic A | `reviewer` | Persistent teammate (per-round identity refresh via `/clear` or shutdown+respawn) |
-| Critic B | `reviewer` | Persistent teammate (per-round identity refresh via `/clear` or shutdown+respawn) |
-| Loop-breaker | `reviewer` | Persistent teammate (per-round identity refresh via `/clear` or shutdown+respawn) |
-| E2E agent | `verifier` | Persistent teammate (per-round identity refresh via `/clear` or shutdown+respawn) |
-| Brainstormer | `brainstormer` | Persistent teammate (per-round identity refresh via `/clear` or shutdown+respawn) |
-
 ### Explorer Prompt Baseline
 
 Per-message body in Step 1.
-- Role name per Spawning table. For independent-process teammates, launch via `codex-as-role explorer` (sets CODEX_ROLE in process env).
+- Role name per Spawning table.
 - "Treat each new task message as a fresh assignment per Step 1 of the ECI skill. Re-read every referenced file each turn — do not trust prior-turn reads."
 
 ### Implementer Prompt Baseline
 
 Per-message body in Step 3.
-- Role name per Spawning table. For independent-process teammates, launch via `codex-as-role eci-implementer`.
+- Role name per Spawning table.
 - "Treat each new task message as a fresh assignment per Step 3 of the ECI skill. Re-read every file you intend to modify each turn."
 - One commit per logical change.
 - Every factual claim in submission carries a T1-T5 tag per CODEX.md Claim Verification protocol. E2E evidence ("tests pass", "build succeeded", screenshots, observed state) cited as T1 with tool output, log path, or screenshot file. Concrete example: "[T1: `go test ./...` exit 0, all 47 pass]" not bare "tests pass". Untagged "all green" = unsubmittable.
@@ -104,8 +86,7 @@ Run in this exact order on disengage. Stopping mid-sequence keeps the gate armed
 1. Write disengage-report markdown (content per **Disengage report** below).
 2. Ask active spawned agents to stop cleanly with `send_input`; wait for acknowledgements when they may hold uncommitted work.
 3. Close completed agents with `close_agent`.
-4. For independent Codex CLI panes, request graceful shutdown first; close the pane only after it exits or the user authorizes terminating it.
-5. `~/.codex/bin/eci-active off <report.md>` (LAST — keeps gate armed if teardown fails partway).
+4. `~/.codex/bin/eci-active off <report.md>` (LAST — keeps gate armed if teardown fails partway).
 
 If the orchestrator's next Stop blocks for proof, copy the disengage report to `$PROOF_DIR/proof.md`.
 
@@ -161,7 +142,7 @@ Send the assignment to the `explorer` role. Each message/prompt must include:
 
 ## Step 2: Critique explorations
 
-When delegation/agents are authorized, use a dedicated critic agent or independent Codex role process — not the explorer, not the implementer, not the main thread. Local artifact critique is allowed only in no-delegation fallback and must be labeled `no-delegation fallback`. Each new round starts with clean context. Do not reuse the explorer or implementer for critic work.
+When delegation/agents are authorized, use a dedicated critic `spawn_agent` — not the explorer, not the implementer, not the main thread. Local artifact critique is allowed only in no-delegation fallback and must be labeled `no-delegation fallback`. Each new round starts with clean context. Do not reuse the explorer or implementer for critic work.
 
 The critic's prompt must include:
 - **Original user requirements verbatim.** The critic must verify options against what the user actually asked for, not just technical soundness.
@@ -383,8 +364,8 @@ auth middleware swap
 | No rejected list in Step 2 | Critic is not adversarial. Re-spawn |
 | Brainstormer output filters/judges/picks a winner | Brainstormer is idea-only. Re-spawn with "no filtering, no negatives" |
 | Explorer or implementer role used for any critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker) | STOP. Use a separate critic role; the producer must never act as critic. |
-| Disengage without teardown sequence | STOP. Close spawned agents / independent sessions, then run `eci-active off`. |
-| Independent-process teammate launched without `codex-as-role`/`CODEX_ROLE=` env prefix | STOP. Stop hook will gate every iteration. Re-launch via `codex-as-role <role>`. |
+| Disengage without teardown sequence | STOP. Close spawned agents, then run `eci-active off`. |
+| Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`, or hard-escalate if unavailable. |
 | Status report uses task/iteration numbers, or flat-lists nested work | See **Status reports** section. |
 | "Fresh context needed" → spawned a separate agent for Step 1 or Step 3 without reason | Reuse role continuity when useful; require fresh file reads every assignment. |
 | Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 assignment. |

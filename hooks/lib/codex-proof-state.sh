@@ -126,6 +126,24 @@ codex_note_state_session_id() {
   printf 'session_id: %s\n' "$session_id" >>"$file"
 }
 
+codex_hook_is_subagent_context() {
+  local input="${1:-}"
+  local transcript_path first_event
+
+  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+  case "$transcript_path" in
+    "$HOME/.codex/sessions/"*.jsonl) ;;
+    *) return 1 ;;
+  esac
+
+  [ -f "$transcript_path" ] || return 1
+  first_event="$(sed -n '1p' "$transcript_path" 2>/dev/null || true)"
+  printf '%s' "$first_event" | jq -e '
+    .type == "session_meta" and
+    (.payload.source.subagent.thread_spawn? != null)
+  ' >/dev/null 2>&1
+}
+
 codex_remove_session_state_file() {
   local kind="$1"
   local filename="$2"

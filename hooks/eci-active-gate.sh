@@ -14,9 +14,9 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-case "${CODEX_ROLE:-}" in
-  eci-implementer|executor|test-executor) exit 0 ;;
-esac
+if codex_hook_is_subagent_context "$input"; then
+  exit 0
+fi
 
 tool_paths() {
   case "$tool_name" in

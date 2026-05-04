@@ -5,7 +5,7 @@ description: Use when porting code, features, or capabilities from one codebase/
 
 # Code Porting
 
-Port code between codebases through exhaustive extraction, adversarial critique, and gated implementation. Keep each phase as a separate work product. Use separate subagents only when higher-priority Codex instructions allow delegation and the user explicitly requested subagents, parallel agents, or delegated work.
+Port code between codebases through exhaustive extraction, adversarial critique, and gated implementation. Keep each phase as a separate work product. Use standard `spawn_agent` subagents when higher-priority Codex instructions allow delegation and the user explicitly requested subagents, parallel agents, delegated work, or dedicated agents. Do not launch Codex agents through shell wrappers.
 
 ## When to use
 
@@ -18,7 +18,7 @@ Port code between codebases through exhaustive extraction, adversarial critique,
 
 ## Agent separation
 
-Every numbered phase below has a separate role and artifact. No role serves dual purposes. When delegation is authorized, run phases as separate agents. Otherwise, perform the phases locally while preserving the boundaries and critique gates.
+Every numbered phase below has a separate role and artifact. No role serves dual purposes. When delegation is authorized, run phases as separate standard subagents. Otherwise, perform the phases locally while preserving the boundaries and critique gates. If the user explicitly required dedicated agents and standard agent tools are unavailable, hard-escalate instead of substituting local artifacts.
 
 Propagate **original user requirements verbatim** to every subagent prompt.
 
@@ -45,7 +45,7 @@ Create a visible plan/checklist before adaptation work begins. Phases 1-5 are an
 
 ## Phase 1: Feature extraction
 
-Spawn extraction agent. Prompt must include:
+Spawn extraction agent with `spawn_agent`. Prompt must include:
 
 - Source codebase paths and user-specified scope.
 - "List AS MUCH AS POSSIBLE. Err on over-listing. The critique phases prune — you do not."
@@ -104,7 +104,7 @@ Word cap: 2000 words.
 
 ## Phase 3: Critique the list
 
-Spawn a DIFFERENT agent — not the extractor or gap analyzer.
+Spawn a DIFFERENT dedicated critic agent — not the extractor or gap analyzer. The critic starts by reading source/target material and writing an independent baseline before reading prior artifacts.
 
 Prompt must include:
 
@@ -124,7 +124,7 @@ Word cap: 2000 words.
 
 ## Phase 4: Critique the critique
 
-Spawn a DIFFERENT agent — not any prior agent.
+Spawn a DIFFERENT dedicated critic agent — not any prior agent. The meta-critic starts by reading source/target material and writing an independent baseline before reading prior artifacts.
 
 Purpose: prevent single-critic bias. The Phase 3 critic may be too aggressive (pruning real features) or too lenient (rubber-stamping).
 
@@ -172,7 +172,7 @@ Word cap: 3000 words.
 
 ### Phase 5b: Plan critic
 
-Spawn a DIFFERENT agent — not the plan designer.
+Spawn a DIFFERENT dedicated plan critic agent — not the plan designer. The critic starts by reading source/target material and writing an independent baseline before reading the plan.
 
 Prompt must include:
 
@@ -240,7 +240,8 @@ Independent tasks (no dependency relationship) may run in parallel via `agent-te
 
 | Symptom | Fix |
 |---------|-----|
-| Main thread implementing instead of spawning agents | Stop. Main thread orchestrates only |
+| Shell-launched Codex process used for a phase | Stop. Use standard `spawn_agent`; hard-escalate if unavailable |
+| Main thread implementing instead of spawning agents when delegation is authorized | Stop. Main thread orchestrates only |
 | Same agent doing extraction + gap analysis | Banned. Separate agents per phase |
 | Feature list suspiciously short (<5 entries for non-trivial source) | Re-spawn extractor with "you are under-listing" |
 | Critique agrees with everything | Re-spawn with harsher prompt: "zero survivors is valid" |
