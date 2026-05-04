@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/session-snapshot.sh",
+            "statusMessage": "Loading Codex session rules"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/validate-bash.sh",
+            "statusMessage": "Checking shell command"
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/validate-apply-patch.sh",
+            "statusMessage": "Checking file edit"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/security-reminder.py",
+            "statusMessage": "Checking security-sensitive edit"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/eci-active-gate.sh",
+            "statusMessage": "Checking ECI gate"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/ate-orchestrator-gate.sh",
+            "statusMessage": "Checking role gate"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/stop-gate.sh",
+            "timeout": 30,
+            "statusMessage": "Checking stop criteria"
+          }
+        ]
+      }
+    ]
+  }
+}

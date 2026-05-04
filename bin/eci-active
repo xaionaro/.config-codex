@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Manage the ECI active marker for the current Codex session.
+
+set -euo pipefail
+
+root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  eci-active on "<task + scope>"
+  eci-active off <disengage-report.md>
+  eci-active status
+
+Set CODEX_SESSION_ID to target a specific session. Without it, the newest
+session directory under ~/.cache/codex-proof is used.
+EOF
+}
+
+session_dir() {
+  if [ -n "${CODEX_SESSION_ID:-}" ]; then
+    case "$CODEX_SESSION_ID" in
+      *[!A-Za-z0-9_-]*) return 1 ;;
+    esac
+    printf '%s/%s\n' "$root" "$CODEX_SESSION_ID"
+    return 0
+  fi
+
+  find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null |
+    sort -rn |
+    awk 'NR == 1 {print $2}'
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  on)
+    shift
+    scope="${*:-}"
+    [ -n "$scope" ] || { usage; exit 2; }
+    dir=$(session_dir)
+    [ -n "$dir" ] || { echo "No Codex proof session found; set CODEX_SESSION_ID." >&2; exit 1; }
+    mkdir -p "$dir"
+    {
+      printf 'scope: %s\n' "$scope"
+      printf 'cwd: %s\n' "$PWD"
+      date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
+    } >"$dir/eci_active"
+    printf 'ECI active: %s\n' "$dir/eci_active"
+    ;;
+  off)
+    report="${2:-}"
+    [ -n "$report" ] || { usage; exit 2; }
+    [ -f "$report" ] || { echo "Disengage report not found: $report" >&2; exit 1; }
+    dir=$(session_dir)
+    [ -n "$dir" ] || { echo "No Codex proof session found; set CODEX_SESSION_ID." >&2; exit 1; }
+    mkdir -p "$dir"
+    cp "$report" "$dir/proof.md"
+    rm -f "$dir/eci_active"
+    printf 'ECI inactive. Proof copied to %s/proof.md\n' "$dir"
+    ;;
+  status)
+    dir=$(session_dir || true)
+    if [ -n "${dir:-}" ] && [ -f "$dir/eci_active" ]; then
+      cat "$dir/eci_active"
+    else
+      echo "ECI inactive"
+    fi
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

@@ -1,0 +1,48 @@
+# Ignore everything unless it is explicitly configuration/instruction/tooling.
+*
+!*/
+
+# Tracked Codex configuration.
+!.gitignore
+!CODEX.md
+!config.toml
+!hooks.json
+!bin/**
+!hooks/**
+!skills/**
+!memories/**
+
+# Standard Codex system skills are provided by Codex, not user config.
+skills/.system/**
+
+# Sensitive or machine/session-local material.
+auth.json
+history.jsonl
+installation_id
+version.json
+models_cache.json
+*.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+*token*
+*secret*
+*credential*
+
+# Volatile runtime state.
+*.log
+*.sqlite
+*.sqlite-*
+log/
+logs/
+sessions/
+shell_snapshots/
+cache/
+tmp/
+.tmp/
+state_*.sqlite*
+logs_*.sqlite*
