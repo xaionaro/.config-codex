@@ -11,6 +11,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 
 - Start this pipeline only when the user explicitly requested subagents, delegation, or parallel agent work.
 - Use `spawn_agent`, `send_input`, and `wait_agent` for role execution.
+- When waiting on teammates, call `wait_agent` with `timeout_ms: 1800000` (30 minutes). Do not use short polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
