@@ -7,6 +7,7 @@ Before stopping, verify every applicable item. If any check fails, keep working 
 - Commit this session's completed changes before stopping.
 - Do not commit unrelated user changes.
 - If committing is unsafe because unrelated work is mixed in, state the blocker, affected paths, and exact next command.
+- Do not paste routine git output into proof; summarize only the commit outcome or blocker.
 - Never push unless the user explicitly asked.
 
 ## Completion

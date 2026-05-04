@@ -19,7 +19,7 @@ Write `fast-exit: <reason>` to the proof file only when no completion claim is b
 5. Search for the same pattern elsewhere when the fix may generalize.
 6. Run the narrowest meaningful tests/static checks for changed behavior.
 7. Verify user-visible behavior directly when touched.
-8. Commit this session's completed changes before writing proof. Do not commit unrelated user changes. If committing is unsafe because unrelated work is mixed in, state that blocker.
+8. Commit this session's completed changes before writing proof. Do not commit unrelated user changes. If committing is unsafe, state the blocker. Do not paste routine git output into proof.
 9. Scan `CODEX.md`, applicable skills, and project instructions for current-turn rule violations.
 
 Required proof sections:
@@ -30,7 +30,7 @@ Required proof sections:
 
 ## Verification
 
-- Changed files/state reviewed:
+- Changed files/state reviewed, summarized without routine git output:
 - Tests/checks run:
 - User-visible evidence:
 - Secrets check:
