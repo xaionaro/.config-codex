@@ -55,6 +55,7 @@ prune_marker_dirs "$root/eci/sessions" eci_active
 prune_marker_dirs "$root/eci/cwd" eci_active
 prune_marker_dirs "$root/skip-stop/sessions" skip_stop
 prune_marker_dirs "$root/skip-stop/cwd" skip_stop
+prune_marker_dirs "$root/side-stop/sessions" side_stop
 
 jq -n --arg ctx 'Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.' '{
   hookSpecificOutput: {

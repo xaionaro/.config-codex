@@ -88,6 +88,7 @@ Before nontrivial work, check whether a matching skill exists under `~/.codex/sk
 Subagent rule:
 
 - Use subagents only when the user explicitly requests subagents, delegation, or parallel agent work, or when higher-priority Codex instructions permit it.
+- Use `spawn_agent` only; do not launch shell-wrapped Codex agents.
 - After spawning multiple subagents, print a roster mapping each generated name to its assigned task; later updates include both.
 - Verify all subagent claims independently before relying on them.
 

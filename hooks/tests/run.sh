@@ -108,18 +108,6 @@ json_field_contains() {
   esac
 }
 
-json_field_not_contains() {
-  local file="$1"
-  local expr="$2"
-  local needle="$3"
-  local got
-  got="$(jq -r "$expr" "$file" 2>/dev/null || true)"
-  case "$got" in
-    *"$needle"*) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
 run_hook() {
   local outfile="$1"
   local script="$2"
@@ -177,22 +165,7 @@ make_git_repo() {
   printf '%s\n' "$repo"
 }
 
-test_prompt_task_reminder_emits_user_prompt_json() {
-  local proof_root out
-  proof_root="$(fresh_proof_root prompt-json)"
-  out="$TMP_ROOT/prompt-json.out"
-
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-
-  json_field_equals "$out" '.hookSpecificOutput.hookEventName // empty' "UserPromptSubmit" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "update_plan" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "spawn_agent" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "T1-T5" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "no codex-as-role"
-}
-
-test_prompt_task_reminder_records_head_and_clears_bypass() {
+test_prompt_state_is_silent_records_head_and_clears_bypass() {
   local proof_root out expected
   proof_root="$(fresh_proof_root prompt-head)"
   mkdir -p "$proof_root/reviewer/t00-session" "$proof_root/pre-reviewer/t00-session"
@@ -203,30 +176,27 @@ test_prompt_task_reminder_records_head_and_clears_bypass() {
   run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  [ "$(cat "$proof_root/reviewer/t00-session/prompt_head" 2>/dev/null || true)" = "$expected" ] &&
+  expect_no_output "$out" &&
+    [ "$(cat "$proof_root/reviewer/t00-session/prompt_head" 2>/dev/null || true)" = "$expected" ] &&
     [ ! -e "$proof_root/reviewer/t00-session/bypass" ] &&
     [ ! -e "$proof_root/pre-reviewer/t00-session/bypass" ]
 }
 
-test_prompt_task_reminder_surfaces_eci_marker() {
-  local proof_root out
-  proof_root="$(fresh_proof_root prompt-eci)"
-  mkdir -p "$proof_root/eci/sessions/t00-session"
-  {
-    printf 'scope: prompt hook test\n'
-    printf 'cwd: %s\n' "$ROOT"
-  } >"$proof_root/eci/sessions/t00-session/eci_active"
-  out="$TMP_ROOT/prompt-eci.out"
+test_prompt_state_marks_side_prompt() {
+  local proof_root out marker
+  proof_root="$(fresh_proof_root prompt-side)"
+  out="$TMP_ROOT/prompt-side.out"
 
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-side.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "ECI active" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "scope: prompt hook test" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "main thread must not edit code directly"
+  marker="$proof_root/side-stop/sessions/t00-session/side_stop"
+  expect_no_output "$out" &&
+    [ -f "$marker" ] &&
+    grep -q '^command: /side$' "$marker"
 }
 
-test_prompt_task_reminder_skips_state_for_invalid_session() {
+test_prompt_state_skips_state_for_invalid_session() {
   local proof_root out
   proof_root="$(fresh_proof_root prompt-invalid)"
   out="$TMP_ROOT/prompt-invalid.out"
@@ -234,28 +204,12 @@ test_prompt_task_reminder_skips_state_for_invalid_session() {
   run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-invalid-session.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  json_field_equals "$out" '.hookSpecificOutput.hookEventName // empty' "UserPromptSubmit" &&
+  expect_no_output "$out" &&
     [ ! -e "$proof_root/reviewer/../bad/prompt_head" ] &&
     [ "$(find "$proof_root/reviewer" -name prompt_head 2>/dev/null | wc -l)" -eq 0 ]
 }
 
-test_prompt_task_reminder_ignores_codex_role_prompt_behavior() {
-  local proof_root out with_role
-  proof_root="$(fresh_proof_root prompt-role)"
-  out="$TMP_ROOT/prompt-role.out"
-  with_role="$TMP_ROOT/prompt-role-env.out"
-
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-  run_hook "$with_role" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
-    CODEX_PROOF_ROOT="$proof_root" CODEX_ROLE=explorer CLAUDE_ROLE=explorer || return 1
-
-  cmp -s "$out" "$with_role" &&
-    json_field_not_contains "$with_role" '.hookSpecificOutput.additionalContext // empty' "CODEX_ROLE" &&
-    json_field_not_contains "$with_role" '.hookSpecificOutput.additionalContext // empty' "CLAUDE_ROLE"
-}
-
-test_prompt_task_reminder_config_is_wired_without_probe() {
+test_prompt_state_config_is_wired_without_probe() {
   jq -e '
     ([.hooks.UserPromptSubmit[]?.hooks[]?.command]
       | any(. == "/home/streaming/.codex/hooks/prompt-task-reminder.sh")) and
@@ -263,6 +217,23 @@ test_prompt_task_reminder_config_is_wired_without_probe() {
     ([.. | objects | .command? // empty]
       | all(contains("/hooks/tests/hook-event-probe.sh") | not))
   ' "$ROOT/hooks.json" >/dev/null
+}
+
+test_stop_gate_allows_side_prompt_before_eci_state() {
+  local proof_root prompt_out input out
+  proof_root="$(fresh_proof_root stop-side-eci)"
+  prompt_out="$TMP_ROOT/stop-side-prompt.out"
+
+  run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-side.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-eci-on.out" 2>&1 || return 1
+
+  input="$TMP_ROOT/stop-side-eci.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-side-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true"
 }
 
 test_runtime_hook_probe_evidence_is_sanitized_and_wired() {
@@ -857,18 +828,14 @@ test_skip_stop_uses_cwd_state_without_session() {
     grep -q "Stop hook bypass enabled: $proof_root/skip-stop/cwd/" "$out"
 }
 
-run_case "prompt reminder emits UserPromptSubmit JSON" \
-  test_prompt_task_reminder_emits_user_prompt_json
-run_case "prompt reminder records HEAD and clears reviewer bypass" \
-  test_prompt_task_reminder_records_head_and_clears_bypass
-run_case "prompt reminder surfaces active ECI marker" \
-  test_prompt_task_reminder_surfaces_eci_marker
-run_case "prompt reminder skips state writes for invalid session" \
-  test_prompt_task_reminder_skips_state_for_invalid_session
-run_case "prompt reminder ignores CODEX_ROLE/CLAUDE_ROLE behavior" \
-  test_prompt_task_reminder_ignores_codex_role_prompt_behavior
-run_case "prompt reminder config is wired without temporary probe" \
-  test_prompt_task_reminder_config_is_wired_without_probe
+run_case "prompt state is silent and records HEAD" \
+  test_prompt_state_is_silent_records_head_and_clears_bypass
+run_case "prompt state marks /side prompts" \
+  test_prompt_state_marks_side_prompt
+run_case "prompt state skips state writes for invalid session" \
+  test_prompt_state_skips_state_for_invalid_session
+run_case "prompt state config is wired without temporary probe" \
+  test_prompt_state_config_is_wired_without_probe
 run_case "runtime hook probe evidence is sanitized and wired" \
   test_runtime_hook_probe_evidence_is_sanitized_and_wired
 run_case "session snapshot saves baseline and clears legacy skip_stop" \
@@ -929,6 +896,8 @@ run_case "stop gate blocks session-scoped ECI marker" \
   test_stop_gate_blocks_session_eci_state
 run_case "stop gate blocks CODEX_ROLE spoof with ECI state" \
   test_stop_gate_blocks_codex_role_spoof_with_eci_state
+run_case "stop gate allows /side before ECI state" \
+  test_stop_gate_allows_side_prompt_before_eci_state
 run_case "stop gate allows spawned-agent transcript without proof state" \
   test_stop_gate_allows_spawned_agent_transcript_without_proof_state
 run_case "stop gate blocks main transcript with ECI state" \
