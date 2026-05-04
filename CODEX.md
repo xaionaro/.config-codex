@@ -90,7 +90,8 @@ Subagent rule:
 
 - Use subagents only when the user explicitly requests subagents, delegation, or parallel agent work, or when higher-priority Codex instructions permit it.
 - Use `spawn_agent` only; do not launch shell-wrapped Codex agents.
-- After spawning multiple subagents, print a roster mapping each generated name to its assigned task; later updates include both.
+- Give every spawned or resumed subagent a current role label. Print or update the roster immediately after spawn, resume, reassignment, or scope change: `<role label>: <runtime name> [type]`.
+- In every wait/status/close update, use `<role label> (<runtime name> [type])`; do not use bare runtime nicknames once labeled.
 - Verify all subagent claims independently before relying on them.
 
 ## Environment
