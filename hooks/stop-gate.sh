@@ -61,6 +61,32 @@ terminal_verdict_count() {
   ' "$1"
 }
 
+git_change_summary() {
+  local repo="$1"
+  local baseline="$2"
+  local base status changed=false
+
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  if [ -s "$baseline" ]; then
+    base=$(cat "$baseline" 2>/dev/null || true)
+    if [ -n "$base" ] && git -C "$repo" cat-file -e "$base^{commit}" 2>/dev/null; then
+      if ! git -C "$repo" diff --quiet "$base"..HEAD -- 2>/dev/null; then
+        printf 'commits changed since baseline %s..HEAD\n' "$base"
+        changed=true
+      fi
+    fi
+  fi
+
+  status=$(git -C "$repo" status --porcelain 2>/dev/null || true)
+  if [ -n "$status" ]; then
+    printf '%s\n' "$status"
+    changed=true
+  fi
+
+  [ "$changed" = "true" ]
+}
+
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
 esac
@@ -78,6 +104,10 @@ instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
 skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
 eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
+repo="${cwd:-$PWD}"
+change_summary="$(git_change_summary "$repo" "$baseline" || true)"
+changed=false
+[ -n "$change_summary" ] && changed=true
 
 mkdir -p "$proof_dir"
 
@@ -176,23 +206,14 @@ if [ -f "$proof" ]; then
 
   cp "$proof" "$summary"
   rm -f "$proof" "$instructions" "$baseline"
-  json_block "Verification proof accepted. Read $summary, relay the relevant result to the user, then stop."
-  exit 0
-fi
-
-repo="${cwd:-$PWD}"
-changed=false
-
-if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if [ -s "$baseline" ]; then
-    base=$(cat "$baseline" 2>/dev/null || true)
-    if [ -n "$base" ] && git -C "$repo" cat-file -e "$base^{commit}" 2>/dev/null; then
-      git -C "$repo" diff --quiet "$base"..HEAD -- 2>/dev/null || changed=true
-    fi
+  if [ "$changed" = "true" ]; then
+    git_status_at_accept="$proof_dir/git-status-at-accept.txt"
+    printf '%s\n' "$change_summary" >"$git_status_at_accept"
+    json_block "Verification proof accepted, but git state is still dirty. Read $summary and $git_status_at_accept, relay the relevant result to the user, commit owned completed changes or state unrelated blockers, then stop."
+  else
+    json_block "Verification proof accepted. Read $summary, relay the relevant result to the user, then stop."
   fi
-  git -C "$repo" diff --quiet -- 2>/dev/null || changed=true
-  git -C "$repo" diff --cached --quiet -- 2>/dev/null || changed=true
-  [ -z "$(git -C "$repo" status --porcelain 2>/dev/null || true)" ] || changed=true
+  exit 0
 fi
 
 if [ "$changed" != "true" ]; then

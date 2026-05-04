@@ -145,6 +145,26 @@ with_cwd_fixture() {
   jq --arg cwd "$ROOT" '.cwd = $cwd' "$src" >"$dst"
 }
 
+with_cwd_path() {
+  local src="$1"
+  local dst="$2"
+  local cwd="$3"
+  jq --arg cwd "$cwd" '.cwd = $cwd' "$src" >"$dst"
+}
+
+make_git_repo() {
+  local name="$1"
+  local repo="$TMP_ROOT/git-$name"
+  mkdir -p "$repo" || return 1
+  git -C "$repo" init -q || return 1
+  git -C "$repo" config user.email "hooks-test@example.invalid" || return 1
+  git -C "$repo" config user.name "Hooks Test" || return 1
+  printf 'base\n' >"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "initial" || return 1
+  printf '%s\n' "$repo"
+}
+
 test_session_snapshot_saves_baseline_and_clears_legacy_skip() {
   local proof_root out
   proof_root="$(fresh_proof_root session)"
@@ -491,6 +511,25 @@ test_stop_gate_accepts_complete_proof_fixture() {
     [ ! -e "$proof_root/t00-session/proof.md" ]
 }
 
+test_stop_gate_accepts_proof_reports_dirty_git_state() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-proof-dirty)"
+  mkdir -p "$proof_root/t00-session"
+  cp "$FIXTURES/proof-complete.md" "$proof_root/t00-session/proof.md"
+  repo="$(make_git_repo stop-proof-dirty)" || return 1
+  printf 'dirty\n' >>"$repo/file.txt"
+  input="$TMP_ROOT/stop-proof-dirty.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-proof-dirty.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "git state is still dirty" &&
+    [ -s "$proof_root/t00-session/summary-to-print.md" ] &&
+    [ -s "$proof_root/t00-session/git-status-at-accept.txt" ] &&
+    grep -q ' M file.txt' "$proof_root/t00-session/git-status-at-accept.txt"
+}
+
 test_stop_gate_blocks_cwd_eci_state() {
   local proof_root input out
   proof_root="$(fresh_proof_root stop-cwd-eci)"
@@ -737,6 +776,8 @@ run_case "stop gate blocks proof missing required sections" \
   test_stop_gate_blocks_missing_proof_sections
 run_case "stop gate accepts complete proof fixture" \
   test_stop_gate_accepts_complete_proof_fixture
+run_case "stop gate accepted proof reports dirty git state" \
+  test_stop_gate_accepts_proof_reports_dirty_git_state
 run_case "stop gate blocks cwd-scoped ECI marker" \
   test_stop_gate_blocks_cwd_eci_state
 run_case "stop gate blocks cwd-scoped ECI marker without cwd field" \
