@@ -68,6 +68,7 @@ For completion summaries, reviews, stop proofs, and subagent reports: tag factua
 ## Skills
 
 Before nontrivial work, check whether a matching skill exists under `~/.codex/skills` and load it when applicable.
+Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker hooks unless Codex exposes real skill identity/path fields.
 
 | Trigger | Skill |
 |---------|-------|
