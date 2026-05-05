@@ -6,15 +6,20 @@ Use this template when dispatching a code quality reviewer subagent.
 
 **Only dispatch after spec compliance review passes.**
 
-```
-Task tool (superpowers:code-reviewer):
-  Use template at requesting-code-review/code-reviewer.md
+Dispatch a worker with:
 
+```
+spawn_agent(agent_type="worker", message=<filled requesting-code-review/code-reviewer.md prompt>)
+
+Fill the prompt with:
   WHAT_WAS_IMPLEMENTED: [from implementer's report]
   PLAN_OR_REQUIREMENTS: Task N from [plan-file]
   BASE_SHA: [commit before task]
   HEAD_SHA: [current commit]
   DESCRIPTION: [task summary]
+
+Add this reviewer instruction:
+  Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker and stop.
 ```
 
 **In addition to standard code quality concerns, the reviewer should check:**

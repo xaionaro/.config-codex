@@ -1,11 +1,11 @@
 ---
 name: debugging-discipline
-description: Use alongside superpowers:systematic-debugging for any problem — adds hypothesis discipline, alternative explanations, and falsification requirements
+description: Use when debugging and needing falsifiable hypotheses, alternative explanations, or stronger root-cause discipline
 ---
 
 # Debugging Discipline
 
-Supplements `superpowers:systematic-debugging` with additional rigor.
+Supplements `systematic-debugging` with additional rigor.
 
 ## Reproduce first
 

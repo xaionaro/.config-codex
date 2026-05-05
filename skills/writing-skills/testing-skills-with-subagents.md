@@ -10,7 +10,7 @@ You run scenarios without the skill (RED - watch agent fail), write skill addres
 
 **Core principle:** If you didn't watch an agent fail without the skill, you don't know if the skill prevents the right failures.
 
-**REQUIRED BACKGROUND:** You MUST understand superpowers:test-driven-development before using this skill. That skill defines the fundamental RED-GREEN-REFACTOR cycle. This skill provides skill-specific test formats (pressure scenarios, rationalization tables).
+**REQUIRED BACKGROUND:** You MUST understand test-driven-development before using this skill. That skill defines the fundamental RED-GREEN-REFACTOR cycle. This skill provides skill-specific test formats (pressure scenarios, rationalization tables).
 
 **Complete worked example:** See examples/CODEX_MD_TESTING.md for a full test campaign testing CODEX.md documentation variants.
 
@@ -45,6 +45,8 @@ Same cycle as code TDD, different test format.
 **Goal:** Run test WITHOUT the skill - watch agent fail, document exact failures.
 
 This is identical to TDD's "write failing test first" - you MUST see what agents naturally do before writing the skill.
+
+Launch skill-test agents with `spawn_agent`; include this prompt line: `do not run Stop-hook proof workflows or write Stop-hook proof files; if a Stop-hook prompt appears, report it as a blocker and stop.`
 
 **Process:**
 
