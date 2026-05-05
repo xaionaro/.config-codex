@@ -17,7 +17,30 @@ json_continue() {
 }
 
 json_block() {
-  jq -n --arg reason "$1" '{decision: "block", reason: $reason}'
+  local reason="$1"
+  local timestamps now cutoff tmp recent_count
+
+  if [ -n "${proof_dir:-}" ]; then
+    mkdir -p "$proof_dir"
+    timestamps="$proof_dir/stop_timestamps"
+    now="$(date +%s)"
+    cutoff=$((now - 300))
+    tmp="$timestamps.tmp.$$"
+    if [ -f "$timestamps" ]; then
+      awk -v cutoff="$cutoff" '$1 >= cutoff' "$timestamps" >"$tmp"
+    else
+      : >"$tmp"
+    fi
+    printf '%s\n' "$now" >>"$tmp"
+    recent_count="$(awk 'END { print NR + 0 }' "$tmp")"
+    mv "$tmp" "$timestamps"
+
+    if [ "$recent_count" -ge 5 ]; then
+      reason="$reason LOOP DETECTED ($recent_count blocks in 5min). Recovery flow: read instructions or stop-checklist, write proof, stop again, identify failing step, do not retry same approach."
+    fi
+  fi
+
+  jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
 
 section_has_body() {
@@ -87,6 +110,65 @@ git_change_summary() {
   [ "$changed" = "true" ]
 }
 
+hash_string() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "$1" | cksum | awk '{print $1}'
+  fi
+}
+
+canonical_existing_path() {
+  local path="$1"
+  local dir base canonical_dir
+
+  if [ -d "$path" ]; then
+    (cd "$path" 2>/dev/null && pwd -P) || printf '%s\n' "$path"
+    return
+  fi
+
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  if [ -d "$dir" ]; then
+    canonical_dir="$( (cd "$dir" 2>/dev/null && pwd -P) || printf '%s' "$dir" )"
+    printf '%s/%s\n' "$canonical_dir" "$base"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+git_common_dir() {
+  local repo="$1"
+  local common top
+
+  common="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -n "$common" ]; then
+    canonical_existing_path "$common"
+    return
+  fi
+
+  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null || true)"
+  top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)"
+  case "$common" in
+    /*) canonical_existing_path "$common" ;;
+    *) canonical_existing_path "${top:-$repo}/$common" ;;
+  esac
+}
+
+repo_identity() {
+  local repo="$1"
+  local top common
+
+  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || printf '%s\n' "$repo")"
+    top="$(canonical_existing_path "$top")"
+    common="$(git_common_dir "$repo")"
+    printf 'git:%s:%s\n' "$top" "$common"
+  else
+    printf 'nogit:%s\n' "$(codex_canonical_cwd "$repo")"
+  fi
+}
+
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
 esac
@@ -117,8 +199,22 @@ eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/de
 change_summary="$(git_change_summary "$repo" "$baseline" || true)"
 changed=false
 [ -n "$change_summary" ] && changed=true
+repo_is_git=false
+if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  repo_is_git=true
+fi
 
 mkdir -p "$proof_dir"
+
+proof_recovery_text() {
+  printf ' Update %s using %s; if that file is missing, read %s.' \
+    "$proof" "$instructions" "$HOME/.codex/hooks/stop-checklist.md"
+}
+
+block_proof_validation() {
+  json_block "$1$(proof_recovery_text)"
+  exit 0
+}
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
   codex_note_state_session_id "$eci_active" "$session_id" || true
@@ -131,22 +227,15 @@ if [ -n "$skip" ] && [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/
   exit 0
 fi
 
-if [ "$stop_active" = "true" ]; then
-  json_continue
-  exit 0
-fi
-
 if [ -f "$proof" ]; then
   if section_has_body "$proof" "ECI completion certificate"; then
     if ! section_has_body "$proof" "Stop checklist walkthrough" || ! section_has_body "$proof" "Incomplete compliance"; then
-      json_block "ECI completion proof must include non-empty Stop checklist walkthrough and Incomplete compliance sections."
-      exit 0
+      block_proof_validation "ECI completion proof must include non-empty Stop checklist walkthrough and Incomplete compliance sections."
     fi
 
     verdicts=$(terminal_verdict_count "$proof")
     if [ "$verdicts" -ne 1 ]; then
-      json_block "ECI completion proof must include exactly one terminal verdict marker: clean-pass:, hard-escalation:, or user-closed:."
-      exit 0
+      block_proof_validation "ECI completion proof must include exactly one terminal verdict marker: clean-pass:, hard-escalation:, or user-closed:."
     fi
   elif ! grep -qiE 'fast.exit|fast exit' "$proof"; then
     missing=""
@@ -161,8 +250,7 @@ if [ -f "$proof" ]; then
     grep -qi '^##[[:space:]]*Gaps' "$proof" || missing="$missing Gaps"
 
     if [ -n "$missing" ]; then
-      json_block "Proof file is missing required sections:$missing. Follow $instructions and update $proof."
-      exit 0
+      block_proof_validation "Proof file is missing required sections:$missing."
     fi
 
     audit_section=$(awk '
@@ -170,47 +258,198 @@ if [ -f "$proof" ]; then
       in_audit && /^##[[:space:]]/ { in_audit=0 }
       in_audit { print }
     ' "$proof")
-    has_clean=false
-    has_violation=false
-    printf '%s\n' "$audit_section" | grep -qi 'clean-scan:' && has_clean=true
-    printf '%s\n' "$audit_section" | grep -qi 'Violation:' && has_violation=true
+    audit_hashes=$(mktemp "${TMPDIR:-/tmp}/codex-audit-hashes.XXXXXX")
+    audit_errs=$(printf '%s\n' "$audit_section" | awk -v hashfile="$audit_hashes" '
+      function trim(s) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+        return s
+      }
+      function check_sources(raw, label,   body, n, i, item, nonempty, has_codex) {
+        body = raw
+        sub(/^[^:]*:[[:space:]]*/, "", body)
+        n = split(body, parts, ",")
+        nonempty = 0
+        has_codex = 0
+        for (i = 1; i <= n; i++) {
+          item = trim(parts[i])
+          if (item == "") {
+            print label ": empty audit source"
+          } else {
+            nonempty++
+          }
+          if (item ~ /CODEX\.md/) has_codex = 1
+        }
+        if (nonempty < 3) print label ": need at least three non-empty sources"
+        if (!has_codex) print label ": must include CODEX.md among the sources"
+      }
+      function finish_violation() {
+        if (violation_count == 0) return
+        if (!has_corr) print "violation #" violation_count ": no correction marker"
+        if (blocker_seen && !blocker_input) print "violation #" violation_count ": blocker missing non-empty input"
+        if (blocker_seen && !blocker_command) print "violation #" violation_count ": blocker missing non-empty command"
+      }
 
-    if [ "$has_clean" = "false" ] && [ "$has_violation" = "false" ]; then
-      json_block "Rule-compliance self-audit must include clean-scan: or Violation: entries."
-      exit 0
+      /^[[:space:]]*[Cc][Ll][Ee][Aa][Nn]-[Ss][Cc][Aa][Nn]:[[:space:]]*/ {
+        clean_count++
+        check_sources($0, "clean-scan")
+        next
+      }
+
+      /^[[:space:]]*[-*]*[[:space:]]*[Vv]iolation:/ {
+        finish_violation()
+        violation_count++
+        has_corr = 0
+        blocker_seen = 0
+        blocker_input = 0
+        blocker_command = 0
+        next
+      }
+
+      violation_count > 0 && /^[[:space:]]*commit:[[:space:]]*[0-9a-fA-F]{7,40}/ {
+        has_corr = 1
+        match($0, /[0-9a-fA-F]{7,40}/)
+        print substr($0, RSTART, RLENGTH) > hashfile
+        next
+      }
+
+      violation_count > 0 && /^[[:space:]]*```(edit|grep|restate)/ {
+        has_corr = 1
+        next
+      }
+
+      violation_count > 0 && /^[[:space:]]*blocker:[[:space:]]*$/ {
+        has_corr = 1
+        blocker_seen = 1
+        next
+      }
+
+      violation_count > 0 && blocker_seen && /^[[:space:]]*input:[[:space:]]*/ {
+        value = $0
+        sub(/^[[:space:]]*input:[[:space:]]*/, "", value)
+        if (trim(value) != "") blocker_input = 1
+        next
+      }
+
+      violation_count > 0 && blocker_seen && /^[[:space:]]*command:[[:space:]]*/ {
+        value = $0
+        sub(/^[[:space:]]*command:[[:space:]]*/, "", value)
+        value = trim(value)
+        lower = tolower(value)
+        if (value == "") {
+          blocker_command = 0
+        } else if (lower ~ /^(tbd|todo|later|fix later|figure out|placeholder|none|n\/a|\.\.\.|<.*>)$/) {
+          print "violation #" violation_count ": blocker command is a placeholder"
+        } else {
+          blocker_command = 1
+        }
+        next
+      }
+
+      END {
+        finish_violation()
+        if (clean_count == 0 && violation_count == 0) print "empty audit: provide clean-scan: or Violation:"
+        if (clean_count > 0 && violation_count > 0) print "mutual-exclusion: use clean-scan or Violation:, not both"
+      }
+    ')
+
+    if [ -n "$audit_errs" ]; then
+      rm -f "$audit_hashes"
+      block_proof_validation "Rule-compliance self-audit grammar failure: $audit_errs"
     fi
-    if [ "$has_clean" = "true" ] && [ "$has_violation" = "true" ]; then
-      json_block "Rule-compliance self-audit must use clean-scan or Violation entries, not both."
-      exit 0
+
+    bad_commits=""
+    if [ -s "$audit_hashes" ]; then
+      while IFS= read -r audit_hash; do
+        if [ "$repo_is_git" != "true" ] ||
+          ! git -C "$repo" cat-file -e "${audit_hash}^{commit}" 2>/dev/null ||
+          ! git -C "$repo" merge-base --is-ancestor "$audit_hash" HEAD 2>/dev/null; then
+          bad_commits="$bad_commits $audit_hash"
+        fi
+      done <"$audit_hashes"
     fi
-    if [ "$has_clean" = "true" ] && ! printf '%s\n' "$audit_section" | grep -q 'CODEX.md'; then
-      json_block "Rule-compliance clean-scan must include CODEX.md."
-      exit 0
+    if [ -n "$bad_commits" ]; then
+      rm -f "$audit_hashes"
+      block_proof_validation "Rule-compliance self-audit has unreachable audit commit(s):$bad_commits."
     fi
-    if [ "$has_clean" = "true" ]; then
-      clean_line=$(printf '%s\n' "$audit_section" | grep -i 'clean-scan:' | head -n1)
-      clean_sources=$(printf '%s\n' "$clean_line" | sed 's/^[^:]*:[[:space:]]*//')
-      if [ "$(printf '%s\n' "$clean_sources" | awk -F',' '{print NF}')" -lt 3 ]; then
-        json_block "Rule-compliance clean-scan must name at least three sources."
-        exit 0
+
+    audit_sha=$(printf '%s' "$audit_section" | sha256sum | awk '{print $1}')
+    cur_head=""
+    workdir_dirty=0
+    if [ "$repo_is_git" = "true" ]; then
+      cur_head=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+      if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null || true)" ]; then
+        workdir_dirty=1
       fi
     fi
-    if [ "$has_violation" = "true" ]; then
-      audit_errs=$(printf '%s\n' "$audit_section" | awk '
-        /^[[:space:]]*[-*]*[[:space:]]*Violation:/ {
-          if (seen && !corr) print "violation #" n " has no correction marker"
-          seen=1; n++; corr=0; next
-        }
-        seen && /^[[:space:]]*(commit:|```(edit|grep|restate)|blocker:)/ { corr=1 }
-        END {
-          if (seen && !corr) print "violation #" n " has no correction marker"
-        }
-      ')
-      if [ -n "$audit_errs" ]; then
-        json_block "Rule-compliance self-audit grammar failure: $audit_errs"
-        exit 0
+
+    history_identity="$(repo_identity "$repo")"
+    history_key="$(hash_string "$history_identity")"
+    history_dir="$root/history/$history_key"
+    history_file="$history_dir/$session_id.log"
+    mkdir -p "$history_dir"
+    printf '%s\n' "$history_identity" >"$history_dir/repo_identity"
+    if [ -f "$history_file" ]; then
+      last_line=$(tail -n1 "$history_file")
+      prev_sha=$(printf '%s' "$last_line" | cut -d'|' -f1)
+      prev_head=$(printf '%s' "$last_line" | cut -d'|' -f2)
+
+      if [ "$audit_sha" = "$prev_sha" ]; then
+        if [ "$workdir_dirty" = "1" ]; then
+          rm -f "$audit_hashes"
+          block_proof_validation "Freshness block: identical audit plus dirty tree."
+        fi
+        if [ -n "$cur_head" ] && [ -n "$prev_head" ] && [ "$cur_head" != "$prev_head" ]; then
+          rm -f "$audit_hashes"
+          block_proof_validation "Freshness block: HEAD advance from $prev_head to $cur_head with a byte-identical audit."
+        fi
+
+        rescan_ok=$(printf '%s\n' "$audit_section" | awk '
+          function trim(s) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+            return s
+          }
+          /^[[:space:]]*[Rr]escanned:[[:space:]]*/ {
+            body = $0
+            sub(/^[^:]*:[[:space:]]*/, "", body)
+            n = split(body, parts, ",")
+            nonempty = 0
+            has_codex = 0
+            empty = 0
+            for (i = 1; i <= n; i++) {
+              item = trim(parts[i])
+              if (item == "") empty = 1
+              else nonempty++
+              if (item ~ /CODEX\.md/) has_codex = 1
+            }
+            if (nonempty >= 3 && has_codex && !empty) ok = 1
+          }
+          END { print ok ? 1 : 0 }
+        ')
+        if [ "$rescan_ok" != "1" ]; then
+          rm -f "$audit_hashes"
+          block_proof_validation "Freshness block: missing/invalid rescanned: for byte-identical audit on unchanged repo."
+        fi
+      fi
+
+      if [ -n "$cur_head" ] && [ -n "$prev_head" ] && [ "$cur_head" != "$prev_head" ] && [ -s "$audit_hashes" ]; then
+        range_ok=0
+        while IFS= read -r audit_hash; do
+          if [ "$audit_hash" != "$prev_head" ] &&
+            git -C "$repo" merge-base --is-ancestor "$prev_head" "$audit_hash" 2>/dev/null &&
+            git -C "$repo" merge-base --is-ancestor "$audit_hash" "$cur_head" 2>/dev/null; then
+            range_ok=1
+            break
+          fi
+        done <"$audit_hashes"
+        if [ "$range_ok" = "0" ]; then
+          rm -f "$audit_hashes"
+          block_proof_validation "Freshness block: old-only commit range after HEAD movement."
+        fi
       fi
     fi
+
+    printf '%s|%s|%s\n' "$audit_sha" "$cur_head" "$(date -u +%s)" >"$history_file"
+    rm -f "$audit_hashes"
   fi
 
   cp "$proof" "$summary"
@@ -222,6 +461,11 @@ if [ -f "$proof" ]; then
   else
     json_block "Verification proof accepted. Read $summary, relay the relevant result to the user, then stop."
   fi
+  exit 0
+fi
+
+if [ "$stop_active" = "true" ]; then
+  json_continue
   exit 0
 fi
 

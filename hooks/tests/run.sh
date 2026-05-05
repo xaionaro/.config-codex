@@ -165,6 +165,36 @@ make_git_repo() {
   printf '%s\n' "$repo"
 }
 
+install_proof_fixture() {
+  local proof_root="$1"
+  local fixture="$2"
+  mkdir -p "$proof_root/t00-session" || return 1
+  cp "$fixture" "$proof_root/t00-session/proof.md"
+}
+
+stop_reason_has_proof_recovery_paths() {
+  local out="$1"
+  local proof_root="$2"
+  json_field_contains "$out" '.reason // empty' "$proof_root/t00-session/proof.md" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-session/instructions.md"
+}
+
+accept_stop_proof() {
+  local proof_root="$1"
+  local repo="$2"
+  local fixture="$3"
+  local tag="$4"
+  local input out
+
+  install_proof_fixture "$proof_root" "$fixture" || return 1
+  input="$TMP_ROOT/${tag}.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/${tag}.out"
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Verification proof accepted"
+}
+
 test_prompt_state_is_silent_records_head_and_clears_bypass() {
   local proof_root out expected
   proof_root="$(fresh_proof_root prompt-head)"
@@ -801,6 +831,219 @@ test_stop_gate_accepts_proof_reports_dirty_git_state() {
     grep -q ' M file.txt' "$proof_root/t00-session/git-status-at-accept.txt"
 }
 
+test_stop_gate_blocks_clean_scan_empty_source() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-clean-empty-source)"
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-audit-clean-empty-source.md"
+  input="$TMP_ROOT/stop-clean-empty-source.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-clean-empty-source.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "empty audit source" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_blocks_blocker_missing_input() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-blocker-missing-input)"
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-audit-blocker-missing-input.md"
+  input="$TMP_ROOT/stop-blocker-missing-input.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-blocker-missing-input.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "blocker missing non-empty input" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_blocks_blocker_missing_command() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-blocker-missing-command)"
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-audit-blocker-missing-command.md"
+  input="$TMP_ROOT/stop-blocker-missing-command.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-blocker-missing-command.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "blocker missing non-empty command" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_blocks_placeholder_blocker_command() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-blocker-placeholder)"
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-audit-blocker-placeholder-command.md"
+  input="$TMP_ROOT/stop-blocker-placeholder.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-blocker-placeholder.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "blocker command is a placeholder" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_blocks_fake_audit_commit() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-fake-commit)"
+  repo="$(make_git_repo stop-fake-commit)" || return 1
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-audit-fake-commit.md"
+  input="$TMP_ROOT/stop-fake-commit.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-fake-commit.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "unreachable audit commit" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_validates_proof_when_stop_hook_active() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-active-validates-proof)"
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-missing-sections.md"
+  input="$TMP_ROOT/stop-active-validates-proof.json"
+  jq --arg cwd "$ROOT" '.cwd = $cwd | .stop_hook_active = true' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-active-validates-proof.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "missing required sections" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_blocks_identical_audit_without_rescanned() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-identical-no-rescan)"
+  repo="$(make_git_repo stop-identical-no-rescan)" || return 1
+  accept_stop_proof "$proof_root" "$repo" "$FIXTURES/proof-complete.md" "stop-identical-no-rescan-first" || return 1
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-complete.md"
+  input="$TMP_ROOT/stop-identical-no-rescan.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-identical-no-rescan.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "missing/invalid rescanned:" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_accepts_identical_audit_with_rescanned() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-identical-rescanned)"
+  repo="$(make_git_repo stop-identical-rescanned)" || return 1
+  accept_stop_proof "$proof_root" "$repo" "$FIXTURES/proof-complete-rescanned.md" "stop-identical-rescanned-first" || return 1
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-complete-rescanned.md"
+  input="$TMP_ROOT/stop-identical-rescanned.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-identical-rescanned.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Verification proof accepted"
+}
+
+test_stop_gate_blocks_dirty_identical_audit() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-dirty-identical)"
+  repo="$(make_git_repo stop-dirty-identical)" || return 1
+  accept_stop_proof "$proof_root" "$repo" "$FIXTURES/proof-complete.md" "stop-dirty-identical-first" || return 1
+  printf 'dirty\n' >>"$repo/file.txt"
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-complete.md"
+  input="$TMP_ROOT/stop-dirty-identical.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-dirty-identical.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "identical audit plus dirty tree" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_blocks_identical_audit_after_head_advance() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-identical-head-advance)"
+  repo="$(make_git_repo stop-identical-head-advance)" || return 1
+  accept_stop_proof "$proof_root" "$repo" "$FIXTURES/proof-complete.md" "stop-identical-head-advance-first" || return 1
+  printf 'new\n' >>"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "advance" || return 1
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-complete.md"
+  input="$TMP_ROOT/stop-identical-head-advance.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-identical-head-advance.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "HEAD advance" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_allows_same_session_history_across_repos() {
+  local proof_root input out repo_a repo_b
+  proof_root="$(fresh_proof_root stop-cross-repo-history)"
+  repo_a="$(make_git_repo stop-cross-repo-history-a)" || return 1
+  repo_b="$(make_git_repo stop-cross-repo-history-b)" || return 1
+  printf 'repo-b\n' >>"$repo_b/file.txt"
+  git -C "$repo_b" add file.txt || return 1
+  git -C "$repo_b" commit -qm "repo b advance" || return 1
+
+  accept_stop_proof "$proof_root" "$repo_a" "$FIXTURES/proof-complete.md" "stop-cross-repo-history-first" || return 1
+  install_proof_fixture "$proof_root" "$FIXTURES/proof-complete.md"
+  input="$TMP_ROOT/stop-cross-repo-history.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo_b"
+  out="$TMP_ROOT/stop-cross-repo-history.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Verification proof accepted"
+}
+
+test_stop_gate_blocks_preexisting_commit_after_head_advance() {
+  local proof_root input out repo old_commit
+  proof_root="$(fresh_proof_root stop-old-commit-head-advance)"
+  repo="$(make_git_repo stop-old-commit-head-advance)" || return 1
+  old_commit="$(git -C "$repo" rev-parse HEAD)" || return 1
+  accept_stop_proof "$proof_root" "$repo" "$FIXTURES/proof-complete.md" "stop-old-commit-head-advance-first" || return 1
+  printf 'new\n' >>"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "advance" || return 1
+  mkdir -p "$proof_root/t00-session" || return 1
+  sed "s/__OLD_COMMIT__/$old_commit/g" "$FIXTURES/proof-audit-old-commit-template.md" >"$proof_root/t00-session/proof.md"
+  input="$TMP_ROOT/stop-old-commit-head-advance.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-old-commit-head-advance.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "old-only commit range" &&
+    stop_reason_has_proof_recovery_paths "$out" "$proof_root"
+}
+
+test_stop_gate_adds_loop_reminder_after_five_blocks() {
+  local proof_root input out i
+  proof_root="$(fresh_proof_root stop-loop-reminder)"
+  input="$TMP_ROOT/stop-loop-reminder.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-loop-reminder.out"
+
+  for i in 1 2 3 4 5; do
+    run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  done
+
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "LOOP DETECTED" &&
+    json_field_contains "$out" '.reason // empty' "read instructions or stop-checklist" &&
+    json_field_contains "$out" '.reason // empty' "write proof" &&
+    json_field_contains "$out" '.reason // empty' "stop again" &&
+    json_field_contains "$out" '.reason // empty' "identify failing step" &&
+    json_field_contains "$out" '.reason // empty' "do not retry same approach"
+}
+
 test_stop_gate_blocks_cwd_eci_state() {
   local proof_root input out
   proof_root="$(fresh_proof_root stop-cwd-eci)"
@@ -999,6 +1242,51 @@ test_skip_stop_uses_cwd_state_without_session() {
     grep -q "Stop hook bypass enabled: $proof_root/skip-stop/cwd/" "$out"
 }
 
+test_audit_sync_checker_ok() {
+  local out
+  out="$TMP_ROOT/audit-sync-ok.out"
+  bash "$ROOT/hooks/check-audit-sync.sh" >"$out" 2>"$out.err" || return 1
+  grep -q "check-audit-sync: OK" "$out"
+}
+
+test_audit_sync_checker_direct_exec_ok() {
+  local out
+  out="$TMP_ROOT/audit-sync-direct-ok.out"
+  "$ROOT/hooks/check-audit-sync.sh" >"$out" 2>"$out.err" || return 1
+  grep -q "check-audit-sync: OK" "$out"
+}
+
+test_audit_sync_checker_detects_drift() {
+  local hook_dir out status
+  hook_dir="$TMP_ROOT/audit-sync-drift"
+  mkdir -p "$hook_dir" || return 1
+  cp "$ROOT/hooks/check-audit-sync.sh" "$hook_dir/check-audit-sync.sh" || return 1
+  cp "$ROOT/hooks/stop-verification.md" "$hook_dir/stop-verification.md" || return 1
+  sed '/rescanned:/d' "$ROOT/hooks/stop-checklist.md" >"$hook_dir/stop-checklist.md"
+  out="$TMP_ROOT/audit-sync-drift.out"
+
+  bash "$hook_dir/check-audit-sync.sh" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -ne 0 ] &&
+    grep -q "rescanned:" "$out"
+}
+
+test_audit_sync_checker_fails_when_synced_file_missing() {
+  local hook_dir out status
+  hook_dir="$TMP_ROOT/audit-sync-missing"
+  mkdir -p "$hook_dir" || return 1
+  cp "$ROOT/hooks/check-audit-sync.sh" "$hook_dir/check-audit-sync.sh" || return 1
+  cp "$ROOT/hooks/stop-verification.md" "$hook_dir/stop-verification.md" || return 1
+  out="$TMP_ROOT/audit-sync-missing.out"
+
+  bash "$hook_dir/check-audit-sync.sh" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -ne 0 ] &&
+    grep -q "missing required file" "$out.err"
+}
+
 run_case "prompt state is silent and records HEAD" \
   test_prompt_state_is_silent_records_head_and_clears_bypass
 run_case "prompt state marks /side prompts" \
@@ -1093,6 +1381,32 @@ run_case "stop gate accepts complete proof fixture" \
   test_stop_gate_accepts_complete_proof_fixture
 run_case "stop gate accepted proof reports dirty git state" \
   test_stop_gate_accepts_proof_reports_dirty_git_state
+run_case "stop gate blocks clean-scan empty source" \
+  test_stop_gate_blocks_clean_scan_empty_source
+run_case "stop gate blocks blocker missing input" \
+  test_stop_gate_blocks_blocker_missing_input
+run_case "stop gate blocks blocker missing command" \
+  test_stop_gate_blocks_blocker_missing_command
+run_case "stop gate blocks placeholder blocker command" \
+  test_stop_gate_blocks_placeholder_blocker_command
+run_case "stop gate blocks fake audit commit" \
+  test_stop_gate_blocks_fake_audit_commit
+run_case "stop gate validates proof while stop_hook_active is true" \
+  test_stop_gate_validates_proof_when_stop_hook_active
+run_case "stop gate blocks identical audit without rescanned" \
+  test_stop_gate_blocks_identical_audit_without_rescanned
+run_case "stop gate accepts identical audit with valid rescanned" \
+  test_stop_gate_accepts_identical_audit_with_rescanned
+run_case "stop gate blocks dirty identical audit" \
+  test_stop_gate_blocks_dirty_identical_audit
+run_case "stop gate blocks identical audit after HEAD advance" \
+  test_stop_gate_blocks_identical_audit_after_head_advance
+run_case "stop gate scopes freshness history across repos" \
+  test_stop_gate_allows_same_session_history_across_repos
+run_case "stop gate blocks pre-existing commit after HEAD advance" \
+  test_stop_gate_blocks_preexisting_commit_after_head_advance
+run_case "stop gate adds loop reminder after five blocks" \
+  test_stop_gate_adds_loop_reminder_after_five_blocks
 run_case "stop gate blocks cwd-scoped ECI marker" \
   test_stop_gate_blocks_cwd_eci_state
 run_case "stop gate blocks cwd-scoped ECI marker without cwd field" \
@@ -1121,8 +1435,14 @@ run_case "eci-active uses cwd state without CODEX_SESSION_ID" \
   test_eci_active_uses_cwd_state_without_session
 run_case "skip-stop uses cwd state without CODEX_SESSION_ID" \
   test_skip_stop_uses_cwd_state_without_session
-
-todo "stop proof freshness oracle parity with .claude detailed audit history"
+run_case "audit sync checker reports ok" \
+  test_audit_sync_checker_ok
+run_case "audit sync checker supports direct exec" \
+  test_audit_sync_checker_direct_exec_ok
+run_case "audit sync checker detects drift" \
+  test_audit_sync_checker_detects_drift
+run_case "audit sync checker fails when synced files are missing" \
+  test_audit_sync_checker_fails_when_synced_file_missing
 
 note "SUMMARY pass=$PASS_COUNT fail=$FAIL_COUNT xfail=$XFAIL_COUNT xpass=$XPASS_COUNT todo=$TODO_COUNT"
 

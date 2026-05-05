@@ -59,8 +59,45 @@ Required proof sections:
 
 ## Rule-Compliance Self-Audit
 
-- `clean-scan: CODEX.md, <skill>, <project instruction>`
-- Or violations found and corrections applied:
+<!-- Keep in sync with stop-checklist.md "Rule-Compliance Self-Audit". -->
+<!-- Grammar below is parsed by stop-gate.sh. -->
+
+The audit subject is the written rule: `CODEX.md`, skill rules, project instructions, and user instructions. Audit the last turn only: conduct between the previous stop or session start and this stop attempt.
+
+Use exactly one form.
+
+Form A:
+
+    clean-scan: CODEX.md, <skill>, <project instruction>
+
+Name at least three non-empty sources you actually scanned. Include `CODEX.md`.
+
+Form B:
+
+    Violation: <short label>
+    Rule: <path or section>
+    Correction:
+      commit: <reachable commit>
+      ```edit <path>
+      <content>
+      ```
+      ```grep <path>
+      <output>
+      ```
+      ```restate
+      <corrected statement>
+      ```
+      blocker:
+      input: <specific missing input>
+      command: <exact command or edit>
+
+Every `Violation:` needs a correction marker. A `blocker:` needs non-empty `input:` and concrete `command:` fields. Placeholder commands such as `TBD`, `TODO`, or `later` are rejected. `commit:` must name a commit reachable from the current repo.
+
+If repeating a byte-identical audit on an unchanged repo, add:
+
+    rescanned: CODEX.md, <source2>, <source3> - <UTC time>
+
+Dirty trees, HEAD movement, missing/invalid `rescanned:`, and old-only commit evidence are rejected when they make the audit stale.
 
 ## Gaps
 
