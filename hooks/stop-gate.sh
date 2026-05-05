@@ -8,6 +8,7 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+transcript_path=$(printf '%s' "$input" | jq -r 'if (.transcript_path? | type) == "string" then .transcript_path else "" end' 2>/dev/null || true)
 stop_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
@@ -42,6 +43,11 @@ json_block() {
 
   jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
+
+if [ -z "$transcript_path" ]; then
+  json_continue
+  exit 0
+fi
 
 section_has_body() {
   local file="$1"

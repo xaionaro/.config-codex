@@ -8,8 +8,11 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+transcript_path=$(printf '%s' "$input" | jq -r 'if (.transcript_path? | type) == "string" then .transcript_path else "" end' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else "" end' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
+
+[ -n "$transcript_path" ] || exit 0
 
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) exit 0 ;;

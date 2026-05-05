@@ -342,6 +342,18 @@ test_session_snapshot_saves_baseline_and_clears_legacy_skip() {
     json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "CODEX.md"
 }
 
+test_session_snapshot_skips_ephemeral_threads() {
+  local proof_root out
+  proof_root="$(fresh_proof_root session-ephemeral)"
+  out="$TMP_ROOT/session-snapshot-ephemeral.out"
+
+  run_hook "$out" "$ROOT/hooks/session-snapshot.sh" "$FIXTURES/session-start-ephemeral.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out" &&
+    [ ! -e "$proof_root/t00-side/baseline_head" ]
+}
+
 test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
   local proof_root out skip_cwd eci_cwd
   proof_root="$(fresh_proof_root session-old-markers)"
@@ -364,6 +376,18 @@ test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
     [ -e "$skip_cwd/skip_stop" ] &&
     [ -e "$proof_root/eci/sessions/t00-session/eci_active" ] &&
     [ -e "$eci_cwd/eci_active" ]
+}
+
+test_stop_gate_allows_ephemeral_threads_before_eci_state() {
+  local proof_root out
+  proof_root="$(fresh_proof_root stop-ephemeral-eci)"
+  CODEX_SESSION_ID=t00-side CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >/dev/null 2>&1 || return 1
+  out="$TMP_ROOT/stop-ephemeral-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$FIXTURES/stop-ephemeral.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  json_field_equals "$out" '.continue // false' "true"
 }
 
 test_side_session_start_is_silent_and_binds_stop_bypass() {
@@ -1844,6 +1868,8 @@ run_case "runtime hook probe historical evidence is sanitized" \
   test_runtime_hook_probe_historical_evidence_is_sanitized
 run_case "session snapshot saves baseline and clears legacy skip_stop" \
   test_session_snapshot_saves_baseline_and_clears_legacy_skip
+run_case "session snapshot skips ephemeral threads" \
+  test_session_snapshot_skips_ephemeral_threads
 run_case "session snapshot preserves fresh markers in old state dirs" \
   test_session_snapshot_preserves_fresh_markers_in_old_state_dirs
 run_case "side session start is silent and binds stop bypass" \
@@ -2006,6 +2032,8 @@ run_case "stop gate allows /side before ECI state" \
   test_stop_gate_allows_side_prompt_before_eci_state
 run_case "stop gate blocks /side parent session with ECI state" \
   test_stop_gate_blocks_side_parent_session_with_eci_state
+run_case "stop gate allows ephemeral threads before ECI state" \
+  test_stop_gate_allows_ephemeral_threads_before_eci_state
 run_case "stop gate allows spawned-agent transcript without proof state" \
   test_stop_gate_allows_spawned_agent_transcript_without_proof_state
 run_case "stop gate blocks main transcript with ECI state" \
