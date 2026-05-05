@@ -10,6 +10,8 @@ description: Use when executing implementation plans with independent tasks in t
 Use this skill only when the user explicitly requested subagents, delegation, or parallel agent work.
 
 Execute plan by dispatching fresh subagent per task, with two-stage review after each: spec compliance review first, then code quality review.
+Dispatch every subagent with `spawn_agent`; shell-wrapped Codex agents are forbidden.
+Every subagent prompt must include: Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
 
 **Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
 
@@ -65,7 +67,7 @@ digraph process {
     "Read plan, extract all tasks with full text, note context, create update_plan" [shape=box];
     "More tasks remain?" [shape=diamond];
     "Dispatch final code reviewer subagent for entire implementation" [shape=box];
-    "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
+    "Use finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
     "Read plan, extract all tasks with full text, note context, create update_plan" -> "Dispatch implementer subagent (./implementer-prompt.md)";
     "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
@@ -84,7 +86,7 @@ digraph process {
     "Mark task complete in update_plan" -> "More tasks remain?";
     "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
     "More tasks remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
-    "Dispatch final code reviewer subagent for entire implementation" -> "Use superpowers:finishing-a-development-branch";
+    "Dispatch final code reviewer subagent for entire implementation" -> "Use finishing-a-development-branch";
 }
 ```
 
@@ -132,7 +134,7 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 ```
 You: I'm using Subagent-Driven Development to execute this plan.
 
-[Read plan file once: docs/superpowers/plans/feature-plan.md]
+[Read plan file once: docs/plans/feature-plan.md]
 [Extract all 5 tasks with full text and context]
 [Create update_plan with all tasks]
 
@@ -143,7 +145,7 @@ Task 1: Hook installation script
 
 Implementer: "Before I begin - should the hook be installed at user or system level?"
 
-You: "User level (~/.config/superpowers/hooks/)"
+You: "User level (~/.codex/hooks/)"
 
 Implementer: "Got it. Implementing now..."
 [Later] Implementer:
@@ -269,13 +271,13 @@ Done!
 ## Integration
 
 **Required workflow skills:**
-- **superpowers:using-git-worktrees** - REQUIRED: Set up isolated workspace before starting
-- **superpowers:writing-plans** - Creates the plan this skill executes
-- **superpowers:requesting-code-review** - Code review template for reviewer subagents
-- **superpowers:finishing-a-development-branch** - Complete development after all tasks
+- **using-git-worktrees** - REQUIRED: Set up isolated workspace before starting
+- **writing-plans** - Creates the plan this skill executes
+- **requesting-code-review** - Code review template for reviewer subagents
+- **finishing-a-development-branch** - Complete development after all tasks
 
 **Subagents should use:**
-- **superpowers:test-driven-development** - Subagents follow TDD for each task
+- **test-driven-development** - Subagents follow TDD for each task
 
 **Alternative workflow:**
-- **superpowers:executing-plans** - Use for parallel session instead of same-session execution
+- **executing-plans** - Use for parallel session instead of same-session execution

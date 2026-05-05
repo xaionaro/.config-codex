@@ -93,6 +93,7 @@ Subagent rule:
 - Give every spawned or resumed subagent a current role label. Print or update the roster immediately after spawn, resume, reassignment, or scope change: `<role label>: <runtime name> [type]`.
 - In every wait/status/close update, use `<role label> (<runtime name> [type])`; do not use bare runtime nicknames once labeled.
 - Verify all subagent claims independently before relying on them.
+- Subagents must not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears in a subagent, it reports the blocker to the orchestrator and stops.
 
 ## Environment
 

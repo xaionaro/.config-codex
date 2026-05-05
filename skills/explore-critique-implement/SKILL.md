@@ -64,6 +64,7 @@ Persistent role instances handle Step 1 (explorer) and Step 3 (implementer) acro
 | Spawn loop-breaker | `spawn_agent` with `agent_type: "explorer"` |
 
 Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel.
+Every spawned ECI agent prompt must also state: "Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop."
 
 ### Explorer Prompt Baseline
 

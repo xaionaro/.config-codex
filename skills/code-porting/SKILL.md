@@ -21,6 +21,7 @@ Port code between codebases through exhaustive extraction, adversarial critique,
 Every numbered phase below has a separate role and artifact. No role serves dual purposes. When delegation is authorized, run phases as separate standard subagents. Otherwise, perform the phases locally while preserving the boundaries and critique gates. If the user explicitly required dedicated agents and standard agent tools are unavailable, hard-escalate instead of substituting local artifacts.
 
 Propagate **original user requirements verbatim** to every subagent prompt.
+Every subagent prompt must include: Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
 
 When combined phase outputs exceed 6000 words, main thread summarizes before spawning the next agent. Preserve: all feature names, all verdicts with one-line reasoning, all MISSING/OVERTURN entries in full. Never silently drop features.
 
@@ -258,5 +259,5 @@ Independent tasks (no dependency relationship) may run in parallel via `agent-te
 | `explore-critique-implement` | Phase 7 delegates each porting task to this skill. Full review gate per change. |
 | `agent-teams-execution` | Use for parallel independent porting tasks in Phase 7. |
 | `harness-tuning` | Apply when the porting target is a skill file, system prompt, or CODEX.md. |
-| `superpowers:brainstorming` | Use before this skill if user intent is unclear (what to port, why). |
+| `brainstorming` | Use before this skill if user intent is unclear (what to port, why). |
 | `proof-driven-development` | Invoked inside `explore-critique-implement` for logic-bearing ported code. |
