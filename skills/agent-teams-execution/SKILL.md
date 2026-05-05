@@ -14,6 +14,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 - When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
+- Every subagent prompt must include: "Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop."
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
 - If standard agent tools are unavailable, do not run this pipeline; hard-escalate instead of launching shell-based Codex sessions.
 - `CODEX_ROLE` is legacy hook metadata. Do not use it to launch teammates.
@@ -22,7 +23,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 
 The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdit when legacy `CODEX_ROLE` is `lead` or `coordinator`. If the gate fires, spawn the appropriate teammate and assign the task — do not unset `CODEX_ROLE` to bypass it.
 
-Lead and coordinator stops go through the standard stop-checklist proof flow (`stop-gate.sh` does NOT exempt them). The proof must walk `~/.codex/hooks/stop-checklist.md` and critically analyze items that could not be fully complied with during the role's tenure. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
+Subagents, including lead and coordinator roles, do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, they report it as a blocker to the main orchestrator and stop. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
 
 **Parallelism principle:** Never serialize independent work. Parallelize everything that can be parallelized.
 
@@ -80,7 +81,7 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 | **Test Reviewer** | 1+ | 4 | Paired with test executors. Report only, never edit tests. |
 | **Verifier** | 1+ | per task | For lightweight tasks (no code, no test pipeline). Adversarially checks deliverable against all expectations. Replaces test pipeline when testing is N/A. |
 | **Brainstormer** | 1 | any | On-demand when a blocker emerges. Genius creative unblocker — thinks outside the box. Lists as many solution ideas as possible. Positives only — no negatives, no filtering, no feasibility judgment. Bigger list = better. |
-| **Snitch** | 1 | all | CCed on all submitted/blocked/completed claims and QA verdicts. Independently verifies all rules are followed. Notifies lead on any violation. Success = finding violations that the lead confirms. The more confirmed violations found, the better. May pushback once per report if lead dismisses — must quote the exact rule/requirement violated and explain why no workaround is acceptable. On QA approvals, looks for gaps in testing — insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On every reviewer APPROVED message, runs rubber-stamp check: compare reviewer findings against executor's critique log. Reviewer citing zero issues beyond executor self-reports = flag to lead. Lead demands reviewer either (a) confirm self-reported issues are adequately fixed with cited evidence, or (b) find at least one independent issue, or (c) confirm the artifact has none after scrutinizing each checklist item. Sets up hourly cron job whose prompt includes: role description, instruction to re-invoke this skill, then scan all teammates' output for violations and detect dead agents (context limit, API quota, crashes). Disables cron when team is idle (coordinator notifies), re-enables when execution resumes. |
+| **Snitch** | 1 | all | CCed on all submitted/blocked/completed claims and QA verdicts. Independently verifies all rules are followed. Notifies lead on any violation. Success = finding violations that the lead confirms. The more confirmed violations found, the better. May pushback once per report if lead dismisses — must quote the exact rule/requirement violated and explain why no workaround is acceptable. On QA approvals, looks for gaps in testing — insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On every reviewer APPROVED message, runs rubber-stamp check: compare reviewer findings against executor's critique log. Reviewer citing zero issues beyond executor self-reports = flag to lead. Lead demands reviewer either (a) confirm self-reported issues are adequately fixed with cited evidence, or (b) find at least one independent issue, or (c) confirm the artifact has none after scrutinizing each checklist item. Lead or coordinator sends event-driven audit reminders with `send_input` at milestones, after long waits, and when execution resumes after user-waiting. Snitch uses `wait_agent` results and teammate output to detect dead or drifting agents. |
 | **QA** | 1 | final | Final integration check. Runs all tests. Last gate. |
 
 ### Team Sizing
@@ -91,7 +92,7 @@ One executor pair per independent unit of work. ~4 agents per phase before coord
 
 **Every teammate** must invoke `agent-teams-execution` skill via skill instructions as their first action. Lead **must include this instruction in every spawn prompt**. Coordinator and lead: re-invoke the skill after every context compaction.
 
-**Hourly skill re-read (coordinator, lead, snitch).** Each sets up a cron that fires every 60 minutes with a prompt: "Re-invoke `agent-teams-execution` skill via skill instructions, then resume your role duties (audit / scan / coordinate)." Prevents rule drift over long sessions. Disable cron when team is idle (user-waiting), re-enable on execution resume.
+**Manual skill refresh (coordinator, lead, snitch).** Lead uses `send_input` to remind active teammates to re-invoke `agent-teams-execution` after context compaction, phase changes, long waits, and user-waiting resume. Use `wait_agent` status before treating silence as a failure.
 
 ### Model and Effort Level
 
@@ -495,15 +496,13 @@ Review independently first — no reading peer findings before writing your own.
 14. **Address all reported issues.** Every executor-reported issue becomes a task. Assign an executor to critically analyze it (code cleanness, semantic integrity, correctness). If dismissed: document rationale. If validated and minor: the analyzing executor fixes it directly. If validated and design-level: full pipeline. No report may be silently ignored.
 15. **Audit subordinates every 10 minutes.** Check each active teammate's recent output for rule violations: untagged claims, missing skill invocations, unreviewed code, shortcuts. Create a task for each violation found.
 16. **Interrupt violations immediately.** Same protocol as lead: send correction message first, then interrupt if the tool surface supports it. Do not wait for their turn to end when interruption is available.
-17. **Notify snitch on idle/resume.** Message snitch when team goes idle (all tasks waiting on user) and when execution resumes, so snitch can disable/enable its cron job.
+17. **Notify snitch on idle/resume.** Use `send_input` when the team goes idle (all tasks waiting on user) and when execution resumes, so snitch can run a manual audit and refresh the role rules.
 18. **Report QA verdict to user, then wait.** Never declare mission accomplished. Never auto-shutdown teammates. Mission complete only when user explicitly confirms. Followups → route per User Followups table.
 19. **Shutdown only on user request.** Then run Shutdown procedure for every teammate, mark all tasks completed.
 
 ## Lead Responsibilities
 
 **NEVER implement. The lead enforces all skill rules.** Reactive, not proactive — the lead reacts to events rather than actively observing. On every event, the lead verifies that all applicable rules were followed. On violation, the lead reminds the agent of the specific rule and the required correction — never blocks, always corrects.
-
-**Stop-hook bypass (first action, unconditional):** As the very first action on entering this skill — before spawning any teammate — run `~/.codex/bin/skip-stop on`. The main thread never implements code, so the verification gate is pure overhead here. On **any** skill exit (team completion, user abort, escalation halt, fatal error), run `~/.codex/bin/skip-stop off` to clear the marker. Leaving it stale would silently bypass verification in the next normal dev session.
 
 **Interrupting violations:** A message alone is insufficient — agents won't see it until their turn ends. To interrupt:
 1. Send the correction with the specific rule + required fix.
@@ -530,7 +529,7 @@ Review independently first — no reading peer findings before writing your own.
 | Coordinator declares mission accomplished without explicit user confirmation | Reject. Force coordinator to report verdict + evidence to user and wait |
 | Coordinator initiates shutdown without explicit user request | Reject. Team stays alive for followups |
 | Coordinator skips pipeline stages on user followup | Verify against User Followups table. Demand justification or reject |
-| Hourly audit (every 60 minutes) | Spot-check agent output for violations coordinator should have caught. Only intervene if coordinator missed them |
+| Manual audit reminder | Use `send_input` after milestones, long waits, user-waiting resume, or suspicious coordinator silence. Spot-check agent output for violations coordinator should have caught. Only intervene if coordinator missed them |
 
 ### Spawn Checklist (lead verifies before every spawn)
 
@@ -607,6 +606,7 @@ Format: [T<tier>: <source>, <confidence: high/medium/low>]
 
 Compliance:
 - Critically analyze ALL inputs. You own bugs from unverified inputs.
+- Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
 - BEFORE writing code, invoke applicable skills via the skill instructions:
   go-coding-style (Go), python-coding-style (Python), testing-discipline (tests),
   test-driven-development (code implementation), proof-driven-development (logic),

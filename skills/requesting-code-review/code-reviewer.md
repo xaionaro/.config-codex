@@ -2,6 +2,9 @@
 
 You are reviewing code changes for production readiness.
 
+Do not run Stop-hook proof workflows or write Stop-hook proof files.
+If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+
 **Your task:**
 1. Review {WHAT_WAS_IMPLEMENTED}
 2. Compare against {PLAN_OR_REQUIREMENTS}

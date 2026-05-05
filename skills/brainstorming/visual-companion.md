@@ -37,48 +37,32 @@ The server watches a directory for HTML files and serves the newest one to the b
 scripts/start-server.sh --project-dir /path/to/project
 
 # Returns: {"type":"server-started","port":52341,"url":"http://localhost:52341",
-#           "screen_dir":"/path/to/project/.superpowers/brainstorm/12345-1706000000/content",
-#           "state_dir":"/path/to/project/.superpowers/brainstorm/12345-1706000000/state"}
+#           "screen_dir":"/path/to/project/.codex/brainstorm/12345-1706000000/content",
+#           "state_dir":"/path/to/project/.codex/brainstorm/12345-1706000000/state"}
 ```
 
 Save `screen_dir` and `state_dir` from the response. Tell user to open the URL.
 
-**Finding connection info:** The server writes its startup JSON to `$STATE_DIR/server-info`. If you launched the server in the background and didn't capture stdout, read that file to get the URL and port. When using `--project-dir`, check `<project>/.superpowers/brainstorm/` for the session directory.
+**Finding connection info:** The server writes its startup JSON to `$STATE_DIR/server-info`. If stdout was not captured because the command is still running in foreground mode, poll the returned shell execution session until `server-info` exists. When using `--project-dir`, check `<project>/.codex/brainstorm/` for the session directory.
 
-**Note:** Pass the project root as `--project-dir` so mockups persist in `.superpowers/brainstorm/` and survive server restarts. Without it, files go to `/tmp` and get cleaned up. Remind the user to add `.superpowers/` to `.gitignore` if it's not already there.
+**Note:** Pass the project root as `--project-dir` so mockups persist in `.codex/brainstorm/` and survive server restarts. Without it, files go to `/tmp` and get cleaned up. Remind the user to add `.codex/brainstorm/` to `.gitignore` if it's not already there.
 
-**Launching the server by platform:**
+**Launching the server with Codex:**
 
-**Codex (macOS / Linux):**
+Run `scripts/start-server.sh` with the shell execution tool:
+
 ```bash
-# Default mode works — the script backgrounds the server itself
+# Default mode returns startup JSON.
 scripts/start-server.sh --project-dir /path/to/project
 ```
 
-**Codex (Windows):**
-```bash
-# Windows auto-detects and uses foreground mode, which blocks the tool call.
-# Use run_in_background: true on the Bash tool call so the server survives
-# across conversation turns.
-scripts/start-server.sh --project-dir /path/to/project
-```
-When calling this via the Bash tool, set `run_in_background: true`. Then read `$STATE_DIR/server-info` on the next turn to get the URL and port.
+If foreground mode is needed, keep the returned execution session running and poll it while the visual companion is active:
 
-**Codex:**
 ```bash
-# Codex reaps background processes. The script auto-detects CODEX_CI and
-# switches to foreground mode. Run it normally — no extra flags needed.
-scripts/start-server.sh --project-dir /path/to/project
-```
-
-**Gemini CLI:**
-```bash
-# Use --foreground and set is_background: true on your shell tool call
-# so the process survives across turns
 scripts/start-server.sh --project-dir /path/to/project --foreground
 ```
 
-**Other environments:** The server must keep running in the background across conversation turns. If your environment reaps detached processes, use `--foreground` and launch the command with your platform's background execution mechanism.
+Keep the session id. Poll it with the shell execution tool as needed; read `$STATE_DIR/server-info` to recover the URL and port.
 
 If the URL is unreachable from your browser (common in remote/containerized setups), bind a non-loopback host:
 
@@ -97,7 +81,7 @@ Use `--url-host` to control what hostname is printed in the returned URL JSON.
    - Before each write, check that `$STATE_DIR/server-info` exists. If it doesn't (or `$STATE_DIR/server-stopped` exists), the server has shut down — restart it with `start-server.sh` before continuing. The server auto-exits after 30 minutes of inactivity.
    - Use semantic filenames: `platform.html`, `visual-style.html`, `layout.html`
    - **Never reuse filenames** — each screen gets a fresh file
-   - Use Write tool — **never use cat/heredoc** (dumps noise into terminal)
+   - Write or update screen HTML with normal Codex file edits; do not use shell heredocs or `cat` commands
    - Server automatically serves the newest file
 
 2. **Tell user what to expect and end your turn:**
@@ -279,7 +263,7 @@ If `$STATE_DIR/events` doesn't exist, the user didn't interact with the browser 
 scripts/stop-server.sh $SESSION_DIR
 ```
 
-If the session used `--project-dir`, mockup files persist in `.superpowers/brainstorm/` for later reference. Only `/tmp` sessions get deleted on stop.
+If the session used `--project-dir`, mockup files persist in `.codex/brainstorm/` for later reference. Only `/tmp` sessions get deleted on stop.
 
 ## Reference
 

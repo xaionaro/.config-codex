@@ -1,7 +1,15 @@
 # Shellcheck-friendly library: drop reviewer violations not grounded in rules.
 # shellcheck shell=bash
 
-: "${REVIEWER_FILTER_CORPUS_FILES:=$HOME/.codex/CODEX.md $HOME/.codex/hooks/stop-checklist.md $HOME/.codex/memories/claude-import/ACTIVE-SUMMARY.md}"
+reviewer_filter_migration_summary="$HOME/.codex/memories/migration-import/ACTIVE-SUMMARY.md"
+reviewer_filter_legacy_summary="$HOME/.codex/memories/claude"'-import/ACTIVE-SUMMARY.md'
+
+if [ -z "${REVIEWER_FILTER_CORPUS_FILES+x}" ]; then
+  REVIEWER_FILTER_CORPUS_FILES="$HOME/.codex/CODEX.md $HOME/.codex/hooks/stop-checklist.md $reviewer_filter_migration_summary"
+  if [ -f "$reviewer_filter_legacy_summary" ]; then
+    REVIEWER_FILTER_CORPUS_FILES="$REVIEWER_FILTER_CORPUS_FILES $reviewer_filter_legacy_summary"
+  fi
+fi
 : "${REVIEWER_FILTER_THRESHOLD:=0.15}"
 
 filter_violations() {

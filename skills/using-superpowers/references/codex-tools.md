@@ -4,10 +4,10 @@ Skills use Codex tool names. When you encounter these in a skill, use your platf
 
 | Skill references | Codex equivalent |
 |-----------------|------------------|
-| `Task` tool (dispatch subagent) | `spawn_agent` (see [Named agent dispatch](#named-agent-dispatch)) |
-| Multiple `Task` calls (parallel) | Multiple `spawn_agent` calls |
-| Task returns result | `wait` |
-| Task completes automatically | `close_agent` to free slot |
+| Legacy subagent dispatch | `spawn_agent` (see [Named agent dispatch](#named-agent-dispatch)) |
+| Legacy parallel dispatches | Multiple `spawn_agent` calls |
+| Legacy subagent result | `wait_agent` |
+| Legacy fire-and-forget dispatch | `close_agent` to free slot |
 | `update_plan` (task tracking) | `update_plan` |
 | `Skill` tool (invoke a skill) | Skills load natively — just follow the instructions |
 | `Read`, `Write`, `Edit` (files) | Use your native file tools |
@@ -22,11 +22,11 @@ Add to your Codex config (`~/.codex/config.toml`):
 multi_agent = true
 ```
 
-This enables `spawn_agent`, `wait`, and `close_agent` for skills like `dispatching-parallel-agents` and `subagent-driven-development`.
+This enables `spawn_agent`, `wait_agent`, and `close_agent` for skills like `dispatching-parallel-agents` and `subagent-driven-development`.
 
 ## Named agent dispatch
 
-Codex skills reference named agent types like `superpowers:code-reviewer`.
+Legacy compatibility references may name agent types with old namespaces like `superpowers:code-reviewer`.
 Codex does not have a named agent registry — `spawn_agent` creates generic agents
 from built-in roles (`default`, `explorer`, `worker`).
 
@@ -40,8 +40,8 @@ When a skill says to dispatch a named agent type:
 
 | Skill instruction | Codex equivalent |
 |-------------------|------------------|
-| `Task tool (superpowers:code-reviewer)` | `spawn_agent(agent_type="worker", message=...)` with `code-reviewer.md` content |
-| `Task tool (general-purpose)` with inline prompt | `spawn_agent(message=...)` with the same prompt |
+| compat reference: Legacy named `code-reviewer` dispatch | `spawn_agent(agent_type="worker", message=...)` with `code-reviewer.md` content |
+| compat reference: Legacy inline subagent dispatch | `spawn_agent(message=...)` with the same prompt |
 
 ### Message framing
 

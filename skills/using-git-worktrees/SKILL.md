@@ -7,70 +7,55 @@ description: Use when starting feature work that needs isolation from current wo
 
 ## Overview
 
-Git worktrees create isolated workspaces sharing the same repository, allowing work on multiple branches simultaneously without switching.
+Git worktrees create isolated workspaces that share one repository, allowing work on multiple branches without switching the current checkout.
 
-**Core principle:** Systematic directory selection + safety verification = reliable isolation.
+**Core principle:** Use the Codex global worktree directory by default; honor explicit project instructions only when `CODEX.md` or the user specifies them.
 
 **Announce at start:** "I'm using the using-git-worktrees skill to set up an isolated workspace."
 
-## Directory Selection Process
+## Directory Selection
 
-Follow this priority order:
-
-### 1. Check Existing Directories
-
-```bash
-# Check in priority order
-ls -d .worktrees 2>/dev/null     # Preferred (hidden)
-ls -d worktrees 2>/dev/null      # Alternative
-```
-
-**If found:** Use that directory. If both exist, `.worktrees` wins.
-
-### 2. Check CODEX.md
+### 1. Check CODEX.md
 
 ```bash
 grep -i "worktree.*director" CODEX.md 2>/dev/null
 ```
 
-**If preference specified:** Use it without asking.
+If `CODEX.md` explicitly specifies a worktree directory, use that path. If it is inside the repository, verify it is ignored before creating the worktree.
 
-### 3. Ask User
+### 2. Default To Codex Global Storage
 
-If no directory exists and no CODEX.md preference:
+If `CODEX.md` has no explicit worktree directory, use:
 
+```text
+$HOME/.codex/worktrees/<project-name>/<branch-name>
 ```
-No worktree directory found. Where should I create worktrees?
 
-1. .worktrees/ (project-local, hidden)
-2. ~/.config/superpowers/worktrees/<project-name>/ (global location)
+Human-readable form: `~/.codex/worktrees/<project-name>/<branch-name>`.
 
-Which would you prefer?
-```
+Do not prompt for project-local paths unless the user asks for one or `CODEX.md` explicitly requires one.
 
 ## Safety Verification
 
-### For Project-Local Directories (.worktrees or worktrees)
+### Default Global Directory
 
-**MUST verify directory is ignored before creating worktree:**
+No repository ignore verification is needed for `$HOME/.codex/worktrees/<project-name>/` because it is outside the project checkout.
+
+### Explicit Project-Local Directory
+
+If `CODEX.md` or the user explicitly chooses a directory inside the repository, verify the directory is ignored before creating a worktree:
 
 ```bash
-# Check if directory is ignored (respects local, global, and system gitignore)
-git check-ignore -q .worktrees 2>/dev/null || git check-ignore -q worktrees 2>/dev/null
+git check-ignore -q "$WORKTREE_PARENT"
 ```
 
-**If NOT ignored:**
+If it is not ignored, fix isolation before proceeding:
 
-Per Jesse's rule "Fix broken things immediately":
-1. Add appropriate line to .gitignore
-2. Commit the change
-3. Proceed with worktree creation
+1. Add the appropriate ignore rule.
+2. Commit the ignore-rule change.
+3. Create the worktree.
 
-**Why critical:** Prevents accidentally committing worktree contents to repository.
-
-### For Global Directory (~/.config/superpowers/worktrees)
-
-No .gitignore verification needed - outside project entirely.
+**Why critical:** This prevents committing worktree contents to the repository.
 
 ## Creation Steps
 
@@ -83,24 +68,18 @@ project=$(basename "$(git rev-parse --show-toplevel)")
 ### 2. Create Worktree
 
 ```bash
-# Determine full path
-case $LOCATION in
-  .worktrees|worktrees)
-    path="$LOCATION/$BRANCH_NAME"
-    ;;
-  ~/.config/superpowers/worktrees/*)
-    path="~/.config/superpowers/worktrees/$project/$BRANCH_NAME"
-    ;;
-esac
+# Default when CODEX.md does not specify WORKTREE_PARENT.
+WORKTREE_PARENT="${WORKTREE_PARENT:-$HOME/.codex/worktrees/$project}"
+path="$WORKTREE_PARENT/$BRANCH_NAME"
 
-# Create worktree with new branch
+mkdir -p "$WORKTREE_PARENT"
 git worktree add "$path" -b "$BRANCH_NAME"
 cd "$path"
 ```
 
 ### 3. Run Project Setup
 
-Auto-detect and run appropriate setup:
+Auto-detect and run the matching setup:
 
 ```bash
 # Node.js
@@ -119,23 +98,21 @@ if [ -f go.mod ]; then go mod download; fi
 
 ### 4. Verify Clean Baseline
 
-Run tests to ensure worktree starts clean:
+Run project tests before changing code:
 
 ```bash
-# Examples - use project-appropriate command
+# Examples - use the project-appropriate command.
 npm test
 cargo test
 pytest
 go test ./...
 ```
 
-**If tests fail:** Report failures, ask whether to proceed or investigate.
-
-**If tests pass:** Report ready.
+If tests fail, report the failures and ask whether to proceed or investigate. If tests pass, report ready.
 
 ### 5. Report Location
 
-```
+```text
 Worktree ready at <full-path>
 Tests passing (<N> tests, 0 failures)
 Ready to implement <feature-name>
@@ -145,48 +122,46 @@ Ready to implement <feature-name>
 
 | Situation | Action |
 |-----------|--------|
-| `.worktrees/` exists | Use it (verify ignored) |
-| `worktrees/` exists | Use it (verify ignored) |
-| Both exist | Use `.worktrees/` |
-| Neither exists | Check CODEX.md → Ask user |
-| Directory not ignored | Add to .gitignore + commit |
-| Tests fail during baseline | Report failures + ask |
-| No package.json/Cargo.toml | Skip dependency install |
+| `CODEX.md` specifies a worktree directory | Use it; if inside repo, verify ignored |
+| No explicit directory preference | Use `$HOME/.codex/worktrees/<project-name>/` |
+| User asks for a project-local directory | Use it; verify ignored |
+| Explicit project-local directory is not ignored | Add ignore rule, commit it, then create worktree |
+| Tests fail during baseline | Report failures and ask |
+| No package.json/Cargo.toml/pyproject.toml/go.mod | Skip dependency setup |
 
 ## Common Mistakes
 
-### Skipping ignore verification
+### Skipping Ignore Verification
 
-- **Problem:** Worktree contents get tracked, pollute git status
-- **Fix:** Always use `git check-ignore` before creating project-local worktree
+- **Problem:** Project-local worktree contents get tracked and pollute git status.
+- **Fix:** Verify the chosen project-local parent with `git check-ignore` before creating the worktree.
 
-### Assuming directory location
+### Defaulting To Project-Local Storage
 
-- **Problem:** Creates inconsistency, violates project conventions
-- **Fix:** Follow priority: existing > CODEX.md > ask
+- **Problem:** Creates inconsistent locations and can expose generated worktree contents to the repository.
+- **Fix:** Use `$HOME/.codex/worktrees/<project-name>/` unless `CODEX.md` or the user explicitly chooses another path.
 
-### Proceeding with failing tests
+### Proceeding With Failing Tests
 
-- **Problem:** Can't distinguish new bugs from pre-existing issues
-- **Fix:** Report failures, get explicit permission to proceed
+- **Problem:** New failures cannot be separated from pre-existing failures.
+- **Fix:** Report baseline failures and get explicit permission to proceed.
 
-### Hardcoding setup commands
+### Hardcoding Setup Commands
 
-- **Problem:** Breaks on projects using different tools
-- **Fix:** Auto-detect from project files (package.json, etc.)
+- **Problem:** Breaks on projects using different tools.
+- **Fix:** Auto-detect from project files.
 
 ## Example Workflow
 
-```
+```text
 You: I'm using the using-git-worktrees skill to set up an isolated workspace.
 
-[Check .worktrees/ - exists]
-[Verify ignored - git check-ignore confirms .worktrees/ is ignored]
-[Create worktree: git worktree add .worktrees/auth -b feature/auth]
+[Check CODEX.md - no explicit worktree directory]
+[Create worktree: git worktree add "$HOME/.codex/worktrees/myproject/auth" -b feature/auth]
 [Run npm install]
 [Run npm test - 47 passing]
 
-Worktree ready at /Users/jesse/myproject/.worktrees/auth
+Worktree ready at ~/.codex/worktrees/myproject/auth
 Tests passing (47 tests, 0 failures)
 Ready to implement auth feature
 ```
@@ -194,17 +169,18 @@ Ready to implement auth feature
 ## Red Flags
 
 **Never:**
-- Create worktree without verifying it's ignored (project-local)
-- Skip baseline test verification
-- Proceed with failing tests without asking
-- Assume directory location when ambiguous
-- Skip CODEX.md check
+- Default to project-local worktree storage.
+- Create a project-local worktree without verifying it is ignored.
+- Skip baseline test verification.
+- Proceed with failing tests without asking.
+- Skip the `CODEX.md` check.
 
 **Always:**
-- Follow directory priority: existing > CODEX.md > ask
-- Verify directory is ignored for project-local
-- Auto-detect and run project setup
-- Verify clean test baseline
+- Check `CODEX.md` for an explicit directory preference.
+- Use `$HOME/.codex/worktrees/<project-name>/` as the fallback.
+- Verify project-local directories are ignored.
+- Auto-detect and run project setup.
+- Verify the clean test baseline.
 
 ## Integration
 

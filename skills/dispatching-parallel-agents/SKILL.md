@@ -65,25 +65,92 @@ Each agent gets:
 - **Specific scope:** One test file or subsystem
 - **Clear goal:** Make these tests pass
 - **Constraints:** Don't change other code
+- **Role label:** A stable label in the first prompt line
+- **Stop-hook boundary:** Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
 - **Expected output:** Summary of what you found and fixed
 
 ### 3. Dispatch in Parallel
 
-```typescript
-// In Codex / AI environment
-Task("Fix agent-tool-abort.test.ts failures")
-Task("Fix batch-completion-behavior.test.ts failures")
-Task("Fix tool-approval-race-conditions.test.ts failures")
-// All three run concurrently
+```python
+agent_tool_abort = spawn_agent(
+    agent_type="worker",
+    reasoning_effort="xhigh",
+    message="""Role label: agent-tool-abort
+
+Fix the failures in src/agents/agent-tool-abort.test.ts.
+
+Scope:
+- Read only the abort-related test and implementation paths needed for this failure.
+- Keep changes focused on abort behavior and its tests.
+- Do not modify batch completion or tool approval race tests.
+
+Stop-hook boundary:
+Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+
+Return: root cause, changed files, verification run, and remaining risk.
+""",
+)
+
+batch_completion = spawn_agent(
+    agent_type="worker",
+    reasoning_effort="xhigh",
+    message="""Role label: batch-completion
+
+Fix the failures in src/agents/batch-completion-behavior.test.ts.
+
+Scope:
+- Read only the batch completion test and implementation paths needed for this failure.
+- Keep changes focused on batch completion behavior.
+- Do not modify abort or tool approval race tests.
+
+Stop-hook boundary:
+Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+
+Return: root cause, changed files, verification run, and remaining risk.
+""",
+)
+
+tool_approval_races = spawn_agent(
+    agent_type="worker",
+    reasoning_effort="xhigh",
+    message="""Role label: tool-approval-races
+
+Fix the failures in src/agents/tool-approval-race-conditions.test.ts.
+
+Scope:
+- Read only the tool approval race test and implementation paths needed for this failure.
+- Keep changes focused on approval timing behavior.
+- Do not modify abort or batch completion tests.
+
+Stop-hook boundary:
+Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+
+Return: root cause, changed files, verification run, and remaining risk.
+""",
+)
+
+# Print the roster immediately after spawn using the returned runtime names:
+# agent-tool-abort: <runtime name> [worker]
+# batch-completion: <runtime name> [worker]
+# tool-approval-races: <runtime name> [worker]
 ```
 
 ### 4. Review and Integrate
 
+Wait for the spawned agents before integrating:
+
+```python
+wait_agent(agent_tool_abort)
+wait_agent(batch_completion)
+wait_agent(tool_approval_races)
+```
+
 When agents return:
 - Read each summary
+- Review every changed line before accepting it
 - Verify fixes don't conflict
 - Run full test suite
-- Integrate all changes
+- Integrate all changes only after review
 
 ## Agent Prompt Structure
 
@@ -91,8 +158,12 @@ Good agent prompts are:
 1. **Focused** - One clear problem domain
 2. **Self-contained** - All context needed to understand the problem
 3. **Specific about output** - What should the agent return?
+4. **Labeled** - First line is `Role label: <stable-role>`
+5. **Bounded** - Includes: `Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.`
 
 ```markdown
+Role label: agent-tool-abort
+
 Fix the 3 failing tests in src/agents/agent-tool-abort.test.ts:
 
 1. "should abort tool with partial output capture" - expects 'interrupted at' in message
@@ -109,6 +180,9 @@ These are timing/race condition issues. Your task:
    - Adjusting test expectations if testing changed behavior
 
 Do NOT just increase timeouts - find the real issue.
+
+Stop-hook boundary:
+Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
 
 Return: Summary of what you found and what you fixed.
 ```
@@ -147,9 +221,20 @@ Return: Summary of what you found and what you fixed.
 
 **Dispatch:**
 ```
-Agent 1 → Fix agent-tool-abort.test.ts
-Agent 2 → Fix batch-completion-behavior.test.ts
-Agent 3 → Fix tool-approval-race-conditions.test.ts
+Use the three `spawn_agent` calls from "Dispatch in Parallel" with role labels:
+agent-tool-abort
+batch-completion
+tool-approval-races
+
+roster:
+agent-tool-abort: <runtime name> [worker]
+batch-completion: <runtime name> [worker]
+tool-approval-races: <runtime name> [worker]
+
+wait:
+wait_agent(agent_tool_abort)
+wait_agent(batch_completion)
+wait_agent(tool_approval_races)
 ```
 
 **Results:**

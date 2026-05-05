@@ -7,43 +7,51 @@ Use this template when dispatching a plan document reviewer subagent.
 **Dispatch after:** The complete plan is written.
 
 ```
-Task tool (general-purpose):
-  description: "Review plan document"
-  prompt: |
-    You are a plan document reviewer. Verify this plan is complete and ready for implementation.
+spawn_agent(
+  agent_type="explorer",
+  reasoning_effort="xhigh",
+  message="""
+Role label: plan-document-reviewer
 
-    **Plan to review:** [PLAN_FILE_PATH]
-    **Spec for reference:** [SPEC_FILE_PATH]
+<task>
+Review [PLAN_FILE_PATH] against [SPEC_FILE_PATH].
+</task>
 
-    ## What to Check
+<stop-hook-boundary>
+Do not run Stop-hook proof workflows or write Stop-hook proof files.
+If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+</stop-hook-boundary>
 
-    | Category | What to Look For |
-    |----------|------------------|
-    | Completeness | TODOs, placeholders, incomplete tasks, missing steps |
-    | Spec Alignment | Plan covers spec requirements, no major scope creep |
-    | Task Decomposition | Tasks have clear boundaries, steps are actionable |
-    | Buildability | Could an engineer follow this plan without getting stuck? |
+<check>
+| Category | Look For |
+|----------|----------|
+| Completeness | TODOs, placeholders, incomplete tasks, missing steps |
+| Spec alignment | Plan covers spec requirements, no major scope creep |
+| Task decomposition | Clear boundaries, actionable steps |
+| Buildability | An engineer can follow the plan without getting stuck |
+</check>
 
-    ## Calibration
+<calibration>
+Only flag issues that would break implementation.
+Approve unless requirements are missing, steps contradict, placeholders remain, or tasks are too vague to act on.
+Treat wording, style, and nice-to-have suggestions as advisory.
+</calibration>
 
-    **Only flag issues that would cause real problems during implementation.**
-    An implementer building the wrong thing or getting stuck is an issue.
-    Minor wording, stylistic preferences, and "nice to have" suggestions are not.
+<report>
+## Plan Review
 
-    Approve unless there are serious gaps — missing requirements from the spec,
-    contradictory steps, placeholder content, or tasks so vague they can't be acted on.
+**Status:** Approved | Issues Found
 
-    ## Output Format
+**Issues (if any):**
+- [Task X, Step Y]: [specific issue] - [why it matters for implementation]
 
-    ## Plan Review
-
-    **Status:** Approved | Issues Found
-
-    **Issues (if any):**
-    - [Task X, Step Y]: [specific issue] - [why it matters for implementation]
-
-    **Recommendations (advisory, do not block approval):**
-    - [suggestions for improvement]
+**Recommendations (advisory, do not block approval):**
+- [suggestions for improvement]
+</report>
+"""
+)
 ```
+
+After spawn, print the roster entry: `plan-document-reviewer: <runtime name> [explorer]`.
 
 **Reviewer returns:** Status, Issues (if any), Recommendations
