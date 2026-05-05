@@ -227,6 +227,15 @@ if [ -n "$skip" ] && [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/
   exit 0
 fi
 
+reviewer_out=""
+if reviewer_out=$(printf '%s' "$input" | "$HOOK_DIR/system-prompt-reviewer.sh"); then
+  if [ -n "$reviewer_out" ] &&
+    printf '%s' "$reviewer_out" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+    printf '%s\n' "$reviewer_out"
+    exit 0
+  fi
+fi
+
 if [ -f "$proof" ]; then
   if section_has_body "$proof" "ECI completion certificate"; then
     if ! section_has_body "$proof" "Stop checklist walkthrough" || ! section_has_body "$proof" "Incomplete compliance"; then

@@ -441,6 +441,52 @@ write_main_transcript() {
 JSON
 }
 
+main_reviewer_transcript_path() {
+  printf '%s/home/.codex/sessions/codex-hooks-test-main-reviewer.jsonl\n' "$TMP_ROOT"
+}
+
+install_reviewer_transcript_fixture() {
+  local fixture="$1"
+  local path="$2"
+  mkdir -p "$(dirname "$path")" || return 1
+  cp "$fixture" "$path"
+}
+
+redaction_fixture_value() {
+  case "$1" in
+    openai-api-key) printf '%s%s%s' 'sk-' 'test' 'SECRET1234567890' ;;
+    password) printf '%s%s' 'hunter' '2' ;;
+    bearer-token) printf '%s%s' 'bearer' 'SECRET987654321' ;;
+    github-token) printf '%s%s%s' 'gh' 'p_' 'SECRETtoken1234567890' ;;
+    slack-token) printf '%s%s%s' 'xo' 'xb-' '1234567890-secretvalue' ;;
+    aws-access-key) printf '%s%s' 'AK' 'IAABCDEFGHIJKLMNOP' ;;
+    google-api-key) printf '%s%s%s' 'AI' 'za' 'SyA1234567890abcdefghijklmnopqrstu' ;;
+    private-key-begin) printf '%s%s %s %s %s%s' '-----' 'BEGIN' 'OPENSSH' 'PRIVATE' 'KEY' '-----' ;;
+    private-key-material) printf '%s%s%s' 'private' '-key-' 'material' ;;
+    private-key-end) printf '%s%s %s %s %s%s' '-----' 'END' 'OPENSSH' 'PRIVATE' 'KEY' '-----' ;;
+    private-key-block)
+      printf '%s\n%s\n%s' \
+        "$(redaction_fixture_value private-key-begin)" \
+        "$(redaction_fixture_value private-key-material)" \
+        "$(redaction_fixture_value private-key-end)"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+file_lacks_values() {
+  local file="$1"
+  local value
+  shift
+
+  for value in "$@"; do
+    [ -n "$value" ] || continue
+    if grep -Fq -- "$value" "$file"; then
+      return 1
+    fi
+  done
+}
+
 test_eci_gate_allows_spawned_agent_transcript_payload() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root eci-subagent-transcript)"
@@ -473,6 +519,470 @@ test_eci_gate_blocks_main_transcript_payload() {
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
 
   is_pretool_deny "$out"
+}
+
+test_reviewer_backend_parser_accepts_no_credential_backends() {
+  (
+    . "$ROOT/hooks/lib/reviewer-backend.sh"
+    CODEX_STOP_REVIEWER="" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      [ "$REVIEWER_BACKEND" = "" ] &&
+      CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      [ "$REVIEWER_BACKEND" = "ollama" ] &&
+      [ "$REVIEWER_OLLAMA_HOST" = "http://127.0.0.1:11434" ] &&
+      [ "$REVIEWER_OLLAMA_MODEL" = "qwen3:4b" ] &&
+      CODEX_STOP_REVIEWER="opencode-zen:https://zen.example:nemotron" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      [ "$REVIEWER_BACKEND" = "opencode-zen" ] &&
+      [ "$REVIEWER_OPENCODE_HOST" = "https://zen.example" ] &&
+      [ "$REVIEWER_OPENCODE_MODEL" = "nemotron" ]
+  )
+}
+
+test_reviewer_backend_parser_rejects_credential_backends() {
+  (
+    . "$ROOT/hooks/lib/reviewer-backend.sh"
+    ! CODEX_STOP_REVIEWER="claude" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      ! CODEX_STOP_REVIEWER="github-copilot:gpt-4.1" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      ! CODEX_STOP_REVIEWER="codex-as-role:reviewer" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      ! CODEX_STOP_REVIEWER="codex:/usr/bin/codex" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      ! CODEX_STOP_REVIEWER="shell:/home/streaming/.codex/bin/agent" parse_reviewer_env CODEX_STOP_REVIEWER
+  )
+}
+
+test_reviewer_schema_matches_rules() {
+  jq -e '
+    (.required | index("assistant_tail_quote")) and
+    (.required | index("passes_completed")) and
+    (.required | index("verdict")) and
+    (.required | index("violations")) and
+    (.properties.passes_completed.items.enum | index("tail")) and
+    (.properties.passes_completed.items.enum | index("tools")) and
+    (.properties.passes_completed.items.enum | index("checklist")) and
+    (.properties.passes_completed.items.enum | index("agreements"))
+  ' "$ROOT/hooks/lib/reviewer-schema.json" >/dev/null &&
+    grep -q 'passes_completed' "$ROOT/hooks/reviewer-rules.md" &&
+    grep -q 'assistant_tail_quote' "$ROOT/hooks/reviewer-rules.md"
+}
+
+test_compose_reviewer_prompt_uses_codex_sources() {
+  local out
+  out="$TMP_ROOT/reviewer-prompt.out"
+
+  (
+    . "$ROOT/hooks/lib/compose-reviewer-prompt.sh"
+    compose_reviewer_prompt "$ROOT/hooks/reviewer-rules.md" >"$out"
+  ) || return 1
+
+  grep -q '# CODEX.md' "$out" &&
+    grep -q '# stop-checklist.md' "$out" &&
+    grep -q 'Claim Verification' "$out" &&
+    ! grep -Eq '[.]claude' "$out"
+}
+
+test_reviewer_filter_keeps_real_rules_and_drops_fabricated_rules() {
+  (
+    . "$ROOT/hooks/lib/reviewer-filter.sh"
+    REVIEWER_FILTER_CORPUS_FILES="$ROOT/hooks/stop-checklist.md"
+    kept=$(filter_violations '{"verdict":"fail","violations":[{"rule":"Commit this session completed changes before stopping.","evidence":"example"}]}')
+    dropped=$(filter_violations '{"verdict":"fail","violations":[{"rule":"Always whistle three times before stopping.","evidence":"example"}]}')
+    [ "$(printf '%s' "$kept" | jq -r '.verdict')" = "fail" ] &&
+      [ "$(printf '%s' "$kept" | jq '.violations | length')" = "1" ] &&
+      [ "$(printf '%s' "$dropped" | jq -r '.verdict')" = "pass" ] &&
+      [ "$(printf '%s' "$dropped" | jq '.violations | length')" = "0" ]
+  )
+}
+
+test_reviewer_filter_keeps_user_history_agreement_rules() {
+  local body
+  body="$TMP_ROOT/reviewer-filter-user-history.md"
+  cat >"$body" <<'EOF'
+## USER_HISTORY
+
+<entry>USER: Always run bash hooks/tests/run.sh before stopping.</entry>
+
+## CURRENT_TURN
+
+<entry>ASSISTANT: I skipped it.</entry>
+<entry>ASSISTANT: I skipped it because the database migration failed.</entry>
+EOF
+
+  (
+    . "$ROOT/hooks/lib/reviewer-filter.sh"
+    REVIEWER_FILTER_CORPUS_FILES="$ROOT/hooks/stop-checklist.md"
+    kept=$(filter_violations '{"verdict":"fail","violations":[{"rule":"Always run bash hooks/tests/run.sh before stopping.","evidence":"I skipped it."}]}' "$body")
+    paraphrased=$(filter_violations '{"verdict":"fail","violations":[{"rule":"You must execute the requested hook test suite before ending the turn.","evidence":"I skipped it."}]}' "$body")
+    fabricated=$(filter_violations '{"verdict":"fail","violations":[{"rule":"Always whistle three times before stopping.","evidence":"I skipped it."}]}' "$body")
+    current_copy=$(filter_violations '{"verdict":"fail","violations":[{"rule":"I skipped it because the database migration failed.","evidence":"I skipped it because the database migration failed."}]}' "$body")
+    [ "$(printf '%s' "$kept" | jq -r '.verdict')" = "fail" ] &&
+      [ "$(printf '%s' "$kept" | jq '.violations | length')" = "1" ] &&
+      [ "$(printf '%s' "$paraphrased" | jq -r '.verdict')" = "fail" ] &&
+      [ "$(printf '%s' "$paraphrased" | jq '.violations | length')" = "1" ] &&
+      [ "$(printf '%s' "$fabricated" | jq -r '.verdict')" = "pass" ] &&
+      [ "$(printf '%s' "$fabricated" | jq '.violations | length')" = "0" ] &&
+      [ "$(printf '%s' "$current_copy" | jq -r '.verdict')" = "pass" ] &&
+      [ "$(printf '%s' "$current_copy" | jq '.violations | length')" = "0" ]
+  )
+}
+
+test_system_reviewer_slices_sanitized_codex_transcript() {
+  local proof_root input out transcript body
+  proof_root="$(fresh_proof_root reviewer-slice)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/reviewer-slice.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/reviewer-slice.out"
+  body="$TMP_ROOT/reviewer-slice-body.md"
+
+  run_hook "$out" "$ROOT/hooks/system-prompt-reviewer.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"pass","violations":[]}' \
+    CODEX_REVIEWER_DEBUG_BODY_PATH="$body" || return 1
+
+  expect_no_output "$out" &&
+    grep -q '## USER_HISTORY' "$body" &&
+    grep -q 'Earlier request: inspect the hook config.' "$body" &&
+    grep -q '## CURRENT_TURN' "$body" &&
+    grep -q 'Current request: implement the Codex reviewer hook.' "$body" &&
+    grep -q 'TOOL_RESULT:' "$body" &&
+    ! grep -q 'Earlier response should not appear in USER_HISTORY.' "$body"
+}
+
+write_fake_ps_with_secrets() {
+  local dir="$1"
+  local openai_key password bearer_token aws_access_key github_token
+  mkdir -p "$dir" || return 1
+  openai_key="$(redaction_fixture_value openai-api-key)" || return 1
+  password="$(redaction_fixture_value password)" || return 1
+  bearer_token="$(redaction_fixture_value bearer-token)" || return 1
+  aws_access_key="$(redaction_fixture_value aws-access-key)" || return 1
+  github_token="$(redaction_fixture_value github-token)" || return 1
+
+  cat >"$dir/ps" <<SH
+#!/usr/bin/env bash
+cat <<'PS'
+101 1 10 S python worker.py --api-key=$openai_key --password $password Authorization: Bearer $bearer_token
+102 1 11 S node service.js AWS_SECRET_ACCESS_KEY=$aws_access_key token=$github_token
+103 1 12 S /home/streaming/.codex/hooks/system-prompt-reviewer.sh --token should_skip
+104 1 13 S ./service --safe flag
+PS
+SH
+  chmod +x "$dir/ps"
+}
+
+test_system_reviewer_redacts_background_process_secrets() {
+  local proof_root input out transcript body fake_bin background
+  local openai_key password bearer_token aws_access_key github_token
+  proof_root="$(fresh_proof_root reviewer-redacts-processes)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/reviewer-redacts-processes.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/reviewer-redacts-processes.out"
+  body="$TMP_ROOT/reviewer-redacts-processes-body.md"
+  background="$TMP_ROOT/reviewer-redacts-processes-background.md"
+  fake_bin="$TMP_ROOT/fake-ps-bin"
+  write_fake_ps_with_secrets "$fake_bin" || return 1
+  openai_key="$(redaction_fixture_value openai-api-key)" || return 1
+  password="$(redaction_fixture_value password)" || return 1
+  bearer_token="$(redaction_fixture_value bearer-token)" || return 1
+  aws_access_key="$(redaction_fixture_value aws-access-key)" || return 1
+  github_token="$(redaction_fixture_value github-token)" || return 1
+
+  run_hook "$out" "$ROOT/hooks/system-prompt-reviewer.sh" "$input" \
+    PATH="$fake_bin:$PATH" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"pass","violations":[]}' \
+    CODEX_REVIEWER_DEBUG_BODY_PATH="$body" || return 1
+
+  awk '/## BACKGROUND_PROCESSES/{flag=1; next} flag{print}' "$body" >"$background"
+  expect_no_output "$out" &&
+    grep -q '## BACKGROUND_PROCESSES' "$body" &&
+    grep -q './service --safe flag' "$background" &&
+    grep -q '\[REDACTED\]' "$background" &&
+    file_lacks_values "$background" "$openai_key" "$password" "$bearer_token" "$aws_access_key" "$github_token" &&
+    ! grep -Eq 'should_skip|system-prompt-reviewer\.sh' "$background"
+}
+
+test_system_reviewer_renders_response_item_tool_events() {
+  local proof_root input out transcript body
+  proof_root="$(fresh_proof_root reviewer-response-item)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-response-item-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/reviewer-response-item.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/reviewer-response-item.out"
+  body="$TMP_ROOT/reviewer-response-item-body.md"
+
+  run_hook "$out" "$ROOT/hooks/system-prompt-reviewer.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"pass","violations":[]}' \
+    CODEX_REVIEWER_DEBUG_BODY_PATH="$body" || return 1
+
+  expect_no_output "$out" &&
+    grep -Fq 'ASSISTANT: [tool_use=functions.exec_command input={"command":"sed -n' "$body" &&
+    grep -q 'TOOL_RESULT:' "$body" &&
+    grep -q 'hooks/system-prompt-reviewer.sh' "$body"
+}
+
+test_stop_reviewer_blocks_main_session_fail_verdict() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-reviewer-block)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/stop-reviewer-block.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-reviewer-block.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"fail","violations":[{"rule":"Commit this session completed changes before stopping.","evidence":"Done."}]}' || return 1
+
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "External compliance reviewer" &&
+    json_field_contains "$out" '.reason // empty' "Commit this session"
+}
+
+test_stop_reviewer_pass_verdict_continues_to_proof_gate() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-reviewer-pass)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/stop-reviewer-pass.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-reviewer-pass.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"pass","violations":[]}' || return 1
+
+  # Codex intentionally does not port Claude-style pass summary surfacing; pass verdicts stay silent and continue to proof validation.
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Follow" &&
+    ! json_field_contains "$out" '.reason // empty' "External compliance reviewer"
+}
+
+test_stop_reviewer_fail_open_for_unknown_backend() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-reviewer-fail-open)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/stop-reviewer-fail-open.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-reviewer-fail-open.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="claude" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"fail","violations":[{"rule":"Commit this session completed changes before stopping.","evidence":"Done."}]}' || return 1
+
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Follow" &&
+    grep -q 'unknown CODEX_STOP_REVIEWER' "$out.err"
+}
+
+test_stop_reviewer_skips_spawned_subagent_transcript() {
+  local proof_root input out transcript body
+  proof_root="$(fresh_proof_root stop-reviewer-subagent)"
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/stop-reviewer-subagent.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-reviewer-subagent.out"
+  body="$TMP_ROOT/stop-reviewer-subagent-body.md"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"fail","violations":[{"rule":"Commit this session completed changes before stopping.","evidence":"Done."}]}' || return 1
+
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session" ] &&
+    [ ! -e "$proof_root/reviewer/t00-session" ] &&
+    [ ! -e "$body" ]
+}
+
+test_stop_reviewer_timeout_and_hook_wiring() {
+  jq -e '
+    ([.hooks.Stop[]?.hooks[]? | select((.command // "") | endswith("/stop-gate.sh")) | .timeout] | all(. >= 240)) and
+    ([.hooks.Stop[]?.hooks[]?.command] | all((endswith("/system-prompt-reviewer.sh") | not))) and
+    ([.hooks.PreToolUse[]?.hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit)$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh")))
+  ' "$ROOT/hooks.json" >/dev/null
+}
+
+test_pre_reviewer_denies_first_tool_call_once_per_turn() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root pre-reviewer-first)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/pre-reviewer-first.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/pre-reviewer-first.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Load the matching skill first" || return 1
+
+  out="$TMP_ROOT/pre-reviewer-first-repeat.out"
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
+  expect_no_output "$out"
+}
+
+write_pre_reviewer_secret_transcript() {
+  local path="$1"
+  local openai_key password bearer_token github_token slack_token aws_access_key google_key private_key content
+  mkdir -p "$(dirname "$path")" || return 1
+  openai_key="$(redaction_fixture_value openai-api-key)" || return 1
+  password="$(redaction_fixture_value password)" || return 1
+  bearer_token="$(redaction_fixture_value bearer-token)" || return 1
+  github_token="$(redaction_fixture_value github-token)" || return 1
+  slack_token="$(redaction_fixture_value slack-token)" || return 1
+  aws_access_key="$(redaction_fixture_value aws-access-key)" || return 1
+  google_key="$(redaction_fixture_value google-api-key)" || return 1
+  private_key="$(redaction_fixture_value private-key-block)" || return 1
+  content=$(printf 'Use OPENAI_API_KEY=%s and password=%s with Authorization: Bearer %s. GitHub token %s, Slack token %s, AWS key %s, Google key %s, and this key:\n%s' \
+    "$openai_key" "$password" "$bearer_token" "$github_token" "$slack_token" "$aws_access_key" "$google_key" "$private_key")
+
+  {
+    jq -nc '{"timestamp":"2026-05-04T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":"cli"}}'
+    jq -nc --arg content "$content" '{"timestamp":"2026-05-04T00:00:01.000Z","type":"user","message":{"content":$content}}'
+  } >"$path"
+}
+
+test_pre_reviewer_redacts_user_message_and_tool_input_payload() {
+  local proof_root input out transcript body command description
+  local openai_key password bearer_token github_token slack_token aws_access_key google_key
+  local private_key_begin private_key_material private_key_end
+  proof_root="$(fresh_proof_root pre-reviewer-redaction)"
+  transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-pre-reviewer-secrets.jsonl"
+  write_pre_reviewer_secret_transcript "$transcript" || return 1
+  input="$TMP_ROOT/pre-reviewer-redaction.json"
+  openai_key="$(redaction_fixture_value openai-api-key)" || return 1
+  password="$(redaction_fixture_value password)" || return 1
+  bearer_token="$(redaction_fixture_value bearer-token)" || return 1
+  github_token="$(redaction_fixture_value github-token)" || return 1
+  slack_token="$(redaction_fixture_value slack-token)" || return 1
+  aws_access_key="$(redaction_fixture_value aws-access-key)" || return 1
+  google_key="$(redaction_fixture_value google-api-key)" || return 1
+  private_key_begin="$(redaction_fixture_value private-key-begin)" || return 1
+  private_key_material="$(redaction_fixture_value private-key-material)" || return 1
+  private_key_end="$(redaction_fixture_value private-key-end)" || return 1
+  command=$(printf 'curl -H "Authorization: Bearer %s" --password %s --api-key=%s https://example.invalid' \
+    "$bearer_token" "$password" "$openai_key")
+  description=$(printf 'uses %s %s %s %s' "$github_token" "$slack_token" "$aws_access_key" "$google_key")
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    --arg command "$command" --arg description "$description" \
+    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command | .tool_input.description = $description' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/pre-reviewer-redaction.out"
+  body="$TMP_ROOT/pre-reviewer-redaction-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"allow","reason":"ok"}' || return 1
+
+  expect_no_output "$out" &&
+    [ -s "$body" ] &&
+    grep -q '\[REDACTED\]' "$body" &&
+    file_lacks_values "$body" "$openai_key" "$password" "$bearer_token" "$github_token" "$slack_token" \
+      "$aws_access_key" "$google_key" "$private_key_begin" "$private_key_material" "$private_key_end"
+}
+
+test_pre_reviewer_allows_stop_reviewer_bypass_command() {
+  local proof_root input out transcript command
+  proof_root="$(fresh_proof_root pre-reviewer-stop-bypass)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  command="touch $proof_root/reviewer/t00-session/bypass"
+  input="$TMP_ROOT/pre-reviewer-stop-bypass.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
+    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/pre-reviewer-stop-bypass.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
+
+  expect_no_output "$out"
+}
+
+test_pre_reviewer_allows_after_prior_tool_call() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root pre-reviewer-prior)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-prior-tool-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/pre-reviewer-prior.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/pre-reviewer-prior.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
+
+  expect_no_output "$out"
+}
+
+test_pre_reviewer_allows_after_prior_response_item_tool_call() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root pre-reviewer-prior-response-item)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-prior-response-item-tool-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/pre-reviewer-prior-response-item.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/pre-reviewer-prior-response-item.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
+
+  expect_no_output "$out"
+}
+
+test_pre_reviewer_skips_spawned_subagent_transcript() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root pre-reviewer-subagent)"
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/pre-reviewer-subagent.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/pre-reviewer-subagent.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
+
+  expect_no_output "$out"
 }
 
 test_eci_gate_allows_markdown_only_apply_patch() {
@@ -681,11 +1191,13 @@ test_edit_write_hook_config_is_split_and_preserves_gates() {
         has($apply; "/security-reminder.py") and
         has($apply; "/eci-active-gate.sh") and
         has($apply; "/ate-orchestrator-gate.sh") and
+        has($apply; "/edit-bash-pre-reviewer.sh") and
         has($direct; "/validate-edit-write.sh") and
         (has($direct; "/validate-apply-patch.sh") | not) and
         has($direct; "/security-reminder.py") and
         has($direct; "/eci-active-gate.sh") and
-        has($direct; "/ate-orchestrator-gate.sh"))
+        has($direct; "/ate-orchestrator-gate.sh") and
+        has($direct; "/edit-bash-pre-reviewer.sh"))
   ' "$ROOT/hooks.json" >/dev/null
 }
 
@@ -1313,6 +1825,46 @@ run_case "ECI gate allows spawned-agent transcript payload" \
   test_eci_gate_allows_spawned_agent_transcript_payload
 run_case "ECI gate blocks main transcript payload" \
   test_eci_gate_blocks_main_transcript_payload
+run_case "reviewer backend parser accepts no-credential backends" \
+  test_reviewer_backend_parser_accepts_no_credential_backends
+run_case "reviewer backend parser rejects credential backends" \
+  test_reviewer_backend_parser_rejects_credential_backends
+run_case "reviewer schema matches reviewer rules" \
+  test_reviewer_schema_matches_rules
+run_case "reviewer prompt composition uses Codex sources" \
+  test_compose_reviewer_prompt_uses_codex_sources
+run_case "reviewer filter keeps real rules and drops fabricated rules" \
+  test_reviewer_filter_keeps_real_rules_and_drops_fabricated_rules
+run_case "reviewer filter keeps user-history agreement rules" \
+  test_reviewer_filter_keeps_user_history_agreement_rules
+run_case "system reviewer slices sanitized Codex transcript" \
+  test_system_reviewer_slices_sanitized_codex_transcript
+run_case "system reviewer redacts background process secrets" \
+  test_system_reviewer_redacts_background_process_secrets
+run_case "system reviewer renders response_item tool events" \
+  test_system_reviewer_renders_response_item_tool_events
+run_case "stop reviewer blocks main-session fail verdict" \
+  test_stop_reviewer_blocks_main_session_fail_verdict
+run_case "stop reviewer pass verdict continues to proof gate" \
+  test_stop_reviewer_pass_verdict_continues_to_proof_gate
+run_case "stop reviewer fails open for unknown backend" \
+  test_stop_reviewer_fail_open_for_unknown_backend
+run_case "stop reviewer skips spawned subagent transcript" \
+  test_stop_reviewer_skips_spawned_subagent_transcript
+run_case "reviewer timeout and hook wiring are configured" \
+  test_stop_reviewer_timeout_and_hook_wiring
+run_case "pre reviewer denies first tool call once per turn" \
+  test_pre_reviewer_denies_first_tool_call_once_per_turn
+run_case "pre reviewer redacts user message and tool input payload" \
+  test_pre_reviewer_redacts_user_message_and_tool_input_payload
+run_case "pre reviewer allows stop-reviewer bypass command" \
+  test_pre_reviewer_allows_stop_reviewer_bypass_command
+run_case "pre reviewer allows after prior tool call" \
+  test_pre_reviewer_allows_after_prior_tool_call
+run_case "pre reviewer allows after prior response_item tool call" \
+  test_pre_reviewer_allows_after_prior_response_item_tool_call
+run_case "pre reviewer skips spawned subagent transcript" \
+  test_pre_reviewer_skips_spawned_subagent_transcript
 run_case "ECI gate allows markdown-only apply_patch while marker exists" \
   test_eci_gate_allows_markdown_only_apply_patch
 run_case "ECI gate allows markdown-only Edit and MultiEdit payloads" \

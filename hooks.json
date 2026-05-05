@@ -31,6 +31,11 @@
             "type": "command",
             "command": "/home/streaming/.codex/hooks/validate-bash.sh",
             "statusMessage": "Checking shell command"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh",
+            "statusMessage": "Checking first tool call"
           }
         ]
       },
@@ -56,6 +61,11 @@
             "type": "command",
             "command": "/home/streaming/.codex/hooks/ate-orchestrator-gate.sh",
             "statusMessage": "Checking role gate"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh",
+            "statusMessage": "Checking first tool call"
           }
         ]
       },
@@ -81,6 +91,11 @@
             "type": "command",
             "command": "/home/streaming/.codex/hooks/ate-orchestrator-gate.sh",
             "statusMessage": "Checking role gate"
+          },
+          {
+            "type": "command",
+            "command": "/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh",
+            "statusMessage": "Checking first tool call"
           }
         ]
       }
@@ -91,7 +106,7 @@
           {
             "type": "command",
             "command": "/home/streaming/.codex/hooks/stop-gate.sh",
-            "timeout": 30,
+            "timeout": 300,
             "statusMessage": "Checking stop criteria"
           }
         ]
