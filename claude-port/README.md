@@ -1,27 +1,37 @@
-# Claude Port Notes
+# Claude Port Status
 
-## Skill Markers
+Scope: active behavior status from `/home/streaming/.claude` to `/home/streaming/.codex`. This ledger records observed behavior, non-ports, degraded substitutes, and verification evidence; it is not a claim of full Claude feature parity. Source labels use `T1` because `CODEX.md` requires tagged completion, review, and stop artifacts. [T1: `/home/streaming/.codex/CODEX.md`]
 
-Status: not ported.
+## Active Behaviors
 
-Claude source behavior:
+| Behavior | Codex status |
+| --- | --- |
+| SessionStart | `hooks.json` wires `SessionStart` matcher `startup|resume|clear` to `hooks/session-snapshot.sh`, which stores a stop-proof baseline when possible, clears legacy `skip_stop`, prunes old proof-adjacent state, and emits the local guidance reminder. [T1: `/home/streaming/.codex/hooks.json`; `/home/streaming/.codex/hooks/session-snapshot.sh`] |
+| UserPromptSubmit | `hooks.json` wires `UserPromptSubmit` to `hooks/prompt-task-reminder.sh`, which records reviewer prompt HEAD, clears reviewer bypass files, and records `/side` prompt state. [T1: `/home/streaming/.codex/hooks.json`; `/home/streaming/.codex/hooks/prompt-task-reminder.sh`] |
+| PreToolUse validation | `Bash` runs `validate-bash.sh` and the opt-in first-tool reviewer. `apply_patch`, `Edit`, `Write`, and `MultiEdit` run file-edit validators, the security reminder, ECI and ATE gates where wired, and the opt-in first-tool reviewer. [T1: `/home/streaming/.codex/hooks.json`; `/home/streaming/.codex/hooks/validate-bash.sh`; `/home/streaming/.codex/hooks/validate-apply-patch.sh`; `/home/streaming/.codex/hooks/validate-edit-write.sh`; `/home/streaming/.codex/hooks/security-reminder.py`; `/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh`] |
+| ECI gate | `eci-active-gate.sh` blocks main-thread code edits while ECI state is active, allows markdown-only edits, and exempts spawned subagents only through transcript metadata. `CODEX_ROLE` is not an ECI bypass. [T1: `/home/streaming/.codex/hooks/eci-active-gate.sh`; `/home/streaming/.codex/hooks/lib/codex-proof-state.sh`; `/home/streaming/.codex/hooks/tests/run.sh`] |
+| ATE gate and teammate launch policy | `ate-orchestrator-gate.sh` treats `CODEX_ROLE=lead` and `CODEX_ROLE=coordinator` as legacy hook metadata that blocks direct edits. Standard teammates use `spawn_agent`, `send_input`, and `wait_agent`; `CODEX_ROLE` must not launch teammates. [T1: `/home/streaming/.codex/hooks/ate-orchestrator-gate.sh`; `/home/streaming/.codex/CODEX.md`; `/home/streaming/.codex/skills/agent-teams-execution/SKILL.md`] |
+| Stop gate and internal reviewer | `hooks.json` wires only `hooks/stop-gate.sh` for `Stop`. `stop-gate.sh` invokes `hooks/system-prompt-reviewer.sh` internally; that reviewer is opt-in and fail-open, and only runs when `CODEX_STOP_REVIEWER` parses to a supported backend. [T1: `/home/streaming/.codex/hooks.json`; `/home/streaming/.codex/hooks/stop-gate.sh`; `/home/streaming/.codex/hooks/system-prompt-reviewer.sh`; `/home/streaming/.codex/hooks/lib/reviewer-backend.sh`] |
+| Subagent exemptions | Stop, ECI, and reviewer exemptions depend on Codex transcript metadata: first transcript event `type == "session_meta"` with `.payload.source.subagent.thread_spawn`. They do not depend on `agent_id`, `CODEX_ROLE`, or shell-launched wrappers. [T1: `/home/streaming/.codex/hooks/lib/codex-proof-state.sh`; `/home/streaming/.codex/hooks/tests/run.sh`] |
+| Skip-stop | `bin/skip-stop` manages session-scoped or cwd-scoped `skip_stop` markers. `stop-gate.sh` allows a fresh marker younger than 60 minutes, and `session-snapshot.sh` prunes stale marker state. [T1: `/home/streaming/.codex/bin/skip-stop`; `/home/streaming/.codex/hooks/stop-gate.sh`; `/home/streaming/.codex/hooks/session-snapshot.sh`] |
+| ECI active CLI | `bin/eci-active` manages session-scoped or cwd-scoped ECI markers. `off` requires a validated disengage report and copies proof to the bound session proof directory before removing the marker. [T1: `/home/streaming/.codex/bin/eci-active`; `/home/streaming/.codex/hooks/stop-gate.sh`] |
+| `/side` stop behavior | A prompt beginning with `/side` writes side-stop markers for the parent session and cwd. `stop-gate.sh` allows a different session covered by that marker, but the parent session remains subject to active ECI blocking. [T1: `/home/streaming/.codex/hooks/prompt-task-reminder.sh`; `/home/streaming/.codex/hooks/stop-gate.sh`; `/home/streaming/.codex/hooks/tests/run.sh`] |
 
-- `/home/streaming/.claude/settings.json` wires `PostToolUse` matcher `Skill` to `/home/streaming/.claude/hooks/skill-marker-record.sh`.
-- `/home/streaming/.claude/hooks/skill-marker-record.sh` reads `.tool_input.skill`, with `.tool_input.name` and `.tool_input.skill_name` fallbacks, then writes per-session marker files.
-- `/home/streaming/.claude/settings.json` wires `PreToolUse` matcher `Edit|Write|MultiEdit` to `/home/streaming/.claude/hooks/skill-marker-gate.sh`.
-- `/home/streaming/.claude/hooks/skill-marker-gate.sh` denies protected `Edit`, `Write`, and `MultiEdit` calls when a required skill marker is missing before the edit.
+## Non-Ports And Degraded Substitutes
 
-Codex probe result:
+| Item | Status |
+| --- | --- |
+| Skill marker hooks | Not ported. Claude wires `PostToolUse` matcher `Skill` to `skill-marker-record.sh` and `PreToolUse` matcher `Edit|Write|MultiEdit` to `skill-marker-gate.sh`; Codex has no active `PostToolUse Skill` marker wiring. Captured skill-probe evidence lacked the required identity/path fields: only `PostToolUse` tool `Bash` with `tool_input_keys=["command"]` was retained in the sanitized fixture. Guardrail: do not add Codex skill marker record/gate wiring until sanitized active Codex payload evidence exposes both skill identity and edit target path fields. [T1: `/home/streaming/.claude/settings.json`; `/home/streaming/.claude/hooks/skill-marker-record.sh`; `/home/streaming/.claude/hooks/skill-marker-gate.sh`; `/home/streaming/.codex/hooks.json`; `/home/streaming/.codex/hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl`] |
+| Reviewers | Stop and first-tool reviewers are degraded, fail-open controls. Unsupported, malformed, credential-oriented, shell-oriented, or `CODEX_ROLE`-oriented reviewer backend specs do not run a reviewer. Supported specs are limited to `ollama:URL:MODEL` and `opencode-zen:URL:MODEL`. Pass verdicts are silent exits, not positive proof artifacts. [T1: `/home/streaming/.codex/hooks/system-prompt-reviewer.sh`; `/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh`; `/home/streaming/.codex/hooks/lib/reviewer-backend.sh`] |
+| Subagent detection | Exemptions are metadata-dependent. If transcript path or first-event metadata is absent or not a spawned-subagent shape, hooks treat the context as a main session. [T1: `/home/streaming/.codex/hooks/lib/codex-proof-state.sh`; `/home/streaming/.codex/hooks/tests/run.sh`] |
+| Rust analyzer | Claude enabled `rust-analyzer-lsp`. Codex has `omx_code_intel` enabled, but this is only a degraded/substitute code-intelligence path; it is not rust-analyzer parity. [T1: `/home/streaming/.claude/settings.json`; `/home/streaming/.codex/config.toml`] |
+| Memory | Codex has `omx_memory` enabled in local config. This ledger does not claim Claude memory data was imported because no verified import artifact was found in the inspected local files. [T1: `/home/streaming/.codex/config.toml`; `/home/streaming/.codex/.omx/project-memory.json`] |
 
-- Temporary probe `hooks/tests/skill-event-probe.sh` recorded sanitized Codex `PostToolUse` payloads under `/home/streaming/.cache/codex-proof/skill-event-probes/*.jsonl`.
-- Captured `PostToolUse` tool names were `Bash` and `apply_patch`; the row count is omitted because probe cache totals can change.
-- Captured `tool_input_keys` were only `["command"]`.
-- No captured row exposed `tool_input.skill`, `tool_input.name`, `tool_input.skill_name`, `tool_input.skill_id`, `path`, `file_path`, `source_path`, or `uri`.
-- The probe produced no `redacted_values` for watched skill/path-like keys.
+## Verification
 
-Active replacement behavior:
-
-- Skill routing remains instruction-only through `CODEX.md`, developer instructions, and each skill's trigger metadata.
-- Do not add Codex `skill-marker-record` or `skill-marker-gate` scripts until a real Codex skill hook payload with identity/path fields is captured as sanitized evidence.
-- Do not add a Codex `PreToolUse` skill-marker gate unless real sanitized Codex payload evidence captures the skill identity and edit target path fields needed to enforce it.
-- `hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl` is historical sanitized evidence only. It is not active wiring proof.
+| Command | Result |
+| --- | --- |
+| `jq . claude-port/manifest.json >/dev/null` | Pass: exit 0. |
+| `rg -n "skill-marker-non-port|codex-as-role.*launch|rust-analyzer.*ported|project memory import" claude-port || true` | Pass: exit 0 with no matches, so there were no allowed hits to explain. |
+| `bash hooks/tests/run.sh` | Pass: `SUMMARY pass=98 fail=0 xfail=0 xpass=0 todo=0`. |
+| `git diff --check` | Pass: exit 0. |
