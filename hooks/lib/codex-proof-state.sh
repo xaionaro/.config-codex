@@ -150,6 +150,42 @@ codex_side_stop_applies_to_session() {
   return 0
 }
 
+codex_state_file_is_session_scoped() {
+  local kind="$1"
+  local filename="$2"
+  local session_id="$3"
+  local file="$4"
+  local expected
+
+  expected="$(codex_session_state_dir "$kind" "$session_id" 2>/dev/null || true)"
+  [ -n "$expected" ] && [ "$file" = "$expected/$filename" ]
+}
+
+codex_side_stop_is_active_for_session() {
+  local file="$1"
+  local session_id="$2"
+
+  [ -n "$file" ] && [ -f "$file" ] || return 1
+  codex_side_stop_applies_to_session "$file" "$session_id" || return 1
+
+  if codex_state_file_is_session_scoped side-stop side_stop "$session_id" "$file"; then
+    return 0
+  fi
+
+  [ -n "$(find "$file" -mmin -60 -print 2>/dev/null)" ]
+}
+
+codex_bind_side_stop_to_session() {
+  local file="$1"
+  local session_id="$2"
+  local dir
+
+  [ -f "$file" ] || return 1
+  dir="$(codex_session_state_dir side-stop "$session_id")" || return 1
+  mkdir -p "$dir" || return 1
+  cp "$file" "$dir/side_stop"
+}
+
 codex_hook_is_subagent_context() {
   local input="${1:-}"
   local transcript_path first_event

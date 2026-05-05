@@ -366,6 +366,39 @@ test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
     [ -e "$eci_cwd/eci_active" ]
 }
 
+test_side_session_start_is_silent_and_binds_stop_bypass() {
+  local proof_root prompt_out prompt_input start_input start_out stop_input stop_out child_marker cwd_marker
+  proof_root="$(fresh_proof_root session-side)"
+  prompt_out="$TMP_ROOT/session-side-prompt.out"
+  prompt_input="$TMP_ROOT/session-side-prompt.json"
+
+  jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/user-prompt-side.json" >"$prompt_input"
+  run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  start_input="$TMP_ROOT/session-side-start.json"
+  jq --arg cwd "$ROOT" '.session_id = "t00-side" | .cwd = $cwd' "$FIXTURES/session-start.json" >"$start_input"
+  start_out="$TMP_ROOT/session-side-start.out"
+  run_hook "$start_out" "$ROOT/hooks/session-snapshot.sh" "$start_input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  child_marker="$proof_root/side-stop/sessions/t00-side/side_stop"
+  cwd_marker=$(find "$proof_root/side-stop/cwd" -mindepth 2 -maxdepth 2 -name side_stop 2>/dev/null | head -n1)
+  [ -n "$cwd_marker" ] || return 1
+  touch -t 202001010000 "$cwd_marker"
+  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/session-side-eci-on.out" 2>&1 || return 1
+
+  stop_input="$TMP_ROOT/session-side-stop.json"
+  jq --arg cwd "$ROOT" '.session_id = "t00-side" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$stop_input"
+  stop_out="$TMP_ROOT/session-side-stop.out"
+  run_hook "$stop_out" "$ROOT/hooks/stop-gate.sh" "$stop_input" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$start_out" &&
+    [ -f "$child_marker" ] &&
+    grep -q '^parent_session_id: t00-parent$' "$child_marker" &&
+    json_field_equals "$stop_out" '.continue // false' "true"
+}
+
 test_eci_gate_blocks_code_apply_patch() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-code)"
@@ -1813,6 +1846,8 @@ run_case "session snapshot saves baseline and clears legacy skip_stop" \
   test_session_snapshot_saves_baseline_and_clears_legacy_skip
 run_case "session snapshot preserves fresh markers in old state dirs" \
   test_session_snapshot_preserves_fresh_markers_in_old_state_dirs
+run_case "side session start is silent and binds stop bypass" \
+  test_side_session_start_is_silent_and_binds_stop_bypass
 run_case "ECI gate blocks code apply_patch when marker exists" \
   test_eci_gate_blocks_code_apply_patch
 run_case "ECI gate blocks code apply_patch from cwd marker" \

@@ -182,9 +182,7 @@ root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
 repo="${cwd:-$PWD}"
 side_stop=$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)
 
-if [ -n "$side_stop" ] && [ -f "$side_stop" ] &&
-  [ -n "$(find "$side_stop" -mmin -60 -print 2>/dev/null)" ] &&
-  codex_side_stop_applies_to_session "$side_stop" "$session_id"; then
+if codex_side_stop_is_active_for_session "$side_stop" "$session_id"; then
   json_continue
   exit 0
 fi

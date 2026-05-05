@@ -8,12 +8,20 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+cwd=$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else "" end' 2>/dev/null || true)
+[ -z "$cwd" ] && cwd="$PWD"
 
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) exit 0 ;;
 esac
 
-root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+root="$(codex_proof_root)"
+side_stop=$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)
+if codex_side_stop_is_active_for_session "$side_stop" "$session_id"; then
+  codex_bind_side_stop_to_session "$side_stop" "$session_id" || true
+  exit 0
+fi
+
 proof_dir="$root/$session_id"
 baseline="$proof_dir/baseline_head"
 
