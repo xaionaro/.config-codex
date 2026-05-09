@@ -41,7 +41,7 @@ Tag important factual claims using this hierarchy when precision matters:
 
 Confidence labels: `high` for directly stated, `medium` for derived, `low` for indirect evidence.
 
-For completion summaries, reviews, stop proofs, and subagent reports: tag factual claims; untagged factual claims are violations. Do not present T5 claims as final facts.
+For completion summaries, reviews, and subagent reports: tag factual claims; untagged factual claims are violations. Do not present T5 claims as final facts.
 
 ## Decision Rules
 
@@ -58,11 +58,12 @@ For completion summaries, reviews, stop proofs, and subagent reports: tag factua
 
 ## Git
 
-- Before every commit, inspect the diff for secrets or credentials.
+- Never expose secrets or credentials in code, commits, logs, prompts, or final output.
 - Before every commit, run available static checks that fit the change.
 - Before stopping after edits, commit completed changes you made unless unrelated user work would be mixed in; state the blocker and paths when not committed.
 - Do not commit unrelated user changes.
 - Push only on explicit user request.
+- One logical change = one commit (unpushed): while commits are unpushed, never stack a `fix bad commit` on top of a bad commit. Amend (`git commit --amend`) the original, or `git reset --soft HEAD~N && git commit` to combine. Hold commits until the change stabilizes. After push, prefer new commits.
 - Do not add AI co-author lines.
 
 ## Skills
@@ -85,6 +86,7 @@ Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker
 | UI work | `ui-design` |
 | Porting code, features, or capabilities between projects | `code-porting` |
 | Handover or resume notes | `writing-handovers` |
+| Project-understanding ledger, context ledger, ECI/ATE ledger updates | `maintaining-context-ledger` |
 
 Subagent rule:
 
@@ -93,7 +95,7 @@ Subagent rule:
 - Give every spawned or resumed subagent a current role label. Print or update the roster immediately after spawn, resume, reassignment, or scope change: `<role label>: <runtime name> [type]`.
 - In every wait/status/close update, use `<role label> (<runtime name> [type])`; do not use bare runtime nicknames once labeled.
 - Verify all subagent claims independently before relying on them.
-- Subagents must not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears in a subagent, it reports the blocker to the orchestrator and stops.
+- Subagents must not handle Stop-hook recovery prompts. If a Stop-hook prompt appears in a subagent, it reports the blocker to the orchestrator and stops.
 
 ## Environment
 
@@ -106,10 +108,9 @@ Subagent rule:
 
 ## Stop Hook
 
-When blocked by the stop hook, inspect `~/.cache/codex-proof/$SESSION_ID/`.
+When blocked by the stop hook, follow the hook prompt.
 
-- Print `summary-to-print.md` to the user when present, then stop.
-- Follow `instructions.md` when present.
+- Follow `~/.cache/codex-proof/$SESSION_ID/instructions.md` when present.
 - Use `~/.codex/hooks/stop-checklist.md` as the acceptance checklist.
 - Use `~/.codex/bin/skip-stop on` only for orchestration-only sessions where verification would be redundant; always run `~/.codex/bin/skip-stop off` before returning to normal development.
 

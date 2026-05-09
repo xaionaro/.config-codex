@@ -10,7 +10,6 @@
 !bin/**
 !hooks/**
 !skills/**
-!memories/**
 
 # Standard Codex system skills are provided by Codex, not user config.
 skills/.system/**
@@ -21,6 +20,7 @@ history.jsonl
 installation_id
 version.json
 models_cache.json
+memories/
 *.env
 *.key
 *.pem

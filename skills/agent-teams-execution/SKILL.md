@@ -14,7 +14,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 - When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
-- Every subagent prompt must include: "Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop."
+- Every subagent prompt must include: "Do not handle Stop-hook recovery prompts. If one appears, report it as a blocker to the orchestrator and stop."
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
 - If standard agent tools are unavailable, do not run this pipeline; hard-escalate instead of launching shell-based Codex sessions.
 - `CODEX_ROLE` is legacy hook metadata. Do not use it to launch teammates.
@@ -23,11 +23,27 @@ Phased agent team with adversarial review loops and tiered information trust.
 
 The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdit when legacy `CODEX_ROLE` is `lead` or `coordinator`. If the gate fires, spawn the appropriate teammate and assign the task — do not unset `CODEX_ROLE` to bypass it.
 
-Subagents, including lead and coordinator roles, do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, they report it as a blocker to the main orchestrator and stop. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
+Subagents, including lead and coordinator roles, do not handle Stop-hook recovery prompts. If one appears, they report it as a blocker to the main orchestrator and stop. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
 
 **Parallelism principle:** Never serialize independent work. Parallelize everything that can be parallelized.
 
 **No urgency. Infinite time.** Never prioritize speed over discipline. Every shortcut, skipped review, or "good enough" degrades the final result. Do it right, every time.
+
+**Autonomy principle.** Drive the pipeline to QA verdict without user input. Teammates decide within their role; coordinator routes within the pipeline; lead enforces rules. Exhaust internal unblocking before escalating: blockers run the Blocker Resolution Protocol (brainstormer + explorer) first, rejections run their full loop budget first. Escalate to user only when those are exhausted, plus: QA verdict to report, user followup arrived. Otherwise proceed — never ask permission for the next obvious step.
+
+## Mission Completion Guard
+
+The main thread, coordinator, and lead do not stop, final-answer, declare done, or shut down teammates while the user's mission has solvable work. A blocker, QA rejection, escalation label, protocol limit, or subagent stop is routing input, not a terminal state.
+
+Keep unblocking, reassigning, re-scoping, and verifying until the objective mission criteria are met and the user explicitly confirms completion/closure. Stop or wait only when the user asks, or when progress needs user input that agents/tools cannot obtain.
+
+## Project Understanding Ledger
+
+Maintain a project-understanding ledger for every ATE run. Follow the `maintaining-context-ledger` skill for path, content, update timing, and validity rules. If `$SESSION_ID` is unavailable, run the stop gate once to bind session state or hard-escalate with the missing session ID.
+
+The coordinator owns the ledger. Teammates report ledger-worthy facts; if a teammate edits the ledger, include that file in explicit ownership and prevent ownership overlap.
+
+Coordinator updates after: findings, design approval, task code/test approval, blocker resolution, user correction; before QA spawn, user-waiting stop, shutdown. Lead + snitch remind on forgetting: every phase transition, manual audit reminder, and any activity burst (multiple transitions, decisions, corrections, or messages) without update. Invalid ledger blocks QA spawn.
 
 <CRITICAL>
 When delegation is authorized, spawn bounded standard Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
@@ -81,7 +97,7 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 | **Test Reviewer** | 1+ | 4 | Paired with test executors. Report only, never edit tests. |
 | **Verifier** | 1+ | per task | For lightweight tasks (no code, no test pipeline). Adversarially checks deliverable against all expectations. Replaces test pipeline when testing is N/A. |
 | **Brainstormer** | 1 | any | On-demand when a blocker emerges. Genius creative unblocker — thinks outside the box. Lists as many solution ideas as possible. Positives only — no negatives, no filtering, no feasibility judgment. Bigger list = better. |
-| **Snitch** | 1 | all | CCed on all submitted/blocked/completed claims and QA verdicts. Independently verifies all rules are followed. Notifies lead on any violation. Success = finding violations that the lead confirms. The more confirmed violations found, the better. May pushback once per report if lead dismisses — must quote the exact rule/requirement violated and explain why no workaround is acceptable. On QA approvals, looks for gaps in testing — insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On every reviewer APPROVED message, runs rubber-stamp check: compare reviewer findings against executor's critique log. Reviewer citing zero issues beyond executor self-reports = flag to lead. Lead demands reviewer either (a) confirm self-reported issues are adequately fixed with cited evidence, or (b) find at least one independent issue, or (c) confirm the artifact has none after scrutinizing each checklist item. Lead or coordinator sends event-driven audit reminders with `send_input` at milestones, after long waits, and when execution resumes after user-waiting. Snitch uses `wait_agent` results and teammate output to detect dead or drifting agents. |
+| **Snitch** | 1 | all | CCed on all submitted/blocked/completed claims and QA verdicts. Independently verifies all rules are followed. Notifies lead on any violation. Success = finding violations that the lead confirms. The more confirmed violations found, the better. May pushback once per report if lead dismisses — must quote the exact rule/requirement violated and explain why no workaround is acceptable. On QA approvals, looks for gaps in testing — insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On every reviewer APPROVED message, runs rubber-stamp check: compare reviewer findings against executor's critique log. Reviewer citing zero issues beyond executor self-reports = flag to lead. Lead demands reviewer either (a) confirm self-reported issues are adequately fixed with cited evidence, or (b) find at least one independent issue, or (c) confirm the artifact has none after scrutinizing each checklist item. Lead or coordinator sends event-driven audit reminders with `send_input` at milestones, after long waits, and when execution resumes after user-waiting. Snitch uses `wait_agent` results and teammate output to detect dead or drifting agents. On every audit, also check ledger freshness — activity burst without update → remind coordinator. |
 | **QA** | 1 | final | Final integration check. Runs all tests. Last gate. |
 
 ### Team Sizing
@@ -165,7 +181,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 | exploring → in_progress | Exploration done, task needs execution next. Executors: pair invariant satisfied |
 | pending → blocked_by_task | Task depends on another task that isn't complete yet |
 | blocked_by_task → in_progress | Blocking task completed. Agent assigned |
-| in_progress → blocked | Agent reports specific blocker. CC lead + snitch |
+| in_progress → blocked | Agent reports genuine blocker (with attempt log per BRP definition). CC lead + snitch |
 | blocked → unblocking | Coordinator launches brainstormer + explorer simultaneously per Blocker Resolution Protocol |
 | unblocking → in_progress | Feasible solution found and assigned. Blocker resolved |
 | unblocking → blocked | No feasible solution found. Escalate to user |
@@ -186,7 +202,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 
 ### Git & Security
 
-- `git diff` for secrets before every commit. Static checks before every commit. Never push without user approval. No AI co-author lines.
+- Never expose secrets or credentials in code, commits, logs, prompts, or final output. Static checks before every commit. Never push without user approval. No AI co-author lines.
 - Security first. Never disable security features. OWASP top 10 for all code. Validate at system boundaries.
 
 ## Flow (per-task after design)
@@ -360,8 +376,19 @@ Paired roles communicate **directly**. All other feedback routes through coordin
 | Executor | Coordinator | Design issue or code smell found | Coordinator assigns executor to analyze; minor: executor fixes directly, design-level: full pipeline |
 | Test Reviewer | Test Executor | Test issue | Direct (paired) |
 | Any agent | Coordinator | Findings received | Coordinator assigns independent verification before accepting |
-| Any teammate | Coordinator | Blocker reported | Blocker Resolution Protocol: simultaneously launch brainstormer + explorer |
+| Any teammate | Coordinator | Genuine blocker (with attempt log) | Blocker Resolution Protocol: simultaneously launch brainstormer + explorer. Reports without attempt log -> bounce back, not BRP |
 | QA | Coordinator | Any verdict (approval or rejection) | CC snitch. On approval, QA must demonstrate sufficient testing was performed (which criteria, what evidence, direct vs proxy). On rejection, route by type. Snitch looks for gaps in testing |
+
+### Debug Mode
+
+Applies: bug fix, build failure, flake, perf regression, any task whose deliverable is fixing observed broken behavior.
+
+- Executor iterates candidate fixes without per-attempt reviewer gate. No `submitted`/`in_review` transition while still hunting the fix.
+- Each candidate fix CCed to reviewer for **async advice only**. Reviewer cannot reject. Executor does not wait for reviewer reply. Reviewer advice is incorporated if useful, otherwise ignored.
+- Proof = working mitigation: failing repro → passing on real path.
+- After mitigation works, task → `submitted` → `in_review`. Reviewer's job at this stage: improve (cleanup, hardening, semantic correctness, removing the hacky parts). Only stage where reviewer rejection counts.
+- Loop limit (10 rounds) counts post-mitigation review rounds only. Pre-mitigation attempts are uncounted.
+- Bug-fix pipeline in User Followups still applies — Debug Mode only changes the executor↔reviewer semantics inside the Execution stage.
 
 ### Loop Limits
 
@@ -388,15 +415,38 @@ Once confirmed unresponsive, **immediately** re-spawn — no delays. The task mu
 
 ### Misbehavior Recovery (any agent)
 
-**Every violation:** Whoever detects it (lead, coordinator, or snitch) sends the violating agent the specific rule + correction and notifies the other oversight roles (lead, coordinator, snitch). Interrupt immediately when the tool surface supports it. No violation goes uninterrupted.
+**Every violation:** Whoever detects it (lead, coordinator, or snitch) sends the violating agent the specific rule + correction and notifies the other oversight roles (lead, coordinator, snitch). Interrupt vs queue per Priority Discipline (strict-priority rule). When interrupting, do so when the tool surface supports it.
 
 **Repeated violations (3+ on same rule):** Counts only corrections the agent received and still violated afterward. Acknowledgement not required; receipt is. Coordinator verifies receipt before counting a cycle. Trigger: 3+ confirmed receive-then-violate cycles. Then restart the agent with a fresh prompt to re-read the skill and continue. If still misbehaving, escalate to user.
 
 **Force-deliver corrections.** Agent busy or mid-turn may not see `send_input` until its turn ends. Interrupt when available, then re-send the correction.
 
+### Priority Discipline
+
+Highest severity first. A finding interrupts the agent's current task **only if its severity is strictly higher** than the current task's severity. Same-or-lower → queue. Critical-on-Critical does not interrupt — let the in-flight Critical finish.
+
+Severity ladder (highest → lowest):
+1. **Critical** — security, correctness, spec violation
+2. **Major** — design deviation, missing edge case
+3. **Minor** — style, smell, sub-optimal but functional
+4. **Nit** — preference, formatting, naming polish
+
+| Current task | Interruptible by | Queue (deliver after submission lands) |
+|--------------|------------------|----------------------------------------|
+| Critical | (nothing) | every finding, including other Critical |
+| Major | Critical | Major / Minor / Nit |
+| Minor | Critical / Major | Minor / Nit |
+| Nit | Critical / Major / Minor | Nit |
+
+Applies to every interrupter: coordinator, lead, snitch, reviewer, peer. Queued findings batched into one consolidated message per submission, never streamed.
+
+Executor receiving a finding list: address in strict severity order, highest first. Defer everything at-or-below the current goal's severity until that goal is proven done.
+
 ### Blocker Resolution Protocol
 
-When any teammate reports a blocker, coordinator simultaneously launches:
+**Genuine blocker definition.** Agent has tried the obvious resolutions (re-read code, retry, alternative approach, spec/doc lookup, ask paired reviewer) and recorded each attempt with why it failed. Without that attempt log, situation is not a blocker. Coordinator bounces blocker claims missing the attempt log.
+
+When a teammate reports a genuine blocker, coordinator simultaneously launches:
 1. **Brainstormer** — prompt as a genius creative unblocker who thinks outside the box. Generates as many solution ideas as possible. Positives only, no filtering, no feasibility judgment. Bigger list = better.
 2. **Explorer** — independently investigates the blocker to understand the technical landscape.
 
@@ -411,7 +461,7 @@ After brainstormer finishes, coordinator launches a second explorer to validate 
 0. **Does it work?** Before evaluating quality, verify code fulfills its stated purpose. If it doesn't — REJECT.
 1. **Assume wrong.** Find errors. Look for what's missing.
 2. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block. Minor (doesn't block), Nit (never blocks).
-3. **Outcomes:** APPROVED (no Critical/Major, with evidence), CONDITIONAL (Minor/Nit listed), REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
+3. **Outcomes:** APPROVED (no Critical/Major, with evidence). CONDITIONAL (Minor/Nit listed — main task completes; coordinator opens follow-up tasks per Priority Discipline; do NOT bounce executor back). REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
 4. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
 5. **Max 10 rounds** then escalate.
 
@@ -467,12 +517,13 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Integration tests pass (run them — direct)
 - [ ] All unit tests pass (run them — proxy, still required)
 - [ ] End-to-end flows verified (direct — run the program as a user)
-- [ ] No uncommitted changes, no secrets in diffs
+- [ ] No uncommitted changes; no secrets or credentials exposed
 - [ ] Static checks pass
 - [ ] Mandatory skills invoked by all teammates
 - [ ] Critique logs exist for all teammates
 - [ ] File ownership respected
 - [ ] Code quality: clean code, semantic integrity, no shortcuts, no workarounds, coding style fully followed
+- [ ] Project-understanding ledger valid per `maintaining-context-ledger`
 
 ## Coordinator Responsibilities
 
@@ -480,14 +531,14 @@ Review independently first — no reading peer findings before writing your own.
 
 **PAIR INVARIANT (hard rule):** Every executor MUST have its paired reviewer spawned and confirmed BEFORE the executor receives any task. Never assign new work to the same executor whose previous submission is unreviewed — assign it to a different executor/reviewer pair instead. Sequence per pair: spawn reviewer -> confirm alive -> spawn executor -> executor implements -> reviewer reviews -> loop until approved -> only then may this executor receive next task. While a pair is in review, other pairs work in parallel. Violating this invariant is a skill violation equivalent to writing code.
 
-1. **Track EVERYTHING as tasks.** Every deliverable, sub-task, blocker = task. Task list is single source of truth.
+1. **Track EVERYTHING as tasks.** Every deliverable, sub-task, blocker = task. Task list is single source of truth. Keep the project-understanding ledger current with the high-level context behind those tasks.
 2. **Request spawns from lead.** Coordinator determines who is needed and when; lead creates the agent team and spawns teammates.
 3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description must include: "Tag all factual claims: `[T<tier>: source, confidence]`."
 4. **Assign file ownership** per design doc. **Create git worktrees** for 2+ parallel executors.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise. Identify what's missing, what could be wrong, what needs verification. Route findings to a second agent for independent verification before acting on them.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, investigate per Crash Recovery. If confirmed unresponsive, follow the respawn sequence.
 7. **Handle "submitted" tasks.** When a task is submitted: verify Stop Checklist items (changes committed, claims tagged, critique log exists). Bounce back immediately if incomplete — don't waste reviewer time. If checklist passes, route to paired reviewer. After reviewer approves, route to test pipeline (code tasks) or verifier (non-code tasks).
-8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks. After ALL tasks tested → spawn QA. Record checkpoint per task: what was produced, who approved, git SHA.
+8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks. After ALL tasks tested → spawn QA. Record checkpoint per task in the ledger: what was produced, who approved, git SHA.
 9. **Budget context** -- summaries, not raw output (see below).
 10. **Enforce loop limits.** Escalate on 11th rejection / 3rd QA re-entry.
 11. **Crash recovery** -- detect unresponsive teammates, request lead to re-spawn. For executors: review changes before re-spawning. Max 2 re-spawns.
@@ -517,19 +568,20 @@ Review independently first — no reading peer findings before writing your own.
 | Coordinator requests reviewer/verifier/QA spawn | Verify spawn checklist. Additionally verify the prompt drives maximum scrutiny: includes original objective, all scrutiny rules, and adversarial framing. Reject weak prompts |
 | Coordinator requests other spawn | Verify spawn checklist, create agent team / spawn teammate |
 | Coordinator requests re-spawn (crash recovery) | Verify hang proof, then spawn |
-| Coordinator reports phase transition | Verify rules were followed: pair invariant, reviews completed, reported issues addressed |
+| Coordinator reports phase transition | Verify rules: pair invariant, reviews completed, issues addressed, ledger updated |
+| Coordinator reports milestone (per top-of-skill ledger rule) | Verify ledger reflects new state. Stale → remind coordinator |
 | Coordinator assigns new task to executor | Verify reviewer exists and previous work reviewed |
 | Teammate reports coordinator doing work directly | Remind coordinator to delegate |
 | Teammate reports unaddressed issue | Remind coordinator to create task and assign analysis |
 | CCed "submitted" claim received | Verify the claim has sufficient proof. If not, remind coordinator not to accept it — demand evidence before marking complete |
-| CCed blocker claim received | Verify the blocker claim is substantiated. If evidence is thin, remind coordinator to launch verification (explorer) before accepting |
+| CCed blocker claim received | Verify attempt log present (what was tried, why each failed) per BRP genuine-blocker definition. Missing or thin -> remind coordinator to bounce back, not run BRP. Evidence thin but log present -> remind coordinator to launch explorer verification before BRP |
 | Reviewer/verifier/QA approves | Scrutinize the approval: does it cite specific evidence? Does it address all scrutiny rules? A shallow "LGTM" is not an approval — send back with specific areas to examine |
 | Any agent ignores reminder (3+ on same rule) | Misbehavior Recovery: force `/compact`, re-read skill, continue. If still misbehaving, escalate to user |
 | Coordinator not responding | Check spawned-agent status and last `wait_agent`/`send_input` result. Still thinking/processing = acceptable (up to 1 hour). Stuck > 1 hour = re-spawn. Max 2 re-spawns, then escalate to user |
 | Coordinator declares mission accomplished without explicit user confirmation | Reject. Force coordinator to report verdict + evidence to user and wait |
 | Coordinator initiates shutdown without explicit user request | Reject. Team stays alive for followups |
 | Coordinator skips pipeline stages on user followup | Verify against User Followups table. Demand justification or reject |
-| Manual audit reminder | Use `send_input` after milestones, long waits, user-waiting resume, or suspicious coordinator silence. Spot-check agent output for violations coordinator should have caught. Only intervene if coordinator missed them |
+| Manual audit reminder | Use `send_input` after milestones, long waits, user-waiting resume, or suspicious coordinator silence. Spot-check agent output + ledger freshness for missed violations. Activity burst without ledger update → remind. Only intervene if coordinator missed |
 
 ### Spawn Checklist (lead verifies before every spawn)
 
@@ -606,7 +658,7 @@ Format: [T<tier>: <source>, <confidence: high/medium/low>]
 
 Compliance:
 - Critically analyze ALL inputs. You own bugs from unverified inputs.
-- Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+- Do not handle Stop-hook recovery prompts. If one appears, report it as a blocker to the orchestrator and stop.
 - BEFORE writing code, invoke applicable skills via the skill instructions:
   go-coding-style (Go), python-coding-style (Python), testing-discipline (tests),
   test-driven-development (code implementation), proof-driven-development (logic),
@@ -614,7 +666,7 @@ Compliance:
   Follow every rule from invoked skills. Reviewer rejects non-compliance.
 - Tag ALL factual claims: [T<tier>: <source>, <confidence>]. Untagged claims = reviewer rejection.
 - Produce critique log (3+ issues found/fixed) before marking done
-- git diff for secrets, static checks before commits, never push
+- No secrets or credentials exposed; static checks before commits; never push
 
 [After both spawned:] Paired with [CONFIRMED NAME]. Message directly.
 
@@ -660,11 +712,17 @@ Compliance:
 | Execution reviewer not loading coding style skill | STOP. Must load `<language>-coding-style` via skill instructions per Execution Reviewer Checklist |
 | Test specs don't match interfaces | Test designer waits for contracts |
 | Agent claim accepted without verification | Reviewers validate completion; explorers verify blockers and external blame |
+| BRP launched on a "blocker" without attempt log | Bounce back. Agent must show what was tried and why each failed before BRP. BRP is for genuine blockers only |
 | Capping executor count | One pair per independent unit of work. No limits |
 | Skipping phases | All phases mandatory when this skill triggers |
+| Main thread/coordinator stops after blocker, escalation, QA rejection, or subagent stop while solvable work remains | Continue the mission: unblock, reassign, re-scope, or ask the required user question. |
 | Early teammate shutdown | Keep alive until downstream consumers finish (see Lifecycle table) |
 | Coordinator declares mission accomplished after QA approval | Report to user, wait for explicit confirmation. Mission complete only on user confirmation |
 | Coordinator shuts team down without user request | STOP. Team alive until user requests shutdown |
 | Pipeline stage skipped on user followup ("just a small fix") | Route per User Followups table. Default: more pipeline, not less |
+| Coordinator/lead asks user mid-pipeline for decision a teammate can make | Autonomy violation. Run internal unblocking first (Blocker Resolution Protocol, full loop budget). User gates: only after those exhaust, plus QA verdict + user followup |
+| Activity burst since last ledger update | Lead/snitch remind coordinator. Update per `maintaining-context-ledger` |
+| Ledger invalid at QA spawn / pre-stop / pre-shutdown | Coordinator updates first; QA blocks spawn until valid |
 | Only one design reviewer spawned in Phase 2 | Spawn both: standard Design Reviewer + Fundamentals Design Reviewer in parallel |
 | Trusting reviewer approval blindly | QA exists to catch reviewer mistakes |
+| Interrupting an agent with same-or-lower severity finding (incl. nit-streaming) | STOP. Queue per Priority Discipline. Only strictly higher severity interrupts |

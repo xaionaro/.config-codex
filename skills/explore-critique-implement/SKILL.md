@@ -30,6 +30,18 @@ Separate the hand that builds from the hand that tears down. The builder cannot 
 
 Coding task? Every subagent prompt (explorer, critic, implementer) must include: "Before starting, load the `<language>-coding-style` skill and follow its rules."
 
+## Mission completion guard
+
+The main thread/orchestrator does not stop, final-answer, disengage, or treat a protocol limit as terminal while the user's mission has solvable work. Keep running ECI loops until the original mission is objectively complete, the user explicitly pauses/stops/closes scope, or progress needs user input that agents/tools cannot obtain.
+
+Subagent blocked/stopped != mission blocked. Reassign, debug, launch unblockers, or re-scope while a feasible path remains. Hard escalation reports the blocker requiring user input and keeps ECI active.
+
+## Project Understanding Ledger
+
+Maintain a project-understanding ledger for every ECI run. Follow the `maintaining-context-ledger` skill for path, content, update timing, and validity rules. If `$SESSION_ID` is unavailable, run the stop gate once to bind session state or hard-escalate with the missing session ID.
+
+The orchestrator owns the ledger. Spawned agents report ledger-worthy facts; if an agent edits the ledger, include that file in its explicit ownership.
+
 ## Engagement marker
 
 The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write/MultiEdit on the main thread while engaged. When delegation/agents are authorized, every code change must flow through a spawned agent. The hook must exempt spawned-agent metadata; if spawned agents trip the gate, fix the hook instead of using shell-env role workarounds.
@@ -37,9 +49,10 @@ The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write
 | Step | Command | When |
 |------|---------|------|
 | Engage | `~/.codex/bin/eci-active on "<task + scope>"` | Before Step 1 of the first iteration |
-| Disengage | See Teardown sequence below | Clean pass landed, hard escalate, or user confirms scope closed |
+| Disengage | See Teardown sequence below | Clean pass landed or user confirms scope closed |
+| Hard escalate | Report blocker requiring user input; marker stays active | ECI cannot proceed without user input |
 
-Do not disengage mid-task to escape the gate. When delegation/agents are authorized, every code change flows through a subagent or teammate. If no-delegation fallback cannot proceed with the marker active, hard-escalate instead of removing the marker.
+Do not disengage mid-task to escape the gate. When delegation/agents are authorized, every code change flows through a subagent or teammate. If no-delegation fallback cannot proceed with the marker active, report the blocker requiring user input while keeping ECI active.
 
 ## Team setup
 
@@ -64,7 +77,7 @@ Persistent role instances handle Step 1 (explorer) and Step 3 (implementer) acro
 | Spawn loop-breaker | `spawn_agent` with `agent_type: "explorer"` |
 
 Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel.
-Every spawned ECI agent prompt must also state: "Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop."
+Every spawned ECI agent prompt must also state: "Do not handle Stop-hook recovery prompts. If one appears, report it as a blocker to the orchestrator and stop."
 
 ### Explorer Prompt Baseline
 
@@ -79,17 +92,18 @@ Per-message body in Step 3.
 - "Treat each new task message as a fresh assignment per Step 3 of the ECI skill. Re-read every file you intend to modify each turn."
 - One commit per logical change.
 - Every factual claim in submission carries a T1-T5 tag per CODEX.md Claim Verification protocol. E2E evidence ("tests pass", "build succeeded", screenshots, observed state) cited as T1 with tool output, log path, or screenshot file. Concrete example: "[T1: `go test ./...` exit 0, all 47 pass]" not bare "tests pass". Untagged "all green" = unsubmittable.
+- For code/debugging tasks, classify affected-path E2E before submission: required, blocked, or not applicable. Cite evidence, exact blocker, or why no real runtime path exists.
 
 ## Teardown sequence
 
-Run in this exact order on disengage. Stopping mid-sequence keeps the gate armed.
+Run in this exact order for clean-pass or user-closed disengage. Stopping mid-sequence keeps the gate armed. Hard escalation does not run teardown; report the blocker while ECI stays active.
 
 1. Write disengage-report markdown (content per **Disengage report** below).
-2. Ask active spawned agents to commit or report uncommitted work, then stop cleanly. If they do not respond after one 15-minute wait, send the forceful shutdown request on the second iteration.
+2. Ask active spawned agents to commit or report uncommitted work, then stop cleanly. If they do not respond, follow the 15/30/45-minute stale-agent cadence below.
 3. Close completed agents with `close_agent`.
-4. `~/.codex/bin/eci-active off <report.md>` (LAST — keeps gate armed if teardown fails partway).
+4. Main thread only: `~/.codex/bin/eci-active off <report.md>` (LAST — keeps gate armed if teardown fails partway). Spawned agents must never disengage ECI; they report completion or blockers to the orchestrator.
 
-If the orchestrator's next Stop blocks for proof, copy the disengage report to `$PROOF_DIR/proof.md`.
+If the orchestrator's next Stop blocks, follow the hook prompt and use the disengage report as the verification summary.
 
 ### Disengage report
 
@@ -97,7 +111,7 @@ If the orchestrator's next Stop blocks for proof, copy the disengage report to `
 
 ```
 ## ECI completion certificate
-<exactly one of: clean-pass: <evidence> | hard-escalation: <evidence> | user-closed: <evidence>>
+<exactly one of: clean-pass: <evidence> | user-closed: <evidence>>
 
 ## Stop checklist walkthrough
 - Questions: pass/fail/N-A — <one-line evidence>
@@ -107,6 +121,7 @@ If the orchestrator's next Stop blocks for proof, copy the disengage report to `
 - Adversarial self-critique: ...
 - Assumed blockers: ...
 - Rule-compliance self-audit: ...
+- Project understanding ledger: ...
 - Testing: ...
 
 ## Incomplete compliance
@@ -115,7 +130,9 @@ If the orchestrator's next Stop blocks for proof, copy the disengage report to `
 fully-compliant: <reason rule-by-rule>   # only if no incomplete items
 ```
 
-The bin rejects reports missing `## Stop checklist walkthrough`, `## Incomplete compliance`, non-empty bodies, and exactly one terminal verdict marker: `clean-pass:`, `hard-escalation:`, or `user-closed:`. Include either all full Codex stop-proof sections or `## ECI completion certificate`. Validation is a content gate, not a wordcount — write substance, not boilerplate.
+The bin rejects reports missing `## Stop checklist walkthrough`, `## Incomplete compliance`, non-empty bodies, and exactly one terminal verdict marker: `clean-pass:` or `user-closed:`. Hard escalation is not a terminal marker; report the blocker while ECI stays active. Include either all full Codex stop-verification sections or `## ECI completion certificate`. Validation is a content gate, not a wordcount — write substance, not boilerplate.
+
+Full Codex stop-verification sections: `Summary`, `Verification`, `Requirements`, `Root Cause`, `Claim Inventory`, `Pre-Mortem`, `Adversarial Critique`, `Rule-Compliance Self-Audit`, `Gaps`.
 
 ## Loop structure
 
@@ -131,7 +148,15 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
 
-**No mid-work polling.** After assigning a role, wait for completion with `wait_agent` using `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls". Do not `send_input` status/checkpoint/report requests while the agent is in progress. A role is not stale until 30+ minutes pass with no assignment/output/process/file/git activity. Before then, inspect passively only. Interrupt only for explicit user stop, destructive/wrong-scope action, wrong worktree, policy/security violation, or 30+ minute confirmed no-progress stall.
+**Stale-agent cadence.** After assigning a role, wait for completion with `wait_agent` using `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls". Any assignment, output, process activity, file activity, or git activity resets the timer.
+
+| Elapsed without activity | Action |
+|---|---|
+| 15 minutes | Ask for status/blocker. |
+| 30 minutes | Hard ask: interrupt when available and require immediate status, blocker, or shutdown report. |
+| 45 minutes | Treat as wrong. Investigate process/tool/worktree state, then reassign, respawn, close, or hard-escalate as evidence requires. |
+
+Interrupt before 30 minutes only for explicit user stop, destructive/wrong-scope action, wrong worktree, or policy/security violation.
 
 ## Step 1: Explore
 
@@ -199,9 +224,11 @@ Each new task message to `implementer` includes:
 - Step 2 CONDITIONAL fix-list (verbatim, if any) — implementer applies these alongside the concrete text.
 - Submission tags every factual claim. Untagged claim → orchestrator bounces back without spawning the gate (parallel to E2E-evidence rule).
 
-**E2E before submit (code/debugging tasks).** Implementer must, before reporting done: build, run full test suite, exercise the affected feature through real UI/API as a user. Cite direct evidence (output, screenshot, observed state). Proxy evidence (unit tests, lint) insufficient. No E2E evidence in submission = orchestrator bounces back without spawning the gate.
+**Affected-path E2E before submit.** Applies only when a code/debugging task changes or investigates runtime behavior reachable through a real UI/API/device/CLI path. Skip for docs, prompt/skill edits, config-only changes, tests-only changes, pure refactors with no behavior change, or code with no runnable target path.
 
-If submission lacks E2E evidence, send: "Submission lacks E2E evidence — re-run build, test suite, and user-path exercise; cite output. Do not re-submit until evidence is in the message body."
+When applicable, implementer must build, run relevant automated tests, exercise the affected real path, and cite direct evidence (output, screenshot, observed state). Proxy evidence (unit tests, lint) is insufficient.
+
+If the required target path is unavailable, implementer reports `BLOCKED` or `INCOMPLETE` with the exact missing resource and next unblock step. If E2E is not applicable, implementer states why and cites the strongest narrower evidence. Missing applicable E2E, blocker, or non-applicability rationale = orchestrator bounces before Step 4.
 
 ## Step 4: Review gate (parallel)
 
@@ -240,11 +267,11 @@ Emit only issues that matter for long-term health. "Would refactor eventually" i
 
 ### E2E agent — end-to-end verification
 
-**Code/debugging tasks only.** Skip for non-code tasks (docs, config, design).
+**Only when fundamentally applicable.** Run E2E for code/debugging tasks that affect a real runtime UI/API/device/CLI path. Return N/A with rationale for docs, prompt/skill edits, config-only changes, tests-only changes, pure refactors with no behavior change, or code with no runnable target path.
 
-1. Build the project. Compilation failure = issue.
-2. Run full test suite. Failures = issue.
-3. Exercise the affected feature through real UI or API as a user would. Verify observable outcomes (output, screenshots, state). Proxy evidence (unit tests pass, linter clean) alone insufficient — direct evidence required.
+1. Build the affected project/artifact when buildable. Compilation failure = issue.
+2. Run relevant automated tests; run the full suite when practical. Failures = issue.
+3. Exercise the affected feature through the real UI/API/device/CLI path as a user would. Verify observable outcomes (output, screenshots, state). Proxy evidence (unit tests pass, linter clean) alone is insufficient when E2E applies.
 4. Confirm no regressions in related features.
 
 ### Evaluating results
@@ -263,11 +290,13 @@ Gate retry and cycle limits defined in Escalation table.
 
 Fresh idea generator — fires on-demand when the cycle stalls. Output is raw ideas only; never decisions, verdicts, or filtering. Bigger list = better.
 
+**Genuine stall definition.** Brainstormer fires only after the producing agent (explorer or implementer) has attempted obvious resolutions and recorded each with why it failed. Attempt log is part of the trigger evidence, not optional. A bare "I'm stuck" without a log is not a stall.
+
 | Trigger | Action |
 |---------|--------|
-| Explorer returned zero viable options | Spawn brainstormer → feed ideas into a new explorer |
+| Explorer returned zero viable options after documented attempts | Spawn brainstormer → feed ideas into a new explorer |
 | Step 2 bounce cap reached (one explorer revision round did not yield a clean option) | Spawn brainstormer → feed ideas into a new explorer |
-| Implementer dead-end inside Step 3 | Spawn brainstormer → feed ideas into a new implementer prompt |
+| Implementer genuinely blocked inside Step 3 (per Genuine stall definition above) | Spawn brainstormer → feed ideas into a new implementer prompt |
 
 ### Prompt requirements
 
@@ -287,7 +316,7 @@ Fresh idea generator — fires on-demand when the cycle stalls. Output is raw id
 
 A separate teammate — not any of the cycle agents — gets one chance to break the loop before escalating to the user.
 
-**One loop-breaker invocation per change**, regardless of trigger. If the granted retry fails → hard escalate to user.
+**One loop-breaker invocation per change**, regardless of trigger. If the granted retry fails → hard escalate; ECI stays active.
 
 ### Prompt must include
 
@@ -316,12 +345,12 @@ Single decision table for all limit hits. One loop-breaker per change total.
 
 | Trigger | Condition | Action | If retry fails |
 |---------|-----------|--------|----------------|
-| Gate retry cap | 3 gate retries failed within one cycle | Invoke loop-breaker (if not yet used for this change) | Hard escalate to user |
-| Cycle limit | 3 full cycles failed for one change | Invoke loop-breaker (if not yet used for this change) | Hard escalate to user |
-| Loop-breaker already used | Either limit hit but loop-breaker was consumed by prior trigger | Skip loop-breaker → hard escalate to user immediately | — |
-| Step 2 post-brainstormer all-REJECT | Brainstormer fired and new explorer's options still all-REJECT after one revision | Hard escalate to user | — |
+| Gate retry cap | 3 gate retries failed within one cycle | Invoke loop-breaker (if not yet used for this change) | Hard escalate; ECI stays active |
+| Cycle limit | 3 full cycles failed for one change | Invoke loop-breaker (if not yet used for this change) | Hard escalate; ECI stays active |
+| Loop-breaker already used | Either limit hit but loop-breaker was consumed by prior trigger | Skip loop-breaker → hard escalate immediately; ECI stays active | — |
+| Step 2 post-brainstormer all-REJECT | Brainstormer fired and new explorer's options still all-REJECT after one revision | Hard escalate; ECI stays active | — |
 
-**Hard escalate** = report to user with: (a) original problem, (b) what each cycle tried, (c) loop-breaker's assessment (if invoked), (d) last blocking issue, (e) next-best alternative from explorer's ranking. Silent punts forbidden.
+**Hard escalate** = report a blocker requiring user input while ECI remains active. Include: (a) original problem, (b) what each cycle tried, (c) loop-breaker's assessment (if invoked), (d) last blocking issue, (e) next-best alternative from explorer's ranking. Silent punts forbidden.
 
 ## Iteration limit
 
@@ -329,9 +358,10 @@ Cycle limit defined in Escalation table (3 full cycles per change).
 
 ## Exit conditions
 
-- All changes landed with clean pass, OR
-- Loop-breaker ACCEPT → current state accepted with reasoning, OR
-- Hard escalate triggered → report to user per Escalation table.
+- All changes landed with clean pass and clean-pass teardown completed, OR
+- Loop-breaker ACCEPT → current state accepted with reasoning and clean-pass teardown completed, OR
+- User confirms scope closed and user-closed teardown completed, OR
+- Hard escalate triggered → blocker/user decision request reported; ECI remains active.
 
 ## Status reports
 
@@ -367,8 +397,9 @@ auth middleware swap
 | No rejected list in Step 2 | Critic is not adversarial. Re-spawn |
 | Brainstormer output filters/judges/picks a winner | Brainstormer is idea-only. Re-spawn with "no filtering, no negatives" |
 | Explorer or implementer role used for any critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker) | STOP. Use a separate critic role; the producer must never act as critic. |
-| Disengage without teardown sequence | STOP. Close spawned agents, then run `eci-active off`. |
+| Disengage without teardown sequence | STOP. Main thread closes spawned agents, then main thread runs `eci-active off`. |
 | Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`, or hard-escalate if unavailable. |
+| Main thread stops after blocker/escalation while solvable work remains | Continue the mission: unblock, reassign, or ask the required user question while ECI stays active. |
 | Status report uses task/iteration numbers, or flat-lists nested work | See **Status reports** section. |
 | "Fresh context needed" → spawned a separate agent for Step 1 or Step 3 without reason | Reuse role continuity when useful; require fresh file reads every assignment. |
 | Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 assignment. |

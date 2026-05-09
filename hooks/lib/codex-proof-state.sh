@@ -126,6 +126,28 @@ codex_note_state_session_id() {
   printf 'session_id: %s\n' "$session_id" >>"$file"
 }
 
+codex_mark_activity() {
+  local session_id="$1"
+  local cwd="$2"
+  local marker_name="$3"
+  local dir marker
+
+  codex_valid_session_id "$session_id" || return 0
+  case "$marker_name" in
+    shell|edit|subagent) ;;
+    *) return 0 ;;
+  esac
+
+  dir="$(codex_session_state_dir activity "$session_id")" || return 0
+  mkdir -p "$dir" || return 0
+  marker="$dir/$marker_name"
+  {
+    printf 'kind: %s\n' "$marker_name"
+    [ -n "$cwd" ] && printf 'cwd: %s\n' "$cwd"
+    date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
+  } >"$marker"
+}
+
 codex_state_value() {
   local file="$1"
   local key="$2"
@@ -220,4 +242,64 @@ codex_remove_cwd_state_file() {
   local dir
   dir="$(codex_cwd_state_dir "$kind" "$cwd")" || return 0
   rm -f "$dir/$filename"
+}
+
+codex_markdown_section_has_body() {
+  local file="$1"
+  local target="$2"
+
+  awk -v target="$target" '
+    BEGIN { target = tolower(target) }
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    /^##[[:space:]]*/ {
+      heading = $0
+      sub(/^##[[:space:]]*/, "", heading)
+      heading = tolower(trim(heading))
+      if (in_section) exit
+      if (heading == target) {
+        in_section = 1
+        next
+      }
+    }
+    in_section {
+      line = trim($0)
+      if (line != "") found = 1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$file"
+}
+
+codex_eci_terminal_verdict_error() {
+  local subject="$1"
+  local file="$2"
+  local counts accepted retired
+
+  counts="$(awk '
+    {
+      line = tolower($0)
+      scan = line
+      while (match(scan, /(^|[^[:alnum:]_-])(clean-pass|user-closed):/)) {
+        accepted++
+        scan = substr(scan, RSTART + RLENGTH)
+      }
+      scan = line
+      while (match(scan, /(^|[^[:alnum:]_-])hard-escalation:/)) {
+        retired++
+        scan = substr(scan, RSTART + RLENGTH)
+      }
+    }
+    END { print accepted + 0, retired + 0 }
+  ' "$file")"
+  read -r accepted retired <<EOF
+$counts
+EOF
+
+  if [ "${retired:-0}" -ne 0 ]; then
+    printf '%s must include exactly one terminal verdict marker: clean-pass: or user-closed:, and must not include retired marker hard-escalation:. Report a blocker requiring user input while ECI remains active.\n' "$subject"
+  elif [ "${accepted:-0}" -ne 1 ]; then
+    printf '%s must include exactly one terminal verdict marker: clean-pass: or user-closed:.\n' "$subject"
+  fi
 }

@@ -1,0 +1,12 @@
+{
+  "tool_name": "MultiEdit",
+  "tool_input": {
+    "file_path": "third_party/vendor/example/file.go",
+    "edits": [
+      {
+        "old_string": "old\n",
+        "new_string": "new\n"
+      }
+    ]
+  }
+}

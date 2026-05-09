@@ -38,6 +38,7 @@ func (n *NodeWithCustomData[C, T]) RemovePushTo(
 ## Error Handling
 
 - **Never blanket-ignore errors.** Suppress only errors matched explicitly by type or value (`errors.Is`/`errors.As`). Any unknown error is the worst case — if the function returns `error`, propagate it; never swallow.
+- Function signatures return `error`, never a concrete error type (`*ParseError`, `ErrFoo`). Use concrete types only for construction and `errors.As`/`errors.Is` matching.
 - Custom error types implement `Unwrap() error`.
 - Accumulate errors in `var errs []error`, return `errors.Join(errs...)`.
 - Switch on error type:

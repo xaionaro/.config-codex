@@ -7,7 +7,7 @@ Before stopping, verify every applicable item. If any check fails, keep working 
 - Commit this session's completed changes before stopping.
 - Do not commit unrelated user changes.
 - If committing is unsafe because unrelated work is mixed in, state the blocker, affected paths, and exact next command.
-- Do not paste routine git output into proof; summarize only the commit outcome or blocker.
+- Do not paste routine git output into the final answer; summarize only the commit outcome or blocker.
 - Never push unless the user explicitly asked.
 
 ## Completion
@@ -15,9 +15,14 @@ Before stopping, verify every applicable item. If any check fails, keep working 
 - User request fully addressed.
 - DONE requires objective evidence, not inference.
 - Relevant changed files/state reviewed with targeted evidence.
-- Secrets or credentials checked when touched files could contain them.
+- No secrets or credentials exposed in code, commits, logs, prompts, or final output.
 - Known remaining work is either completed or stated as a blocker with next action.
 - Claims in the final answer are supported by tool output, source, or explicit caveat.
+
+## Project Understanding Ledger
+
+- If ECI or ATE was used, update the session project-understanding ledger per the `maintaining-context-ledger` skill before stopping.
+- If no ledger update is needed, state why.
 
 ## Root Cause
 

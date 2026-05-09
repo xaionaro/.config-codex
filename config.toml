@@ -8,7 +8,7 @@ Ported skills live in /home/streaming/.codex/skills; use matching skills for Go,
 """
 
 [features]
-codex_hooks = true
+hooks = true
 
 [mcp_servers.context7]
 command = "npx"
@@ -33,6 +33,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/home/streaming/go/src/github.com/xaionaro-go/avd"]
+trust_level = "trusted"
+
+[projects."/tmp/codex-verify-ws"]
 trust_level = "trusted"
 
 [tui.model_availability_nux]
@@ -74,4 +77,79 @@ startup_timeout_sec = 5
 [tui]
 status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]
 terminal_title = ["activity", "project-name", "task-progress"]
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "CODEX_OPENROUTER_API_KEY"
+env_key_instructions = "Set CODEX_OPENROUTER_API_KEY in ~/.profile (codex-scoped name)."
+wire_api = "responses"
+
+[model_providers.openrouter.http_headers]
+"HTTP-Referer" = "https://github.com/openai/codex"
+"X-Title" = "Codex CLI"
+
+[model_providers.deepseek_direct]
+name = "DeepSeek (direct via local proxy)"
+base_url = "http://127.0.0.1:5000/v1"
+wire_api = "responses"
+
+[profiles.deepseek-v4-pro]
+model = "deepseek-v4-pro"
+model_provider = "deepseek_direct"
+model_catalog_json = "/home/streaming/.codex/deepseek-catalog.json"
+model_reasoning_effort = "xhigh"
+
+[profiles.deepseek-v4-flash]
+model = "deepseek-v4-flash"
+model_provider = "deepseek_direct"
+model_catalog_json = "/home/streaming/.codex/deepseek-catalog.json"
+model_reasoning_effort = "xhigh"
+
+[hooks.state]
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:9cc14d1491e8fb77886292a98197809f9f90a51b8b2a1d763bb5b9064d83799e"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:1"]
+trusted_hash = "sha256:ea071f7a9518e38b06fa4ca08de76535d8a25647a91faa8d15e9befd98a94067"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:0"]
+trusted_hash = "sha256:06eaaff68624ad271312a9ef7a6317c74dcc9c36824d62262199a6320acb6680"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:1"]
+trusted_hash = "sha256:d473a2ae39dae4d65bbf7f9724c57d35742c61624f95016c185ecfc3fb5ff511"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:2"]
+trusted_hash = "sha256:fef6bd7df057d7de258c0f69ebd2aa25175a92579bbb343a80cdaa067d9139c2"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:3"]
+trusted_hash = "sha256:4bd477925d514f024353d2eae03415b19e320acd5669b3404268bd79214a2d7f"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:4"]
+trusted_hash = "sha256:4de40ae7543ab16f96800a9270910a25eaefed508cd3634b78145e7354ea4e40"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:0"]
+trusted_hash = "sha256:ad4a9e3d3f7ee2659386a76c85b43e5171d01de93143c3c45e20d8f87dfeb01a"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:1"]
+trusted_hash = "sha256:50cb3d7af6903c78e4b521cb08d64be8c7b5d11c0bca903f2a878d5baac90868"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:2"]
+trusted_hash = "sha256:8badcfae98937f7bad9fe919548e350f9eb7d44a1177067f6249ab76fe6d7edd"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:3"]
+trusted_hash = "sha256:45a68e47c908a464e3e15b5fdd7878a840b75c9133a9f608c613e8941b3e9919"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:4"]
+trusted_hash = "sha256:f142569c9f46b7b903d1aeb2d3182dd9f400155d3ea88c32bc1cab084c296d40"
+
+[hooks.state."/home/streaming/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:6d80e33b385ead603b094ee94953d460be890f22de9f5e197738a1084d128f16"
+
+[hooks.state."/home/streaming/.codex/hooks.json:stop:0:0"]
+trusted_hash = "sha256:b4e55e7deb39355fa95f3e61d7924576132f8adfb7af32e5bbb32fe937ec8164"
+
+[hooks.state."/home/streaming/.codex/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:81ccd1d434ac5d15bfac8bb05110aea965814e1cb895699388ff01082232f67d"
 

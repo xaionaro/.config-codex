@@ -70,7 +70,7 @@ marker=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/nu
 codex_note_state_session_id "$marker" "$session_id" || true
 
 marker_text=$(cat "$marker" 2>/dev/null || true)
-jq -n --arg reason "ECI is active for this session. Route edits through the implementer role, or disengage with ~/.codex/bin/eci-active off <disengage-report.md>. Marker: $marker_text" '{
+jq -n --arg reason "ECI is active for this session. Never stop until the ECI task is complete. Continue the ECI task, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>. Marker: $marker_text" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",

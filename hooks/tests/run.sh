@@ -108,6 +108,10 @@ json_field_contains() {
   esac
 }
 
+json_field_not_contains() {
+  ! json_field_contains "$@"
+}
+
 run_hook() {
   local outfile="$1"
   local script="$2"
@@ -163,6 +167,61 @@ make_git_repo() {
   git -C "$repo" add file.txt || return 1
   git -C "$repo" commit -qm "initial" || return 1
   printf '%s\n' "$repo"
+}
+
+make_fake_gitleaks() {
+  local name="$1"
+  local bin_dir="$TMP_ROOT/bin-$name"
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/gitleaks" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+
+report=""
+source="."
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --report-path|-r)
+      shift
+      report="${1:-}"
+      ;;
+    --source|-s)
+      shift
+      source="${1:-.}"
+      ;;
+  esac
+  shift || break
+done
+
+if [ -z "$report" ]; then
+  printf '%s\n' "missing report path" >&2
+  exit 2
+fi
+
+if [ "${FAKE_GITLEAKS_MODE:-}" = "error" ]; then
+  printf '%s\n' "scanner exploded" >&2
+  exit 2
+fi
+
+if [ -d "$source" ] && grep -R "FAKE_SECRET" "$source" >/dev/null 2>&1; then
+  cat >"$report" <<'JSON'
+[
+  {
+    "Description": "Fake secret",
+    "StartLine": 2,
+    "File": "file.txt",
+    "RuleID": "fake-secret"
+  }
+]
+JSON
+  exit 1
+fi
+
+printf '[]\n' >"$report"
+exit 0
+SCRIPT
+  chmod +x "$bin_dir/gitleaks" || return 1
+  printf '%s\n' "$bin_dir"
 }
 
 install_proof_fixture() {
@@ -436,6 +495,25 @@ test_eci_gate_blocks_code_apply_patch() {
   is_pretool_deny "$out"
 }
 
+test_eci_gate_message_mentions_clean_pass_user_closed() {
+  local proof_root out
+  proof_root="$(fresh_proof_root eci-message)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/eci-message.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Never stop until the ECI task is complete" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Continue the ECI task" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Disengage only with clean-pass or user-closed" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Route edits" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "implementer role" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "request"
+}
+
 test_eci_gate_blocks_code_apply_patch_from_cwd_state() {
   local proof_root input out count
   proof_root="$(fresh_proof_root eci-code-cwd)"
@@ -495,6 +573,16 @@ write_main_transcript() {
   mkdir -p "$(dirname "$path")" || return 1
   cat >"$path" <<'JSON'
 {"timestamp":"2026-05-04T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":"cli"}}
+JSON
+}
+
+write_main_transcript_with_subagent_call() {
+  local path="$1"
+  mkdir -p "$(dirname "$path")" || return 1
+  cat >"$path" <<'JSON'
+{"timestamp":"2026-05-04T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":"cli"}}
+{"timestamp":"2026-05-04T00:00:01.000Z","type":"user","message":{"content":"use a subagent"}}
+{"timestamp":"2026-05-04T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","arguments":"{\"agent_type\":\"explorer\"}"}}
 JSON
 }
 
@@ -789,6 +877,8 @@ test_system_reviewer_renders_response_item_tool_events() {
 test_stop_reviewer_blocks_main_session_fail_verdict() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root stop-reviewer-block)"
+  mkdir -p "$proof_root/activity/sessions/t00-session"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
   input="$TMP_ROOT/stop-reviewer-block.json"
@@ -809,6 +899,8 @@ test_stop_reviewer_blocks_main_session_fail_verdict() {
 test_stop_reviewer_pass_verdict_continues_to_proof_gate() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root stop-reviewer-pass)"
+  mkdir -p "$proof_root/activity/sessions/t00-session"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
   input="$TMP_ROOT/stop-reviewer-pass.json"
@@ -830,6 +922,8 @@ test_stop_reviewer_pass_verdict_continues_to_proof_gate() {
 test_stop_reviewer_fail_open_for_unknown_backend() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root stop-reviewer-fail-open)"
+  mkdir -p "$proof_root/activity/sessions/t00-session"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
   input="$TMP_ROOT/stop-reviewer-fail-open.json"
@@ -1165,6 +1259,31 @@ test_validate_apply_patch_blocks_plan_move_destination() {
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
 }
 
+test_validate_apply_patch_blocks_vendor_path() {
+  local out
+  out="$TMP_ROOT/apply-patch-vendor.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-vendor.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "original source" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "revendor"
+}
+
+test_validate_apply_patch_blocks_imports_move_destination() {
+  local out
+  out="$TMP_ROOT/apply-patch-imports-move.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-imports-move.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "original source" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "revendor"
+}
+
+test_validate_apply_patch_allows_vendorish_path() {
+  local out
+  out="$TMP_ROOT/apply-patch-vendorish.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$FIXTURES/validate-apply-patch-vendorish.json" || return 1
+  expect_no_output "$out"
+}
+
 test_validate_edit_write_blocks_direct_edit_plan_path() {
   local out
   out="$TMP_ROOT/edit-write-plan-edit.out"
@@ -1187,6 +1306,83 @@ test_validate_edit_write_blocks_direct_multiedit_plan_path() {
   run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-plan-multiedit.json" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "docs/plans"
+}
+
+test_validate_edit_write_blocks_direct_write_imports_path() {
+  local out
+  out="$TMP_ROOT/edit-write-imports-write.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-imports-write.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "original source" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "revendor"
+}
+
+test_validate_edit_write_blocks_direct_multiedit_vendor_path() {
+  local out
+  out="$TMP_ROOT/edit-write-vendor-multiedit.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-vendor-multiedit.json" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "original source" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "revendor"
+}
+
+test_validate_edit_write_allows_vendorish_path() {
+  local out
+  out="$TMP_ROOT/edit-write-vendorish.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$FIXTURES/validate-edit-write-vendorish-edit.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_edit_write_blocks_submodule_edit() {
+  local repo sub input out
+  repo="$TMP_ROOT/sup-repo-$$"
+  sub="$repo/sub"
+  mkdir -p "$repo/.git" "$sub"
+  printf 'gitdir: %s/modules/sub\n' "$repo/.git" >"$sub/.git"
+  echo "package x" >"$sub/file.go"
+  input="$TMP_ROOT/edit-submod-codex.json"
+  jq -n --arg fp "$sub/file.go" '{tool_name:"Edit",tool_input:{file_path:$fp,old_string:"x",new_string:"y"}}' >"$input"
+  out="$TMP_ROOT/edit-submod-codex.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "git submodule"
+}
+
+test_validate_edit_write_allows_regular_repo_edit() {
+  local repo input out
+  repo="$TMP_ROOT/regular-repo-$$"
+  mkdir -p "$repo/.git"
+  echo "package x" >"$repo/file.go"
+  input="$TMP_ROOT/edit-regular-codex.json"
+  jq -n --arg fp "$repo/file.go" '{tool_name:"Edit",tool_input:{file_path:$fp,old_string:"x",new_string:"y"}}' >"$input"
+  out="$TMP_ROOT/edit-regular-codex.out"
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_write_into_submodule() {
+  # Submodule write blocking is the file-edit tools' job (Edit/Write/MultiEdit
+  # via validate-edit-write.sh). Bash is intentionally NOT gated on submodule
+  # paths, so normal script/build workflows in submodules still work.
+  local repo sub input out
+  repo="$TMP_ROOT/sup-repo-bash-$$"
+  sub="$repo/sub"
+  mkdir -p "$repo/.git" "$sub"
+  printf 'gitdir: %s/modules/sub\n' "$repo/.git" >"$sub/.git"
+  input="$TMP_ROOT/bash-submod-codex.json"
+  jq -n --arg cmd "echo y > $sub/file.go" '{tool_name:"Bash",tool_input:{command:$cmd}}' >"$input"
+  out="$TMP_ROOT/bash-submod-codex.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
+  local decision
+  decision=$(jq -r '.hookSpecificOutput.permissionDecision // "no-decision"' <"$out" 2>/dev/null)
+  [ -z "$decision" ] && decision="no-decision"
+
+  if [ "$decision" != "deny" ]; then
+    pass "validate-bash allows writes into a git submodule"
+  else
+    fail "validate-bash allows writes into a git submodule" \
+      "decision=$decision; expected non-deny. Output: $(head -c 300 "$out")"
+  fi
 }
 
 test_validate_edit_write_blocks_direct_edit_local_gomod_replace() {
@@ -1312,6 +1508,139 @@ test_validate_apply_patch_allows_unrelated_non_plan_edit() {
   expect_no_output "$out"
 }
 
+test_validate_bash_marks_shell_activity() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root activity-bash)"
+  input="$TMP_ROOT/activity-bash.json"
+  jq --arg cwd "$ROOT" '.session_id = "t00-session" | .cwd = $cwd' "$FIXTURES/validate-bash-go-test-redirect.json" >"$input"
+  out="$TMP_ROOT/activity-bash.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" &&
+    [ -s "$proof_root/activity/sessions/t00-session/shell" ]
+}
+
+test_validate_bash_skips_read_only_shell_activity() {
+  local proof_root input out command
+  proof_root="$(fresh_proof_root activity-bash-read-only)"
+  command='rg -n "codex-proof|CODEX_PROOF_ROOT|proof_dir" . -S'
+  input="$TMP_ROOT/activity-bash-read-only.json"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/activity-bash-read-only.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" &&
+    [ ! -e "$proof_root/activity/sessions/t00-session/shell" ]
+}
+
+test_validate_bash_skips_read_only_shell_chain_activity() {
+  local proof_root input out command
+  proof_root="$(fresh_proof_root activity-bash-read-chain)"
+  command="sed -n '1,90p' hooks/stop-gate.sh && sed -n '360,430p' hooks/stop-gate.sh && sed -n '660,745p' hooks/stop-gate.sh"
+  input="$TMP_ROOT/activity-bash-read-chain.json"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/activity-bash-read-chain.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" &&
+    [ ! -e "$proof_root/activity/sessions/t00-session/shell" ]
+}
+
+test_validate_bash_marks_redirected_read_shell_activity() {
+  local proof_root input out command
+  proof_root="$(fresh_proof_root activity-bash-read-redirect)"
+  command="sed -n '1,5p' CODEX.md > /tmp/codex-read-output.txt"
+  input="$TMP_ROOT/activity-bash-read-redirect.json"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/activity-bash-read-redirect.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" &&
+    [ -s "$proof_root/activity/sessions/t00-session/shell" ]
+}
+
+test_validate_bash_blocks_subagent_eci_active_off() {
+  local input out transcript command
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  command="~/.codex/bin/eci-active off /tmp/eci-disengage.md"
+  input="$TMP_ROOT/bash-subagent-eci-off.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
+    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/bash-subagent-eci-off.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main thread"
+}
+
+test_validate_bash_allows_main_eci_active_off() {
+  local input out transcript command
+  transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-main-eci-off.jsonl"
+  write_main_transcript "$transcript" || return 1
+  command="~/.codex/bin/eci-active off /tmp/eci-disengage.md"
+  input="$TMP_ROOT/bash-main-eci-off.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
+    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/bash-main-eci-off.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_redirect_to_vendor_path() {
+  local out
+  out="$TMP_ROOT/bash-vendor-redirect.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-vendor-redirect.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_in_place_imports_path() {
+  local out
+  out="$TMP_ROOT/bash-imports-sed.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-imports-sed.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_vendor_test_with_tmp_redirect() {
+  local out
+  out="$TMP_ROOT/bash-vendor-go-test.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-vendor-go-test.json" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_apply_patch_marks_edit_activity() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root activity-apply-patch)"
+  input="$TMP_ROOT/activity-apply-patch.json"
+  jq --arg cwd "$ROOT" '.session_id = "t00-session" | .cwd = $cwd' "$FIXTURES/eci-apply-patch-markdown.json" >"$input"
+  out="$TMP_ROOT/activity-apply-patch.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" &&
+    [ -s "$proof_root/activity/sessions/t00-session/edit" ]
+}
+
+test_validate_edit_write_marks_edit_activity() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root activity-edit-write)"
+  input="$TMP_ROOT/activity-edit-write.json"
+  jq --arg cwd "$ROOT" '.session_id = "t00-session" | .cwd = $cwd' "$FIXTURES/validate-edit-write-allow-unrelated-edit.json" >"$input"
+  out="$TMP_ROOT/activity-edit-write.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" &&
+    [ -s "$proof_root/activity/sessions/t00-session/edit" ]
+}
+
 test_validate_bash_blocks_bare_go_test() {
   local out
   out="$TMP_ROOT/bash-go-test-bare.out"
@@ -1365,6 +1694,226 @@ test_stop_gate_blocks_missing_proof_sections() {
     json_field_contains "$out" '.reason // empty' "missing required sections"
 }
 
+test_stop_gate_continues_clean_inactive_turn() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-clean-inactive)"
+  repo="$(make_git_repo stop-clean-inactive)" || return 1
+  input="$TMP_ROOT/stop-clean-inactive.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-clean-inactive.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/instructions.md" ] &&
+    [ ! -e "$proof_root/t00-session/proof.md" ]
+}
+
+test_stop_gate_blocks_activity_marker() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-activity-marker)"
+  repo="$(make_git_repo stop-activity-marker)" || return 1
+  mkdir -p "$proof_root/activity/sessions/t00-session"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
+  input="$TMP_ROOT/stop-activity-marker.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-activity-marker.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated stop checks passed" &&
+    json_field_not_contains "$out" '.reason // empty' "write " &&
+    [ -s "$proof_root/t00-session/instructions.md" ] &&
+    grep -q "Git state: clean" "$proof_root/t00-session/instructions.md" &&
+    grep -q "Do not rerun automated git checks" "$proof_root/t00-session/instructions.md"
+}
+
+test_stop_gate_blocks_parent_subagent_tool_call() {
+  local proof_root input out transcript repo
+  proof_root="$(fresh_proof_root stop-parent-subagent-tool)"
+  repo="$(make_git_repo stop-parent-subagent-tool)" || return 1
+  transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-main-subagent-tool.jsonl"
+  write_main_transcript_with_subagent_call "$transcript" || return 1
+  input="$TMP_ROOT/stop-parent-subagent-tool.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-parent-subagent-tool.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated stop checks passed" &&
+    json_field_not_contains "$out" '.reason // empty' "write " &&
+    [ -s "$proof_root/t00-session/instructions.md" ] &&
+    grep -q "Git state: clean" "$proof_root/t00-session/instructions.md" &&
+    grep -q "Do not rerun automated git checks" "$proof_root/t00-session/instructions.md"
+}
+
+test_stop_gate_reports_automated_git_checks_for_dirty_state() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-dirty-automated-checks)"
+  repo="$(make_git_repo stop-dirty-automated-checks)" || return 1
+  printf 'dirty\n' >>"$repo/file.txt"
+  input="$TMP_ROOT/stop-dirty-automated-checks.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-dirty-automated-checks.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated stop checks found changed git state" &&
+    [ -s "$proof_root/t00-session/instructions.md" ] &&
+    grep -q "Dirty worktree:  M file.txt" "$proof_root/t00-session/instructions.md" &&
+    grep -q "HEAD: " "$proof_root/t00-session/instructions.md" &&
+    grep -q "Do not rerun automated git checks" "$proof_root/t00-session/instructions.md"
+}
+
+test_stop_gate_reports_automated_git_checks_for_committed_state() {
+  local proof_root input out repo base
+  proof_root="$(fresh_proof_root stop-committed-automated-checks)"
+  repo="$(make_git_repo stop-committed-automated-checks)" || return 1
+  mkdir -p "$proof_root/t00-session"
+  base="$(git -C "$repo" rev-parse HEAD)" || return 1
+  printf '%s\n' "$base" >"$proof_root/t00-session/baseline_head"
+  printf 'committed\n' >>"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "committed change" || return 1
+  input="$TMP_ROOT/stop-committed-automated-checks.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-committed-automated-checks.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated stop checks found changed git state" &&
+    [ -s "$proof_root/t00-session/instructions.md" ] &&
+    grep -q "Dirty worktree: clean" "$proof_root/t00-session/instructions.md" &&
+    grep -q "HEAD: .*committed change" "$proof_root/t00-session/instructions.md" &&
+    grep -q "commits changed since baseline" "$proof_root/t00-session/instructions.md" &&
+    grep -q "Do not rerun automated git checks" "$proof_root/t00-session/instructions.md"
+}
+
+test_stop_gate_reports_automated_secret_scan_pass() {
+  local proof_root input out repo bin_dir
+  proof_root="$(fresh_proof_root stop-secret-scan-pass)"
+  repo="$(make_git_repo stop-secret-scan-pass)" || return 1
+  bin_dir="$(make_fake_gitleaks stop-secret-scan-pass)" || return 1
+  printf 'ordinary change\n' >>"$repo/file.txt"
+  input="$TMP_ROOT/stop-secret-scan-pass.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-secret-scan-pass.out"
+
+  PATH="$bin_dir:$PATH" run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated stop checks found changed git state" &&
+    [ -s "$proof_root/t00-session/instructions.md" ] &&
+    grep -q "Secret scan: passed (gitleaks)" "$proof_root/t00-session/instructions.md" &&
+    [ ! -e "$proof_root/t00-session/gitleaks-findings.txt" ]
+}
+
+test_stop_gate_blocks_gitleaks_findings_from_dirty_state() {
+  local proof_root input out repo bin_dir
+  proof_root="$(fresh_proof_root stop-secret-scan-dirty)"
+  repo="$(make_git_repo stop-secret-scan-dirty)" || return 1
+  bin_dir="$(make_fake_gitleaks stop-secret-scan-dirty)" || return 1
+  printf 'FAKE_SECRET\n' >>"$repo/file.txt"
+  input="$TMP_ROOT/stop-secret-scan-dirty.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-secret-scan-dirty.out"
+
+  PATH="$bin_dir:$PATH" run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated secret scan found possible secrets" &&
+    [ -s "$proof_root/t00-session/gitleaks-report.json" ] &&
+    [ -s "$proof_root/t00-session/gitleaks-findings.txt" ] &&
+    grep -q "file.txt:2 fake-secret Fake secret" "$proof_root/t00-session/gitleaks-findings.txt"
+}
+
+test_stop_gate_blocks_gitleaks_findings_from_untracked_state() {
+  local proof_root input out repo bin_dir
+  proof_root="$(fresh_proof_root stop-secret-scan-untracked)"
+  repo="$(make_git_repo stop-secret-scan-untracked)" || return 1
+  bin_dir="$(make_fake_gitleaks stop-secret-scan-untracked)" || return 1
+  printf 'FAKE_SECRET\n' >"$repo/new.txt"
+  input="$TMP_ROOT/stop-secret-scan-untracked.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-secret-scan-untracked.out"
+
+  PATH="$bin_dir:$PATH" run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated secret scan found possible secrets" &&
+    [ -s "$proof_root/t00-session/gitleaks-report.json" ] &&
+    [ -s "$proof_root/t00-session/gitleaks-findings.txt" ]
+}
+
+test_stop_gate_blocks_gitleaks_findings_from_committed_state() {
+  local proof_root input out repo bin_dir base
+  proof_root="$(fresh_proof_root stop-secret-scan-committed)"
+  repo="$(make_git_repo stop-secret-scan-committed)" || return 1
+  bin_dir="$(make_fake_gitleaks stop-secret-scan-committed)" || return 1
+  mkdir -p "$proof_root/t00-session"
+  base="$(git -C "$repo" rev-parse HEAD)" || return 1
+  printf '%s\n' "$base" >"$proof_root/t00-session/baseline_head"
+  printf 'FAKE_SECRET\n' >>"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "secret" || return 1
+  input="$TMP_ROOT/stop-secret-scan-committed.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-secret-scan-committed.out"
+
+  PATH="$bin_dir:$PATH" run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated secret scan found possible secrets" &&
+    [ -s "$proof_root/t00-session/gitleaks-report.json" ] &&
+    [ -s "$proof_root/t00-session/gitleaks-findings.txt" ]
+}
+
+test_stop_gate_blocks_gitleaks_execution_failure() {
+  local proof_root input out repo bin_dir
+  proof_root="$(fresh_proof_root stop-secret-scan-error)"
+  repo="$(make_git_repo stop-secret-scan-error)" || return 1
+  bin_dir="$(make_fake_gitleaks stop-secret-scan-error)" || return 1
+  printf 'ordinary change\n' >>"$repo/file.txt"
+  input="$TMP_ROOT/stop-secret-scan-error.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-secret-scan-error.out"
+
+  PATH="$bin_dir:$PATH" run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" FAKE_GITLEAKS_MODE=error || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated secret scan could not complete" &&
+    [ -s "$proof_root/t00-session/gitleaks-findings.txt" ] &&
+    grep -q "scanner exploded" "$proof_root/t00-session/gitleaks-findings.txt"
+}
+
+test_stop_gate_blocks_ate_active_state() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-ate-active)"
+  repo="$(make_git_repo stop-ate-active)" || return 1
+  mkdir -p "$proof_root/ate/sessions/t00-session"
+  printf 'phase: execution\n' >"$proof_root/ate/sessions/t00-session/ate_active"
+  input="$TMP_ROOT/stop-ate-active.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-ate-active.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ATE is active"
+}
+
+test_stop_gate_allows_ate_awaiting_user_without_other_activity() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-ate-awaiting-user)"
+  repo="$(make_git_repo stop-ate-awaiting-user)" || return 1
+  mkdir -p "$proof_root/ate/sessions/t00-session"
+  printf 'phase: awaiting_user\n' >"$proof_root/ate/sessions/t00-session/ate_active"
+  input="$TMP_ROOT/stop-ate-awaiting-user.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-ate-awaiting-user.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true"
+}
+
 test_stop_gate_accepts_complete_proof_fixture() {
   local proof_root input out
   proof_root="$(fresh_proof_root stop-complete)"
@@ -1377,8 +1926,30 @@ test_stop_gate_accepts_complete_proof_fixture() {
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
     json_field_contains "$out" '.reason // empty' "Verification proof accepted" &&
-    [ -s "$proof_root/t00-session/summary-to-print.md" ] &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ] &&
     [ ! -e "$proof_root/t00-session/proof.md" ]
+}
+
+test_stop_gate_accepts_proof_clears_active_work_markers() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-complete-clears-active)"
+  repo="$(make_git_repo stop-complete-clears-active)" || return 1
+  mkdir -p "$proof_root/t00-session" \
+    "$proof_root/activity/sessions/t00-session" \
+    "$proof_root/active-task/sessions/t00-session"
+  cp "$FIXTURES/proof-complete.md" "$proof_root/t00-session/proof.md"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/active-task/sessions/t00-session/task_active"
+  input="$TMP_ROOT/stop-complete-clears-active.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-complete-clears-active.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Verification proof accepted" &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ] &&
+    [ ! -e "$proof_root/activity/sessions/t00-session/shell" ] &&
+    [ ! -e "$proof_root/active-task/sessions/t00-session/task_active" ]
 }
 
 test_stop_gate_accepts_proof_reports_dirty_git_state() {
@@ -1395,9 +1966,31 @@ test_stop_gate_accepts_proof_reports_dirty_git_state() {
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
     json_field_contains "$out" '.reason // empty' "git state is still dirty" &&
-    [ -s "$proof_root/t00-session/summary-to-print.md" ] &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ] &&
     [ -s "$proof_root/t00-session/git-status-at-accept.txt" ] &&
     grep -q ' M file.txt' "$proof_root/t00-session/git-status-at-accept.txt"
+}
+
+test_stop_gate_accepts_proof_after_baseline_commit_without_dirty_state() {
+  local proof_root input out repo base
+  proof_root="$(fresh_proof_root stop-proof-baseline-commit-clean)"
+  mkdir -p "$proof_root/t00-session"
+  cp "$FIXTURES/proof-complete.md" "$proof_root/t00-session/proof.md"
+  repo="$(make_git_repo stop-proof-baseline-commit-clean)" || return 1
+  base="$(git -C "$repo" rev-parse HEAD)" || return 1
+  printf '%s\n' "$base" >"$proof_root/t00-session/baseline_head"
+  printf 'committed\n' >>"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "committed change" || return 1
+  input="$TMP_ROOT/stop-proof-baseline-commit-clean.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-proof-baseline-commit-clean.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Verification proof accepted" &&
+    json_field_not_contains "$out" '.reason // empty' "git state is still dirty" &&
+    [ ! -e "$proof_root/t00-session/git-status-at-accept.txt" ]
 }
 
 test_stop_gate_blocks_clean_scan_empty_source() {
@@ -1596,6 +2189,8 @@ test_stop_gate_blocks_preexisting_commit_after_head_advance() {
 test_stop_gate_adds_loop_reminder_after_five_blocks() {
   local proof_root input out i
   proof_root="$(fresh_proof_root stop-loop-reminder)"
+  mkdir -p "$proof_root/activity/sessions/t00-session"
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
   input="$TMP_ROOT/stop-loop-reminder.json"
   with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
   out="$TMP_ROOT/stop-loop-reminder.out"
@@ -1607,7 +2202,6 @@ test_stop_gate_adds_loop_reminder_after_five_blocks() {
   is_stop_block "$out" &&
     json_field_contains "$out" '.reason // empty' "LOOP DETECTED" &&
     json_field_contains "$out" '.reason // empty' "read instructions or stop-checklist" &&
-    json_field_contains "$out" '.reason // empty' "write proof" &&
     json_field_contains "$out" '.reason // empty' "stop again" &&
     json_field_contains "$out" '.reason // empty' "identify failing step" &&
     json_field_contains "$out" '.reason // empty' "do not retry same approach"
@@ -1625,7 +2219,9 @@ test_stop_gate_blocks_cwd_eci_state() {
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "ECI is active"
+    json_field_contains "$out" '.reason // empty' "Never stop until the ECI task is complete" &&
+    json_field_contains "$out" '.reason // empty' "Disengage only with clean-pass or user-closed" &&
+    json_field_not_contains "$out" '.reason // empty' "request"
 }
 
 test_stop_gate_blocks_cwd_eci_state_without_cwd_field() {
@@ -1733,27 +2329,170 @@ test_stop_gate_allows_cwd_skip_state() {
   json_field_equals "$out" '.continue // false' "true"
 }
 
-test_eci_active_off_cwd_marker_writes_bound_session_proof() {
-  local proof_root input out active_count
+write_user_closed_eci_report() {
+  local report="$1"
+
+  cat >"$report" <<'EOF'
+## ECI completion certificate
+
+user-closed: fixture user confirmed scope closure.
+
+## Stop checklist walkthrough
+
+- Fixture stop checklist item was reviewed.
+
+## Incomplete compliance
+
+- None.
+EOF
+}
+
+write_mixed_eci_report() {
+  local report="$1"
+
+  cat >"$report" <<'EOF'
+## ECI completion certificate
+
+clean-pass: fixture ECI completion proof.
+hard-escalation: retired marker must keep ECI active.
+
+## Stop checklist walkthrough
+
+- Fixture stop checklist item was reviewed.
+
+## Incomplete compliance
+
+- None.
+EOF
+}
+
+test_stop_gate_rejects_hard_escalation_eci_proof() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-hard-eci-proof)"
+  install_proof_fixture "$proof_root" "$FIXTURES/hard-eci-proof-complete.md" || return 1
+
+  input="$TMP_ROOT/stop-hard-eci-proof.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-hard-eci-proof.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "clean-pass: or user-closed:" &&
+    [ -s "$proof_root/t00-session/proof.md" ] &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ]
+}
+
+test_stop_gate_accepts_user_closed_eci_proof() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-user-closed-eci-proof)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  write_user_closed_eci_report "$proof_root/t00-session/proof.md" || return 1
+
+  input="$TMP_ROOT/stop-user-closed-eci-proof.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-user-closed-eci-proof.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Verification proof accepted" &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ] &&
+    [ ! -e "$proof_root/t00-session/proof.md" ]
+}
+
+test_stop_gate_rejects_mixed_hard_escalation_eci_proof() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-mixed-hard-eci-proof)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  write_mixed_eci_report "$proof_root/t00-session/proof.md" || return 1
+
+  input="$TMP_ROOT/stop-mixed-hard-eci-proof.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-mixed-hard-eci-proof.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "hard-escalation:" &&
+    [ -s "$proof_root/t00-session/proof.md" ] &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ]
+}
+
+test_eci_active_off_rejects_hard_escalation_report() {
+  local proof_root out marker status
+  proof_root="$(fresh_proof_root eci-off-hard-escalation)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-hard-on.out" 2>&1 || return 1
+  marker="$proof_root/eci/sessions/t00-session/eci_active"
+  [ -s "$marker" ] || return 1
+
+  out="$TMP_ROOT/eci-off-hard.out"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$FIXTURES/hard-eci-proof-complete.md" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -ne 0 ] &&
+    [ -s "$marker" ] &&
+    [ ! -e "$proof_root/eci/sessions/t00-session/proof.md" ] &&
+    [ ! -e "$proof_root/t00-session/proof.md" ] &&
+    grep -q "clean-pass: or user-closed:" "$out.err"
+}
+
+test_eci_active_off_accepts_user_closed_report() {
+  local proof_root out report marker
+  proof_root="$(fresh_proof_root eci-off-user-closed)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-user-closed-on.out" 2>&1 || return 1
+  report="$TMP_ROOT/eci-off-user-closed.md"
+  write_user_closed_eci_report "$report" || return 1
+  marker="$proof_root/eci/sessions/t00-session/eci_active"
+  [ -s "$marker" ] || return 1
+
+  out="$TMP_ROOT/eci-off-user-closed.out"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$report" >"$out" 2>"$out.err" || return 1
+
+  [ ! -e "$marker" ] &&
+    [ ! -e "$proof_root/eci/sessions/t00-session/proof.md" ] &&
+    [ ! -e "$proof_root/t00-session/proof.md" ] &&
+    grep -q "ECI inactive" "$out"
+}
+
+test_eci_active_off_rejects_mixed_hard_escalation_report() {
+  local proof_root out marker report status
+  proof_root="$(fresh_proof_root eci-off-mixed-hard)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-mixed-hard-on.out" 2>&1 || return 1
+  report="$TMP_ROOT/eci-off-mixed-hard.md"
+  write_mixed_eci_report "$report" || return 1
+  marker="$proof_root/eci/sessions/t00-session/eci_active"
+  [ -s "$marker" ] || return 1
+
+  out="$TMP_ROOT/eci-off-mixed-hard.out"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$report" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -ne 0 ] &&
+    [ -s "$marker" ] &&
+    [ ! -e "$proof_root/eci/sessions/t00-session/proof.md" ] &&
+    [ ! -e "$proof_root/t00-session/proof.md" ] &&
+    grep -q "hard-escalation:" "$out.err"
+}
+
+test_eci_active_off_cwd_marker_closes_bound_session_without_proof() {
+  local proof_root input out active_count repo
   proof_root="$(fresh_proof_root eci-off-cwd)"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-cwd-on.out" 2>&1 || return 1
+  repo="$(make_git_repo eci-off-cwd)" || return 1
+  (cd "$repo" && env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope") >"$TMP_ROOT/eci-off-cwd-on.out" 2>&1 || return 1
 
   input="$TMP_ROOT/eci-off-cwd-stop.json"
-  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
   out="$TMP_ROOT/eci-off-cwd-stop.out"
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" || return 1
 
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$TMP_ROOT/eci-off-cwd-off.out" 2>"$TMP_ROOT/eci-off-cwd-off.err" || return 1
+  (cd "$repo" && env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md") >"$TMP_ROOT/eci-off-cwd-off.out" 2>"$TMP_ROOT/eci-off-cwd-off.err" || return 1
   active_count=$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | wc -l)
   [ "$active_count" -eq 0 ] || return 1
-  [ -s "$proof_root/t00-session/proof.md" ] || return 1
+  [ ! -e "$proof_root/t00-session/proof.md" ] || return 1
 
   out="$TMP_ROOT/eci-off-cwd-accept.out"
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "Verification proof accepted" &&
-    [ -s "$proof_root/t00-session/summary-to-print.md" ] &&
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/summary-to-print.md" ] &&
     [ ! -e "$proof_root/t00-session/proof.md" ]
 }
 
@@ -1876,6 +2615,8 @@ run_case "side session start is silent and binds stop bypass" \
   test_side_session_start_is_silent_and_binds_stop_bypass
 run_case "ECI gate blocks code apply_patch when marker exists" \
   test_eci_gate_blocks_code_apply_patch
+run_case "ECI gate message names clean-pass/user-closed teardown" \
+  test_eci_gate_message_mentions_clean_pass_user_closed
 run_case "ECI gate blocks code apply_patch from cwd marker" \
   test_eci_gate_blocks_code_apply_patch_from_cwd_state
 run_case "ECI gate blocks code apply_patch from session marker" \
@@ -1950,12 +2691,30 @@ run_case "validate-apply-patch parses tool_input.input plan paths" \
   test_validate_apply_patch_blocks_plan_paths_from_input
 run_case "validate-apply-patch blocks Move to plan paths" \
   test_validate_apply_patch_blocks_plan_move_destination
+run_case "validate-apply-patch blocks vendor paths" \
+  test_validate_apply_patch_blocks_vendor_path
+run_case "validate-apply-patch blocks imports move destinations" \
+  test_validate_apply_patch_blocks_imports_move_destination
+run_case "validate-apply-patch allows vendorish paths" \
+  test_validate_apply_patch_allows_vendorish_path
 run_case "validate-edit-write blocks direct Edit plan paths" \
   test_validate_edit_write_blocks_direct_edit_plan_path
 run_case "validate-edit-write blocks direct Write plan paths" \
   test_validate_edit_write_blocks_direct_write_plan_path
 run_case "validate-edit-write blocks direct MultiEdit plan paths" \
   test_validate_edit_write_blocks_direct_multiedit_plan_path
+run_case "validate-edit-write blocks direct Write imports paths" \
+  test_validate_edit_write_blocks_direct_write_imports_path
+run_case "validate-edit-write blocks direct MultiEdit vendor paths" \
+  test_validate_edit_write_blocks_direct_multiedit_vendor_path
+run_case "validate-edit-write allows vendorish paths" \
+  test_validate_edit_write_allows_vendorish_path
+run_case "validate-edit-write blocks edits inside a git submodule" \
+  test_validate_edit_write_blocks_submodule_edit
+run_case "validate-edit-write allows edits in a regular non-submodule repo" \
+  test_validate_edit_write_allows_regular_repo_edit
+run_case "validate-bash allows writes into a git submodule" \
+  test_validate_bash_allows_write_into_submodule
 run_case "validate-edit-write blocks direct Edit go.mod local replace" \
   test_validate_edit_write_blocks_direct_edit_local_gomod_replace
 run_case "validate-edit-write blocks direct Write go.mod local replace" \
@@ -1978,6 +2737,28 @@ run_case "validate-apply-patch allows remote go.mod replace" \
   test_validate_apply_patch_allows_remote_gomod_replace
 run_case "validate-apply-patch allows unrelated non-plan edit" \
   test_validate_apply_patch_allows_unrelated_non_plan_edit
+run_case "validate-bash marks shell activity" \
+  test_validate_bash_marks_shell_activity
+run_case "validate-bash skips read-only shell activity" \
+  test_validate_bash_skips_read_only_shell_activity
+run_case "validate-bash skips read-only shell chain activity" \
+  test_validate_bash_skips_read_only_shell_chain_activity
+run_case "validate-bash marks redirected read shell activity" \
+  test_validate_bash_marks_redirected_read_shell_activity
+run_case "validate-bash blocks subagent eci-active off" \
+  test_validate_bash_blocks_subagent_eci_active_off
+run_case "validate-bash allows main eci-active off" \
+  test_validate_bash_allows_main_eci_active_off
+run_case "validate-bash allows redirect to vendor paths" \
+  test_validate_bash_allows_redirect_to_vendor_path
+run_case "validate-bash allows in-place imports paths" \
+  test_validate_bash_allows_in_place_imports_path
+run_case "validate-bash allows vendor test with tmp redirect" \
+  test_validate_bash_allows_vendor_test_with_tmp_redirect
+run_case "validate-apply-patch marks edit activity" \
+  test_validate_apply_patch_marks_edit_activity
+run_case "validate-edit-write marks edit activity" \
+  test_validate_edit_write_marks_edit_activity
 run_case "validate-bash blocks bare go test" \
   test_validate_bash_blocks_bare_go_test
 run_case "validate-bash blocks go test -count=1" \
@@ -1990,10 +2771,38 @@ run_case "security reminder sees workflow Move to destination" \
   test_security_reminder_sees_workflow_move_destination
 run_case "stop gate blocks proof missing required sections" \
   test_stop_gate_blocks_missing_proof_sections
+run_case "stop gate continues clean inactive turn" \
+  test_stop_gate_continues_clean_inactive_turn
+run_case "stop gate blocks activity marker" \
+  test_stop_gate_blocks_activity_marker
+run_case "stop gate blocks parent subagent tool call" \
+  test_stop_gate_blocks_parent_subagent_tool_call
+run_case "stop gate reports automated git checks for dirty state" \
+  test_stop_gate_reports_automated_git_checks_for_dirty_state
+run_case "stop gate reports automated git checks for committed state" \
+  test_stop_gate_reports_automated_git_checks_for_committed_state
+run_case "stop gate reports automated secret scan pass" \
+  test_stop_gate_reports_automated_secret_scan_pass
+run_case "stop gate blocks gitleaks findings from dirty state" \
+  test_stop_gate_blocks_gitleaks_findings_from_dirty_state
+run_case "stop gate blocks gitleaks findings from untracked state" \
+  test_stop_gate_blocks_gitleaks_findings_from_untracked_state
+run_case "stop gate blocks gitleaks findings from committed state" \
+  test_stop_gate_blocks_gitleaks_findings_from_committed_state
+run_case "stop gate blocks gitleaks execution failure" \
+  test_stop_gate_blocks_gitleaks_execution_failure
+run_case "stop gate blocks ATE active state" \
+  test_stop_gate_blocks_ate_active_state
+run_case "stop gate allows ATE awaiting user without other activity" \
+  test_stop_gate_allows_ate_awaiting_user_without_other_activity
 run_case "stop gate accepts complete proof fixture" \
   test_stop_gate_accepts_complete_proof_fixture
+run_case "stop gate accepts proof clears active work markers" \
+  test_stop_gate_accepts_proof_clears_active_work_markers
 run_case "stop gate accepted proof reports dirty git state" \
   test_stop_gate_accepts_proof_reports_dirty_git_state
+run_case "stop gate accepts proof after baseline commit without dirty state" \
+  test_stop_gate_accepts_proof_after_baseline_commit_without_dirty_state
 run_case "stop gate blocks clean-scan empty source" \
   test_stop_gate_blocks_clean_scan_empty_source
 run_case "stop gate blocks blocker missing input" \
@@ -2042,8 +2851,20 @@ run_case "stop gate allows session-scoped skip marker" \
   test_stop_gate_allows_session_skip_state
 run_case "stop gate allows cwd-scoped skip marker" \
   test_stop_gate_allows_cwd_skip_state
-run_case "eci-active off maps cwd marker proof to bound session" \
-  test_eci_active_off_cwd_marker_writes_bound_session_proof
+run_case "stop gate rejects hard-escalation ECI proof" \
+  test_stop_gate_rejects_hard_escalation_eci_proof
+run_case "stop gate accepts user-closed ECI proof" \
+  test_stop_gate_accepts_user_closed_eci_proof
+run_case "stop gate rejects mixed hard-escalation ECI proof" \
+  test_stop_gate_rejects_mixed_hard_escalation_eci_proof
+run_case "eci-active off rejects hard-escalation report" \
+  test_eci_active_off_rejects_hard_escalation_report
+run_case "eci-active off accepts user-closed report" \
+  test_eci_active_off_accepts_user_closed_report
+run_case "eci-active off rejects mixed hard-escalation report" \
+  test_eci_active_off_rejects_mixed_hard_escalation_report
+run_case "eci-active off closes cwd marker bound to session without proof" \
+  test_eci_active_off_cwd_marker_closes_bound_session_without_proof
 run_case "eci-active off rejects unbound cwd marker" \
   test_eci_active_off_rejects_unbound_cwd_marker
 run_case "eci-active uses cwd state without CODEX_SESSION_ID" \

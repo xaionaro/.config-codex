@@ -7,6 +7,8 @@ description: Use when working with Android phones or tablets — fastboot, adb, 
 
 **User data is sacred.** `fastboot erase userdata`, `fastboot erase metadata`, `fastboot -w`, and factory reset require explicit user request. Erasing user data is never a side effect of another operation.
 
+**Avoid `adb forward` / `adb reverse` unless necessary.** Device usually reaches the host directly over LAN — use the host IP. Tunnels add hidden state, mask real connectivity issues, and break when adbd restarts. Justify every `forward`/`reverse` (e.g. USB-only device, no routable network).
+
 ## Device Health
 
 Handle health checks and routine fixes in-place in the current session; they generally do not need a separate agent.

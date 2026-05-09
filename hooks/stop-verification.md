@@ -2,60 +2,24 @@
 
 Before stopping, verify the work against the user's request.
 
-Proof file: `{{PROOF}}`
-
 Run only checks that prove the actual change. Prefer direct evidence: source reads, targeted diffs, tests/static checks, screenshots, observed state, or command output.
 
 ## Fast Exit
 
-Write `fast-exit: <reason>` to the proof file only when no completion claim is being made, the answer is still mid-conversation, or the change is trivial enough that a mistake is implausible.
+Use a fast exit only when no completion claim is being made, the answer is still mid-conversation, or the change is trivial enough that a mistake is implausible.
 
 ## Full Verification
 
 1. Inspect every file or state change relevant to this turn.
-2. Check for secrets or credentials when touched files could contain them.
+2. Verify no secrets or credentials are exposed in code, commits, logs, prompts, or final output.
 3. Review the change for correctness, error handling, security, consistency, and completeness.
 4. For bug fixes, identify root cause and whether the fix addresses the cause.
 5. Search for the same pattern elsewhere when the fix may generalize.
 6. Run the narrowest meaningful tests/static checks for changed behavior.
 7. Verify user-visible behavior directly when touched.
-8. Commit this session's completed changes before writing proof. Do not commit unrelated user changes. If committing is unsafe, state the blocker. Do not paste routine git output into proof.
-9. Scan `CODEX.md`, applicable skills, and project instructions for current-turn rule violations.
-
-Required proof sections:
-
-## Summary
-
-- What changed.
-
-## Verification
-
-- Changed files/state reviewed, summarized without routine git output:
-- Tests/checks run:
-- User-visible evidence:
-- Secrets check:
-
-## Requirements
-
-- Original request items verified:
-
-## Root Cause
-
-- Cause:
-- Generalization search:
-
-## Claim Inventory
-
-- Claims and source/confidence:
-
-## Pre-Mortem
-
-- Most likely flaw considered:
-- Result:
-
-## Adversarial Critique
-
-- Objections found and resolution:
+8. If ECI or ATE was used, update the session project-understanding ledger per the `maintaining-context-ledger` skill and verify it passes that skill's validity rules.
+9. Commit this session's completed changes before stopping. Do not commit unrelated user changes. If committing is unsafe, state the blocker. Do not paste routine git output into the final answer.
+10. Scan `CODEX.md`, applicable skills, and project instructions for current-turn rule violations.
 
 ## Rule-Compliance Self-Audit
 
@@ -99,6 +63,6 @@ If repeating a byte-identical audit on an unchanged repo, add:
 
 Dirty trees, HEAD movement, missing/invalid `rescanned:`, and old-only commit evidence are rejected when they make the audit stale.
 
-## Gaps
+## Final Response
 
-- Unrun checks, uncommitted changes, blockers, and residual risks:
+State the verification performed, any skipped checks, uncommitted changes, blockers, and residual risks.

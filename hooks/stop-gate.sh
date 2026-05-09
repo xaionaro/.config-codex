@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop hook: require verification proof before ending.
+# Stop hook: require a checklist pass before ending.
 
 set -euo pipefail
 
@@ -37,7 +37,7 @@ json_block() {
     mv "$tmp" "$timestamps"
 
     if [ "$recent_count" -ge 5 ]; then
-      reason="$reason LOOP DETECTED ($recent_count blocks in 5min). Recovery flow: read instructions or stop-checklist, write proof, stop again, identify failing step, do not retry same approach."
+      reason="$reason LOOP DETECTED ($recent_count blocks in 5min). Recovery flow: read instructions or stop-checklist, identify failing step, stop again, do not retry same approach."
     fi
   fi
 
@@ -48,47 +48,6 @@ if [ -z "$transcript_path" ]; then
   json_continue
   exit 0
 fi
-
-section_has_body() {
-  local file="$1"
-  local target="$2"
-
-  awk -v target="$target" '
-    BEGIN { target = tolower(target) }
-    function trim(s) {
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
-      return s
-    }
-    /^##[[:space:]]*/ {
-      heading = $0
-      sub(/^##[[:space:]]*/, "", heading)
-      heading = tolower(trim(heading))
-      if (in_section) exit
-      if (heading == target) {
-        in_section = 1
-        next
-      }
-    }
-    in_section {
-      line = trim($0)
-      if (line != "") found = 1
-    }
-    END { exit(found ? 0 : 1) }
-  ' "$file"
-}
-
-terminal_verdict_count() {
-  awk '
-    {
-      line = tolower($0)
-      while (match(line, /(^|[^[:alnum:]_-])(clean-pass|hard-escalation|user-closed):/)) {
-        count++
-        line = substr(line, RSTART + RLENGTH)
-      }
-    }
-    END { print count + 0 }
-  ' "$1"
-}
 
 git_change_summary() {
   local repo="$1"
@@ -114,6 +73,154 @@ git_change_summary() {
   fi
 
   [ "$changed" = "true" ]
+}
+
+git_dirty_summary() {
+  local repo="$1"
+  local status
+
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  status=$(git -C "$repo" status --porcelain 2>/dev/null || true)
+  if [ -n "$status" ]; then
+    printf '%s\n' "$status"
+    return 0
+  fi
+
+  return 1
+}
+
+git_head_summary() {
+  local repo="$1"
+
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$repo" log -1 --oneline 2>/dev/null || true
+}
+
+indent_text() {
+  sed 's/^/  /'
+}
+
+format_gitleaks_findings() {
+  local report="$1"
+
+  jq -r '
+    .[] |
+    "\(.File // "<unknown>"):\((.StartLine // "?") | tostring) \(.RuleID // "unknown") \(.Description // "possible secret")"
+  ' "$report" 2>/dev/null
+}
+
+run_gitleaks_command() {
+  local report="$1"
+  shift
+  local out rc
+
+  out=$("$@" 2>&1)
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *)
+      printf '%s\n' "$out" >"${report}.err"
+      return 2
+      ;;
+  esac
+}
+
+run_secret_scan() {
+  local repo="$1"
+  local baseline="$2"
+  local proof_dir="$3"
+  local report="$proof_dir/gitleaks-report.json"
+  local findings="$proof_dir/gitleaks-findings.txt"
+  local worktree_report="$proof_dir/gitleaks-worktree-report.json"
+  local commit_report="$proof_dir/gitleaks-commit-report.json"
+  local tmp_index base findings_count worktree_dirty commit_changed scan_rc errors=""
+  local -a reports
+
+  rm -f "$report" "$findings" "$worktree_report" "$commit_report" \
+    "${worktree_report}.err" "${commit_report}.err"
+
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    printf '%s\n' "gitleaks not found on PATH" >"$findings"
+    return 2
+  fi
+
+  worktree_dirty=false
+  if [ -n "$(git -C "$repo" status --porcelain 2>/dev/null || true)" ]; then
+    worktree_dirty=true
+  fi
+
+  commit_changed=false
+  if [ -s "$baseline" ]; then
+    base=$(cat "$baseline" 2>/dev/null || true)
+    if [ -n "$base" ] && git -C "$repo" cat-file -e "$base^{commit}" 2>/dev/null &&
+      ! git -C "$repo" diff --quiet "$base"..HEAD -- 2>/dev/null; then
+      commit_changed=true
+    fi
+  fi
+
+  if [ "$worktree_dirty" = "true" ]; then
+    tmp_index=$(mktemp "$proof_dir/gitleaks-index.XXXXXX")
+    rm -f "$tmp_index"
+    if GIT_INDEX_FILE="$tmp_index" git -C "$repo" read-tree HEAD >/dev/null 2>&1; then
+      GIT_INDEX_FILE="$tmp_index" git -C "$repo" add -N -- . >/dev/null 2>&1 || true
+      scan_rc=0
+      GIT_INDEX_FILE="$tmp_index" run_gitleaks_command "$worktree_report" \
+        gitleaks protect --source "$repo" --redact --no-banner --log-level error \
+          --report-format json --report-path "$worktree_report" || scan_rc=$?
+      case "$scan_rc" in
+        0|1)
+          [ -f "$worktree_report" ] || errors="$errors worktree"
+          ;;
+        *) errors="$errors worktree" ;;
+      esac
+    else
+      printf '%s\n' "could not prepare temporary git index for worktree scan" >"${worktree_report}.err"
+      errors="$errors worktree"
+    fi
+    rm -f "$tmp_index"
+  fi
+
+  if [ "$commit_changed" = "true" ]; then
+    scan_rc=0
+    run_gitleaks_command "$commit_report" \
+      gitleaks detect --source "$repo" --log-opts "$base..HEAD" --redact --no-banner \
+        --log-level error --report-format json --report-path "$commit_report" || scan_rc=$?
+    case "$scan_rc" in
+      0|1)
+        [ -f "$commit_report" ] || errors="$errors commits"
+        ;;
+      *) errors="$errors commits" ;;
+    esac
+  fi
+
+  reports=()
+  [ -f "$worktree_report" ] && reports+=("$worktree_report")
+  [ -f "$commit_report" ] && reports+=("$commit_report")
+  if [ "${#reports[@]}" -gt 0 ]; then
+    jq -s 'add' "${reports[@]}" >"$report" 2>/dev/null || cp "${reports[0]}" "$report"
+  else
+    printf '[]\n' >"$report"
+  fi
+
+  if [ -n "$errors" ]; then
+    {
+      printf '%s\n' "gitleaks failed for:$errors"
+      [ -s "${worktree_report}.err" ] && cat "${worktree_report}.err"
+      [ -s "${commit_report}.err" ] && cat "${commit_report}.err"
+    } >"$findings"
+    return 2
+  fi
+
+  findings_count=$(jq 'length' "$report" 2>/dev/null || printf '0')
+  if [ "${findings_count:-0}" -gt 0 ]; then
+    format_gitleaks_findings "$report" >"$findings"
+    return 1
+  fi
+
+  rm -f "$findings" "$worktree_report" "$commit_report"
+  return 0
 }
 
 hash_string() {
@@ -175,6 +282,70 @@ repo_identity() {
   fi
 }
 
+activity_marker_summary() {
+  local session_id="$1"
+  local cwd="$2"
+  local marker name found=""
+
+  for name in shell edit subagent; do
+    marker=$(codex_existing_state_file activity "$name" "$session_id" "$cwd" 2>/dev/null || true)
+    [ -n "$marker" ] && found="$found $name"
+  done
+
+  printf '%s\n' "$found"
+}
+
+transcript_has_activity_since_last_user() {
+  local transcript="$1"
+
+  [ -n "$transcript" ] && [ -f "$transcript" ] || return 1
+  jq -e -s '
+    def response_item_type($e):
+      $e.payload.type // $e.payload.item.type // "";
+    def content_of($e):
+      $e.message.content // $e.payload.message.content // $e.payload.item.content // $e.payload.content // "";
+    def event_role($e):
+      if $e.type == "user" then "user"
+      elif $e.type == "assistant" then "assistant"
+      elif $e.type == "response_item" then
+        if response_item_type($e) == "function_call" then "assistant"
+        elif response_item_type($e) == "function_call_output" then "tool_result"
+        else ($e.payload.role // $e.payload.item.role // "") end
+      elif $e.type == "message" then ($e.role // "")
+      else "" end;
+    def is_real_user($e):
+      event_role($e) == "user"
+      and ((content_of($e) | type) == "string")
+      and ((content_of($e) | test("^[[:space:]]*<(hook_prompt|subagent_notification|turn_aborted)"; "i")) | not)
+      and (($e.isMeta // $e.message.isMeta // false) | not);
+    def call_records($e):
+      if $e.type == "response_item" and response_item_type($e) == "function_call" then
+        [{
+          name: ($e.payload.name // $e.payload.item.name // ""),
+          arguments: (($e.payload.arguments // $e.payload.item.arguments // "") | tostring)
+        }]
+      else
+        (content_of($e) as $c
+        | if ($c | type) == "array" then
+          [$c[] | select(.type == "tool_use" or .type == "function_call")
+            | {name: (.name // ""), arguments: ((.input // .arguments // "") | tostring)}]
+        else [] end)
+      end;
+    def active_call($c):
+      (($c.name // "") | test("(^|\\.)(apply_patch|Edit|Write|MultiEdit|spawn_agent|send_input|wait_agent|close_agent|resume_agent)$"))
+      or
+      (($c.name // "") == "multi_tool_use.parallel"
+        and (($c.arguments // "") | test("functions\\.(apply_patch|spawn_agent|send_input|wait_agent|close_agent|resume_agent)")));
+    . as $all
+    | ([ $all | to_entries[] | select(is_real_user(.value)) | .key ] | last // -1) as $last_user
+    | $last_user >= 0 and
+      ([ $all | to_entries[]
+        | select(.key > $last_user and event_role(.value) == "assistant")
+        | call_records(.value)[]
+        | select(active_call(.)) ] | length) > 0
+  ' "$transcript" >/dev/null 2>&1
+}
+
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
 esac
@@ -195,11 +366,13 @@ fi
 
 proof_dir="$root/$session_id"
 proof="$proof_dir/proof.md"
-summary="$proof_dir/summary-to-print.md"
 instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
 skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
 eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
+ate_active=$(codex_existing_state_file ate ate_active "$session_id" "$cwd" 2>/dev/null || true)
+task_active=$(codex_existing_state_file active-task task_active "$session_id" "$cwd" 2>/dev/null || true)
+activity_summary="$(activity_marker_summary "$session_id" "$cwd")"
 change_summary="$(git_change_summary "$repo" "$baseline" || true)"
 changed=false
 [ -n "$change_summary" ] && changed=true
@@ -211,7 +384,7 @@ fi
 mkdir -p "$proof_dir"
 
 proof_recovery_text() {
-  printf ' Update %s using %s; if that file is missing, read %s.' \
+  printf ' Legacy proof files are optional. Update or remove %s using %s; if that file is missing, read %s.' \
     "$proof" "$instructions" "$HOME/.codex/hooks/stop-checklist.md"
 }
 
@@ -222,11 +395,40 @@ block_proof_validation() {
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
   codex_note_state_session_id "$eci_active" "$session_id" || true
-  json_block "ECI is active for this session. Complete the ECI task, hard-escalate it, or disengage through ~/.codex/bin/eci-active off <disengage-report.md> before stopping."
+  json_block "ECI is active for this session. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
   exit 0
 fi
 
 if [ -n "$skip" ] && [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/dev/null)" ]; then
+  json_continue
+  exit 0
+fi
+
+if [ -n "$ate_active" ] && [ -f "$ate_active" ]; then
+  ate_phase=$(codex_state_value "$ate_active" phase || true)
+  case "$ate_phase" in
+    awaiting_user|closed) ;;
+    *)
+      codex_note_state_session_id "$ate_active" "$session_id" || true
+      json_block "ATE is active for this session. Continue the agent team task, update the session project-understanding ledger, report a real blocker, or close ATE before stopping."
+      exit 0
+      ;;
+  esac
+fi
+
+# Early exit: if this session did no mutation work since the last user
+# message, skip the stop gate regardless of pre-existing dirt from prior sessions.
+if ! transcript_has_activity_since_last_user "$transcript_path"; then
+  json_continue
+  exit 0
+fi
+
+# Legacy gate: also continue if none of the other indicators are present
+# (preserved for sessions where transcript may not be available).
+if [ ! -f "$proof" ] &&
+  [ "$changed" != "true" ] &&
+  [ -z "$task_active" ] &&
+  [ -z "$activity_summary" ]; then
   json_continue
   exit 0
 fi
@@ -241,14 +443,14 @@ if reviewer_out=$(printf '%s' "$input" | "$HOOK_DIR/system-prompt-reviewer.sh");
 fi
 
 if [ -f "$proof" ]; then
-  if section_has_body "$proof" "ECI completion certificate"; then
-    if ! section_has_body "$proof" "Stop checklist walkthrough" || ! section_has_body "$proof" "Incomplete compliance"; then
+  if codex_markdown_section_has_body "$proof" "ECI completion certificate"; then
+    if ! codex_markdown_section_has_body "$proof" "Stop checklist walkthrough" || ! codex_markdown_section_has_body "$proof" "Incomplete compliance"; then
       block_proof_validation "ECI completion proof must include non-empty Stop checklist walkthrough and Incomplete compliance sections."
     fi
 
-    verdicts=$(terminal_verdict_count "$proof")
-    if [ "$verdicts" -ne 1 ]; then
-      block_proof_validation "ECI completion proof must include exactly one terminal verdict marker: clean-pass:, hard-escalation:, or user-closed:."
+    marker_error="$(codex_eci_terminal_verdict_error "ECI completion proof" "$proof")"
+    if [ -n "$marker_error" ]; then
+      block_proof_validation "$marker_error"
     fi
   elif ! grep -qiE 'fast.exit|fast exit' "$proof"; then
     missing=""
@@ -465,51 +667,92 @@ if [ -f "$proof" ]; then
     rm -f "$audit_hashes"
   fi
 
-  cp "$proof" "$summary"
+  activity_dir=$(codex_session_state_dir activity "$session_id" 2>/dev/null || true)
+  task_dir=$(codex_session_state_dir active-task "$session_id" 2>/dev/null || true)
+  [ -n "$activity_dir" ] && rm -rf "$activity_dir"
+  [ -n "$task_dir" ] && rm -f "$task_dir/task_active"
   rm -f "$proof" "$instructions" "$baseline"
-  if [ "$changed" = "true" ]; then
+  dirty_summary="$(git_dirty_summary "$repo" || true)"
+  if [ -n "$dirty_summary" ]; then
     git_status_at_accept="$proof_dir/git-status-at-accept.txt"
-    printf '%s\n' "$change_summary" >"$git_status_at_accept"
-    json_block "Verification proof accepted, but git state is still dirty. Read $summary and $git_status_at_accept, relay the relevant result to the user, commit owned completed changes or state unrelated blockers, then stop."
+    printf '%s\n' "$dirty_summary" >"$git_status_at_accept"
+    json_block "Verification proof accepted (legacy path), but git state is still dirty. Read $git_status_at_accept, relay the relevant result to the user, commit owned completed changes or state unrelated blockers, then stop."
   else
-    json_block "Verification proof accepted. Read $summary, relay the relevant result to the user, then stop."
+    json_block "Verification proof accepted (legacy path). Relay the relevant result to the user, then stop."
   fi
   exit 0
 fi
 
 if [ "$stop_active" = "true" ]; then
+  activity_dir=$(codex_session_state_dir activity "$session_id" 2>/dev/null || true)
+  task_dir=$(codex_session_state_dir active-task "$session_id" 2>/dev/null || true)
+  [ -n "$activity_dir" ] && rm -rf "$activity_dir"
+  [ -n "$task_dir" ] && rm -f "$task_dir/task_active"
+  rm -f "$instructions" "$baseline"
   json_continue
   exit 0
 fi
 
 if [ "$changed" != "true" ]; then
+  head_summary="$(git_head_summary "$repo")"
+  [ -n "$head_summary" ] || head_summary="N/A (not a git repo)"
+  activity_display="${activity_summary# }"
+  [ -n "$activity_display" ] || activity_display="none"
   cat >"$instructions" <<EOF
 # Stop Checklist Review
 
-No changed git state was detected, so full code verification is not required. Still verify the applicable stop checklist before stopping.
+Automated checks already run by stop-gate:
+- Git state: clean. No changed git state was detected.
+- HEAD: $head_summary
+- Activity markers: $activity_display
 
-1. Read ~/.codex/hooks/stop-checklist.md.
-2. Verify every applicable item.
+Do not rerun automated git checks unless investigating a reported failure.
+
+Manual checks remaining:
+1. Verify the applicable non-automated stop-checklist items.
+2. If ECI or ATE was used, verify the session project-understanding ledger was updated.
 3. If any item failed, fix it before stopping.
-4. Write proof to:
-
-   $proof
-
-Required proof:
-
-fast-exit: checklist review (no changed git state)
-
-- Checklist items applied:
-- Pass/fail result:
-- Issues found and resolution:
 EOF
 
-  json_block "Check stop criteria. Follow $instructions, write $proof, then stop again."
+  json_block "Automated stop checks passed. Follow $instructions for remaining manual checks, then stop again."
   exit 0
 fi
 
-sed \
-  -e "s|{{PROOF}}|$proof|g" \
-  "$HOME/.codex/hooks/stop-verification.md" >"$instructions"
+head_summary="$(git_head_summary "$repo")"
+[ -n "$head_summary" ] || head_summary="N/A (not a git repo)"
+dirty_summary="$(git_dirty_summary "$repo" || true)"
+[ -n "$dirty_summary" ] || dirty_summary="clean"
+secret_scan_rc=0
+run_secret_scan "$repo" "$baseline" "$proof_dir" || secret_scan_rc=$?
+case "$secret_scan_rc" in
+  0) secret_scan_status="passed (gitleaks)" ;;
+  1)
+    json_block "Automated secret scan found possible secrets. Read $proof_dir/gitleaks-findings.txt, remove or explicitly remediate them, then stop again."
+    exit 0
+    ;;
+  *)
+    json_block "Automated secret scan could not complete. Read $proof_dir/gitleaks-findings.txt, fix the scanner failure, then stop again."
+    exit 0
+    ;;
+esac
+{
+  cat <<EOF
+# Automated Stop Checks
 
-json_block "Code changes are present. Follow $instructions, write $proof, then stop again."
+Automated checks already run by stop-gate:
+- Git changes since the session baseline: present.
+- Dirty worktree: $dirty_summary
+- HEAD: $head_summary
+- Secret scan: $secret_scan_status
+- Change summary:
+EOF
+  printf '%s\n' "$change_summary" | indent_text
+  cat <<'EOF'
+
+Do not rerun automated git checks unless investigating a reported failure.
+
+EOF
+  cat "$HOME/.codex/hooks/stop-verification.md"
+} >"$instructions"
+
+json_block "Automated stop checks found changed git state. Follow $instructions for remaining verification, then stop again."
