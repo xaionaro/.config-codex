@@ -18,7 +18,7 @@ Follow this loop:
 loop(loop(RCA, critic), repro), loop(fix, review)
 ```
 
-Core rule: keep the failure check cheap and rerun it constantly. After each probe, logging change, or fix, immediately answer: is the original failure still present?
+Core rule: use the shortest faithful repro and rerun it constantly. If an issue reproduces without full E2E (unit/API/CLI/log replay/component), iterate there first; use E2E later for user-path proof. After each probe, logging change, or fix, immediately answer: is the original failure still present?
 
 - **Repro loop:** Keep a minimal, fast repro command/path ready. Reproduce the current failure before each RCA pass and rerun the repro after each small probe, logging change, or fix. If reproduction is slow or inconsistent, first shrink/stabilize it with evidence, logging, or tests until the failure mode is observable.
 - **RCA/critic loop:** Gather evidence first: inspect the failing path, relevant code, logs, tests, recent changes, and adjacent systems. State an informed RCA hypothesis from that evidence, not a guess. The critic must identify alternative explanations, missing evidence, and predictions that could falsify the hypothesis. Repeat until the critic has no unresolved objections.

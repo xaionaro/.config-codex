@@ -5,9 +5,9 @@ description: Use when writing, running, or reviewing tests, or before reporting 
 
 # Testing Discipline
 
-- Test every modification (unit + E2E) before reporting done. Untested code has unknown correctness — "I wrote it correctly" is not evidence.
-- Use E2E testing for every feature when a framework is available. Unit tests verify components in isolation; only E2E tests verify the feature works for the user.
-- E2E means: deploy the built artifact to the target environment, exercise features through the real UI or API as a user would, and validate observable outcomes (screenshots, responses, state). Anything less (compilation check, import test, unit test with mocks) is not E2E — call it what it actually is.
+- Test every modification before reporting done: unit checks plus E2E when a framework exists. Unit isolates; E2E proves user path.
+- E2E = built artifact in target env, exercised through real UI/API, validated by output/screenshots/state. Anything less is not E2E; name it honestly.
+- Iterate on the shortest faithful check first. If behavior reproduces without full E2E (unit/API/CLI/component), debug there; use E2E for final user-path proof.
 - Treat tests as falsification attempts — they try to disprove your code works. Tests that cannot fail are worthless. Assert behavior and edge cases, not just happy path.
 - **Dual-sided testing**: Every test must confirm both that good behavior IS happening AND that bad behavior is NOT happening. Testing only one side leaves the other unverified.
 - **Test validation**: When adding a new test, break the code intentionally and confirm the test fails. A test that passes regardless of code correctness proves nothing.

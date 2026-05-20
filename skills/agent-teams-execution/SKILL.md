@@ -363,7 +363,7 @@ Phase 2 design **must include**:
 - **Test designer** writes specs covering all applicable test types: integration tests (cross-task boundaries), full E2E tests (entire user-facing flows), and UI tests (screen manipulation, interaction sequences) when the project has a UI.
 - Every cross-task interface must have at least one test on the real call path (no mocks at boundaries).
 - E2E tests exercise complete workflows as a user would, including UI manipulation when applicable.
-- Batch E2E only when E2E capacity is the bottleneck. Until capacity opens, actively use alternate checks to test and discover issues. Before launch, wait briefly for imminent ready tasks unless the bottleneck would idle. After launch, leave healthy batches alone; queue late arrivals. Report separate task verdicts.
+- E2E capacity bottlenecked: batch only then. While waiting, debug via shortest faithful repro (unit/API/CLI/log replay/component) before full E2E. Wait briefly for imminent tasks only if no slot idles; keep healthy batches running; queue late arrivals; report per-task verdicts.
 - **Failure routing:** cross-task boundary bug → executor pair. Design flaw → research/design.
 
 ## Feedback Loops
@@ -682,7 +682,7 @@ Compliance:
 
 - [ROLE-SPECIFIC RULES]
 - [FOR EXECUTORS:] While implementing, actively look for code smell and design issues in all code you study or touch. Report ALL findings to coordinator — do not silently work around them.
-- [FOR EXECUTORS, code/debugging tasks:] Before "submitted": provide root-cause rationale, build, run full test suite, exercise the affected feature through real UI/API as a user. Cite direct evidence (output, screenshot, observed state) in submission. Proxy evidence (unit tests, lint) insufficient. No root-cause rationale or E2E evidence = coordinator bounces back without routing to reviewer.
+- [FOR EXECUTORS, code/debugging tasks:] Before "submitted": provide RCA; build; run full suite; exercise affected user path via real UI/API; cite output/screenshot/state. Proxy evidence alone insufficient. No RCA or E2E evidence = bounce.
 - Mark task as "submitted" (not "complete") + notify coordinator when done. **CC the lead and snitch on all submitted, blocked, and completed claims.**
 - If blocked, message coordinator with specifics. **CC the lead and snitch.**
 ```

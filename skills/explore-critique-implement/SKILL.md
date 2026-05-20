@@ -213,11 +213,9 @@ Each new task message to `implementer` includes:
 - Code/debugging submissions include root-cause rationale. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation unless containment was explicitly requested.
 - Submission tags every factual claim. Untagged claim → orchestrator bounces back without spawning the gate (parallel to E2E-evidence rule).
 
-**Affected-path E2E before submit.** Apply only when a code/debugging task changes runtime behavior reachable via UI/API/device/CLI. Skip for docs, prompt/skill edits, config-only, tests-only, or pure refactors with no behavior change. If applicable but unavailable, the implementer reports BLOCKED with the exact missing resource. Missing applicable E2E without rationale → orchestrator bounces before Step 4.
+**Affected-path E2E before submit.** Runtime behavior reachable via UI/API/device/CLI: build, run full tests, exercise affected user path, cite output/screenshot/state. Proxy evidence alone insufficient. Skip docs, prompts, config-only, tests-only, pure refactors. If E2E unavailable, report BLOCKED with the exact missing resource; missing E2E/rationale → bounce before Step 4.
 
-When applicable, implementer must build, run full test suite, exercise the affected feature through real UI/API as a user. Cite direct evidence (output, screenshot, observed state). Proxy evidence (unit tests, lint) insufficient.
-
-If submission lacks E2E evidence (and E2E is applicable), `send_input`: "Submission lacks E2E evidence — re-run build, test suite, and user-path exercise; cite output. Do not re-submit until evidence is in the message body."
+If applicable E2E evidence is missing, `send_input`: "Missing E2E evidence — build, run full suite, exercise user path, cite output/screenshot/state. Do not resubmit without evidence."
 
 ## Step 4: Review gate (parallel)
 
@@ -261,12 +259,12 @@ Emit only issues that matter for long-term health. "Would refactor eventually" i
 ### E2E agent — end-to-end verification
 
 **Code/debugging tasks only.** Skip for non-code tasks (docs, config, design).
-Batch E2E only when E2E capacity is the bottleneck (device/browser/env slots, credentials, long setup). Until capacity opens, actively use alternate checks to test and discover issues. Before launch, wait briefly for imminent ready tasks unless the bottleneck would idle. After launch, leave healthy batches alone; queue late arrivals. Report separate verdicts per task.
+E2E capacity bottlenecked (device/browser/env slots, credentials, long setup): batch only then. While waiting, debug via shortest faithful repro (unit/API/CLI/log replay/component) before full E2E. Wait briefly for imminent tasks only if no slot idles; keep healthy batches running; queue late arrivals; report per-task verdicts.
 
-1. Build the project. Compilation failure = issue.
-2. Run full test suite. Failures = issue.
-3. Exercise the affected feature through real UI or API as a user would. Verify observable outcomes (output, screenshots, state). Proxy evidence (unit tests pass, linter clean) alone insufficient — direct evidence required.
-4. Confirm no regressions in related features.
+1. Build; failure = issue.
+2. Run full suite; failure = issue.
+3. Exercise affected user path through real UI/API; cite output/screenshot/state. Proxy evidence alone insufficient.
+4. Check related regressions.
 
 ### Evaluating results
 
