@@ -363,7 +363,7 @@ Phase 2 design **must include**:
 - **Test designer** writes specs covering all applicable test types: integration tests (cross-task boundaries), full E2E tests (entire user-facing flows), and UI tests (screen manipulation, interaction sequences) when the project has a UI.
 - Every cross-task interface must have at least one test on the real call path (no mocks at boundaries).
 - E2E tests exercise complete workflows as a user would, including UI manipulation when applicable.
-- Batch E2E-ready tasks only when scarce resources would contend and batching meaningfully cuts wall time; report separate task verdicts.
+- Batch E2E only when E2E capacity is the bottleneck. When bottlenecked, wait for imminent E2E-ready tasks before launching the current queue; launch immediately if waiting would idle the bottleneck. Report separate task verdicts.
 - **Failure routing:** cross-task boundary bug → executor pair. Design flaw → research/design.
 
 ## Feedback Loops
@@ -548,7 +548,7 @@ Review independently first — no reading peer findings before writing your own.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise. Identify what's missing, what could be wrong, what needs verification. Route findings to a second agent for independent verification before acting on them.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, investigate per Crash Recovery. If confirmed unresponsive, follow the respawn sequence.
 7. **Handle "submitted" tasks.** When a task is submitted: verify Stop Checklist items (changes committed, claims tagged, critique log exists). Bounce back immediately if incomplete — don't waste reviewer time. If checklist passes, route to paired reviewer. After reviewer approves, route to test pipeline (code tasks) or verifier (non-code tasks).
-8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks except batched E2E under Testing Protocol. After ALL tasks tested → spawn QA. Record checkpoint per task in the ledger: what was produced, who approved, git SHA.
+8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks except bottlenecked E2E batches under Testing Protocol. After ALL tasks tested → spawn QA. Record checkpoint per task in the ledger: what was produced, who approved, git SHA.
 9. **Budget context** -- summaries, not raw output (see below).
 10. **Enforce loop limits.** Escalate on 11th rejection / 3rd QA re-entry.
 11. **Crash recovery** -- detect unresponsive teammates, request lead to re-spawn. For executors: review changes before re-spawning. Max 2 re-spawns.
@@ -693,7 +693,7 @@ Compliance:
 |---------|-----|
 | Spawning without a skill-defined role, ownership, or stop condition | STOP. Use bounded Codex agents with explicit role, ownership, and expected output |
 | Work without corresponding task | Create task immediately |
-| Task waiting for other tasks before testing | Pipelines are per-task. Code approved + test specs ready → start testing immediately, except batched E2E under Testing Protocol |
+| Task waiting for other tasks before testing | Pipelines are per-task. Code approved + test specs ready → start testing immediately, except bottlenecked E2E batches under Testing Protocol |
 | Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`, or hard-escalate if unavailable. |
 | Spawning custom-named teammates outside defined roles | Unbounded growth. Use role names in prompts and roster mapping: executor-N, explorer-N. Reassign idle teammates. |
 | Executor assigned new task with unreviewed previous work | STOP. Assign to a different executor/reviewer pair instead. This executor waits for its reviewer |
