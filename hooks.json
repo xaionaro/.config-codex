@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/session-snapshot.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/session-snapshot.sh\"'",
             "statusMessage": "Loading Codex session rules"
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/prompt-task-reminder.sh"
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/prompt-task-reminder.sh\"'"
           }
         ]
       }
@@ -29,12 +29,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/validate-bash.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-bash.sh\"'",
             "statusMessage": "Checking shell command"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/edit-bash-pre-reviewer.sh\"'",
             "statusMessage": "Checking first tool call"
           }
         ]
@@ -44,27 +44,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/validate-apply-patch.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-apply-patch.sh\"'",
             "statusMessage": "Checking file edit"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/security-reminder.py",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/security-reminder.py\"'",
             "statusMessage": "Checking security-sensitive edit"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/eci-active-gate.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-active-gate.sh\"'",
             "statusMessage": "Checking ECI gate"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/ate-orchestrator-gate.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/ate-orchestrator-gate.sh\"'",
             "statusMessage": "Checking role gate"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/edit-bash-pre-reviewer.sh\"'",
             "statusMessage": "Checking first tool call"
           }
         ]
@@ -74,27 +74,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/validate-edit-write.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-edit-write.sh\"'",
             "statusMessage": "Checking file edit"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/security-reminder.py",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/security-reminder.py\"'",
             "statusMessage": "Checking security-sensitive edit"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/eci-active-gate.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-active-gate.sh\"'",
             "statusMessage": "Checking ECI gate"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/ate-orchestrator-gate.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/ate-orchestrator-gate.sh\"'",
             "statusMessage": "Checking role gate"
           },
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/edit-bash-pre-reviewer.sh\"'",
             "statusMessage": "Checking first tool call"
           }
         ]
@@ -105,7 +105,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/streaming/.codex/hooks/stop-gate.sh",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/stop-gate.sh\"'",
             "timeout": 300,
             "statusMessage": "Checking stop criteria"
           }

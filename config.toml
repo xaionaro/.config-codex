@@ -3,8 +3,8 @@ model_reasoning_effort = "xhigh"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 developer_instructions = """
-Also follow /home/streaming/.codex/CODEX.md as user-level guidance when it does not conflict with higher-priority Codex instructions.
-Ported skills live in /home/streaming/.codex/skills; use matching skills for Go, Python, tests, debugging, UI, Android, porting, skill/prompt work, and explicit delegated-agent work.
+Also follow `$CODEX_HOME/CODEX.md` (default `~/.codex/CODEX.md`) as user-level guidance when it does not conflict with higher-priority Codex instructions.
+Ported skills live in `$CODEX_HOME/skills` (default `~/.codex/skills`); use matching skills for Go, Python, tests, debugging, UI, Android, porting, skill/prompt work, and explicit delegated-agent work.
 """
 
 [features]
@@ -14,39 +14,6 @@ hooks = true
 command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
 
-[projects."/"]
-trust_level = "trusted"
-
-[projects."/home/streaming/.codex"]
-trust_level = "trusted"
-
-[projects."/home/streaming/go/src/github.com/xaionaro-go/jni"]
-trust_level = "trusted"
-
-[projects."/home/streaming/go/src/github.com/xaionaro-go"]
-trust_level = "trusted"
-
-[projects."/home/streaming"]
-trust_level = "trusted"
-
-[projects."/home/streaming/go/src/github.com/xaionaro-go/avpipeline"]
-trust_level = "trusted"
-
-[projects."/home/streaming/go/src/github.com/xaionaro-go/avd"]
-trust_level = "trusted"
-
-[projects."/tmp/codex-verify-ws"]
-trust_level = "trusted"
-
-[projects."/home/streaming/go/src/github.com/xaionaro-go/ndk"]
-trust_level = "trusted"
-
-[projects."/home/streaming/.claude"]
-trust_level = "trusted"
-
-[projects."/home/streaming/go/src/github.com/bluenviron/mediamtx"]
-trust_level = "trusted"
-
 [tui.model_availability_nux]
 "gpt-5.5" = 4
 
@@ -54,32 +21,32 @@ trust_level = "trusted"
 hide_rate_limit_model_nudge = true
 
 [mcp_servers.omx_state]
-command = "node"
-args = ["/usr/lib/node_modules/oh-my-codex/dist/mcp/state-server.js"]
+command = "omx"
+args = ["mcp-serve", "state"]
 enabled = true
 startup_timeout_sec = 5
 
 [mcp_servers.omx_memory]
-command = "node"
-args = ["/usr/lib/node_modules/oh-my-codex/dist/mcp/memory-server.js"]
+command = "omx"
+args = ["mcp-serve", "memory"]
 enabled = true
 startup_timeout_sec = 5
 
 [mcp_servers.omx_code_intel]
-command = "node"
-args = ["/usr/lib/node_modules/oh-my-codex/dist/mcp/code-intel-server.js"]
+command = "omx"
+args = ["mcp-serve", "code-intel"]
 enabled = true
 startup_timeout_sec = 10
 
 [mcp_servers.omx_trace]
-command = "node"
-args = ["/usr/lib/node_modules/oh-my-codex/dist/mcp/trace-server.js"]
+command = "omx"
+args = ["mcp-serve", "trace"]
 enabled = true
 startup_timeout_sec = 5
 
 [mcp_servers.omx_wiki]
-command = "node"
-args = ["/usr/lib/node_modules/oh-my-codex/dist/mcp/wiki-server.js"]
+command = "omx"
+args = ["mcp-serve", "wiki"]
 enabled = true
 startup_timeout_sec = 5
 
@@ -106,61 +73,9 @@ wire_api = "responses"
 [profiles.deepseek-v4-pro]
 model = "deepseek-v4-pro"
 model_provider = "deepseek_direct"
-model_catalog_json = "/home/streaming/.codex/deepseek-catalog.json"
 model_reasoning_effort = "xhigh"
 
 [profiles.deepseek-v4-flash]
 model = "deepseek-v4-flash"
 model_provider = "deepseek_direct"
-model_catalog_json = "/home/streaming/.codex/deepseek-catalog.json"
 model_reasoning_effort = "xhigh"
-
-[hooks.state]
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
-enabled = true
-trusted_hash = "sha256:9cc14d1491e8fb77886292a98197809f9f90a51b8b2a1d763bb5b9064d83799e"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:1"]
-enabled = true
-trusted_hash = "sha256:ea071f7a9518e38b06fa4ca08de76535d8a25647a91faa8d15e9befd98a94067"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:0"]
-trusted_hash = "sha256:06eaaff68624ad271312a9ef7a6317c74dcc9c36824d62262199a6320acb6680"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:1"]
-trusted_hash = "sha256:d473a2ae39dae4d65bbf7f9724c57d35742c61624f95016c185ecfc3fb5ff511"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:2"]
-trusted_hash = "sha256:fef6bd7df057d7de258c0f69ebd2aa25175a92579bbb343a80cdaa067d9139c2"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:3"]
-trusted_hash = "sha256:4bd477925d514f024353d2eae03415b19e320acd5669b3404268bd79214a2d7f"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:4"]
-trusted_hash = "sha256:4de40ae7543ab16f96800a9270910a25eaefed508cd3634b78145e7354ea4e40"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:0"]
-trusted_hash = "sha256:ef9dd77ef3883c845aad3086a215ed19527cb800bc7094c68fc8da28d3ca8c66"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:1"]
-trusted_hash = "sha256:5c1a0823ad04d55494bfa1aea7bd3eb975a94b3bce7481a4f7b58fc8263add9e"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:2"]
-trusted_hash = "sha256:12ae738b40273cea55c1d2d8e6f90e916b9c94c71e306b8f9da480ae7fb43a80"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:3"]
-trusted_hash = "sha256:67bfca8be2daf713faf3edfed56fc0e5a924f8bb480f4014ee5b1fa9c281dc37"
-
-[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:4"]
-trusted_hash = "sha256:bd2dc7d6b8198e30bfc0bf679c958224d87e0134b7842f7fa0a7787bba8ac68a"
-
-[hooks.state."/home/streaming/.codex/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:6d80e33b385ead603b094ee94953d460be890f22de9f5e197738a1084d128f16"
-
-[hooks.state."/home/streaming/.codex/hooks.json:stop:0:0"]
-trusted_hash = "sha256:b4e55e7deb39355fa95f3e61d7924576132f8adfb7af32e5bbb32fe937ec8164"
-
-[hooks.state."/home/streaming/.codex/hooks.json:user_prompt_submit:0:0"]
-trusted_hash = "sha256:81ccd1d434ac5d15bfac8bb05110aea965814e1cb895699388ff01082232f67d"
-

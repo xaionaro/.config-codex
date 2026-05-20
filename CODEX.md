@@ -115,9 +115,9 @@ Subagent rule:
 - Environment IP: `192.168.141.16`.
 - LAN devices may connect through `192.168.0.131` on ports `7000-7019`, DNATed to this environment.
 - Ollama is available at `192.168.0.171:11434`.
-- Bluetooth is available as hci1/hci2 with `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/bluez-proxy/system_bus_socket`.
-- Gitleaks is required at `/usr/bin/gitleaks` or on `PATH`; the stop gate hard-blocks when it cannot scan changed work.
-- Use `~/tmp/` for large scratch files or objects when `/tmp` is tmpfs.
+- Bluetooth may be available as hci1/hci2; use the environment's `DBUS_SYSTEM_BUS_ADDRESS` when set.
+- Gitleaks is required on `PATH`; the stop gate hard-blocks when it cannot scan changed work.
+- Use `$TMPDIR` or `~/tmp/` for large scratch files or objects when default temp storage is tmpfs.
 
 ## Stop Hook
 

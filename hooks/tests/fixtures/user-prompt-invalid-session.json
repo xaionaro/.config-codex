@@ -1,6 +1,6 @@
 {
   "session_id": "../bad",
   "hook_event_name": "UserPromptSubmit",
-  "cwd": "/home/streaming/.codex",
+  "cwd": ".",
   "prompt": "test prompt"
 }

@@ -323,7 +323,7 @@ test_prompt_state_keeps_session_eci_marker_silent() {
 test_prompt_state_config_is_wired_without_probe() {
   jq -e '
     ([.hooks.UserPromptSubmit[]?.hooks[]?.command]
-      | any(. == "/home/streaming/.codex/hooks/prompt-task-reminder.sh")) and
+      | any(test("\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/hooks/prompt-task-reminder\\.sh"))) and
     ([.hooks.PostToolUse[]?.hooks[]?.command] | length == 0) and
     ([.. | objects | .command? // empty]
       | all(contains("/hooks/tests/skill-event-probe.sh") | not))
@@ -379,7 +379,7 @@ test_runtime_hook_probe_historical_evidence_is_sanitized() {
     all(keys_unsorted | all(IN("hook_event_name", "session_id", "cwd", "tool_name", "tool_input_keys", "observed"))) and
     any(
       .hook_event_name == "UserPromptSubmit" and
-      .cwd == "/home/streaming/.codex" and
+      .cwd == "<codex-home>" and
       (.session_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
     ) and
     any(
@@ -719,8 +719,8 @@ test_reviewer_backend_parser_rejects_credential_backends() {
     ! CODEX_STOP_REVIEWER="claude" parse_reviewer_env CODEX_STOP_REVIEWER &&
       ! CODEX_STOP_REVIEWER="github-copilot:gpt-4.1" parse_reviewer_env CODEX_STOP_REVIEWER &&
       ! CODEX_STOP_REVIEWER="codex-as-role:reviewer" parse_reviewer_env CODEX_STOP_REVIEWER &&
-      ! CODEX_STOP_REVIEWER="codex:/usr/bin/codex" parse_reviewer_env CODEX_STOP_REVIEWER &&
-      ! CODEX_STOP_REVIEWER="shell:/home/streaming/.codex/bin/agent" parse_reviewer_env CODEX_STOP_REVIEWER
+      ! CODEX_STOP_REVIEWER="codex:codex" parse_reviewer_env CODEX_STOP_REVIEWER &&
+      ! CODEX_STOP_REVIEWER="shell:agent" parse_reviewer_env CODEX_STOP_REVIEWER
   )
 }
 
@@ -867,7 +867,7 @@ write_fake_ps_with_secrets() {
 cat <<'PS'
 101 1 10 S python worker.py --api-key=$openai_key --password $password Authorization: Bearer $bearer_token
 102 1 11 S node service.js AWS_SECRET_ACCESS_KEY=$aws_access_key token=$github_token
-103 1 12 S /home/streaming/.codex/hooks/system-prompt-reviewer.sh --token should_skip
+103 1 12 S $ROOT/hooks/system-prompt-reviewer.sh --token should_skip
 104 1 13 S ./service --safe flag
 PS
 SH
@@ -1024,12 +1024,12 @@ test_stop_reviewer_skips_spawned_subagent_transcript() {
 
 test_stop_reviewer_timeout_and_hook_wiring() {
   jq -e '
-    ([.hooks.Stop[]?.hooks[]? | select((.command // "") | endswith("/stop-gate.sh")) | .timeout] | all(. >= 240)) and
-    ([.hooks.Stop[]?.hooks[]?.command] | all((endswith("/system-prompt-reviewer.sh") | not))) and
-    ([.hooks.PreToolUse[]?.hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh")))
+    ([.hooks.Stop[]?.hooks[]? | select((.command // "") | test("/stop-gate\\.sh")) | .timeout] | all(. >= 240)) and
+    ([.hooks.Stop[]?.hooks[]?.command] | all((test("/system-prompt-reviewer\\.sh") | not))) and
+    ([.hooks.PreToolUse[]?.hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh")))
   ' "$ROOT/hooks.json" >/dev/null
 }
 
@@ -1295,7 +1295,7 @@ eci_gate_matcher() {
   jq -er '
     [
       .hooks.PreToolUse[]?
-      | select(any(.hooks[]?; (.command // "") | endswith("/eci-active-gate.sh")))
+      | select(any(.hooks[]?; (.command // "") | test("/eci-active-gate\\.sh")))
       | .matcher
       | strings
     ] | join("|")
@@ -1557,7 +1557,7 @@ test_edit_write_hook_config_is_split_and_preserves_gates() {
     def commands_for($matcher):
       [.hooks.PreToolUse[]? | select(.matcher == $matcher) | .hooks[]?.command];
     def has($commands; $suffix):
-      any($commands[]?; endswith($suffix));
+      any($commands[]?; contains($suffix));
 
     (commands_for("^apply_patch$") as $apply
       | commands_for("^(Edit|Write|MultiEdit|NotebookEdit)$") as $direct
