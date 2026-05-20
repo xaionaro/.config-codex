@@ -2695,6 +2695,23 @@ test_stop_gate_allows_spawned_agent_transcript_with_legacy_parent_eci_state() {
   json_field_equals "$out" '.continue // false' "true"
 }
 
+test_stop_gate_allows_spawned_agent_transcript_when_input_session_is_parent_eci() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-subagent-input-parent-eci)"
+  CODEX_SESSION_ID=parent-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "parent ECI" >"$TMP_ROOT/stop-subagent-input-parent-eci-on.out" 2>"$TMP_ROOT/stop-subagent-input-parent-eci-on.err" || return 1
+
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/stop-subagent-input-parent-eci.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.session_id = "parent-session" | .cwd = $cwd | .transcript_path = $transcript' \
+    "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-subagent-input-parent-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true"
+}
+
 test_stop_gate_blocks_subagent_touched_repo_changes() {
   local proof_root repo transcript touch_input stop_input out marker_count reminder
   proof_root="$(fresh_proof_root stop-subagent-touched-change)"
@@ -3510,6 +3527,8 @@ run_case "stop gate blocks spawned-agent transcript with own ECI state" \
   test_stop_gate_blocks_spawned_agent_transcript_with_own_eci_state
 run_case "stop gate allows spawned-agent transcript with legacy parent ECI state" \
   test_stop_gate_allows_spawned_agent_transcript_with_legacy_parent_eci_state
+run_case "stop gate allows spawned-agent transcript when input session is parent ECI" \
+  test_stop_gate_allows_spawned_agent_transcript_when_input_session_is_parent_eci
 run_case "stop gate blocks subagent touched repo changes" \
   test_stop_gate_blocks_subagent_touched_repo_changes
 run_case "stop gate ignores subagent unrelated dirty file" \

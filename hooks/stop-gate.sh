@@ -57,6 +57,11 @@ active_eci_marker_for_stop() {
   fi
 
   if codex_valid_session_id "$session_id"; then
+    if [ "$is_subagent_context" = true ]; then
+      parent_session_id="$(codex_hook_parent_session_id "$input" 2>/dev/null || true)"
+      [ "$session_id" = "$parent_session_id" ] && return 1
+    fi
+
     marker="$root/$session_id/eci_active"
     [ -f "$marker" ] && { printf '%s\n' "$marker"; return 0; }
 
