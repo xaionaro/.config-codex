@@ -363,7 +363,7 @@ Phase 2 design **must include**:
 - **Test designer** writes specs covering all applicable test types: integration tests (cross-task boundaries), full E2E tests (entire user-facing flows), and UI tests (screen manipulation, interaction sequences) when the project has a UI.
 - Every cross-task interface must have at least one test on the real call path (no mocks at boundaries).
 - E2E tests exercise complete workflows as a user would, including UI manipulation when applicable.
-- Batch E2E only when E2E capacity is the bottleneck. When bottlenecked, wait for imminent E2E-ready tasks before launching the current queue; launch immediately if waiting would idle the bottleneck. Report separate task verdicts.
+- Batch E2E only when E2E capacity is the bottleneck. Before launch, wait briefly for imminent ready tasks unless the bottleneck would idle. After launch, leave healthy batches alone; queue late arrivals. Report separate task verdicts.
 - **Failure routing:** cross-task boundary bug → executor pair. Design flaw → research/design.
 
 ## Feedback Loops
