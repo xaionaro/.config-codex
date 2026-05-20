@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/codex-git-dirty-watchdog"
+run_log="$cache_root/run.log"
+
+mkdir -p "$cache_root"
+rm -f "$cache_root/MANDATORY_COMMIT" "$cache_root/MANDATORY_COMMIT.next" \
+	"$cache_root/BLOCKED" "$cache_root/BLOCKED.next"
+
+printf '%s git-dirty-watchdog disabled; stop hook enforces commit hygiene\n' \
+	"$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$run_log"
+
+exit 0

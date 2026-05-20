@@ -7,7 +7,7 @@ input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
 case "$tool_name" in
-  apply_patch|Edit|Write|MultiEdit) ;;
+  apply_patch|Edit|Write|MultiEdit|NotebookEdit) ;;
   *) exit 0 ;;
 esac
 

@@ -5,6 +5,9 @@ set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+. "$HOOK_DIR/lib/codex-tmp.sh"
+codex_init_tmp || true
+codex_install_fail_open_trap stop-gate
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
@@ -12,6 +15,8 @@ transcript_path=$(printf '%s' "$input" | jq -r 'if (.transcript_path? | type) ==
 stop_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
+root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+proof_dir="$root/$session_id"
 
 json_continue() {
   jq -n '{continue: true}'
@@ -43,6 +48,50 @@ json_block() {
 
   jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
+
+active_eci_marker_for_stop() {
+  local marker side_stop parent_session_id is_subagent_context=false
+
+  if codex_hook_is_subagent_context "$input"; then
+    is_subagent_context=true
+  fi
+
+  if codex_valid_session_id "$session_id"; then
+    marker="$root/$session_id/eci_active"
+    [ -f "$marker" ] && { printf '%s\n' "$marker"; return 0; }
+
+    [ "$is_subagent_context" = true ] && return 1
+
+    side_stop=$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)
+    parent_session_id="$(codex_state_value "$side_stop" parent_session_id || true)"
+    if codex_valid_session_id "$parent_session_id"; then
+      marker="$root/$parent_session_id/eci_active"
+      [ -f "$marker" ] && { printf '%s\n' "$marker"; return 0; }
+    fi
+  fi
+
+  [ "$is_subagent_context" = true ] && return 1
+
+  codex_legacy_eci_markers_for_cwd "$cwd" 2>/dev/null | head -n1
+}
+
+block_if_eci_active_for_stop() {
+  local marker
+
+  marker="$(active_eci_marker_for_stop || true)"
+  [ -n "$marker" ] && [ -f "$marker" ] || return 1
+  codex_valid_session_id "$session_id" && codex_note_state_session_id "$marker" "$session_id" || true
+  json_block "ECI is active for this stop attempt via marker $marker. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  return 0
+}
+
+case "$session_id" in
+  ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
+esac
+
+if block_if_eci_active_for_stop; then
+  exit 0
+fi
 
 if [ -z "$transcript_path" ]; then
   json_continue
@@ -99,6 +148,62 @@ git_head_summary() {
 
 indent_text() {
   sed 's/^/  /'
+}
+
+touched_repo_change_summary() {
+  local marker="$1"
+  local repo base_status_sha status status_sha repo_wide path path_status found=false
+
+  repo="$(codex_state_value "$marker" repo || true)"
+  [ -n "$repo" ] || return 1
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+
+  status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal 2>/dev/null || true)"
+  [ -n "$status" ] || return 1
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    path_status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal -- "$path" 2>/dev/null || true)"
+    [ -n "$path_status" ] || continue
+    if [ "$found" = false ]; then
+      printf '%s\n' "$repo"
+      found=true
+    fi
+    printf '%s\n' "$path_status" | indent_text
+  done < <(awk 'index($0, "path: ") == 1 { print substr($0, 7) }' "$marker" 2>/dev/null)
+  [ "$found" = true ] && return 0
+
+  repo_wide="$(codex_state_value "$marker" repo_wide || true)"
+  [ "$repo_wide" = true ] || return 1
+
+  base_status_sha="$(codex_state_value "$marker" status_sha || true)"
+  status_sha="$(codex_hash_string "$status")"
+
+  if [ -n "$status" ] && [ -n "$base_status_sha" ] && [ "$status_sha" != "$base_status_sha" ]; then
+    printf '%s\n' "$repo"
+    printf '%s\n' "$status" | indent_text
+    return 0
+  fi
+
+  return 1
+}
+
+touched_repos_change_summary() {
+  local session_id="$1"
+  local dir marker found=false summary
+
+  dir="$(codex_session_state_dir touched-repos "$session_id" 2>/dev/null || true)"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+
+  for marker in "$dir"/*; do
+    [ -f "$marker" ] || continue
+    summary="$(touched_repo_change_summary "$marker" || true)"
+    [ -n "$summary" ] || continue
+    printf '%s\n' "$summary"
+    found=true
+  done
+
+  [ "$found" = "true" ]
 }
 
 format_gitleaks_findings() {
@@ -223,14 +328,6 @@ run_secret_scan() {
   return 0
 }
 
-hash_string() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$1" | sha256sum | awk '{print $1}'
-  else
-    printf '%s' "$1" | cksum | awk '{print $1}'
-  fi
-}
-
 canonical_existing_path() {
   local path="$1"
   local dir base canonical_dir
@@ -346,16 +443,48 @@ transcript_has_activity_since_last_user() {
   ' "$transcript" >/dev/null 2>&1
 }
 
-case "$session_id" in
-  ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
-esac
-
 if codex_hook_is_subagent_context "$input"; then
+  case "${CODEX_ROLE:-}" in
+    lead|coordinator)
+      json_continue
+      exit 0
+      ;;
+  esac
+
+  reminder="$proof_dir/subagent-commit-reminder.md"
+  skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
+  if [ -n "$skip" ]; then
+    rm -f "$reminder" 2>/dev/null || true
+    json_continue
+    exit 0
+  fi
+
+  subagent_change_summary="$(touched_repos_change_summary "$session_id" || true)"
+  if [ -n "$subagent_change_summary" ]; then
+    mkdir -p "$proof_dir"
+    {
+      cat <<EOF
+# Subagent Commit Reminder
+
+This subagent has dirty files in repos it modified.
+Commit only owned completed dirty paths modified by this subagent. Do not commit unrelated dirty files.
+If committing is unsafe, report the blocker and affected paths to the orchestrator.
+
+Bypass when handoff with dirty work is intentional:
+  CODEX_SESSION_ID=$session_id ~/.codex/bin/skip-stop on
+
+Changed repos:
+EOF
+      printf '%s\n' "$subagent_change_summary" | indent_text
+    } >"$reminder"
+    json_block "This subagent has dirty files it modified. Read $reminder; commit only owned completed dirty paths, report the blocker, or bypass with CODEX_SESSION_ID=$session_id ~/.codex/bin/skip-stop on; then stop again."
+    exit 0
+  fi
+  rm -f "$reminder" 2>/dev/null || true
   json_continue
   exit 0
 fi
 
-root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
 repo="${cwd:-$PWD}"
 side_stop=$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)
 
@@ -364,18 +493,22 @@ if codex_side_stop_is_active_for_session "$side_stop" "$session_id"; then
   exit 0
 fi
 
-proof_dir="$root/$session_id"
 proof="$proof_dir/proof.md"
 instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
 skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
-eci_active=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
+eci_active="$root/$session_id/eci_active"
+legacy_eci_active="$(codex_legacy_eci_markers_for_cwd "$cwd" 2>/dev/null | head -n1 || true)"
 ate_active=$(codex_existing_state_file ate ate_active "$session_id" "$cwd" 2>/dev/null || true)
 task_active=$(codex_existing_state_file active-task task_active "$session_id" "$cwd" 2>/dev/null || true)
 activity_summary="$(activity_marker_summary "$session_id" "$cwd")"
 change_summary="$(git_change_summary "$repo" "$baseline" || true)"
 changed=false
 [ -n "$change_summary" ] && changed=true
+transcript_activity=false
+if transcript_has_activity_since_last_user "$transcript_path"; then
+  transcript_activity=true
+fi
 repo_is_git=false
 if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   repo_is_git=true
@@ -395,7 +528,12 @@ block_proof_validation() {
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
   codex_note_state_session_id "$eci_active" "$session_id" || true
-  json_block "ECI is active for this session. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  json_block "ECI is active for this session. Never stop until the ECI task is complete. If work is not done, dispatch remaining work to subagents and use wait_agent; do not stop while they run. Continue the ECI task, update the session project-understanding ledger, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  exit 0
+fi
+
+if [ -n "$legacy_eci_active" ] && [ -f "$legacy_eci_active" ]; then
+  json_block "ECI is active for this workspace via legacy marker $legacy_eci_active. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
   exit 0
 fi
 
@@ -417,15 +555,10 @@ if [ -n "$ate_active" ] && [ -f "$ate_active" ]; then
 fi
 
 # Early exit: if this session did no mutation work since the last user
-# message, skip the stop gate regardless of pre-existing dirt from prior sessions.
-if ! transcript_has_activity_since_last_user "$transcript_path"; then
-  json_continue
-  exit 0
-fi
-
-# Legacy gate: also continue if none of the other indicators are present
-# (preserved for sessions where transcript may not be available).
-if [ ! -f "$proof" ] &&
+# message and no persisted indicators exist, skip the stop gate regardless of
+# pre-existing dirt from prior sessions.
+if [ "$transcript_activity" != "true" ] &&
+  [ ! -f "$proof" ] &&
   [ "$changed" != "true" ] &&
   [ -z "$task_active" ] &&
   [ -z "$activity_summary" ]; then
@@ -598,7 +731,7 @@ if [ -f "$proof" ]; then
     fi
 
     history_identity="$(repo_identity "$repo")"
-    history_key="$(hash_string "$history_identity")"
+    history_key="$(codex_hash_string "$history_identity")"
     history_dir="$root/history/$history_key"
     history_file="$history_dir/$session_id.log"
     mkdir -p "$history_dir"

@@ -5,9 +5,11 @@ set -uo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+. "$HOOK_DIR/lib/codex-tmp.sh"
 . "$HOOK_DIR/lib/reviewer-backend.sh"
 . "$HOOK_DIR/lib/reviewer-call.sh"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
+codex_init_tmp || true
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
@@ -15,7 +17,7 @@ tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || tr
 codex_valid_session_id "$session_id" || exit 0
 
 case "$tool_name" in
-  Bash|apply_patch|Edit|Write|MultiEdit) ;;
+  Bash|apply_patch|Edit|Write|MultiEdit|NotebookEdit) ;;
   *) exit 0 ;;
 esac
 

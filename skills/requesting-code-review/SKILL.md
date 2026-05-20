@@ -6,7 +6,7 @@ description: Use when completing tasks, implementing major features, or before m
 # Requesting Code Review
 
 Launch a dedicated code-reviewer subagent with `spawn_agent`; include the filled `requesting-code-review/code-reviewer.md` prompt in the subagent prompt body. The reviewer gets precise context for evaluation, never your session history.
-Every reviewer prompt must include: Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+Every reviewer prompt must include: Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
 **Core principle:** Review early, review often.
 

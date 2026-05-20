@@ -39,4 +39,5 @@ if codex_valid_session_id "$session_id"; then
       [ -n "$side_dir" ] && write_side_stop_marker "$side_dir"
     fi
   fi
+
 fi

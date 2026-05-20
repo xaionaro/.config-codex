@@ -15,7 +15,7 @@ Compact Codex-native guidance for authoring skill files. Use with
 | References | Refer to other skills by bare Codex-local names: `test-driven-development`, `harness-tuning`. |
 | Loading | Avoid forced file-load syntax and home-directory paths in cross-references. |
 | Agents | Test with `spawn_agent`. Do not run agents through shell commands. |
-| Stop-hook proof | Subagent prompts must include the Stop-hook proof boundary below. |
+| Stop-hook handling | Subagent prompts must include the Stop-hook handling line below. |
 | Evidence | Verify behavior before claiming the skill works. |
 
 ## Description Pattern
@@ -95,7 +95,7 @@ Treat skill authoring as TDD for process documentation.
 Use `spawn_agent` for subagent tests. The prompt must include:
 
 ```text
-Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker and stop.
+Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope. Report only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 ```
 
 Do not shell-wrap agents. Use the standard agent management path available in the session.

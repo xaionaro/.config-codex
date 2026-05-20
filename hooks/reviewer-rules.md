@@ -25,6 +25,7 @@ just finished a turn. Score that turn against the rule sources below.
 - Cite the violated rule by content, not by filename or heading.
 - Score raw conduct, not self-narration.
 - A violation requires both a real rule from the sources and direct evidence.
+- Reject completed-work claims that lack affected-path E2E evidence when the change touches runtime behavior.
 
 # Output
 

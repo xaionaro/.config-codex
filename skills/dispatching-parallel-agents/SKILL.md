@@ -66,7 +66,7 @@ Each agent gets:
 - **Clear goal:** Make these tests pass
 - **Constraints:** Don't change other code
 - **Role label:** A stable label in the first prompt line
-- **Stop-hook boundary:** Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+- **Stop-hook handling:** Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 - **Expected output:** Summary of what you found and fixed
 
 ### 3. Dispatch in Parallel
@@ -85,7 +85,7 @@ Scope:
 - Do not modify batch completion or tool approval race tests.
 
 Stop-hook boundary:
-Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
 Return: root cause, changed files, verification run, and remaining risk.
 """,
@@ -104,7 +104,7 @@ Scope:
 - Do not modify abort or tool approval race tests.
 
 Stop-hook boundary:
-Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
 Return: root cause, changed files, verification run, and remaining risk.
 """,
@@ -123,7 +123,7 @@ Scope:
 - Do not modify abort or batch completion tests.
 
 Stop-hook boundary:
-Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
 Return: root cause, changed files, verification run, and remaining risk.
 """,
@@ -159,7 +159,7 @@ Good agent prompts are:
 2. **Self-contained** - All context needed to understand the problem
 3. **Specific about output** - What should the agent return?
 4. **Labeled** - First line is `Role label: <stable-role>`
-5. **Bounded** - Includes: `Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.`
+5. **Bounded** - Includes Stop-hook handling: follow prompts and proof/checklist steps in-session, fix in-scope blockers, and report only out-of-scope blockers.
 
 ```markdown
 Role label: agent-tool-abort
@@ -182,7 +182,7 @@ These are timing/race condition issues. Your task:
 Do NOT just increase timeouts - find the real issue.
 
 Stop-hook boundary:
-Do not run Stop-hook proof workflows or write Stop-hook proof files. If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
 Return: Summary of what you found and what you fixed.
 ```

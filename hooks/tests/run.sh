@@ -304,6 +304,22 @@ test_prompt_state_skips_state_for_invalid_session() {
     [ "$(find "$proof_root/reviewer" -name prompt_head 2>/dev/null | wc -l)" -eq 0 ]
 }
 
+test_prompt_state_keeps_session_eci_marker_silent() {
+  local proof_root out marker
+  proof_root="$(fresh_proof_root prompt-eci)"
+  marker="$proof_root/t00-session/eci_active"
+  mkdir -p "$(dirname "$marker")" || return 1
+  printf 'scope: prompt reminder test\n' >"$marker"
+  out="$TMP_ROOT/prompt-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out" &&
+    [ -f "$marker" ] &&
+    grep -q "scope: prompt reminder test" "$marker"
+}
+
 test_prompt_state_config_is_wired_without_probe() {
   jq -e '
     ([.hooks.UserPromptSubmit[]?.hooks[]?.command]
@@ -314,7 +330,7 @@ test_prompt_state_config_is_wired_without_probe() {
   ' "$ROOT/hooks.json" >/dev/null
 }
 
-test_stop_gate_allows_side_prompt_before_eci_state() {
+test_stop_gate_blocks_side_prompt_with_parent_eci_state() {
   local proof_root prompt_out prompt_input input out
   proof_root="$(fresh_proof_root stop-side-eci)"
   prompt_out="$TMP_ROOT/stop-side-prompt.out"
@@ -323,14 +339,16 @@ test_stop_gate_allows_side_prompt_before_eci_state() {
   jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/user-prompt-side.json" >"$prompt_input"
   run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-eci-on.out" 2>&1 || return 1
+  CODEX_SESSION_ID=t00-parent CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-eci-on.out" 2>&1 || return 1
 
   input="$TMP_ROOT/stop-side-eci.json"
   jq --arg cwd "$ROOT" '.session_id = "t00-side" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
   out="$TMP_ROOT/stop-side-eci.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  json_field_equals "$out" '.continue // false' "true"
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-parent/eci_active"
 }
 
 test_stop_gate_blocks_side_parent_session_with_eci_state() {
@@ -342,7 +360,7 @@ test_stop_gate_blocks_side_parent_session_with_eci_state() {
   jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/user-prompt-side.json" >"$prompt_input"
   run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-parent-eci-on.out" 2>&1 || return 1
+  CODEX_SESSION_ID=t00-parent CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-side-parent-eci-on.out" 2>&1 || return 1
 
   input="$TMP_ROOT/stop-side-parent-eci.json"
   jq --arg cwd "$ROOT" '.session_id = "t00-parent" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
@@ -350,7 +368,8 @@ test_stop_gate_blocks_side_parent_session_with_eci_state() {
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "ECI is active"
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-parent/eci_active"
 }
 
 test_runtime_hook_probe_historical_evidence_is_sanitized() {
@@ -414,18 +433,15 @@ test_session_snapshot_skips_ephemeral_threads() {
 }
 
 test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
-  local proof_root out skip_cwd eci_cwd
+  local proof_root out skip_cwd
   proof_root="$(fresh_proof_root session-old-markers)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/skip-stop" on >/dev/null 2>&1 || return 1
   env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/skip-stop" on >/dev/null 2>&1 || return 1
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >/dev/null 2>&1 || return 1
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >/dev/null 2>&1 || return 1
 
   skip_cwd=$(find "$proof_root/skip-stop/cwd" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1)
-  eci_cwd=$(find "$proof_root/eci/cwd" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1)
-  [ -n "$skip_cwd" ] && [ -n "$eci_cwd" ] || return 1
-  touch -t 202001010000 "$proof_root/skip-stop/sessions/t00-session" "$skip_cwd" \
-    "$proof_root/eci/sessions/t00-session" "$eci_cwd"
+  [ -n "$skip_cwd" ] || return 1
+  touch -t 202001010000 "$proof_root/skip-stop/sessions/t00-session" "$skip_cwd" "$proof_root/t00-session"
 
   out="$TMP_ROOT/session-snapshot-old-markers.out"
   run_hook "$out" "$ROOT/hooks/session-snapshot.sh" "$FIXTURES/session-start.json" \
@@ -433,11 +449,11 @@ test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
 
   [ -e "$proof_root/skip-stop/sessions/t00-session/skip_stop" ] &&
     [ -e "$skip_cwd/skip_stop" ] &&
-    [ -e "$proof_root/eci/sessions/t00-session/eci_active" ] &&
-    [ -e "$eci_cwd/eci_active" ]
+    [ -e "$proof_root/t00-session/eci_active" ] &&
+    [ "$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | wc -l)" -eq 0 ]
 }
 
-test_stop_gate_allows_ephemeral_threads_before_eci_state() {
+test_stop_gate_blocks_ephemeral_threads_with_eci_state() {
   local proof_root out
   proof_root="$(fresh_proof_root stop-ephemeral-eci)"
   CODEX_SESSION_ID=t00-side CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >/dev/null 2>&1 || return 1
@@ -446,7 +462,8 @@ test_stop_gate_allows_ephemeral_threads_before_eci_state() {
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$FIXTURES/stop-ephemeral.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  json_field_equals "$out" '.continue // false' "true"
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-side/eci_active"
 }
 
 test_side_session_start_is_silent_and_binds_stop_bypass() {
@@ -469,7 +486,7 @@ test_side_session_start_is_silent_and_binds_stop_bypass() {
   cwd_marker=$(find "$proof_root/side-stop/cwd" -mindepth 2 -maxdepth 2 -name side_stop 2>/dev/null | head -n1)
   [ -n "$cwd_marker" ] || return 1
   touch -t 202001010000 "$cwd_marker"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/session-side-eci-on.out" 2>&1 || return 1
+  CODEX_SESSION_ID=t00-parent CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/session-side-eci-on.out" 2>&1 || return 1
 
   stop_input="$TMP_ROOT/session-side-stop.json"
   jq --arg cwd "$ROOT" '.session_id = "t00-side" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$stop_input"
@@ -479,7 +496,8 @@ test_side_session_start_is_silent_and_binds_stop_bypass() {
   expect_no_output "$start_out" &&
     [ -f "$child_marker" ] &&
     grep -q '^parent_session_id: t00-parent$' "$child_marker" &&
-    json_field_equals "$stop_out" '.continue // false' "true"
+    is_stop_block "$stop_out" &&
+    json_field_contains "$stop_out" '.reason // empty' "$proof_root/t00-parent/eci_active"
 }
 
 test_eci_gate_blocks_code_apply_patch() {
@@ -493,6 +511,21 @@ test_eci_gate_blocks_code_apply_patch() {
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   is_pretool_deny "$out"
+}
+
+test_eci_gate_skips_invalid_session_id() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root eci-invalid-session)"
+  mkdir -p "$proof_root/../bad"
+  printf 'scope: bad\n' >"$proof_root/../bad/eci_active"
+  input="$TMP_ROOT/eci-invalid-session.json"
+  jq '.session_id = "../bad"' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-invalid-session.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out"
 }
 
 test_eci_gate_message_mentions_clean_pass_user_closed() {
@@ -514,13 +547,11 @@ test_eci_gate_message_mentions_clean_pass_user_closed() {
     json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "request"
 }
 
-test_eci_gate_blocks_code_apply_patch_from_cwd_state() {
-  local proof_root input out count
+test_eci_gate_ignores_code_apply_patch_from_cwd_state() {
+  local proof_root input out cwd_dir
   proof_root="$(fresh_proof_root eci-code-cwd)"
-  out="$TMP_ROOT/eci-code-cwd-active.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
-  count=$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | wc -l)
-  [ "$count" -eq 1 ] || return 1
+  cwd_dir="$(CODEX_PROOF_ROOT="$proof_root" bash -c '. "$0/hooks/lib/codex-proof-state.sh"; codex_ensure_cwd_state_dir eci "$1"' "$ROOT" "$ROOT")" || return 1
+  printf 'scope: stale cwd state\n' >"$cwd_dir/eci_active"
 
   input="$TMP_ROOT/eci-code-cwd.json"
   jq --arg cwd "$ROOT" '.cwd = $cwd' "$FIXTURES/eci-apply-patch-code.json" >"$input"
@@ -529,7 +560,7 @@ test_eci_gate_blocks_code_apply_patch_from_cwd_state() {
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  is_pretool_deny "$out"
+  expect_no_output "$out"
 }
 
 test_eci_gate_blocks_code_apply_patch_from_session_state() {
@@ -537,8 +568,8 @@ test_eci_gate_blocks_code_apply_patch_from_session_state() {
   proof_root="$(fresh_proof_root eci-code-session)"
   out="$TMP_ROOT/eci-code-session-active.out"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
-  [ -f "$proof_root/eci/sessions/t00-session/eci_active" ] || return 1
-  [ ! -e "$proof_root/t00-session/eci_active" ] || return 1
+  [ -f "$proof_root/t00-session/eci_active" ] || return 1
+  [ ! -e "$proof_root/eci/cwd" ] || return 1
 
   out="$TMP_ROOT/eci-code-session.out"
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
@@ -794,6 +825,33 @@ test_system_reviewer_slices_sanitized_codex_transcript() {
     ! grep -q 'Earlier response should not appear in USER_HISTORY.' "$body"
 }
 
+test_system_reviewer_skips_vcs_when_eci_active() {
+  local proof_root input out transcript body marker
+  proof_root="$(fresh_proof_root reviewer-eci-vcs-skip)"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  marker="$proof_root/t00-session/eci_active"
+  mkdir -p "$(dirname "$marker")" || return 1
+  printf 'scope: reviewer skip\n' >"$marker"
+  input="$TMP_ROOT/reviewer-eci-vcs-skip.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/reviewer-eci-vcs-skip.out"
+  body="$TMP_ROOT/reviewer-eci-vcs-skip-body.md"
+
+  run_hook "$out" "$ROOT/hooks/system-prompt-reviewer.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_STOP_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_REVIEWER_FAKE_RESULT='{"assistant_tail_quote":"Done.","passes_completed":["tail","tools","checklist","agreements"],"verdict":"pass","violations":[]}' \
+    CODEX_REVIEWER_DEBUG_BODY_PATH="$body" || return 1
+
+  expect_no_output "$out" &&
+    grep -q '## VCS_STATUS' "$body" &&
+    grep -q 'skipped: ECI active' "$body" &&
+    grep -q '## DIFF' "$body" &&
+    grep -q 'skipped: same reason as VCS_STATUS' "$body"
+}
+
 write_fake_ps_with_secrets() {
   local dir="$1"
   local openai_key password bearer_token aws_access_key github_token
@@ -971,7 +1029,7 @@ test_stop_reviewer_timeout_and_hook_wiring() {
     ([.hooks.PreToolUse[]?.hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
     ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
     ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh"))) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit)$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh")))
+    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | any(endswith("/edit-bash-pre-reviewer.sh")))
   ' "$ROOT/hooks.json" >/dev/null
 }
 
@@ -1192,6 +1250,21 @@ test_eci_gate_denies_code_write_payload() {
   is_pretool_deny "$out"
 }
 
+test_eci_gate_denies_code_notebookedit_payload() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root eci-code-notebook)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  input="$TMP_ROOT/eci-notebook.json"
+  jq -n '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:"src/file.ipynb"}}' >"$input"
+  out="$TMP_ROOT/eci-notebook.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_pretool_deny "$out"
+}
+
 test_eci_gate_denies_mixed_markdown_code_patch() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-mixed)"
@@ -1241,6 +1314,12 @@ test_multiedit_hook_config_is_wired() {
   local matcher
   matcher="$(eci_gate_matcher)" || return 1
   matcher_has_tool "$matcher" "MultiEdit"
+}
+
+test_notebookedit_hook_config_is_wired() {
+  local matcher
+  matcher="$(eci_gate_matcher)" || return 1
+  matcher_has_tool "$matcher" "NotebookEdit"
 }
 
 test_validate_apply_patch_blocks_plan_paths_from_input() {
@@ -1360,6 +1439,49 @@ test_validate_edit_write_allows_regular_repo_edit() {
   expect_no_output "$out"
 }
 
+test_validate_edit_write_allows_notebookedit_same_sid_proof() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root edit-write-notebook-same)"
+  mkdir -p "$proof_root/t00-session"
+  input="$TMP_ROOT/edit-write-notebook-same.json"
+  jq -n --arg fp "$proof_root/t00-session/project-understanding.md" \
+    '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"x"}}' >"$input"
+  out="$TMP_ROOT/edit-write-notebook-same.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root edit-write-notebook-other)"
+  mkdir -p "$proof_root/other-session"
+  input="$TMP_ROOT/edit-write-notebook-other.json"
+  jq -n --arg fp "$proof_root/other-session/project-understanding.md" \
+    '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"x"}}' >"$input"
+  out="$TMP_ROOT/edit-write-notebook-other.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "other-session"
+}
+
+test_validate_apply_patch_blocks_other_sid_proof() {
+  local proof_root input out patch_path patch_text
+  proof_root="$(fresh_proof_root apply-patch-other-session)"
+  mkdir -p "$proof_root/other-session"
+  patch_path="$proof_root/other-session/project-understanding.md"
+  patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
+  input="$TMP_ROOT/apply-patch-other-session.json"
+  jq -n --arg patch "$patch_text" \
+    '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
+  out="$TMP_ROOT/apply-patch-other-session.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "other-session"
+}
+
 test_validate_bash_allows_write_into_submodule() {
   # Submodule write blocking is the file-edit tools' job (Edit/Write/MultiEdit
   # via validate-edit-write.sh). Bash is intentionally NOT gated on submodule
@@ -1438,7 +1560,7 @@ test_edit_write_hook_config_is_split_and_preserves_gates() {
       any($commands[]?; endswith($suffix));
 
     (commands_for("^apply_patch$") as $apply
-      | commands_for("^(Edit|Write|MultiEdit)$") as $direct
+      | commands_for("^(Edit|Write|MultiEdit|NotebookEdit)$") as $direct
       | has($apply; "/validate-apply-patch.sh") and
         (has($apply; "/validate-edit-write.sh") | not) and
         has($apply; "/security-reminder.py") and
@@ -1594,6 +1716,70 @@ test_validate_bash_allows_main_eci_active_off() {
 
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
   expect_no_output "$out"
+}
+
+test_validate_bash_blocks_git_reset_without_marker() {
+  local repo input out command
+  repo="$TMP_ROOT/git-reset-without-marker"
+  mkdir -p "$repo" || return 1
+  git -C "$repo" init -q || return 1
+  command="git -C $repo reset --hard HEAD"
+  input="$TMP_ROOT/bash-git-reset-without-marker.json"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/bash-git-reset-without-marker.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "git reset denied"
+}
+
+test_validate_bash_consumes_git_reset_marker() {
+  local repo marker input out command
+  repo="$TMP_ROOT/git-reset-with-marker"
+  mkdir -p "$repo" || return 1
+  git -C "$repo" init -q || return 1
+  command="git -C $repo reset --hard HEAD"
+  marker="$repo/.git-reset-approved-once"
+  {
+    printf 'date: 2026-05-17\n'
+    printf 'reason: hook test\n'
+    printf 'command: %s\n' "$command"
+  } >"$marker"
+  input="$TMP_ROOT/bash-git-reset-with-marker.json"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/bash-git-reset-with-marker.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
+  expect_no_output "$out" &&
+    [ ! -e "$marker" ]
+}
+
+test_validate_bash_blocks_git_reset_marker_mismatch() {
+  local repo marker input out command
+  repo="$TMP_ROOT/git-reset-marker-mismatch"
+  mkdir -p "$repo" || return 1
+  git -C "$repo" init -q || return 1
+  command="git -C $repo reset --hard HEAD"
+  marker="$repo/.git-reset-approved-once"
+  {
+    printf 'date: 2026-05-17\n'
+    printf 'reason: hook test\n'
+    printf 'command: git -C %s reset --soft HEAD~1\n' "$repo"
+  } >"$marker"
+  input="$TMP_ROOT/bash-git-reset-marker-mismatch.json"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/bash-git-reset-marker-mismatch.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
+  is_pretool_deny "$out" &&
+    [ -e "$marker" ] &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "does not match"
 }
 
 test_validate_bash_allows_redirect_to_vendor_path() {
@@ -2207,36 +2393,38 @@ test_stop_gate_adds_loop_reminder_after_five_blocks() {
     json_field_contains "$out" '.reason // empty' "do not retry same approach"
 }
 
-test_stop_gate_blocks_cwd_eci_state() {
-  local proof_root input out
+test_stop_gate_ignores_cwd_eci_state() {
+  local proof_root input out cwd_dir repo
   proof_root="$(fresh_proof_root stop-cwd-eci)"
-  out="$TMP_ROOT/stop-cwd-eci-active.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+  repo="$(make_git_repo stop-cwd-eci)" || return 1
+  cwd_dir="$(CODEX_PROOF_ROOT="$proof_root" bash -c '. "$0/hooks/lib/codex-proof-state.sh"; codex_ensure_cwd_state_dir eci "$1"' "$ROOT" "$repo")" || return 1
+  printf 'scope: stale cwd state\n' >"$cwd_dir/eci_active"
 
   input="$TMP_ROOT/stop-cwd-eci.json"
-  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
   out="$TMP_ROOT/stop-cwd-eci.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "Never stop until the ECI task is complete" &&
-    json_field_contains "$out" '.reason // empty' "Disengage only with clean-pass or user-closed" &&
-    json_field_not_contains "$out" '.reason // empty' "request"
+  json_field_equals "$out" '.continue // false' "true"
 }
 
-test_stop_gate_blocks_cwd_eci_state_without_cwd_field() {
-  local proof_root input out
+test_stop_gate_ignores_cwd_eci_state_without_cwd_field() {
+  local proof_root input out cwd_dir repo
   proof_root="$(fresh_proof_root stop-cwd-eci-no-cwd)"
-  out="$TMP_ROOT/stop-cwd-eci-no-cwd-active.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+  repo="$(make_git_repo stop-cwd-eci-no-cwd)" || return 1
+  cwd_dir="$(CODEX_PROOF_ROOT="$proof_root" bash -c '. "$0/hooks/lib/codex-proof-state.sh"; codex_ensure_cwd_state_dir eci "$1"' "$ROOT" "$repo")" || return 1
+  printf 'scope: stale cwd state\n' >"$cwd_dir/eci_active"
 
   input="$TMP_ROOT/stop-cwd-eci-no-cwd.json"
   jq 'del(.cwd)' "$FIXTURES/stop-basic.json" >"$input"
   out="$TMP_ROOT/stop-cwd-eci-no-cwd.out"
 
-  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "ECI is active"
+  (
+    cd "$repo" || exit 1
+    env -u CODEX_ROLE CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" \
+      <"$input" >"$out" 2>"$out.err"
+  ) || return 1
+  json_field_equals "$out" '.continue // false' "true"
 }
 
 test_stop_gate_blocks_session_eci_state() {
@@ -2251,14 +2439,213 @@ test_stop_gate_blocks_session_eci_state() {
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "ECI is active"
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-session/eci_active"
+}
+
+test_stop_gate_blocks_transcriptless_session_eci_state() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-transcriptless-session-eci)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  printf 'scope: transcriptless test\n' >"$proof_root/t00-session/eci_active"
+
+  input="$TMP_ROOT/stop-transcriptless-session-eci.json"
+  jq '.transcript_path = null' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-transcriptless-session-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-session/eci_active"
+}
+
+test_stop_gate_blocks_session_eci_before_skip_marker() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-session-eci-before-skip)"
+  mkdir -p "$proof_root/t00-session" "$proof_root/skip-stop/sessions/t00-session" || return 1
+  printf 'scope: skip test\n' >"$proof_root/t00-session/eci_active"
+  printf 'created_utc: now\n' >"$proof_root/skip-stop/sessions/t00-session/skip_stop"
+
+  input="$TMP_ROOT/stop-session-eci-before-skip.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-session-eci-before-skip.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/t00-session/eci_active"
+}
+
+test_stop_gate_blocks_legacy_reserved_eci_marker_same_cwd() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-legacy-reserved-eci)"
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: legacy test\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+  } >"$proof_root/pre-reviewer/eci_active"
+
+  input="$TMP_ROOT/stop-legacy-reserved-eci.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-legacy-reserved-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    json_field_contains "$out" '.reason // empty' "$proof_root/pre-reviewer/eci_active"
+}
+
+test_stop_gate_ignores_legacy_reserved_eci_marker_other_cwd() {
+  local proof_root input out repo
+  proof_root="$(fresh_proof_root stop-legacy-reserved-eci-other-cwd)"
+  repo="$(make_git_repo stop-legacy-reserved-eci-other-cwd)" || return 1
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: legacy test\n'
+    printf 'cwd: %s\n' "$TMP_ROOT/other-cwd"
+    printf 'session_id: pre-reviewer\n'
+  } >"$proof_root/pre-reviewer/eci_active"
+
+  input="$TMP_ROOT/stop-legacy-reserved-eci-other-cwd.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-legacy-reserved-eci-other-cwd.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true"
+}
+
+test_stop_gate_skips_invalid_session_before_legacy_eci_state() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root stop-invalid-session-legacy-eci)"
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: legacy invalid-session test\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+  } >"$proof_root/pre-reviewer/eci_active"
+
+  input="$TMP_ROOT/stop-invalid-session-legacy-eci.json"
+  jq --arg cwd "$ROOT" '.session_id = "../bad" | .cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-invalid-session-legacy-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/../bad/stop_timestamps" ]
+}
+
+test_stop_gate_matches_eci_marker_decision_table() {
+  local valid subagent own parent legacy name proof_root sid transcript input out expected repo
+
+  for valid in true false; do
+    for subagent in true false; do
+      for own in true false; do
+        for parent in true false; do
+          for legacy in true false; do
+            name="stop-eci-table-v${valid}-s${subagent}-o${own}-p${parent}-l${legacy}"
+            proof_root="$(fresh_proof_root "$name")" || return 1
+            repo="$(make_git_repo "$name")" || return 1
+            sid="t00-session"
+            [ "$valid" = true ] || sid="../bad"
+
+            if [ "$own" = true ]; then
+              mkdir -p "$proof_root/t00-session" || return 1
+              printf 'scope: table own session\n' >"$proof_root/t00-session/eci_active"
+            fi
+
+            if [ "$parent" = true ]; then
+              mkdir -p "$proof_root/t00-parent" "$proof_root/side-stop/sessions/t00-session" || return 1
+              printf 'scope: table parent session\n' >"$proof_root/t00-parent/eci_active"
+              {
+                printf 'command: /side\n'
+                printf 'parent_session_id: t00-parent\n'
+              } >"$proof_root/side-stop/sessions/t00-session/side_stop"
+            fi
+
+            if [ "$legacy" = true ]; then
+              mkdir -p "$proof_root/pre-reviewer" || return 1
+              {
+                printf 'scope: table legacy\n'
+                printf 'cwd: %s\n' "$repo"
+                printf 'session_id: pre-reviewer\n'
+              } >"$proof_root/pre-reviewer/eci_active"
+            fi
+
+            transcript="$TMP_ROOT/home/.codex/sessions/$name.jsonl"
+            if [ "$subagent" = true ]; then
+              write_subagent_transcript "$transcript" || return 1
+            else
+              write_main_transcript "$transcript" || return 1
+            fi
+
+            input="$TMP_ROOT/$name.json"
+            jq --arg sid "$sid" --arg cwd "$repo" --arg transcript "$transcript" \
+              '.session_id = $sid | .cwd = $cwd | .transcript_path = $transcript' \
+              "$FIXTURES/stop-basic.json" >"$input"
+            out="$TMP_ROOT/$name.out"
+
+            expected=none
+            if [ "$valid" = true ]; then
+              if [ "$own" = true ]; then
+                expected=session
+              elif [ "$subagent" = true ]; then
+                expected=none
+              elif [ "$parent" = true ]; then
+                expected=parent
+              elif [ "$legacy" = true ]; then
+                expected=legacy
+              fi
+            fi
+
+            run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+              HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+            case "$expected" in
+              none)
+                json_field_equals "$out" '.continue // false' "true" || {
+                  printf '%s\n' "$name expected continue" >&2
+                  cat "$out" >&2
+                  return 1
+                }
+                ;;
+              session)
+                is_stop_block "$out" &&
+                  json_field_contains "$out" '.reason // empty' "$proof_root/t00-session/eci_active" || {
+                    printf '%s\n' "$name expected session marker block" >&2
+                    cat "$out" >&2
+                    return 1
+                  }
+                ;;
+              parent)
+                is_stop_block "$out" &&
+                  json_field_contains "$out" '.reason // empty' "$proof_root/t00-parent/eci_active" || {
+                    printf '%s\n' "$name expected parent marker block" >&2
+                    cat "$out" >&2
+                    return 1
+                  }
+                ;;
+              legacy)
+                is_stop_block "$out" &&
+                  json_field_contains "$out" '.reason // empty' "$proof_root/pre-reviewer/eci_active" || {
+                    printf '%s\n' "$name expected legacy marker block" >&2
+                    cat "$out" >&2
+                    return 1
+                  }
+                ;;
+              *) return 1 ;;
+            esac
+          done
+        done
+      done
+    done
+  done
 }
 
 test_stop_gate_blocks_codex_role_spoof_with_eci_state() {
   local proof_root input out
   proof_root="$(fresh_proof_root stop-role-spoof)"
   out="$TMP_ROOT/stop-role-spoof-eci-active.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
 
   input="$TMP_ROOT/stop-role-spoof.json"
   with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
@@ -2269,11 +2656,11 @@ test_stop_gate_blocks_codex_role_spoof_with_eci_state() {
     json_field_contains "$out" '.reason // empty' "ECI is active"
 }
 
-test_stop_gate_allows_spawned_agent_transcript_without_proof_state() {
+test_stop_gate_blocks_spawned_agent_transcript_with_own_eci_state() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root stop-subagent-transcript)"
   out="$TMP_ROOT/stop-subagent-transcript-eci-active.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
 
   transcript="$(subagent_transcript_path)"
   write_subagent_transcript "$transcript" || return 1
@@ -2282,15 +2669,210 @@ test_stop_gate_allows_spawned_agent_transcript_without_proof_state() {
   out="$TMP_ROOT/stop-subagent-transcript.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active" &&
+    [ -e "$proof_root/t00-session/eci_active" ]
+}
+
+test_stop_gate_allows_spawned_agent_transcript_with_legacy_parent_eci_state() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root stop-subagent-legacy-parent-eci)"
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: legacy parent test\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+  } >"$proof_root/pre-reviewer/eci_active"
+
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/stop-subagent-legacy-parent-eci.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-subagent-legacy-parent-eci.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true"
+}
+
+test_stop_gate_blocks_subagent_touched_repo_changes() {
+  local proof_root repo transcript touch_input stop_input out marker_count reminder
+  proof_root="$(fresh_proof_root stop-subagent-touched-change)"
+  repo="$(make_git_repo stop-subagent-touched-change)" || return 1
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+
+  touch_input="$TMP_ROOT/subagent-touch-apply-patch.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript |
+     .tool_input.patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n-base\n+base\n+touched\n*** End Patch\n"' \
+    "$FIXTURES/validate-apply-patch-unrelated.json" >"$touch_input"
+  out="$TMP_ROOT/subagent-touch-apply-patch.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$touch_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
+
+  printf 'touched\n' >>"$repo/file.txt"
+  stop_input="$TMP_ROOT/stop-subagent-touched-change.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript' \
+    "$FIXTURES/stop-basic.json" >"$stop_input"
+  out="$TMP_ROOT/stop-subagent-touched-change.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$stop_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  marker_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
+  reminder="$proof_root/t00-session/subagent-commit-reminder.md"
+  is_stop_block "$out" &&
+    [ "$marker_count" -eq 1 ] &&
+    [ -s "$reminder" ] &&
+    json_field_contains "$out" '.reason // empty' "commit only owned completed dirty paths" &&
+    json_field_contains "$out" '.reason // empty' "skip-stop on" &&
+    grep -q "Do not commit unrelated dirty files" "$reminder" &&
+    grep -q "CODEX_SESSION_ID=t00-session ~/.codex/bin/skip-stop on" "$reminder" &&
+    grep -q "file.txt" "$reminder"
+}
+
+test_stop_gate_ignores_subagent_unrelated_dirty_file() {
+  local proof_root repo transcript touch_input stop_input out marker_count
+  proof_root="$(fresh_proof_root stop-subagent-unrelated-dirty)"
+  repo="$(make_git_repo stop-subagent-unrelated-dirty)" || return 1
+  printf 'other\n' >"$repo/other.txt"
+  git -C "$repo" add other.txt || return 1
+  git -C "$repo" commit -qm "add other file" || return 1
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+
+  touch_input="$TMP_ROOT/subagent-unrelated-dirty-apply-patch.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript |
+     .tool_input.patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n-base\n+base\n+touched\n*** End Patch\n"' \
+    "$FIXTURES/validate-apply-patch-unrelated.json" >"$touch_input"
+  out="$TMP_ROOT/subagent-unrelated-dirty-apply-patch.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$touch_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
+  marker_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
+  [ "$marker_count" -eq 1 ] || return 1
+
+  printf 'dirty\n' >>"$repo/other.txt"
+  stop_input="$TMP_ROOT/stop-subagent-unrelated-dirty.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript' \
+    "$FIXTURES/stop-basic.json" >"$stop_input"
+  out="$TMP_ROOT/stop-subagent-unrelated-dirty.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$stop_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   json_field_equals "$out" '.continue // false' "true" &&
-    [ ! -e "$proof_root/t00-session" ]
+    [ ! -e "$proof_root/t00-session/subagent-commit-reminder.md" ]
+}
+
+test_stop_gate_ignores_subagent_preexisting_dirty_at_first_touch() {
+  local proof_root repo transcript touch_input stop_input out marker_count
+  proof_root="$(fresh_proof_root stop-subagent-preexisting-dirty)"
+  repo="$(make_git_repo stop-subagent-preexisting-dirty)" || return 1
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  printf 'preexisting\n' >>"$repo/file.txt"
+
+  touch_input="$TMP_ROOT/subagent-preexisting-bash.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" --arg command "touch noop" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$touch_input"
+  out="$TMP_ROOT/subagent-preexisting-bash.out"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$touch_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
+  marker_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
+  [ "$marker_count" -eq 1 ] || return 1
+
+  stop_input="$TMP_ROOT/stop-subagent-preexisting-dirty.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript' \
+    "$FIXTURES/stop-basic.json" >"$stop_input"
+  out="$TMP_ROOT/stop-subagent-preexisting-dirty.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$stop_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/subagent-commit-reminder.md" ]
+}
+
+test_stop_gate_allows_subagent_skip_marker() {
+  local proof_root repo transcript touch_input stop_input out marker_count
+  proof_root="$(fresh_proof_root stop-subagent-skip-marker)"
+  repo="$(make_git_repo stop-subagent-skip-marker)" || return 1
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+
+  touch_input="$TMP_ROOT/subagent-skip-marker-apply-patch.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript |
+     .tool_input.patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n-base\n+base\n+touched\n*** End Patch\n"' \
+    "$FIXTURES/validate-apply-patch-unrelated.json" >"$touch_input"
+  out="$TMP_ROOT/subagent-skip-marker-apply-patch.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$touch_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
+  marker_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
+  [ "$marker_count" -eq 1 ] || return 1
+
+  printf 'dirty\n' >>"$repo/file.txt"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/skip-stop" on \
+    >"$TMP_ROOT/subagent-skip-marker-on.out" 2>&1 || return 1
+
+  stop_input="$TMP_ROOT/stop-subagent-skip-marker.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript' \
+    "$FIXTURES/stop-basic.json" >"$stop_input"
+  out="$TMP_ROOT/stop-subagent-skip-marker.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$stop_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/subagent-commit-reminder.md" ]
+}
+
+test_stop_gate_allows_subagent_committed_clean_repo() {
+  local proof_root repo transcript touch_input stop_input out marker_count
+  proof_root="$(fresh_proof_root stop-subagent-committed-clean)"
+  repo="$(make_git_repo stop-subagent-committed-clean)" || return 1
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+
+  touch_input="$TMP_ROOT/subagent-committed-clean-apply-patch.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript |
+     .tool_input.patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n-base\n+base\n+committed\n*** End Patch\n"' \
+    "$FIXTURES/validate-apply-patch-unrelated.json" >"$touch_input"
+  out="$TMP_ROOT/subagent-committed-clean-apply-patch.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$touch_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
+  marker_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
+  [ "$marker_count" -eq 1 ] || return 1
+
+  printf 'committed\n' >>"$repo/file.txt"
+  git -C "$repo" add file.txt || return 1
+  git -C "$repo" commit -qm "subagent committed change" || return 1
+  stop_input="$TMP_ROOT/stop-subagent-committed-clean.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript' \
+    "$FIXTURES/stop-basic.json" >"$stop_input"
+  out="$TMP_ROOT/stop-subagent-committed-clean.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$stop_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/subagent-commit-reminder.md" ]
 }
 
 test_stop_gate_blocks_main_transcript_with_eci_state() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root stop-main-transcript)"
   out="$TMP_ROOT/stop-main-transcript-eci-active.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
 
   transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-main.jsonl"
   write_main_transcript "$transcript" || return 1
@@ -2420,7 +3002,7 @@ test_eci_active_off_rejects_hard_escalation_report() {
   local proof_root out marker status
   proof_root="$(fresh_proof_root eci-off-hard-escalation)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-hard-on.out" 2>&1 || return 1
-  marker="$proof_root/eci/sessions/t00-session/eci_active"
+  marker="$proof_root/t00-session/eci_active"
   [ -s "$marker" ] || return 1
 
   out="$TMP_ROOT/eci-off-hard.out"
@@ -2429,7 +3011,6 @@ test_eci_active_off_rejects_hard_escalation_report() {
 
   [ "$status" -ne 0 ] &&
     [ -s "$marker" ] &&
-    [ ! -e "$proof_root/eci/sessions/t00-session/proof.md" ] &&
     [ ! -e "$proof_root/t00-session/proof.md" ] &&
     grep -q "clean-pass: or user-closed:" "$out.err"
 }
@@ -2440,14 +3021,13 @@ test_eci_active_off_accepts_user_closed_report() {
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-user-closed-on.out" 2>&1 || return 1
   report="$TMP_ROOT/eci-off-user-closed.md"
   write_user_closed_eci_report "$report" || return 1
-  marker="$proof_root/eci/sessions/t00-session/eci_active"
+  marker="$proof_root/t00-session/eci_active"
   [ -s "$marker" ] || return 1
 
   out="$TMP_ROOT/eci-off-user-closed.out"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$report" >"$out" 2>"$out.err" || return 1
 
   [ ! -e "$marker" ] &&
-    [ ! -e "$proof_root/eci/sessions/t00-session/proof.md" ] &&
     [ ! -e "$proof_root/t00-session/proof.md" ] &&
     grep -q "ECI inactive" "$out"
 }
@@ -2458,7 +3038,7 @@ test_eci_active_off_rejects_mixed_hard_escalation_report() {
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-mixed-hard-on.out" 2>&1 || return 1
   report="$TMP_ROOT/eci-off-mixed-hard.md"
   write_mixed_eci_report "$report" || return 1
-  marker="$proof_root/eci/sessions/t00-session/eci_active"
+  marker="$proof_root/t00-session/eci_active"
   [ -s "$marker" ] || return 1
 
   out="$TMP_ROOT/eci-off-mixed-hard.out"
@@ -2467,71 +3047,120 @@ test_eci_active_off_rejects_mixed_hard_escalation_report() {
 
   [ "$status" -ne 0 ] &&
     [ -s "$marker" ] &&
-    [ ! -e "$proof_root/eci/sessions/t00-session/proof.md" ] &&
     [ ! -e "$proof_root/t00-session/proof.md" ] &&
     grep -q "hard-escalation:" "$out.err"
 }
 
-test_eci_active_off_cwd_marker_closes_bound_session_without_proof() {
-  local proof_root input out active_count repo
-  proof_root="$(fresh_proof_root eci-off-cwd)"
-  repo="$(make_git_repo eci-off-cwd)" || return 1
-  (cd "$repo" && env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope") >"$TMP_ROOT/eci-off-cwd-on.out" 2>&1 || return 1
+test_eci_active_status_uses_legacy_reserved_marker_same_cwd() {
+  local proof_root out
+  proof_root="$(fresh_proof_root eci-status-legacy-reserved)"
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: legacy status\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+  } >"$proof_root/pre-reviewer/eci_active"
+  out="$TMP_ROOT/eci-status-legacy-reserved.out"
 
-  input="$TMP_ROOT/eci-off-cwd-stop.json"
-  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
-  out="$TMP_ROOT/eci-off-cwd-stop.out"
-  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" || return 1
+  env -u CODEX_SESSION_ID CODEX_THREAD_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" status >"$out" 2>"$out.err" || return 1
 
-  (cd "$repo" && env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md") >"$TMP_ROOT/eci-off-cwd-off.out" 2>"$TMP_ROOT/eci-off-cwd-off.err" || return 1
-  active_count=$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | wc -l)
-  [ "$active_count" -eq 0 ] || return 1
-  [ ! -e "$proof_root/t00-session/proof.md" ] || return 1
-
-  out="$TMP_ROOT/eci-off-cwd-accept.out"
-  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  json_field_equals "$out" '.continue // false' "true" &&
-    [ ! -e "$proof_root/t00-session/summary-to-print.md" ] &&
-    [ ! -e "$proof_root/t00-session/proof.md" ]
+  grep -q "scope: legacy status" "$out" &&
+    grep -q "session_id: pre-reviewer" "$out"
 }
 
-test_eci_active_off_rejects_unbound_cwd_marker() {
-  local proof_root out marker status
-  proof_root="$(fresh_proof_root eci-off-unbound)"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-unbound-on.out" 2>&1 || return 1
-  marker=$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | head -n1)
-  [ -n "$marker" ] || return 1
+test_eci_active_off_removes_legacy_reserved_marker_same_cwd() {
+  local proof_root out
+  proof_root="$(fresh_proof_root eci-off-legacy-reserved)"
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: legacy off\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+  } >"$proof_root/pre-reviewer/eci_active"
+  out="$TMP_ROOT/eci-off-legacy-reserved.out"
 
-  out="$TMP_ROOT/eci-off-unbound-off.out"
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err"
-  status=$?
+  env -u CODEX_SESSION_ID CODEX_THREAD_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err" || return 1
 
-  [ "$status" -ne 0 ] &&
-    [ -e "$marker" ] &&
-    [ ! -e "$(dirname "$marker")/proof.md" ] &&
-    [ ! -e "$proof_root/t00-session/proof.md" ] &&
-    grep -q "not associated with a Codex session" "$out.err"
+  [ ! -e "$proof_root/pre-reviewer/eci_active" ] &&
+    grep -q "ECI inactive" "$out"
 }
 
-test_eci_active_uses_cwd_state_without_session() {
+test_eci_active_on_uses_newest_session_without_session_id() {
   local proof_root out status count
-  proof_root="$(fresh_proof_root cwd-state)"
+  proof_root="$(fresh_proof_root eci-on-newest-session)"
   mkdir -p "$proof_root/019df400-0000-7000-8000-000000000001" \
     "$proof_root/019df400-0000-7000-8000-000000000002"
   touch -t 202001010000 "$proof_root/019df400-0000-7000-8000-000000000001"
   touch -t 202101010000 "$proof_root/019df400-0000-7000-8000-000000000002"
-  out="$TMP_ROOT/eci-active-cwd.out"
+  out="$TMP_ROOT/eci-active-newest-session.out"
 
-  env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err"
+  env -u CODEX_SESSION_ID -u CODEX_THREAD_ID CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err"
   status=$?
   count=$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | wc -l)
 
   [ "$status" -eq 0 ] &&
     [ ! -e "$proof_root/019df400-0000-7000-8000-000000000001/eci_active" ] &&
+    [ -e "$proof_root/019df400-0000-7000-8000-000000000002/eci_active" ] &&
+    [ "$count" -eq 0 ] &&
+    grep -q "ECI active: $proof_root/019df400-0000-7000-8000-000000000002/eci_active" "$out"
+}
+
+test_eci_active_on_prefers_thread_id_without_session_id() {
+  local proof_root out status
+  proof_root="$(fresh_proof_root eci-on-thread-id)"
+  mkdir -p "$proof_root/019df400-0000-7000-8000-000000000001" \
+    "$proof_root/019df400-0000-7000-8000-000000000002"
+  touch -t 202001010000 "$proof_root/019df400-0000-7000-8000-000000000001"
+  touch -t 202101010000 "$proof_root/019df400-0000-7000-8000-000000000002"
+  out="$TMP_ROOT/eci-active-thread-id.out"
+
+  env -u CODEX_SESSION_ID CODEX_THREAD_ID=019df400-0000-7000-8000-000000000001 CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -eq 0 ] &&
+    [ -e "$proof_root/019df400-0000-7000-8000-000000000001/eci_active" ] &&
     [ ! -e "$proof_root/019df400-0000-7000-8000-000000000002/eci_active" ] &&
-    [ "$count" -eq 1 ] &&
-    grep -q "ECI active: $proof_root/eci/cwd/" "$out"
+    grep -q "ECI active: $proof_root/019df400-0000-7000-8000-000000000001/eci_active" "$out"
+}
+
+test_eci_active_on_ignores_reserved_dirs_without_session_id() {
+  local proof_root out status
+  proof_root="$(fresh_proof_root eci-on-ignore-reserved)"
+  mkdir -p "$proof_root/pre-reviewer" "$proof_root/reviewer" \
+    "$proof_root/019df400-0000-7000-8000-000000000001"
+  touch -t 202001010000 "$proof_root/019df400-0000-7000-8000-000000000001"
+  touch -t 202201010000 "$proof_root/reviewer"
+  touch -t 202301010000 "$proof_root/pre-reviewer"
+  out="$TMP_ROOT/eci-active-ignore-reserved.out"
+
+  env -u CODEX_SESSION_ID -u CODEX_THREAD_ID CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -eq 0 ] &&
+    [ -e "$proof_root/019df400-0000-7000-8000-000000000001/eci_active" ] &&
+    [ ! -e "$proof_root/pre-reviewer/eci_active" ] &&
+    [ ! -e "$proof_root/reviewer/eci_active" ] &&
+    grep -q "ECI active: $proof_root/019df400-0000-7000-8000-000000000001/eci_active" "$out"
+}
+
+test_eci_active_off_uses_newest_session_without_session_id() {
+  local proof_root out status
+  proof_root="$(fresh_proof_root eci-off-newest-session)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-requires-session-on.out" 2>&1 || return 1
+
+  out="$TMP_ROOT/eci-off-newest-session.out"
+  env -u CODEX_SESSION_ID -u CODEX_THREAD_ID CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -eq 0 ] &&
+    [ ! -e "$proof_root/t00-session/eci_active" ] &&
+    grep -q "ECI inactive" "$out"
 }
 
 test_skip_stop_uses_cwd_state_without_session() {
@@ -2601,6 +3230,8 @@ run_case "prompt state marks /side prompts" \
   test_prompt_state_marks_side_prompt
 run_case "prompt state skips state writes for invalid session" \
   test_prompt_state_skips_state_for_invalid_session
+run_case "prompt state keeps session ECI marker silent" \
+  test_prompt_state_keeps_session_eci_marker_silent
 run_case "prompt state config is wired without temporary probe" \
   test_prompt_state_config_is_wired_without_probe
 run_case "runtime hook probe historical evidence is sanitized" \
@@ -2615,10 +3246,12 @@ run_case "side session start is silent and binds stop bypass" \
   test_side_session_start_is_silent_and_binds_stop_bypass
 run_case "ECI gate blocks code apply_patch when marker exists" \
   test_eci_gate_blocks_code_apply_patch
+run_case "ECI gate skips invalid session id" \
+  test_eci_gate_skips_invalid_session_id
 run_case "ECI gate message names clean-pass/user-closed teardown" \
   test_eci_gate_message_mentions_clean_pass_user_closed
-run_case "ECI gate blocks code apply_patch from cwd marker" \
-  test_eci_gate_blocks_code_apply_patch_from_cwd_state
+run_case "ECI gate ignores code apply_patch from cwd marker" \
+  test_eci_gate_ignores_code_apply_patch_from_cwd_state
 run_case "ECI gate blocks code apply_patch from session marker" \
   test_eci_gate_blocks_code_apply_patch_from_session_state
 run_case "ECI gate blocks CODEX_ROLE spoof through marker" \
@@ -2641,6 +3274,8 @@ run_case "reviewer filter keeps user-history agreement rules" \
   test_reviewer_filter_keeps_user_history_agreement_rules
 run_case "system reviewer slices sanitized Codex transcript" \
   test_system_reviewer_slices_sanitized_codex_transcript
+run_case "system reviewer skips VCS context when ECI active" \
+  test_system_reviewer_skips_vcs_when_eci_active
 run_case "system reviewer redacts background process secrets" \
   test_system_reviewer_redacts_background_process_secrets
 run_case "system reviewer renders response_item tool events" \
@@ -2675,12 +3310,16 @@ run_case "ECI gate allows markdown-only Write payload" \
   test_eci_gate_allows_markdown_only_write_payload
 run_case "ECI gate denies code Write payload" \
   test_eci_gate_denies_code_write_payload
+run_case "ECI gate denies code NotebookEdit payload" \
+  test_eci_gate_denies_code_notebookedit_payload
 run_case "ECI gate denies mixed markdown/code apply_patch" \
   test_eci_gate_denies_mixed_markdown_code_patch
 run_case "ECI gate blocks MultiEdit JSON stdin when marker exists" \
   test_eci_gate_blocks_multiedit_stdin
 run_case "hooks.json edit matcher includes MultiEdit" \
   test_multiedit_hook_config_is_wired
+run_case "hooks.json edit matcher includes NotebookEdit" \
+  test_notebookedit_hook_config_is_wired
 run_case "hooks.json splits apply_patch and direct edit validators while preserving gates" \
   test_edit_write_hook_config_is_split_and_preserves_gates
 run_case "ATE gate denies markdown edits for lead role" \
@@ -2713,6 +3352,12 @@ run_case "validate-edit-write blocks edits inside a git submodule" \
   test_validate_edit_write_blocks_submodule_edit
 run_case "validate-edit-write allows edits in a regular non-submodule repo" \
   test_validate_edit_write_allows_regular_repo_edit
+run_case "validate-edit-write allows NotebookEdit on own proof dir" \
+  test_validate_edit_write_allows_notebookedit_same_sid_proof
+run_case "validate-edit-write blocks NotebookEdit on another session proof dir" \
+  test_validate_edit_write_blocks_notebookedit_other_sid_proof
+run_case "validate-apply-patch blocks edits to another session proof dir" \
+  test_validate_apply_patch_blocks_other_sid_proof
 run_case "validate-bash allows writes into a git submodule" \
   test_validate_bash_allows_write_into_submodule
 run_case "validate-edit-write blocks direct Edit go.mod local replace" \
@@ -2749,6 +3394,12 @@ run_case "validate-bash blocks subagent eci-active off" \
   test_validate_bash_blocks_subagent_eci_active_off
 run_case "validate-bash allows main eci-active off" \
   test_validate_bash_allows_main_eci_active_off
+run_case "validate-bash blocks git reset without marker" \
+  test_validate_bash_blocks_git_reset_without_marker
+run_case "validate-bash consumes git reset marker" \
+  test_validate_bash_consumes_git_reset_marker
+run_case "validate-bash blocks git reset marker mismatch" \
+  test_validate_bash_blocks_git_reset_marker_mismatch
 run_case "validate-bash allows redirect to vendor paths" \
   test_validate_bash_allows_redirect_to_vendor_path
 run_case "validate-bash allows in-place imports paths" \
@@ -2829,22 +3480,46 @@ run_case "stop gate blocks pre-existing commit after HEAD advance" \
   test_stop_gate_blocks_preexisting_commit_after_head_advance
 run_case "stop gate adds loop reminder after five blocks" \
   test_stop_gate_adds_loop_reminder_after_five_blocks
-run_case "stop gate blocks cwd-scoped ECI marker" \
-  test_stop_gate_blocks_cwd_eci_state
-run_case "stop gate blocks cwd-scoped ECI marker without cwd field" \
-  test_stop_gate_blocks_cwd_eci_state_without_cwd_field
+run_case "stop gate ignores cwd-scoped ECI marker" \
+  test_stop_gate_ignores_cwd_eci_state
+run_case "stop gate ignores cwd-scoped ECI marker without cwd field" \
+  test_stop_gate_ignores_cwd_eci_state_without_cwd_field
 run_case "stop gate blocks session-scoped ECI marker" \
   test_stop_gate_blocks_session_eci_state
+run_case "stop gate blocks transcriptless session-scoped ECI marker" \
+  test_stop_gate_blocks_transcriptless_session_eci_state
+run_case "stop gate blocks session ECI before skip marker" \
+  test_stop_gate_blocks_session_eci_before_skip_marker
+run_case "stop gate blocks legacy reserved ECI marker for same cwd" \
+  test_stop_gate_blocks_legacy_reserved_eci_marker_same_cwd
+run_case "stop gate ignores legacy reserved ECI marker for other cwd" \
+  test_stop_gate_ignores_legacy_reserved_eci_marker_other_cwd
+run_case "stop gate skips invalid session before legacy ECI state" \
+  test_stop_gate_skips_invalid_session_before_legacy_eci_state
+run_case "stop gate matches ECI marker decision table" \
+  test_stop_gate_matches_eci_marker_decision_table
 run_case "stop gate blocks CODEX_ROLE spoof with ECI state" \
   test_stop_gate_blocks_codex_role_spoof_with_eci_state
-run_case "stop gate allows /side before ECI state" \
-  test_stop_gate_allows_side_prompt_before_eci_state
+run_case "stop gate blocks /side when parent ECI is active" \
+  test_stop_gate_blocks_side_prompt_with_parent_eci_state
 run_case "stop gate blocks /side parent session with ECI state" \
   test_stop_gate_blocks_side_parent_session_with_eci_state
-run_case "stop gate allows ephemeral threads before ECI state" \
-  test_stop_gate_allows_ephemeral_threads_before_eci_state
-run_case "stop gate allows spawned-agent transcript without proof state" \
-  test_stop_gate_allows_spawned_agent_transcript_without_proof_state
+run_case "stop gate blocks ephemeral threads with ECI state" \
+  test_stop_gate_blocks_ephemeral_threads_with_eci_state
+run_case "stop gate blocks spawned-agent transcript with own ECI state" \
+  test_stop_gate_blocks_spawned_agent_transcript_with_own_eci_state
+run_case "stop gate allows spawned-agent transcript with legacy parent ECI state" \
+  test_stop_gate_allows_spawned_agent_transcript_with_legacy_parent_eci_state
+run_case "stop gate blocks subagent touched repo changes" \
+  test_stop_gate_blocks_subagent_touched_repo_changes
+run_case "stop gate ignores subagent unrelated dirty file" \
+  test_stop_gate_ignores_subagent_unrelated_dirty_file
+run_case "stop gate ignores subagent preexisting dirty at first touch" \
+  test_stop_gate_ignores_subagent_preexisting_dirty_at_first_touch
+run_case "stop gate allows subagent skip marker" \
+  test_stop_gate_allows_subagent_skip_marker
+run_case "stop gate allows subagent committed clean repo" \
+  test_stop_gate_allows_subagent_committed_clean_repo
 run_case "stop gate blocks main transcript with ECI state" \
   test_stop_gate_blocks_main_transcript_with_eci_state
 run_case "stop gate allows session-scoped skip marker" \
@@ -2863,12 +3538,18 @@ run_case "eci-active off accepts user-closed report" \
   test_eci_active_off_accepts_user_closed_report
 run_case "eci-active off rejects mixed hard-escalation report" \
   test_eci_active_off_rejects_mixed_hard_escalation_report
-run_case "eci-active off closes cwd marker bound to session without proof" \
-  test_eci_active_off_cwd_marker_closes_bound_session_without_proof
-run_case "eci-active off rejects unbound cwd marker" \
-  test_eci_active_off_rejects_unbound_cwd_marker
-run_case "eci-active uses cwd state without CODEX_SESSION_ID" \
-  test_eci_active_uses_cwd_state_without_session
+run_case "eci-active status uses legacy reserved marker for same cwd" \
+  test_eci_active_status_uses_legacy_reserved_marker_same_cwd
+run_case "eci-active off removes legacy reserved marker for same cwd" \
+  test_eci_active_off_removes_legacy_reserved_marker_same_cwd
+run_case "eci-active on uses newest session without CODEX_SESSION_ID" \
+  test_eci_active_on_uses_newest_session_without_session_id
+run_case "eci-active on prefers CODEX_THREAD_ID without CODEX_SESSION_ID" \
+  test_eci_active_on_prefers_thread_id_without_session_id
+run_case "eci-active on ignores reserved proof dirs without CODEX_SESSION_ID" \
+  test_eci_active_on_ignores_reserved_dirs_without_session_id
+run_case "eci-active off uses newest session without CODEX_SESSION_ID" \
+  test_eci_active_off_uses_newest_session_without_session_id
 run_case "skip-stop uses cwd state without CODEX_SESSION_ID" \
   test_skip_stop_uses_cwd_state_without_session
 run_case "audit sync checker reports ok" \

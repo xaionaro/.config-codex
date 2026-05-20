@@ -14,7 +14,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 - When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
-- Every subagent prompt must include: "Do not handle Stop-hook recovery prompts. If one appears, report it as a blocker to the orchestrator and stop."
+- Every subagent prompt must include: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval."
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
 - If standard agent tools are unavailable, do not run this pipeline; hard-escalate instead of launching shell-based Codex sessions.
 - `CODEX_ROLE` is legacy hook metadata. Do not use it to launch teammates.
@@ -23,7 +23,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 
 The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdit when legacy `CODEX_ROLE` is `lead` or `coordinator`. If the gate fires, spawn the appropriate teammate and assign the task — do not unset `CODEX_ROLE` to bypass it.
 
-Subagents, including lead and coordinator roles, do not handle Stop-hook recovery prompts. If one appears, they report it as a blocker to the main orchestrator and stop. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
+Subagents, including lead and coordinator roles, follow Stop-hook prompts in their own sessions, including required proof/checklist files. They report to the main orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
 
 **Parallelism principle:** Never serialize independent work. Parallelize everything that can be parallelized.
 
@@ -152,6 +152,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 - Strong typing for domain concepts. No bare primitives where named types belong.
 - Package/binary scope: code belongs in the binary whose stated purpose matches the code's function. A standalone CLI tool must not contain code requiring a running daemon.
 - Clean solution over hack, always. Reviewers reject shortcuts, workarounds, and "good enough for now."
+- Root cause first. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation; reviewers reject it unless containment was explicitly requested.
 - Interface implementation is a contract: "I fulfill this interface." An always-erroring implementation is a false claim — same as naming a function Save that doesn't save. Stub implementations that always error must not exist in production code.
 
 ### Task States
@@ -185,7 +186,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 | blocked → unblocking | Coordinator launches brainstormer + explorer simultaneously per Blocker Resolution Protocol |
 | unblocking → in_progress | Feasible solution found and assigned. Blocker resolved |
 | unblocking → blocked | No feasible solution found. Escalate to user |
-| in_progress → submitted | All claims tagged `[T<tier>: source, confidence]`. Critique log produced (3+ problems found/fixed). Code tasks: all changes committed, hard proof that the solution works (test output, command output, screenshots). CC lead + snitch |
+| in_progress → submitted | All claims tagged `[T<tier>: source, confidence]`. Critique log produced (3+ problems found/fixed). Code/debugging tasks: root-cause rationale explains the cause chain and why the diff repairs it, all changes committed, hard proof that the solution works (test output, command output, screenshots). CC lead + snitch |
 | submitted → in_progress | Coordinator bounces back: submission checklist failed |
 | submitted → in_review | Coordinator verifies submission checklist passes. Routes to paired reviewer |
 | in_review → in_progress | Reviewer rejected. Routes back to executor with feedback |
@@ -362,6 +363,7 @@ Phase 2 design **must include**:
 - **Test designer** writes specs covering all applicable test types: integration tests (cross-task boundaries), full E2E tests (entire user-facing flows), and UI tests (screen manipulation, interaction sequences) when the project has a UI.
 - Every cross-task interface must have at least one test on the real call path (no mocks at boundaries).
 - E2E tests exercise complete workflows as a user would, including UI manipulation when applicable.
+- Batch E2E-ready tasks only when scarce resources would contend and batching meaningfully cuts wall time; report separate task verdicts.
 - **Failure routing:** cross-task boundary bug → executor pair. Design flaw → research/design.
 
 ## Feedback Loops
@@ -383,11 +385,14 @@ Paired roles communicate **directly**. All other feedback routes through coordin
 
 Applies: bug fix, build failure, flake, perf regression, any task whose deliverable is fixing observed broken behavior.
 
+- Any discovered bug enters Debug Mode: user followup, teammate finding, test failure, reviewer finding, or QA rejection. Coordinator/lead never debug or patch directly.
+- Delegate `debugging-discipline` roles to separate agents: repro → test executor/verifier; RCA → explorer; critic → independent reviewer; fix → executor; review → paired reviewer + final QA. Every bug-task prompt says: "Load `systematic-debugging` and `debugging-discipline`; follow their repro/RCA-critic/fix-review loop. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
 - Executor iterates candidate fixes without per-attempt reviewer gate. No `submitted`/`in_review` transition while still hunting the fix.
 - Each candidate fix CCed to reviewer for **async advice only**. Reviewer cannot reject. Executor does not wait for reviewer reply. Reviewer advice is incorporated if useful, otherwise ignored.
-- Proof = working mitigation: failing repro → passing on real path.
-- After mitigation works, task → `submitted` → `in_review`. Reviewer's job at this stage: improve (cleanup, hardening, semantic correctness, removing the hacky parts). Only stage where reviewer rejection counts.
-- Loop limit (10 rounds) counts post-mitigation review rounds only. Pre-mitigation attempts are uncounted.
+- Proof while hunting = failing repro → passing on real path.
+- Before `submitted`, executor provides root-cause rationale: cause chain, evidence, and why the diff repairs the cause. Unknown "why" = not submitted.
+- After the candidate fix works, task → `submitted` → `in_review`. Reviewer's job at this stage: critique the rationale, reject mitigation, and improve cleanup, hardening, and semantic correctness. Only stage where reviewer rejection counts.
+- Loop limit (10 rounds) counts post-candidate-fix review rounds only. Pre-submission attempts are uncounted.
 - Bug-fix pipeline in User Followups still applies — Debug Mode only changes the executor↔reviewer semantics inside the Execution stage.
 
 ### Loop Limits
@@ -431,6 +436,8 @@ Severity ladder (highest → lowest):
 3. **Minor** — style, smell, sub-optimal but functional
 4. **Nit** — preference, formatting, naming polish
 
+**Blocker severity inheritance.** Task A unavoidably blocks task B -> severity(A) >= severity(B). Transitive across chains: any chain terminating in Critical lifts every prerequisite to Critical. Lift only, never reduce. Re-scopable-around blocker is not unavoidable; route around it instead.
+
 | Current task | Interruptible by | Queue (deliver after submission lands) |
 |--------------|------------------|----------------------------------------|
 | Critical | (nothing) | every finding, including other Critical |
@@ -459,11 +466,12 @@ After brainstormer finishes, coordinator launches a second explorer to validate 
 **Reviewers report, never fix.** No editing code, designs, or tests. Describe the problem and suggest a fix direction. The paired executor implements all changes.
 
 0. **Does it work?** Before evaluating quality, verify code fulfills its stated purpose. If it doesn't — REJECT.
-1. **Assume wrong.** Find errors. Look for what's missing.
-2. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block. Minor (doesn't block), Nit (never blocks).
-3. **Outcomes:** APPROVED (no Critical/Major, with evidence). CONDITIONAL (Minor/Nit listed — main task completes; coordinator opens follow-up tasks per Priority Discipline; do NOT bounce executor back). REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
-4. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
-5. **Max 10 rounds** then escalate.
+1. **Root cause first.** Critique the executor's rationale. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
+2. **Assume wrong.** Find errors. Look for what's missing.
+3. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block. Minor (doesn't block), Nit (never blocks).
+4. **Outcomes:** APPROVED (no Critical/Major, with evidence). CONDITIONAL (Minor/Nit listed — main task completes; coordinator opens follow-up tasks per Priority Discipline; do NOT bounce executor back). REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
+5. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
+6. **Max 10 rounds** then escalate.
 
 Design creates a type/component but defers making it work = reject. Valid deferral: don't create it yet. Invalid deferral: create a broken version.
 
@@ -483,6 +491,7 @@ Extends the general Reviewer Protocol above (which already covers OWASP, edge ca
 - [ ] Load the `<language>-coding-style` skill via skill instructions. Check every rule.
 - [ ] Requirements coverage — each user requirement → code
 - [ ] Design compliance — implementation matches architecture + interface contracts (error modes, pre/postconditions, invariants, thread safety)
+- [ ] Root-cause rationale — cause chain complete; diff repairs the cause, not only symptoms
 - [ ] Code location — files in correct binary per purpose map
 - [ ] Shared concerns register — no reimplementation (REJECT); missed abstraction (CONDITIONAL)
 
@@ -517,6 +526,7 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Integration tests pass (run them — direct)
 - [ ] All unit tests pass (run them — proxy, still required)
 - [ ] End-to-end flows verified (direct — run the program as a user)
+- [ ] Root-cause rationale reviewed; no unexplained causal link or symptom-only mitigation
 - [ ] No uncommitted changes; no secrets or credentials exposed
 - [ ] Static checks pass
 - [ ] Mandatory skills invoked by all teammates
@@ -538,7 +548,7 @@ Review independently first — no reading peer findings before writing your own.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise. Identify what's missing, what could be wrong, what needs verification. Route findings to a second agent for independent verification before acting on them.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, investigate per Crash Recovery. If confirmed unresponsive, follow the respawn sequence.
 7. **Handle "submitted" tasks.** When a task is submitted: verify Stop Checklist items (changes committed, claims tagged, critique log exists). Bounce back immediately if incomplete — don't waste reviewer time. If checklist passes, route to paired reviewer. After reviewer approves, route to test pipeline (code tasks) or verifier (non-code tasks).
-8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks. After ALL tasks tested → spawn QA. Record checkpoint per task in the ledger: what was produced, who approved, git SHA.
+8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks except batched E2E under Testing Protocol. After ALL tasks tested → spawn QA. Record checkpoint per task in the ledger: what was produced, who approved, git SHA.
 9. **Budget context** -- summaries, not raw output (see below).
 10. **Enforce loop limits.** Escalate on 11th rejection / 3rd QA re-entry.
 11. **Crash recovery** -- detect unresponsive teammates, request lead to re-spawn. For executors: review changes before re-spawning. Max 2 re-spawns.
@@ -658,7 +668,7 @@ Format: [T<tier>: <source>, <confidence: high/medium/low>]
 
 Compliance:
 - Critically analyze ALL inputs. You own bugs from unverified inputs.
-- Do not handle Stop-hook recovery prompts. If one appears, report it as a blocker to the orchestrator and stop.
+- Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope; report only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 - BEFORE writing code, invoke applicable skills via the skill instructions:
   go-coding-style (Go), python-coding-style (Python), testing-discipline (tests),
   test-driven-development (code implementation), proof-driven-development (logic),
@@ -672,7 +682,7 @@ Compliance:
 
 - [ROLE-SPECIFIC RULES]
 - [FOR EXECUTORS:] While implementing, actively look for code smell and design issues in all code you study or touch. Report ALL findings to coordinator — do not silently work around them.
-- [FOR EXECUTORS, code/debugging tasks:] Before "submitted": build, run full test suite, exercise the affected feature through real UI/API as a user. Cite direct evidence (output, screenshot, observed state) in submission. Proxy evidence (unit tests, lint) insufficient. No E2E evidence = coordinator bounces back without routing to reviewer.
+- [FOR EXECUTORS, code/debugging tasks:] Before "submitted": provide root-cause rationale, build, run full test suite, exercise the affected feature through real UI/API as a user. Cite direct evidence (output, screenshot, observed state) in submission. Proxy evidence (unit tests, lint) insufficient. No root-cause rationale or E2E evidence = coordinator bounces back without routing to reviewer.
 - Mark task as "submitted" (not "complete") + notify coordinator when done. **CC the lead and snitch on all submitted, blocked, and completed claims.**
 - If blocked, message coordinator with specifics. **CC the lead and snitch.**
 ```
@@ -683,7 +693,7 @@ Compliance:
 |---------|-----|
 | Spawning without a skill-defined role, ownership, or stop condition | STOP. Use bounded Codex agents with explicit role, ownership, and expected output |
 | Work without corresponding task | Create task immediately |
-| Task waiting for other tasks before testing | Pipelines are per-task. Code approved + test specs ready → start testing immediately |
+| Task waiting for other tasks before testing | Pipelines are per-task. Code approved + test specs ready → start testing immediately, except batched E2E under Testing Protocol |
 | Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`, or hard-escalate if unavailable. |
 | Spawning custom-named teammates outside defined roles | Unbounded growth. Use role names in prompts and roster mapping: executor-N, explorer-N. Reassign idle teammates. |
 | Executor assigned new task with unreviewed previous work | STOP. Assign to a different executor/reviewer pair instead. This executor waits for its reviewer |
@@ -701,6 +711,8 @@ Compliance:
 | Reviewer feedback ignored | Coordinator enforces: fix then re-review. Lead reminds if coordinator misses it |
 | Mandatory skill not invoked | Reviewer rejects |
 | Untagged factual claims in deliverable | Reviewer rejects |
+| Submitted code/debugging fix lacks root-cause rationale | Bounce before review. Unknown "why" means not submitted |
+| Reviewer approves without critiquing root-cause rationale | Approval invalid. Re-spawn or re-prompt reviewer |
 | Spawn prompt uses `[LIST APPLICABLE SKILLS]` placeholder | Replace with exact skill names from Mandatory Skills table |
 | 11th rejection in same pair | Escalate: replace or re-scope |
 | Teammate seems slow or won't respond before 30 minutes | Not stale. Do not message or interrupt for status |

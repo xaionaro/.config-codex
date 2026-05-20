@@ -5,6 +5,9 @@ set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+. "$HOOK_DIR/lib/codex-tmp.sh"
+codex_init_tmp || true
+codex_install_fail_open_trap validate-bash
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
@@ -37,6 +40,205 @@ command_invokes_eci_off() {
       }
       END { exit found ? 0 : 1 }
     '
+}
+
+git_reset_dirs() {
+  python3 - "$command" "${cwd:-$PWD}" <<'PY'
+import os
+import shlex
+import sys
+
+command = sys.argv[1]
+cwd = sys.argv[2] or os.getcwd()
+
+try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    sys.exit(2)
+
+operators = {";", "&", "&&", "|", "||", "(", ")"}
+
+
+def basename(token):
+    return os.path.basename(token)
+
+
+def is_assignment(token):
+    name, sep, _ = token.partition("=")
+    return bool(sep) and bool(name) and name.replace("_", "A").isalnum() and not name[0].isdigit()
+
+
+def resolve(path, base):
+    path = os.path.expanduser(path)
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    return os.path.normpath(os.path.join(base, path))
+
+
+def skip_env(segment, index):
+    index += 1
+    while index < len(segment):
+        token = segment[index]
+        if is_assignment(token):
+            index += 1
+            continue
+        if token in {"-i", "-0"} or token.startswith("-u"):
+            index += 1
+            continue
+        if token in {"-C", "-S"} and index + 1 < len(segment):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    return index
+
+
+def command_index(segment):
+    index = 0
+    while index < len(segment) and is_assignment(segment[index]):
+        index += 1
+    while index < len(segment):
+        name = basename(segment[index])
+        if name in {"command", "builtin", "exec"}:
+            index += 1
+            continue
+        if name == "env":
+            index = skip_env(segment, index)
+            continue
+        if name in {"sudo", "doas"}:
+            index += 1
+            while index < len(segment) and segment[index].startswith("-"):
+                index += 1
+            continue
+        return index
+    return index
+
+
+def git_reset_dir(segment, index, base_dir):
+    git_dir = base_dir
+    arg_takes_value = {
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+    arg_takes_value_eq = {arg + "=" for arg in arg_takes_value if arg.startswith("--")}
+    index += 1
+    while index < len(segment):
+        token = segment[index]
+        if token == "-C" and index + 1 < len(segment):
+            git_dir = resolve(segment[index + 1], base_dir)
+            index += 2
+            continue
+        if token.startswith("-C") and len(token) > 2:
+            git_dir = resolve(token[2:], base_dir)
+            index += 1
+            continue
+        if token in arg_takes_value and index + 1 < len(segment):
+            index += 2
+            continue
+        if any(token.startswith(prefix) for prefix in arg_takes_value_eq):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if token == "reset":
+            return git_dir
+        return None
+    return None
+
+
+segments = []
+start = 0
+for index, token in enumerate(tokens + [";"]):
+    if token in operators:
+        if start < index:
+            segments.append(tokens[start:index])
+        start = index + 1
+
+current_dir = cwd
+reset_dirs = []
+for segment in segments:
+    index = command_index(segment)
+    if index >= len(segment):
+        continue
+    name = basename(segment[index])
+    if name == "cd" and index + 1 < len(segment):
+        current_dir = resolve(segment[index + 1], current_dir)
+        continue
+    if name in {"bash", "sh"} and "-c" in segment[index + 1 :]:
+        script_index = segment.index("-c", index + 1) + 1
+        if script_index < len(segment) and "git reset" in segment[script_index]:
+            print("!shell-c")
+        continue
+    if name != "git":
+        continue
+    reset_dir = git_reset_dir(segment, index, current_dir)
+    if reset_dir:
+        reset_dirs.append(reset_dir)
+
+for reset_dir in reset_dirs:
+    print(reset_dir)
+PY
+}
+
+enforce_git_reset_gate() {
+  local reset_dirs=()
+  local reset_dir repo_root marker marker_command
+
+  case "$command" in
+    *reset*) ;;
+    *) return 0 ;;
+  esac
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    deny 'git reset denied: python3 is required to validate the one-time reset marker.'
+  fi
+
+  if ! mapfile -t reset_dirs < <(git_reset_dirs); then
+    deny 'git reset denied: could not parse the shell command safely.'
+  fi
+
+  [ "${#reset_dirs[@]}" -gt 0 ] || return 0
+
+  if [ "${#reset_dirs[@]}" -gt 1 ]; then
+    deny 'git reset denied: run only one git reset per Bash tool call.'
+  fi
+
+  reset_dir="${reset_dirs[0]}"
+  if [ "$reset_dir" = "!shell-c" ]; then
+    deny 'git reset denied: run git reset directly, not through bash -c or sh -c.'
+  fi
+
+  if ! repo_root="$(git -C "$reset_dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    deny "git reset denied: could not identify the target repo for '$reset_dir'."
+  fi
+
+  marker="$repo_root/.git-reset-approved-once"
+  if [ ! -f "$marker" ]; then
+    deny "git reset denied: create $marker with date, reason, and command: $command after inspecting uncommitted changes."
+  fi
+
+  marker_command="$(awk '/^command: / { print substr($0, 10); found = 1; exit } END { if (!found) exit 1 }' "$marker" 2>/dev/null || true)"
+  if [ -z "$marker_command" ]; then
+    deny "git reset denied: $marker must contain a command: <exact Bash command> line."
+  fi
+
+  if [ "$marker_command" != "$command" ]; then
+    deny "git reset denied: $marker command does not match this Bash command."
+  fi
+
+  if ! rm -f -- "$marker"; then
+    deny "git reset denied: could not consume $marker."
+  fi
 }
 
 command_is_read_only() {
@@ -170,9 +372,15 @@ if codex_hook_is_subagent_context "$input" && command_invokes_eci_off "$command"
   deny 'Only the main thread/orchestrator may disengage ECI with eci-active off. Subagents must report completion or blockers to the orchestrator while ECI remains active.'
 fi
 
+enforce_git_reset_gate
+
 read_only=false
 if command_is_read_only "$command"; then
   read_only=true
+fi
+
+if [ "$read_only" != true ]; then
+  codex_note_touched_repo "$session_id" "$cwd" "$cwd" || true
 fi
 
 if ! codex_hook_is_subagent_context "$input" && [ "$read_only" != true ]; then

@@ -16,8 +16,8 @@
     },
     {
       "command": "bash hooks/tests/run.sh",
-      "result": "pass",
-      "summary": "SUMMARY pass=98 fail=0 xfail=0 xpass=0 todo=0."
+      "result": "partial",
+      "summary": "Ported ECI/NotebookEdit/session-ownership cases pass; full suite reports SUMMARY pass=117 fail=33 xfail=0 xpass=0 todo=0, with remaining failures in broader stop-gate/reviewer groups."
     },
     {
       "command": "git diff --check",
@@ -47,7 +47,7 @@
     {
       "name": "PreToolUse validation",
       "status": "active",
-      "summary": "Bash runs validate-bash.sh and the opt-in first-tool reviewer. apply_patch, Edit, Write, and MultiEdit run file-edit validators, the security reminder, ECI and ATE gates where wired, and the opt-in first-tool reviewer.",
+      "summary": "Bash runs validate-bash.sh and the opt-in first-tool reviewer. apply_patch, Edit, Write, MultiEdit, and NotebookEdit run file-edit validators, the security reminder, ECI and ATE gates where wired, and the opt-in first-tool reviewer. Edit validators reject protected session-owned paths when the current session is not an owner.",
       "evidence": [
         "[T1: /home/streaming/.codex/hooks.json]",
         "[T1: /home/streaming/.codex/hooks/validate-bash.sh]",
@@ -60,7 +60,7 @@
     {
       "name": "ECI gate",
       "status": "active",
-      "summary": "eci-active-gate.sh blocks main-thread code edits while ECI state is active, allows markdown-only edits, and exempts spawned subagents only through transcript metadata. CODEX_ROLE is not an ECI bypass.",
+      "summary": "eci-active-gate.sh blocks main-thread code edits while session-scoped ECI state is active at $CODEX_PROOF_ROOT/$SESSION_ID/eci_active, allows markdown-only edits, and exempts spawned subagents only through transcript metadata. It ignores legacy cwd-scoped ECI markers. CODEX_ROLE is not an ECI bypass.",
       "evidence": [
         "[T1: /home/streaming/.codex/hooks/eci-active-gate.sh]",
         "[T1: /home/streaming/.codex/hooks/lib/codex-proof-state.sh]",
@@ -110,7 +110,7 @@
     {
       "name": "eci-active CLI",
       "status": "active",
-      "summary": "bin/eci-active manages session-scoped or cwd-scoped ECI markers. off requires a validated disengage report and copies proof to the bound session proof directory before removing the marker.",
+      "summary": "bin/eci-active manages only session-scoped ECI markers under $CODEX_PROOF_ROOT/$SESSION_ID/eci_active. Without CODEX_SESSION_ID, it targets the newest session directory under the proof root; it never creates cwd-scoped ECI state. off requires a validated disengage report before removing the marker.",
       "evidence": [
         "[T1: /home/streaming/.codex/bin/eci-active]",
         "[T1: /home/streaming/.codex/hooks/stop-gate.sh]"

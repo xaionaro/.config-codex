@@ -5,11 +5,13 @@ set -uo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+. "$HOOK_DIR/lib/codex-tmp.sh"
 . "$HOOK_DIR/lib/reviewer-backend.sh"
 . "$HOOK_DIR/lib/compose-reviewer-prompt.sh"
 . "$HOOK_DIR/lib/reviewer-filter.sh"
 . "$HOOK_DIR/lib/reviewer-call.sh"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
+codex_init_tmp || true
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
@@ -161,7 +163,12 @@ render_transcript() {
 append_repo_context() {
   local repo="$1"
   printf '\n\n## VCS_STATUS\n\n'
-  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  local eci_marker="$root/$session_id/eci_active"
+  if [ -e "$eci_marker" ]; then
+    printf '(skipped: ECI active; working-tree state is transient until delegated/subagent work lands.)\n'
+    printf '\n\n## DIFF\n\n'
+    printf '(skipped: same reason as VCS_STATUS.)\n'
+  elif git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     local porcelain
     porcelain=$(git -C "$repo" status --porcelain 2>/dev/null || true)
     if [ -z "$porcelain" ]; then

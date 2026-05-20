@@ -11,12 +11,14 @@ description: Use when writing, reviewing, or modifying Go code (*.go, go.mod, go
 - Choose the correct, clean solution even when it's harder than the simple, practical, or convenient one.
 - **Read before using.** Before first use of any package (stdlib or third-party), read its API surface — godoc, source, or context7. Don't guess signatures, defaults, or behavior.
 - **Prefer existing implementations.** Use well-maintained third-party packages over reimplementing functionality. Search for established libraries before writing from scratch.
+- **Non-reusable is a smell.** Prefer reusable domain primitives over one-off code.
 
 ## Strong Typing
 
 - Named types for domain concepts (`type UserID uint64`, not bare `uint64`). Typed constants with iota. Use generics instead of `any`/`interface{}`.
 - Group related behavior through types, method sets, and interfaces — let the type system encode domain relationships instead of scattering them across unrelated functions.
 - One source of truth per logic/constant — define once, reference everywhere. Duplicated values drift.
+- Return values must be orthogonal. If a caller can derive one result from another without losing information, return only the authoritative result. Add another result only for independent state or ambiguity the authoritative result cannot encode.
 - Struct fields are exported by default. Only unexport a field when external mutation would violate an invariant maintained by the type's methods.
 
 ## File tree
@@ -83,6 +85,12 @@ func (n *NodeWithCustomData[C, T]) RemovePushTo(
   type optionCheckInterval time.Duration
   func (o optionCheckInterval) apply(c *Config) { c.CheckInterval = (time.Duration)(o) }
   ```
+
+## Function Values
+
+- Prefer named interfaces over anonymous functions/closures. They hide behavior, defeat method discovery, capture state implicitly, and do not serialize.
+- Prefer serializable constructs. Values crossing a boundary such as RPC, config, snapshot, replay, or audit log must be data, not closures.
+- Anonymous functions are OK only for `defer`/`go`/`observability.Go` bodies, one-off `sort.Slice` less funcs, and test closures. Anything reused, stored, or passed across packages uses a named type plus interface.
 
 ## Other patterns
 

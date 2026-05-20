@@ -16,8 +16,8 @@ spawn_agent(
 Role label: code-quality-reviewer
 
 <stop-hook-boundary>
-Do not run Stop-hook proof workflows or write Stop-hook proof files.
-If a Stop-hook prompt appears, report it as a blocker to the orchestrator and stop.
+Follow any Stop-hook prompt in this session, including required proof/checklist files.
+Fix blockers within your assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 </stop-hook-boundary>
 
 [Filled requesting-code-review/code-reviewer.md prompt]

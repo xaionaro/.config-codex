@@ -1,46 +1,95 @@
 ---
 name: maintaining-context-ledger
-description: Use when writing or verifying project-understanding ledgers, context ledgers, ECI/ATE session ledgers, handoff context, or stop-hook ledger updates
+description: Use when writing or verifying project-understanding ledgers, context ledgers, ECI/ATE session ledgers, handoff context, or stop-hook ledger updates — keeps the ledger a current-state snapshot and the high-level log an append-only history, side by side
 ---
 
 # Maintaining Context Ledgers
 
-A context ledger preserves current project understanding for safe resumption. It is not an activity log, transcript summary, proof bundle, or report archive.
+Two files, side by side, both required:
+
+| File | Role | Edit mode |
+|------|------|-----------|
+| `project-understanding.md` (the ledger) | Current-state snapshot | Rewrite in place; stale entries deleted |
+| `high_level_log.md` (the log) | Append-only history of every material change | Append only; never edit, never delete past entries |
+
+The ledger answers what is true now. The log answers what happened, in order, and why we believe what is now in the ledger. They are not redundant: the ledger has no history; the log has no synthesis.
 
 ## Core Rule
 
-A fresh agent should be able to resume accurately from the ledger without transcript access. Record every known project/task detail that could affect planning, implementation, risk handling, assignment, command choice, verification, or the final answer.
+A fresh agent reading only the ledger, without transcript or memory, must reach the same current understanding you have. Record every project/task detail that could affect planning, implementation, risk handling, assignment, command choice, verification, or the final answer.
 
-Err on exhaustive useful detail. Do not omit a detail because it seems obvious from the transcript, local state, prior agent memory, or project familiarity.
+Err on exhaustive useful detail for current state. Do not omit a detail because it seems obvious from transcript, local state, prior agent memory, or project familiarity. Equally, do not retain a detail because it was true earlier. Exhaustive on current state; zero on superseded state.
 
 ## Storage
 
-For ECI/ATE, write the ledger at:
+For ECI/ATE, both files live at:
 
 ```text
-~/.cache/codex-proof/$SESSION_ID/project-understanding.md
+~/.cache/codex-proof/$SESSION_ID/project-understanding.md   # the ledger
+~/.cache/codex-proof/$SESSION_ID/high_level_log.md          # the log
 ```
 
-Do not store the ECI/ATE ledger in the project/repo.
+Do not store either file in the project/repo.
+
+## High-Level Log
+
+Append-only history. Every material change recorded in the ledger gets a corresponding entry appended to the log in the same turn.
+
+| Rule | Detail |
+|------|--------|
+| Append only | Never edit, reorder, or delete past entries. Wrong entries are corrected by a new appended entry referencing the prior one. |
+| Reflect all details | Capture the change, prior state, new state, reason, source/evidence, and agent/turn. |
+| Chronological | Newest entries at the bottom. Each entry leads with a UTC timestamp. |
+| Same-turn pairing | Every ledger update has at least one log entry from that turn. A ledger diff with no log append is defective. |
+| No synthesis | The log records what changed; it does not duplicate the ledger's current-state synthesis. Cross-reference by section/heading instead. |
+
+Suggested entry shape:
+
+```text
+## 2026-05-08T14:22Z - Decisions / library choice
+- Was: undecided between X and Y.
+- Now: chose Y.
+- Why: <reason, in one sentence>.
+- Evidence: <commit | report path | command output reference>.
+- Agent: <runtime name / role>.
+```
 
 ## Current State, Not History
 
 | Case | Ledger Action |
 |------|---------------|
-| Mutable fact changes | Replace stale value with latest state by subject |
-| Old state explains a binding constraint, user correction, or future hazard | Keep only the needed history and why it matters |
-| Large step finishes | Record verdict, resulting state, report/evidence link, remaining gaps |
-| Detailed report exists elsewhere | Link it; do not copy report body, substeps, transcripts, or verification bullet lists |
-| User corrects an agent mistake | Record corrected fact/rule, affected current state, recurrence guard, and source/correction link |
+| Mutable fact changes | Replace value in place; never append beside old |
+| Hypothesis disproved, plan abandoned, decision reversed | Delete the obsolete entry; keep only the surviving conclusion |
+| Old state explains a binding constraint or hazard | Keep only the needed history and why it still matters |
+| Step finishes | Record verdict + resulting state + evidence link; drop the in-progress entry |
+| Detailed report exists elsewhere | Link it; do not copy report body, substeps, transcripts, or bullet lists |
+| User corrects an agent mistake | Record corrected fact, affected state, recurrence guard, source link |
+| Task/blocker resolved | Move to completed milestones with link, or delete |
 
-Do not keep blow-by-blow mistake or activity history unless it prevents a likely recurrence.
+Skip blow-by-blow history unless it prevents recurrence.
 
-## Suggested Shape
+### Log vs Ledger
 
-Use headings that fit the work. This pseudo-schema is a floor, not a fixed form:
+A given fact lives in one file, not both. Route by edit mode:
 
-| Field | Purpose |
-|-------|---------|
+| Content | Ledger | Log |
+|---|---|---|
+| "14:22 - tried A, failed" | - | append |
+| "Considered X, chose Y because..." | "Using Y. Why: <reason>." | append the consideration + decision event |
+| "Thought bug was in M, found in N" | "Bug: N. Fix: <link>." | append the M->N correction event |
+| "Step 1 done. Step 2 done. Step 3 WIP." | "Current: step 3 - <state>. Done: 1, 2 (links)." | append each step transition |
+| Narrative of what each agent did | Current owner + last verdict + next action | append per-agent action when it produced a material change |
+
+Per-ledger-line test: true and load-bearing right now? No -> drop from ledger; if it captures something material that happened, append to the log instead.
+
+## Structure
+
+The ledger is always structured. Free-form prose, wall-of-text, and chat-style narration are rejected. Every fact lives under a heading whose subject covers it. Every section is scannable: table, bullet list, or short labeled lines (`Owner: ...`, `Status: ...`, `Evidence: ...`). No multi-paragraph essays. No long one-liners: split multi-clause bullets, semicolon chains, and "and"-joined run-ons into sub-bullets, labeled lines, or table rows. One fact per line. Prefer tables for more than two parallel items.
+
+Choose headings that fit the project. The agent decides section set, names, and order. This example is a starting template, not a fixed schema:
+
+| Example section | Purpose |
+|---------|---------|
 | Sources | Authoritative inputs and what each governs |
 | Goal | Desired outcome, reason, scope boundaries |
 | Requirements | Binding conditions, acceptance criteria, source refs, current status |
@@ -51,22 +100,40 @@ Use headings that fit the work. This pseudo-schema is a floor, not a fixed form:
 | Progress | Current work state, owners, completed milestones with report links, WIP, next action |
 | Verification | How completion will be proven, evidence links, current verdicts, missing proof |
 
-Keep the project's own vocabulary, names, identifiers, and source wording when they are binding. Do not flatten specifics into generic labels.
+Use `### <subject>` subsections when a section grows large enough that a fresh agent would have to scan to find a fact. Keep the project's own vocabulary, names, identifiers, and source wording when binding. Do not flatten specifics into generic labels.
 
 ## Update Points
 
 Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after user corrections, before QA/verdicts, before user-waiting stops, and before shutdown.
 
-After each update, run an omission pass against authoritative sources, current user instructions, current diffs/state, and agent reports available this turn.
+When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
+
+Three-pass ledger edit, in order:
+
+1. Stale pass. Re-read each section; for every line ask: still current? No -> delete or rewrite.
+2. Omission pass. Add what is missing, checking authoritative sources, user instructions, current diffs/state, and this turn's agent reports.
+3. Fit pass. Re-read the section list itself. Rename, split, merge, add, or drop sections so headings match the current work.
+
+Structure must evolve with the project. A frozen schema that no longer fits is defective. A purely additive diff to the ledger is a log-into-ledger defect: rewrite in place.
+
+Then append to `high_level_log.md` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry.
 
 ## Invalid Ledger
 
-Reject the ledger if:
+Reject the ledger if any holds:
 
 - A fresh agent needs the transcript or unstated local memory to recover useful current project/task facts.
 - An authoritative source is named without extracting its relevant current-state details.
 - Binding requirements, acceptance criteria, user corrections, assumptions, risks, decisions, current state, or evidence are missing.
 - Claims cannot be traced to sources, reports, commands, logs, screenshots, or commits.
-- Obsolete states are retained as if current.
+- Obsolete states are retained as if current: stale plans, abandoned hypotheses, finished WIP, resolved blockers, superseded values.
+- Entries are timestamped narrative or chronological "what happened next" prose, i.e. log-style.
+- Multiple values for the same fact coexist instead of one current value.
 - Activity logs or copied report bodies replace current-state summaries and links.
+- The latest update is purely additive while sections that should have changed were left untouched.
+- Facts are dumped as free-form prose instead of placed under a fitting heading.
+- A section runs as multi-paragraph narrative where a table, bullet list, or labeled lines would scan.
+- A line packs multiple facts into a long bullet or run-on sentence.
+- Headings no longer fit the content.
+- The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
 - Secrets, credentials, or unnecessary personal data are recorded.

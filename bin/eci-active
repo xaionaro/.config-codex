@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the ECI active marker for the current Codex session or cwd.
+# Manage the ECI active marker for the current Codex session.
 
 set -euo pipefail
 
@@ -13,9 +13,50 @@ Usage:
   eci-active off <disengage-report.md>
   eci-active status
 
-Set CODEX_SESSION_ID to target a specific session. Without it, the newest
-state directory is never guessed; state is scoped to the current cwd.
+Set CODEX_SESSION_ID, or CODEX_THREAD_ID when CODEX_SESSION_ID is
+unset, to target a session. Without either, the newest real session
+directory under the proof root is used. Cwd-scoped ECI state is never
+created.
 EOF
+}
+
+resolve_session_dir() {
+  local root name newest="" newest_mtime=0 d mtime session_id session_var
+  root="$(codex_proof_root)"
+
+  if [ -n "${CODEX_SESSION_ID:-}" ]; then
+    session_id="$CODEX_SESSION_ID"
+    session_var="CODEX_SESSION_ID"
+  elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+    session_id="$CODEX_THREAD_ID"
+    session_var="CODEX_THREAD_ID"
+  fi
+
+  if [ -n "${session_id:-}" ]; then
+    codex_valid_session_id "$session_id" || {
+      echo "Invalid $session_var; use only letters, digits, '_' or '-'." >&2
+      exit 1
+    }
+    printf '%s/%s\n' "$root" "$session_id"
+    return
+  fi
+
+  [ -d "$root" ] || return 1
+  shopt -s nullglob
+  for d in "$root"/*/; do
+    d="${d%/}"
+    name="${d##*/}"
+    codex_valid_session_id "$name" || continue
+    codex_reserved_proof_dir "$name" && continue
+    mtime=$(stat -c '%Y' "$d" 2>/dev/null) || continue
+    if [ "$mtime" -gt "$newest_mtime" ]; then
+      newest_mtime="$mtime"
+      newest="$d"
+    fi
+  done
+  shopt -u nullglob
+  [ -n "$newest" ] || return 1
+  printf '%s\n' "$newest"
 }
 
 validate_disengage_report() {
@@ -68,52 +109,70 @@ validate_disengage_report() {
   fi
 }
 
+remove_legacy_eci_markers_for_cwd() {
+  local keep="${1:-}"
+  local marker
+
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    [ -n "$keep" ] && [ "$marker" = "$keep" ] && continue
+    rm -f "$marker"
+  done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
+}
+
 cmd="${1:-}"
 case "$cmd" in
   on)
     shift
     scope="${*:-}"
     [ -n "$scope" ] || { usage; exit 2; }
-    marker=$(codex_cli_state_file eci eci_active true) || {
-      echo "Invalid CODEX_SESSION_ID; use only letters, digits, '_' or '-'." >&2
+    session_dir="$(resolve_session_dir)" || {
+      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
+    marker="$session_dir/eci_active"
+    mkdir -p "$session_dir"
     {
       printf 'scope: %s\n' "$scope"
       printf 'cwd: %s\n' "$PWD"
-      if [ -n "${CODEX_SESSION_ID:-}" ]; then
-        printf 'session_id: %s\n' "$CODEX_SESSION_ID"
-      fi
+      printf 'session_id: %s\n' "${session_dir##*/}"
       date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
     } >"$marker"
+    remove_legacy_eci_markers_for_cwd "$marker"
     printf 'ECI active: %s\n' "$marker"
     ;;
   off)
     report="${2:-}"
+    markers=()
     [ -n "$report" ] || { usage; exit 2; }
     [ -f "$report" ] || { echo "Disengage report not found: $report" >&2; exit 1; }
-    marker=$(codex_cli_state_file eci eci_active false) || {
-      echo "Invalid CODEX_SESSION_ID; use only letters, digits, '_' or '-'." >&2
+    session_dir="$(resolve_session_dir)" || {
+      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
-    [ -f "$marker" ] || { echo "ECI marker is not active: $marker" >&2; exit 1; }
+    marker="$session_dir/eci_active"
+    [ -f "$marker" ] && markers+=("$marker")
+    while IFS= read -r legacy_marker; do
+      [ -n "$legacy_marker" ] || continue
+      [ "$legacy_marker" = "$marker" ] && continue
+      markers+=("$legacy_marker")
+    done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
+    [ "${#markers[@]}" -gt 0 ] || { echo "ECI marker is not active: $marker" >&2; exit 1; }
     validate_disengage_report "$report"
-    proof_session="${CODEX_SESSION_ID:-}"
-    if ! codex_valid_session_id "$proof_session"; then
-      proof_session="$(codex_state_session_id "$marker" || true)"
-    fi
-    if ! codex_valid_session_id "$proof_session"; then
-      echo "ECI marker is active but is not associated with a Codex session." >&2
-      echo "Run the stop/ECI gate once in the target session before disengaging, or activate ECI with CODEX_SESSION_ID set." >&2
-      exit 1
-    fi
-    rm -f "$marker"
+    rm -f "${markers[@]}"
     printf 'ECI inactive. Disengage report validated: %s\n' "$report"
     ;;
   status)
-    marker=$(codex_cli_state_file eci eci_active false 2>/dev/null || true)
+    session_dir="$(resolve_session_dir)" || {
+      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+      exit 1
+    }
+    marker="$session_dir/eci_active"
     if [ -n "${marker:-}" ] && [ -f "$marker" ]; then
       cat "$marker"
+    elif legacy_marker="$(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null | head -n1)" &&
+      [ -n "$legacy_marker" ] && [ -f "$legacy_marker" ]; then
+      cat "$legacy_marker"
     else
       echo "ECI inactive"
     fi

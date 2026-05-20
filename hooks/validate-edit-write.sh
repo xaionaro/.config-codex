@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# PreToolUse hook: validate direct file edits made through Edit, Write, and MultiEdit.
+# PreToolUse hook: validate direct file edits made through Edit, Write, MultiEdit, and NotebookEdit.
 
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+. "$HOOK_DIR/lib/codex-tmp.sh"
+codex_init_tmp || true
+codex_install_fail_open_trap validate-edit-write
 
 input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
@@ -12,13 +15,9 @@ session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 
 case "$tool_name" in
-  Edit|Write|MultiEdit) ;;
+  Edit|Write|MultiEdit|NotebookEdit) ;;
   *) exit 0 ;;
 esac
-
-if ! codex_hook_is_subagent_context "$input"; then
-  codex_mark_activity "$session_id" "$cwd" edit || true
-fi
 
 deny() {
   jq -n --arg reason "$1" '{
@@ -31,9 +30,35 @@ deny() {
   exit 0
 }
 
-file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.target_file // empty' 2>/dev/null || true)
+file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // .tool_input.path // .tool_input.target_file // empty' 2>/dev/null || true)
 
 [ -n "$file_path" ] || exit 0
+
+ownership_failure_deny() {
+  local reason="ownership check failed; failing closed for session-scoped path safety"
+  jq -n --arg reason "$reason" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+}
+
+trap 'ownership_failure_deny' ERR
+owner_session_id="$(codex_path_owner_session_id "$file_path" 2>/dev/null || true)"
+if [ -n "$owner_session_id" ]; then
+  mapfile -t allowed_session_ids < <(codex_hook_allowed_session_ids "$input")
+  if [ "${#allowed_session_ids[@]}" -eq 0 ]; then
+    deny "Session-scoped file ${file_path##*/} requires a current session id; none resolved. Refusing fail-open on a session-scoped path."
+  fi
+  if ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
+    deny "Refusing to edit ${file_path##*/}: file belongs to session $owner_session_id, allowed sessions are ${allowed_session_ids[*]}."
+  fi
+fi
+trap - ERR
+codex_install_fail_open_trap validate-edit-write
 
 if printf '%s\n' "$file_path" | grep -Eq '(^|/)docs/(superpowers/)?plans/'; then
   deny 'Do not edit plan files under docs/plans or docs/superpowers/plans from normal implementation flow. Use the active plan/checklist instead.'
@@ -71,6 +96,12 @@ if [ -n "$file_path" ] && is_inside_submodule "$file_path"; then
   deny 'Do not edit files inside a git submodule. Update the submodule upstream and pull, or detach with git submodule deinit if intentional.'
 fi
 
+codex_note_touched_repo "$session_id" "$cwd" "$file_path" || true
+
+if ! codex_hook_is_subagent_context "$input"; then
+  codex_mark_activity "$session_id" "$cwd" edit || true
+fi
+
 case "$tool_name" in
   Write)
     edit_text=$(printf '%s' "$input" | jq -r '.tool_input.content // empty' 2>/dev/null || true)
@@ -80,6 +111,9 @@ case "$tool_name" in
     ;;
   MultiEdit)
     edit_text=$(printf '%s' "$input" | jq -r '.tool_input.edits[]? | .new_string // empty' 2>/dev/null || true)
+    ;;
+  NotebookEdit)
+    edit_text=""
     ;;
 esac
 

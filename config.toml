@@ -38,6 +38,15 @@ trust_level = "trusted"
 [projects."/tmp/codex-verify-ws"]
 trust_level = "trusted"
 
+[projects."/home/streaming/go/src/github.com/xaionaro-go/ndk"]
+trust_level = "trusted"
+
+[projects."/home/streaming/.claude"]
+trust_level = "trusted"
+
+[projects."/home/streaming/go/src/github.com/bluenviron/mediamtx"]
+trust_level = "trusted"
+
 [tui.model_availability_nux]
 "gpt-5.5" = 4
 
@@ -109,9 +118,11 @@ model_reasoning_effort = "xhigh"
 [hooks.state]
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
+enabled = true
 trusted_hash = "sha256:9cc14d1491e8fb77886292a98197809f9f90a51b8b2a1d763bb5b9064d83799e"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:1"]
+enabled = true
 trusted_hash = "sha256:ea071f7a9518e38b06fa4ca08de76535d8a25647a91faa8d15e9befd98a94067"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:0"]
@@ -130,19 +141,19 @@ trusted_hash = "sha256:4bd477925d514f024353d2eae03415b19e320acd5669b3404268bd792
 trusted_hash = "sha256:4de40ae7543ab16f96800a9270910a25eaefed508cd3634b78145e7354ea4e40"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:0"]
-trusted_hash = "sha256:ad4a9e3d3f7ee2659386a76c85b43e5171d01de93143c3c45e20d8f87dfeb01a"
+trusted_hash = "sha256:ef9dd77ef3883c845aad3086a215ed19527cb800bc7094c68fc8da28d3ca8c66"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:1"]
-trusted_hash = "sha256:50cb3d7af6903c78e4b521cb08d64be8c7b5d11c0bca903f2a878d5baac90868"
+trusted_hash = "sha256:5c1a0823ad04d55494bfa1aea7bd3eb975a94b3bce7481a4f7b58fc8263add9e"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:2"]
-trusted_hash = "sha256:8badcfae98937f7bad9fe919548e350f9eb7d44a1177067f6249ab76fe6d7edd"
+trusted_hash = "sha256:12ae738b40273cea55c1d2d8e6f90e916b9c94c71e306b8f9da480ae7fb43a80"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:3"]
-trusted_hash = "sha256:45a68e47c908a464e3e15b5fdd7878a840b75c9133a9f608c613e8941b3e9919"
+trusted_hash = "sha256:67bfca8be2daf713faf3edfed56fc0e5a924f8bb480f4014ee5b1fa9c281dc37"
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:4"]
-trusted_hash = "sha256:f142569c9f46b7b903d1aeb2d3182dd9f400155d3ea88c32bc1cab084c296d40"
+trusted_hash = "sha256:bd2dc7d6b8198e30bfc0bf679c958224d87e0134b7842f7fa0a7787bba8ac68a"
 
 [hooks.state."/home/streaming/.codex/hooks.json:session_start:0:0"]
 trusted_hash = "sha256:6d80e33b385ead603b094ee94953d460be890f22de9f5e197738a1084d128f16"

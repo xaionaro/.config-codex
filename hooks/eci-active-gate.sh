@@ -10,7 +10,7 @@ input=$(cat)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
 case "$tool_name" in
-  apply_patch|Edit|Write|MultiEdit) ;;
+  apply_patch|Edit|Write|MultiEdit|NotebookEdit) ;;
   *) exit 0 ;;
 esac
 
@@ -34,9 +34,9 @@ tool_paths() {
           }
         '
       ;;
-    Edit|Write|MultiEdit)
+    Edit|Write|MultiEdit|NotebookEdit)
       printf '%s' "$input" |
-        jq -r '.tool_input.file_path // .tool_input.path // .tool_input.target_file // empty' 2>/dev/null
+        jq -r '.tool_input.file_path // .tool_input.notebook_path // .tool_input.path // .tool_input.target_file // empty' 2>/dev/null
       ;;
   esac
 }
@@ -62,10 +62,13 @@ if tool_paths | markdown_only_edit; then
 fi
 
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+case "$session_id" in
+  ""|*[!A-Za-z0-9_-]*) exit 0 ;;
+esac
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
 
-marker=$(codex_existing_state_file eci eci_active "$session_id" "$cwd" 2>/dev/null || true)
+marker="$(codex_proof_root)/$session_id/eci_active"
 [ -f "$marker" ] || exit 0
 codex_note_state_session_id "$marker" "$session_id" || true
 

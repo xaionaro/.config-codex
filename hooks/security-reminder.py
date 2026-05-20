@@ -115,6 +115,8 @@ def tool_content(tool_name: str, tool_input) -> tuple[str, str]:
         edits = tool_input.get("edits") or []
         content = " ".join(str(edit.get("new_string", "")) for edit in edits if isinstance(edit, dict))
         return str(tool_input.get("file_path", "")), content
+    if tool_name == "NotebookEdit":
+        return str(tool_input.get("notebook_path", "")), ""
     return "", ""
 
 
@@ -139,7 +141,7 @@ def main() -> int:
         return 0
 
     tool_name = data.get("tool_name", "")
-    if tool_name not in {"apply_patch", "Edit", "Write", "MultiEdit"}:
+    if tool_name not in {"apply_patch", "Edit", "Write", "MultiEdit", "NotebookEdit"}:
         return 0
 
     file_path, content = tool_content(tool_name, data.get("tool_input", {}))

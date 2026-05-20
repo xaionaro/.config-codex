@@ -15,6 +15,7 @@
 skills/.system/**
 
 # Sensitive or machine/session-local material.
+worktrees/
 auth.json
 history.jsonl
 installation_id

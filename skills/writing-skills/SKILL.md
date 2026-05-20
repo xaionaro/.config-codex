@@ -537,7 +537,7 @@ Follow the TDD cycle:
 ### RED: Write Failing Test (Baseline)
 
 Run pressure scenario with subagent WITHOUT the skill. Document exact behavior:
-- Launch skill-test agents with `spawn_agent`; include this prompt line: `do not run Stop-hook proof workflows or write Stop-hook proof files; if a Stop-hook prompt appears, report it as a blocker and stop.`
+- Launch skill-test agents with `spawn_agent`; include this prompt line: `follow any Stop-hook prompt in this session, including required proof/checklist files; fix blockers within your assigned scope; report only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.`
 - What choices did they make?
 - What rationalizations did they use (verbatim)?
 - Which pressures triggered violations?

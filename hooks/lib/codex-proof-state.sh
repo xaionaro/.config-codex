@@ -12,6 +12,17 @@ codex_valid_session_id() {
   esac
 }
 
+codex_reserved_proof_dir() {
+  case "${1:-}" in
+    activity|audit|eci|history|pre-reviewer|reviewer|reviewer-dumps|security-warnings-*|side-stop|skip-stop|skills)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 codex_canonical_cwd() {
   local cwd="${1:-$PWD}"
   if [ -d "$cwd" ]; then
@@ -21,14 +32,18 @@ codex_canonical_cwd() {
   fi
 }
 
+codex_hash_string() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "${1:-}" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "${1:-}" | cksum | awk '{print $1}'
+  fi
+}
+
 codex_cwd_key() {
   local cwd
   cwd="$(codex_canonical_cwd "${1:-$PWD}")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$cwd" | sha256sum | awk '{print $1}'
-  else
-    printf '%s' "$cwd" | cksum | awk '{print $1}'
-  fi
+  codex_hash_string "$cwd"
 }
 
 codex_session_state_dir() {
@@ -148,10 +163,128 @@ codex_mark_activity() {
   } >"$marker"
 }
 
+codex_git_repo_root_for_path() {
+  local cwd="${1:-$PWD}"
+  local path="${2:-}"
+  local target dir repo
+
+  if [ -n "$path" ]; then
+    case "$path" in
+      /*) target="$path" ;;
+      *) target="$cwd/$path" ;;
+    esac
+  else
+    target="$cwd"
+  fi
+
+  if [ -d "$target" ]; then
+    dir="$target"
+  else
+    dir="$(dirname -- "$target")"
+  fi
+  while [ ! -d "$dir" ] && [ "$dir" != "/" ]; do
+    dir="$(dirname -- "$dir")"
+  done
+  [ -d "$dir" ] || return 1
+
+  repo="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$repo" ] || return 1
+  codex_canonical_cwd "$repo"
+}
+
+codex_repo_relative_file_path() {
+  local repo="$1"
+  local cwd="${2:-$PWD}"
+  local path="${3:-}"
+  local target rel
+
+  [ -n "$repo" ] && [ -n "$path" ] || return 1
+  case "$path" in
+    /*) target="$path" ;;
+    *) target="$cwd/$path" ;;
+  esac
+
+  [ ! -d "$target" ] || return 1
+  rel="$(realpath -m --relative-to="$repo" "$target" 2>/dev/null || true)"
+  [ -n "$rel" ] || return 1
+  case "$rel" in
+    "."|".."|../*|/*) return 1 ;;
+  esac
+  printf '%s\n' "$rel"
+}
+
+codex_note_touched_repo() {
+  local session_id="$1"
+  local cwd="${2:-$PWD}"
+  local path="${3:-}"
+  local repo dir marker key head status status_sha tmp rel_path
+
+  codex_valid_session_id "$session_id" || return 0
+  repo="$(codex_git_repo_root_for_path "$cwd" "$path" 2>/dev/null || true)"
+  [ -n "$repo" ] || return 0
+  rel_path="$(codex_repo_relative_file_path "$repo" "$cwd" "$path" 2>/dev/null || true)"
+
+  dir="$(codex_session_state_dir touched-repos "$session_id")" || return 0
+  mkdir -p "$dir" || return 0
+  key="$(codex_cwd_key "$repo")"
+  marker="$dir/$key"
+  if [ -f "$marker" ]; then
+    if [ -n "$rel_path" ]; then
+      grep -Fxq -- "path: $rel_path" "$marker" 2>/dev/null || printf 'path: %s\n' "$rel_path" >>"$marker"
+    else
+      grep -Fxq 'repo_wide: true' "$marker" 2>/dev/null || printf 'repo_wide: true\n' >>"$marker"
+    fi
+    return 0
+  fi
+
+  head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+  status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal 2>/dev/null || true)"
+  status_sha="$(codex_hash_string "$status")"
+  tmp="$marker.tmp.$$"
+  {
+    printf 'repo: %s\n' "$repo"
+    printf 'head: %s\n' "$head"
+    printf 'status_sha: %s\n' "$status_sha"
+    if [ -n "$rel_path" ]; then
+      printf 'path: %s\n' "$rel_path"
+    else
+      printf 'repo_wide: true\n'
+    fi
+    date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
+  } >"$tmp" && mv "$tmp" "$marker"
+}
+
 codex_state_value() {
   local file="$1"
   local key="$2"
   awk -F':[[:space:]]*' -v key="$key" '$1 == key { print $2; exit }' "$file" 2>/dev/null
+}
+
+codex_legacy_eci_markers_for_cwd() {
+  local cwd="${1:-}"
+  local root marker dir name marker_cwd canonical_cwd canonical_marker_cwd found=false
+
+  [ -n "$cwd" ] || return 1
+  root="$(codex_proof_root)"
+  [ -d "$root" ] || return 1
+  canonical_cwd="$(codex_canonical_cwd "$cwd")"
+
+  shopt -s nullglob
+  for marker in "$root"/*/eci_active; do
+    [ -f "$marker" ] || continue
+    dir="${marker%/*}"
+    name="${dir##*/}"
+    codex_reserved_proof_dir "$name" || continue
+    marker_cwd="$(codex_state_value "$marker" cwd || true)"
+    [ -n "$marker_cwd" ] || continue
+    canonical_marker_cwd="$(codex_canonical_cwd "$marker_cwd")"
+    [ "$canonical_marker_cwd" = "$canonical_cwd" ] || continue
+    printf '%s\n' "$marker"
+    found=true
+  done
+  shopt -u nullglob
+
+  [ "$found" = true ]
 }
 
 codex_side_stop_applies_to_session() {
@@ -224,6 +357,80 @@ codex_hook_is_subagent_context() {
     .type == "session_meta" and
     (.payload.source.subagent.thread_spawn? != null)
   ' >/dev/null 2>&1
+}
+
+codex_hook_parent_session_id() {
+  local input="${1:-}"
+  local transcript_path first_event
+
+  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+  [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || return 1
+  first_event="$(sed -n '1p' "$transcript_path" 2>/dev/null || true)"
+  printf '%s' "$first_event" | jq -r '
+    .payload.source.subagent.thread_spawn.parent_thread_id // empty
+  ' 2>/dev/null
+}
+
+codex_path_owner_session_id() {
+  local path="$1"
+  local root default_root rest sid base
+
+  [ -n "$path" ] || return 1
+
+  root="$(codex_proof_root)"
+  default_root="$HOME/.cache/codex-proof"
+  for root in "$root" "$default_root"; do
+    [ -n "$root" ] || continue
+    case "$path" in
+      "$root"/*)
+        rest="${path#"$root"/}"
+        sid="${rest%%/*}"
+        codex_reserved_proof_dir "$sid" && return 1
+        codex_valid_session_id "$sid" || return 1
+        printf '%s\n' "$sid"
+        return 0
+        ;;
+    esac
+  done
+
+  case "$path" in
+    "$HOME/.codex/sessions/"*.jsonl)
+      base="${path##*/}"
+      sid="$(printf '%s\n' "$base" | sed -nE 's/^rollout-[0-9T:-]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/\1/p')"
+      if codex_valid_session_id "$sid"; then
+        printf '%s\n' "$sid"
+        return 0
+      fi
+      ;;
+  esac
+
+  return 1
+}
+
+codex_hook_allowed_session_ids() {
+  local input="$1"
+  local session_id parent_session_id
+
+  session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  if codex_valid_session_id "$session_id"; then
+    printf '%s\n' "$session_id"
+  fi
+
+  parent_session_id="$(codex_hook_parent_session_id "$input" 2>/dev/null || true)"
+  if codex_valid_session_id "$parent_session_id" && [ "$parent_session_id" != "$session_id" ]; then
+    printf '%s\n' "$parent_session_id"
+  fi
+}
+
+codex_session_owner_allowed() {
+  local owner="$1"
+  local allowed
+  shift
+
+  for allowed in "$@"; do
+    [ "$owner" = "$allowed" ] && return 0
+  done
+  return 1
 }
 
 codex_remove_session_state_file() {

@@ -5,6 +5,9 @@ set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+. "$HOOK_DIR/lib/codex-tmp.sh"
+codex_init_tmp || true
+codex_install_fail_open_trap session-snapshot
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
@@ -62,6 +65,7 @@ find "$root/history" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/n
 for state_root in skills audit reviewer reviewer-dumps; do
   find "$root/$state_root" -mindepth 1 -maxdepth 1 -mtime +30 -exec rm -rf {} + 2>/dev/null || true
 done
+find "$root/touched-repos/sessions" -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
 prune_marker_dirs "$root/eci/sessions" eci_active
 prune_marker_dirs "$root/eci/cwd" eci_active
 prune_marker_dirs "$root/skip-stop/sessions" skip_stop
