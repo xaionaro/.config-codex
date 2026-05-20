@@ -261,7 +261,7 @@ Emit only issues that matter for long-term health. "Would refactor eventually" i
 ### E2E agent — end-to-end verification
 
 **Code/debugging tasks only.** Skip for non-code tasks (docs, config, design).
-Batch E2E only when E2E capacity is the bottleneck (device/browser/env slots, credentials, long setup). Before launch, wait briefly for imminent ready tasks unless the bottleneck would idle. After launch, leave healthy batches alone; queue late arrivals. Report separate verdicts per task.
+Batch E2E only when E2E capacity is the bottleneck (device/browser/env slots, credentials, long setup). Until capacity opens, actively use alternate checks to test and discover issues. Before launch, wait briefly for imminent ready tasks unless the bottleneck would idle. After launch, leave healthy batches alone; queue late arrivals. Report separate verdicts per task.
 
 1. Build the project. Compilation failure = issue.
 2. Run full test suite. Failures = issue.
