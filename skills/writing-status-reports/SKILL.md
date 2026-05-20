@@ -40,6 +40,22 @@ Progress reports changed state and completed outcomes, not files read, commands 
 - Use "not verified yet" instead of implying unrun checks passed.
 - For blockers and risks, state impact and the needed owner/input.
 
+## Multi-Lane Mission Status
+
+For “where are we on each lane?” or “who works on each lane?”, report every in-scope lane known from the active plan, ledger, or test matrix. Include idle, waiting, review, deploy, proof, and paused lanes.
+
+| Lane | Status | Owner | Blocker | Next proof/action |
+| --- | --- | --- | --- | --- |
+| `<lane result wanted>` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `<person/agent or unowned>` | `none` or `<exact blocker; impact; unblock owner/path>` | `<next evidence/action>` |
+
+| Rule | Behavior |
+| --- | --- |
+| Status vocabulary | Use only `NEW`, `IN PROGRESS`, `BLOCKED`, `CLOSED`. |
+| Evidence states | Put worker completions, reviews, source fixes, deploys, and partial proofs in `Next proof/action`, not `Status`. |
+| `CLOSED` | Use only when the lane result is proven or explicitly removed from scope. |
+| `BLOCKED` | Name exact blocker, stalled impact, and unblock owner/path. |
+| Coverage | Do not omit lanes because they are idle, waiting, paused, under review, deployment-only, or proof-only. |
+
 ## Pressure Scenario
 
 Under time pressure, do not write "blocked on review" or "risk in tests" alone. Write impact plus owner/input: "Blocked on API contract review; checkout validation may be wrong until Alex confirms required fields."
@@ -66,3 +82,5 @@ Under time pressure, do not write "blocked on review" or "risk in tests" alone. 
 | Verification | Evidence is cited or absence is explicit. |
 | Next Focus | Names the next concrete work area. |
 | Concision | No raw activity log or filler. |
+| Multi-lane coverage | Every in-scope lane is listed, including idle/waiting/review/deploy/proof/paused lanes. |
+| Lane statuses | Each lane status is exactly `NEW`, `IN PROGRESS`, `BLOCKED`, or `CLOSED`. |
