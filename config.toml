@@ -79,3 +79,59 @@ model_reasoning_effort = "xhigh"
 model = "deepseek-v4-flash"
 model_provider = "deepseek_direct"
 model_reasoning_effort = "xhigh"
+
+[projects."/home/streaming/.codex"]
+trust_level = "trusted"
+
+[projects."/home/streaming"]
+trust_level = "trusted"
+
+[projects."/home/streaming/go/src/github.com/xaionaro-go/avpipeline"]
+trust_level = "trusted"
+
+[hooks.state]
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:8ef784389479243d336c364499fc8f37de6b29827150255bf1513d12154f8830"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:1"]
+trusted_hash = "sha256:cf34fec48d7b917a1314ead7c0bf2d329b0ceffdfb6f534460513f5343437833"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:0"]
+trusted_hash = "sha256:41c9346a7f9771f8d2b39c69d470282a6a67caa2781b02c9913f0d3159c40ed9"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:1"]
+trusted_hash = "sha256:0a6dc7c78d6ade6930697265feeaad766808ab76033800fa9e308a52b8597e4c"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:2"]
+trusted_hash = "sha256:da63cd5afcf2f9c629468b2fc84556ab89df65a2569a7f715dd7de7929592a58"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:3"]
+trusted_hash = "sha256:92c608d98deb1cf2f6a1c40a788ea76e2b72ca719bb7799c82b15771b39b4b9c"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:1:4"]
+trusted_hash = "sha256:bb92c091e52d4558080b32d6f46bb9f77cdce2406e199ad58e8cbd2d57406d87"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:0"]
+trusted_hash = "sha256:ab1caad99c8956bce051d91c4c00429780c6baabd172b4c97d10b56618b49b76"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:1"]
+trusted_hash = "sha256:fde3ebd46b39069717ef505bdfc9f2dd18aba0ea7a5fe4cfe6cd479318e229c4"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:2"]
+trusted_hash = "sha256:2b9272de0401b4522f2e38f1e8c34bb3a3e2c085b9a5dfdca69532af5ad314bc"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:3"]
+trusted_hash = "sha256:ad862083459f94099fad7c47ff61aa26ae181016c469608385da5556848ad065"
+
+[hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:2:4"]
+trusted_hash = "sha256:73579b756c4112876710629972a2cf2465d98f25182b2d6b56cad5d6cf27cb4c"
+
+[hooks.state."/home/streaming/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:795fc65397d95787888f869b056e25c746d7bac92b1801acd8683b217b76a595"
+
+[hooks.state."/home/streaming/.codex/hooks.json:stop:0:0"]
+trusted_hash = "sha256:010c625cb307ab76373a95325b3396299f28cc0e19709c3955f36448e1414307"
+
+[hooks.state."/home/streaming/.codex/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:1f7f0598df1a296c0942bb8fe6f144a96ea3bb72111b3c06eec1ac739eb7ba9a"
