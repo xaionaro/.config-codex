@@ -11,7 +11,7 @@ Ported skills live in `$CODEX_HOME/skills` (default `~/.codex/skills`); use matc
 hooks = true
 
 [mcp_servers.context7]
-command = "/home/streaming/.codex/bin/context7-mcp"
+command = "/home/pheona/.codex/bin/context7-mcp"
 args = []
 
 [tui.model_availability_nux]
@@ -23,31 +23,31 @@ hide_rate_limit_model_nudge = true
 [mcp_servers.omx_state]
 command = "omx"
 args = ["mcp-serve", "state"]
-enabled = true
+enabled = false
 startup_timeout_sec = 5
 
 [mcp_servers.omx_memory]
 command = "omx"
 args = ["mcp-serve", "memory"]
-enabled = true
+enabled = false
 startup_timeout_sec = 5
 
 [mcp_servers.omx_code_intel]
 command = "omx"
 args = ["mcp-serve", "code-intel"]
-enabled = true
+enabled = false
 startup_timeout_sec = 10
 
 [mcp_servers.omx_trace]
 command = "omx"
 args = ["mcp-serve", "trace"]
-enabled = true
+enabled = false
 startup_timeout_sec = 5
 
 [mcp_servers.omx_wiki]
 command = "omx"
 args = ["mcp-serve", "wiki"]
-enabled = true
+enabled = false
 startup_timeout_sec = 5
 
 [tui]
