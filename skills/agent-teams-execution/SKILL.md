@@ -26,6 +26,50 @@ The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdi
 
 Subagents, including lead and coordinator roles, follow Stop-hook prompts in their own sessions, including required proof/checklist files. They report to the main orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval. Disengaging by unsetting `CODEX_ROLE` to escape the gate is itself a violation flagged by the rule-compliance self-audit.
 
+## ATE Active Marker
+
+Before the first teammate spawn, create the marker the stop gate reads:
+
+```bash
+. "$HOME/.codex/hooks/lib/codex-proof-state.sh"
+
+update_ate_marker() {
+  phase="$1"
+  scope="$2"
+  session_id="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
+  if [ -n "$session_id" ]; then
+    codex_valid_session_id "$session_id" || {
+      echo "Invalid ATE session id: $session_id" >&2
+      exit 1
+    }
+    marker="$(codex_session_state_dir ate "$session_id")/ate_active"
+  else
+    marker="$(codex_cli_state_file ate ate_active true)"
+  fi
+
+  mkdir -p "$(dirname "$marker")"
+  {
+    printf 'phase: %s\n' "$phase"
+    printf 'scope: %s\n' "$scope"
+    printf 'cwd: %s\n' "$PWD"
+    [ -n "$session_id" ] && printf 'session_id: %s\n' "$session_id"
+    date -u '+updated_utc: %Y-%m-%dT%H:%M:%SZ'
+  } >"$marker"
+}
+
+update_ate_marker research "<task + scope>"
+```
+
+At every phase transition, run `update_ate_marker <phase> "<task + scope>"`. It recomputes the `ate_active` path and writes `phase: <phase>`, `scope`, `cwd`, optional `session_id`, and `updated_utc`.
+
+Active phases: `research`, `design`, `execution`, `testing`, `qa`, `unblocking`.
+
+Run `update_ate_marker awaiting_user "<task + scope>"` only after reporting a QA verdict or user-owned blocker and all in-scope teammates are idle waiting for the user. Switch back to an active phase before routing any followup.
+
+Run `update_ate_marker closed "<task + scope>"` only during user-requested shutdown after teammate shutdown handling.
+
+Do not use `awaiting_user`, `closed`, marker removal, or session-variable changes merely to bypass the stop gate. The marker records ATE lifecycle state; it is not a stop bypass.
+
 **Parallelism principle:** Never serialize independent work. Parallelize everything that can be parallelized.
 
 **No urgency. Infinite time.** Never prioritize speed over discipline. Every shortcut, skipped review, or "good enough" degrades the final result. Do it right, every time.
