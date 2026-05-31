@@ -23,6 +23,21 @@ codex_reserved_proof_dir() {
   esac
 }
 
+codex_real_session_dir_name() {
+  [[ "${1:-}" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
+}
+
+codex_proof_alias_session_id() {
+  local dir="$1"
+  local marker session_id
+
+  marker="$dir/.codex-proof-alias"
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  session_id="$(awk -F':[[:space:]]*' '$1 == "session_id" { print $2; exit }' "$marker" 2>/dev/null | tr -d '\r')"
+  codex_valid_session_id "$session_id" || return 1
+  printf '%s\n' "$session_id"
+}
+
 codex_canonical_cwd() {
   local cwd="${1:-$PWD}"
   if [ -d "$cwd" ]; then
@@ -373,7 +388,7 @@ codex_hook_parent_session_id() {
 
 codex_path_owner_session_id() {
   local path="$1"
-  local root default_root rest sid base
+  local root default_root rest sid base alias_session_id
 
   [ -n "$path" ] || return 1
 
@@ -386,6 +401,13 @@ codex_path_owner_session_id() {
         rest="${path#"$root"/}"
         sid="${rest%%/*}"
         codex_reserved_proof_dir "$sid" && return 1
+        if ! codex_real_session_dir_name "$sid"; then
+          alias_session_id="$(codex_proof_alias_session_id "$root/$sid" 2>/dev/null || true)"
+          if [ -n "$alias_session_id" ]; then
+            printf '%s\n' "$alias_session_id"
+            return 0
+          fi
+        fi
         codex_valid_session_id "$sid" || return 1
         printf '%s\n' "$sid"
         return 0

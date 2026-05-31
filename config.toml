@@ -89,6 +89,18 @@ trust_level = "trusted"
 [projects."/home/streaming/go/src/github.com/xaionaro-go/avpipeline"]
 trust_level = "trusted"
 
+[projects."/home/streaming/go/src/github.com/xaionaro-go/streamctl"]
+trust_level = "trusted"
+
+[projects."/home/streaming/.claude"]
+trust_level = "trusted"
+
+[projects."/home/streaming/go/src/github.com/xaionaro-go"]
+trust_level = "trusted"
+
+[projects."/home/streaming/go/src/github.com/xaionaro-go/wingout"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]

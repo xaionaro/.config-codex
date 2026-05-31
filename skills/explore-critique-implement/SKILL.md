@@ -29,6 +29,18 @@ Maintain a project-understanding ledger for every ECI run. Use the `maintaining-
 
 Coding task? Every subagent prompt (explorer, critic, implementer) must include: "Before starting, load the `<language>-coding-style` skill and follow its rules."
 
+## Blocker handling
+
+Use `blocker-resolution-protocol` for genuine stalls, Step 2 post-bounce all-REJECT outcomes, and gate/cycle limit hits before hard escalation.
+
+ECI adapter:
+- Keep ECI active while resolving blockers.
+- Use the separate `brainstormer` role for genuine stalls and Step 2 all-REJECT caps.
+- Run a BRP primary explorer and separate `brp-feasibility-validator` before routing brainstormer output onward.
+- Feed the blocker record, validated feasible ideas, primary explorer facts, and prior failures into the next explorer or implementer message.
+- Use the separate `loop-breaker` role at gate/cycle limits before hard escalation.
+- Hard escalation reports the blocker requiring user input; it does not disengage ECI.
+
 ## Engagement marker
 
 The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write/MultiEdit on the main thread while engaged. Every code change must flow through a spawned agent. Spawned agents write from their own session; the marker is keyed to the orchestrator's session and must not block them.
@@ -45,11 +57,13 @@ Do not disengage mid-task to escape the gate — that is the regression this mar
 
 **Persistent agent** = spawned once with `spawn_agent`, then reused with `send_input`. **One-shot agent** = spawned for one bounded assignment, then closed. ECI uses persistent agents for every cycle role when reuse is available.
 
-Persistent agents handle Step 1 (explorer) and Step 3 (implementer) across iterations. Critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker) is also done by persistent agents — not the explorer or implementer, but separately-spawned critic agents with their own identity. E2E agent is also a persistent agent. The producer (explorer/implementer) must never act as critic.
+Persistent agents handle Step 1 (explorer) and Step 3 (implementer) across iterations. Critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, loop-breaker) is also done by persistent agents — not the explorer or implementer, but separately-spawned critic agents with their own identity. E2E agent is also a persistent agent. The producer (explorer/implementer) must never act as critic.
 
 **"Persistent" != "carries cross-iteration context".** The persistent agent's spawn-prompt baseline already forces fresh-assignment treatment each message (re-read referenced files, no prior-turn trust). Spawning a new agent for Step 1 or Step 3 because "fresh context is needed" defeats the persistent role — `send_input` to the existing agent already gives that. The producer-vs-critic split is about *agent identity for adversarial separation* (critic must not be the producer), not about context staleness.
 
-**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, and loop-breaker are spawned as separate agents with a unique role-name (`critic-r<N>`, `critic-A`, `critic-B`, `brainstormer`, `loop-breaker`). Adversarial separation = identity rule (critic != producer). Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or shutting down and respawning under the same role name. Do not rely on persistent-context "carrying over" — each round must start clean.
+**Reusable role rule.** Spawn stable role slots, not task/round-specific identities. Use the tool's reusable `agent_type` values (`explorer`, `worker`, `default`); carry ECI identity in the spawn prompt, roster label, and `send_input` messages. Put changing details (`round`, `gate`, `scope`, `lens`) in the assignment, not the role name.
+
+**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, and loop-breaker are spawned as separate reusable role slots (`critic-step2`, `critic-A`, `critic-B`, `brainstormer`, `brp-feasibility-validator`, `loop-breaker`). Adversarial separation = identity rule (critic != producer). Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or shutting down and respawning under the same role name. Do not rely on persistent-context "carrying over" — each round must start clean.
 
 Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, or independent tmux/CLI agents for ECI. Role identity is carried in the spawn prompt, roster label, and subsequent `send_input` messages.
 
@@ -59,10 +73,11 @@ Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, or independent tmux
 |--------|---------|
 | Spawn explorer | `spawn_agent` with `agent_type: "explorer"` and role label `explorer` |
 | Spawn implementer | `spawn_agent` with `agent_type: "worker"`, role label `implementer`, and explicit file/module ownership |
-| Spawn Step 2 critic | `spawn_agent` with `agent_type: "explorer"` or `default`; role label `critic-r<N>` |
+| Spawn Step 2 critic | `spawn_agent` with `agent_type: "explorer"` or `default`; role label `critic-step2`; assignment includes round number |
 | Spawn Step 4 critic-A / critic-B | Parallel `spawn_agent` calls with role labels `critic-A` / `critic-B` |
-| Spawn E2E agent | `spawn_agent` with `agent_type: "worker"` or `default`; role label `e2e-<gate-N>` |
+| Spawn E2E agent | `spawn_agent` with `agent_type: "worker"` or `default`; role label `e2e-gate`; assignment includes gate number |
 | Spawn brainstormer | `spawn_agent` with `agent_type: "explorer"` and role label `brainstormer` |
+| Spawn BRP feasibility validator | `spawn_agent` with `agent_type: "explorer"` or `default`; role label `brp-feasibility-validator` |
 | Spawn loop-breaker | `spawn_agent` with `agent_type: "explorer"` and role label `loop-breaker` |
 
 Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel.
@@ -131,7 +146,7 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 | Step | Phase | Actor | Output |
 |------|-------|-------|--------|
 | 1 | Explore | Persistent `explorer` agent (`send_input`) | Ranked options + cited sources |
-| 2 | Critique explorations | Critic agent (per round, clear context or shutdown+respawn) | Winner with concrete text + tagged CONDITIONAL/NIT list (one explorer revision round permitted on all-REJECT) |
+| 2 | Critique explorations | `critic-step2` agent (per round, clear context or shutdown+respawn under same role label) | Winner with concrete text + tagged CONDITIONAL/NIT list (one explorer revision round permitted on all-REJECT) |
 | 3 | Implement | Persistent `implementer` agent (`send_input`) | One diff |
 | 4 | Review gate (parallel) | Critic A + Critic B + E2E agents in parallel | All three run concurrently; wait for all |
 | Exit | Main thread | Apply / commit / report |
@@ -156,9 +171,19 @@ Map `debugging-discipline` to separate delegated ECI roles: repro → `repro` wo
 - Every factual claim in the report must carry a T1-T5 tag per CODEX.md Claim Verification protocol. Primary sources only for T1. Untagged factual claims are not allowed.
 - Word cap on the report (default: 1000 words).
 
+### Proof of Concept Requirement
+
+Any proposed option whose core mechanism is unproven-in-practice (not a well-known pattern, not already shipped in this codebase, not a documented vendor API used as documented) ships with a minimal PoC alongside the proposal:
+
+- Strip every concern not needed to exercise the core mechanism — no error handling, no edge cases, no production polish, no scaffolding beyond what the demo requires.
+- Run end-to-end on one real input; produce the observable behavior the mechanism claims.
+- Explorer attaches the PoC to the option in Step 1. Missing PoC on an unproven option = Step 2 REJECT.
+
+Proven-in-practice mechanisms need no PoC. State "proven by <link/citation>" when claiming exemption.
+
 ## Step 2: Critique explorations
 
-Spawn a DIFFERENT agent — not the explorer, not the main thread. The critic identity must differ from explorer and implementer. Spawn the critic with a unique role label `critic-r<N>` (round) or `critic-A` / `critic-B` (Step 4). Each new round must start with a clean critic context — either clear context when supported or shut it down and respawn under the same role label. MUST NOT reuse the persistent explorer or implementer agent for critic work.
+Spawn a DIFFERENT agent — not the explorer, not the main thread. The critic identity must differ from explorer and implementer. Spawn or reuse the stable role label `critic-step2` (Step 2) or `critic-A` / `critic-B` (Step 4); put the round number in the assignment. Each new round must start with a clean critic context — either clear context when supported or shut it down and respawn under the same role label. MUST NOT reuse the persistent explorer or implementer agent for critic work.
 
 The critic's prompt must include:
 - **Original user requirements verbatim.** The critic must verify options against what the user actually asked for, not just technical soundness.
@@ -179,7 +204,7 @@ The critic's prompt must include:
 - **If every option has REJECTs**: do not pick. Return REJECT issues verbatim to orchestrator for bounce per Loop-logic table.
 - Single-option explorations get the same adversarial treatment.
 - "Be harsh. Most suggestions are noise. Zero survivors is a valid outcome."
-- Each retry round spawns a fresh-identity critic (parallels Red Flag agent-identity rule).
+- Each retry round uses a clean critic context under the same reusable critic role label.
 
 ### Step 2 severity codes
 
@@ -196,7 +221,7 @@ Same vocabulary as Step 4; Effect column differs because receiver/artifact/remed
 | Critic verdict pattern | Action | Output |
 |---|---|---|
 | ≥1 option with zero REJECTs | Pick highest-ranked clean option as winner | Winner + that option's CONDITIONAL fix-text list + NITs |
-| Every option has ≥1 REJECT, round 1 | Bounce verbatim REJECT reasons to explorer; explorer revises; spawn fresh-identity critic for round 2 | Bounce-back |
+| Every option has ≥1 REJECT, round 1 | Bounce verbatim REJECT reasons to explorer; explorer revises; reset/reuse `critic-step2` for round 2 | Bounce-back |
 | Every option has ≥1 REJECT, round 2 | Trigger brainstormer per Brainstormer trigger row; new explorer round | Escalation per Escalation table |
 | Only NITs across all options | Pick highest-ranked option directly | Winner + NITs |
 
@@ -219,7 +244,7 @@ If applicable E2E evidence is missing, `send_input`: "Missing E2E evidence — b
 
 ## Step 4: Review gate (parallel)
 
-Spawn all three as critic agents in a single message (three parallel `spawn_agent` tool calls with role labels `critic-A` / `critic-B` / `e2e-<gate-N>`). Each MUST NOT message the persistent `explorer` or `implementer` agent. Wait for all three to complete before evaluating results. Every reviewer prompt must include the **original user requirements verbatim** — reviewers catch requirement deviations, not just technical issues.
+Spawn all three as critic agents in a single message (three parallel `spawn_agent` tool calls with role labels `critic-A` / `critic-B` / `e2e-gate`; assignment includes gate number). Each MUST NOT message the persistent `explorer` or `implementer` agent. Wait for all three to complete before evaluating results. Every reviewer prompt must include the **original user requirements verbatim** — reviewers catch requirement deviations, not just technical issues.
 
 ### Issue severity codes
 
@@ -294,13 +319,13 @@ Step 1 explorer re-reads current code and researches options that resolve the fu
 
 Fresh idea generator — fires on-demand when the cycle stalls. Output is raw ideas only; never decisions, verdicts, or filtering. Bigger list = better.
 
-**Genuine stall definition.** Brainstormer fires only after the producing agent (explorer or implementer) has attempted obvious resolutions and recorded each with why it failed. Attempt log is part of the trigger evidence, not optional. A bare "I'm stuck" without log → not a stall, push the agent to keep trying.
+**Genuine stall definition.** Use the Required Record from `blocker-resolution-protocol`. A bare "I'm stuck" without an attempt log is not a stall; push the agent to keep trying.
 
 | Trigger | Action |
 |---------|--------|
-| Explorer returned zero viable options after documented attempts | Spawn brainstormer → feed ideas into a new explorer |
-| Step 2 bounce cap reached (one explorer revision round did not yield a clean option) | Spawn brainstormer → feed ideas into a new explorer |
-| Implementer genuinely blocked inside Step 3 (per Genuine stall definition above) | Spawn brainstormer → feed ideas into a new implementer prompt |
+| Explorer returned zero viable options after documented attempts | Spawn brainstormer + BRP primary explorer -> run `brp-feasibility-validator` -> feed blocker record, validated feasible ideas, primary explorer facts, and prior failures into the next explorer/implementer prompt |
+| Step 2 bounce cap reached (one explorer revision round did not yield a clean option) | Spawn brainstormer + BRP primary explorer -> run `brp-feasibility-validator` -> feed blocker record, validated feasible ideas, primary explorer facts, and prior failures into the next explorer/implementer prompt |
+| Implementer genuinely blocked inside Step 3 (per Genuine stall definition above) | Spawn brainstormer + BRP primary explorer -> run `brp-feasibility-validator` -> feed blocker record, validated feasible ideas, primary explorer facts, and prior failures into the next explorer/implementer prompt |
 
 ### Prompt requirements
 
@@ -312,15 +337,16 @@ Fresh idea generator — fires on-demand when the cycle stalls. Output is raw id
 ### Constraints
 
 - Spawn as separate `brainstormer` agent; never message the explorer or implementer agent.
-- Must NOT be any other cycle agent (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E, loop-breaker).
+- Must NOT be any other cycle agent (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E, brp-feasibility-validator, loop-breaker).
 - Each invocation refreshes context via `/clear` or shutdown+respawn — start each idea-burst clean.
-- Ideas only — the next cycle agent does the filtering.
+- Ideas only — `brp-feasibility-validator` filters BRP-triggered ideas.
+- Brainstormer output never goes directly to explorer/implementer after a BRP trigger; only validator-approved ideas may be routed onward.
 
 ## Loop-breaker
 
 A separate agent — not any of the cycle agents — gets one chance to break the loop before escalating to the user.
 
-**One loop-breaker invocation per change**, regardless of trigger. If the granted retry fails → hard escalate; ECI stays active.
+**One loop-breaker invocation per change**, regardless of trigger. If the granted retry fails -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned. ECI stays active.
 
 ### Prompt must include
 
@@ -341,7 +367,7 @@ A separate agent — not any of the cycle agents — gets one chance to break th
 - Spawn as separate `loop-breaker` agent; refresh context by clearing when supported or shutdown+respawn between invocations.
 - Must NOT be any of the 6 cycle agents (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent).
 - Reads code and issues independently — no reliance on prior agent summaries.
-- One invocation per change. Granted retry fails → escalate to user.
+- One invocation per change. Granted retry fails -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned.
 
 ## Escalation
 
@@ -349,12 +375,12 @@ Single decision table for all limit hits. One loop-breaker per change total.
 
 | Trigger | Condition | Action | If retry fails |
 |---------|-----------|--------|----------------|
-| Gate retry cap | 3 gate retries failed within one cycle | Invoke loop-breaker (if not yet used for this change) | Hard escalate; ECI stays active |
-| Cycle limit | 3 full cycles failed for one change | Invoke loop-breaker (if not yet used for this change) | Hard escalate; ECI stays active |
-| Loop-breaker already used | Either limit hit but loop-breaker was consumed by prior trigger | Skip loop-breaker → hard escalate immediately; ECI stays active | — |
-| Step 2 post-brainstormer all-REJECT | Brainstormer fired and new explorer's options still all-REJECT after one revision | Hard escalate; ECI stays active | — |
+| Gate retry cap | 3 gate retries failed within one cycle | Invoke loop-breaker (if not yet used for this change) | Create protocol-limit blocker record -> run `blocker-resolution-protocol` -> hard escalate only if BRP finds no feasible internal path or the blocker is user-owned; ECI stays active |
+| Cycle limit | 3 full cycles failed for one change | Invoke loop-breaker (if not yet used for this change) | Create protocol-limit blocker record -> run `blocker-resolution-protocol` -> hard escalate only if BRP finds no feasible internal path or the blocker is user-owned; ECI stays active |
+| Loop-breaker already used | Either limit hit but loop-breaker was consumed by prior trigger | Create protocol-limit blocker record -> run `blocker-resolution-protocol` -> hard escalate only if BRP finds no feasible internal path or the blocker is user-owned; ECI stays active | — |
+| Step 2 post-brainstormer all-REJECT | Brainstormer fired and new explorer's options still all-REJECT after one revision | Create protocol-limit blocker record -> run `blocker-resolution-protocol` -> hard escalate only if BRP finds no feasible internal path or the blocker is user-owned; ECI stays active | — |
 
-**Hard escalate** = report a blocker requiring user input while ECI remains active. Include: (a) original problem, (b) what each cycle tried, (c) loop-breaker's assessment (if invoked), (d) last blocking issue, (e) next-best alternative from explorer's ranking. Silent punts forbidden.
+**Hard escalate** = report a blocker requiring user input while ECI remains active. Use the escalation report from `blocker-resolution-protocol`, plus: (a) original problem, (b) what each cycle tried, (c) loop-breaker's assessment (if invoked), (d) last blocking issue, (e) next-best alternative from explorer's ranking. Silent punts forbidden.
 
 ## Iteration limit
 
@@ -395,14 +421,15 @@ auth middleware swap
 |---------|-----|
 | Implementing 2+ changes before re-critiquing | Stop. One at a time |
 | "Good enough" at cycle 3 | Invoke loop-breaker, don't settle or force |
-| Any two of {explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent, loop-breaker} are the same agent | Banned. Up to seven distinct agents (six per normal cycle + loop-breaker at limits) |
+| Any two of {explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent, brainstormer, brp-feasibility-validator, loop-breaker} are the same agent | Banned. Up to nine distinct agents (six per normal cycle + brainstormer/validator for BRP + loop-breaker at limits) |
 | Review-gate Critic A returned before Critic B was spawned | Sequential gate. Spawn Critic A + Critic B (+ E2E when in scope) in one message with parallel `spawn_agent` tool calls; do not serialize even if one critic's view seems sufficient. |
+| Task/round-specific role labels (`critic-r3`, `e2e-gate-7`) used instead of reusable role slots | STOP. Use stable labels (`critic-step2`, `e2e-gate`) and put round/gate details in the assignment. |
 | Skipping E2E inside loop | E2E is part of the review gate — runs every iteration, not at the end |
 | Skipping exploration or critique for later iterations | Every iteration runs all four steps — none are optional |
 | Winner lacks concrete text | Critic under-specified. Re-spawn with "concrete text required" |
 | No rejected list in Step 2 | Critic is not adversarial. Re-spawn |
 | Brainstormer output filters/judges/picks a winner | Brainstormer is idea-only. Re-spawn with "no filtering, no negatives" |
-| Persistent explorer or implementer agent addressed for any critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, loop-breaker) | STOP. Spawn a separate critic agent; the producer (explorer/implementer) must never act as critic. |
+| Persistent explorer or implementer agent addressed for any critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, loop-breaker) | STOP. Spawn a separate critic agent; the producer (explorer/implementer) must never act as critic. |
 | Disengage without teardown sequence | STOP. Shutdown/close agents → eci-active off, in that order. |
 | Shell-launched Codex process used as an agent | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`/`close_agent`, or hard-escalate if unavailable. |
 | Status report uses task/iteration numbers, or flat-lists nested work | See **Status reports** section. |
@@ -421,5 +448,6 @@ auth middleware swap
 |-------|-----------|
 | `brainstorming` | Explores user intent before design. This skill explores solutions after intent is clear. |
 | `agent-teams-execution` | Full multi-role pipeline for large builds. This skill is the medium-task pattern (explore → critique → implement → parallel review gate). ECI shares the standard Codex agent mechanism (`spawn_agent` / `send_input` / `wait_agent` / `close_agent`) for the persistent explorer + implementer. Borrow its rubber-stamp check: critic citing zero issues beyond producer's self-reports = re-spawn with harsher prompt. |
+| `blocker-resolution-protocol` | Shared blocker handling. ECI keeps its own role separation, loop-breaker, and hard-escalation semantics while using the shared blocker record and escalation rules. |
 | `systematic-debugging` | For diagnosing a known bug. This skill is for open-ended improvement/design research. |
 | `proof-driven-development` | Proves correctness of logic. This skill selects which logic to build. |

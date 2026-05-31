@@ -44,15 +44,21 @@ Progress reports changed state and completed outcomes, not files read, commands 
 
 For “where are we on each lane?” or “who works on each lane?”, report every in-scope lane known from the active plan, ledger, or test matrix. Include idle, waiting, review, deploy, proof, and paused lanes.
 
-| Lane | Status | Owner | Blocker | Next proof/action |
-| --- | --- | --- | --- | --- |
-| `<lane result wanted>` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `<person/agent or unowned>` | `none` or `<exact blocker; impact; unblock owner/path>` | `<next evidence/action>` |
+Use three separate status columns so source readiness cannot be mistaken for E2E completion.
+
+| Lane | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next proof/action |
+| --- | --- | --- | --- | --- | --- | --- |
+| `<lane result wanted>` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `none` or `<exact blocker; impact; unblock owner/path>` | `<next evidence/action>` |
 
 | Rule | Behavior |
 | --- | --- |
-| Status vocabulary | Use only `NEW`, `IN PROGRESS`, `BLOCKED`, `CLOSED`. |
-| Evidence states | Put worker completions, reviews, source fixes, deploys, and partial proofs in `Next proof/action`, not `Status`. |
-| `CLOSED` | Use only when the lane result is proven or explicitly removed from scope. |
+| Status vocabulary | In each status column, use only `NEW`, `IN PROGRESS`, `BLOCKED`, `CLOSED`. |
+| Implementation Status | Covers exploration, RCA, design, code changes, code review, build checks, unit/component/integration auto-tests, and source-level readiness. `CLOSED` means source-level work is accepted with relevant automated checks. |
+| Test Status | Covers E2E validation in the non-production test environment, including real devices, test services, UI manipulation, and mission/test-plan helpers. `CLOSED` means test-environment E2E passed or was explicitly waived. |
+| Prod Status | Covers E2E validation in production, including deploy provenance, real production services/devices, UI manipulation where relevant, and user-visible behavior. `CLOSED` means production E2E passed or was explicitly waived. |
+| Lane closure | A lane is finished only when the required highest environment column is `CLOSED`. For production-gated work, Implementation/Test `CLOSED` with Prod open is still not finished. |
+| Evidence states | Put worker completions, reviews, source fixes, deploys, and partial proofs in `Next proof/action`, not by collapsing status columns. |
+| `CLOSED` | Use only in the specific column whose required evidence is proven or explicitly removed from scope. |
 | `BLOCKED` | Name exact blocker, stalled impact, and unblock owner/path. |
 | Coverage | Do not omit lanes because they are idle, waiting, paused, under review, deployment-only, or proof-only. |
 
@@ -83,4 +89,5 @@ Under time pressure, do not write "blocked on review" or "risk in tests" alone. 
 | Next Focus | Names the next concrete work area. |
 | Concision | No raw activity log or filler. |
 | Multi-lane coverage | Every in-scope lane is listed, including idle/waiting/review/deploy/proof/paused lanes. |
-| Lane statuses | Each lane status is exactly `NEW`, `IN PROGRESS`, `BLOCKED`, or `CLOSED`. |
+| Lane statuses | Each Implementation/Test/Prod status is exactly `NEW`, `IN PROGRESS`, `BLOCKED`, or `CLOSED`. |
+| Status separation | Source-level completion, test E2E, and production E2E are never merged into one status. |

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/codex-proof/pre-reviewer"
+marker="$cache_root/lane-status-reminder-due.md"
+log_file="$cache_root/lane-status-reminder.log"
+timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+mkdir -p "$cache_root"
+tmp_marker="$(mktemp "$marker.tmp.XXXXXX")"
+trap 'rm -f "$tmp_marker"' EXIT
+
+{
+	printf '# Lane Status Reminder\n\n'
+	printf 'due_utc: %s\n' "$timestamp"
+	printf 'role_label: lane-status-reminder-job-r1\n'
+	printf 'non_blocking: true\n\n'
+	printf 'Reminder for orchestrator:\n'
+	printf '%s\n' '- Report: Where we are on each lane? (and who works on each lane?)'
+	printf '%s\n' '- Check safe parallelization opportunities.'
+	printf '%s\n\n' '- Check whether any known lane/proof/review/deploy task was forgotten or left unassigned.'
+	printf 'This marker is context only. It must not block tools, edits, stop hooks, or normal execution.\n'
+} >"$tmp_marker"
+
+mv "$tmp_marker" "$marker"
+trap - EXIT
+
+printf '%s lane-status-reminder wrote %s\n' "$timestamp" "$marker" >>"$log_file"

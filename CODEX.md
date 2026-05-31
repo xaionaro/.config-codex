@@ -105,6 +105,7 @@ Subagent rule:
 - Use `spawn_agent` only; do not launch shell-wrapped Codex agents.
 - Give every spawned or resumed subagent a current role label. Print or update the roster immediately after spawn, resume, reassignment, or scope change: `<role label>: <runtime name> [type]`.
 - In every wait/status/close update, use `<role label> (<runtime name> [type])`; do not use bare runtime nicknames once labeled.
+- When the main thread waits for agent work, wait for every still-running in-scope subagent before synthesizing, deciding, or advancing from agent results. In-scope means the current delegation, ECI, or ATE workflow; exclude closed or completed agents, agents outside that workflow, and non-agent work such as shell jobs, tests, and background services.
 - Verify all subagent claims independently before relying on them.
 - Subagents follow Stop-hook prompts in their own session, including required proof/checklist files. They fix blockers within assigned scope; report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 

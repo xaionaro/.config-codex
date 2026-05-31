@@ -13,6 +13,7 @@ Phased agent team with adversarial review loops and tiered information trust.
 - Use `spawn_agent`, `send_input`, and `wait_agent` for role execution.
 - When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
+- Spawn with reusable `agent_type` roles only: `explorer`, `worker`, `default`. Team roles (`designer`, `executor`, `qa`) are stable roster labels, not custom `agent_type`s.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
 - Every subagent prompt must include: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval."
 - If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
@@ -29,7 +30,7 @@ Subagents, including lead and coordinator roles, follow Stop-hook prompts in the
 
 **No urgency. Infinite time.** Never prioritize speed over discipline. Every shortcut, skipped review, or "good enough" degrades the final result. Do it right, every time.
 
-**Autonomy principle.** Drive the pipeline to QA verdict without user input. Teammates decide within their role; coordinator routes within the pipeline; lead enforces rules. Exhaust internal unblocking before escalating: blockers run the Blocker Resolution Protocol (brainstormer + explorer) first, rejections run their full loop budget first. Escalate to user only when those are exhausted, plus: QA verdict to report, user followup arrived. Otherwise proceed — never ask permission for the next obvious step.
+**Autonomy principle.** Drive the pipeline to QA verdict without user input. Teammates decide within their role; coordinator routes within the pipeline; lead enforces rules. Exhaust internal unblocking before escalating: work blockers use `blocker-resolution-protocol` first, rejections run their full loop budget first. Escalate to user only when those are exhausted, plus: QA verdict to report, user followup arrived. Otherwise proceed — never ask permission for the next obvious step.
 
 ## Mission Completion Guard
 
@@ -50,7 +51,7 @@ When delegation is authorized, spawn bounded standard Codex agents with explicit
 
 Example authorized mapping: one `explorer` for each independent research slice, one `worker` for implementation ownership, and one `explorer` or `default` reviewer for critique.
 
-**Only skill-defined roles.** Name by role (`executor-1`, `explorer-2`). Reassign idle teammates instead of spawning new ones.
+**Reusable role slots only.** Name by stable role (`executor-1`, `explorer-2`), not task/round/gate (`executor-auth-fix`, `qa-cycle-3`). Put task id, ownership, lens, phase, and cycle in the assignment. Reassign idle teammates instead of spawning new ones.
 </CRITICAL>
 
 ## Pipeline Model
@@ -87,7 +88,7 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 | **Coordinator** | 1 | all | Task assignment, routing, phase management. Requests spawns from lead. **Never implements.** |
 | **Lead** | 1 | all | Spawns teammates. Audits coordinator's rule compliance. Reminds coordinator when it forgets enforcement. **Never implements.** |
 | **Explorer** | 1+ | 1 | Gather facts. Tag sources. Challenge each other. |
-| **Designer** | 1 | 2 | Architect from findings. Produce file ownership map. |
+| **Designer** | 1 | 2 | Architect from findings. Produce file ownership map. Ship a minimal proof-of-concept implementation for any unproven-in-practice mechanism the design relies on — see Designer PoC Requirement. |
 | **Design Reviewer** | 1+ | 2 | Adversarial design review against the design itself. Report only, never edit design. 2+ for large tasks. |
 | **Fundamentals Design Reviewer** | 1 | 2 | Runs in parallel with Design Reviewer. Challenges design fundamentals, not surface issues. Spawns 3 subagents via spawn_agent tool: (1) brainstormer — list possible fundamental issues (premise, problem framing, architectural axioms, hidden assumptions, scope, alternatives); (2) reviewer — investigate design against each listed issue and report; (3) meta-reviewer — critically review the reviewer's report for missed angles, weak evidence, rubber-stamping. Report only, never edit design. |
 | **Executor** | 1+ | 3 | Implement assigned task + unit tests. One per independent unit of work. Actively look for code smell and design issues in code they study/touch, report all to coordinator. Broken infra or resorting to a workaround = notify coordinator before proceeding. |
@@ -107,6 +108,8 @@ One executor pair per independent unit of work. ~4 agents per phase before coord
 ## Mandatory Compliance
 
 **Every teammate** must invoke `agent-teams-execution` skill via skill instructions as their first action. Lead **must include this instruction in every spawn prompt**. Coordinator and lead: re-invoke the skill after every context compaction.
+
+Blocker handling uses `blocker-resolution-protocol` (BRP). Lead includes that skill name in prompts for blocker-resolution tasks.
 
 **Manual skill refresh (coordinator, lead, snitch).** Lead uses `send_input` to remind active teammates to re-invoke `agent-teams-execution` after context compaction, phase changes, long waits, and user-waiting resume. Use `wait_agent` status before treating silence as a failure.
 
@@ -164,7 +167,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 | **in_progress** | in_progress | Agent is actively working on it | Assigned agent |
 | **blocked** | in_progress | Cannot proceed — needs resolution | Assigned agent (CC lead + snitch) |
 | **exploring** | in_progress | Explorer investigating (research phase or blocker investigation) | Coordinator |
-| **unblocking** | in_progress | Brainstormer + explorer working to resolve blocker | Coordinator (after blocker reported) |
+| **unblocking** | in_progress | Brainstormer, primary explorer, and feasibility validator/second explorer working to resolve blocker | Coordinator (after blocker reported or recorded) |
 | **submitted** | in_progress | Agent believes done, awaiting verification | Assigned agent (CC lead + snitch) |
 | **in_review** | in_progress | Reviewer is actively reviewing | Coordinator (after submission checklist passes) |
 | **in_test_design** | in_progress | Test designer writing test specs (code tasks only) | Coordinator (after reviewer approves) |
@@ -182,8 +185,8 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 | exploring → in_progress | Exploration done, task needs execution next. Executors: pair invariant satisfied |
 | pending → blocked_by_task | Task depends on another task that isn't complete yet |
 | blocked_by_task → in_progress | Blocking task completed. Agent assigned |
-| in_progress → blocked | Agent reports genuine blocker (with attempt log per BRP definition). CC lead + snitch |
-| blocked → unblocking | Coordinator launches brainstormer + explorer simultaneously per Blocker Resolution Protocol |
+| in_progress → blocked | Agent reports genuine blocker, or a review pair hits the 11th rejection and coordinator creates a protocol-limit blocker record. CC lead + snitch |
+| blocked → unblocking | Coordinator runs `blocker-resolution-protocol` |
 | unblocking → in_progress | Feasible solution found and assigned. Blocker resolved |
 | unblocking → blocked | No feasible solution found. Escalate to user |
 | in_progress → submitted | All claims tagged `[T<tier>: source, confidence]`. Critique log produced (3+ problems found/fixed). Code/debugging tasks: root-cause rationale explains the cause chain and why the diff repairs it, all changes committed, hard proof that the solution works (test output, command output, screenshots). CC lead + snitch |
@@ -226,9 +229,10 @@ digraph phases {
     "Design reviewer approves?" [shape=diamond];
     "Revise design based on feedback" [shape=box];
     "Designer needs more info?" [shape=diamond];
+    "Designer-to-explorer cap hit?" [shape=diamond];
     "Re-spawn explorers for targeted research" [shape=box];
     "Finalize approved design + file ownership" [shape=doublecircle];
-    "STOP: 10 rejections - escalate to user" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
+    "Protocol-limit blocker: run BRP" [shape=octagon, style=filled, fillcolor=orange, fontcolor=black];
 
     "PHASE 3: EXECUTION" [shape=doublecircle];
     "Spawn executor/reviewer pairs + test designer" [shape=box];
@@ -240,7 +244,7 @@ digraph phases {
     "Write test specs (wait for interface contracts)" [shape=box];
     "Finalize test specs" [shape=doublecircle];
     "Task code approved" [shape=doublecircle];
-    "STOP: 10 exec rejections - escalate" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
+    "Protocol-limit blocker: run BRP" [shape=octagon, style=filled, fillcolor=orange, fontcolor=black];
 
     "PHASE 4: TESTING + INTEGRATION" [shape=doublecircle];
     "Spawn test executor/reviewer pairs" [shape=box];
@@ -248,7 +252,7 @@ digraph phases {
     "Test reviewer approves?" [shape=diamond];
     "Revise tests based on feedback" [shape=box];
     "Confirm all tests pass" [shape=doublecircle];
-    "STOP: 10 test rejections - escalate" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
+    "Protocol-limit blocker: run BRP" [shape=octagon, style=filled, fillcolor=orange, fontcolor=black];
 
     "FINAL QA" [shape=doublecircle];
     "Spawn QA" [shape=box];
@@ -278,16 +282,18 @@ digraph phases {
     "Design architecture + file ownership map" -> "Fundamentals reviewer approves?";
     "Fundamentals reviewer approves?" [shape=diamond];
     "Fundamentals reviewer approves?" -> "Revise design based on feedback" [label="no (round 1-10)"];
-    "Fundamentals reviewer approves?" -> "STOP: 10 rejections - escalate to user" [label="no (round 11+)"];
+    "Fundamentals reviewer approves?" -> "Protocol-limit blocker: run BRP" [label="no (round 11+)"];
     "Fundamentals reviewer approves?" -> "Both reviewers approved?" [label="yes - with evidence"];
     "Both reviewers approved?" [shape=diamond];
     "Design reviewer approves?" -> "Revise design based on feedback" [label="no (round 1-10)"];
-    "Design reviewer approves?" -> "STOP: 10 rejections - escalate to user" [label="no (round 11+)"];
+    "Design reviewer approves?" -> "Protocol-limit blocker: run BRP" [label="no (round 11+)"];
     "Design reviewer approves?" -> "Both reviewers approved?" [label="yes - with evidence"];
     "Both reviewers approved?" -> "Finalize approved design + file ownership" [label="yes"];
     "Both reviewers approved?" -> "Design architecture + file ownership map" [label="no - wait for other"];
     "Revise design based on feedback" -> "Designer needs more info?";
-    "Designer needs more info?" -> "Re-spawn explorers for targeted research" [label="yes"];
+    "Designer needs more info?" -> "Designer-to-explorer cap hit?" [label="yes"];
+    "Designer-to-explorer cap hit?" -> "Protocol-limit blocker: run BRP" [label="yes (2 rounds exhausted)"];
+    "Designer-to-explorer cap hit?" -> "Re-spawn explorers for targeted research" [label="no"];
     "Re-spawn explorers for targeted research" -> "Design architecture + file ownership map";
     "Designer needs more info?" -> "Design architecture + file ownership map" [label="no"];
     "Design reviewer approves?" -> "Finalize approved design + file ownership" [label="yes - with evidence"];
@@ -298,7 +304,7 @@ digraph phases {
     "Spawn executor/reviewer pairs + test designer" -> "Write test specs (wait for interface contracts)";
     "Implement module (owns assigned files only)" -> "Execution reviewer approves?";
     "Execution reviewer approves?" -> "Revise code based on feedback" [label="no (round 1-10)"];
-    "Execution reviewer approves?" -> "STOP: 10 exec rejections - escalate" [label="no (round 11+)"];
+    "Execution reviewer approves?" -> "Protocol-limit blocker: run BRP" [label="no (round 11+)"];
     "Revise code based on feedback" -> "Executor blocked by design issue?";
     "Executor blocked by design issue?" -> "Report to lead - re-enter Phase 1" [label="yes"];
     "Report to lead - re-enter Phase 1" -> "Spawn explorers";
@@ -312,7 +318,7 @@ digraph phases {
     "Spawn test executor/reviewer pairs" -> "Implement unit + integration tests from specs";
     "Implement unit + integration tests from specs" -> "Test reviewer approves?";
     "Test reviewer approves?" -> "Revise tests based on feedback" [label="no (round 1-10)"];
-    "Test reviewer approves?" -> "STOP: 10 test rejections - escalate" [label="no (round 11+)"];
+    "Test reviewer approves?" -> "Protocol-limit blocker: run BRP" [label="no (round 11+)"];
     "Revise tests based on feedback" -> "Test reviewer approves?";
     "Test reviewer approves?" -> "Confirm all tests pass" [label="yes - with evidence"];
 
@@ -378,7 +384,8 @@ Paired roles communicate **directly**. All other feedback routes through coordin
 | Executor | Coordinator | Design issue or code smell found | Coordinator assigns executor to analyze; minor: executor fixes directly, design-level: full pipeline |
 | Test Reviewer | Test Executor | Test issue | Direct (paired) |
 | Any agent | Coordinator | Findings received | Coordinator assigns independent verification before accepting |
-| Any teammate | Coordinator | Genuine blocker (with attempt log) | Blocker Resolution Protocol: simultaneously launch brainstormer + explorer. Reports without attempt log -> bounce back, not BRP |
+| Any teammate | Coordinator | Genuine blocker (with attempt log) | Run `blocker-resolution-protocol`. Reports without attempt log -> bounce back, not BRP |
+| Review pair | Coordinator | 11th rejection | Create protocol-limit blocker record; run `blocker-resolution-protocol` |
 | QA | Coordinator | Any verdict (approval or rejection) | CC snitch. On approval, QA must demonstrate sufficient testing was performed (which criteria, what evidence, direct vs proxy). On rejection, route by type. Snitch looks for gaps in testing |
 
 ### Debug Mode
@@ -399,9 +406,9 @@ Applies: bug fix, build failure, flake, perf regression, any task whose delivera
 
 Round = one rejection (initial submission is not a round).
 
-- **10 rounds max** per pair. 11th rejection -> escalate (replace teammate or re-scope). Counters reset on QA/Phase 2 re-entry.
+- **10 rounds max** per pair. 11th rejection -> protocol-limit blocker: run BRP before user escalation. Counters reset on QA/Phase 2 re-entry.
 - **2 QA re-entries max** (total). 3rd -> escalate to user with: what failed, what was tried.
-- **2 designer-to-explorer rounds max.** Then escalate to user.
+- **2 designer-to-explorer rounds max.** Cap hit -> create a protocol-limit blocker record; run `blocker-resolution-protocol` before user escalation.
 
 ### Crash Recovery
 
@@ -414,9 +421,9 @@ Round = one rejection (initial submission is not a round).
 4. Only if no response after interrupt → confirmed unresponsive.
 Skipping any step = false positive. Coordinator must document evidence of all checks before requesting re-spawn.
 
-Once confirmed unresponsive, **immediately** re-spawn — no delays. The task must not stall.
+Once confirmed unresponsive, **immediately** re-spawn under the same reusable role label — no delays. The task must not stall.
 **Executors:** Paired reviewer reviews all changes before re-spawn. Unreviewed output never discarded.
-**Non-executors:** Re-spawn immediately. Max 2 re-spawns per role, then escalate to user.
+**Non-executors:** Re-spawn immediately under the same reusable role label. Max 2 re-spawns per role, then escalate to user.
 
 ### Misbehavior Recovery (any agent)
 
@@ -449,15 +456,19 @@ Applies to every interrupter: coordinator, lead, snitch, reviewer, peer. Queued 
 
 Executor receiving a finding list: address in strict severity order, highest first. Defer everything at-or-below the current goal's severity until that goal is proven done.
 
-### Blocker Resolution Protocol
+### Blocker Resolution
 
-**Genuine blocker definition.** Agent has tried the obvious resolutions (re-read code, retry, alternative approach, spec/doc lookup, ask paired reviewer) and recorded each attempt with why it failed. Without that attempt log, situation is not a blocker. Coordinator bounces blocker claims missing the attempt log.
+Use `blocker-resolution-protocol` for work blockers, review/iteration protocol-limit blockers, and task-progress pre-user-escalation decisions.
 
-When a teammate reports a genuine blocker, coordinator simultaneously launches:
-1. **Brainstormer** — prompt as a genius creative unblocker who thinks outside the box. Generates as many solution ideas as possible. Positives only, no filtering, no feasibility judgment. Bigger list = better.
-2. **Explorer** — independently investigates the blocker to understand the technical landscape.
+Unresponsive-agent recovery, repeated agent misbehavior, coordinator silence, and shutdown/lifecycle failures follow ATE lifecycle recovery unless they expose a separate concrete work blocker. Do not run BRP merely because those lifecycle paths can end in user escalation.
 
-After brainstormer finishes, coordinator launches a second explorer to validate **technical feasibility** of the brainstormer's ideas against the explorer's findings. Coordinator picks the best feasible approach and assigns it.
+ATE adapter:
+- Coordinator owns the BRP task and task-state transitions.
+- Lead and snitch verify that the blocker record has the required attempt log before BRP starts.
+- Coordinator launches brainstormer and primary explorer simultaneously, then launches a second explorer for feasibility validation before routing the best feasible path.
+- On the 11th rejection in a pair, coordinator creates the protocol-limit blocker record from the rejection history, then runs BRP.
+- On the designer-to-explorer cap, coordinator creates the protocol-limit blocker record from the designer/explorer round history, then runs `blocker-resolution-protocol`.
+- Escalate to the user only if BRP finds no feasible internal path or the blocker requires user-owned product/scope input.
 
 ## Reviewer Protocol
 
@@ -471,9 +482,19 @@ After brainstormer finishes, coordinator launches a second explorer to validate 
 3. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block. Minor (doesn't block), Nit (never blocks).
 4. **Outcomes:** APPROVED (no Critical/Major, with evidence). CONDITIONAL (Minor/Nit listed — main task completes; coordinator opens follow-up tasks per Priority Discipline; do NOT bounce executor back). REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
 5. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
-6. **Max 10 rounds** then escalate.
+6. **Max 10 rounds.** 11th rejection becomes a protocol-limit blocker; run `blocker-resolution-protocol` before user escalation.
 
 Design creates a type/component but defers making it work = reject. Valid deferral: don't create it yet. Invalid deferral: create a broken version.
+
+### Designer — Proof of Concept Requirement
+
+Any design whose core mechanism is unproven-in-practice (not a well-known pattern, not already shipped in this codebase, not a documented vendor API used as documented) ships with a minimal PoC:
+
+- Strip every concern not needed to exercise the core mechanism — no error handling, no edge cases, no production polish, no scaffolding beyond what the demo requires.
+- Run end-to-end on one real input; produce the observable behavior the mechanism claims.
+- Hand off the PoC with the design. Missing PoC for an unproven mechanism = REJECT.
+
+Proven-in-practice mechanisms need no PoC. State "proven by <link/citation>" when claiming exemption.
 
 ### Design Reviewer — Additional Rejection Criteria
 
@@ -483,6 +504,16 @@ REJECT if any are missing or incomplete:
 - Shared concerns register (item 8) — all cross-task logic/types identified with designated locations
 - Enriched interface contracts (item 4) — error modes, pre/postconditions, invariants, thread safety
 - File ownership map contradicts binary/service purpose map (items 2 vs 3)
+
+### Fundamentals Design Reviewer — Verdict
+
+| Verdict | When |
+|---------|------|
+| **REJECT** | A substantive fundamental flaw — falsifies a load-bearing part of the design; cannot be patched without rethinking premise, framing, scope, or another foundational decision. |
+| **CONDITIONAL** | No fundamental flaw, but a significant issue remains. Main task completes; coordinator opens follow-up tasks. |
+| **NIT** | Only minor or non-substantive issues. Never blocks. |
+
+The reviewer is not constrained to any fixed taxonomy of flaw types; the test for REJECT is impact, not category.
 
 ### Execution Reviewer Checklist
 
@@ -552,7 +583,7 @@ Review independently first — no reading peer findings before writing your own.
 7. **Handle "submitted" tasks.** When a task is submitted: verify Stop Checklist items (changes committed, claims tagged, critique log exists). Bounce back immediately if incomplete — don't waste reviewer time. If checklist passes, route to paired reviewer. After reviewer approves, route to test pipeline (code tasks) or verifier (non-code tasks).
 8. **Drive per-task pipelines.** When a task's code is approved + its test specs are ready → immediately spawn test executor/reviewer pair for that task. Do not wait for other tasks except bottlenecked E2E batches under Testing Protocol. After ALL tasks tested → spawn QA. Record checkpoint per task in the ledger: what was produced, who approved, git SHA.
 9. **Budget context** -- summaries, not raw output (see below).
-10. **Enforce loop limits.** Escalate on 11th rejection / 3rd QA re-entry.
+10. **Enforce loop limits.** Run `blocker-resolution-protocol` on the 11th rejection and the designer-to-explorer cap. Escalate directly on 3rd QA re-entry.
 11. **Crash recovery** -- detect unresponsive teammates, request lead to re-spawn. For executors: review changes before re-spawning. Max 2 re-spawns.
 12. **Manage lifetimes** per Teammate Lifecycle (below).
 13. **Enforce pair invariant.** Before every executor task assignment, verify reviewer exists and previous work is reviewed.
@@ -586,7 +617,7 @@ Review independently first — no reading peer findings before writing your own.
 | Teammate reports coordinator doing work directly | Remind coordinator to delegate |
 | Teammate reports unaddressed issue | Remind coordinator to create task and assign analysis |
 | CCed "submitted" claim received | Verify the claim has sufficient proof. If not, remind coordinator not to accept it — demand evidence before marking complete |
-| CCed blocker claim received | Verify attempt log present (what was tried, why each failed) per BRP genuine-blocker definition. Missing or thin -> remind coordinator to bounce back, not run BRP. Evidence thin but log present -> remind coordinator to launch explorer verification before BRP |
+| CCed blocker claim received | Missing or thin attempt log -> remind coordinator to bounce per `blocker-resolution-protocol`, not run BRP. Present required record -> remind coordinator to run `blocker-resolution-protocol`. |
 | Reviewer/verifier/QA approves | Scrutinize the approval: does it cite specific evidence? Does it address all scrutiny rules? A shallow "LGTM" is not an approval — send back with specific areas to examine |
 | Any agent ignores reminder (3+ on same rule) | Misbehavior Recovery: force `/compact`, re-read skill, continue. If still misbehaving, escalate to user |
 | Coordinator not responding | Check spawned-agent status and last `wait_agent`/`send_input` result. Still thinking/processing = acceptable (up to 1 hour). Stuck > 1 hour = re-spawn. Max 2 re-spawns, then escalate to user |
@@ -601,6 +632,7 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Stop condition stated as observable criterion; false-stops enumerated
 - [ ] Model override omitted unless the user explicitly requested one
 - [ ] Reasoning effort set to xhigh
+- [ ] Reusable `agent_type` selected (`explorer`, `worker`, or `default`); task-specific details are in assignment text, not role/type
 - [ ] Correct coding style skill listed by exact name (not placeholder)
 - [ ] Claim tagging instructions included verbatim
 - [ ] File ownership explicit (executor/test roles)
@@ -634,7 +666,7 @@ Downstream agents get **structured summaries**, not raw upstream output.
 | Test Designer | Phase 4 end | Test executors need spec clarification |
 | Test Executors + Reviewers | User shutdown | User may request followups |
 | Snitch | User shutdown | Monitors all claims throughout |
-| **QA** | User shutdown | **Re-spawned fresh per QA cycle** |
+| **QA** | User shutdown | **Re-spawned fresh under `qa` role label per QA cycle** |
 | Coordinator + Lead | User shutdown | Stand by for user followups |
 
 **No "DONE" state.** QA approval ≠ mission accomplished. After QA approves, coordinator reports verdict + evidence to user and **waits**. Mission is accomplished only when the user explicitly confirms (e.g. "ship it", "done", "approved"). Until then, all teammates remain alive.
@@ -650,7 +682,7 @@ If graceful shutdown fails, escalate to the user before terminating work. After 
 ### Spawn Prompt Template
 
 ```
-You are the [ROLE] for this agent team.
+You are the [REUSABLE ROLE LABEL] for this agent team.
 
 Your task: [SPECIFIC TASK]
 
@@ -694,6 +726,7 @@ Compliance:
 | Symptom | Fix |
 |---------|-----|
 | Spawning without a skill-defined role, ownership, or stop condition | STOP. Use bounded Codex agents with explicit role, ownership, and expected output |
+| Spawning with task-specific role/type labels | STOP. Use reusable `agent_type` + stable roster label; put task details in assignment text |
 | Work without corresponding task | Create task immediately |
 | Task waiting for other tasks before testing | Pipelines are per-task. Code approved + test specs ready → start testing immediately, except bottlenecked E2E batches under Testing Protocol |
 | Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`, or hard-escalate if unavailable. |
@@ -716,7 +749,7 @@ Compliance:
 | Submitted code/debugging fix lacks root-cause rationale | Bounce before review. Unknown "why" means not submitted |
 | Reviewer approves without critiquing root-cause rationale | Approval invalid. Re-spawn or re-prompt reviewer |
 | Spawn prompt uses `[LIST APPLICABLE SKILLS]` placeholder | Replace with exact skill names from Mandatory Skills table |
-| 11th rejection in same pair | Escalate: replace or re-scope |
+| 11th rejection in same pair | Create protocol-limit blocker record; run `blocker-resolution-protocol` before user escalation |
 | Teammate seems slow or won't respond before 30 minutes | Not stale. Do not message or interrupt for status |
 | Teammate seems slow or won't respond after 30+ minutes | Check active process and file/git activity; a running build means they're working |
 | Non-executor confirmed unresponsive | Re-spawn immediately |
@@ -726,7 +759,7 @@ Compliance:
 | Execution reviewer not loading coding style skill | STOP. Must load `<language>-coding-style` via skill instructions per Execution Reviewer Checklist |
 | Test specs don't match interfaces | Test designer waits for contracts |
 | Agent claim accepted without verification | Reviewers validate completion; explorers verify blockers and external blame |
-| BRP launched on a "blocker" without attempt log | Bounce back. Agent must show what was tried and why each failed before BRP. BRP is for genuine blockers only |
+| BRP launched on a "blocker" without attempt log | Bounce back. Agent must show what was tried and why each failed before BRP. See `blocker-resolution-protocol` |
 | Capping executor count | One pair per independent unit of work. No limits |
 | Skipping phases | All phases mandatory when this skill triggers |
 | Main thread/coordinator stops after blocker, escalation, QA rejection, or subagent stop while solvable work remains | Continue the mission: unblock, reassign, re-scope, or ask the required user question. |
@@ -734,7 +767,7 @@ Compliance:
 | Coordinator declares mission accomplished after QA approval | Report to user, wait for explicit confirmation. Mission complete only on user confirmation |
 | Coordinator shuts team down without user request | STOP. Team alive until user requests shutdown |
 | Pipeline stage skipped on user followup ("just a small fix") | Route per User Followups table. Default: more pipeline, not less |
-| Coordinator/lead asks user mid-pipeline for decision a teammate can make | Autonomy violation. Run internal unblocking first (Blocker Resolution Protocol, full loop budget). User gates: only after those exhaust, plus QA verdict + user followup |
+| Coordinator/lead asks user mid-pipeline for decision a teammate can make | Autonomy violation. Run `blocker-resolution-protocol` and full loop budget first. User gates: only after those exhaust, plus QA verdict + user followup |
 | Activity burst since last ledger update | Lead/snitch remind coordinator. Update per `maintaining-context-ledger` |
 | Ledger invalid at QA spawn / pre-stop / pre-shutdown | Coordinator updates first; QA blocks spawn until valid |
 | Only one design reviewer spawned in Phase 2 | Spawn both: standard Design Reviewer + Fundamentals Design Reviewer in parallel |

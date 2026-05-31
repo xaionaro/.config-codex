@@ -1452,6 +1452,21 @@ test_validate_edit_write_allows_notebookedit_same_sid_proof() {
   expect_no_output "$out"
 }
 
+test_validate_edit_write_allows_aliased_proof_dir() {
+  local proof_root input out alias_dir
+  proof_root="$(fresh_proof_root edit-write-alias)"
+  alias_dir="$proof_root/mission-alias"
+  mkdir -p "$alias_dir"
+  printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
+  input="$TMP_ROOT/edit-write-alias.json"
+  jq -n --arg fp "$alias_dir/project-understanding.md" \
+    '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"x"}}' >"$input"
+  out="$TMP_ROOT/edit-write-alias.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
+}
+
 test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
   local proof_root input out
   proof_root="$(fresh_proof_root edit-write-notebook-other)"
@@ -1464,6 +1479,23 @@ test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
   run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "other-session"
+}
+
+test_validate_apply_patch_allows_aliased_proof_dir() {
+  local proof_root input out alias_dir patch_path patch_text
+  proof_root="$(fresh_proof_root apply-patch-alias)"
+  alias_dir="$proof_root/mission-alias"
+  mkdir -p "$alias_dir"
+  printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
+  patch_path="$alias_dir/project-understanding.md"
+  patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
+  input="$TMP_ROOT/apply-patch-alias.json"
+  jq -n --arg patch "$patch_text" \
+    '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
+  out="$TMP_ROOT/apply-patch-alias.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
 }
 
 test_validate_apply_patch_blocks_other_sid_proof() {
@@ -1480,6 +1512,24 @@ test_validate_apply_patch_blocks_other_sid_proof() {
   run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "other-session"
+}
+
+test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker() {
+  local proof_root input out uuid_dir patch_path patch_text
+  proof_root="$(fresh_proof_root apply-patch-uuid-alias)"
+  uuid_dir="$proof_root/019e55e6-6d85-7181-b197-43aa5708609b"
+  mkdir -p "$uuid_dir"
+  printf 'session_id: t00-session\n' >"$uuid_dir/.codex-proof-alias"
+  patch_path="$uuid_dir/project-understanding.md"
+  patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
+  input="$TMP_ROOT/apply-patch-uuid-alias.json"
+  jq -n --arg patch "$patch_text" \
+    '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
+  out="$TMP_ROOT/apply-patch-uuid-alias.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "019e55e6-6d85-7181-b197-43aa5708609b"
 }
 
 test_validate_bash_allows_write_into_submodule() {
@@ -3371,10 +3421,16 @@ run_case "validate-edit-write allows edits in a regular non-submodule repo" \
   test_validate_edit_write_allows_regular_repo_edit
 run_case "validate-edit-write allows NotebookEdit on own proof dir" \
   test_validate_edit_write_allows_notebookedit_same_sid_proof
+run_case "validate-edit-write allows aliased proof dir" \
+  test_validate_edit_write_allows_aliased_proof_dir
 run_case "validate-edit-write blocks NotebookEdit on another session proof dir" \
   test_validate_edit_write_blocks_notebookedit_other_sid_proof
+run_case "validate-apply-patch allows aliased proof dir" \
+  test_validate_apply_patch_allows_aliased_proof_dir
 run_case "validate-apply-patch blocks edits to another session proof dir" \
   test_validate_apply_patch_blocks_other_sid_proof
+run_case "validate-apply-patch blocks UUID proof dir despite alias marker" \
+  test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker
 run_case "validate-bash allows writes into a git submodule" \
   test_validate_bash_allows_write_into_submodule
 run_case "validate-edit-write blocks direct Edit go.mod local replace" \
