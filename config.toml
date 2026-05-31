@@ -11,8 +11,8 @@ Ported skills live in `$CODEX_HOME/skills` (default `~/.codex/skills`); use matc
 hooks = true
 
 [mcp_servers.context7]
-command = "npx"
-args = ["-y", "@upstash/context7-mcp"]
+command = "/home/streaming/.codex/bin/context7-mcp"
+args = []
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
