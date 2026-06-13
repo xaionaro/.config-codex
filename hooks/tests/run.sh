@@ -1532,6 +1532,201 @@ test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker() {
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "019e55e6-6d85-7181-b197-43aa5708609b"
 }
 
+ledger_basenames() {
+  printf '%s\n' \
+    "project-understanding.md" \
+    "high_level_log.md" \
+    "latest-status-report.md"
+}
+
+test_validate_bash_allows_subagent_low_level_work() {
+  local proof_root transcript repo input out command tag failures=0
+  proof_root="$(fresh_proof_root bash-subagent-low-level)"
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  repo="$(make_git_repo bash-subagent-low-level)" || return 1
+  printf 'next\n' >"$repo/file.txt"
+
+  while IFS=$'\t' read -r tag command; do
+    [ -n "$tag" ] || continue
+    input="$TMP_ROOT/bash-subagent-low-level-$tag.json"
+    out="$TMP_ROOT/bash-subagent-low-level-$tag.out"
+    jq --arg cwd "$repo" --arg transcript "$transcript" --arg command "$command" \
+      '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+      "$FIXTURES/pre-reviewer-bash.json" >"$input" || return 1
+
+    run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+    if ! expect_no_output "$out"; then
+      note "$tag expected no hook output"
+      cat "$out"
+      failures=$((failures + 1))
+    fi
+  done <<EOF
+mkdir	mkdir -p build/output
+rg	rg -n ledger_basenames $ROOT/hooks/tests/run.sh
+git-commit	git add file.txt && git commit -m low-level-work
+EOF
+
+  [ "$failures" -eq 0 ]
+}
+
+write_direct_ledger_input() {
+  local tool="$1"
+  local path="$2"
+  local output="$3"
+
+  case "$tool" in
+    Edit)
+      jq -n --arg fp "$path" \
+        '{session_id:"t00-session",tool_name:"Edit",tool_input:{file_path:$fp,old_string:"old",new_string:"new"}}' >"$output"
+      ;;
+    Write)
+      jq -n --arg fp "$path" \
+        '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"new"}}' >"$output"
+      ;;
+    MultiEdit)
+      jq -n --arg fp "$path" \
+        '{session_id:"t00-session",tool_name:"MultiEdit",tool_input:{file_path:$fp,edits:[{old_string:"old",new_string:"new"}]}}' >"$output"
+      ;;
+    NotebookEdit)
+      jq -n --arg fp "$path" \
+        '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"new"}}' >"$output"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+write_apply_patch_input() {
+  local path="$1"
+  local output="$2"
+  local patch_text
+
+  patch_text="$(printf '*** Begin Patch\n*** Update File: %s\n@@\n-old\n+new\n*** End Patch\n' "$path")"
+  jq -n --arg patch "$patch_text" \
+    '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$output"
+}
+
+test_validate_direct_and_apply_block_subagent_ledger_paths() {
+  local proof_root ledger_dir transcript ledger tool input out tag
+  proof_root="$(fresh_proof_root direct-subagent-ledger)"
+  ledger_dir="$proof_root/t00-session"
+  mkdir -p "$ledger_dir" || return 1
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+
+  while IFS= read -r ledger; do
+    for tool in Edit Write MultiEdit NotebookEdit; do
+      tag="direct-subagent-ledger-${tool}-${ledger//[^A-Za-z0-9]/-}"
+      input="$TMP_ROOT/$tag.json"
+      write_direct_ledger_input "$tool" "$ledger" "$input" || return 1
+      jq --arg cwd "$ledger_dir" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript' "$input" >"$input.tmp" &&
+        mv "$input.tmp" "$input" || return 1
+      out="$TMP_ROOT/$tag.out"
+
+      run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+      is_pretool_deny "$out" &&
+        json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main thread" || {
+          printf '%s\n' "$tag expected ledger write denial" >&2
+          cat "$out" >&2
+          return 1
+        }
+    done
+
+    tag="apply-subagent-ledger-${ledger//[^A-Za-z0-9]/-}"
+    input="$TMP_ROOT/$tag.json"
+    write_apply_patch_input "$ledger" "$input" || return 1
+    jq --arg cwd "$ledger_dir" --arg transcript "$transcript" \
+      '.cwd = $cwd | .transcript_path = $transcript' "$input" >"$input.tmp" &&
+      mv "$input.tmp" "$input" || return 1
+    out="$TMP_ROOT/$tag.out"
+
+    run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+    is_pretool_deny "$out" &&
+      json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main thread" || {
+        printf '%s\n' "$tag expected ledger write denial" >&2
+        cat "$out" >&2
+        return 1
+      }
+  done < <(ledger_basenames)
+}
+
+test_validate_direct_and_apply_allow_main_ledger_paths() {
+  local proof_root ledger_dir ledger tool input out tag
+  proof_root="$(fresh_proof_root direct-main-ledger)"
+  ledger_dir="$proof_root/t00-session"
+  mkdir -p "$ledger_dir" || return 1
+
+  while IFS= read -r ledger; do
+    for tool in Edit Write MultiEdit NotebookEdit; do
+      tag="direct-main-ledger-${tool}-${ledger//[^A-Za-z0-9]/-}"
+      input="$TMP_ROOT/$tag.json"
+      write_direct_ledger_input "$tool" "$ledger" "$input" || return 1
+      jq --arg cwd "$ledger_dir" '.cwd = $cwd' "$input" >"$input.tmp" &&
+        mv "$input.tmp" "$input" || return 1
+      out="$TMP_ROOT/$tag.out"
+
+      run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+      expect_no_output "$out" || {
+        printf '%s\n' "$tag expected no denial" >&2
+        cat "$out" >&2
+        return 1
+      }
+    done
+
+    tag="apply-main-ledger-${ledger//[^A-Za-z0-9]/-}"
+    input="$TMP_ROOT/$tag.json"
+    write_apply_patch_input "$ledger" "$input" || return 1
+    jq --arg cwd "$ledger_dir" '.cwd = $cwd' "$input" >"$input.tmp" &&
+      mv "$input.tmp" "$input" || return 1
+    out="$TMP_ROOT/$tag.out"
+
+    run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+    expect_no_output "$out" || {
+      printf '%s\n' "$tag expected no denial" >&2
+      cat "$out" >&2
+      return 1
+    }
+  done < <(ledger_basenames)
+}
+
+test_validate_direct_and_apply_allow_subagent_non_ledger_parent_proof_paths() {
+  local proof_root parent_dir transcript tool input out tag proof_path
+  proof_root="$(fresh_proof_root direct-subagent-parent-proof)"
+  parent_dir="$proof_root/parent-session"
+  mkdir -p "$parent_dir" || return 1
+  proof_path="$parent_dir/proof.md"
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+
+  for tool in Edit Write MultiEdit NotebookEdit; do
+    tag="direct-subagent-parent-proof-$tool"
+    input="$TMP_ROOT/$tag.json"
+    write_direct_ledger_input "$tool" "$proof_path" "$input" || return 1
+    jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+      '.cwd = $cwd | .transcript_path = $transcript' "$input" >"$input.tmp" &&
+      mv "$input.tmp" "$input" || return 1
+    out="$TMP_ROOT/$tag.out"
+
+    run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+    expect_no_output "$out" || {
+      printf '%s\n' "$tag expected no denial" >&2
+      cat "$out" >&2
+      return 1
+    }
+  done
+
+  input="$TMP_ROOT/apply-subagent-parent-proof.json"
+  write_apply_patch_input "$proof_path" "$input" || return 1
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$input" >"$input.tmp" &&
+    mv "$input.tmp" "$input" || return 1
+  out="$TMP_ROOT/apply-subagent-parent-proof.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
+}
+
 test_validate_bash_allows_write_into_submodule() {
   # Submodule write blocking is the file-edit tools' job (Edit/Write/MultiEdit
   # via validate-edit-write.sh). Bash is intentionally NOT gated on submodule
@@ -1851,6 +2046,249 @@ test_validate_bash_allows_vendor_test_with_tmp_redirect() {
   out="$TMP_ROOT/bash-vendor-go-test.out"
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$FIXTURES/validate-bash-vendor-go-test.json" || return 1
   expect_no_output "$out"
+}
+
+run_validate_bash_command() {
+  local command="$1"
+  local tag="$2"
+  local input out
+
+  input="$TMP_ROOT/${tag}.json"
+  out="$TMP_ROOT/${tag}.out"
+  jq --arg cwd "$ROOT" --arg command "$command" \
+    '.cwd = $cwd | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
+  printf '%s\n' "$out"
+}
+
+is_make_memory_cap_deny() {
+  is_pretool_deny "$1" &&
+    json_field_contains "$1" '.hookSpecificOutput.permissionDecisionReason // empty' \
+      "make must be run with a finite memory cap"
+}
+
+test_validate_bash_blocks_direct_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "make test" "bash-make-direct")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_env_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "env make test" "bash-make-env")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_sudo_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "sudo make test" "bash-make-sudo")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_command_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "command -- make test" "bash-make-command")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_exec_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "exec -- make test" "bash-make-exec")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_time_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "time make test" "bash-make-time")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_time_format_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command \
+    "/usr/bin/time -f '%M' make test" \
+    "bash-make-time-format")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_nice_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "nice make test" "bash-make-nice")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_timeout_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "timeout 30s make test" "bash-make-timeout")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_bash_c_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "bash -c 'make test'" "bash-make-bash-c")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_bash_lc_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "bash -lc 'make test'" "bash-make-bash-lc")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_sh_c_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "sh -c 'make test'" "bash-make-sh-c")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_xargs_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command "printf test | xargs make" "bash-make-xargs")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_find_exec_make_without_memory_cap() {
+  local out
+  out="$(run_validate_bash_command \
+    "find . -maxdepth 0 -exec make test \\;" \
+    "bash-make-find-exec")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_allows_systemd_run_property_capped_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "systemd-run --scope --property=MemoryMax=1G make test" \
+    "bash-make-systemd-property")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_systemd_run_short_property_capped_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "systemd-run --scope -p MemoryMax=1G make test" \
+    "bash-make-systemd-short-property")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_systemd_run_unit_capped_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "systemd-run --scope -u build -p MemoryMax=1G make test" \
+    "bash-make-systemd-unit-capped")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_prlimit_as_capped_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "prlimit --as=1073741824 make test" \
+    "bash-make-prlimit-as")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_prlimit_attached_v_capped_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "prlimit -v1048576 make test" \
+    "bash-make-prlimit-v")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_blocks_systemd_run_without_memorymax_for_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "systemd-run --scope make test" \
+    "bash-make-systemd-uncapped")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_systemd_run_unit_without_memorymax_for_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "systemd-run --scope -u build make test" \
+    "bash-make-systemd-unit-uncapped")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_systemd_run_memoryhigh_for_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "systemd-run --scope -p MemoryHigh=1G make test" \
+    "bash-make-systemd-memoryhigh")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_blocks_prlimit_unlimited_cap_for_make() {
+  local out
+  out="$(run_validate_bash_command \
+    "prlimit --as=unlimited make test" \
+    "bash-make-prlimit-unlimited")" || return 1
+  is_make_memory_cap_deny "$out"
+}
+
+test_validate_bash_allows_non_make_command_with_make_substring() {
+  local out
+  out="$(run_validate_bash_command "cmake --version" "bash-make-substring")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_printf_make_word() {
+  local out
+  out="$(run_validate_bash_command "printf make" "bash-make-printf-word")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_echo_make_word() {
+  local out
+  out="$(run_validate_bash_command "echo make" "bash-make-echo-word")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_command_v_make_lookup() {
+  local out
+  out="$(run_validate_bash_command "command -v make" "bash-make-command-v")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_find_name_make_print() {
+  local out
+  out="$(run_validate_bash_command \
+    "find . -name make -print" \
+    "bash-make-find-name-print")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_xargs_echo_make_word() {
+  local out
+  out="$(run_validate_bash_command \
+    "printf make | xargs echo" \
+    "bash-make-xargs-echo-word")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_allows_dynamic_fragment_scope_boundary() {
+  local out
+  out="$(run_validate_bash_command "ma\$'ke' test" "bash-make-dynamic-boundary")" || return 1
+  expect_no_output "$out"
+}
+
+test_validate_bash_denied_make_does_not_mark_activity() {
+  local proof_root input out touched_count
+  proof_root="$(fresh_proof_root bash-denied-make-no-activity)"
+  input="$TMP_ROOT/bash-denied-make-no-activity.json"
+  out="$TMP_ROOT/bash-denied-make-no-activity.out"
+  jq --arg cwd "$ROOT" \
+    '.session_id = "t00-session" | .cwd = $cwd | .tool_input.command = "make test"' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input" || return 1
+
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  touched_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
+
+  is_make_memory_cap_deny "$out" &&
+    [ ! -e "$proof_root/activity/sessions/t00-session/shell" ] &&
+    [ "$touched_count" -eq 0 ]
 }
 
 test_validate_apply_patch_marks_edit_activity() {
@@ -2843,12 +3281,13 @@ test_stop_gate_ignores_subagent_preexisting_dirty_at_first_touch() {
   write_subagent_transcript "$transcript" || return 1
   printf 'preexisting\n' >>"$repo/file.txt"
 
-  touch_input="$TMP_ROOT/subagent-preexisting-bash.json"
-  jq --arg cwd "$repo" --arg transcript "$transcript" --arg command "touch noop" \
-    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
-    "$FIXTURES/pre-reviewer-bash.json" >"$touch_input"
-  out="$TMP_ROOT/subagent-preexisting-bash.out"
-  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$touch_input" \
+  touch_input="$TMP_ROOT/subagent-preexisting-apply-patch.json"
+  jq --arg cwd "$repo" --arg transcript "$transcript" \
+    '.session_id = "t00-session" | .cwd = $cwd | .transcript_path = $transcript |
+     .tool_input.patch = "*** Begin Patch\n*** Update File: .\n@@\n-base\n+base\n+touched\n*** End Patch\n"' \
+    "$FIXTURES/validate-apply-patch-unrelated.json" >"$touch_input"
+  out="$TMP_ROOT/subagent-preexisting-apply-patch.out"
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$touch_input" \
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out" || return 1
   marker_count="$(find "$proof_root/touched-repos/sessions/t00-session" -type f 2>/dev/null | wc -l)"
@@ -3431,6 +3870,14 @@ run_case "validate-apply-patch blocks edits to another session proof dir" \
   test_validate_apply_patch_blocks_other_sid_proof
 run_case "validate-apply-patch blocks UUID proof dir despite alias marker" \
   test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker
+run_case "validate-bash allows subagent low-level work" \
+  test_validate_bash_allows_subagent_low_level_work
+run_case "validate direct/apply blocks subagent ledger paths" \
+  test_validate_direct_and_apply_block_subagent_ledger_paths
+run_case "validate direct/apply allows main-thread ledger paths" \
+  test_validate_direct_and_apply_allow_main_ledger_paths
+run_case "validate direct/apply allows subagent non-ledger parent proof paths" \
+  test_validate_direct_and_apply_allow_subagent_non_ledger_parent_proof_paths
 run_case "validate-bash allows writes into a git submodule" \
   test_validate_bash_allows_write_into_submodule
 run_case "validate-edit-write blocks direct Edit go.mod local replace" \
@@ -3479,6 +3926,68 @@ run_case "validate-bash allows in-place imports paths" \
   test_validate_bash_allows_in_place_imports_path
 run_case "validate-bash allows vendor test with tmp redirect" \
   test_validate_bash_allows_vendor_test_with_tmp_redirect
+run_case "validate-bash blocks direct make without memory cap" \
+  test_validate_bash_blocks_direct_make_without_memory_cap
+run_case "validate-bash blocks env make without memory cap" \
+  test_validate_bash_blocks_env_make_without_memory_cap
+run_case "validate-bash blocks sudo make without memory cap" \
+  test_validate_bash_blocks_sudo_make_without_memory_cap
+run_case "validate-bash blocks command make without memory cap" \
+  test_validate_bash_blocks_command_make_without_memory_cap
+run_case "validate-bash blocks exec make without memory cap" \
+  test_validate_bash_blocks_exec_make_without_memory_cap
+run_case "validate-bash blocks time make without memory cap" \
+  test_validate_bash_blocks_time_make_without_memory_cap
+run_case "validate-bash blocks time format make without memory cap" \
+  test_validate_bash_blocks_time_format_make_without_memory_cap
+run_case "validate-bash blocks nice make without memory cap" \
+  test_validate_bash_blocks_nice_make_without_memory_cap
+run_case "validate-bash blocks timeout make without memory cap" \
+  test_validate_bash_blocks_timeout_make_without_memory_cap
+run_case "validate-bash blocks bash -c make without memory cap" \
+  test_validate_bash_blocks_bash_c_make_without_memory_cap
+run_case "validate-bash blocks bash -lc make without memory cap" \
+  test_validate_bash_blocks_bash_lc_make_without_memory_cap
+run_case "validate-bash blocks sh -c make without memory cap" \
+  test_validate_bash_blocks_sh_c_make_without_memory_cap
+run_case "validate-bash blocks xargs make without memory cap" \
+  test_validate_bash_blocks_xargs_make_without_memory_cap
+run_case "validate-bash blocks find -exec make without memory cap" \
+  test_validate_bash_blocks_find_exec_make_without_memory_cap
+run_case "validate-bash allows systemd-run property capped make" \
+  test_validate_bash_allows_systemd_run_property_capped_make
+run_case "validate-bash allows systemd-run short property capped make" \
+  test_validate_bash_allows_systemd_run_short_property_capped_make
+run_case "validate-bash allows systemd-run unit capped make" \
+  test_validate_bash_allows_systemd_run_unit_capped_make
+run_case "validate-bash allows prlimit --as capped make" \
+  test_validate_bash_allows_prlimit_as_capped_make
+run_case "validate-bash allows prlimit attached -v capped make" \
+  test_validate_bash_allows_prlimit_attached_v_capped_make
+run_case "validate-bash blocks systemd-run without MemoryMax for make" \
+  test_validate_bash_blocks_systemd_run_without_memorymax_for_make
+run_case "validate-bash blocks systemd-run unit without MemoryMax for make" \
+  test_validate_bash_blocks_systemd_run_unit_without_memorymax_for_make
+run_case "validate-bash blocks systemd-run MemoryHigh-only for make" \
+  test_validate_bash_blocks_systemd_run_memoryhigh_for_make
+run_case "validate-bash blocks prlimit unlimited cap for make" \
+  test_validate_bash_blocks_prlimit_unlimited_cap_for_make
+run_case "validate-bash allows non-make command with make substring" \
+  test_validate_bash_allows_non_make_command_with_make_substring
+run_case "validate-bash allows printf make word" \
+  test_validate_bash_allows_printf_make_word
+run_case "validate-bash allows echo make word" \
+  test_validate_bash_allows_echo_make_word
+run_case "validate-bash allows command -v make lookup" \
+  test_validate_bash_allows_command_v_make_lookup
+run_case "validate-bash allows find name make print" \
+  test_validate_bash_allows_find_name_make_print
+run_case "validate-bash allows xargs echo make word" \
+  test_validate_bash_allows_xargs_echo_make_word
+run_case "validate-bash allows dynamic command-fragment scope boundary" \
+  test_validate_bash_allows_dynamic_fragment_scope_boundary
+run_case "validate-bash denied make does not mark shell activity or touched repo" \
+  test_validate_bash_denied_make_does_not_mark_activity
 run_case "validate-apply-patch marks edit activity" \
   test_validate_apply_patch_marks_edit_activity
 run_case "validate-edit-write marks edit activity" \

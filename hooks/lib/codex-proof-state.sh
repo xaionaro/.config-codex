@@ -47,6 +47,70 @@ codex_canonical_cwd() {
   fi
 }
 
+codex_resolve_hook_path() {
+  local cwd="${1:-$PWD}"
+  local path="${2:-}"
+
+  [ -n "$path" ] || return 1
+  [ -n "$cwd" ] || cwd="$PWD"
+  case "$path" in
+    "~") path="$HOME" ;;
+    "~/"*) path="$HOME/${path#~/}" ;;
+  esac
+  case "$path" in
+    /*) ;;
+    *) path="$cwd/$path" ;;
+  esac
+
+  realpath -m -- "$path" 2>/dev/null || printf '%s\n' "$path"
+}
+
+codex_session_ledger_basenames() {
+  printf '%s\n' \
+    "project-understanding.md" \
+    "high_level_log.md" \
+    "latest-status-report.md"
+}
+
+codex_session_ledger_basename() {
+  case "${1:-}" in
+    project-understanding.md|high_level_log.md|latest-status-report.md)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+codex_path_is_session_ledger_file() {
+  local path="$1"
+  local actual_root default_root root rest sid filename
+
+  [ -n "$path" ] || return 1
+  filename="${path##*/}"
+  codex_session_ledger_basename "$filename" || return 1
+
+  actual_root="$(codex_resolve_hook_path "$PWD" "$(codex_proof_root)" 2>/dev/null || codex_proof_root)"
+  default_root="$(codex_resolve_hook_path "$PWD" "$HOME/.cache/codex-proof" 2>/dev/null || printf '%s\n' "$HOME/.cache/codex-proof")"
+  for root in "$actual_root" "$default_root"; do
+    [ -n "$root" ] || continue
+    case "$path" in
+      "$root"/*)
+        rest="${path#"$root"/}"
+        sid="${rest%%/*}"
+        [ "$rest" != "$sid" ] || continue
+        [ "${rest#*/}" = "$filename" ] || continue
+        codex_reserved_proof_dir "$sid" && continue
+        codex_valid_session_id "$sid" || continue
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
 codex_hash_string() {
   if command -v sha256sum >/dev/null 2>&1; then
     printf '%s' "${1:-}" | sha256sum | awk '{print $1}'

@@ -31,10 +31,13 @@ Coding task? Every subagent prompt (explorer, critic, implementer) must include:
 
 ## Blocker handling
 
-Use `blocker-resolution-protocol` for genuine stalls, Step 2 post-bounce all-REJECT outcomes, and gate/cycle limit hits before hard escalation.
+Use `blocker-resolution-protocol` only after normal ECI issue handling cannot resolve a stall, after Step 2 post-bounce all-REJECT outcomes, or after gate/cycle limit hits before hard escalation.
+
+Concrete bug/failure/flake/perf/incorrect behavior -> debugging iteration (`debugging-discipline`), not BRP; BRP only if debugging itself is blocked with an attempt log, hits its cap, or needs user-owned input.
 
 ECI adapter:
 - Keep ECI active while resolving blockers.
+- Subagent-blocked != mission-blocked. Try normal ECI issue handling first; BRP is last resort before hard escalation.
 - Use the separate `brainstormer` role for genuine stalls and Step 2 all-REJECT caps.
 - Run a BRP primary explorer and separate `brp-feasibility-validator` before routing brainstormer output onward.
 - Feed the blocker record, validated feasible ideas, primary explorer facts, and prior failures into the next explorer or implementer message.
@@ -81,7 +84,7 @@ Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, or independent tmux
 | Spawn loop-breaker | `spawn_agent` with `agent_type: "explorer"` and role label `loop-breaker` |
 
 Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel.
-Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval."
+Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
 
 ### Explorer spawn-prompt baseline
 
@@ -319,7 +322,7 @@ Step 1 explorer re-reads current code and researches options that resolve the fu
 
 Fresh idea generator — fires on-demand when the cycle stalls. Output is raw ideas only; never decisions, verdicts, or filtering. Bigger list = better.
 
-**Genuine stall definition.** Use the Required Record from `blocker-resolution-protocol`. A bare "I'm stuck" without an attempt log is not a stall; push the agent to keep trying.
+**Genuine stall definition.** Normal ECI issue handling was tried, and the Required Record from `blocker-resolution-protocol` exists. A bare "I'm stuck" without an attempt log is not a stall; push the agent to keep trying.
 
 | Trigger | Action |
 |---------|--------|

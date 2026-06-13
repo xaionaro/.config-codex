@@ -9,6 +9,7 @@ Ported skills live in `$CODEX_HOME/skills` (default `~/.codex/skills`); use matc
 
 [features]
 hooks = true
+image_generation = false
 
 [mcp_servers.context7]
 command = "/home/pheona/.codex/bin/context7-mcp"
@@ -102,6 +103,21 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/home/pheona/.codex"]
+trust_level = "trusted"
+
+[projects."/home/pheona"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/avpipeline"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/.codex"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/streamctl"]
 trust_level = "trusted"
 
 [hooks.state]

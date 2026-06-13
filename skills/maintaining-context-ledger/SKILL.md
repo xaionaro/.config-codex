@@ -33,6 +33,8 @@ For ECI/ATE, all three files live at:
 
 Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. Both the ledger and the report survive across stops by construction; do not place them under any other name.
 
+Create each file once; then update in place. Never delete/recreate.
+
 ## High-Level Log
 
 Append-only history. Every material change recorded in the ledger gets a corresponding entry appended to the log in the same turn.
@@ -62,7 +64,7 @@ Suggested entry shape:
 
 | Rule | Detail |
 |------|--------|
-| One file, overwrite | Each refresh replaces the file. No history kept here: that is the log's job. |
+| One file, overwrite | Each refresh overwrites content in place. No history kept here: that is the log's job. |
 | Same skill, same format | Content follows `writing-status-reports`: state, progress, decisions, blockers/risks, verification, next focus; multi-lane table when applicable. |
 | Lead with UTC timestamp | First line: `# Status - <UTC ISO8601>`. Stale reports without a timestamp are rejected. |
 | Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status. |
@@ -134,7 +136,7 @@ Structure must evolve with the project. A frozen schema that no longer fits is d
 
 Then append to `high_level_log.md` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry.
 
-Finally overwrite `latest-status-report.md` with a fresh status report (per `writing-status-reports`) reflecting the just-updated ledger. Skip only when this turn produced no ledger or log change.
+Finally refresh `latest-status-report.md` in place with a fresh status report (per `writing-status-reports`) reflecting the just-updated ledger. Skip only when this turn produced no ledger or log change.
 
 ## Invalid Ledger
 

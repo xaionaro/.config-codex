@@ -355,6 +355,385 @@ enforce_git_reset_gate() {
   fi
 }
 
+detect_uncapped_make() {
+  [ -n "${command:-}" ] || return 0
+
+  python3 - "$command" <<'PY'
+from __future__ import annotations
+
+import os
+import shlex
+import sys
+
+command = sys.argv[1]
+SEPARATORS = {";", "&", "&&", "|", "||"}
+FINITE_BAD_LIMITS = {"", "infinity", "unlimited"}
+SYSTEMD_VALUE_OPTIONS = {
+    "--background",
+    "--description",
+    "--expand-environment",
+    "--gid",
+    "--host",
+    "--json",
+    "--machine",
+    "--nice",
+    "--service-type",
+    "--setenv",
+    "--slice",
+    "--uid",
+    "--unit",
+    "--working-directory",
+    "-E",
+    "-H",
+    "-M",
+    "-u",
+}
+SYSTEMD_VALUE_PREFIXES = tuple(
+    option + "=" for option in SYSTEMD_VALUE_OPTIONS if option.startswith("--")
+)
+TIME_VALUE_OPTIONS = {"--format", "--output", "-f", "-o"}
+TIME_VALUE_PREFIXES = ("--format=", "--output=")
+
+
+def tokenize(command_text: str) -> list[str] | None:
+    try:
+        lexer = shlex.shlex(command_text, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def basename(token: str) -> str:
+    return os.path.basename(token)
+
+
+def is_assignment(token: str) -> bool:
+    name, separator, _ = token.partition("=")
+    return (
+        bool(separator)
+        and bool(name)
+        and name.replace("_", "A").isalnum()
+        and not name[0].isdigit()
+    )
+
+
+def finite_limit(limit: str) -> bool:
+    return limit.lower() not in FINITE_BAD_LIMITS
+
+
+def memorymax_property(property_text: str) -> bool:
+    name, separator, value = property_text.partition("=")
+    return name == "MemoryMax" and bool(separator) and finite_limit(value)
+
+
+def command_index(tokens: list[str]) -> int:
+    index = 0
+    while index < len(tokens) and is_assignment(tokens[index]):
+        index += 1
+    return index
+
+
+def command_segments(tokens: list[str]) -> list[list[str]]:
+    result = []
+    start = 0
+    for index, token in enumerate(tokens + [";"]):
+        if token in SEPARATORS:
+            if start < index:
+                result.append(tokens[start:index])
+            start = index + 1
+    return result
+
+
+def has_uncapped_make_text(
+    command_text: str,
+    capped: bool = False,
+    depth: int = 0,
+) -> bool:
+    if depth > 3:
+        return False
+    tokens = tokenize(command_text)
+    if tokens is None:
+        return False
+    return any(
+        has_uncapped_make(segment, capped=capped, depth=depth)
+        for segment in command_segments(tokens)
+    )
+
+
+def wrapper_tail(tokens: list[str], index: int, value_options: set[str]) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:]
+        if token in value_options and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def env_tail(tokens: list[str], index: int) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:]
+        if is_assignment(token):
+            index += 1
+            continue
+        if token in {"-u", "--unset", "-C", "--chdir"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def command_tail(tokens: list[str], index: int) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-v", "-V"}:
+            return []
+        if token == "--":
+            return tokens[index + 1:]
+        if token == "-p":
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def exec_tail(tokens: list[str], index: int) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:]
+        if token == "-a" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def timeout_tail(tokens: list[str], index: int) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in {"-k", "--kill-after", "-s", "--signal"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token in {"--foreground", "--preserve-status", "--verbose", "-f", "-p", "-v"}:
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if index >= len(tokens):
+        return []
+    return tokens[index + 1:]
+
+
+def time_tail(tokens: list[str], index: int) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:]
+        if token in TIME_VALUE_OPTIONS and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(TIME_VALUE_PREFIXES):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def shell_payload(tokens: list[str], index: int) -> str | None:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-c" or (token.startswith("-") and "c" in token[1:]):
+            if index + 1 < len(tokens):
+                return tokens[index + 1]
+            return None
+        index += 1
+    return None
+
+
+def systemd_tail(tokens: list[str], index: int) -> tuple[list[str], bool]:
+    capped = False
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:], capped
+        if token in {"-p", "--property"} and index + 1 < len(tokens):
+            capped = capped or memorymax_property(tokens[index + 1])
+            index += 2
+            continue
+        if token.startswith("--property="):
+            capped = capped or memorymax_property(token.partition("=")[2])
+            index += 1
+            continue
+        if token.startswith("-p") and len(token) > 2:
+            capped = capped or memorymax_property(token[2:])
+            index += 1
+            continue
+        if token in SYSTEMD_VALUE_OPTIONS and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(SYSTEMD_VALUE_PREFIXES):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:], capped
+    return [], capped
+
+
+def prlimit_tail(tokens: list[str], index: int) -> tuple[list[str], bool]:
+    capped = False
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:], capped
+        if token.startswith("--as="):
+            capped = capped or finite_limit(token.partition("=")[2])
+            index += 1
+            continue
+        if token.startswith("-v="):
+            capped = capped or finite_limit(token[3:])
+            index += 1
+            continue
+        if token.startswith("-v") and len(token) > 2:
+            capped = capped or finite_limit(token[2:])
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:], capped
+    return [], capped
+
+
+def xargs_tail(tokens: list[str], index: int) -> list[str]:
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1:]
+        if token in {"-I", "-n", "-P", "-a", "-d", "-s", "-L"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def find_has_uncapped_make(
+    tokens: list[str],
+    index: int,
+    capped: bool,
+    depth: int,
+) -> bool:
+    index += 1
+    while index < len(tokens):
+        if tokens[index] not in {"-exec", "-execdir", "-ok", "-okdir"}:
+            index += 1
+            continue
+        start = index + 1
+        end = start
+        while end < len(tokens) and tokens[end] not in {";", "+"}:
+            end += 1
+        if has_uncapped_make(tokens[start:end], capped=capped, depth=depth + 1):
+            return True
+        index = end + 1
+    return False
+
+
+def has_uncapped_make(tokens: list[str], capped: bool, depth: int) -> bool:
+    index = command_index(tokens)
+    if index >= len(tokens):
+        return False
+
+    name = basename(tokens[index])
+    if name == "make":
+        return not capped
+    if name == "env":
+        return has_uncapped_make(env_tail(tokens, index), capped=capped, depth=depth)
+    if name == "sudo":
+        return has_uncapped_make(
+            wrapper_tail(tokens, index, {"-u", "-g", "-D"}),
+            capped=capped,
+            depth=depth,
+        )
+    if name == "command":
+        return has_uncapped_make(command_tail(tokens, index), capped=capped, depth=depth)
+    if name == "exec":
+        return has_uncapped_make(exec_tail(tokens, index), capped=capped, depth=depth)
+    if name == "time":
+        return has_uncapped_make(time_tail(tokens, index), capped=capped, depth=depth)
+    if name == "nice":
+        return has_uncapped_make(
+            wrapper_tail(tokens, index, {"-n", "--adjustment"}),
+            capped=capped,
+            depth=depth,
+        )
+    if name == "timeout":
+        return has_uncapped_make(timeout_tail(tokens, index), capped=capped, depth=depth)
+    if name in {"bash", "sh"}:
+        payload = shell_payload(tokens, index)
+        return bool(payload) and has_uncapped_make_text(
+            payload,
+            capped=capped,
+            depth=depth + 1,
+        )
+    if name == "systemd-run":
+        tail, wrapper_capped = systemd_tail(tokens, index)
+        return has_uncapped_make(tail, capped=capped or wrapper_capped, depth=depth)
+    if name == "prlimit":
+        tail, wrapper_capped = prlimit_tail(tokens, index)
+        return has_uncapped_make(tail, capped=capped or wrapper_capped, depth=depth)
+    if name == "xargs":
+        tail = xargs_tail(tokens, index)
+        return bool(tail) and has_uncapped_make(tail, capped=capped, depth=depth)
+    if name == "find":
+        return find_has_uncapped_make(tokens, index, capped, depth)
+    return False
+
+
+if has_uncapped_make_text(command):
+    print("1")
+PY
+}
+
 command_is_read_only() {
   local scrubbed
 
@@ -486,22 +865,31 @@ if [ -n "$command" ] && [ "$(detect_git_push 2>/dev/null)" = "1" ]; then
   deny 'git push is blocked. No task in this environment requires git push, and no task is blocked by its absence. If you believe push is needed, that judgment is wrong — commit locally and proceed.'
 fi
 
-if codex_hook_is_subagent_context "$input" && command_invokes_eci_off "$command"; then
-  deny 'Only the main thread/orchestrator may disengage ECI with eci-active off. Subagents must report completion or blockers to the orchestrator while ECI remains active.'
+hook_is_subagent=false
+if codex_hook_is_subagent_context "$input"; then
+  hook_is_subagent=true
 fi
-
-enforce_git_reset_gate
 
 read_only=false
 if command_is_read_only "$command"; then
   read_only=true
 fi
 
+if [ "$hook_is_subagent" = true ] && command_invokes_eci_off "$command"; then
+  deny 'Only the main thread/orchestrator may disengage ECI with eci-active off. Subagents must report completion or blockers to the orchestrator while ECI remains active.'
+fi
+
+enforce_git_reset_gate
+
+if [ -n "$command" ] && [ "$(detect_uncapped_make 2>/dev/null)" = "1" ]; then
+  deny 'make must be run with a finite memory cap, for example: systemd-run --scope -p MemoryMax=1G make ...'
+fi
+
 if [ "$read_only" != true ]; then
   codex_note_touched_repo "$session_id" "$cwd" "$cwd" || true
 fi
 
-if ! codex_hook_is_subagent_context "$input" && [ "$read_only" != true ]; then
+if [ "$hook_is_subagent" != true ] && [ "$read_only" != true ]; then
   codex_mark_activity "$session_id" "$cwd" shell || true
 fi
 
