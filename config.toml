@@ -7,8 +7,12 @@ Also follow `$CODEX_HOME/CODEX.md` (default `~/.codex/CODEX.md`) as user-level g
 Ported skills live in `$CODEX_HOME/skills` (default `~/.codex/skills`); use matching skills for Go, Python, tests, debugging, UI, Android, porting, skill/prompt work, and explicit delegated-agent work.
 """
 
+[shell_environment_policy]
+set = { TMPDIR = "/home/pheona/tmp", TMP = "/home/pheona/tmp", TEMP = "/home/pheona/tmp" }
+
 [features]
 hooks = true
+image_generation = false
 
 [mcp_servers.context7]
 command = "/home/pheona/.codex/bin/context7-mcp"
@@ -102,6 +106,30 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/home/pheona/.codex"]
+trust_level = "trusted"
+
+[projects."/home/pheona"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/avpipeline"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/.codex"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/streamctl"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/wingout"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/djictl"]
+trust_level = "trusted"
+
+[projects."/home/pheona/.config/nvim"]
 trust_level = "trusted"
 
 [hooks.state]

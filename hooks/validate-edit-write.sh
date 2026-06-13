@@ -34,6 +34,13 @@ file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.n
 
 [ -n "$file_path" ] || exit 0
 
+resolved_file_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$file_path" 2>/dev/null || true)"
+if [ -n "$resolved_file_path" ] &&
+   codex_hook_is_subagent_context "$input" &&
+   codex_path_is_session_ledger_file "$resolved_file_path"; then
+  deny "Only the main thread may modify session ledger file ${file_path##*/}."
+fi
+
 ownership_failure_deny() {
   local reason="ownership check failed; failing closed for session-scoped path safety"
   jq -n --arg reason "$reason" '{

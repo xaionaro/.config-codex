@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+description: Use only when the user explicitly asks to interactively brainstorm before implementation
 ---
 
 # Brainstorming Ideas Into Designs
@@ -13,9 +13,11 @@ Start by understanding the current project context, then ask questions one at a 
 Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
 </HARD-GATE>
 
-## Anti-Pattern: "This Is Too Simple To Need A Design"
+## Trigger Rule
 
-Every project goes through this process. A todo list, a single-function utility, a config change — all of them. "Simple" projects are where unexamined assumptions cause the most wasted work. The design can be short (a few sentences for truly simple projects), but you MUST present it and get approval.
+Invoke this skill only when the user explicitly asks to interactively brainstorm before implementation. Do not infer brainstorming from ordinary requests to build, add, change, fix, explore, design, or implement something.
+
+Once this skill is invoked, every brainstormed project goes through the design process below. A todo list, a single-function utility, a config change - all of them. The design can be short, but you MUST present it and get approval.
 
 ## Checklist
 
@@ -26,7 +28,7 @@ You MUST create a task for each of these items and complete them in order:
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
-6. **Write design doc** — save to `docs/specs/YYYY-MM-DD-<topic>-design.md` and commit
+6. **Write design doc** — save to the docs/plans hook-recommended destination outside the working repo
 7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 8. **User reviews written spec** — ask user to review the spec file before proceeding
 9. **Transition to implementation** — invoke writing-plans skill to create implementation plan
@@ -108,10 +110,11 @@ digraph brainstorming {
 
 **Documentation:**
 
-- Write the validated design (spec) to `docs/specs/YYYY-MM-DD-<topic>-design.md`
-  - (User preferences for spec location override this default)
+- Write the validated design (spec) to the destination recommended by the same tool-hook flow that redirects `docs/plans` artifacts.
+- Do not choose or hardcode a path inside the working repo, including `docs/specs/` or `docs/plans/`.
+- If the write tool or hook returns a redirected path, active plan/checklist path, or destination instruction, use that destination for the spec.
+  - (User preferences for spec location override this default only when the user explicitly gives a path)
 - Use elements-of-style:writing-clearly-and-concisely skill if available
-- Commit the design document to git
 
 **Spec Self-Review:**
 After writing the spec document, look at it with fresh eyes:
@@ -126,7 +129,7 @@ Fix any issues inline. No need to re-review — just fix and move on.
 **User Review Gate:**
 After the spec review loop passes, ask the user to review the written spec before proceeding:
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
+> "Spec written to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
 
 Wait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.
 

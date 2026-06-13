@@ -39,6 +39,16 @@ patch_paths=$(printf '%s\n' "$patch_text" | awk '
   }
 ')
 
+if codex_hook_is_subagent_context "$input"; then
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    resolved_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
+    if [ -n "$resolved_path" ] && codex_path_is_session_ledger_file "$resolved_path"; then
+      deny "Only the main thread may modify session ledger file ${path##*/}."
+    fi
+  done <<<"$patch_paths"
+fi
+
 if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)docs/(superpowers/)?plans/'; then
   deny 'Do not edit plan files under docs/plans or docs/superpowers/plans from normal implementation flow. Use the active plan/checklist instead.'
 fi

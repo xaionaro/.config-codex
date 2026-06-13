@@ -33,6 +33,8 @@ For ECI/ATE, all three files live at:
 
 Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. Both the ledger and the report survive across stops by construction; do not place them under any other name.
 
+Create each file once; then update in place. Never delete/recreate.
+
 ## High-Level Log
 
 Append-only history. Every material change recorded in the ledger gets a corresponding entry appended to the log in the same turn.
@@ -40,6 +42,7 @@ Append-only history. Every material change recorded in the ledger gets a corresp
 | Rule | Detail |
 |------|--------|
 | Append only | Never edit, reorder, or delete past entries. Wrong entries are corrected by a new appended entry referencing the prior one. |
+| Material essence | Lead with what is true now, what to do next, why it matters, and evidence. Add changed-state context or provenance when it explains a material change. |
 | Reflect all details | Capture the change, prior state, new state, reason, source/evidence, and agent/turn. |
 | Chronological | Newest entries at the bottom. Each entry leads with a UTC timestamp. |
 | Same-turn pairing | Every ledger update has at least one log entry from that turn. A ledger diff with no log append is defective. |
@@ -62,7 +65,7 @@ Suggested entry shape:
 
 | Rule | Detail |
 |------|--------|
-| One file, overwrite | Each refresh replaces the file. No history kept here: that is the log's job. |
+| One file, overwrite | Each refresh overwrites content in place. No history kept here: that is the log's job. |
 | Same skill, same format | Content follows `writing-status-reports`: state, progress, decisions, blockers/risks, verification, next focus; multi-lane table when applicable. |
 | Lead with UTC timestamp | First line: `# Status - <UTC ISO8601>`. Stale reports without a timestamp are rejected. |
 | Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status. |
@@ -79,7 +82,7 @@ A ledger update without a matching report refresh is a defect, same as a missing
 | Old state explains a binding constraint or hazard | Keep only the needed history and why it still matters |
 | Step finishes | Record verdict + resulting state + evidence link; drop the in-progress entry |
 | Detailed report exists elsewhere | Link it; do not copy report body, substeps, transcripts, or bullet lists |
-| User corrects an agent mistake | Record corrected fact, affected state, recurrence guard, source link |
+| Correction changes current understanding | Record the surviving fact, affected state, recurrence guard when useful, and source/evidence. For reaffirmed existing facts, use the `Existing ledger fact reaffirmed before action changes state` routing row. |
 | Task/blocker resolved | Move to completed milestones with link, or delete |
 
 Skip blow-by-blow history unless it prevents recurrence.
@@ -95,6 +98,7 @@ A given fact lives in one file, not both. Route by edit mode:
 | "Thought bug was in M, found in N" | "Bug: N. Fix: <link>." | append the M->N correction event |
 | "Step 1 done. Step 2 done. Step 3 WIP." | "Current: step 3 - <state>. Done: 1, 2 (links)." | append each step transition |
 | Narrative of what each agent did | Current owner + last verdict + next action | append per-agent action when it produced a material change |
+| Existing ledger fact reaffirmed before action changes state | keep existing current fact | keep log as-is for pure reaffirmation; append material planning, risk, ownership, authority, or verification change |
 
 Per-ledger-line test: true and load-bearing right now? No -> drop from ledger; if it captures something material that happened, append to the log instead.
 
@@ -111,7 +115,7 @@ Choose headings that fit the project. The agent decides section set, names, and 
 | Requirements | Binding conditions, acceptance criteria, source refs, current status |
 | Context | Domain model, terminology, relevant locations, relationships |
 | Decisions | Choices made, rationale, tradeoffs, consequences |
-| Corrections | User-corrected agent mistakes and recurrence guards |
+| Guards | Material current-understanding changes, binding requirement updates, and useful recurrence guards |
 | Unknowns | Assumptions, risks, blockers, open questions, validation needed |
 | Progress | Current work state, owners, completed milestones with report links, WIP, next action |
 | Verification | How completion will be proven, evidence links, current verdicts, missing proof |
@@ -120,7 +124,7 @@ Use `### <subject>` subsections when a section grows large enough that a fresh a
 
 ## Update Points
 
-Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after user corrections, before QA/verdicts, before user-waiting stops, and before shutdown.
+Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
 
 When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
 
@@ -134,7 +138,7 @@ Structure must evolve with the project. A frozen schema that no longer fits is d
 
 Then append to `high_level_log.md` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry.
 
-Finally overwrite `latest-status-report.md` with a fresh status report (per `writing-status-reports`) reflecting the just-updated ledger. Skip only when this turn produced no ledger or log change.
+Finally refresh `latest-status-report.md` in place with a fresh status report (per `writing-status-reports`) reflecting the just-updated ledger. Skip only when this turn produced no ledger or log change.
 
 ## Invalid Ledger
 
@@ -142,7 +146,7 @@ Reject the ledger if any holds:
 
 - A fresh agent needs the transcript or unstated local memory to recover useful current project/task facts.
 - An authoritative source is named without extracting its relevant current-state details.
-- Binding requirements, acceptance criteria, user corrections, assumptions, risks, decisions, current state, or evidence are missing.
+- Binding requirements, acceptance criteria, material current-understanding corrections, useful recurrence guards, assumptions, risks, decisions, current state, or evidence are missing.
 - Claims cannot be traced to sources, reports, commands, logs, screenshots, or commits.
 - Obsolete states are retained as if current: stale plans, abandoned hypotheses, finished WIP, resolved blockers, superseded values.
 - Entries are timestamped narrative or chronological "what happened next" prose, i.e. log-style.

@@ -30,7 +30,13 @@ Core rule: use the shortest faithful repro and rerun it constantly. If an issue 
 
 When subagents are explicitly authorized, use one persistent `repro/RCA/fix` subagent for all three phases so reproduction and RCA context carry into the fix. Use separate subagents for `critic` and `review`. Prefer fresh `critic` and `review` subagents each iteration; close or replace them after each pass so prior conclusions do not anchor the next critique. Pass only a compact evidence packet: problem statement, repro steps, relevant logs, current RCA or diff, constraints, and open questions.
 
-Root-cause reporting to the coordinator is mandatory at each transition: suggested RCA, critic-approved RCA, fix proposal, and confirmed fix. Include cause chain, evidence, falsifying prediction tested or still needed, repaired link, and unresolved alternatives. The coordinator owns the current root-cause state and passes it into the next critic/review packet.
+Root-cause reporting to the coordinator is mandatory at each transition: suggested RCA, critic-approved RCA, fix proposal, and confirmed fix.
+
+- Label state as `hypothesis`, `accepted-for-fix`, `fix-submitted`, or `confirmed-fixed`.
+- Only `confirmed-fixed` may say RCA/fix is closed. It requires domain-required acceptance proof on the real failing/user path.
+- Source/unit proof alone is source readiness when required E2E/integration proof remains open.
+- Include cause chain, evidence, falsifying prediction tested or still needed, repaired link, and unresolved alternatives.
+- Coordinator owns current root-cause state and passes it into the next critic/review packet.
 
 ## Reproduce first
 

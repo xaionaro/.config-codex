@@ -14,13 +14,15 @@ Every token costs context window in every session. Waste is cumulative.
 | # | Rule | Example |
 |---|------|---------|
 | 1 | One idea per sentence | Split compounds. Cut conjunctions. |
-| 2 | Rule first, not reasoning | "Never push without approval" not "Because pushing can cause..." |
-| 3 | Tables over prose | Rows scan; paragraphs don't. |
-| 4 | No filler | Cut: "It is important to", "Make sure to", "In order to" |
-| 5 | Define once, reference elsewhere | Rule in table AND prose AND red flags? Keep table. |
-| 6 | Imperatives | "Tag all claims" not "All teammates should tag their claims" |
-| 7 | Specific over abstract | "Reject bare `uint64`" not "Ensure strong typing" |
-| 8 | Examples compress | One precise example replaces a paragraph. |
+| 2 | Rule first, not reasoning | "Push only after approval" before risk explanation. |
+| 3 | Preserve intent, not wording | Rewrite the user's phrasing into a sharper explicit rule. |
+| 4 | Positive form | Lead with the action to take: "Use relative paths instead of absolute paths." |
+| 5 | Tables over prose | Rows scan; paragraphs don't. |
+| 6 | Lean wording | Cut: "It is important to", "Make sure to", "In order to" |
+| 7 | Define once, reference elsewhere | Rule in table AND prose AND red flags? Keep table. |
+| 8 | Imperatives | "Tag all claims" not "All teammates should tag their claims" |
+| 9 | Specific over abstract | "Reject bare `uint64`" not "Ensure strong typing" |
+| 10 | Examples compress | One precise example replaces a paragraph. |
 
 ## Anti-Patterns
 

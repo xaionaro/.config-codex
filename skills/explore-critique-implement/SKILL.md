@@ -1,6 +1,6 @@
 ---
 name: explore-critique-implement
-description: Use when solving any non-trivial problem where the solution space is uncertain — research options via a persistent explorer agent, adversarially critique them via separately-spawned critic agents, then loop (implement → critique) until the critic finds nothing. Skip only for single-line or trivial changes.
+description: Use when solving a non-trivial or uncertain problem, when 2+ approaches may fit, or when future behavior, routing, or contract risk is load-bearing. Skip only mechanical changes whose correct answer and consequences are obvious before editing.
 ---
 
 # Explore-Critique-Implement
@@ -11,10 +11,12 @@ Separate the hand that builds from the hand that tears down. The builder cannot 
 
 | Use | Skip |
 |-----|------|
-| Solution space uncertain | Single-line change |
+| Solution space uncertain | Mechanical change with obvious answer and no future behavior risk |
 | 2+ plausible approaches | Trivial typo or reformat |
 | Correctness is load-bearing | Throwaway experiment |
 | Research would reduce uncertainty | Mechanical rename |
+
+**Triviality rule:** Classify by decision complexity and future behavior risk, not diff size, line count, file count, or locality. A single-line or single-file change is non-trivial when it changes instructions, prompts, routing, protocols, public contracts, security, persistence, concurrency, architecture, or reviewer/agent behavior, or when 2+ plausible approaches exist. Skip ECI only when the correct change is mechanical and consequences are obvious, directly verifiable, and carry no future behavior or routing risk.
 
 Maintain a project-understanding ledger for every ECI run. Use the `maintaining-context-ledger` skill for storage path, content schema, update timing, and validity rules.
 
@@ -31,10 +33,13 @@ Coding task? Every subagent prompt (explorer, critic, implementer) must include:
 
 ## Blocker handling
 
-Use `blocker-resolution-protocol` for genuine stalls, Step 2 post-bounce all-REJECT outcomes, and gate/cycle limit hits before hard escalation.
+Use `blocker-resolution-protocol` only after normal ECI issue handling cannot resolve a stall, after Step 2 post-bounce all-REJECT outcomes, or after gate/cycle limit hits before hard escalation.
+
+Concrete bug/failure/flake/perf/incorrect behavior -> debugging iteration (`debugging-discipline`), not BRP; BRP only if debugging itself is blocked with an attempt log, hits its cap, or needs user-owned input.
 
 ECI adapter:
 - Keep ECI active while resolving blockers.
+- Subagent-blocked != mission-blocked. Try normal ECI issue handling first; BRP is last resort before hard escalation.
 - Use the separate `brainstormer` role for genuine stalls and Step 2 all-REJECT caps.
 - Run a BRP primary explorer and separate `brp-feasibility-validator` before routing brainstormer output onward.
 - Feed the blocker record, validated feasible ideas, primary explorer facts, and prior failures into the next explorer or implementer message.
@@ -80,8 +85,8 @@ Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, or independent tmux
 | Spawn BRP feasibility validator | `spawn_agent` with `agent_type: "explorer"` or `default`; role label `brp-feasibility-validator` |
 | Spawn loop-breaker | `spawn_agent` with `agent_type: "explorer"` and role label `loop-breaker` |
 
-Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel.
-Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval."
+Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel. Exception: Critic B Packet 1 for code diffs contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction; omit original requirements, exact scope, ledger/task/design context, rationale, commit message, and prior review output until Packet 2.
+Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
 
 ### Explorer spawn-prompt baseline
 
@@ -246,19 +251,26 @@ If applicable E2E evidence is missing, `send_input`: "Missing E2E evidence — b
 
 Spawn all three as critic agents in a single message (three parallel `spawn_agent` tool calls with role labels `critic-A` / `critic-B` / `e2e-gate`; assignment includes gate number). Each MUST NOT message the persistent `explorer` or `implementer` agent. Wait for all three to complete before evaluating results. Every reviewer prompt must include the **original user requirements verbatim** — reviewers catch requirement deviations, not just technical issues.
 
+Critic B code-diff exception:
+- Code diffs use two packets. Skip Packet 1 when there is no code diff.
+- Packet 1 is diff-only isolation. If Critic B is reused, clear context first when supported; otherwise shutdown+respawn under `critic-B`.
+- Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction. It is exempt from original requirements, exact scope, and normal review context.
+- After `reconstructed intention:` returns, send Packet 2 with original requirements and full Critic B context.
+- Gate incomplete until Packet 2 returns.
+
 ### Issue severity codes
 
 Every issue from Critic A and Critic B must carry exactly one code:
 
 | Code | Meaning | Effect |
 |------|---------|--------|
-| **REJECT** | Would make the change wrong, unsafe, or contradictory | Triggers gate re-run after fix |
-| **CONDITIONAL** | Fix needed, but obvious/trivial enough to trust without re-review | Must be fixed; no re-run needed |
+| **REJECT** | Would make the change wrong, unsafe, or contradictory | Must be fixed; routing follows impact/evaluation rules below |
+| **CONDITIONAL** | Fix needed, but specific enough for the implementer to apply without redesign unless impact requires it | Must be fixed; routing follows impact/evaluation rules below |
 | **NIT** | Soft recommendation | May be ignored |
 
 Both critics tag every issue per the severity codes table above. Same vocabulary as Step 2; Effect differs (re-implement vs. re-explore).
 
-For every REJECT or CONDITIONAL, reviewers must also tag `impact: trivial` or `impact: substantive` with a one-line rationale. `substantive` means non-trivial, major, API-changing, contract-changing, architecture-changing, security-sensitive, persistence-affecting, concurrency-affecting, or requiring a design tradeoff. Missing impact tag = REJECT against the review output; re-prompt that reviewer before evaluating the gate.
+For every REJECT or CONDITIONAL, reviewers must also tag `impact: trivial` or `impact: substantive` with a one-line rationale. `substantive` means non-trivial, major, API-changing, contract-changing, architecture-changing, security-sensitive, persistence-affecting, concurrency-affecting, or requiring a design tradeoff. Use the Triviality rule above for impact tags. Small patches are substantive when they alter future behavior, decision rules, contracts, prompts/instructions, or review routing. Missing impact tag = REJECT against the review output; re-prompt that reviewer before evaluating the gate.
 
 Both critics critique the implementer's root-cause rationale. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
 
@@ -271,6 +283,16 @@ Tag-discipline audit: every factual claim in the implementer's submission must c
 ### Critic B — long-term health
 
 Different agent from Critic A.
+
+Diff-only intention check:
+- Code diffs only. Skip when there is no code diff.
+- Before Packet 1, clear `critic-B` context when supported; otherwise shutdown+respawn under `critic-B`.
+- Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction.
+- Exclude original requirements, exact scope, ledger/task/design context, rationale, commit message, implementer or teammate summaries, and prior review output.
+- Output `reconstructed intention:` with 2-4 bullets covering apparent root reason and intended behavior change, then stop.
+- Main thread compares the reconstruction with the actual root reason and desired effects.
+- If it misses the root reason, relies on hidden context, or claims an undesired effect, add a `CONDITIONAL` follow-up with the normal `impact:` tag to make code, tests, names, comments, or commit message explain the change.
+- Packet 2: continue normal long-term-health review with full context.
 
 Focus — adversarial, long-term lens:
 - **Tech debt**: Coupling, hidden dependencies, or shortcuts costing more to fix later than now?
@@ -319,7 +341,7 @@ Step 1 explorer re-reads current code and researches options that resolve the fu
 
 Fresh idea generator — fires on-demand when the cycle stalls. Output is raw ideas only; never decisions, verdicts, or filtering. Bigger list = better.
 
-**Genuine stall definition.** Use the Required Record from `blocker-resolution-protocol`. A bare "I'm stuck" without an attempt log is not a stall; push the agent to keep trying.
+**Genuine stall definition.** Normal ECI issue handling was tried, and the Required Record from `blocker-resolution-protocol` exists. A bare "I'm stuck" without an attempt log is not a stall; push the agent to keep trying.
 
 | Trigger | Action |
 |---------|--------|

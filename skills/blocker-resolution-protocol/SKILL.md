@@ -41,6 +41,8 @@ Obvious resolutions include re-reading relevant source, retrying once when nonde
 
 ATE and ECI own role names, task states, loop limits, and lifecycle. This skill owns the shared blocker record, unblocking workflow, and escalation report.
 
+ATE/ECI subagent blocker claims are not BRP triggers. Route through the active protocol first; enter BRP only after normal issue handling fails, protocol limits hit, or user-owned input is required.
+
 ATE: feasibility validator is a second explorer launched after the brainstormer and primary explorer complete.
 
 Unresponsive-agent recovery, repeated agent misbehavior, coordinator silence, and shutdown/lifecycle failures follow ATE lifecycle recovery unless they expose a separate concrete work blocker. Do not run BRP merely because those lifecycle paths can end in user escalation.
