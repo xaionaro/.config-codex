@@ -100,7 +100,7 @@ Per-message body in Step 3.
 - Role label per Spawning table.
 - "Treat each new task message as a fresh assignment per Step 3 of the ECI skill. Re-read every file you intend to modify each turn."
 - One commit per logical change.
-- Code/debugging submissions include root-cause rationale: cause chain, evidence, and why the diff repairs the cause. Unknown "why" = unsubmittable.
+- Code/debugging submissions include root-cause rationale plus regression status/explanation when applicable: cause chain, evidence, and why the diff repairs the cause. Unknown "why" = unsubmittable.
 - Every factual claim in submission carries a T1-T5 tag per CODEX.md Claim Verification protocol. E2E evidence ("tests pass", "build succeeded", screenshots, observed state) cited as T1 with tool output, log path, or screenshot file. Concrete example: "[T1: `go test ./...` exit 0, all 47 pass]" not bare "tests pass". Untagged "all green" = unsubmittable.
 
 ## Teardown sequence
@@ -164,7 +164,9 @@ Polling cadence: re-check a working agent at most every 30 minutes; faster polli
 
 If any ECI agent, gate, or user followup discovers a concrete bug (failure, flake, perf regression, or incorrect behavior), route the bug through a debugging iteration or nested ECI pipeline. Main thread only coordinates.
 
-Map `debugging-discipline` to separate delegated ECI roles: repro → `repro` worker; RCA → explorer; critic → Step 2 critic; fix → implementer; review → Critic A/B + E2E gate. Every bug prompt says: "Load `debugging-discipline`; follow its repro/RCA-critic/fix-review loop. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
+Map `debugging-discipline` to separate delegated ECI roles: repro -> `repro` worker; RCA/regression -> `rcaer` explorer; critic -> Step 2 critic; fix -> implementer; review -> Critic A/B + E2E gate. Every bug prompt says: "Load `debugging-discipline`; follow its repro/RCA-critic/fix-review loop. Determine `regression: yes/no/unknown`; if regression, explain how it happened. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
+
+Before sending the RCA/regression assignment, write or update a human-readable regression report file: `~/.cache/codex-proof/$SESSION_ID/eci-regression-reports/<task>.md` when `$SESSION_ID` exists; otherwise `./.codex-regression-reports/<task>.md`. Include bug statement, repro, previous/current test-run artifact paths, CI/log/release/QA evidence, known-good/current-bad anchors, regression status, missing evidence, and the regression explanation once known. Send the report path and evidence packet to `rcaer`. Human reading is optional; never block the pipeline waiting for user review.
 
 ## Step 1: Explore
 
@@ -240,7 +242,7 @@ Each new task message to `implementer` includes:
 - The current iteration's concrete-text from the Step 2 critic (verbatim).
 - Iterations 2+: prior iteration's gate findings (verbatim) and files changed since the last message.
 - Step 2 CONDITIONAL fix-list (verbatim, if any) — implementer applies these alongside the concrete text.
-- Code/debugging submissions include root-cause rationale. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation unless containment was explicitly requested.
+- Code/debugging submissions include root-cause rationale plus regression status/explanation when applicable. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation unless containment was explicitly requested.
 - Submission tags every factual claim. Untagged claim → orchestrator bounces back without spawning the gate (parallel to E2E-evidence rule).
 
 **Affected-path E2E before submit.** Runtime behavior reachable via UI/API/device/CLI: build, run full tests, exercise affected user path, cite output/screenshot/state. Proxy evidence alone insufficient. Skip docs, prompts, config-only, tests-only, pure refactors. If E2E unavailable, report BLOCKED with the exact missing resource; missing E2E/rationale → bounce before Step 4.
@@ -272,7 +274,7 @@ Both critics tag every issue per the severity codes table above. Same vocabulary
 
 For every REJECT or CONDITIONAL, reviewers must also tag `impact: trivial` or `impact: substantive` with a one-line rationale. `substantive` means non-trivial, major, API-changing, contract-changing, architecture-changing, security-sensitive, persistence-affecting, concurrency-affecting, or requiring a design tradeoff. Use the Triviality rule above for impact tags. Small patches are substantive when they alter future behavior, decision rules, contracts, prompts/instructions, or review routing. Missing impact tag = REJECT against the review output; re-prompt that reviewer before evaluating the gate.
 
-Both critics critique the implementer's root-cause rationale. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
+Both critics critique the implementer's root-cause rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
 
 ### Critic A — correctness
 
@@ -459,8 +461,9 @@ auth middleware swap
 | Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 `send_input` body. |
 | Orchestrator forgot to pass Step 2 CONDITIONALs to implementer | STOP. Step 3 message must include verbatim CONDITIONAL fix-list. |
 | Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B rule). |
-| Code/debugging submission lacks root-cause rationale | STOP. Bounce before gate; unknown "why" means unsubmittable. |
-| Critic fails to critique root-cause rationale | STOP. Re-prompt or re-spawn critic. |
+| Code/debugging submission lacks root-cause rationale or required regression explanation | STOP. Bounce before gate; unknown "why" means unsubmittable. |
+| Bug RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |
+| Critic fails to critique root-cause rationale or regression explanation | STOP. Re-prompt or re-spawn critic. |
 | Substantive REJECT/CONDITIONAL fixed directly after review gate | STOP. Batch all gate issues and return to Step 1/Step 2 explorer/designer-critic loop. |
 | Gate issues handled one-by-one | STOP. Batch by affected artifact/API/contract before re-exploration or implementation. |
 

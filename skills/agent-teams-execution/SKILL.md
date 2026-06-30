@@ -173,6 +173,7 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 | **Test Executor** | 1+ | 4 | Implement tests from specs. |
 | **Test Reviewer** | 0-1 per root task | final | Reviews test changes during aggregate/final review when needed. Report only, never edit tests. |
 | **Verifier** | 1+ | per task | For lightweight tasks (no code, no test pipeline). Adversarially checks deliverable against all expectations. Replaces test pipeline when testing is N/A. |
+| **RCAer** | 1 per debug task | debug | Explores root cause and regression status from repro evidence plus previous/current test-run artifacts. Reports RCA only; never fixes. |
 | **Brainstormer** | 1 | any | On-demand when a blocker emerges. Genius creative unblocker — thinks outside the box. Lists as many solution ideas as possible. Positives only — no negatives, no filtering, no feasibility judgment. Bigger list = better. |
 | **Snitch** | 1 | all | Snitch is async-only: CCs, reminders, audits, reports, verification requests, and silence create no prerequisite, wait, direct interruption, or gate. CCed on all submitted/blocked/completed claims and QA verdicts. Independently audits rule compliance and reports violations to lead/coordinator. Success = confirmed violations found. May push back once per report if lead dismisses: quote the exact rule/requirement violated and why no workaround is acceptable. On QA approvals, looks for testing gaps: insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On reviewer APPROVED messages, checks for rubber-stamping against the executor critique log and reports gaps to lead. Lead handles confirmed gaps under normal finding/priority rules. Lead or coordinator sends event-driven audit reminders with `send_input` at milestones, after long waits, and when execution resumes after user-waiting. Snitch uses available `wait_agent` results and teammate output to detect dead or drifting agents. On every audit, also check ledger freshness and asynchronously remind coordinator after activity bursts without updates. |
 | **QA** | 1 | final | Final integration check. Runs all tests. Last gate. |
@@ -266,7 +267,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 | blocked → unblocking | Coordinator runs `blocker-resolution-protocol` |
 | unblocking → in_progress | Feasible solution found and assigned. Blocker resolved |
 | unblocking → blocked | No feasible solution found. Escalate to user |
-| in_progress → submitted | All claims tagged. Critique log exists. Code/debugging tasks: RCA explains cause chain; root-task E2E/targeted proof confirms fulfillment; aggregate changes committed once per touched repo. CC lead + snitch |
+| in_progress → submitted | All claims tagged. Critique log exists. Code/debugging tasks: RCA explains cause chain plus regression status/explanation when applicable; root-task E2E/targeted proof confirms fulfillment; aggregate changes committed once per touched repo. CC lead + snitch |
 | submitted → in_progress | Coordinator bounces back: submission checklist failed |
 | submitted -> in_review | Coordinator verifies submission checklist passes. Code targets: route the full root-task diff to both reusable Execution Reviewer lens slots. Non-code targets: route to a verifier unless a role-specific paired reviewer applies. |
 | in_review → in_progress | Root REJECTED/CONDITIONAL. Create/fix tasks. REJECTED reruns both lenses after proof/amend; CONDITIONAL fixes verify before final proof/QA |
@@ -362,16 +363,17 @@ Paired roles communicate **directly**. All other feedback routes through coordin
 Applies: bug fix, build failure, flake, perf regression, any task whose deliverable is fixing observed broken behavior.
 
 - Any discovered bug enters Debug Mode: user followup, teammate finding, test failure, reviewer finding, or QA rejection. Coordinator/lead never debug or patch directly.
-- Delegate `debugging-discipline` roles to separate agents: repro → test executor/verifier; RCA → explorer; critic → independent reviewer; fix → executor; aggregate review → both execution reviewers + final QA. Every bug-task prompt says: "Load `systematic-debugging` and `debugging-discipline`; follow their repro/RCA-critic/fix-review loop. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
-- Coordinator validates RCA transitions against `debugging-discipline`: current repro, evidence-backed cause chain, alternatives, falsifying prediction tested or recorded as still required, and critic loop with no unresolved objections. Symptom bundle, suspected cause, or "needs more evidence" is not RCA acceptance.
-- When Snitch is assigned or CCed to an RCA/debugging transition audit, Snitch loads `debugging-discipline` and checks repro, alternatives, falsifying prediction, critic loop, and cause chain. Snitch is an additional guard; coordinator remains responsible for transition and acceptance.
-- Debug packets must label state as `hypothesis`, `accepted-for-fix`, `fix-submitted`, or `confirmed-fixed`. Only `confirmed-fixed` may say RCA/fix is closed.
+- Delegate `debugging-discipline` roles to separate agents: repro -> test executor/verifier; RCA/regression -> `rcaer` explorer; critic -> independent reviewer; fix -> executor; aggregate review -> both execution reviewers + final QA. Every bug-task prompt says: "Load `systematic-debugging` and `debugging-discipline`; follow their repro/RCA-critic/fix-review loop. Determine `regression: yes/no/unknown`; if regression, explain how it happened. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
+- Before assigning RCA/regression, coordinator writes or updates a human-readable regression report file in the proof directory: `regression-reports/<task>.md`. Include bug statement, repro, previous/current test-run artifact paths, CI/log/release/QA evidence, known-good/current-bad anchors, regression status, missing evidence, and the regression explanation once known. Send the report path and evidence packet to `rcaer`. Human reading is optional; never block the pipeline waiting for user review.
+- Coordinator validates RCA transitions against `debugging-discipline`: current repro, evidence-backed cause chain, regression status/explanation when applicable, alternatives, falsifying prediction tested or recorded as still required, and critic loop with no unresolved objections. Symptom bundle, suspected cause, or "needs more evidence" is not RCA acceptance.
+- When Snitch is assigned or CCed to an RCA/debugging transition audit, Snitch loads `debugging-discipline` and checks repro, regression status/explanation when applicable, alternatives, falsifying prediction, critic loop, and cause chain. Snitch is an additional guard; coordinator remains responsible for transition and acceptance.
+- Debug packets must label state as `hypothesis`, `accepted-for-fix`, `fix-submitted`, or `confirmed-fixed`, and carry `regression: yes/no/unknown`. Only `confirmed-fixed` may say RCA/fix is closed.
 - `confirmed-fixed` requires the domain-required acceptance proof on the real failing/user path. Missing, failing, or not-runnable required proof blocks `submitted`, `complete`, "fixed", and "RCA closed" wording; report it as source-only/progress plus next proof.
 - Executor iterates candidate fixes without per-attempt reviewer gate. No `submitted`/`in_review` transition until root-task E2E/proof passes.
 - Candidate-fix review verdicts are advisory during the debug loop; they are not a stop condition, lane handback, or prerequisite to the next proof run or still-red failure packet.
 - Candidate-fix reviews use sub-task/candidate-fix execution review rules: both lenses, async verdicts, independent verification, next active iteration or queued async-followups. Async output never delays or reopens root aggregate review.
 - Proof while hunting = failing repro → passing on real path.
-- Before `submitted`, executor provides root-cause rationale: cause chain, evidence, and why the diff repairs the cause. Unknown "why" = not submitted.
+- Before `submitted`, executor provides root-cause rationale: cause chain, evidence, regression status/explanation when applicable, and why the diff repairs the cause. Unknown "why" = not submitted.
 - After proof passes, task → `submitted` → `in_review`. Reviewers critique the full aggregate diff+rationale, reject mitigation, and improve cleanup, hardening, and semantic correctness.
 - Loop limit (10 rounds) counts aggregate review rounds only. Pre-submission attempts are uncounted.
 - Bug-fix pipeline in User Followups still applies — Debug Mode only changes the executor↔reviewer semantics inside the Execution stage.
@@ -453,11 +455,11 @@ ATE adapter:
 **Reviewers report, never fix.** No editing code, designs, or tests. Describe the problem and suggest a fix direction. The paired executor implements all changes.
 
 0. **Does it work?** Before evaluating quality, verify code fulfills its stated purpose. If it doesn't — REJECT.
-1. **Root cause first.** Critique the executor's rationale. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
+1. **Root cause first.** Critique the executor's rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
 2. **Assume wrong.** Find errors. Look for what's missing.
 3. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block for blocking review gates. Minor (doesn't block), Nit (never blocks).
 4. **Outcomes:** Execution reviews use Execution dual review. Other gates: APPROVED (no Critical/Major, with evidence); CONDITIONAL (Minor/Nit listed; coordinator opens follow-ups per Priority Discipline); REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
-5. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
+5. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale/regression explanation, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
 6. **Max 10 rounds.** 11th REJECTED pass becomes a protocol-limit blocker; run `blocker-resolution-protocol` before user escalation.
 
 **Sub-task/candidate-fix execution review effect:** Report, never fix. Use Execution dual review and the Execution Reviewer Checklist. Verdict labels match root aggregate review. Async CONDITIONAL/REJECTED findings route to coordinator for independent verification, then enter the next active iteration or queued async-followups if none remains. NITs stay optional. Executor continues in-flight work. Async output never delays, reopens, or retroactively blocks root aggregate review.
@@ -547,7 +549,7 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Integration tests pass (run them — direct)
 - [ ] All unit tests pass (run them — proxy, still required)
 - [ ] End-to-end flows verified (direct — run the program as a user)
-- [ ] Root-cause rationale reviewed; no unexplained causal link or symptom-only mitigation
+- [ ] Root-cause rationale and regression explanation reviewed; no unexplained causal link or symptom-only mitigation
 - [ ] No uncommitted changes; no secrets or credentials exposed
 - [ ] Static checks pass
 - [ ] Mandatory skills invoked by all teammates
@@ -570,7 +572,7 @@ Review independently first — no reading peer findings before writing your own.
 4. **Assign file ownership** per design doc. **Create git worktrees** for 2+ parallel executors.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise or accept at face value. Record the verification question, source finding, and target artifact; route to a second agent for independent verification before acting.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, check Crash Recovery signals. If confirmed unresponsive, follow the respawn sequence.
-7. **Handle root "submitted" tasks.** Verify grouped commit(s), claim tags, critique log, RCA when applicable, and root-task E2E/proof. Bounce if incomplete. If complete, route code diffs to both reusable Execution Reviewer lens slots; route non-code targets to a verifier unless a role-specific paired reviewer applies.
+7. **Handle root "submitted" tasks.** Verify grouped commit(s), claim tags, critique log, RCA/regression status when applicable, and root-task E2E/proof. Bounce if incomplete. If complete, route code diffs to both reusable Execution Reviewer lens slots; route non-code targets to a verifier unless a role-specific paired reviewer applies.
 8. **Drive aggregate pipelines.** Keep creating/fixing discovered tasks until root E2E passes. Then aggregate review loops until no REJECTED/CONDITIONAL remains, amend/squash commits, rerun full E2E, then spawn QA. Record checkpoint per root task: output, reviewers, evidence, git SHA.
 9. **Budget context** -- summaries, not raw output (see below).
 10. **Enforce loop limits.** Run `blocker-resolution-protocol` on the 11th REJECTED pass and the designer-to-explorer cap. Escalate directly on 3rd QA re-entry.
@@ -629,6 +631,7 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] For executor spawns: sub-task/candidate-fix review trigger names correctness/fidelity + long-term health lenses and async route.
 - [ ] For execution review spawns: both lens slots assigned/reused before review starts; spawn only missing lenses.
 - [ ] For long-term-health execution reviews on code targets: reviewer context cleared or shutdown+respawned under the same stable lens label before Packet 1; Packet 1 excludes all normal context; Packet 2 normal review context is sent only after `reconstructed intention:` returns.
+- [ ] For debugging/RCA spawns: regression report artifact path plus previous/current test-run evidence packet included.
 - [ ] Reviewer/verifier normal review packets include: executor's original objective with full context, and all scrutiny rules (coding style, claim tagging, OWASP, semantic integrity, etc.)
 - [ ] Execution reviewer normal review packets include: scope, lens, effect, coding-style instruction, shared concerns register.
 - [ ] Preemptive warnings included: coordinator anticipates the most likely mistakes this agent could make given the specific task and explicitly warns against them in the spawn prompt
@@ -645,6 +648,7 @@ Downstream agents get **structured summaries**, not raw upstream output.
 |------|----------|----------|
 | Designer | Explorer findings summary + source tags | Raw tool outputs, full files |
 | Executor | Own module's design + interface contracts | Other modules, explorer findings |
+| RCAer | Repro, failing path, regression report/evidence packet, previous/current test-run artifact paths, known-good/current-bad anchors | Teammate histories, unrelated raw logs |
 | Reviewer | Executor's original objective (with full context), diff, relevant design, enriched interface contracts, shared concerns register, all scrutiny rules (coding style, claim tagging, OWASP, etc.) | Full codebase, other modules |
 | Test Executor | Test specs + contracts + public APIs | Implementation details |
 | QA | Original objectives (all tasks, with full context), phase summaries, test results, all scrutiny rules | Teammate conversation histories |
@@ -690,6 +694,7 @@ Context:
 - Explorer findings: [summary or "see task list"]
 - Design doc: [location or "not yet created"]
 - File ownership: [YOUR FILES ONLY. Do not edit other files.]
+- Regression report/evidence (debugging only): [path + previous/current test-run artifacts, or N/A]
 
 Trust Hierarchy (tag ALL claims):
 T1: Specs/RFCs/docs/source -> trusted | T2: Academic -> high trust
@@ -713,7 +718,8 @@ Compliance:
 
 - [ROLE-SPECIFIC RULES]
 - [FOR EXECUTORS:] While implementing, actively look for code smell and design issues in all code you study or touch. Report ALL findings to coordinator — do not silently work around them.
-- [FOR EXECUTORS, code/debugging tasks:] Before "submitted": provide RCA; build; root-task E2E/targeted proof; one commit per touched repo; cite output/screenshot/state. Proxy evidence alone insufficient. No RCA or E2E/proof = bounce.
+- [FOR DEBUGGING/RCA TASKS:] Classify `regression: yes/no/unknown`. If yes, explain how it happened. Use the regression report/evidence packet; include previous/current test-run artifacts and known-good/current-bad anchors in the RCA.
+- [FOR EXECUTORS, code/debugging tasks:] Before "submitted": provide RCA/regression status when applicable; build; root-task E2E/targeted proof; one commit per touched repo; cite output/screenshot/state. Proxy evidence alone insufficient. No RCA or E2E/proof = bounce.
 - Mark task as "submitted" (not "complete") + notify coordinator when done. **CC the lead and snitch on all submitted, blocked, and completed claims.**
 - If blocked, message coordinator with specifics. **CC the lead and snitch.**
 ```
@@ -748,8 +754,9 @@ Compliance:
 | Root aggregate reviewer feedback ignored | Coordinator enforces REJECTED fixes and required pre-QA fix tasks. Async scope follows Execution dual review. |
 | Mandatory skill not invoked | Reviewer rejects |
 | Untagged factual claims in deliverable | Reviewer rejects |
-| Submitted code/debugging fix lacks root-cause rationale | Bounce before review. Unknown "why" means not submitted |
-| Reviewer approves without critiquing root-cause rationale | Approval invalid. Re-spawn or re-prompt reviewer |
+| Submitted code/debugging fix lacks root-cause rationale or required regression explanation | Bounce before review. Unknown "why" means not submitted |
+| Debugging/RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |
+| Reviewer approves without critiquing root-cause rationale or regression explanation | Approval invalid. Re-spawn or re-prompt reviewer |
 | Spawn prompt uses `[LIST APPLICABLE SKILLS]` placeholder | Replace with exact skill names from Mandatory Skills table |
 | 11th REJECTED pass in same root-task aggregate review | Create protocol-limit blocker record; run `blocker-resolution-protocol` before user escalation |
 | Teammate seems slow or won't respond before 30 minutes | Not stale. Do not message or interrupt for status |
