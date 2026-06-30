@@ -14,7 +14,7 @@ set = { TMPDIR = "/home/pheona/tmp", TMP = "/home/pheona/tmp", TEMP = "/home/phe
 hooks = true
 image_generation = false
 child_agents_md = true
-collab = true
+multi_agent = true
 
 [mcp_servers.context7]
 command = "/home/pheona/.codex/bin/context7-mcp"
