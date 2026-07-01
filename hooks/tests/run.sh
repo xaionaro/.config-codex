@@ -330,6 +330,21 @@ test_prompt_state_config_is_wired_without_probe() {
   ' "$ROOT/hooks.json" >/dev/null
 }
 
+prompt_state_output_has_scoped_reminder() {
+  local out="$1"
+  json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "deterministic action+target heuristic" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "check whether" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "explore-critique-implement" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "agent-teams-execution" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "harness-tuning" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "testing-discipline" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "T1-T5" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "UserPromptSubmit reminder is deterministic and session-safe" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "not an LLM classifier" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "CODEX_EDIT_PRE_REVIEWER" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.additionalContext // empty' "is non-trivial by deterministic prompt check"
+}
+
 test_prompt_state_reminds_nontrivial_governance_task_to_load_required_instructions() {
   local proof_root input out
   proof_root="$(fresh_proof_root prompt-nontrivial-reminder)"
@@ -341,13 +356,21 @@ test_prompt_state_reminds_nontrivial_governance_task_to_load_required_instructio
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   [ -s "$out" ] &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "explore-critique-implement" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "agent-teams-execution" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "harness-tuning" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "testing-discipline" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "T1-T5" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "No hidden LLM classifier" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "deterministic and session-safe"
+    prompt_state_output_has_scoped_reminder "$out"
+}
+
+test_prompt_state_reminds_codex_typo_without_nontrivial_overclaim() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root prompt-codex-typo-reminder)"
+  input="$TMP_ROOT/prompt-codex-typo-reminder.json"
+  jq '.prompt = "Fix a typo in CODEX.md"' "$FIXTURES/user-prompt-submit.json" >"$input"
+  out="$TMP_ROOT/prompt-codex-typo-reminder.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  [ -s "$out" ] &&
+    prompt_state_output_has_scoped_reminder "$out"
 }
 
 test_prompt_state_reminds_hooks_path_governance_task() {
@@ -361,7 +384,7 @@ test_prompt_state_reminds_hooks_path_governance_task() {
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   [ -s "$out" ] &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "explore-critique-implement"
+    prompt_state_output_has_scoped_reminder "$out"
 }
 
 test_prompt_state_leaves_react_hook_prompt_silent() {
@@ -426,7 +449,7 @@ prompt_state_prompt_emits_reminder() {
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   [ -s "$out" ] &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "explore-critique-implement"
+    prompt_state_output_has_scoped_reminder "$out"
 }
 
 prompt_state_prompt_stays_silent() {
@@ -4006,6 +4029,8 @@ run_case "prompt state config is wired without temporary probe" \
   test_prompt_state_config_is_wired_without_probe
 run_case "prompt state reminds nontrivial governance task to load required instructions" \
   test_prompt_state_reminds_nontrivial_governance_task_to_load_required_instructions
+run_case "prompt state reminds CODEX typo without nontrivial overclaim" \
+  test_prompt_state_reminds_codex_typo_without_nontrivial_overclaim
 run_case "prompt state reminds hooks path governance task" \
   test_prompt_state_reminds_hooks_path_governance_task
 run_case "prompt state leaves React hook prompt silent" \

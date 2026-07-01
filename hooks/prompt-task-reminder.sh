@@ -49,7 +49,7 @@ prompt_has_governance_target() {
 }
 
 emit_governance_reminder() {
-  jq -n --arg ctx 'Governance/prompt/hook/routing work is non-trivial by deterministic prompt check. Load applicable instructions and skills before acting: explore-critique-implement for non-trivial work; agent-teams-execution for very long, heavy, multiday, or multi-workstream work; harness-tuning for prompt/global guidance edits; testing-discipline for hook tests. Tag factual claims T1-T5. No hidden LLM classifier exists; this hook is deterministic and session-safe, and it creates no marker state.' '{
+  jq -n --arg ctx 'Governance/prompt/hook/routing reminder matched a deterministic action+target heuristic. Before acting, check whether the user request is trivial or non-trivial; use direct work for truly mechanical safe changes, explore-critique-implement for non-trivial work, agent-teams-execution for very long/heavy/multi-workstream work, harness-tuning for prompt/global guidance edits, and testing-discipline for hook tests. Tag factual claims T1-T5. This UserPromptSubmit reminder is deterministic and session-safe, creates no marker state, and is not an LLM classifier; any LLM first-tool admission review is separate PreToolUse behavior configured through CODEX_EDIT_PRE_REVIEWER.' '{
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
       additionalContext: $ctx
