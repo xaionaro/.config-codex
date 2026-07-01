@@ -12,7 +12,7 @@
 - Verify suspect claims with tools or sources before relying on them.
 - Answer direct user questions before follow-up work; use tools first only when needed for accuracy.
 - Default to complete, concise, plain engineering prose: rule first, no filler, one idea per sentence.
-- Use `ponytail` for simplest-working-solution mode when the user requests ponytail or the `ponytail` skill triggers; do not treat ponytail as terse phrasing/token-efficiency mode.
+- Use `caveman` for terse/token-efficient communication when requested. Use `ponytail` only for simplest-working-solution mode when requested or explicitly triggered.
 
 ## Learning From Mistakes
 
