@@ -52,7 +52,20 @@ fi
 
 [ -f "$state_dir/bypass" ] && exit 0
 
-if ! parse_reviewer_env CODEX_EDIT_PRE_REVIEWER; then
+select_edit_pre_reviewer_env() {
+  local env_name
+
+  for env_name in CODEX_EDIT_PRE_REVIEWER LLM_EDIT_PRE_REVIEWER CLAUDE_EDIT_PRE_REVIEWER; do
+    if [ -n "${!env_name:-}" ]; then
+      printf '%s\n' "$env_name"
+      return 0
+    fi
+  done
+}
+
+reviewer_env_name="$(select_edit_pre_reviewer_env)"
+[ -n "$reviewer_env_name" ] || exit 0
+if ! parse_reviewer_env "$reviewer_env_name"; then
   exit 0
 fi
 [ -n "$REVIEWER_BACKEND" ] || exit 0

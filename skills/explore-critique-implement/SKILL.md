@@ -197,7 +197,7 @@ The critic's prompt must include:
 - **"Step 0 — Independent baseline."** Read the source material (target file, existing code, prior art) and write your own 3-5 bullet assessment BEFORE opening the explorer's report. Include this baseline in the critique output.
 - "Assume every suggestion is wrong until you prove otherwise."
 - "Read the current state first" (the file/code/doc the explorer was working on) — verify duplication claims independently.
-- **Claim-scope audit for governance/prompt/hook/protocol/reviewer changes:** record mechanism/predicate, emitted or user-facing wording, strongest wording evidence supports, and one boundary counterexample. REJECT certainty, classification, provenance, or authority wording beyond mechanism evidence. Heuristic/regex evidence may support "matched the reminder heuristic"; it does not prove the user's work is non-trivial. `prompt-task-reminder.sh` is deterministic `UserPromptSubmit`; `edit-bash-pre-reviewer.sh` is LLM-capable first-tool `PreToolUse` only when `CODEX_EDIT_PRE_REVIEWER` is configured.
+- **Claim-scope audit for governance/prompt/hook/protocol/reviewer changes:** record mechanism/predicate, emitted or user-facing wording, strongest wording evidence supports, and one boundary counterexample. REJECT certainty, classification, provenance, or authority wording beyond mechanism evidence. Heuristic/regex evidence may support "matched the reminder heuristic"; it does not prove the user's work is non-trivial. `prompt-task-reminder.sh` is deterministic `UserPromptSubmit`; any LLM first-tool admission review is separate `PreToolUse` behavior configured through `CODEX_EDIT_PRE_REVIEWER`, with `LLM_EDIT_PRE_REVIEWER` and `CLAUDE_EDIT_PRE_REVIEWER` accepted only as lower-precedence compatibility aliases when earlier variables are unset.
 - **Cite-verify and tag-discipline protocol:**
   - Untagged factual claim from explorer = REJECT-tagged issue on the option that depends on it.
   - Fetch every T1/T2 URL via WebFetch; use Read for source-code citations.
@@ -277,7 +277,7 @@ For every REJECT or CONDITIONAL, reviewers must also tag `impact: trivial` or `i
 
 Both critics critique the implementer's root-cause rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
 
-For governance/prompt/hook/protocol/reviewer changes, Critic A and Critic B perform the Step 2 claim-scope audit. REJECT overclaims and missing boundary/negative tests; deterministic checks must not be described as LLM reviewers/classifiers.
+For governance/prompt/hook/protocol/reviewer changes, Critic A and Critic B perform the Step 2 claim-scope audit. REJECT overclaims and missing boundary/negative tests; deterministic checks must not be described as LLM reviewers/classifiers. Any LLM first-tool admission review is separate `PreToolUse` behavior configured through `CODEX_EDIT_PRE_REVIEWER`, with `LLM_EDIT_PRE_REVIEWER` and `CLAUDE_EDIT_PRE_REVIEWER` accepted only as lower-precedence compatibility aliases when earlier variables are unset.
 
 ### Critic A — correctness
 

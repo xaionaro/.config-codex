@@ -342,6 +342,8 @@ prompt_state_output_has_scoped_reminder() {
     json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "UserPromptSubmit reminder is deterministic and session-safe" &&
     json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "not an LLM classifier" &&
     json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "CODEX_EDIT_PRE_REVIEWER" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "LLM_EDIT_PRE_REVIEWER" &&
+    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "CLAUDE_EDIT_PRE_REVIEWER" &&
     json_field_not_contains "$out" '.hookSpecificOutput.additionalContext // empty' "is non-trivial by deterministic prompt check"
 }
 
@@ -1343,6 +1345,91 @@ test_pre_reviewer_denies_first_tool_call_once_per_turn() {
     CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
     CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
   expect_no_output "$out"
+}
+
+run_pre_reviewer_fake_deny() {
+  local tag="$1"
+  local proof_root input out transcript
+  shift
+
+  proof_root="$(fresh_proof_root "$tag")"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/$tag.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/$tag.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    "$@" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Alias selected."}' || return 1
+
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Alias selected"
+}
+
+run_pre_reviewer_expect_no_output() {
+  local tag="$1"
+  local proof_root input out transcript
+  shift
+
+  proof_root="$(fresh_proof_root "$tag")"
+  transcript="$(main_reviewer_transcript_path)"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  input="$TMP_ROOT/$tag.json"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  out="$TMP_ROOT/$tag.out"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    "$@" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Fallback selected."}' || return 1
+
+  expect_no_output "$out"
+}
+
+test_pre_reviewer_llm_alias_enables_fake_deny() {
+  run_pre_reviewer_fake_deny "pre-reviewer-llm-alias" \
+    CODEX_EDIT_PRE_REVIEWER= \
+    LLM_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CLAUDE_EDIT_PRE_REVIEWER=
+}
+
+test_pre_reviewer_claude_alias_enables_fake_deny() {
+  run_pre_reviewer_fake_deny "pre-reviewer-claude-alias" \
+    CODEX_EDIT_PRE_REVIEWER= \
+    LLM_EDIT_PRE_REVIEWER= \
+    CLAUDE_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b"
+}
+
+test_pre_reviewer_codex_alias_precedence_ignores_malformed_lower_aliases() {
+  run_pre_reviewer_fake_deny "pre-reviewer-codex-precedence" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    LLM_EDIT_PRE_REVIEWER="malformed" \
+    CLAUDE_EDIT_PRE_REVIEWER="also-malformed"
+}
+
+test_pre_reviewer_llm_alias_precedence_ignores_malformed_claude() {
+  run_pre_reviewer_fake_deny "pre-reviewer-llm-precedence" \
+    CODEX_EDIT_PRE_REVIEWER= \
+    LLM_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CLAUDE_EDIT_PRE_REVIEWER="malformed"
+}
+
+test_pre_reviewer_malformed_codex_does_not_fallback_to_llm() {
+  run_pre_reviewer_expect_no_output "pre-reviewer-malformed-codex-no-llm-fallback" \
+    CODEX_EDIT_PRE_REVIEWER="malformed" \
+    LLM_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CLAUDE_EDIT_PRE_REVIEWER=
+}
+
+test_pre_reviewer_malformed_llm_does_not_fallback_to_claude() {
+  run_pre_reviewer_expect_no_output "pre-reviewer-malformed-llm-no-claude-fallback" \
+    CODEX_EDIT_PRE_REVIEWER= \
+    LLM_EDIT_PRE_REVIEWER="malformed" \
+    CLAUDE_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b"
 }
 
 write_pre_reviewer_secret_transcript() {
@@ -4161,6 +4248,18 @@ run_case "reviewer timeout and hook wiring are configured" \
   test_stop_reviewer_timeout_and_hook_wiring
 run_case "pre reviewer denies first tool call once per turn" \
   test_pre_reviewer_denies_first_tool_call_once_per_turn
+run_case "pre reviewer accepts LLM compatibility alias" \
+  test_pre_reviewer_llm_alias_enables_fake_deny
+run_case "pre reviewer accepts CLAUDE compatibility alias" \
+  test_pre_reviewer_claude_alias_enables_fake_deny
+run_case "pre reviewer prefers CODEX over malformed lower aliases" \
+  test_pre_reviewer_codex_alias_precedence_ignores_malformed_lower_aliases
+run_case "pre reviewer prefers LLM over malformed CLAUDE alias" \
+  test_pre_reviewer_llm_alias_precedence_ignores_malformed_claude
+run_case "pre reviewer malformed CODEX does not fallback to LLM" \
+  test_pre_reviewer_malformed_codex_does_not_fallback_to_llm
+run_case "pre reviewer malformed LLM does not fallback to CLAUDE" \
+  test_pre_reviewer_malformed_llm_does_not_fallback_to_claude
 run_case "pre reviewer redacts user message and tool input payload" \
   test_pre_reviewer_redacts_user_message_and_tool_input_payload
 run_case "pre reviewer allows stop-reviewer bypass command" \
