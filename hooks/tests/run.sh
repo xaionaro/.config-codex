@@ -309,7 +309,7 @@ test_prompt_state_keeps_session_eci_marker_silent() {
   proof_root="$(fresh_proof_root prompt-eci)"
   marker="$proof_root/t00-session/eci_active"
   mkdir -p "$(dirname "$marker")" || return 1
-  printf 'scope: prompt reminder test\n' >"$marker"
+  printf 'scope: prompt state test\n' >"$marker"
   out="$TMP_ROOT/prompt-eci.out"
 
   run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$FIXTURES/user-prompt-submit.json" \
@@ -317,7 +317,7 @@ test_prompt_state_keeps_session_eci_marker_silent() {
 
   expect_no_output "$out" &&
     [ -f "$marker" ] &&
-    grep -q "scope: prompt reminder test" "$marker"
+    grep -q "scope: prompt state test" "$marker"
 }
 
 test_prompt_state_config_is_wired_without_probe() {
@@ -330,63 +330,19 @@ test_prompt_state_config_is_wired_without_probe() {
   ' "$ROOT/hooks.json" >/dev/null
 }
 
-prompt_state_output_has_scoped_reminder() {
-  local out="$1"
-  json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "deterministic action+target heuristic" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "check whether" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "explore-critique-implement" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "agent-teams-execution" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "harness-tuning" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "testing-discipline" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "T1-T5" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "UserPromptSubmit reminder is deterministic and session-safe" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "not an LLM classifier" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "CODEX_EDIT_PRE_REVIEWER" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "LLM_EDIT_PRE_REVIEWER" &&
-    json_field_contains "$out" '.hookSpecificOutput.additionalContext // empty' "CLAUDE_EDIT_PRE_REVIEWER" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.additionalContext // empty' "is non-trivial by deterministic prompt check"
+test_prompt_state_keeps_nontrivial_governance_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-nontrivial-governance-silent" \
+    "Update CODEX.md and hooks/prompt-task-reminder.sh to enforce governance routing."
 }
 
-test_prompt_state_reminds_nontrivial_governance_task_to_load_required_instructions() {
-  local proof_root input out
-  proof_root="$(fresh_proof_root prompt-nontrivial-reminder)"
-  input="$TMP_ROOT/prompt-nontrivial-reminder.json"
-  jq '.prompt = "Update CODEX.md and hooks/prompt-task-reminder.sh to enforce governance routing."' "$FIXTURES/user-prompt-submit.json" >"$input"
-  out="$TMP_ROOT/prompt-nontrivial-reminder.out"
-
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-
-  [ -s "$out" ] &&
-    prompt_state_output_has_scoped_reminder "$out"
+test_prompt_state_keeps_codex_typo_silent() {
+  prompt_state_prompt_stays_silent "prompt-codex-typo-silent" \
+    "Fix a typo in CODEX.md"
 }
 
-test_prompt_state_reminds_codex_typo_without_nontrivial_overclaim() {
-  local proof_root input out
-  proof_root="$(fresh_proof_root prompt-codex-typo-reminder)"
-  input="$TMP_ROOT/prompt-codex-typo-reminder.json"
-  jq '.prompt = "Fix a typo in CODEX.md"' "$FIXTURES/user-prompt-submit.json" >"$input"
-  out="$TMP_ROOT/prompt-codex-typo-reminder.out"
-
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-
-  [ -s "$out" ] &&
-    prompt_state_output_has_scoped_reminder "$out"
-}
-
-test_prompt_state_reminds_hooks_path_governance_task() {
-  local proof_root input out
-  proof_root="$(fresh_proof_root prompt-hooks-path-reminder)"
-  input="$TMP_ROOT/prompt-hooks-path-reminder.json"
-  jq '.prompt = "Fix hooks/stop-gate.sh to enforce ECI teardown."' "$FIXTURES/user-prompt-submit.json" >"$input"
-  out="$TMP_ROOT/prompt-hooks-path-reminder.out"
-
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-
-  [ -s "$out" ] &&
-    prompt_state_output_has_scoped_reminder "$out"
+test_prompt_state_keeps_hooks_path_governance_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-hooks-path-silent" \
+    "Fix hooks/stop-gate.sh to enforce ECI teardown."
 }
 
 test_prompt_state_leaves_react_hook_prompt_silent() {
@@ -438,22 +394,6 @@ test_prompt_state_leaves_email_rule_prompt_silent() {
   expect_no_output "$out"
 }
 
-prompt_state_prompt_emits_reminder() {
-  local tag="$1"
-  local prompt_text="$2"
-  local proof_root input out
-  proof_root="$(fresh_proof_root "$tag")"
-  input="$TMP_ROOT/$tag.json"
-  jq --arg prompt "$prompt_text" '.prompt = $prompt' "$FIXTURES/user-prompt-submit.json" >"$input"
-  out="$TMP_ROOT/$tag.out"
-
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-
-  [ -s "$out" ] &&
-    prompt_state_output_has_scoped_reminder "$out"
-}
-
 prompt_state_prompt_stays_silent() {
   local tag="$1"
   local prompt_text="$2"
@@ -469,108 +409,108 @@ prompt_state_prompt_stays_silent() {
   expect_no_output "$out"
 }
 
-test_prompt_state_reminds_system_prompt_task() {
-  prompt_state_prompt_emits_reminder "prompt-system-prompt-reminder" \
+test_prompt_state_keeps_system_prompt_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-system-prompt-silent" \
     "Improve the system prompt."
 }
 
-test_prompt_state_reminds_subagent_stop_hook_prompt_task() {
-  prompt_state_prompt_emits_reminder "prompt-subagent-stop-hook-reminder" \
+test_prompt_state_keeps_subagent_stop_hook_prompt_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-subagent-stop-hook-silent" \
     "Update the subagent prompt for Stop-hook handling."
 }
 
-test_prompt_state_reminds_stop_hook_prompt_task() {
-  prompt_state_prompt_emits_reminder "prompt-stop-hook-prompt-reminder" \
+test_prompt_state_keeps_stop_hook_prompt_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-stop-hook-prompt-silent" \
     "Tighten the Stop-hook prompt."
 }
 
-test_prompt_state_reminds_codex_review_task() {
-  prompt_state_prompt_emits_reminder "prompt-codex-review-reminder" \
+test_prompt_state_keeps_codex_review_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-codex-review-silent" \
     "Review CODEX.md."
 }
 
-test_prompt_state_reminds_hook_behavior_audit_task() {
-  prompt_state_prompt_emits_reminder "prompt-hook-behavior-audit-reminder" \
+test_prompt_state_keeps_hook_behavior_audit_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-hook-behavior-audit-silent" \
     "Audit hook behavior."
 }
 
-test_prompt_state_reminds_hook_tests_task() {
-  prompt_state_prompt_emits_reminder "prompt-hook-tests-reminder" \
+test_prompt_state_keeps_hook_tests_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-hook-tests-silent" \
     "Add hook tests for stop gate behavior."
 }
 
-test_prompt_state_reminds_task_routing_task() {
-  prompt_state_prompt_emits_reminder "prompt-task-routing-reminder" \
+test_prompt_state_keeps_task_routing_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-task-routing-silent" \
     "Fix task routing for non-trivial requests."
 }
 
-test_prompt_state_reminds_agent_routing_protocol_task() {
-  prompt_state_prompt_emits_reminder "prompt-agent-routing-protocol-reminder" \
+test_prompt_state_keeps_agent_routing_protocol_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-agent-routing-protocol-silent" \
     "Fix agent routing so non-trivial tasks use the right protocol."
 }
 
-test_prompt_state_reminds_nontrivial_tasks_use_eci_question() {
-  prompt_state_prompt_emits_reminder "prompt-nontrivial-tasks-use-eci-question-reminder" \
+test_prompt_state_keeps_nontrivial_tasks_use_eci_question_silent() {
+  prompt_state_prompt_stays_silent "prompt-nontrivial-tasks-use-eci-question-silent" \
     "What should we fix so non-trivial tasks use ECI at least?"
 }
 
-test_prompt_state_reminds_ensure_nontrivial_tasks_use_eci() {
-  prompt_state_prompt_emits_reminder "prompt-ensure-nontrivial-tasks-use-eci-reminder" \
+test_prompt_state_keeps_ensure_nontrivial_tasks_use_eci_silent() {
+  prompt_state_prompt_stays_silent "prompt-ensure-nontrivial-tasks-use-eci-silent" \
     "Ensure non-trivial tasks use ECI at least."
 }
 
-test_prompt_state_reminds_route_nontrivial_tasks_to_eci() {
-  prompt_state_prompt_emits_reminder "prompt-route-nontrivial-tasks-to-eci-reminder" \
+test_prompt_state_keeps_route_nontrivial_tasks_to_eci_silent() {
+  prompt_state_prompt_stays_silent "prompt-route-nontrivial-tasks-to-eci-silent" \
     "Route non-trivial tasks to ECI."
 }
 
-test_prompt_state_reminds_routing_nontrivial_tasks_use_eci() {
-  prompt_state_prompt_emits_reminder "prompt-routing-nontrivial-tasks-use-eci-reminder" \
+test_prompt_state_keeps_routing_nontrivial_tasks_use_eci_silent() {
+  prompt_state_prompt_stays_silent "prompt-routing-nontrivial-tasks-use-eci-silent" \
     "Fix routing so non-trivial tasks use ECI at least."
 }
 
-test_prompt_state_reminds_eci_routing_nontrivial_tasks() {
-  prompt_state_prompt_emits_reminder "prompt-eci-routing-nontrivial-tasks-reminder" \
+test_prompt_state_keeps_eci_routing_nontrivial_tasks_silent() {
+  prompt_state_prompt_stays_silent "prompt-eci-routing-nontrivial-tasks-silent" \
     "Fix ECI routing for non-trivial tasks."
 }
 
-test_prompt_state_reminds_make_nontrivial_tasks_use_eci() {
-  prompt_state_prompt_emits_reminder "prompt-make-nontrivial-tasks-use-eci-reminder" \
+test_prompt_state_keeps_make_nontrivial_tasks_use_eci_silent() {
+  prompt_state_prompt_stays_silent "prompt-make-nontrivial-tasks-use-eci-silent" \
     "Make non-trivial tasks use ECI at least."
 }
 
-test_prompt_state_reminds_caveman_switch_task() {
-  prompt_state_prompt_emits_reminder "prompt-caveman-switch-reminder" \
+test_prompt_state_keeps_caveman_switch_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-caveman-switch-silent" \
     "OK, we switched from caveman to ponytail previously. Switch it back to caveman."
 }
 
-test_prompt_state_reminds_plain_stop_gate_task() {
-  prompt_state_prompt_emits_reminder "prompt-stop-gate-reminder" \
+test_prompt_state_keeps_plain_stop_gate_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-stop-gate-silent" \
     "Fix stop gate behavior."
 }
 
-test_prompt_state_reminds_hyphen_stop_gate_task() {
-  prompt_state_prompt_emits_reminder "prompt-hyphen-stop-gate-reminder" \
+test_prompt_state_keeps_hyphen_stop_gate_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-hyphen-stop-gate-silent" \
     "Fix stop-gate behavior."
 }
 
-test_prompt_state_reminds_stop_gate_script_task() {
-  prompt_state_prompt_emits_reminder "prompt-stop-gate-script-reminder" \
+test_prompt_state_keeps_stop_gate_script_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-stop-gate-script-silent" \
     "Update stop-gate.sh."
 }
 
-test_prompt_state_reminds_stop_checklist_path_task() {
-  prompt_state_prompt_emits_reminder "prompt-stop-checklist-path-reminder" \
+test_prompt_state_keeps_stop_checklist_path_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-stop-checklist-path-silent" \
     "Update hooks/stop-checklist.md."
 }
 
-test_prompt_state_reminds_stop_checklist_task() {
-  prompt_state_prompt_emits_reminder "prompt-stop-checklist-reminder" \
+test_prompt_state_keeps_stop_checklist_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-stop-checklist-silent" \
     "Update stop checklist."
 }
 
-test_prompt_state_reminds_codex_config_task() {
-  prompt_state_prompt_emits_reminder "prompt-codex-config-reminder" \
+test_prompt_state_keeps_codex_config_task_silent() {
+  prompt_state_prompt_stays_silent "prompt-codex-config-silent" \
     "Update Codex config.toml."
 }
 
@@ -4114,12 +4054,12 @@ run_case "prompt state keeps session ECI marker silent" \
   test_prompt_state_keeps_session_eci_marker_silent
 run_case "prompt state config is wired without temporary probe" \
   test_prompt_state_config_is_wired_without_probe
-run_case "prompt state reminds nontrivial governance task to load required instructions" \
-  test_prompt_state_reminds_nontrivial_governance_task_to_load_required_instructions
-run_case "prompt state reminds CODEX typo without nontrivial overclaim" \
-  test_prompt_state_reminds_codex_typo_without_nontrivial_overclaim
-run_case "prompt state reminds hooks path governance task" \
-  test_prompt_state_reminds_hooks_path_governance_task
+run_case "prompt state keeps nontrivial governance task silent" \
+  test_prompt_state_keeps_nontrivial_governance_task_silent
+run_case "prompt state keeps CODEX typo silent" \
+  test_prompt_state_keeps_codex_typo_silent
+run_case "prompt state keeps hooks path governance task silent" \
+  test_prompt_state_keeps_hooks_path_governance_task_silent
 run_case "prompt state leaves React hook prompt silent" \
   test_prompt_state_leaves_react_hook_prompt_silent
 run_case "prompt state leaves React app hooks path silent" \
@@ -4130,48 +4070,48 @@ run_case "prompt state leaves Express routing prompt silent" \
   test_prompt_state_leaves_express_routing_prompt_silent
 run_case "prompt state leaves email rule prompt silent" \
   test_prompt_state_leaves_email_rule_prompt_silent
-run_case "prompt state reminds system prompt task" \
-  test_prompt_state_reminds_system_prompt_task
-run_case "prompt state reminds subagent Stop-hook prompt task" \
-  test_prompt_state_reminds_subagent_stop_hook_prompt_task
-run_case "prompt state reminds Stop-hook prompt task" \
-  test_prompt_state_reminds_stop_hook_prompt_task
-run_case "prompt state reminds CODEX.md review task" \
-  test_prompt_state_reminds_codex_review_task
-run_case "prompt state reminds hook behavior audit task" \
-  test_prompt_state_reminds_hook_behavior_audit_task
-run_case "prompt state reminds hook tests task" \
-  test_prompt_state_reminds_hook_tests_task
-run_case "prompt state reminds task routing task" \
-  test_prompt_state_reminds_task_routing_task
-run_case "prompt state reminds agent routing protocol task" \
-  test_prompt_state_reminds_agent_routing_protocol_task
-run_case "prompt state reminds nontrivial tasks use ECI question" \
-  test_prompt_state_reminds_nontrivial_tasks_use_eci_question
-run_case "prompt state reminds ensure nontrivial tasks use ECI" \
-  test_prompt_state_reminds_ensure_nontrivial_tasks_use_eci
-run_case "prompt state reminds route nontrivial tasks to ECI" \
-  test_prompt_state_reminds_route_nontrivial_tasks_to_eci
-run_case "prompt state reminds routing nontrivial tasks use ECI" \
-  test_prompt_state_reminds_routing_nontrivial_tasks_use_eci
-run_case "prompt state reminds ECI routing nontrivial tasks" \
-  test_prompt_state_reminds_eci_routing_nontrivial_tasks
-run_case "prompt state reminds make nontrivial tasks use ECI" \
-  test_prompt_state_reminds_make_nontrivial_tasks_use_eci
-run_case "prompt state reminds caveman switch task" \
-  test_prompt_state_reminds_caveman_switch_task
-run_case "prompt state reminds plain stop gate task" \
-  test_prompt_state_reminds_plain_stop_gate_task
-run_case "prompt state reminds hyphen stop gate task" \
-  test_prompt_state_reminds_hyphen_stop_gate_task
-run_case "prompt state reminds stop gate script task" \
-  test_prompt_state_reminds_stop_gate_script_task
-run_case "prompt state reminds stop checklist path task" \
-  test_prompt_state_reminds_stop_checklist_path_task
-run_case "prompt state reminds stop checklist task" \
-  test_prompt_state_reminds_stop_checklist_task
-run_case "prompt state reminds Codex config task" \
-  test_prompt_state_reminds_codex_config_task
+run_case "prompt state keeps system prompt task silent" \
+  test_prompt_state_keeps_system_prompt_task_silent
+run_case "prompt state keeps subagent Stop-hook prompt task silent" \
+  test_prompt_state_keeps_subagent_stop_hook_prompt_task_silent
+run_case "prompt state keeps Stop-hook prompt task silent" \
+  test_prompt_state_keeps_stop_hook_prompt_task_silent
+run_case "prompt state keeps CODEX.md review task silent" \
+  test_prompt_state_keeps_codex_review_task_silent
+run_case "prompt state keeps hook behavior audit task silent" \
+  test_prompt_state_keeps_hook_behavior_audit_task_silent
+run_case "prompt state keeps hook tests task silent" \
+  test_prompt_state_keeps_hook_tests_task_silent
+run_case "prompt state keeps task routing task silent" \
+  test_prompt_state_keeps_task_routing_task_silent
+run_case "prompt state keeps agent routing protocol task silent" \
+  test_prompt_state_keeps_agent_routing_protocol_task_silent
+run_case "prompt state keeps nontrivial tasks use ECI question silent" \
+  test_prompt_state_keeps_nontrivial_tasks_use_eci_question_silent
+run_case "prompt state keeps ensure nontrivial tasks use ECI silent" \
+  test_prompt_state_keeps_ensure_nontrivial_tasks_use_eci_silent
+run_case "prompt state keeps route nontrivial tasks to ECI silent" \
+  test_prompt_state_keeps_route_nontrivial_tasks_to_eci_silent
+run_case "prompt state keeps routing nontrivial tasks use ECI silent" \
+  test_prompt_state_keeps_routing_nontrivial_tasks_use_eci_silent
+run_case "prompt state keeps ECI routing nontrivial tasks silent" \
+  test_prompt_state_keeps_eci_routing_nontrivial_tasks_silent
+run_case "prompt state keeps make nontrivial tasks use ECI silent" \
+  test_prompt_state_keeps_make_nontrivial_tasks_use_eci_silent
+run_case "prompt state keeps caveman switch task silent" \
+  test_prompt_state_keeps_caveman_switch_task_silent
+run_case "prompt state keeps plain stop gate task silent" \
+  test_prompt_state_keeps_plain_stop_gate_task_silent
+run_case "prompt state keeps hyphen stop gate task silent" \
+  test_prompt_state_keeps_hyphen_stop_gate_task_silent
+run_case "prompt state keeps stop gate script task silent" \
+  test_prompt_state_keeps_stop_gate_script_task_silent
+run_case "prompt state keeps stop checklist path task silent" \
+  test_prompt_state_keeps_stop_checklist_path_task_silent
+run_case "prompt state keeps stop checklist task silent" \
+  test_prompt_state_keeps_stop_checklist_task_silent
+run_case "prompt state keeps Codex config task silent" \
+  test_prompt_state_keeps_codex_config_task_silent
 run_case "prompt state leaves CLI installation instructions silent" \
   test_prompt_state_leaves_cli_installation_instructions_silent
 run_case "prompt state leaves onboarding email instructions silent" \
