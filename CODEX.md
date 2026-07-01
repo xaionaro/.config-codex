@@ -48,6 +48,9 @@ For completion summaries, reviews, and subagent reports: tag factual claims; unt
 ## Decision Rules
 
 - For every nontrivial user request and every discovered issue, call `update_plan` immediately; keep pending, in-progress, and completed items visible until all work is done or the user changes scope.
+- Task routing: trivial = direct; non-trivial = ECI after explicit ECI/agent authorization; very long, heavy, multiday, or multi-workstream = ATE after explicit delegation authorization.
+- Treat a task as non-trivial when it changes prompts, routing, protocols, contracts, security, persistence, concurrency, architecture, reviewer/agent behavior, or has 2+ plausible approaches.
+- Treat a task as trivial only when the correct action is mechanical, directly verifiable, and has no future behavior or routing risk.
 - Security first. Use minimal targeted solutions; do not disable security controls as a workaround.
 - Prefer the simplest safe path.
 - Skip dead ends fast when required resources are unavailable.
@@ -89,8 +92,8 @@ Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker
 | Code implementation | `test-driven-development` |
 | Logic-heavy implementation | `proof-driven-development` |
 | Android device work: adb, fastboot, flashing, kernel updates | `android-device` |
-| User-requested ECI, or medium uncertain coding task after explicit agent authorization | `explore-critique-implement` |
-| Explicitly requested parallel/delegated agent work | `agent-teams-execution` |
+| User-requested ECI, or non-trivial task after explicit agent authorization | `explore-critique-implement` |
+| Very long/heavy/multiday or multi-workstream task after explicit delegation authorization | `agent-teams-execution` |
 | Skills, prompts, global instructions, `CODEX.md`, `AGENTS.md`, or `SKILL.md` | `harness-tuning` |
 | UI work | `ui-design` |
 | Porting code, features, or capabilities between projects | `code-porting` |
