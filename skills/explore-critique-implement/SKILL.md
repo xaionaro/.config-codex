@@ -197,6 +197,7 @@ The critic's prompt must include:
 - **"Step 0 — Independent baseline."** Read the source material (target file, existing code, prior art) and write your own 3-5 bullet assessment BEFORE opening the explorer's report. Include this baseline in the critique output.
 - "Assume every suggestion is wrong until you prove otherwise."
 - "Read the current state first" (the file/code/doc the explorer was working on) — verify duplication claims independently.
+- **Claim-scope audit for governance/prompt/hook/protocol/reviewer changes:** record mechanism/predicate, emitted or user-facing wording, strongest wording evidence supports, and one boundary counterexample. REJECT certainty, classification, provenance, or authority wording beyond mechanism evidence. Heuristic/regex evidence may support "matched the reminder heuristic"; it does not prove the user's work is non-trivial. `prompt-task-reminder.sh` is deterministic `UserPromptSubmit`; `edit-bash-pre-reviewer.sh` is LLM-capable first-tool `PreToolUse` only when `CODEX_EDIT_PRE_REVIEWER` is configured.
 - **Cite-verify and tag-discipline protocol:**
   - Untagged factual claim from explorer = REJECT-tagged issue on the option that depends on it.
   - Fetch every T1/T2 URL via WebFetch; use Read for source-code citations.
@@ -275,6 +276,8 @@ Both critics tag every issue per the severity codes table above. Same vocabulary
 For every REJECT or CONDITIONAL, reviewers must also tag `impact: trivial` or `impact: substantive` with a one-line rationale. `substantive` means non-trivial, major, API-changing, contract-changing, architecture-changing, security-sensitive, persistence-affecting, concurrency-affecting, or requiring a design tradeoff. Use the Triviality rule above for impact tags. Small patches are substantive when they alter future behavior, decision rules, contracts, prompts/instructions, or review routing. Missing impact tag = REJECT against the review output; re-prompt that reviewer before evaluating the gate.
 
 Both critics critique the implementer's root-cause rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
+
+For governance/prompt/hook/protocol/reviewer changes, Critic A and Critic B perform the Step 2 claim-scope audit. REJECT overclaims and missing boundary/negative tests; deterministic checks must not be described as LLM reviewers/classifiers.
 
 ### Critic A — correctness
 
@@ -461,6 +464,7 @@ auth middleware swap
 | Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 `send_input` body. |
 | Orchestrator forgot to pass Step 2 CONDITIONALs to implementer | STOP. Step 3 message must include verbatim CONDITIONAL fix-list. |
 | Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B rule). |
+| Hook/protocol/reviewer wording claims a heuristic proves, classifies, or determines task nature without matching mechanism evidence and boundary tests | STOP. Reword to the strongest supported claim and add negative/boundary pressure. |
 | Code/debugging submission lacks root-cause rationale or required regression explanation | STOP. Bounce before gate; unknown "why" means unsubmittable. |
 | Bug RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |
 | Critic fails to critique root-cause rationale or regression explanation | STOP. Re-prompt or re-spawn critic. |

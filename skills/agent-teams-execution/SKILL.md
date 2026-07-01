@@ -456,11 +456,12 @@ ATE adapter:
 
 0. **Does it work?** Before evaluating quality, verify code fulfills its stated purpose. If it doesn't — REJECT.
 1. **Root cause first.** Critique the executor's rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
-2. **Assume wrong.** Find errors. Look for what's missing.
-3. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block for blocking review gates. Minor (doesn't block), Nit (never blocks).
-4. **Outcomes:** Execution reviews use Execution dual review. Other gates: APPROVED (no Critical/Major, with evidence); CONDITIONAL (Minor/Nit listed; coordinator opens follow-ups per Priority Discipline); REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
-5. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale/regression explanation, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
-6. **Max 10 rounds.** 11th REJECTED pass becomes a protocol-limit blocker; run `blocker-resolution-protocol` before user escalation.
+2. **Claim scope.** For governance/prompt/hook/protocol/reviewer changes, compare mechanism/predicate, emitted or user-facing wording, strongest supported wording, and one boundary counterexample. Reject certainty, classification, LLM provenance, or authority beyond evidence. Heuristic/regex evidence may support "matched the reminder heuristic"; it does not prove the user's work is non-trivial. `prompt-task-reminder.sh` is deterministic `UserPromptSubmit`; `edit-bash-pre-reviewer.sh` is LLM-capable first-tool `PreToolUse` only when `CODEX_EDIT_PRE_REVIEWER` is configured.
+3. **Assume wrong.** Find errors. Look for what's missing.
+4. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block for blocking review gates. Minor (doesn't block), Nit (never blocks).
+5. **Outcomes:** Execution reviews use Execution dual review. Other gates: APPROVED (no Critical/Major, with evidence); CONDITIONAL (Minor/Nit listed; coordinator opens follow-ups per Priority Discipline); REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
+6. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale/regression explanation, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
+7. **Max 10 rounds.** 11th REJECTED pass becomes a protocol-limit blocker; run `blocker-resolution-protocol` before user escalation.
 
 **Sub-task/candidate-fix execution review effect:** Report, never fix. Use Execution dual review and the Execution Reviewer Checklist. Verdict labels match root aggregate review. Async CONDITIONAL/REJECTED findings route to coordinator for independent verification, then enter the next active iteration or queued async-followups if none remains. NITs stay optional. Executor continues in-flight work. Async output never delays, reopens, or retroactively blocks root aggregate review.
 
@@ -515,6 +516,7 @@ Extends the general Reviewer Protocol above (which already covers OWASP, edge ca
 - [ ] Requirements coverage — each user requirement → code
 - [ ] Design compliance — implementation matches architecture + interface contracts (error modes, pre/postconditions, invariants, thread safety)
 - [ ] Root-cause rationale — cause chain complete; diff repairs the cause, not only symptoms
+- [ ] Claim scope — compare mechanism/predicate, emitted wording, supported wording, and boundary counterexample/negative test; deterministic checks are not described as LLM reviewers/classifiers.
 - [ ] Code location — files in correct binary per purpose map
 - [ ] Shared concerns register — no reimplementation (REJECT); missed abstraction (CONDITIONAL)
 
@@ -633,6 +635,7 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] For long-term-health execution reviews on code targets: reviewer context cleared or shutdown+respawned under the same stable lens label before Packet 1; Packet 1 excludes all normal context; Packet 2 normal review context is sent only after `reconstructed intention:` returns.
 - [ ] For debugging/RCA spawns: regression report artifact path plus previous/current test-run evidence packet included.
 - [ ] Reviewer/verifier normal review packets include: executor's original objective with full context, and all scrutiny rules (coding style, claim tagging, OWASP, semantic integrity, etc.)
+- [ ] For governance/prompt/hook/protocol/reviewer changes, reviewer/verifier packets include claim-scope audit instructions plus boundary/negative evidence requirement.
 - [ ] Execution reviewer normal review packets include: scope, lens, effect, coding-style instruction, shared concerns register.
 - [ ] Preemptive warnings included: coordinator anticipates the most likely mistakes this agent could make given the specific task and explicitly warns against them in the spawn prompt
 - [ ] Evidence-bearing spawn/routing prompt artifact exists in the proof directory; artifact path + SHA256 recorded and forwarded where relevant
