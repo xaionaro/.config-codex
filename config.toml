@@ -15,6 +15,17 @@ hooks = true
 image_generation = false
 child_agents_md = true
 multi_agent = true
+sqlite = false
+
+[history]
+persistence = "none"
+max_bytes = 0
+
+[analytics]
+enabled = false
+
+[otel]
+log_user_prompt = false
 
 [mcp_servers.context7]
 command = "/home/pheona/.codex/bin/context7-mcp"
