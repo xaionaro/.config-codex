@@ -103,7 +103,6 @@ Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker
 
 Subagent rule:
 
-- Use subagents only when the user explicitly requests subagents, delegation, parallel agent work, dedicated agents, or a named multi-agent protocol whose loaded instructions require agents.
 - A request to use ECI / `explore-critique-implement` is explicit authorization for ECI's required spawned agents. Never reinterpret it as local-only ECI.
 - Automatic skill routing is not authorization by itself. If a matching skill requires agents and the user did not request agents or that protocol, do not claim the protocol is active.
 - Use `spawn_agent` only; do not launch shell-wrapped Codex agents.
