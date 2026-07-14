@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 FIXTURES="$ROOT/hooks/tests/fixtures"
+if ! command -v strace >/dev/null 2>&1; then
+  printf '%s\n' "FAIL setup strace is required"
+  exit 1
+fi
 TMP_ROOT=""
 if ! TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-hooks-tests.XXXXXX")"; then
   printf '%s\n' "FAIL setup could not create temporary test root"
@@ -257,7 +262,8 @@ accept_stop_proof() {
 test_prompt_state_is_silent_records_head_and_clears_bypass() {
   local proof_root out expected
   proof_root="$(fresh_proof_root prompt-head)"
-  mkdir -p "$proof_root/reviewer/t00-session" "$proof_root/pre-reviewer/t00-session"
+  mkdir -p "$proof_root/reviewer/t00-session"
+  mkdir -p -m 0700 "$proof_root/pre-reviewer/t00-session"
   touch "$proof_root/reviewer/t00-session/bypass" "$proof_root/pre-reviewer/t00-session/bypass"
   expected="$(git -C "$ROOT" rev-parse HEAD)"
   out="$TMP_ROOT/prompt-head.out"
@@ -828,6 +834,179 @@ write_subagent_transcript() {
 JSON
 }
 
+write_first_record_scoped_subagent_transcript() {
+  local path="$1"
+  local record_bytes="$2"
+  local include_newline="${3:-yes}"
+  local include_history="${4:-yes}"
+  local prefix suffix newline_bytes padding_length history_prefix history_suffix
+  prefix='{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session"}}}},"padding":"'
+  suffix='"}'
+  newline_bytes=1
+  [ "$include_newline" = yes ] || newline_bytes=0
+  padding_length=$((record_bytes - ${#prefix} - ${#suffix} - newline_bytes))
+  [ "$padding_length" -ge 0 ] || return 1
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s%*s%s' "$prefix" "$padding_length" '' "$suffix" | tr ' ' x >"$path"
+  [ "$include_newline" = yes ] && printf '\n' >>"$path"
+  if [ "$include_history" = yes ]; then
+    history_prefix='{"padding":"'
+    history_suffix='","sentinel":"DEEP_SECOND_RECORD_SENTINEL"}'
+    printf '%s%*s%s\n' "$history_prefix" 1048576 '' "$history_suffix" | tr ' ' y >>"$path"
+  fi
+  [ "$record_bytes" -eq "$(head -c "$record_bytes" "$path" | wc -c)" ]
+}
+
+trace_first_record_helper() {
+  local helper="$1"
+  local transcript="$2"
+  local output="$3"
+  local trace="$4"
+
+  strace -f -qq -s 8192 -e trace=read -P "$transcript" -o "$trace" \
+    env HOME="$TMP_ROOT/home" bash -c '. "$1"; "$2" "$3"' \
+    bash "$ROOT/hooks/lib/codex-proof-state.sh" "$helper" \
+    "$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')" \
+    >"$output" 2>"$output.err"
+}
+
+trace_read_bytes() {
+  local trace="$1"
+
+  awk '$NF ~ /^[0-9]+$/ { total += $NF } END { print total + 0 }' "$trace"
+}
+
+trace_is_first_record_scoped() {
+  local trace="$1"
+  local transcript="$2"
+  local first_record_bytes total_bytes read_bytes
+  first_record_bytes="$(sed -n '1{p;q;}' "$transcript" | wc -c)"
+  total_bytes="$(wc -c <"$transcript")"
+  read_bytes="$(trace_read_bytes "$trace")"
+
+  [ -s "$trace" ] &&
+    [ "$read_bytes" -le $((first_record_bytes + 8192)) ] &&
+    { [ "$first_record_bytes" -eq "$total_bytes" ] || [ "$read_bytes" -lt "$total_bytes" ]; } &&
+    ! grep -Fq 'DEEP_SECOND_RECORD_SENTINEL' "$trace"
+}
+
+invoke_state_helper() {
+  local helper="$1"
+  local input="$2"
+  local output="$3"
+
+  env HOME="$TMP_ROOT/home" bash -c '. "$1"; "$2" "$3"' \
+    bash "$ROOT/hooks/lib/codex-proof-state.sh" "$helper" "$input" \
+    >"$output" 2>"$output.err"
+}
+
+test_subagent_helper_processes_through_first_record_then_quits() {
+  local label record_bytes transcript output trace
+  for label in short boundary large; do
+    case "$label" in
+      short) record_bytes=256 ;;
+      boundary) record_bytes=4096 ;;
+      large) record_bytes=1048576 ;;
+    esac
+    transcript="$TMP_ROOT/home/.codex/sessions/first-record-subagent-$label.jsonl"
+    output="$TMP_ROOT/first-record-subagent-$label.out"
+    trace="$TMP_ROOT/first-record-subagent-$label.strace"
+    write_first_record_scoped_subagent_transcript "$transcript" "$record_bytes" || return 1
+    trace_first_record_helper codex_hook_is_subagent_context "$transcript" "$output" "$trace" || return 1
+    [ ! -s "$output" ] && trace_is_first_record_scoped "$trace" "$transcript" || return 1
+    if [ "$label" = large ]; then
+      [ "$(grep -Ec '(^|[[:space:]])read\(' "$trace")" -gt 1 ] || return 1
+    fi
+  done
+}
+
+test_parent_helper_processes_through_first_record_then_quits() {
+  local transcript output trace
+  transcript="$TMP_ROOT/home/.codex/sessions/first-record-parent-large.jsonl"
+  output="$TMP_ROOT/first-record-parent-large.out"
+  trace="$TMP_ROOT/first-record-parent-large.strace"
+  write_first_record_scoped_subagent_transcript "$transcript" 1048576 || return 1
+
+  trace_first_record_helper codex_hook_parent_session_id "$transcript" "$output" "$trace" &&
+    [ "$(cat "$output")" = "parent-session" ] &&
+    [ "$(grep -Ec '(^|[[:space:]])read\(' "$trace")" -gt 1 ] &&
+    trace_is_first_record_scoped "$trace" "$transcript"
+}
+
+test_first_record_helpers_accept_oversize_without_final_newline() {
+  local transcript input output
+  transcript="$TMP_ROOT/home/.codex/sessions/first-record-no-final-newline.jsonl"
+  output="$TMP_ROOT/first-record-no-final-newline.out"
+  write_first_record_scoped_subagent_transcript "$transcript" 1048576 no no || return 1
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+
+  invoke_state_helper codex_hook_is_subagent_context "$input" "$output" || return 1
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || return 1
+  [ "$(cat "$output")" = parent-session ]
+}
+
+test_first_record_helpers_preserve_boundary_behavior() {
+  local dir transcript input output
+  dir="$TMP_ROOT/home/.codex/sessions"
+  mkdir -p "$dir" || return 1
+
+  transcript="$dir/boundary-subagent.jsonl"
+  write_subagent_transcript "$transcript" || return 1
+  input="$(jq -cn --arg transcript "$transcript" --arg sid child-session \
+    '{transcript_path: $transcript, session_id: $sid}')"
+  output="$TMP_ROOT/boundary-subagent.out"
+  invoke_state_helper codex_hook_is_subagent_context "$input" "$output" || return 1
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || return 1
+  [ "$(cat "$output")" = parent-session ] || return 1
+
+  transcript="$dir/boundary-no-final-newline.jsonl"
+  printf '%s' "$(cat "$dir/boundary-subagent.jsonl")" >"$transcript"
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+  invoke_state_helper codex_hook_is_subagent_context "$input" "$output" || return 1
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || return 1
+  [ "$(cat "$output")" = parent-session ] || return 1
+
+  transcript="$dir/boundary-empty.jsonl"
+  : >"$transcript"
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+  if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then return 1; fi
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || true
+  [ ! -s "$output" ] || return 1
+
+  transcript="$dir/boundary-malformed.jsonl"
+  printf '%s\n' '{malformed' >"$transcript"
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+  if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then return 1; fi
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || true
+  [ ! -s "$output" ] || return 1
+
+  transcript="$dir/boundary-missing.jsonl"
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+  if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then return 1; fi
+  if invoke_state_helper codex_hook_parent_session_id "$input" "$output"; then return 1; fi
+
+  transcript="$dir/boundary-main.jsonl"
+  write_main_transcript "$transcript" || return 1
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+  if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then return 1; fi
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || true
+  [ ! -s "$output" ] || return 1
+
+  transcript="$dir/boundary-invalid-parent.jsonl"
+  printf '%s\n' '{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"../bad"}}}}}' >"$transcript"
+  input="$(jq -cn --arg transcript "$transcript" --arg sid child-session \
+    '{transcript_path: $transcript, session_id: $sid}')"
+  invoke_state_helper codex_hook_allowed_session_ids "$input" "$output" || return 1
+  [ "$(cat "$output")" = child-session ] || return 1
+
+  transcript="$TMP_ROOT/outside-restricted-session-path.jsonl"
+  write_subagent_transcript "$transcript" || return 1
+  input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
+  if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then return 1; fi
+  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || return 1
+  [ "$(cat "$output")" = parent-session ]
+}
+
 write_main_transcript() {
   local path="$1"
   mkdir -p "$(dirname "$path")" || return 1
@@ -1255,11 +1434,1764 @@ test_stop_reviewer_timeout_and_hook_wiring() {
   jq -e '
     ([.hooks.Stop[]?.hooks[]? | select((.command // "") | test("/stop-gate\\.sh")) | .timeout] | all(. >= 240)) and
     ([.hooks.Stop[]?.hooks[]?.command] | all((test("/system-prompt-reviewer\\.sh") | not))) and
-    ([.hooks.PreToolUse[]?.hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
+    ([.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test("/edit-bash-pre-reviewer\\.sh"))]
+      | length == 3 and all(.timeout == 75)) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?
+      | select((.command // "") | test("/validate-bash\\.sh"))]
+      | length == 1 and all(.timeout == 75)) and
     ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
     ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
     ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh")))
-  ' "$ROOT/hooks.json" >/dev/null
+  ' "$ROOT/hooks.json" >/dev/null || return 1
+  [ "$(bash -c '. "$1"; printf "%s" "$CODEX_EDIT_PRE_REVIEWER_TIMEOUT"' \
+      bash "$ROOT/hooks/lib/reviewer-call.sh")" = 60 ]
+}
+
+write_large_history_main_pre_reviewer_transcript() {
+  local path="$1"
+
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' '{"type":"session_meta","payload":{"id":"t00-session","source":"cli"}}' >"$path"
+  printf '%s\n' '{"type":"user","message":{"content":"OLD_HISTORY_POISON_MUST_NOT_BE_READ"}}' >>"$path"
+  printf '%12000s\n' '' | tr ' ' x >>"$path"
+  [ "$(wc -c <"$path")" -gt 8192 ]
+}
+
+submit_current_turn() {
+  local proof_root="$1"
+  local turn_id="$2"
+  local prompt="$3"
+  local tag="$4"
+  local input="$TMP_ROOT/$tag-submit.json"
+  local out="$TMP_ROOT/$tag-submit.out"
+
+  jq -n --arg cwd "$ROOT" --arg turn_id "$turn_id" --arg prompt "$prompt" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:$turn_id,prompt:$prompt}' \
+    >"$input" || return 1
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
+}
+
+turn_state_key() {
+  local turn_id="$1"
+
+  env HOME="$TMP_ROOT/home" bash -c '. "$1"; codex_hash_string "$2"' \
+    bash "$ROOT/hooks/lib/codex-proof-state.sh" \
+    "$(jq -cn --arg turn_id "$turn_id" '$turn_id')"
+}
+
+turn_capture_path() {
+  local proof_root="$1"
+  local turn_id="$2"
+  local key
+  key="$(turn_state_key "$turn_id")" || return 1
+  printf '%s/pre-reviewer/t00-session/capture-turn-%s.json\n' "$proof_root" "$key"
+}
+
+turn_claim_path() {
+  local proof_root="$1"
+  local turn_id="$2"
+  local key
+  key="$(turn_state_key "$turn_id")" || return 1
+  printf '%s/pre-reviewer/t00-session/claim-turn-%s\n' "$proof_root" "$key"
+}
+
+test_pre_reviewer_lock_is_bounded_and_fileless() {
+  local state_dir holder_fd started_ns ended_ns elapsed_ms status
+  state_dir="$TMP_ROOT/pre-reviewer-bounded-lock"
+  mkdir -m 0700 "$state_dir" || return 1
+  exec {holder_fd}<"$state_dir" || return 1
+  flock -x "$holder_fd" || return 1
+  started_ns="$(date +%s%N)" || return 1
+  status=0
+  env CODEX_PRE_REVIEWER_LOCK_TIMEOUT=2 bash -c '
+    . "$1"
+    codex_lock_pre_reviewer_turn "$2"
+  ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" || status=$?
+  ended_ns="$(date +%s%N)" || return 1
+  flock -u "$holder_fd" || return 1
+  exec {holder_fd}>&-
+  elapsed_ms=$(((ended_ns - started_ns) / 1000000))
+
+  [ "$status" -ne 0 ] && [ "$elapsed_ms" -lt 2000 ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'lock-turn-*' | wc -l)" -eq 0 ] &&
+    grep -Eq 'flock[[:space:]]+-x[[:space:]]+-w' \
+      "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" &&
+    ! grep -q 'lock-turn-' "$ROOT/hooks/lib/pre-reviewer-turn-state.sh"
+}
+
+write_flock_timeout_argv_spy() {
+  local bin_dir="$1"
+
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/flock" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = -x ] && [ "${2:-}" = -w ]; then
+  printf '%s\n' "${3:-}" >"$CODEX_TEST_FLOCK_TIMEOUT_ARG"
+  exit 0
+fi
+if [ "${1:-}" = -u ]; then
+  exit 0
+fi
+exit 99
+SH
+  chmod 0755 "$bin_dir/flock"
+}
+
+test_pre_reviewer_lock_timeout_accepts_only_zero_through_one() {
+  local state_dir bin_dir observed value
+  local -a accepted rejected
+  state_dir="$TMP_ROOT/pre-reviewer-lock-timeout-values"
+  bin_dir="$TMP_ROOT/pre-reviewer-lock-timeout-values-bin"
+  mkdir -m 0700 "$state_dir" || return 1
+  write_flock_timeout_argv_spy "$bin_dir" || return 1
+  accepted=(0 00 0.0 000.999 1 01 1.0 001.000)
+  rejected=(
+    "" 2 0002 1.0001 01.1 -0 +0 .5 0. 1. 1e0
+    " 1" "1 " $'\t1' 0x1 one 1second ١ １
+    99999999999999999999999999999999999999999999999999
+  )
+
+  for value in "${accepted[@]}"; do
+    rm -f "$TMP_ROOT/flock-timeout-arg"
+    env PATH="$bin_dir:$PATH" \
+      CODEX_TEST_FLOCK_TIMEOUT_ARG="$TMP_ROOT/flock-timeout-arg" \
+      CODEX_PRE_REVIEWER_LOCK_TIMEOUT="$value" bash -c '
+        . "$1"
+        codex_lock_pre_reviewer_turn "$2" || exit 1
+        codex_unlock_pre_reviewer_turn
+      ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" || return 1
+    IFS= read -r observed <"$TMP_ROOT/flock-timeout-arg" || return 1
+    [ "$observed" = "$value" ] || return 1
+  done
+
+  for value in "${rejected[@]}"; do
+    rm -f "$TMP_ROOT/flock-timeout-arg"
+    env PATH="$bin_dir:$PATH" \
+      CODEX_TEST_FLOCK_TIMEOUT_ARG="$TMP_ROOT/flock-timeout-arg" \
+      CODEX_PRE_REVIEWER_LOCK_TIMEOUT="$value" bash -c '
+        . "$1"
+        codex_lock_pre_reviewer_turn "$2" || exit 1
+        codex_unlock_pre_reviewer_turn
+      ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" || return 1
+    IFS= read -r observed <"$TMP_ROOT/flock-timeout-arg" || return 1
+    [ "$observed" = 1 ] || return 1
+  done
+
+  grep -Fq '[[ "$timeout" =~ ^(0+([.][0123456789]+)?|0*1([.]0+)?)$ ]] || timeout=1' \
+    "$ROOT/hooks/lib/pre-reviewer-turn-state.sh"
+}
+
+test_pre_reviewer_lock_revalidates_after_waiting_path_swap() {
+  local state_dir moved_dir bin_dir ready holder_fd ready_fd ready_signal pid status
+  state_dir="$TMP_ROOT/pre-reviewer-lock-swap"
+  moved_dir="$TMP_ROOT/pre-reviewer-lock-swap-moved"
+  bin_dir="$TMP_ROOT/pre-reviewer-lock-swap-bin"
+  ready="$TMP_ROOT/pre-reviewer-lock-swap-ready"
+  mkdir -m 0700 "$state_dir" || return 1
+  exec {holder_fd}<"$state_dir" || return 1
+  flock -x "$holder_fd" || return 1
+  mkfifo "$ready" || return 1
+  exec {ready_fd}<>"$ready" || return 1
+  write_signaling_flock_wrapper "$bin_dir" || return 1
+
+  env PATH="$bin_dir:$PATH" CODEX_TEST_LOCK_READY="$ready" \
+    CODEX_PRE_REVIEWER_LOCK_TIMEOUT=1 bash -c '
+      . "$1"
+      if codex_lock_pre_reviewer_turn "$2"; then
+        codex_unlock_pre_reviewer_turn
+        exit 0
+      fi
+      exit 1
+    ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" &
+  pid=$!
+  if ! IFS= read -r -t 5 -u "$ready_fd" ready_signal || [ "$ready_signal" != ready ]; then
+    flock -u "$holder_fd" || true
+    exec {holder_fd}>&-
+    wait "$pid" 2>/dev/null || true
+    exec {ready_fd}>&-
+    rm -f "$ready"
+    return 1
+  fi
+  exec {ready_fd}>&-
+  rm -f "$ready"
+  mv "$state_dir" "$moved_dir" || return 1
+  mkdir -m 0700 "$state_dir" || return 1
+  flock -u "$holder_fd" || return 1
+  exec {holder_fd}>&-
+  status=0
+  wait "$pid" || status=$?
+
+  [ "$status" -ne 0 ] &&
+    env bash -c '
+      . "$1"
+      codex_lock_pre_reviewer_turn "$2" || exit 1
+      codex_unlock_pre_reviewer_turn
+    ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir"
+}
+
+test_pre_reviewer_lock_revalidates_private_mode_after_waiting() {
+  local state_dir bin_dir ready holder_fd ready_fd ready_signal pid status
+  state_dir="$TMP_ROOT/pre-reviewer-lock-mode-change"
+  bin_dir="$TMP_ROOT/pre-reviewer-lock-mode-change-bin"
+  ready="$TMP_ROOT/pre-reviewer-lock-mode-change-ready"
+  mkdir -m 0700 "$state_dir" || return 1
+  exec {holder_fd}<"$state_dir" || return 1
+  flock -x "$holder_fd" || return 1
+  mkfifo "$ready" || return 1
+  exec {ready_fd}<>"$ready" || return 1
+  write_signaling_flock_wrapper "$bin_dir" || return 1
+
+  env PATH="$bin_dir:$PATH" CODEX_TEST_LOCK_READY="$ready" \
+    CODEX_PRE_REVIEWER_LOCK_TIMEOUT=1 bash -c '
+      . "$1"
+      if codex_lock_pre_reviewer_turn "$2"; then
+        codex_unlock_pre_reviewer_turn
+        exit 0
+      fi
+      exit 1
+    ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" &
+  pid=$!
+  if ! IFS= read -r -t 5 -u "$ready_fd" ready_signal || [ "$ready_signal" != ready ]; then
+    flock -u "$holder_fd" || true
+    exec {holder_fd}>&-
+    wait "$pid" 2>/dev/null || true
+    exec {ready_fd}>&-
+    rm -f "$ready"
+    return 1
+  fi
+  exec {ready_fd}>&-
+  rm -f "$ready"
+  chmod 0755 "$state_dir" || return 1
+  flock -u "$holder_fd" || return 1
+  exec {holder_fd}>&-
+  status=0
+  wait "$pid" || status=$?
+  chmod 0700 "$state_dir" || return 1
+
+  [ "$status" -ne 0 ]
+}
+
+test_many_turns_leave_no_lock_files() {
+  local proof_root state_dir index
+  proof_root="$(fresh_proof_root pre-reviewer-many-turns-no-lock-files)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  for index in $(seq 1 128); do
+    submit_current_turn "$proof_root" "turn-$index" "PROMPT_$index" \
+      "pre-reviewer-many-turns-$index" || return 1
+  done
+
+  [ "$(find "$state_dir" -maxdepth 1 -type f -name 'lock-turn-*' | wc -l)" -eq 0 ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'capture-turn-*.json' | wc -l)" -eq 128 ]
+}
+
+test_pre_reviewer_present_turn_skips_transcript_find() {
+  local proof_root bin_dir marker input out body
+  proof_root="$(fresh_proof_root pre-reviewer-present-no-find)"
+  submit_current_turn "$proof_root" turn-no-find "NO_FIND_CAPTURE" \
+    pre-reviewer-present-no-find || return 1
+  bin_dir="$TMP_ROOT/pre-reviewer-present-no-find-bin"
+  marker="$TMP_ROOT/pre-reviewer-present-no-find-called"
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/find" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' >"$CODEX_TEST_FIND_MARKER"
+exit 99
+SH
+  chmod 0755 "$bin_dir/find"
+  input="$TMP_ROOT/pre-reviewer-present-no-find.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",tool_name:"Bash",turn_id:"turn-no-find",cwd:$cwd,
+      tool_input:{command:"sed -n 1,20p hooks/stop-gate.sh"}}' >"$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-present-no-find.out"
+  body="$TMP_ROOT/pre-reviewer-present-no-find-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_FIND_MARKER="$marker" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"No find."}' || return 1
+
+  is_pretool_deny "$out" && grep -Fq NO_FIND_CAPTURE "$body" && [ ! -e "$marker" ]
+}
+
+write_blocking_perl_wrapper() {
+  local bin_dir="$1"
+  local real_perl
+
+  real_perl="$(command -v perl)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/perl" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "\${CODEX_TEST_CAPTURE_READY:-}" ]; then
+  printf 'ready\n' >"\$CODEX_TEST_CAPTURE_READY"
+  read -r release <"\$CODEX_TEST_CAPTURE_RELEASE"
+  [ "\$release" = release ]
+fi
+exec "$real_perl" "\$@"
+EOF
+  chmod 0755 "$bin_dir/perl"
+}
+
+write_blocking_validation_python_wrapper() {
+  local bin_dir="$1"
+  local real_python
+
+  real_python="$(command -v python3)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ " \$* " == *turn_capture_validator.py* ]] && [ ! -e "\$CODEX_TEST_ONCE" ]; then
+  : >"\$CODEX_TEST_ONCE"
+  printf 'ready\n' >"\$CODEX_TEST_VALIDATION_READY"
+  read -r release <"\$CODEX_TEST_VALIDATION_RELEASE"
+  [ "\$release" = release ]
+fi
+exec "$real_python" "\$@"
+EOF
+  chmod 0755 "$bin_dir/python3"
+}
+
+write_signaling_flock_wrapper() {
+  local bin_dir="$1"
+  local real_flock
+
+  real_flock="$(command -v flock)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/flock" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = -x ] && [ -n "\${CODEX_TEST_LOCK_READY:-}" ]; then
+  printf 'ready\n' >"\$CODEX_TEST_LOCK_READY"
+fi
+exec "$real_flock" "\$@"
+EOF
+  chmod 0755 "$bin_dir/flock"
+}
+
+test_prompt_capture_distinct_turns_overlap_without_overwrite() {
+  local proof_root state_dir bin_dir ready release input_a input_b out_a out_b pid_a ready_fd release_fd
+  local key_a key_b capture_a capture_b redacted_tmp ready_signal wait_status
+  proof_root="$(fresh_proof_root prompt-capture-distinct-overlap)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  bin_dir="$TMP_ROOT/prompt-capture-distinct-overlap-bin"
+  ready="$TMP_ROOT/prompt-capture-distinct-overlap-ready"
+  release="$TMP_ROOT/prompt-capture-distinct-overlap-release"
+  mkfifo "$ready" "$release" || return 1
+  exec {ready_fd}<>"$ready" || return 1
+  exec {release_fd}<>"$release" || { exec {ready_fd}>&-; return 1; }
+  write_blocking_perl_wrapper "$bin_dir" || return 1
+  input_a="$TMP_ROOT/prompt-capture-distinct-overlap-a.json"
+  input_b="$TMP_ROOT/prompt-capture-distinct-overlap-b.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:"turn-a",prompt:"PROMPT_A"}' \
+    >"$input_a" || return 1
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:"turn-b",prompt:"PROMPT_B"}' \
+    >"$input_b" || return 1
+  out_a="$TMP_ROOT/prompt-capture-distinct-overlap-a.out"
+  out_b="$TMP_ROOT/prompt-capture-distinct-overlap-b.out"
+
+  run_hook "$out_a" "$ROOT/hooks/prompt-task-reminder.sh" "$input_a" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_CAPTURE_READY="$ready" CODEX_TEST_CAPTURE_RELEASE="$release" &
+  pid_a=$!
+  if ! IFS= read -r -t 5 -u "$ready_fd" ready_signal || [ "$ready_signal" != ready ]; then
+    printf 'release\n' >&"$release_fd" || true
+    kill "$pid_a" 2>/dev/null || true
+    wait "$pid_a" 2>/dev/null || true
+    exec {ready_fd}>&-
+    exec {release_fd}>&-
+    rm -f "$ready" "$release"
+    return 1
+  fi
+  redacted_tmp=$(find "$state_dir" -maxdepth 1 -type f -name '.capture-turn-*.redacted.*' -print -quit)
+  if [ -z "$redacted_tmp" ] || [ "$(stat -c '%a' "$redacted_tmp")" != 600 ] ||
+      ! run_hook "$out_b" "$ROOT/hooks/prompt-task-reminder.sh" "$input_b" \
+        HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root"; then
+    printf 'release\n' >&"$release_fd" || true
+    kill "$pid_a" 2>/dev/null || true
+    wait "$pid_a" 2>/dev/null || true
+    exec {ready_fd}>&-
+    exec {release_fd}>&-
+    rm -f "$ready" "$release"
+    return 1
+  fi
+  printf 'release\n' >&"$release_fd"
+  wait_status=0
+  wait "$pid_a" || wait_status=$?
+  exec {ready_fd}>&-
+  exec {release_fd}>&-
+  rm -f "$ready" "$release"
+  [ "$wait_status" -eq 0 ] || return 1
+
+  key_a="$(turn_state_key turn-a)" || return 1
+  key_b="$(turn_state_key turn-b)" || return 1
+  capture_a="$state_dir/capture-turn-$key_a.json"
+  capture_b="$state_dir/capture-turn-$key_b.json"
+  expect_no_output "$out_a" && expect_no_output "$out_b" &&
+    jq -e '.turn_id == "turn-a" and .prompt == "PROMPT_A"' "$capture_a" >/dev/null &&
+    jq -e '.turn_id == "turn-b" and .prompt == "PROMPT_B"' "$capture_b" >/dev/null &&
+    [ "$(stat -c '%a' "$capture_a")" = 600 ] && [ "$(stat -c '%a' "$capture_b")" = 600 ]
+}
+
+test_prompt_cap_failure_leaves_no_same_key_reusable_state() {
+  local proof_root state_dir capture claim bin_dir input out
+  proof_root="$(fresh_proof_root prompt-cap-failure)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  submit_current_turn "$proof_root" turn-cap-failure "OLD_CAPTURE" prompt-cap-failure-old || return 1
+  capture="$(turn_capture_path "$proof_root" turn-cap-failure)" || return 1
+  claim="$(turn_claim_path "$proof_root" turn-cap-failure)" || return 1
+  bin_dir="$TMP_ROOT/prompt-cap-failure-bin"
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod 0755 "$bin_dir/python3"
+  input="$TMP_ROOT/prompt-cap-failure.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:"turn-cap-failure",prompt:"NEW_CAPTURE"}' >"$input" || return 1
+  out="$TMP_ROOT/prompt-cap-failure.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out" && [ ! -e "$capture" ] && [ ! -e "$claim" ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name '.capture-turn-*' | wc -l)" -eq 0 ]
+}
+
+test_turn_state_pruning_is_old_regular_file_and_namespace_scoped() {
+  local state_dir old_capture old_temp old_claim fresh_capture bypass other
+  state_dir="$TMP_ROOT/prune-turn-state"
+  mkdir -m 0700 "$state_dir" || return 1
+  old_capture="$state_dir/capture-turn-old.json"
+  old_temp="$state_dir/.capture-turn-old.capped.ABCDEF"
+  old_claim="$state_dir/claim-turn-old"
+  fresh_capture="$state_dir/capture-turn-fresh.json"
+  bypass="$state_dir/bypass"
+  other="$state_dir/unrelated"
+  : >"$old_capture"
+  : >"$old_temp"
+  : >"$old_claim"
+  : >"$fresh_capture"
+  : >"$bypass"
+  : >"$other"
+  mkdir "$state_dir/capture-turn-old-directory.json" || return 1
+  touch -d '2 hours ago' "$old_capture" "$old_temp" "$old_claim" "$bypass" "$other" \
+    "$state_dir/capture-turn-old-directory.json" || return 1
+
+  env HOME="$TMP_ROOT/home" bash -c \
+    '. "$1"; codex_lock_pre_reviewer_turn "$2" || exit 1
+      codex_prune_pre_reviewer_turn_state
+      status=$?
+      codex_unlock_pre_reviewer_turn
+      exit "$status"' \
+    bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" || return 1
+
+  [ ! -e "$old_capture" ] && [ ! -e "$old_temp" ] && [ ! -e "$old_claim" ] &&
+    [ -e "$fresh_capture" ] && [ -e "$bypass" ] && [ -e "$other" ] &&
+    [ -d "$state_dir/capture-turn-old-directory.json" ]
+}
+
+test_turn_state_pruning_requires_held_lock_descriptor() {
+  local state_dir old_claim
+  state_dir="$TMP_ROOT/prune-turn-state-unlocked"
+  mkdir -m 0700 "$state_dir" || return 1
+  old_claim="$state_dir/claim-turn-old"
+  : >"$old_claim"
+  touch -d '2 hours ago' "$old_claim" || return 1
+
+  if env HOME="$TMP_ROOT/home" bash -c \
+    '. "$1"; codex_prune_pre_reviewer_turn_state' \
+    bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh"; then
+    return 1
+  fi
+  [ -e "$old_claim" ]
+}
+
+populate_retained_turn_state() {
+  local state_dir="$1"
+  local old_count="$2"
+  local fresh_count="$3"
+  local index path
+  local -a old_paths
+
+  old_paths=()
+  for index in $(seq 1 "$old_count"); do
+    case $((index % 4)) in
+      0) path="$state_dir/capture-turn-retained-old-$index.json" ;;
+      1) path="$state_dir/claim-turn-retained-old-$index" ;;
+      2) path="$state_dir/.capture-turn-retained-old-$index.capped.A$index" ;;
+      3) path="$state_dir/.capture-turn-retained-old-$index.prompt.A$index" ;;
+    esac
+    : >"$path" || return 1
+    old_paths+=("$path")
+  done
+  touch -d '2 hours ago' "${old_paths[@]}" || return 1
+  for index in $(seq 1 "$fresh_count"); do
+    : >"$state_dir/claim-turn-retained-fresh-$index" || return 1
+  done
+}
+
+write_prune_observer_python_wrapper() {
+  local bin_dir="$1"
+  local real_python
+
+  real_python="$(command -v python3)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == *prune_pre_reviewer_turn_state.py ]]; then
+  printf 'prune\n' >>"\$CODEX_TEST_PRUNE_TRACE"
+  if [ "\${CODEX_TEST_PRUNE_FATAL:-}" = 1 ]; then
+    exit 99
+  fi
+fi
+exec "$real_python" "\$@"
+EOF
+  chmod 0755 "$bin_dir/python3"
+}
+
+write_stat_rm_observer_wrappers() {
+  local bin_dir="$1"
+  local real_stat real_rm command_name
+
+  real_stat="$(command -v stat)" || return 1
+  real_rm="$(command -v rm)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  for command_name in stat rm; do
+    cat >"$bin_dir/$command_name" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+command_name=\${0##*/}
+printf '%s\n' "\$command_name" >>"\$CODEX_TEST_COMMAND_TRACE"
+case "\$command_name" in
+  stat) exec "$real_stat" "\$@" ;;
+  rm) exec "$real_rm" "\$@" ;;
+  *) exit 99 ;;
+esac
+EOF
+    chmod 0755 "$bin_dir/$command_name"
+  done
+}
+
+trace_count() {
+  local pattern="$1"
+  local path="$2"
+  awk -v pattern="$pattern" '$0 == pattern { count++ } END { print count + 0 }' "$path"
+}
+
+test_present_turn_with_retained_state_skips_pruner() {
+  local proof_root state_dir transcript input out body bin_dir trace capture
+  local started_ns ended_ns elapsed_ms
+  proof_root="$(fresh_proof_root pre-reviewer-retained-no-prune)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-retained-no-prune.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" retained-current CURRENT_CAPTURE retained-current || return 1
+  populate_retained_turn_state "$state_dir" 2000 0 || return 1
+  input="$TMP_ROOT/pre-reviewer-retained-no-prune.json"
+  write_present_pre_reviewer_input "$transcript" retained-current "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-retained-no-prune.out"
+  body="$TMP_ROOT/pre-reviewer-retained-no-prune-body.md"
+  bin_dir="$TMP_ROOT/pre-reviewer-retained-no-prune-bin"
+  trace="$TMP_ROOT/pre-reviewer-retained-no-prune.trace"
+  : >"$trace"
+  write_prune_observer_python_wrapper "$bin_dir" || return 1
+
+  started_ns="$(date +%s%N)" || return 1
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_PRUNE_TRACE="$trace" CODEX_TEST_PRUNE_FATAL=1 \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Retained state."}' || return 1
+  ended_ns="$(date +%s%N)" || return 1
+  elapsed_ms=$(((ended_ns - started_ns) / 1000000))
+  capture="$(turn_capture_path "$proof_root" retained-current)" || return 1
+
+  is_pretool_deny "$out" && grep -Fq CURRENT_CAPTURE "$body" &&
+    [ ! -e "$capture" ] && [ ! -s "$trace" ] && [ "$elapsed_ms" -lt 2000 ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'claim-turn-retained-old-*' | wc -l)" -eq 500 ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'capture-turn-retained-old-*.json' | wc -l)" -eq 500 ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name '.capture-turn-retained-old-*' | wc -l)" -eq 1000 ] &&
+    ! grep -q 'codex_prune_pre_reviewer_turn_state' "$ROOT/hooks/edit-bash-pre-reviewer.sh"
+}
+
+test_prompt_retained_state_prunes_once_without_per_file_subprocesses() {
+  local proof_root state_dir bin_dir trace command_trace baseline_stat baseline_rm
+  local input out capture captured
+  proof_root="$(fresh_proof_root prompt-retained-one-pass)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  bin_dir="$TMP_ROOT/prompt-retained-one-pass-bin"
+  trace="$TMP_ROOT/prompt-retained-one-pass-prune.trace"
+  command_trace="$TMP_ROOT/prompt-retained-one-pass-command.trace"
+  write_prune_observer_python_wrapper "$bin_dir" || return 1
+  write_stat_rm_observer_wrappers "$bin_dir" || return 1
+  : >"$trace"
+  : >"$command_trace"
+  input="$TMP_ROOT/prompt-retained-baseline.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:"baseline",prompt:"BASELINE"}' >"$input" || return 1
+  run_hook "$TMP_ROOT/prompt-retained-baseline.out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_PRUNE_TRACE="$trace" CODEX_TEST_COMMAND_TRACE="$command_trace" || return 1
+  [ "$(trace_count prune "$trace")" -eq 1 ] || return 1
+  baseline_stat="$(trace_count stat "$command_trace")"
+  baseline_rm="$(trace_count rm "$command_trace")"
+
+  populate_retained_turn_state "$state_dir" 2000 500 || return 1
+  : >"$trace"
+  : >"$command_trace"
+  input="$TMP_ROOT/prompt-retained-populated.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:"current-retained",prompt:"CURRENT_RETAINED"}' >"$input" || return 1
+  out="$TMP_ROOT/prompt-retained-populated.out"
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_PRUNE_TRACE="$trace" CODEX_TEST_COMMAND_TRACE="$command_trace" || return 1
+  capture="$(turn_capture_path "$proof_root" current-retained)" || return 1
+  captured="$(jq -r '.prompt' "$capture" 2>/dev/null)" || return 1
+
+  expect_no_output "$out" && [ "$captured" = CURRENT_RETAINED ] &&
+    [ "$(trace_count prune "$trace")" -eq 1 ] &&
+    [ "$(trace_count stat "$command_trace")" -eq "$baseline_stat" ] &&
+    [ "$(trace_count rm "$command_trace")" -eq "$baseline_rm" ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name '*retained-old-*' | wc -l)" -eq 0 ] &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'claim-turn-retained-fresh-*' | wc -l)" -eq 500 ]
+}
+
+write_pausing_prune_python_wrapper() {
+  local bin_dir="$1"
+  local real_python
+
+  real_python="$(command -v python3)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == *prune_pre_reviewer_turn_state.py ]]; then
+  printf 'ready\n' >"\$CODEX_TEST_PRUNE_READY"
+  IFS= read -r release <"\$CODEX_TEST_PRUNE_RELEASE"
+  [ "\$release" = release ]
+fi
+exec "$real_python" "\$@"
+EOF
+  chmod 0755 "$bin_dir/python3"
+}
+
+test_paused_prompt_pruning_bounds_concurrent_pretool_wait() {
+  local proof_root state_dir transcript prompt_input prompt_out pre_input pre_out bin_dir
+  local ready release ready_fd release_fd signal prompt_pid started_ns ended_ns elapsed_ms
+  proof_root="$(fresh_proof_root paused-prompt-pruning)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  transcript="$TMP_ROOT/home/.codex/sessions/paused-prompt-pruning.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  bin_dir="$TMP_ROOT/paused-prompt-pruning-bin"
+  ready="$TMP_ROOT/paused-prompt-pruning-ready"
+  release="$TMP_ROOT/paused-prompt-pruning-release"
+  mkfifo "$ready" "$release" || return 1
+  exec {ready_fd}<>"$ready" || return 1
+  exec {release_fd}<>"$release" || return 1
+  write_pausing_prune_python_wrapper "$bin_dir" || return 1
+  prompt_input="$TMP_ROOT/paused-prompt-pruning-submit.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:"paused-turn",prompt:"PAUSED_CAPTURE"}' >"$prompt_input" || return 1
+  prompt_out="$TMP_ROOT/paused-prompt-pruning-submit.out"
+  run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_PRUNE_READY="$ready" CODEX_TEST_PRUNE_RELEASE="$release" &
+  prompt_pid=$!
+  if ! IFS= read -r -t 5 -u "$ready_fd" signal || [ "$signal" != ready ]; then
+    printf 'release\n' >&"$release_fd" || true
+    wait "$prompt_pid" 2>/dev/null || true
+    exec {ready_fd}>&-
+    exec {release_fd}>&-
+    rm -f "$ready" "$release"
+    return 1
+  fi
+
+  pre_input="$TMP_ROOT/paused-prompt-pruning-pretool.json"
+  write_present_pre_reviewer_input "$transcript" paused-turn "$pre_input" || return 1
+  pre_out="$TMP_ROOT/paused-prompt-pruning-pretool.out"
+  started_ns="$(date +%s%N)" || return 1
+  run_hook "$pre_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$pre_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_PRE_REVIEWER_LOCK_TIMEOUT=0.1 \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Must fail open."}' || return 1
+  ended_ns="$(date +%s%N)" || return 1
+  elapsed_ms=$(((ended_ns - started_ns) / 1000000))
+  printf 'release\n' >&"$release_fd" || return 1
+  wait "$prompt_pid" || return 1
+  exec {ready_fd}>&-
+  exec {release_fd}>&-
+  rm -f "$ready" "$release"
+
+  expect_no_output "$pre_out" && [ "$elapsed_ms" -lt 2000 ] && expect_no_output "$prompt_out" &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'capture-turn-*.json' | wc -l)" -eq 1 ]
+}
+
+test_prune_pre_reviewer_turn_state_python_unit_suite() {
+  python3 "$ROOT/hooks/tests/test_prune_pre_reviewer_turn_state.py" >/dev/null
+}
+
+test_prune_pre_reviewer_turn_state_matches_lean_spec() {
+  "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null
+}
+
+write_present_pre_reviewer_input() {
+  local transcript="$1"
+  local turn_id="$2"
+  local output="$3"
+
+  jq -n --arg cwd "$ROOT" --arg transcript "$transcript" --arg turn_id "$turn_id" \
+    '{session_id:"t00-session",tool_name:"Bash",turn_id:$turn_id,transcript_path:$transcript,
+      cwd:$cwd,tool_input:{command:"sed -n '1,80p' hooks/stop-gate.sh"}}' >"$output"
+}
+
+trace_present_pre_reviewer() {
+  local proof_root="$1"
+  local input="$2"
+  local transcript="$3"
+  local out="$4"
+  local trace="$5"
+  local body="$6"
+
+  strace -f -qq -s 8192 -e trace=read -P "$transcript" -o "$trace" \
+    env -u CODEX_ROLE HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+      CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+      CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Captured current turn."}' \
+      bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <"$input" >"$out" 2>"$out.err"
+}
+
+present_pre_reviewer_trace_is_first_record_scoped() {
+  local trace="$1"
+  local transcript="$2"
+
+  trace_is_first_record_scoped "$trace" "$transcript"
+}
+
+make_path_without_sha256sum() {
+  local bin_dir="$1"
+  local command_name command_path
+
+  mkdir -p "$bin_dir" || return 1
+  for command_name in bash dirname jq sed mkdir mktemp cat awk cp rm python3 perl \
+      flock chmod mv find grep date stat id; do
+    command_path="$(command -v "$command_name")" || return 1
+    ln -s "$command_path" "$bin_dir/$command_name" || return 1
+  done
+}
+
+test_hash_fails_open_without_sha256_or_python() {
+  local bin_dir out
+  bin_dir="$TMP_ROOT/hash-no-sha-no-python-bin"
+  out="$TMP_ROOT/hash-no-sha-no-python.out"
+  mkdir -p "$bin_dir" || return 1
+
+  if PATH="$bin_dir" /bin/bash -c '. "$1"; codex_hash_string value' \
+      bash "$ROOT/hooks/lib/codex-proof-state.sh" >"$out" 2>/dev/null; then
+    return 1
+  fi
+  [ ! -s "$out" ]
+}
+
+test_pre_reviewer_present_turn_uses_per_turn_capture_with_first_record_scope() {
+  local proof_root transcript input out trace body capture claim
+  local turn_id=$'../opaque/turn\nwith spaces'
+  proof_root="$(fresh_proof_root pre-reviewer-present-capture)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-capture.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" "$turn_id" "CURRENT_CAPTURE_ONLY" \
+    pre-reviewer-present-capture || return 1
+  input="$TMP_ROOT/pre-reviewer-present-capture.json"
+  write_present_pre_reviewer_input "$transcript" "$turn_id" "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-present-capture.out"
+  trace="$TMP_ROOT/pre-reviewer-present-capture.strace"
+  body="$TMP_ROOT/pre-reviewer-present-capture-body.md"
+
+  trace_present_pre_reviewer "$proof_root" "$input" "$transcript" "$out" "$trace" "$body" || return 1
+  capture="$(turn_capture_path "$proof_root" "$turn_id")" || return 1
+  claim="$(turn_claim_path "$proof_root" "$turn_id")" || return 1
+  is_pretool_deny "$out" &&
+    grep -Fq 'CURRENT_CAPTURE_ONLY' "$body" &&
+    ! grep -Fq 'OLD_HISTORY_POISON_MUST_NOT_BE_READ' "$body" &&
+    present_pre_reviewer_trace_is_first_record_scoped "$trace" "$transcript" &&
+    [ ! -e "$capture" ] &&
+    [ -f "$claim" ] &&
+    [ "$(stat -c '%a' "$claim")" = 600 ] &&
+    [ "$(basename "$claim")" != *opaque* ] &&
+    [ "$(find "$proof_root/pre-reviewer/t00-session" -maxdepth 1 -type f -name '.capture-turn-*.validated.*' | wc -l)" -eq 0 ]
+}
+
+test_pre_reviewer_present_turn_claim_uses_hash_fallback() {
+  local proof_root transcript input submit_input out body reduced_path claim turn_id
+  turn_id='../fallback/turn-id'
+  proof_root="$(fresh_proof_root pre-reviewer-present-hash-fallback)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-hash-fallback.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  reduced_path="$TMP_ROOT/pre-reviewer-present-hash-fallback-bin"
+  make_path_without_sha256sum "$reduced_path" || return 1
+  submit_input="$TMP_ROOT/pre-reviewer-present-hash-fallback-submit.json"
+  jq -n --arg cwd "$ROOT" --arg turn_id "$turn_id" --arg prompt "HASH_FALLBACK_CAPTURE" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:$turn_id,prompt:$prompt}' \
+    >"$submit_input" || return 1
+  run_hook "$TMP_ROOT/pre-reviewer-present-hash-fallback-submit.out" \
+    "$ROOT/hooks/prompt-task-reminder.sh" "$submit_input" \
+    PATH="$reduced_path" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  input="$TMP_ROOT/pre-reviewer-present-hash-fallback.json"
+  write_present_pre_reviewer_input "$transcript" "$turn_id" "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-present-hash-fallback.out"
+  body="$TMP_ROOT/pre-reviewer-present-hash-fallback-body.md"
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    PATH="$reduced_path" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Fallback hash."}' || return 1
+
+  claim=$(find "$proof_root/pre-reviewer/t00-session" -maxdepth 1 -type f -name 'claim-*' -print -quit)
+  is_pretool_deny "$out" &&
+    grep -Fq 'HASH_FALLBACK_CAPTURE' "$body" &&
+    [ -n "$claim" ] &&
+    [[ "$(basename "$claim")" =~ ^claim-turn-[0-9a-f]{64}$ ]] &&
+    [ "$(basename "$claim")" != *fallback* ]
+}
+
+test_pre_reviewer_present_turn_duplicate_is_silent_and_first_record_scoped() {
+  local proof_root transcript input first_out second_out trace first_body second_body
+  proof_root="$(fresh_proof_root pre-reviewer-present-duplicate)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-duplicate.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" "turn-duplicate" "DUPLICATE_CAPTURE" \
+    pre-reviewer-present-duplicate || return 1
+  input="$TMP_ROOT/pre-reviewer-present-duplicate.json"
+  write_present_pre_reviewer_input "$transcript" "turn-duplicate" "$input" || return 1
+  first_out="$TMP_ROOT/pre-reviewer-present-duplicate-first.out"
+  first_body="$TMP_ROOT/pre-reviewer-present-duplicate-first-body.md"
+  run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$first_body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Captured current turn."}' || return 1
+  second_out="$TMP_ROOT/pre-reviewer-present-duplicate-second.out"
+  trace="$TMP_ROOT/pre-reviewer-present-duplicate-second.strace"
+  second_body="$TMP_ROOT/pre-reviewer-present-duplicate-second-body.md"
+  trace_present_pre_reviewer "$proof_root" "$input" "$transcript" "$second_out" "$trace" "$second_body" || return 1
+
+  is_pretool_deny "$first_out" &&
+    [ -s "$first_body" ] &&
+    expect_no_output "$second_out" &&
+    [ ! -e "$second_body" ] &&
+    present_pre_reviewer_trace_is_first_record_scoped "$trace" "$transcript" &&
+    [ "$(find "$proof_root/pre-reviewer/t00-session" -maxdepth 1 -type f -name 'claim-*' | wc -l)" -eq 1 ]
+}
+
+test_same_turn_resubmit_is_idempotent_after_claim() {
+  local proof_root transcript input first_out second_out first_body second_body claim
+  local denials bodies
+  proof_root="$(fresh_proof_root pre-reviewer-same-turn-resubmit)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-same-turn-resubmit.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" same-turn "FIRST_CAPTURE" \
+    pre-reviewer-same-turn-first-submit || return 1
+  input="$TMP_ROOT/pre-reviewer-same-turn-resubmit.json"
+  write_present_pre_reviewer_input "$transcript" same-turn "$input" || return 1
+  first_out="$TMP_ROOT/pre-reviewer-same-turn-first.out"
+  first_body="$TMP_ROOT/pre-reviewer-same-turn-first-body.md"
+  run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$first_body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"First only."}' || return 1
+
+  submit_current_turn "$proof_root" same-turn "SECOND_MUST_NOT_PUBLISH" \
+    pre-reviewer-same-turn-second-submit || return 1
+  second_out="$TMP_ROOT/pre-reviewer-same-turn-second.out"
+  second_body="$TMP_ROOT/pre-reviewer-same-turn-second-body.md"
+  run_hook "$second_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$second_body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Duplicate."}' || return 1
+
+  denials=0
+  is_pretool_deny "$first_out" && denials=$((denials + 1))
+  is_pretool_deny "$second_out" && denials=$((denials + 1))
+  bodies=0
+  [ -s "$first_body" ] && bodies=$((bodies + 1))
+  [ -s "$second_body" ] && bodies=$((bodies + 1))
+  claim="$(turn_claim_path "$proof_root" same-turn)" || return 1
+  [ "$denials" -eq 1 ] && [ "$bodies" -eq 1 ] && [ -f "$claim" ] &&
+    [ ! -e "$(turn_capture_path "$proof_root" same-turn)" ]
+}
+
+test_pre_reviewer_present_turn_capture_failure_clears_stale_and_never_falls_back() {
+  local proof_root state_dir transcript prompt_input input out trace body capture claim other_capture
+  proof_root="$(fresh_proof_root pre-reviewer-present-capture-failure)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  mkdir -p -m 0700 "$state_dir" || return 1
+  capture="$(turn_capture_path "$proof_root" turn-failure)" || return 1
+  claim="$(turn_claim_path "$proof_root" turn-failure)" || return 1
+  other_capture="$(turn_capture_path "$proof_root" other-turn)" || return 1
+  printf '%s\n' '{"turn_id":"turn-failure","prompt":"STALE_CAPTURE"}' >"$capture"
+  printf '%s\n' '{"turn_id":"other-turn","prompt":"OTHER_CAPTURE"}' >"$other_capture"
+  chmod 0600 "$capture" "$other_capture"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-capture-failure.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  prompt_input="$TMP_ROOT/pre-reviewer-present-capture-failure-submit.json"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:"turn-failure",prompt:{bad:true}}' \
+    >"$prompt_input" || return 1
+  run_hook "$TMP_ROOT/pre-reviewer-present-capture-failure-submit.out" \
+    "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  input="$TMP_ROOT/pre-reviewer-present-capture-failure.json"
+  write_present_pre_reviewer_input "$transcript" "turn-failure" "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-present-capture-failure.out"
+  trace="$TMP_ROOT/pre-reviewer-present-capture-failure.strace"
+  body="$TMP_ROOT/pre-reviewer-present-capture-failure-body.md"
+  trace_present_pre_reviewer "$proof_root" "$input" "$transcript" "$out" "$trace" "$body" || return 1
+
+  expect_no_output "$out" &&
+    [ ! -e "$body" ] &&
+    [ ! -e "$capture" ] && [ ! -e "$claim" ] && [ -e "$other_capture" ] &&
+    present_pre_reviewer_trace_is_first_record_scoped "$trace" "$transcript"
+}
+
+test_pre_reviewer_present_turn_mismatch_is_silent_and_first_record_scoped() {
+  local proof_root transcript input out trace body
+  proof_root="$(fresh_proof_root pre-reviewer-present-mismatch)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-mismatch.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" "captured-turn" "MISMATCH_CAPTURE" \
+    pre-reviewer-present-mismatch || return 1
+  input="$TMP_ROOT/pre-reviewer-present-mismatch.json"
+  write_present_pre_reviewer_input "$transcript" "other-turn" "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-present-mismatch.out"
+  trace="$TMP_ROOT/pre-reviewer-present-mismatch.strace"
+  body="$TMP_ROOT/pre-reviewer-present-mismatch-body.md"
+  trace_present_pre_reviewer "$proof_root" "$input" "$transcript" "$out" "$trace" "$body" || return 1
+
+  expect_no_output "$out" &&
+    [ ! -e "$body" ] &&
+    [ "$(find "$proof_root/pre-reviewer/t00-session" -maxdepth 1 -type f -name 'claim-*' | wc -l)" -eq 0 ] &&
+    present_pre_reviewer_trace_is_first_record_scoped "$trace" "$transcript"
+}
+
+test_pre_reviewer_hash_collision_fails_open_without_claim() {
+  local proof_root state_dir transcript input out body capture claim
+  proof_root="$(fresh_proof_root pre-reviewer-hash-collision)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  mkdir -p -m 0700 "$state_dir" || return 1
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-hash-collision.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  capture="$(turn_capture_path "$proof_root" requested-turn)" || return 1
+  claim="$(turn_claim_path "$proof_root" requested-turn)" || return 1
+  printf '%s\n' '{"turn_id":"colliding-other-turn","prompt":"MUST_NOT_REVIEW"}' >"$capture"
+  chmod 0600 "$capture"
+  input="$TMP_ROOT/pre-reviewer-hash-collision.json"
+  write_present_pre_reviewer_input "$transcript" requested-turn "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-hash-collision.out"
+  body="$TMP_ROOT/pre-reviewer-hash-collision-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Must not review."}' || return 1
+
+  expect_no_output "$out" && [ ! -e "$body" ] && [ ! -e "$capture" ] && [ ! -e "$claim" ]
+}
+
+test_pre_reviewer_claim_loser_does_not_delete_capture() {
+  local proof_root transcript input out body capture claim
+  proof_root="$(fresh_proof_root pre-reviewer-claim-loser)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-claim-loser.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" turn-loser "LOSER_CAPTURE" pre-reviewer-claim-loser || return 1
+  capture="$(turn_capture_path "$proof_root" turn-loser)" || return 1
+  claim="$(turn_claim_path "$proof_root" turn-loser)" || return 1
+  : >"$claim"
+  input="$TMP_ROOT/pre-reviewer-claim-loser.json"
+  write_present_pre_reviewer_input "$transcript" turn-loser "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-claim-loser.out"
+  body="$TMP_ROOT/pre-reviewer-claim-loser-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Loser."}' || return 1
+
+  expect_no_output "$out" && [ ! -e "$body" ] && [ -e "$capture" ] && [ -e "$claim" ]
+}
+
+test_claim_creation_failure_restores_consumed_capture() {
+  local proof_root transcript input out body capture claim bin_dir real_python
+  proof_root="$(fresh_proof_root pre-reviewer-claim-restore)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-claim-restore.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" turn-restore "RESTORE_CAPTURE" \
+    pre-reviewer-claim-restore-submit || return 1
+  capture="$(turn_capture_path "$proof_root" turn-restore)" || return 1
+  claim="$(turn_claim_path "$proof_root" turn-restore)" || return 1
+  bin_dir="$TMP_ROOT/pre-reviewer-claim-restore-bin"
+  real_python="$(command -v python3)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ " \$* " == *turn_capture_validator.py* ]]; then
+  mkdir "\$CODEX_TEST_CLAIM_PATH"
+fi
+exec "$real_python" "\$@"
+EOF
+  chmod 0755 "$bin_dir/python3"
+  input="$TMP_ROOT/pre-reviewer-claim-restore.json"
+  write_present_pre_reviewer_input "$transcript" turn-restore "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-claim-restore.out"
+  body="$TMP_ROOT/pre-reviewer-claim-restore-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_CLAIM_PATH="$claim" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Must not run."}' || return 1
+
+  expect_no_output "$out" && [ ! -e "$body" ] && [ -d "$claim" ] &&
+    jq -e '.turn_id == "turn-restore" and .prompt == "RESTORE_CAPTURE"' "$capture" >/dev/null
+}
+
+test_same_key_resubmit_preserves_winner_claim() {
+  local proof_root transcript input out body capture claim bin_python bin_flock validation_ready validation_release
+  local lock_ready once pre_pid prompt_pid replacement_input replacement_out validation_ready_fd validation_release_fd
+  local lock_ready_fd validation_signal lock_signal pre_status prompt_status
+  proof_root="$(fresh_proof_root pre-reviewer-same-key-replacement)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-same-key-replacement.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" same-key "OLD_CAPTURE" pre-reviewer-same-key-old || return 1
+  capture="$(turn_capture_path "$proof_root" same-key)" || return 1
+  input="$TMP_ROOT/pre-reviewer-same-key-replacement.json"
+  write_present_pre_reviewer_input "$transcript" same-key "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-same-key-replacement.out"
+  body="$TMP_ROOT/pre-reviewer-same-key-replacement-body.md"
+  bin_python="$TMP_ROOT/pre-reviewer-same-key-python-bin"
+  bin_flock="$TMP_ROOT/pre-reviewer-same-key-flock-bin"
+  validation_ready="$TMP_ROOT/pre-reviewer-same-key-validation-ready"
+  validation_release="$TMP_ROOT/pre-reviewer-same-key-validation-release"
+  lock_ready="$TMP_ROOT/pre-reviewer-same-key-lock-ready"
+  once="$TMP_ROOT/pre-reviewer-same-key-once"
+  mkfifo "$validation_ready" "$validation_release" "$lock_ready" || return 1
+  exec {validation_ready_fd}<>"$validation_ready" || return 1
+  exec {validation_release_fd}<>"$validation_release" || { exec {validation_ready_fd}>&-; return 1; }
+  exec {lock_ready_fd}<>"$lock_ready" || {
+    exec {validation_ready_fd}>&-
+    exec {validation_release_fd}>&-
+    return 1
+  }
+  write_blocking_validation_python_wrapper "$bin_python" || return 1
+  write_signaling_flock_wrapper "$bin_flock" || return 1
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    PATH="$bin_python:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_ONCE="$once" CODEX_TEST_VALIDATION_READY="$validation_ready" \
+    CODEX_TEST_VALIDATION_RELEASE="$validation_release" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Old winner."}' &
+  pre_pid=$!
+  if ! IFS= read -r -t 5 -u "$validation_ready_fd" validation_signal ||
+      [ "$validation_signal" != ready ]; then
+    printf 'release\n' >&"$validation_release_fd" || true
+    kill "$pre_pid" 2>/dev/null || true
+    wait "$pre_pid" 2>/dev/null || true
+    exec {validation_ready_fd}>&-
+    exec {validation_release_fd}>&-
+    exec {lock_ready_fd}>&-
+    rm -f "$validation_ready" "$validation_release" "$lock_ready"
+    return 1
+  fi
+
+  replacement_input="$TMP_ROOT/pre-reviewer-same-key-replacement-submit.json"
+  if ! jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:"same-key",prompt:"NEW_CAPTURE"}' \
+    >"$replacement_input"; then
+    printf 'release\n' >&"$validation_release_fd" || true
+    kill "$pre_pid" 2>/dev/null || true
+    wait "$pre_pid" 2>/dev/null || true
+    exec {validation_ready_fd}>&-
+    exec {validation_release_fd}>&-
+    exec {lock_ready_fd}>&-
+    rm -f "$validation_ready" "$validation_release" "$lock_ready"
+    return 1
+  fi
+  replacement_out="$TMP_ROOT/pre-reviewer-same-key-replacement-submit.out"
+  run_hook "$replacement_out" "$ROOT/hooks/prompt-task-reminder.sh" "$replacement_input" \
+    PATH="$bin_flock:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_LOCK_READY="$lock_ready" &
+  prompt_pid=$!
+  if ! IFS= read -r -t 5 -u "$lock_ready_fd" lock_signal || [ "$lock_signal" != ready ]; then
+    printf 'release\n' >&"$validation_release_fd" || true
+    kill "$pre_pid" "$prompt_pid" 2>/dev/null || true
+    wait "$pre_pid" 2>/dev/null || true
+    wait "$prompt_pid" 2>/dev/null || true
+    exec {validation_ready_fd}>&-
+    exec {validation_release_fd}>&-
+    exec {lock_ready_fd}>&-
+    rm -f "$validation_ready" "$validation_release" "$lock_ready"
+    return 1
+  fi
+  printf 'release\n' >&"$validation_release_fd"
+  pre_status=0
+  prompt_status=0
+  wait "$pre_pid" || pre_status=$?
+  wait "$prompt_pid" || prompt_status=$?
+  exec {validation_ready_fd}>&-
+  exec {validation_release_fd}>&-
+  exec {lock_ready_fd}>&-
+  rm -f "$validation_ready" "$validation_release" "$lock_ready"
+  [ "$pre_status" -eq 0 ] && [ "$prompt_status" -eq 0 ] || return 1
+
+  claim="$(turn_claim_path "$proof_root" same-key)" || return 1
+  is_pretool_deny "$out" && grep -Fq OLD_CAPTURE "$body" &&
+    [ ! -e "$capture" ] && [ -f "$claim" ] &&
+    ! grep -Fq NEW_CAPTURE "$body"
+}
+
+test_present_turn_claim_persists_across_non_deny_outcomes() {
+  local variant proof_root transcript input first_out second_out first_body second_body claim capture
+  for variant in allow malformed backend-failure; do
+    proof_root="$(fresh_proof_root pre-reviewer-claim-persists-$variant)"
+    transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-claim-persists-$variant.jsonl"
+    write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+    submit_current_turn "$proof_root" "turn-$variant" "PROMPT_$variant" \
+      "pre-reviewer-claim-persists-$variant" || return 1
+    input="$TMP_ROOT/pre-reviewer-claim-persists-$variant.json"
+    write_present_pre_reviewer_input "$transcript" "turn-$variant" "$input" || return 1
+    first_out="$TMP_ROOT/pre-reviewer-claim-persists-$variant-first.out"
+    first_body="$TMP_ROOT/pre-reviewer-claim-persists-$variant-first-body.md"
+    case "$variant" in
+      allow)
+        run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+          HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+          CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+          CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$first_body" \
+          CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"allow","reason":"Allowed."}' || return 1 ;;
+      malformed)
+        run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+          HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+          CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+          CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$first_body" \
+          CODEX_PRE_REVIEWER_FAKE_RESULT='{malformed' || return 1 ;;
+      backend-failure)
+        run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+          HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+          CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:1:qwen3:4b" \
+          CODEX_EDIT_PRE_REVIEWER_TIMEOUT=1 CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$first_body" || return 1 ;;
+    esac
+    claim="$(turn_claim_path "$proof_root" "turn-$variant")" || return 1
+    capture="$(turn_capture_path "$proof_root" "turn-$variant")" || return 1
+    expect_no_output "$first_out" && [ -e "$claim" ] && [ ! -e "$capture" ] || return 1
+
+    second_out="$TMP_ROOT/pre-reviewer-claim-persists-$variant-second.out"
+    second_body="$TMP_ROOT/pre-reviewer-claim-persists-$variant-second-body.md"
+    run_hook "$second_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+      CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$second_body" \
+      CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Must stay silent."}' || return 1
+    expect_no_output "$second_out" && [ ! -e "$second_body" ] && [ -e "$claim" ] || return 1
+  done
+}
+
+test_pre_reviewer_present_turn_rejects_malformed_capture_payloads() {
+  local variant proof_root state_dir transcript input out body capture
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-invalid-capture.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+
+  for variant in malformed nonstring-prompt; do
+    proof_root="$(fresh_proof_root pre-reviewer-present-invalid-capture-$variant)"
+    state_dir="$proof_root/pre-reviewer/t00-session"
+    mkdir -p -m 0700 "$state_dir" || return 1
+    capture="$(turn_capture_path "$proof_root" turn-invalid-capture)" || return 1
+    case "$variant" in
+      malformed) printf '%s\n' '{malformed' >"$capture" ;;
+      nonstring-prompt) printf '%s\n' '{"turn_id":"turn-invalid-capture","prompt":{"bad":true}}' \
+        >"$capture" ;;
+    esac
+    chmod 0600 "$capture"
+    input="$TMP_ROOT/pre-reviewer-present-invalid-capture-$variant.json"
+    write_present_pre_reviewer_input "$transcript" "turn-invalid-capture" "$input" || return 1
+    out="$TMP_ROOT/pre-reviewer-present-invalid-capture-$variant.out"
+    body="$TMP_ROOT/pre-reviewer-present-invalid-capture-$variant-body.md"
+    run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+      CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+      CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Must not review."}' || return 1
+    expect_no_output "$out" && [ ! -e "$body" ] && [ ! -e "$capture" ] &&
+      [ "$(find "$state_dir" -maxdepth 1 -type f -name 'claim-*' | wc -l)" -eq 0 ] || return 1
+  done
+}
+
+test_present_turn_strict_capture_consumer_rejects_unsafe_inputs() {
+  local variant proof_root state_dir transcript input out body capture claim target
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-strict-capture.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+
+  for variant in invalid-utf8 oversized mismatched symlink hardlink wrong-mode; do
+    proof_root="$(fresh_proof_root pre-reviewer-strict-capture-$variant)"
+    submit_current_turn "$proof_root" strict-turn "PLACEHOLDER" \
+      "pre-reviewer-strict-capture-$variant-submit" || return 1
+    state_dir="$proof_root/pre-reviewer/t00-session"
+    capture="$(turn_capture_path "$proof_root" strict-turn)" || return 1
+    claim="$(turn_claim_path "$proof_root" strict-turn)" || return 1
+    target="$state_dir/strict-target-$variant"
+    case "$variant" in
+      invalid-utf8)
+        printf '{"turn_id":"strict-turn","prompt":"bad\377"}' >"$capture" ;;
+      oversized)
+        {
+          printf '{"turn_id":"strict-turn","prompt":"'
+          printf '%4001s' '' | tr ' ' x
+          printf '"}'
+        } >"$capture" ;;
+      mismatched)
+        printf '%s\n' '{"turn_id":"colliding-turn","prompt":"MISMATCH"}' >"$capture" ;;
+      symlink)
+        printf '%s\n' '{"turn_id":"strict-turn","prompt":"SYMLINK"}' >"$target"
+        chmod 0600 "$target"
+        rm -f "$capture"
+        ln -s "$target" "$capture" ;;
+      hardlink)
+        printf '%s\n' '{"turn_id":"strict-turn","prompt":"HARDLINK"}' >"$target"
+        chmod 0600 "$target"
+        rm -f "$capture"
+        ln "$target" "$capture" ;;
+      wrong-mode)
+        printf '%s\n' '{"turn_id":"strict-turn","prompt":"WRONG_MODE"}' >"$capture"
+        chmod 0644 "$capture" ;;
+    esac
+    [ "$variant" = symlink ] || [ "$variant" = hardlink ] || [ "$variant" = wrong-mode ] ||
+      chmod 0600 "$capture"
+    input="$TMP_ROOT/pre-reviewer-strict-capture-$variant.json"
+    write_present_pre_reviewer_input "$transcript" strict-turn "$input" || return 1
+    out="$TMP_ROOT/pre-reviewer-strict-capture-$variant.out"
+    body="$TMP_ROOT/pre-reviewer-strict-capture-$variant-body.md"
+    run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+      CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+      CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Unsafe capture."}' || return 1
+    expect_no_output "$out" && [ ! -e "$body" ] && [ ! -e "$claim" ] &&
+      [ ! -e "$capture" ] || return 1
+    case "$variant" in
+      symlink|hardlink) [ -f "$target" ] || return 1 ;;
+    esac
+  done
+}
+
+test_present_turn_strict_capture_consumer_preserves_valid_replacement_character() {
+  local proof_root transcript input out body
+  proof_root="$(fresh_proof_root pre-reviewer-strict-capture-replacement)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-strict-capture-replacement.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" strict-replacement "VALID_�_CAPTURE" \
+    pre-reviewer-strict-capture-replacement-submit || return 1
+  input="$TMP_ROOT/pre-reviewer-strict-capture-replacement.json"
+  write_present_pre_reviewer_input "$transcript" strict-replacement "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-strict-capture-replacement.out"
+  body="$TMP_ROOT/pre-reviewer-strict-capture-replacement-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Valid capture."}' || return 1
+
+  is_pretool_deny "$out" && grep -Fq 'VALID_�_CAPTURE' "$body"
+}
+
+test_pre_reviewer_owned_0755_state_directory_migrates_and_publishes() {
+  local proof_root state_dir capture
+  proof_root="$(fresh_proof_root pre-reviewer-state-migration)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  mkdir -p "$proof_root/pre-reviewer" || return 1
+  mkdir -m 0755 "$state_dir" || return 1
+  chmod 0755 "$state_dir" || return 1
+
+  submit_current_turn "$proof_root" migration-turn MIGRATED_CAPTURE \
+    pre-reviewer-state-migration || return 1
+  capture="$(turn_capture_path "$proof_root" migration-turn)" || return 1
+
+  [ "$(stat -c '%a' "$state_dir")" = 700 ] &&
+    [ "$(stat -c '%a' "$capture")" = 600 ] &&
+    jq -e '.turn_id == "migration-turn" and .prompt == "MIGRATED_CAPTURE"' \
+      "$capture" >/dev/null
+}
+
+test_pre_reviewer_private_state_directory_skips_python_migrator() {
+  local state_dir bin_dir marker out status
+  state_dir="$TMP_ROOT/pre-reviewer-private-fast-path"
+  bin_dir="$TMP_ROOT/pre-reviewer-private-fast-path-bin"
+  marker="$TMP_ROOT/pre-reviewer-private-fast-path-python-called"
+  out="$TMP_ROOT/pre-reviewer-private-fast-path.out"
+  mkdir -m 0700 "$state_dir" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' >"$CODEX_TEST_PYTHON_MARKER"
+exit 99
+SH
+  chmod 0755 "$bin_dir/python3"
+
+  status=0
+  env PATH="$bin_dir:$PATH" CODEX_TEST_PYTHON_MARKER="$marker" bash -c '
+    . "$1"
+    codex_ensure_private_pre_reviewer_state_dir "$2"
+  ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" \
+    >"$out" 2>"$out.err" || status=$?
+
+  [ "$status" -eq 0 ] && expect_no_output "$out" && [ ! -s "$out.err" ] &&
+    [ ! -e "$marker" ] && [ "$(stat -c '%a' "$state_dir")" = 700 ]
+}
+
+test_pre_reviewer_unavailable_migrator_fails_silently_without_mutation() {
+  local state_dir bin_dir marker out status
+  state_dir="$TMP_ROOT/pre-reviewer-unavailable-migrator"
+  bin_dir="$TMP_ROOT/pre-reviewer-unavailable-migrator-bin"
+  marker="$TMP_ROOT/pre-reviewer-unavailable-migrator-python-called"
+  out="$TMP_ROOT/pre-reviewer-unavailable-migrator.out"
+  mkdir -m 0755 "$state_dir" || return 1
+  chmod 0755 "$state_dir" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/python3" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' >"$CODEX_TEST_PYTHON_MARKER"
+exit 127
+SH
+  chmod 0755 "$bin_dir/python3"
+
+  status=0
+  env PATH="$bin_dir:$PATH" CODEX_TEST_PYTHON_MARKER="$marker" bash -c '
+    . "$1"
+    codex_ensure_private_pre_reviewer_state_dir "$2"
+  ' bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" \
+    >"$out" 2>"$out.err" || status=$?
+
+  [ "$status" -ne 0 ] && expect_no_output "$out" && [ ! -s "$out.err" ] &&
+    [ -e "$marker" ] && [ "$(stat -c '%a' "$state_dir")" = 755 ]
+}
+
+test_pre_reviewer_wrong_owner_fails_without_mutation_or_publication() {
+  local proof_root state_dir bin_dir input out capture real_python
+  proof_root="$(fresh_proof_root pre-reviewer-wrong-owner)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  bin_dir="$TMP_ROOT/pre-reviewer-wrong-owner-bin"
+  input="$TMP_ROOT/pre-reviewer-wrong-owner-submit.json"
+  out="$TMP_ROOT/pre-reviewer-wrong-owner.out"
+  mkdir -p "$proof_root/pre-reviewer" "$bin_dir" || return 1
+  mkdir -m 0755 "$state_dir" || return 1
+  chmod 0755 "$state_dir" || return 1
+  real_python="$(command -v python3)" || return 1
+  cat >"$bin_dir/python3" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == *migrate_pre_reviewer_state_dir.py ]]; then
+  exec "$CODEX_TEST_REAL_PYTHON" - "$1" "$2" <<'PY'
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("state_dir_migrator", sys.argv[1])
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+actual_uid = os.geteuid()
+module.os.geteuid = lambda: actual_uid + 1
+raise SystemExit(0 if module.migrate(sys.argv[2]) else 1)
+PY
+fi
+exec "$CODEX_TEST_REAL_PYTHON" "$@"
+SH
+  chmod 0755 "$bin_dir/python3"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:"wrong-owner",prompt:"MUST_NOT_PUBLISH"}' >"$input" || return 1
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    PATH="$bin_dir:$PATH" CODEX_TEST_REAL_PYTHON="$real_python" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  capture="$(turn_capture_path "$proof_root" wrong-owner)" || return 1
+
+  expect_no_output "$out" && [ ! -s "$out.err" ] && [ ! -e "$capture" ] &&
+    [ "$(stat -c '%a' "$state_dir")" = 755 ]
+}
+
+test_pre_reviewer_rejects_unsafe_state_directories() {
+  local variant proof_root pre_parent state_dir target input out capture
+  for variant in symlink non-directory; do
+    proof_root="$(fresh_proof_root pre-reviewer-unsafe-state-$variant)"
+    pre_parent="$proof_root/pre-reviewer"
+    state_dir="$pre_parent/t00-session"
+    mkdir -p "$pre_parent" || return 1
+    case "$variant" in
+      symlink)
+        target="$proof_root/attacker-state"
+        mkdir -m 0755 "$target" || return 1
+        chmod 0755 "$target" || return 1
+        ln -s "$target" "$state_dir" || return 1 ;;
+      non-directory)
+        printf 'state\n' >"$state_dir"
+        chmod 0644 "$state_dir" ;;
+    esac
+    input="$TMP_ROOT/pre-reviewer-unsafe-state-$variant-submit.json"
+    jq -n --arg cwd "$ROOT" \
+      '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+        turn_id:"unsafe-state",prompt:"MUST_NOT_PUBLISH"}' >"$input" || return 1
+    out="$TMP_ROOT/pre-reviewer-unsafe-state-$variant.out"
+    run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+    capture="$(turn_capture_path "$proof_root" unsafe-state)" || return 1
+    expect_no_output "$out" && [ ! -s "$out.err" ] && [ ! -e "$capture" ] || return 1
+    case "$variant" in
+      symlink)
+        [ "$(stat -c '%a' "$target")" = 755 ] &&
+          [ "$(find "$target" -mindepth 1 -maxdepth 1 | wc -l)" -eq 0 ] || return 1 ;;
+      non-directory)
+        [ "$(stat -c '%a' "$state_dir")" = 644 ] || return 1 ;;
+    esac
+  done
+}
+
+test_pre_reviewer_present_turn_claim_is_atomic_under_concurrency() {
+  local proof_root transcript input out_a out_b body_a body_b status_a status_b denials bodies
+  proof_root="$(fresh_proof_root pre-reviewer-present-concurrent)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-present-concurrent.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" "turn-concurrent" "CONCURRENT_CAPTURE" \
+    pre-reviewer-present-concurrent || return 1
+  input="$TMP_ROOT/pre-reviewer-present-concurrent.json"
+  write_present_pre_reviewer_input "$transcript" "turn-concurrent" "$input" || return 1
+  out_a="$TMP_ROOT/pre-reviewer-present-concurrent-a.out"
+  out_b="$TMP_ROOT/pre-reviewer-present-concurrent-b.out"
+  body_a="$TMP_ROOT/pre-reviewer-present-concurrent-a-body.md"
+  body_b="$TMP_ROOT/pre-reviewer-present-concurrent-b-body.md"
+
+  run_hook "$out_a" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body_a" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Concurrent winner."}' &
+  local pid_a=$!
+  run_hook "$out_b" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body_b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Concurrent winner."}' &
+  local pid_b=$!
+  wait "$pid_a"; status_a=$?
+  wait "$pid_b"; status_b=$?
+  [ "$status_a" -eq 0 ] && [ "$status_b" -eq 0 ] || return 1
+
+  denials=0
+  is_pretool_deny "$out_a" && denials=$((denials + 1))
+  is_pretool_deny "$out_b" && denials=$((denials + 1))
+  bodies=0
+  [ -s "$body_a" ] && bodies=$((bodies + 1))
+  [ -s "$body_b" ] && bodies=$((bodies + 1))
+  [ "$denials" -eq 1 ] && [ "$bodies" -eq 1 ] &&
+    [ "$(find "$proof_root/pre-reviewer/t00-session" -maxdepth 1 -type f -name 'claim-*' | wc -l)" -eq 1 ] &&
+    grep -Fq 'CONCURRENT_CAPTURE' "$body_a" "$body_b" 2>/dev/null &&
+    ! grep -Fq 'OLD_HISTORY_POISON_MUST_NOT_BE_READ' "$body_a" "$body_b" 2>/dev/null
+}
+
+test_pre_reviewer_distinct_turn_ids_with_same_prompt_each_review() {
+  local proof_root transcript input_a input_b out_a out_b body_a body_b
+  proof_root="$(fresh_proof_root pre-reviewer-distinct-turns)"
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-distinct-turns.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+
+  submit_current_turn "$proof_root" "turn-a" "SAME_PROMPT" pre-reviewer-distinct-a || return 1
+  input_a="$TMP_ROOT/pre-reviewer-distinct-a.json"
+  write_present_pre_reviewer_input "$transcript" "turn-a" "$input_a" || return 1
+  out_a="$TMP_ROOT/pre-reviewer-distinct-a.out"
+  body_a="$TMP_ROOT/pre-reviewer-distinct-a-body.md"
+  run_hook "$out_a" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input_a" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body_a" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Turn A."}' || return 1
+
+  submit_current_turn "$proof_root" "turn-b" "SAME_PROMPT" pre-reviewer-distinct-b || return 1
+  input_b="$TMP_ROOT/pre-reviewer-distinct-b.json"
+  write_present_pre_reviewer_input "$transcript" "turn-b" "$input_b" || return 1
+  out_b="$TMP_ROOT/pre-reviewer-distinct-b.out"
+  body_b="$TMP_ROOT/pre-reviewer-distinct-b-body.md"
+  run_hook "$out_b" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input_b" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body_b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Turn B."}' || return 1
+
+  is_pretool_deny "$out_a" && is_pretool_deny "$out_b" &&
+    [ -s "$body_a" ] && [ -s "$body_b" ]
+}
+
+test_prompt_capture_redacts_complete_prompt_before_byte_cap() {
+  local proof_root prompt capture captured secret_material private_key_begin private_key_end
+  proof_root="$(fresh_proof_root prompt-capture-redact-cap)"
+  secret_material="PRIVATE_MATERIAL_MUST_NOT_SURVIVE"
+  private_key_begin="$(redaction_fixture_value private-key-begin)" || return 1
+  private_key_end="$(redaction_fixture_value private-key-end)" || return 1
+  prompt=$(printf '%3900s\n%s\n%s\n%300s\n%s\nTAIL' \
+    '' "$private_key_begin" "$secret_material" '' "$private_key_end")
+  submit_current_turn "$proof_root" "turn-redact-cap" "$prompt" prompt-capture-redact-cap || return 1
+  capture="$(turn_capture_path "$proof_root" turn-redact-cap)" || return 1
+  captured=$(jq -r '.prompt' "$capture" 2>/dev/null) || return 1
+
+  jq -e . "$capture" >/dev/null &&
+    [ "$(printf '%s' "$captured" | wc -c)" -le 4000 ] &&
+    case "$captured" in *'[REDACTED]'*) true ;; *) false ;; esac &&
+    case "$captured" in *"$secret_material"*) false ;; *) true ;; esac
+}
+
+test_prompt_capture_byte_cap_preserves_utf8_boundary() {
+  local proof_root prompt capture captured prefix
+  proof_root="$(fresh_proof_root prompt-capture-utf8-cap)"
+  prefix=$(printf '%3999s' '')
+  prompt="${prefix}éTAIL"
+  submit_current_turn "$proof_root" "turn-utf8-cap" "$prompt" prompt-capture-utf8-cap || return 1
+  capture="$(turn_capture_path "$proof_root" turn-utf8-cap)" || return 1
+  captured=$(jq -r '.prompt' "$capture" 2>/dev/null) || return 1
+
+  jq -e . "$capture" >/dev/null &&
+    [ "$(printf '%s' "$captured" | wc -c)" -le 4000 ] &&
+    [ "$captured" = "$prefix" ] &&
+    case "$captured" in *$'\uFFFD'*|*é*|*TAIL*) false ;; *) true ;; esac
+}
+
+test_large_prompt_submission_publishes_bounded_capture() {
+  local proof_root prompt_file input out capture
+  proof_root="$(fresh_proof_root prompt-capture-large)"
+  prompt_file="$TMP_ROOT/prompt-capture-large.txt"
+  dd if=/dev/zero bs=1048576 count=8 status=none | tr '\0' x >"$prompt_file" || return 1
+  input="$TMP_ROOT/prompt-capture-large.json"
+  jq -Rs --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:"turn-large-prompt",prompt:.}' "$prompt_file" >"$input" || return 1
+  out="$TMP_ROOT/prompt-capture-large.out"
+
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  capture="$(turn_capture_path "$proof_root" turn-large-prompt)" || return 1
+  expect_no_output "$out" && jq -e . "$capture" >/dev/null &&
+    [ "$(jq -r '.prompt' "$capture" | wc -c)" -eq 4001 ] &&
+    [ "$(jq -r '.prompt' "$capture" | tr -d 'x\n' | wc -c)" -eq 0 ]
+}
+
+test_prompt_capture_utf8_prefix_matches_lean_spec() {
+  "$ROOT/hooks/tests/differential/utf8-prefix.sh" >/dev/null
+}
+
+test_utf8_prefix_cap_python_unit_suite() {
+  python3 "$ROOT/hooks/tests/test_utf8_prefix_cap.py" >/dev/null
+}
+
+test_turn_capture_validator_python_unit_suite() {
+  python3 "$ROOT/hooks/tests/test_turn_capture_validator.py" >/dev/null
+}
+
+test_turn_capture_validator_matches_lean_spec() {
+  "$ROOT/hooks/tests/differential/turn-capture.sh" >/dev/null
+}
+
+write_lock_fd_observer_python_wrapper() {
+  local bin_dir="$1"
+  local real_python
+
+  real_python="$(command -v python3)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nREAL_PYTHON=%q\n' "$real_python" >"$bin_dir/python3" || return 1
+  cat >>"$bin_dir/python3" <<'SH'
+kind=other
+case " $* " in
+  *prune_pre_reviewer_turn_state.py*) kind=pruner ;;
+  *turn_capture_validator.py*) kind=validator ;;
+esac
+if [ "$kind" != other ]; then
+  child=closed
+  parent=missing
+  for fd in /proc/$$/fd/*; do
+    [ "$(readlink "$fd" 2>/dev/null || true)" = "$CODEX_TEST_STATE_DIR" ] && child=has
+  done
+  for fd in /proc/$PPID/fd/*; do
+    [ "$(readlink "$fd" 2>/dev/null || true)" = "$CODEX_TEST_STATE_DIR" ] && parent=has
+  done
+  printf '%s-child-%s\n%s-parent-%s\n' "$kind" "$child" "$kind" "$parent" >>"$CODEX_TEST_FD_TRACE"
+fi
+exec "$REAL_PYTHON" "$@"
+SH
+  chmod 0755 "$bin_dir/python3"
+}
+
+test_capture_validator_child_closes_lock_fd_while_pruner_inherits() {
+  local proof_root state_dir transcript input out body bin_dir trace submit_input submit_out
+  proof_root="$(fresh_proof_root pre-reviewer-validator-fd)"
+  state_dir="$proof_root/pre-reviewer/t00-session"
+  mkdir -p -m 0700 "$state_dir" || return 1
+  state_dir="$(readlink -f "$state_dir")" || return 1
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-validator-fd.jsonl"
+  write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+  bin_dir="$TMP_ROOT/pre-reviewer-validator-fd-bin"
+  trace="$TMP_ROOT/pre-reviewer-validator-fd.trace"
+  : >"$trace"
+  write_lock_fd_observer_python_wrapper "$bin_dir" || return 1
+  submit_input="$TMP_ROOT/pre-reviewer-validator-fd-submit.json"
+  submit_out="$TMP_ROOT/pre-reviewer-validator-fd-submit.out"
+  jq -n --arg cwd "$ROOT" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:"validator-fd",prompt:"FD_PROMPT"}' \
+    >"$submit_input" || return 1
+  run_hook "$submit_out" "$ROOT/hooks/prompt-task-reminder.sh" "$submit_input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_STATE_DIR="$state_dir" CODEX_TEST_FD_TRACE="$trace" || return 1
+  expect_no_output "$submit_out" || return 1
+  input="$TMP_ROOT/pre-reviewer-validator-fd.json"
+  write_present_pre_reviewer_input "$transcript" validator-fd "$input" || return 1
+  out="$TMP_ROOT/pre-reviewer-validator-fd.out"
+  body="$TMP_ROOT/pre-reviewer-validator-fd-body.md"
+
+  run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_TEST_STATE_DIR="$state_dir" CODEX_TEST_FD_TRACE="$trace" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"FD test."}' || return 1
+
+  is_pretool_deny "$out" &&
+    grep -qx 'pruner-child-has' "$trace" && grep -qx 'pruner-parent-has' "$trace" &&
+    grep -qx 'validator-child-closed' "$trace" && grep -qx 'validator-parent-has' "$trace" &&
+    ! grep -qx 'validator-child-has' "$trace"
+}
+
+test_hook_tests_leave_no_python_bytecode_cache() {
+  [ -z "$(find "$ROOT/hooks" -type d -name __pycache__ -print -quit)" ]
+}
+
+test_pre_reviewer_state_dir_migration_python_unit_suite() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_state_dir_migration.py" >/dev/null
+}
+
+test_prompt_submit_without_usable_turn_id_preserves_per_turn_state() {
+  local kind proof_root state_dir input out
+
+  for kind in absent empty object; do
+    proof_root="$(fresh_proof_root prompt-clear-prior-$kind)"
+    state_dir="$proof_root/pre-reviewer/t00-session"
+    mkdir -p -m 0700 "$state_dir" || return 1
+    printf '%s\n' '{"turn_id":"other-turn","prompt":"OTHER"}' >"$state_dir/capture-turn-other.json"
+    : >"$state_dir/.capture-turn-other.capped.STALE"
+    : >"$state_dir/claim-turn-other"
+    input="$TMP_ROOT/prompt-clear-prior-$kind.json"
+    case "$kind" in
+      absent) jq -n --arg cwd "$ROOT" \
+        '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"legacy"}' >"$input" ;;
+      empty) jq -n --arg cwd "$ROOT" \
+        '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:"",prompt:"legacy"}' >"$input" ;;
+      object) jq -n --arg cwd "$ROOT" \
+        '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,turn_id:{bad:true},prompt:"legacy"}' >"$input" ;;
+    esac
+    out="$TMP_ROOT/prompt-clear-prior-$kind.out"
+    run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+    expect_no_output "$out" &&
+      [ -e "$state_dir/capture-turn-other.json" ] &&
+      [ -e "$state_dir/.capture-turn-other.capped.STALE" ] &&
+      [ -e "$state_dir/claim-turn-other" ] || return 1
+  done
+}
+
+write_pre_reviewer_side_effect_spies() {
+  local bin_dir="$1"
+  local name real
+
+  mkdir -p "$bin_dir" || return 1
+  for name in sed find curl; do
+    real="$(command -v "$name")" || return 1
+    cat >"$bin_dir/$name" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '$name' >>"\$CODEX_TEST_SIDE_EFFECTS"
+exec "$real" "\$@"
+EOF
+    chmod 0755 "$bin_dir/$name" || return 1
+  done
+}
+
+test_pre_reviewer_unusable_turn_ids_fail_open_before_side_effects() {
+  local kind proof_root transcript input out trace body bin_dir effects state_dir
+  transcript="$TMP_ROOT/home/.codex/sessions/pre-reviewer-unusable-turn-id.jsonl"
+  install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  bin_dir="$TMP_ROOT/pre-reviewer-unusable-turn-id-bin"
+  effects="$TMP_ROOT/pre-reviewer-unusable-turn-id-effects"
+  write_pre_reviewer_side_effect_spies "$bin_dir" || return 1
+
+  for kind in absent empty null bool number array object; do
+    proof_root="$(fresh_proof_root pre-reviewer-unusable-turn-id-$kind)"
+    state_dir="$proof_root/pre-reviewer/t00-session"
+    input="$TMP_ROOT/pre-reviewer-unusable-turn-id-$kind.json"
+    case "$kind" in
+      absent) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | del(.turn_id)' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+      empty) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | .turn_id = ""' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+      null) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | .turn_id = null' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+      bool) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | .turn_id = true' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+      number) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | .turn_id = 42' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+      array) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | .turn_id = ["bad"]' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+      object) jq --arg cwd "$ROOT" --arg transcript "$transcript" \
+        '.cwd = $cwd | .transcript_path = $transcript | .turn_id = {bad:true}' \
+        "$FIXTURES/pre-reviewer-bash.json" >"$input" ;;
+    esac
+    out="$TMP_ROOT/pre-reviewer-unusable-turn-id-$kind.out"
+    trace="$TMP_ROOT/pre-reviewer-unusable-turn-id-$kind.trace"
+    body="$TMP_ROOT/pre-reviewer-unusable-turn-id-$kind-body.md"
+    : >"$effects"
+    strace -f -qq -e trace=read -P "$transcript" -o "$trace" \
+      env -u CODEX_ROLE PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" \
+        CODEX_PROOF_ROOT="$proof_root" CODEX_TEST_SIDE_EFFECTS="$effects" \
+        CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+        CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+        CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Must not run."}' \
+        bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <"$input" >"$out" 2>"$out.err" || return 1
+    expect_no_output "$out" && ! grep -q 'read(' "$trace" && [ ! -s "$effects" ] &&
+      [ ! -e "$state_dir" ] && [ ! -e "$body" ] || return 1
+  done
+
+  ! grep -Eq 'find_transcript|jq[[:space:]]+-rs' "$ROOT/hooks/edit-bash-pre-reviewer.sh"
 }
 
 test_pre_reviewer_denies_first_tool_call_once_per_turn() {
@@ -1267,9 +3199,9 @@ test_pre_reviewer_denies_first_tool_call_once_per_turn() {
   proof_root="$(fresh_proof_root pre-reviewer-first)"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  submit_current_turn "$proof_root" pre-reviewer-first "FIRST_TOOL_PROMPT" pre-reviewer-first || return 1
   input="$TMP_ROOT/pre-reviewer-first.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" pre-reviewer-first "$input" || return 1
   out="$TMP_ROOT/pre-reviewer-first.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1295,9 +3227,9 @@ run_pre_reviewer_fake_deny() {
   proof_root="$(fresh_proof_root "$tag")"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  submit_current_turn "$proof_root" "$tag-turn" "ALIAS_PROMPT" "$tag" || return 1
   input="$TMP_ROOT/$tag.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" "$tag-turn" "$input" || return 1
   out="$TMP_ROOT/$tag.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1317,9 +3249,9 @@ run_pre_reviewer_expect_no_output() {
   proof_root="$(fresh_proof_root "$tag")"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  submit_current_turn "$proof_root" "$tag-turn" "ALIAS_PROMPT" "$tag" || return 1
   input="$TMP_ROOT/$tag.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" "$tag-turn" "$input" || return 1
   out="$TMP_ROOT/$tag.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1394,7 +3326,7 @@ write_pre_reviewer_secret_transcript() {
 }
 
 test_pre_reviewer_redacts_user_message_and_tool_input_payload() {
-  local proof_root input out transcript body command description
+  local proof_root input out transcript body command description prompt
   local openai_key password bearer_token github_token slack_token aws_access_key google_key
   local private_key_begin private_key_material private_key_end
   proof_root="$(fresh_proof_root pre-reviewer-redaction)"
@@ -1414,10 +3346,12 @@ test_pre_reviewer_redacts_user_message_and_tool_input_payload() {
   command=$(printf 'curl -H "Authorization: Bearer %s" --password %s --api-key=%s https://example.invalid' \
     "$bearer_token" "$password" "$openai_key")
   description=$(printf 'uses %s %s %s %s' "$github_token" "$slack_token" "$aws_access_key" "$google_key")
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    --arg command "$command" --arg description "$description" \
-    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command | .tool_input.description = $description' \
-    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  prompt="$(jq -rs '.[1].message.content' "$transcript")" || return 1
+  submit_current_turn "$proof_root" pre-reviewer-redaction "$prompt" pre-reviewer-redaction || return 1
+  write_present_pre_reviewer_input "$transcript" pre-reviewer-redaction "$input" || return 1
+  jq --arg command "$command" --arg description "$description" \
+    '.tool_input.command = $command | .tool_input.description = $description' "$input" >"$input.tmp" || return 1
+  mv "$input.tmp" "$input" || return 1
   out="$TMP_ROOT/pre-reviewer-redaction.out"
   body="$TMP_ROOT/pre-reviewer-redaction-body.md"
 
@@ -1439,11 +3373,12 @@ test_pre_reviewer_allows_stop_reviewer_bypass_command() {
   proof_root="$(fresh_proof_root pre-reviewer-stop-bypass)"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-main-transcript.jsonl" "$transcript" || return 1
+  submit_current_turn "$proof_root" pre-reviewer-stop-bypass "BYPASS_PROMPT" pre-reviewer-stop-bypass || return 1
   command="touch $proof_root/reviewer/t00-session/bypass"
   input="$TMP_ROOT/pre-reviewer-stop-bypass.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
-    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
-    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" pre-reviewer-stop-bypass "$input" || return 1
+  jq --arg command "$command" '.tool_input.command = $command' "$input" >"$input.tmp" || return 1
+  mv "$input.tmp" "$input" || return 1
   out="$TMP_ROOT/pre-reviewer-stop-bypass.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1455,13 +3390,19 @@ test_pre_reviewer_allows_stop_reviewer_bypass_command() {
 }
 
 test_pre_reviewer_allows_after_prior_tool_call() {
-  local proof_root input out transcript
+  local proof_root input first_out out transcript
   proof_root="$(fresh_proof_root pre-reviewer-prior)"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-prior-tool-transcript.jsonl" "$transcript" || return 1
+  submit_current_turn "$proof_root" pre-reviewer-prior "PRIOR_PROMPT" pre-reviewer-prior || return 1
   input="$TMP_ROOT/pre-reviewer-prior.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" pre-reviewer-prior "$input" || return 1
+  first_out="$TMP_ROOT/pre-reviewer-prior-first.out"
+  run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"allow","reason":"Claim turn."}' || return 1
+  expect_no_output "$first_out" || return 1
   out="$TMP_ROOT/pre-reviewer-prior.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1473,13 +3414,19 @@ test_pre_reviewer_allows_after_prior_tool_call() {
 }
 
 test_pre_reviewer_allows_after_prior_response_item_tool_call() {
-  local proof_root input out transcript
+  local proof_root input first_out out transcript
   proof_root="$(fresh_proof_root pre-reviewer-prior-response-item)"
   transcript="$(main_reviewer_transcript_path)"
   install_reviewer_transcript_fixture "$FIXTURES/reviewer-prior-response-item-tool-transcript.jsonl" "$transcript" || return 1
+  submit_current_turn "$proof_root" pre-reviewer-prior-response "PRIOR_RESPONSE_PROMPT" pre-reviewer-prior-response || return 1
   input="$TMP_ROOT/pre-reviewer-prior-response-item.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" pre-reviewer-prior-response "$input" || return 1
+  first_out="$TMP_ROOT/pre-reviewer-prior-response-item-first.out"
+  run_hook "$first_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+    CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+    CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"allow","reason":"Claim turn."}' || return 1
+  expect_no_output "$first_out" || return 1
   out="$TMP_ROOT/pre-reviewer-prior-response-item.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1491,13 +3438,15 @@ test_pre_reviewer_allows_after_prior_response_item_tool_call() {
 }
 
 test_pre_reviewer_skips_spawned_subagent_transcript() {
-  local proof_root input out transcript
+  local proof_root input out transcript capture claim
   proof_root="$(fresh_proof_root pre-reviewer-subagent)"
   transcript="$(subagent_transcript_path)"
   write_subagent_transcript "$transcript" || return 1
+  submit_current_turn "$proof_root" pre-reviewer-subagent "SUBAGENT_PROMPT" pre-reviewer-subagent || return 1
+  capture="$(turn_capture_path "$proof_root" pre-reviewer-subagent)" || return 1
+  claim="$(turn_claim_path "$proof_root" pre-reviewer-subagent)" || return 1
   input="$TMP_ROOT/pre-reviewer-subagent.json"
-  jq --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '.cwd = $cwd | .transcript_path = $transcript' "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  write_present_pre_reviewer_input "$transcript" pre-reviewer-subagent "$input" || return 1
   out="$TMP_ROOT/pre-reviewer-subagent.out"
 
   run_hook "$out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$input" \
@@ -1505,7 +3454,7 @@ test_pre_reviewer_skips_spawned_subagent_transcript() {
     CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
     CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Load the matching skill first."}' || return 1
 
-  expect_no_output "$out"
+  expect_no_output "$out" && [ -f "$capture" ] && [ ! -e "$claim" ]
 }
 
 test_eci_gate_allows_markdown_only_apply_patch() {
@@ -4152,6 +6101,14 @@ run_case "ECI gate blocks code apply_patch from session marker" \
   test_eci_gate_blocks_code_apply_patch_from_session_state
 run_case "ECI gate blocks CODEX_ROLE spoof through marker" \
   test_eci_gate_blocks_codex_role_spoof
+run_case "subagent helper processes through first record then quits" \
+  test_subagent_helper_processes_through_first_record_then_quits
+run_case "parent helper processes through first record then quits" \
+  test_parent_helper_processes_through_first_record_then_quits
+run_case "first-record helpers accept oversize record without final newline" \
+  test_first_record_helpers_accept_oversize_without_final_newline
+run_case "first-record helpers preserve boundary behavior" \
+  test_first_record_helpers_preserve_boundary_behavior
 run_case "ECI gate allows spawned-agent transcript payload" \
   test_eci_gate_allows_spawned_agent_transcript_payload
 run_case "ECI gate blocks main transcript payload" \
@@ -4186,6 +6143,104 @@ run_case "stop reviewer skips spawned subagent transcript" \
   test_stop_reviewer_skips_spawned_subagent_transcript
 run_case "reviewer timeout and hook wiring are configured" \
   test_stop_reviewer_timeout_and_hook_wiring
+run_case "pre reviewer lock is bounded and fileless" \
+  test_pre_reviewer_lock_is_bounded_and_fileless
+run_case "pre reviewer lock timeout accepts only zero through one" \
+  test_pre_reviewer_lock_timeout_accepts_only_zero_through_one
+run_case "pre reviewer lock revalidates after waiting path swap" \
+  test_pre_reviewer_lock_revalidates_after_waiting_path_swap
+run_case "pre reviewer lock revalidates private mode after waiting" \
+  test_pre_reviewer_lock_revalidates_private_mode_after_waiting
+run_case "many turns leave no lock files" \
+  test_many_turns_leave_no_lock_files
+run_case "present-turn pre reviewer skips transcript find" \
+  test_pre_reviewer_present_turn_skips_transcript_find
+run_case "present-turn pre reviewer uses per-turn capture with first-record scope" \
+  test_pre_reviewer_present_turn_uses_per_turn_capture_with_first_record_scope
+run_case "distinct prompt captures overlap without overwrite" \
+  test_prompt_capture_distinct_turns_overlap_without_overwrite
+run_case "prompt cap failure leaves no same-key reusable state" \
+  test_prompt_cap_failure_leaves_no_same_key_reusable_state
+run_case "turn state pruning is old regular-file and namespace scoped" \
+  test_turn_state_pruning_is_old_regular_file_and_namespace_scoped
+run_case "turn state pruning requires held lock descriptor" \
+  test_turn_state_pruning_requires_held_lock_descriptor
+run_case "present-turn pre reviewer with retained state skips pruner" \
+  test_present_turn_with_retained_state_skips_pruner
+run_case "prompt retained state prunes once without per-file subprocesses" \
+  test_prompt_retained_state_prunes_once_without_per_file_subprocesses
+run_case "paused prompt pruning bounds concurrent pretool wait" \
+  test_paused_prompt_pruning_bounds_concurrent_pretool_wait
+run_case "Python pre reviewer pruning unit suite" \
+  test_prune_pre_reviewer_turn_state_python_unit_suite
+run_case "pre reviewer pruning matches Lean namespace spec" \
+  test_prune_pre_reviewer_turn_state_matches_lean_spec
+run_case "present-turn pre reviewer claim uses hash fallback" \
+  test_pre_reviewer_present_turn_claim_uses_hash_fallback
+run_case "hash fails open without SHA-256 or Python" \
+  test_hash_fails_open_without_sha256_or_python
+run_case "present-turn pre reviewer duplicate is silent and first-record scoped" \
+  test_pre_reviewer_present_turn_duplicate_is_silent_and_first_record_scoped
+run_case "same-turn resubmit remains idempotent after claim" \
+  test_same_turn_resubmit_is_idempotent_after_claim
+run_case "present-turn capture failure clears stale state without legacy fallback" \
+  test_pre_reviewer_present_turn_capture_failure_clears_stale_and_never_falls_back
+run_case "present-turn pre reviewer mismatch is silent and first-record scoped" \
+  test_pre_reviewer_present_turn_mismatch_is_silent_and_first_record_scoped
+run_case "present-turn hash collision fails open without claim" \
+  test_pre_reviewer_hash_collision_fails_open_without_claim
+run_case "present-turn claim loser does not delete capture" \
+  test_pre_reviewer_claim_loser_does_not_delete_capture
+run_case "claim creation failure restores consumed capture" \
+  test_claim_creation_failure_restores_consumed_capture
+run_case "same-key resubmit preserves winner claim" \
+  test_same_key_resubmit_preserves_winner_claim
+run_case "present-turn claim persists across non-deny outcomes" \
+  test_present_turn_claim_persists_across_non_deny_outcomes
+run_case "present-turn pre reviewer rejects malformed capture payloads" \
+  test_pre_reviewer_present_turn_rejects_malformed_capture_payloads
+run_case "present-turn strict capture consumer rejects unsafe inputs" \
+  test_present_turn_strict_capture_consumer_rejects_unsafe_inputs
+run_case "present-turn strict capture consumer preserves replacement character" \
+  test_present_turn_strict_capture_consumer_preserves_valid_replacement_character
+run_case "owned 0755 pre reviewer state directory migrates and publishes" \
+  test_pre_reviewer_owned_0755_state_directory_migrates_and_publishes
+run_case "private pre reviewer state directory skips Python migrator" \
+  test_pre_reviewer_private_state_directory_skips_python_migrator
+run_case "unavailable pre reviewer migrator fails silently without mutation" \
+  test_pre_reviewer_unavailable_migrator_fails_silently_without_mutation
+run_case "wrong-owner pre reviewer state fails without mutation or publication" \
+  test_pre_reviewer_wrong_owner_fails_without_mutation_or_publication
+run_case "pre reviewer rejects unsafe state directories without mutation" \
+  test_pre_reviewer_rejects_unsafe_state_directories
+run_case "present-turn claim is atomic under concurrency" \
+  test_pre_reviewer_present_turn_claim_is_atomic_under_concurrency
+run_case "distinct turn ids with the same prompt each review" \
+  test_pre_reviewer_distinct_turn_ids_with_same_prompt_each_review
+run_case "prompt capture redacts completely before byte cap" \
+  test_prompt_capture_redacts_complete_prompt_before_byte_cap
+run_case "prompt capture byte cap preserves UTF-8 boundary" \
+  test_prompt_capture_byte_cap_preserves_utf8_boundary
+run_case "large prompt submission publishes bounded capture" \
+  test_large_prompt_submission_publishes_bounded_capture
+run_case "prompt capture UTF-8 prefix matches Lean spec" \
+  test_prompt_capture_utf8_prefix_matches_lean_spec
+run_case "Python UTF-8 prefix cap unit suite" \
+  test_utf8_prefix_cap_python_unit_suite
+run_case "Python strict turn capture unit suite" \
+  test_turn_capture_validator_python_unit_suite
+run_case "turn capture validator matches Lean specification" \
+  test_turn_capture_validator_matches_lean_spec
+run_case "validator child closes turn lock FD while pruner inherits it" \
+  test_capture_validator_child_closes_lock_fd_while_pruner_inherits
+run_case "Python pre reviewer state directory migration unit suite" \
+  test_pre_reviewer_state_dir_migration_python_unit_suite
+run_case "hook tests leave no Python bytecode cache" \
+  test_hook_tests_leave_no_python_bytecode_cache
+run_case "prompt submit without usable turn id preserves per-turn state" \
+  test_prompt_submit_without_usable_turn_id_preserves_per_turn_state
+run_case "unusable turn ids fail open before transcript, state, or backend access" \
+  test_pre_reviewer_unusable_turn_ids_fail_open_before_side_effects
 run_case "pre reviewer denies first tool call once per turn" \
   test_pre_reviewer_denies_first_tool_call_once_per_turn
 run_case "pre reviewer accepts LLM compatibility alias" \

@@ -9,6 +9,7 @@
 !hooks.json
 !bin/**
 !hooks/**
+!proofs/**
 !skills/**
 
 # Standard Codex system skills are provided by Codex, not user config.

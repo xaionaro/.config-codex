@@ -114,8 +114,11 @@ codex_path_is_session_ledger_file() {
 codex_hash_string() {
   if command -v sha256sum >/dev/null 2>&1; then
     printf '%s' "${1:-}" | sha256sum | awk '{print $1}'
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "${1:-}" | python3 -c \
+      'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
   else
-    printf '%s' "${1:-}" | cksum | awk '{print $1}'
+    return 1
   fi
 }
 
@@ -422,7 +425,7 @@ codex_bind_side_stop_to_session() {
 
 codex_hook_is_subagent_context() {
   local input="${1:-}"
-  local transcript_path first_event
+  local transcript_path first_record
 
   transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
   case "$transcript_path" in
@@ -431,8 +434,8 @@ codex_hook_is_subagent_context() {
   esac
 
   [ -f "$transcript_path" ] || return 1
-  first_event="$(sed -n '1p' "$transcript_path" 2>/dev/null || true)"
-  printf '%s' "$first_event" | jq -e '
+  first_record="$(sed -n '1{p;q;}' "$transcript_path" 2>/dev/null || true)"
+  printf '%s' "$first_record" | jq -e '
     .type == "session_meta" and
     (.payload.source.subagent.thread_spawn? != null)
   ' >/dev/null 2>&1
@@ -440,12 +443,12 @@ codex_hook_is_subagent_context() {
 
 codex_hook_parent_session_id() {
   local input="${1:-}"
-  local transcript_path first_event
+  local transcript_path first_record
 
   transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
   [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || return 1
-  first_event="$(sed -n '1p' "$transcript_path" 2>/dev/null || true)"
-  printf '%s' "$first_event" | jq -r '
+  first_record="$(sed -n '1{p;q;}' "$transcript_path" 2>/dev/null || true)"
+  printf '%s' "$first_record" | jq -r '
     .payload.source.subagent.thread_spawn.parent_thread_id // empty
   ' 2>/dev/null
 }
