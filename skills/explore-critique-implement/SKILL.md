@@ -1,6 +1,6 @@
 ---
 name: explore-critique-implement
-description: Use when solving a non-trivial or uncertain problem, when 2+ approaches may fit, or when future behavior, routing, or contract risk is load-bearing. Skip only mechanical changes whose correct answer and consequences are obvious before editing.
+description: Use when CODEX selects ECI as the outer workflow or active ATE routes bounded work through ECI
 ---
 
 # Explore-Critique-Implement
@@ -22,8 +22,9 @@ Maintain a project-understanding ledger for every ECI run. Use the `maintaining-
 
 ## Codex adapter
 
-- A user request to "use ECI" or `explore-critique-implement` authorizes this skill's required spawned agents.
-- Automatic skill routing may load this file for uncertain work, but loading alone is not ECI invocation. Do not claim ECI is active without explicit ECI or agent authorization.
+- Start ECI only when CODEX selects it as the outer workflow or active ATE routes bounded work through it. Loading this skill alone does not start ECI.
+- ECI includes its required spawned agents.
+- A request to use ATE while ECI is active, or to cancel, withdraw, or replace ECI's root scope, is user closure for ECI teardown. Checkpoint unfinished work and record its successor handoff or scope removal before using `user-closed:`.
 - Claude `TeamCreate` / named Agent / `SendMessage` / `TeamDelete` maps to Codex `spawn_agent` / `send_input` / `wait_agent` / `close_agent`.
 - Codex ECI uses standard agent management tools only. Do not launch shell-wrapped Codex agents. If `spawn_agent` or related agent tools are unavailable, ECI cannot run; hard-escalate to the user.
 
@@ -53,7 +54,7 @@ The PreToolUse gate `~/.codex/hooks/eci-active-gate.sh` denies direct Edit/Write
 | Step | Command | When |
 |------|---------|------|
 | Engage | `~/.codex/bin/eci-active on "<task + scope>"` | Before Step 1 of the first iteration |
-| Disengage | See Teardown sequence below | Clean pass landed or user confirms scope closed |
+| Disengage | See Teardown sequence below | Clean pass or user closes ECI through protocol or root-scope replacement |
 | Hard escalate | Report blocker requiring user input; marker stays active | ECI cannot proceed without user input |
 
 Do not disengage mid-task to escape the gate — that is the regression this marker exists to catch. If a hand-edit feels necessary, send the work to the persistent `implementer` agent.
@@ -417,7 +418,7 @@ Cycle limit defined in Escalation table (3 full cycles per change).
 
 - All changes landed with clean pass and clean-pass teardown completed, OR
 - Loop-breaker ACCEPT → current state accepted with reasoning and clean-pass teardown completed, OR
-- User confirms scope closed and user-closed teardown completed, OR
+- User closes ECI by requesting ATE or by cancelling, withdrawing, or replacing its root scope, and user-closed teardown completes, OR
 - Hard escalate triggered → blocker/user decision request reported; ECI remains active.
 
 ## Status reports
@@ -476,7 +477,7 @@ auth middleware swap
 | Skill | Difference |
 |-------|-----------|
 | `brainstorming` | Explores user intent before design. This skill explores solutions after intent is clear. |
-| `agent-teams-execution` | Full multi-role pipeline for large builds. This skill is the medium-task pattern (explore → critique → implement → parallel review gate). ECI shares the standard Codex agent mechanism (`spawn_agent` / `send_input` / `wait_agent` / `close_agent`) for the persistent explorer + implementer. Borrow its rubber-stamp check: critic citing zero issues beyond producer's self-reports = re-spawn with harsher prompt. |
+| `agent-teams-execution` | ATE is the outer workflow for large or multi-workstream work. It may route bounded work through ECI; ATE remains outer. ECI borrows ATE's rubber-stamp check: a critic citing no issues beyond producer self-reports must be re-spawned with a harsher prompt. |
 | `blocker-resolution-protocol` | Shared blocker handling. ECI keeps its own role separation, loop-breaker, and hard-escalation semantics while using the shared blocker record and escalation rules. |
 | `systematic-debugging` | For diagnosing a known bug. This skill is for open-ended improvement/design research. |
 | `proof-driven-development` | Proves correctness of logic. This skill selects which logic to build. |

@@ -5,7 +5,7 @@ description: Use when porting code, features, or capabilities from one codebase/
 
 # Code Porting
 
-Port code between codebases through exhaustive extraction, adversarial critique, and gated implementation. Keep each phase as a separate work product. Use standard `spawn_agent` subagents when higher-priority Codex instructions allow delegation and the user explicitly requested subagents, parallel agents, delegated work, or dedicated agents. Do not launch Codex agents through shell wrappers.
+Port code between codebases through exhaustive extraction, adversarial critique, and gated implementation. When ECI or ATE owns the current work, route agent-owned phases through that protocol. Outside ECI/ATE, use standard `spawn_agent` subagents only when higher-priority Codex instructions allow delegation and the user explicitly requests subagents, parallel agents, delegated work, or dedicated agents. Do not launch Codex agents through shell wrappers.
 
 ## When to use
 
@@ -18,7 +18,7 @@ Port code between codebases through exhaustive extraction, adversarial critique,
 
 ## Agent separation
 
-Every numbered phase below has a separate role and artifact. No role serves dual purposes. When delegation is authorized, run phases as separate standard subagents. Otherwise, perform the phases locally while preserving the boundaries and critique gates. If the user explicitly required dedicated agents and standard agent tools are unavailable, hard-escalate instead of substituting local artifacts.
+Every numbered phase below has a separate role and artifact. No role serves dual purposes. When ECI or ATE owns the current work, route those roles through that protocol. Outside ECI/ATE, run phases as separate standard subagents only after explicit user delegation; otherwise perform them locally while preserving role boundaries and critique gates. If the user explicitly requires dedicated agents and standard agent tools are unavailable, hard-escalate instead of substituting local artifacts.
 
 Propagate **original user requirements verbatim** to every subagent prompt.
 Every subagent prompt must include: Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
@@ -211,7 +211,7 @@ Proceed only with user-approved tasks.
 
 ## Phase 7: Implementation
 
-For each approved task, invoke `explore-critique-implement`. Each task goes through the full explore→critique→implement→review gate loop independently.
+Route each approved task through ECI's full explore→critique→implement→review loop as a separate iteration. If ECI is the outer workflow, use that workflow. If ATE is outer, ATE routes each bounded task through ECI and remains outer.
 
 Per-task prompt must include:
 
@@ -226,7 +226,7 @@ Per-task prompt must include:
 
 Task ordering from Phase 5 is mandatory — do not parallelize tasks with dependencies.
 
-Independent tasks (no dependency relationship) may run in parallel via `agent-teams-execution`.
+When ATE is outer, it may run independent tasks in parallel while routing each bounded task through ECI.
 
 ## Escalation
 
@@ -242,7 +242,7 @@ Independent tasks (no dependency relationship) may run in parallel via `agent-te
 | Symptom | Fix |
 |---------|-----|
 | Shell-launched Codex process used for a phase | Stop. Use standard `spawn_agent`; hard-escalate if unavailable |
-| Main thread implementing instead of spawning agents when delegation is authorized | Stop. Main thread orchestrates only |
+| Main thread implements agent-owned work | Route it through the owning ECI/ATE workflow; outside those workflows, spawn only under the generic delegation rule. |
 | Same agent doing extraction + gap analysis | Banned. Separate agents per phase |
 | Feature list suspiciously short (<5 entries for non-trivial source) | Re-spawn extractor with "you are under-listing" |
 | Critique agrees with everything | Re-spawn with harsher prompt: "zero survivors is valid" |
@@ -256,8 +256,8 @@ Independent tasks (no dependency relationship) may run in parallel via `agent-te
 
 | Skill | Relationship |
 |-------|-------------|
-| `explore-critique-implement` | Phase 7 delegates each porting task to this skill. Full review gate per change. |
-| `agent-teams-execution` | Use for parallel independent porting tasks in Phase 7. |
+| `explore-critique-implement` | Each Phase 7 task is a full ECI iteration. Under ATE, ECI is bounded and nested. |
+| `agent-teams-execution` | Outer workflow for parallel independent Phase 7 tasks; ATE remains outer while routing each bounded task through ECI. |
 | `harness-tuning` | Apply when the porting target is a skill file, system prompt, or CODEX.md. |
 | `brainstorming` | Use before this skill if user intent is unclear (what to port, why). |
 | `proof-driven-development` | Invoked inside `explore-critique-implement` for logic-bearing ported code. |

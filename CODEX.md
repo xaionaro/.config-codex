@@ -48,7 +48,15 @@ For completion summaries, reviews, and subagent reports: tag factual claims; unt
 ## Decision Rules
 
 - For every nontrivial user request and every discovered issue, call `update_plan` immediately; keep pending, in-progress, and completed items visible until all work is done or the user changes scope.
-- Task routing: trivial = direct; non-trivial = ECI after explicit ECI/agent authorization; very long, heavy, multiday, or multi-workstream = ATE after explicit delegation authorization.
+- Select exactly one outer workflow: direct, ECI, or ATE.
+- If the user requests exactly one of ECI or ATE, select it. If the user requests both, select ATE; ATE may route bounded work through ECI.
+- Otherwise, select direct for trivial tasks, ATE for very long, heavy, multiday, or multi-workstream tasks, and ECI for other non-trivial tasks.
+- Apply outer-workflow selection only when no ECI or ATE outer workflow is active.
+- An active outer workflow owns follow-ups within or additive to its root scope until its existing clean-pass, user-closed, or ATE-shutdown path completes. Do not reselect solely because additive growth crosses ATE size criteria.
+- A follow-up is additive only when it extends the active root scope. Queue unrelated requests as separate roots until the active workflow closes unless the user explicitly replaces it.
+- While ECI is active, a request to use ATE explicitly replaces ECI. Complete ECI's user-closed teardown before selecting ATE.
+- While ATE is active, route a bounded ECI request as nested ECI. Replace ATE with ECI only when the user explicitly requests a switch, replacement, or stop of ATE.
+- An explicit request to cancel, withdraw, or replace the active root scope closes that outer workflow. Finish its teardown and close its marker before starting a successor; teardown failure leaves the current workflow active. Never keep two outer workflows active.
 - Treat a task as non-trivial when it changes prompts, routing, protocols, contracts, security, persistence, concurrency, architecture, reviewer/agent behavior, or has 2+ plausible approaches.
 - Treat a task as trivial only when the correct action is mechanical, directly verifiable, and has no future behavior or routing risk.
 - Security first. Use minimal targeted solutions; do not disable security controls as a workaround.
@@ -92,8 +100,8 @@ Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker
 | Code implementation | `test-driven-development` |
 | Logic-heavy implementation | `proof-driven-development` |
 | Android device work: adb, fastboot, flashing, kernel updates | `android-device` |
-| User-requested ECI, or non-trivial task after explicit agent authorization | `explore-critique-implement` |
-| Very long/heavy/multiday or multi-workstream task after explicit delegation authorization | `agent-teams-execution` |
+| CODEX selects ECI as the outer workflow | `explore-critique-implement` |
+| CODEX selects ATE as the outer workflow | `agent-teams-execution` |
 | Skills, prompts, global instructions, `CODEX.md`, `AGENTS.md`, or `SKILL.md` | `harness-tuning` |
 | UI work | `ui-design` |
 | Porting code, features, or capabilities between projects | `code-porting` |
@@ -103,8 +111,7 @@ Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker
 
 Subagent rule:
 
-- A request to use ECI / `explore-critique-implement` is explicit authorization for ECI's required spawned agents. Never reinterpret it as local-only ECI.
-- Automatic skill routing is not authorization by itself. If a matching skill requires agents and the user did not request agents or that protocol, do not claim the protocol is active.
+- CODEX selection of ECI or ATE activates the full protocol, including required spawned agents. Never reinterpret either protocol as local-only.
 - Use `spawn_agent` only; do not launch shell-wrapped Codex agents.
 - Give every spawned or resumed subagent a current role label. Print or update the roster immediately after spawn, resume, reassignment, or scope change: `<role label>: <runtime name> [type]`.
 - In every wait/status/close update, use `<role label> (<runtime name> [type])`; do not use bare runtime nicknames once labeled.

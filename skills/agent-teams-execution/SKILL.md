@@ -1,6 +1,6 @@
 ---
 name: agent-teams-execution
-description: Use when facing any non-trivial software building or debugging task that spans multiple independent workstreams
+description: Use when CODEX selects ATE as the outer workflow
 ---
 
 # Agent Teams Execution
@@ -9,14 +9,13 @@ Phased agent team with adversarial review loops and tiered information trust.
 
 ## Delegation Rules
 
-- Start this pipeline only when the user explicitly requested subagents, delegation, or parallel agent work.
+- CODEX selection starts this pipeline. Loading this skill alone does not.
 - Use standard `spawn_agent`, `send_input`, and `wait_agent` for role execution.
 - When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
 - Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
 - Spawn with reusable `agent_type` roles only: `explorer`, `worker`, `default`. Team roles (`designer`, `executor`, `qa`) are stable roster labels, not custom `agent_type`s. If the spawn schema lacks `agent_type`, put the intended reusable type in the prompt/roster and record the limitation.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
 - Every subagent prompt must include: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
-- If delegation is not authorized, do not run this pipeline; execute locally with the relevant review checklist.
 - If the main/orchestrator lacks standard agent tools, do not run this pipeline; hard-escalate instead of launching shell-based Codex sessions.
 - If a teammate role lacks standard agent tools required by ATE but the main/orchestrator has them, use the Lead-Mediated Nested Delegation Adapter.
 - `CODEX_ROLE` is legacy hook metadata. Do not use it to launch teammates.
@@ -90,7 +89,7 @@ Active phases: `research`, `design`, `execution`, `testing`, `qa`, `unblocking`.
 
 Run `update_ate_marker awaiting_user "<task + scope>"` only after reporting a QA verdict or user-owned blocker and all in-scope teammates are idle waiting for the user. Switch back to an active phase before routing any followup.
 
-Run `update_ate_marker closed "<task + scope>"` only during user-requested shutdown after teammate shutdown handling.
+Run `update_ate_marker closed "<task + scope>"` only after teammate shutdown for an explicit request to shut down or switch away from ATE, or to cancel, withdraw, or replace ATE's root scope. A bounded ECI request is nested and does not close ATE.
 
 Do not use `awaiting_user`, `closed`, marker removal, or session-variable changes merely to bypass the stop gate. The marker records ATE lifecycle state; it is not a stop bypass.
 
@@ -117,9 +116,9 @@ The coordinator owns the ledger. Teammates report ledger-worthy facts; if a team
 Coordinator updates after: findings, design approval, task code/test approval, blocker resolution, user correction; before QA spawn, user-waiting stop, shutdown. Lead reminds on forgotten updates. Snitch may remind asynchronously after phase transitions, manual audit reminders, and activity bursts. Invalid ledger blocks QA spawn.
 
 <CRITICAL>
-When delegation is authorized, spawn bounded standard Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
+When this pipeline is active, spawn bounded standard Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
 
-Example authorized mapping: one `explorer` for each independent research slice, one `worker` for implementation ownership, and one `explorer` or `default` reviewer for critique.
+Example mapping: one `explorer` for each independent research slice, one `worker` for implementation ownership, and one `explorer` or `default` reviewer for critique.
 
 **Reusable role slots only.** Name by stable role (`executor-1`, `explorer-2`), not task/round/gate (`executor-auth-fix`, `qa-cycle-3`). Put task id, ownership, lens, phase, and cycle in the assignment. Reassign idle teammates instead of spawning new ones.
 </CRITICAL>
@@ -586,7 +585,7 @@ Review independently first — no reading peer findings before writing your own.
 16. **Interrupt violations immediately.** Same protocol as lead: send correction message first, then interrupt if the tool surface supports it. Do not wait for their turn to end when interruption is available.
 17. **Notify Snitch on idle/resume.** Notify Snitch asynchronously on idle/resume. Do not wait for Snitch audit before routing followups, QA verdicts, or shutdown.
 18. **Report QA verdict to user, then wait.** Never declare mission accomplished. Never auto-shutdown teammates. Mission complete only when user explicitly confirms. Followups → route per User Followups table.
-19. **Shutdown only on user request.** Then run Shutdown procedure for every teammate, mark all tasks completed.
+19. **Shutdown only on a lifecycle shutdown request.** Run Shutdown procedure. On protocol replacement, preserve every unfinished task state in the successor handoff. On root-scope replacement, record unfinished tasks as removed from scope. Mark only fully verified tasks complete.
 
 ## Lead Responsibilities
 
@@ -664,14 +663,14 @@ Downstream agents get **structured summaries**, not raw upstream output.
 | Designer + Reviewer | Phase 3 end | Design issues re-enter full pipeline |
 | Executors + Reviewers | Phase 4 end | Test failures trace to code |
 | Test Designer | Phase 4 end | Test executors need spec clarification |
-| Test Executors + Reviewers | User shutdown | User may request followups |
-| Snitch | User shutdown | Monitors all claims throughout |
-| **QA** | User shutdown | **Re-spawned fresh under `qa` role label per QA cycle** |
-| Coordinator + Lead | User shutdown | Stand by for user followups |
+| Test Executors + Reviewers | ATE lifecycle shutdown | User may request followups |
+| Snitch | ATE lifecycle shutdown | Monitors all claims throughout |
+| **QA** | ATE lifecycle shutdown | **Re-spawned fresh under `qa` role label per QA cycle** |
+| Coordinator + Lead | ATE lifecycle shutdown | Stand by for user followups |
 
-**No "DONE" state.** QA approval ≠ mission accomplished. After QA approves, coordinator reports verdict + evidence to user and **waits**. Mission is accomplished only when the user explicitly confirms (e.g. "ship it", "done", "approved"). Until then, all teammates remain alive.
+**No "DONE" state.** QA approval ≠ mission accomplished. After QA approves, coordinator reports verdict + evidence to user and **waits**. Mission is accomplished only when the user explicitly confirms (e.g. "ship it", "done", "approved"). Until then, all teammates remain alive unless an ATE lifecycle shutdown request defined by the closed-marker rule applies.
 
-**Shutdown only on user request.** Coordinator never auto-shuts down the team. User must explicitly request shutdown ("disband", "end team", "shut down"). Then coordinator runs Shutdown procedure for every teammate.
+**Shutdown only on a lifecycle request.** Use the closed-marker rule above. Then run Shutdown procedure for every teammate. Mark only fully verified tasks complete; preserve unfinished work as required by Coordinator item 19.
 
 Re-entry: original designer handles Phase 2 re-entry directly — full context preserved.
 
@@ -777,7 +776,7 @@ Compliance:
 | Main thread/coordinator stops after blocker, escalation, QA rejection, or subagent stop while solvable work remains | Continue the mission: unblock, reassign, re-scope, or ask the required user question. |
 | Early teammate shutdown | Keep alive until downstream consumers finish (see Lifecycle table) |
 | Coordinator declares mission accomplished after QA approval | Report to user, wait for explicit confirmation. Mission complete only on user confirmation |
-| Coordinator shuts team down without user request | STOP. Team alive until user requests shutdown |
+| Coordinator shuts team down without an ATE lifecycle shutdown request | STOP. Keep the team alive until the closed-marker rule applies. |
 | Pipeline stage skipped on user followup ("just a small fix") | Route per User Followups table. Default: more pipeline, not less |
 | Coordinator/lead asks user mid-pipeline for decision a teammate can make | Autonomy violation. Run normal protocol flow and full loop budget first; BRP only if unresolved before user gate. |
 | Activity burst since last ledger update | Lead reminds coordinator; Snitch may report/remind asynchronously. Update per `maintaining-context-ledger` |
