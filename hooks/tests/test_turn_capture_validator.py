@@ -73,6 +73,37 @@ class TurnCaptureValidatorTests(unittest.TestCase):
                 json.dumps("x" * 4097),
             )
 
+    def test_turn_id_uses_nonempty_utf8_byte_bound(self) -> None:
+        accepted = (
+            "x" * 4095,
+            "x" * 4096,
+            "é" * 2048,
+            "😀" * 1024,
+            "x" * 4090 + "é😀",
+        )
+        rejected = ("", "x" * 4097, "é" * 2049, "😀" * 1025)
+
+        for turn_id in accepted:
+            with self.subTest(accepted_bytes=len(turn_id.encode())):
+                result = turn_capture_validator.validate_capture_bytes(
+                    capture_bytes(turn_id, "prompt"),
+                    json.dumps(turn_id, ensure_ascii=False),
+                )
+                self.assertEqual(result, b"prompt")
+        for turn_id in rejected:
+            with self.subTest(rejected_bytes=len(turn_id.encode())):
+                with self.assertRaises(ValueError):
+                    turn_capture_validator.validate_capture_bytes(
+                        capture_bytes(turn_id, "prompt"),
+                        json.dumps(turn_id, ensure_ascii=False),
+                    )
+
+        with self.assertRaises(ValueError):
+            turn_capture_validator.validate_capture_bytes(
+                capture_bytes("turn-valid", "prompt"),
+                '"bad\udcff"',
+            )
+
     def test_cli_outputs_prompt_only_on_success(self) -> None:
         helper = LIB_ROOT / "turn_capture_validator.py"
         valid = subprocess.run(

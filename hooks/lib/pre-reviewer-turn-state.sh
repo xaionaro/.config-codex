@@ -4,8 +4,15 @@
 codex_hook_turn_id_json() {
   local input="${1:-}"
 
+  # This is a local hook resource ceiling, not an upstream turn-ID schema claim.
   printf '%s' "$input" | jq -c \
-    'if ((.turn_id? | type) == "string" and .turn_id != "") then .turn_id else empty end' \
+    '(.turn_id? // null) as $turn_id
+    | if (($turn_id | type) == "string"
+        and ($turn_id | utf8bytelength) > 0
+        and ($turn_id | utf8bytelength) <= 4096)
+      then $turn_id
+      else empty
+      end' \
     2>/dev/null || true
 }
 

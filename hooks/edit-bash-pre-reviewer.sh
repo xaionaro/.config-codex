@@ -3,6 +3,54 @@
 
 set -uo pipefail
 
+if [ "${CODEX_EDIT_PRE_REVIEWER_WORKER:-}" != 1 ]; then
+  readonly CODEX_EDIT_PRE_REVIEWER_SELF_TIMEOUT=70
+  controller_buffer=""
+  controller_stdin_fd=""
+  controller_pid=""
+  cleanup_controller() {
+    if [ -n "${controller_stdin_fd:-}" ]; then
+      exec {controller_stdin_fd}>&- 2>/dev/null || true
+      controller_stdin_fd=""
+    fi
+    if [ -n "${controller_pid:-}" ]; then
+      kill -TERM -- "-$controller_pid" 2>/dev/null || true
+      kill -KILL -- "-$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+    fi
+    rm -f "${controller_buffer:-}" 2>/dev/null || true
+  }
+  trap 'cleanup_controller; exit 0' HUP INT TERM
+  controller_buffer=$(mktemp "${TMPDIR:-/tmp}/.edit-pre-reviewer.XXXXXX" 2>/dev/null) || exit 0
+  chmod 0600 "$controller_buffer" 2>/dev/null || {
+    cleanup_controller
+    exit 0
+  }
+  exec {controller_stdin_fd}<&0 2>/dev/null || {
+    cleanup_controller
+    exit 0
+  }
+  # This ceiling bounds signal-responsive process groups; uninterruptible kernel
+  # sleep remains outside any userspace timeout guarantee.
+  timeout --signal=TERM --kill-after=2s "${CODEX_EDIT_PRE_REVIEWER_SELF_TIMEOUT}s" \
+    env CODEX_EDIT_PRE_REVIEWER_WORKER=1 bash "$0" \
+    <&"$controller_stdin_fd" >"$controller_buffer" 2>/dev/null &
+  controller_pid=$!
+  exec {controller_stdin_fd}>&-
+  controller_stdin_fd=""
+  controller_status=0
+  wait "$controller_pid" || controller_status=$?
+  controller_pid=""
+  if [ "$controller_status" -eq 0 ]; then
+    cat "$controller_buffer" 2>/dev/null || true
+  fi
+  rm -f "$controller_buffer" 2>/dev/null || true
+  controller_buffer=""
+  trap - HUP INT TERM
+  exit 0
+fi
+unset CODEX_EDIT_PRE_REVIEWER_WORKER
+
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
 . "$HOOK_DIR/lib/codex-tmp.sh"

@@ -5,7 +5,7 @@ namespace CodexHooks
 theorem validateTurnCapture_sound (expectedTurnId : String) (capture : TurnCapture)
     (prompt : String) (validated : validateTurnCapture expectedTurnId capture = some prompt) :
     capture.turnId = expectedTurnId ∧
-      capture.turnId.utf8ByteSize ≤ turnIdByteLimit ∧
+      usableTurnId capture.turnId ∧
       capture.prompt.utf8ByteSize ≤ promptByteLimit ∧
       '\x00' ∉ capture.prompt.toList ∧
       prompt = capture.prompt := by
@@ -14,11 +14,11 @@ theorem validateTurnCapture_sound (expectedTurnId : String) (capture : TurnCaptu
 
 theorem validateTurnCapture_complete (expectedTurnId : String) (capture : TurnCapture)
     (sameTurn : capture.turnId = expectedTurnId)
-    (turnIdBounded : capture.turnId.utf8ByteSize ≤ turnIdByteLimit)
+    (turnIdUsable : usableTurnId capture.turnId)
     (promptBounded : capture.prompt.utf8ByteSize ≤ promptByteLimit)
     (promptHasNoNul : '\x00' ∉ capture.prompt.toList) :
     validateTurnCapture expectedTurnId capture = some capture.prompt := by
   subst expectedTurnId
-  simp [validateTurnCapture, turnIdBounded, promptBounded, promptHasNoNul]
+  simp [validateTurnCapture, turnIdUsable, promptBounded, promptHasNoNul]
 
 end CodexHooks

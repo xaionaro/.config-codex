@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HELPER="${CODEX_TEST_PRUNE_HELPER:-$ROOT/hooks/lib/prune_pre_reviewer_turn_state.py}"

@@ -1447,6 +1447,96 @@ test_stop_reviewer_timeout_and_hook_wiring() {
       bash "$ROOT/hooks/lib/reviewer-call.sh")" = 60 ]
 }
 
+write_accelerated_timeout_wrapper() {
+  local bin_dir="$1"
+  local real_timeout
+
+  real_timeout="$(command -v timeout)" || return 1
+  mkdir -p "$bin_dir" || return 1
+  cat >"$bin_dir/timeout" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >"\$CODEX_TEST_TIMEOUT_ARGS"
+exec "$real_timeout" --signal=TERM --kill-after=0.2s 0.2s "\$CODEX_TEST_TIMEOUT_WORKER"
+EOF
+  chmod 0755 "$bin_dir/timeout"
+}
+
+write_partial_timeout_worker() {
+  local worker="$1"
+
+  cat >"$worker" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -p /dev/stdin ]]
+printf '%s\n' "$PPID" >"$CODEX_TEST_TIMEOUT_CONTROLLER_PID"
+printf '%s\n' "$$" >"$CODEX_TEST_TIMEOUT_WORKER_PID"
+printf '{"partial":true'
+sleep 30 &
+grandchild=$!
+printf '%s\n' "$grandchild" >"$CODEX_TEST_TIMEOUT_GRANDCHILD_PID"
+wait "$grandchild"
+SH
+  chmod 0755 "$worker"
+}
+
+test_pre_reviewer_self_timeout_starts_before_stdin_and_contains_process_group() {
+  local proof_root bin_dir input_fifo input_fd completion completion_fd launcher status out tmp_dir
+  local args worker controller_pid worker_pid grandchild_pid
+  proof_root="$(fresh_proof_root pre-reviewer-self-timeout)"
+  bin_dir="$TMP_ROOT/pre-reviewer-self-timeout-bin"
+  input_fifo="$TMP_ROOT/pre-reviewer-self-timeout-input"
+  completion="$TMP_ROOT/pre-reviewer-self-timeout-completion"
+  out="$TMP_ROOT/pre-reviewer-self-timeout.out"
+  tmp_dir="$TMP_ROOT/pre-reviewer-self-timeout-tmp"
+  worker="$TMP_ROOT/pre-reviewer-self-timeout-worker"
+  mkdir -p "$tmp_dir" || return 1
+  mkfifo "$input_fifo" "$completion" || return 1
+  exec {input_fd}<>"$input_fifo" || return 1
+  exec {completion_fd}<>"$completion" || { exec {input_fd}>&-; return 1; }
+  write_accelerated_timeout_wrapper "$bin_dir" || return 1
+  write_partial_timeout_worker "$worker" || return 1
+
+  (
+    hook_status=0
+    /usr/bin/timeout --signal=TERM --kill-after=1s 3s \
+      env PATH="$bin_dir:$PATH" TMPDIR="$tmp_dir" HOME="$TMP_ROOT/home" \
+        CODEX_PROOF_ROOT="$proof_root" \
+        CODEX_TEST_TIMEOUT_ARGS="$TMP_ROOT/pre-reviewer-self-timeout.args" \
+        CODEX_TEST_TIMEOUT_WORKER="$worker" \
+        CODEX_TEST_TIMEOUT_CONTROLLER_PID="$TMP_ROOT/pre-reviewer-self-timeout-controller.pid" \
+        CODEX_TEST_TIMEOUT_WORKER_PID="$TMP_ROOT/pre-reviewer-self-timeout-worker.pid" \
+        CODEX_TEST_TIMEOUT_GRANDCHILD_PID="$TMP_ROOT/pre-reviewer-self-timeout-grandchild.pid" \
+        bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <&"$input_fd" >"$out" 2>"$out.err" || hook_status=$?
+    printf '%s\n' "$hook_status" >&"$completion_fd"
+  ) &
+  launcher=$!
+
+  if ! IFS= read -r -t 5 -u "$completion_fd" status; then
+    kill "$launcher" 2>/dev/null || true
+    wait "$launcher" 2>/dev/null || true
+    exec {input_fd}>&-
+    exec {completion_fd}>&-
+    rm -f "$input_fifo" "$completion"
+    return 1
+  fi
+  wait "$launcher" || return 1
+  exec {input_fd}>&-
+  exec {completion_fd}>&-
+  rm -f "$input_fifo" "$completion"
+
+  args="$(cat "$TMP_ROOT/pre-reviewer-self-timeout.args" 2>/dev/null)" || return 1
+  controller_pid="$(cat "$TMP_ROOT/pre-reviewer-self-timeout-controller.pid" 2>/dev/null)" || return 1
+  worker_pid="$(cat "$TMP_ROOT/pre-reviewer-self-timeout-worker.pid" 2>/dev/null)" || return 1
+  grandchild_pid="$(cat "$TMP_ROOT/pre-reviewer-self-timeout-grandchild.pid" 2>/dev/null)" || return 1
+  [ "$status" = 0 ] && expect_no_output "$out" &&
+    [[ "$args" == *"--signal=TERM"* ]] && [[ "$args" == *"--kill-after=2s"* ]] &&
+    [[ "$args" == *"70s"* ]] && [[ "$args" != *"--foreground"* ]] &&
+    ! kill -0 "$controller_pid" 2>/dev/null && ! kill -0 "$worker_pid" 2>/dev/null &&
+    ! kill -0 "$grandchild_pid" 2>/dev/null &&
+    [ -z "$(find "$tmp_dir" -maxdepth 1 -name '.edit-pre-reviewer.*' -print -quit)" ]
+}
+
 write_large_history_main_pre_reviewer_transcript() {
   local path="$1"
 
@@ -1729,8 +1819,13 @@ write_blocking_perl_wrapper() {
 set -euo pipefail
 if [ -n "\${CODEX_TEST_CAPTURE_READY:-}" ]; then
   printf 'ready\n' >"\$CODEX_TEST_CAPTURE_READY"
-  read -r release <"\$CODEX_TEST_CAPTURE_RELEASE"
+  exec {release_fd}<>"\$CODEX_TEST_CAPTURE_RELEASE"
+  cleanup_release_fd() { exec {release_fd}>&-; }
+  trap cleanup_release_fd EXIT HUP INT TERM
+  read -r -t 1 -u "\$release_fd" release
   [ "\$release" = release ]
+  cleanup_release_fd
+  trap - EXIT HUP INT TERM
 fi
 exec "$real_perl" "\$@"
 EOF
@@ -1749,8 +1844,13 @@ set -euo pipefail
 if [[ " \$* " == *turn_capture_validator.py* ]] && [ ! -e "\$CODEX_TEST_ONCE" ]; then
   : >"\$CODEX_TEST_ONCE"
   printf 'ready\n' >"\$CODEX_TEST_VALIDATION_READY"
-  read -r release <"\$CODEX_TEST_VALIDATION_RELEASE"
+  exec {release_fd}<>"\$CODEX_TEST_VALIDATION_RELEASE"
+  cleanup_release_fd() { exec {release_fd}>&-; }
+  trap cleanup_release_fd EXIT HUP INT TERM
+  read -r -t 1 -u "\$release_fd" release
   [ "\$release" = release ]
+  cleanup_release_fd
+  trap - EXIT HUP INT TERM
 fi
 exec "$real_python" "\$@"
 EOF
@@ -2082,8 +2182,13 @@ write_pausing_prune_python_wrapper() {
 set -euo pipefail
 if [[ "\${1:-}" == *prune_pre_reviewer_turn_state.py ]]; then
   printf 'ready\n' >"\$CODEX_TEST_PRUNE_READY"
-  IFS= read -r release <"\$CODEX_TEST_PRUNE_RELEASE"
+  exec {release_fd}<>"\$CODEX_TEST_PRUNE_RELEASE"
+  cleanup_release_fd() { exec {release_fd}>&-; }
+  trap cleanup_release_fd EXIT HUP INT TERM
+  IFS= read -r -t 1 -u "\$release_fd" release
   [ "\$release" = release ]
+  cleanup_release_fd
+  trap - EXIT HUP INT TERM
 fi
 exec "$real_python" "\$@"
 EOF
@@ -2149,6 +2254,83 @@ test_prune_pre_reviewer_turn_state_python_unit_suite() {
 
 test_prune_pre_reviewer_turn_state_matches_lean_spec() {
   "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null
+}
+
+test_prune_differential_disables_python_bytecode_with_parent_env_unset() {
+  local bin_dir
+  bin_dir="$TMP_ROOT/prune-differential-no-bytecode-bin"
+  mkdir -p "$bin_dir" || return 1
+  ln -s "$(type -P true)" "$bin_dir/lake" || return 1
+  find "$ROOT/hooks" -type d -name __pycache__ -prune -exec rm -rf {} +
+  env -u PYTHONDONTWRITEBYTECODE PATH="$bin_dir:$PATH" \
+    "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null || return 1
+  [ -z "$(find "$ROOT/hooks" -type d -name __pycache__ -print -quit)" ]
+}
+
+test_generated_fifo_wrappers_use_owned_bounded_release_descriptors() {
+  [ "$(grep -c 'exec {release_fd}<>"\\$CODEX_TEST_.*_RELEASE"' "$ROOT/hooks/tests/run.sh")" -eq 3 ] &&
+    [ "$(grep -c 'read -r -t 1 -u "\\$release_fd" release' "$ROOT/hooks/tests/run.sh")" -eq 3 ] ||
+    return 1
+  test_generated_fifo_wrapper_release_timeouts
+}
+
+test_generated_fifo_wrapper_release_timeouts() {
+  local bin_dir kind kind_bin wrapper ready release ready_fd pid_file status_file launcher
+  local status wrapper_pid signal
+  local -a command
+  bin_dir="$TMP_ROOT/generated-fifo-bounded-bin"
+
+  for kind in capture validation prune; do
+    kind_bin="$bin_dir/$kind"
+    ready="$TMP_ROOT/generated-fifo-$kind-ready"
+    release="$TMP_ROOT/generated-fifo-$kind-release"
+    pid_file="$TMP_ROOT/generated-fifo-$kind.pid"
+    status_file="$TMP_ROOT/generated-fifo-$kind.status"
+    case "$kind" in
+      capture)
+        write_blocking_perl_wrapper "$kind_bin" || return 1
+        wrapper="$kind_bin/perl"
+        command=(env CODEX_TEST_CAPTURE_READY="$ready" CODEX_TEST_CAPTURE_RELEASE="$release"
+          "$wrapper" -e 1)
+        ;;
+      validation)
+        write_blocking_validation_python_wrapper "$kind_bin" || return 1
+        wrapper="$kind_bin/python3"
+        command=(env CODEX_TEST_VALIDATION_READY="$ready" CODEX_TEST_VALIDATION_RELEASE="$release"
+          CODEX_TEST_ONCE="$TMP_ROOT/generated-fifo-validation-once"
+          "$wrapper" "$ROOT/hooks/lib/turn_capture_validator.py")
+        ;;
+      prune)
+        write_pausing_prune_python_wrapper "$kind_bin" || return 1
+        wrapper="$kind_bin/python3"
+        command=(env CODEX_TEST_PRUNE_READY="$ready" CODEX_TEST_PRUNE_RELEASE="$release"
+          "$wrapper" "$ROOT/hooks/lib/prune_pre_reviewer_turn_state.py")
+        ;;
+    esac
+    mkfifo "$ready" "$release" || return 1
+    exec {ready_fd}<>"$ready" || return 1
+    (
+      wrapper_status=0
+      /usr/bin/timeout --signal=TERM --kill-after=0.2s 3s \
+        bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' \
+        bash "$pid_file" "${command[@]}" || wrapper_status=$?
+      printf '%s\n' "$wrapper_status" >"$status_file"
+    ) &
+    launcher=$!
+    if ! IFS= read -r -t 2 -u "$ready_fd" signal || [ "$signal" != ready ]; then
+      kill "$launcher" 2>/dev/null || true
+      wait "$launcher" 2>/dev/null || true
+      exec {ready_fd}>&-
+      rm -f "$ready" "$release"
+      return 1
+    fi
+    wait "$launcher" || return 1
+    exec {ready_fd}>&-
+    rm -f "$ready" "$release"
+    status="$(cat "$status_file" 2>/dev/null)" || return 1
+    wrapper_pid="$(cat "$pid_file" 2>/dev/null)" || return 1
+    [ "$status" -eq 142 ] && ! kill -0 "$wrapper_pid" 2>/dev/null || return 1
+  done
 }
 
 write_present_pre_reviewer_input() {
@@ -3122,6 +3304,141 @@ test_prompt_submit_without_usable_turn_id_preserves_per_turn_state() {
       [ -e "$state_dir/capture-turn-other.json" ] &&
       [ -e "$state_dir/.capture-turn-other.capped.STALE" ] &&
       [ -e "$state_dir/claim-turn-other" ] || return 1
+  done
+}
+
+test_turn_id_extractor_enforces_utf8_byte_bound_and_canonical_json() {
+  local label turn_id expected input extracted canonical
+
+  for label in empty ascii-4095 ascii-4096 ascii-4097 two-4096 two-4098 four-4096 four-4100 mixed-4096; do
+    case "$label" in
+      empty) turn_id=; expected=0 ;;
+      ascii-4095) printf -v turn_id '%*s' 4095 ''; turn_id=${turn_id// /x}; expected=1 ;;
+      ascii-4096) printf -v turn_id '%*s' 4096 ''; turn_id=${turn_id// /x}; expected=1 ;;
+      ascii-4097) printf -v turn_id '%*s' 4097 ''; turn_id=${turn_id// /x}; expected=0 ;;
+      two-4096) printf -v turn_id '%*s' 2048 ''; turn_id=${turn_id// /é}; expected=1 ;;
+      two-4098) printf -v turn_id '%*s' 2049 ''; turn_id=${turn_id// /é}; expected=0 ;;
+      four-4096) printf -v turn_id '%*s' 1024 ''; turn_id=${turn_id// /😀}; expected=1 ;;
+      four-4100) printf -v turn_id '%*s' 1025 ''; turn_id=${turn_id// /😀}; expected=0 ;;
+      mixed-4096) printf -v turn_id '%*s' 4090 ''; turn_id=${turn_id// /x}; turn_id+="é😀"; expected=1 ;;
+    esac
+    input=$(jq -cn --arg turn_id "$turn_id" '{turn_id:$turn_id}') || return 1
+    extracted=$(bash -c '. "$1"; codex_hook_turn_id_json "$2"' \
+      bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$input") || return 1
+    canonical=$(jq -cn --arg turn_id "$turn_id" '$turn_id') || return 1
+    if [ "$expected" -eq 1 ]; then
+      [ "$extracted" = "$canonical" ] || return 1
+    else
+      [ -z "$extracted" ] || return 1
+    fi
+  done
+
+  input="$TMP_ROOT/turn-id-invalid-utf8.json"
+  printf '{"turn_id":"\377"}' >"$input"
+  # jq normalizes a raw invalid byte to U+FFFD; strict rejection remains in the
+  # Python capture validator, whose parser receives bytes rather than shell text.
+  [ "$(bash -c '. "$1"; codex_hook_turn_id_json "$(cat "$2")"' \
+    bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$input")" = '"�"' ]
+}
+
+test_prompt_unusable_turn_ids_skip_normal_state_but_preserve_side() {
+  local kind proof_root input out
+
+  for kind in absent empty null bool number array object; do
+    proof_root="$(fresh_proof_root prompt-unusable-$kind)"
+    input="$TMP_ROOT/prompt-unusable-$kind.json"
+    jq -n --arg cwd "$ROOT" \
+      '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:"ordinary"}' \
+      >"$input" || return 1
+    case "$kind" in
+      absent) ;;
+      empty) jq '.turn_id = ""' "$input" >"$input.tmp" && mv "$input.tmp" "$input" ;;
+      null) jq '.turn_id = null' "$input" >"$input.tmp" && mv "$input.tmp" "$input" ;;
+      bool) jq '.turn_id = true' "$input" >"$input.tmp" && mv "$input.tmp" "$input" ;;
+      number) jq '.turn_id = 42' "$input" >"$input.tmp" && mv "$input.tmp" "$input" ;;
+      array) jq '.turn_id = ["bad"]' "$input" >"$input.tmp" && mv "$input.tmp" "$input" ;;
+      object) jq '.turn_id = {bad:true}' "$input" >"$input.tmp" && mv "$input.tmp" "$input" ;;
+    esac
+    out="$TMP_ROOT/prompt-unusable-$kind.out"
+    run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+    expect_no_output "$out" && [ ! -e "$proof_root/reviewer/t00-session" ] &&
+      [ ! -e "$proof_root/pre-reviewer/t00-session" ] || return 1
+  done
+
+  proof_root="$(fresh_proof_root prompt-unusable-side)"
+  input="$TMP_ROOT/prompt-unusable-side.json"
+  jq -n --arg cwd "$ROOT" --arg turn_id "$(printf '%4097s' '' | tr ' ' x)" \
+    '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+      turn_id:$turn_id,prompt:"/side continue"}' >"$input" || return 1
+  out="$TMP_ROOT/prompt-unusable-side.out"
+  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" && [ -f "$proof_root/side-stop/sessions/t00-session/side_stop" ] &&
+    [ ! -e "$proof_root/reviewer/t00-session" ] && [ ! -e "$proof_root/pre-reviewer/t00-session" ]
+}
+
+test_turn_id_byte_bound_applies_to_prompt_and_pretool_lifecycle() {
+  local label turn_id proof_root transcript prompt_input prompt_out pre_input pre_out trace body bin_dir effects
+  local state_dir capture
+
+  for label in ascii-4096 two-4096; do
+    case "$label" in
+      ascii-4096) printf -v turn_id '%*s' 4096 ''; turn_id=${turn_id// /x} ;;
+      two-4096) printf -v turn_id '%*s' 2048 ''; turn_id=${turn_id// /é} ;;
+    esac
+    proof_root="$(fresh_proof_root turn-bound-accepted-$label)"
+    transcript="$TMP_ROOT/home/.codex/sessions/turn-bound-accepted-$label.jsonl"
+    write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+    submit_current_turn "$proof_root" "$turn_id" "BOUNDARY_PROMPT_$label" \
+      "turn-bound-accepted-$label" || return 1
+    capture="$(turn_capture_path "$proof_root" "$turn_id")" || return 1
+    [ -f "$capture" ] && [ -d "$proof_root/reviewer/t00-session" ] || return 1
+    pre_input="$TMP_ROOT/turn-bound-accepted-$label-pre.json"
+    write_present_pre_reviewer_input "$transcript" "$turn_id" "$pre_input" || return 1
+    pre_out="$TMP_ROOT/turn-bound-accepted-$label-pre.out"
+    run_hook "$pre_out" "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$pre_input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+      CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Boundary accepted."}' || return 1
+    is_pretool_deny "$pre_out" || return 1
+  done
+
+  for label in ascii-4097 two-4098; do
+    case "$label" in
+      ascii-4097) printf -v turn_id '%*s' 4097 ''; turn_id=${turn_id// /x} ;;
+      two-4098) printf -v turn_id '%*s' 2049 ''; turn_id=${turn_id// /é} ;;
+    esac
+    proof_root="$(fresh_proof_root turn-bound-rejected-$label)"
+    state_dir="$proof_root/pre-reviewer/t00-session"
+    transcript="$TMP_ROOT/home/.codex/sessions/turn-bound-rejected-$label.jsonl"
+    write_large_history_main_pre_reviewer_transcript "$transcript" || return 1
+    prompt_input="$TMP_ROOT/turn-bound-rejected-$label-prompt.json"
+    jq -n --arg cwd "$ROOT" --arg turn_id "$turn_id" \
+      '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
+        turn_id:$turn_id,prompt:"REJECTED_BOUNDARY"}' >"$prompt_input" || return 1
+    prompt_out="$TMP_ROOT/turn-bound-rejected-$label-prompt.out"
+    run_hook "$prompt_out" "$ROOT/hooks/prompt-task-reminder.sh" "$prompt_input" \
+      HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+    bin_dir="$TMP_ROOT/turn-bound-rejected-$label-bin"
+    effects="$TMP_ROOT/turn-bound-rejected-$label-effects"
+    write_pre_reviewer_side_effect_spies "$bin_dir" || return 1
+    : >"$effects"
+    pre_input="$TMP_ROOT/turn-bound-rejected-$label-pre.json"
+    write_present_pre_reviewer_input "$transcript" "$turn_id" "$pre_input" || return 1
+    pre_out="$TMP_ROOT/turn-bound-rejected-$label-pre.out"
+    trace="$TMP_ROOT/turn-bound-rejected-$label.trace"
+    body="$TMP_ROOT/turn-bound-rejected-$label-body.md"
+    strace -f -qq -e trace=read -P "$transcript" -o "$trace" \
+      env -u CODEX_ROLE PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" \
+        CODEX_PROOF_ROOT="$proof_root" CODEX_TEST_SIDE_EFFECTS="$effects" \
+        CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
+        CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
+        bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <"$pre_input" >"$pre_out" 2>"$pre_out.err" || return 1
+    expect_no_output "$prompt_out" && expect_no_output "$pre_out" &&
+      [ ! -e "$proof_root/reviewer/t00-session" ] && [ ! -e "$state_dir" ] &&
+      [ ! -e "$body" ] && [ ! -s "$effects" ] && ! grep -q 'read(' "$trace" || return 1
   done
 }
 
@@ -6143,6 +6460,8 @@ run_case "stop reviewer skips spawned subagent transcript" \
   test_stop_reviewer_skips_spawned_subagent_transcript
 run_case "reviewer timeout and hook wiring are configured" \
   test_stop_reviewer_timeout_and_hook_wiring
+run_case "pre reviewer self-timeout starts before stdin and contains its process group" \
+  test_pre_reviewer_self_timeout_starts_before_stdin_and_contains_process_group
 run_case "pre reviewer lock is bounded and fileless" \
   test_pre_reviewer_lock_is_bounded_and_fileless
 run_case "pre reviewer lock timeout accepts only zero through one" \
@@ -6175,6 +6494,10 @@ run_case "Python pre reviewer pruning unit suite" \
   test_prune_pre_reviewer_turn_state_python_unit_suite
 run_case "pre reviewer pruning matches Lean namespace spec" \
   test_prune_pre_reviewer_turn_state_matches_lean_spec
+run_case "prune differential disables Python bytecode with parent env unset" \
+  test_prune_differential_disables_python_bytecode_with_parent_env_unset
+run_case "generated FIFO wrappers own bounded release descriptors" \
+  test_generated_fifo_wrappers_use_owned_bounded_release_descriptors
 run_case "present-turn pre reviewer claim uses hash fallback" \
   test_pre_reviewer_present_turn_claim_uses_hash_fallback
 run_case "hash fails open without SHA-256 or Python" \
@@ -6239,6 +6562,12 @@ run_case "hook tests leave no Python bytecode cache" \
   test_hook_tests_leave_no_python_bytecode_cache
 run_case "prompt submit without usable turn id preserves per-turn state" \
   test_prompt_submit_without_usable_turn_id_preserves_per_turn_state
+run_case "turn id extractor enforces UTF-8 byte bound and canonical JSON" \
+  test_turn_id_extractor_enforces_utf8_byte_bound_and_canonical_json
+run_case "prompt unusable turn ids skip normal state but preserve side" \
+  test_prompt_unusable_turn_ids_skip_normal_state_but_preserve_side
+run_case "turn id byte bound applies to prompt and pretool lifecycle" \
+  test_turn_id_byte_bound_applies_to_prompt_and_pretool_lifecycle
 run_case "unusable turn ids fail open before transcript, state, or backend access" \
   test_pre_reviewer_unusable_turn_ids_fail_open_before_side_effects
 run_case "pre reviewer denies first tool call once per turn" \

@@ -82,46 +82,48 @@ write_side_stop_marker() {
 }
 
 if codex_valid_session_id "$session_id"; then
-  reviewer_dir="$root/reviewer/$session_id"
-  pre_reviewer_dir="$root/pre-reviewer/$session_id"
-  mkdir -p "$reviewer_dir"
-  pre_reviewer_ready=false
-  if codex_ensure_private_pre_reviewer_state_dir "$pre_reviewer_dir"; then
-    pre_reviewer_ready=true
-  fi
-  head=$(git -C "$HOME/.codex" rev-parse HEAD 2>/dev/null || true)
-  if [ -n "$head" ]; then
-    printf '%s\n' "$head" >"$reviewer_dir/prompt_head"
-  fi
-  rm -f "$reviewer_dir/bypass"
-  if [ "$pre_reviewer_ready" = true ]; then
-    rm -f "$pre_reviewer_dir/bypass"
-  fi
-
-  if [ "$pre_reviewer_ready" = true ] && [ -n "$turn_id_json" ]; then
-    turn_key="$(codex_turn_state_key "$turn_id_json" 2>/dev/null || true)"
-    capture_prepared=false
-    if [ -n "$turn_key" ] && [ "$prompt_type" = "string" ] &&
-        prepare_current_turn_capture "$pre_reviewer_dir" "$turn_key"; then
-      capture_prepared=true
+  if [ -n "$turn_id_json" ]; then
+    reviewer_dir="$root/reviewer/$session_id"
+    pre_reviewer_dir="$root/pre-reviewer/$session_id"
+    mkdir -p "$reviewer_dir"
+    pre_reviewer_ready=false
+    if codex_ensure_private_pre_reviewer_state_dir "$pre_reviewer_dir"; then
+      pre_reviewer_ready=true
     fi
-    if [ -n "$turn_key" ] && codex_lock_pre_reviewer_turn "$pre_reviewer_dir"; then
-      turn_capture="$(codex_turn_capture_path "$pre_reviewer_dir" "$turn_key")"
-      turn_claim="$(codex_turn_claim_path "$pre_reviewer_dir" "$turn_key")"
-      codex_prune_pre_reviewer_turn_state || true
-      if [ ! -e "$turn_claim" ] && [ ! -L "$turn_claim" ]; then
-        if rm -f -- "$turn_capture"; then
-          if [ "$capture_prepared" = true ]; then
-            if mv -f -- "$capture_json_tmp" "$turn_capture"; then
-              capture_json_tmp=""
+    head=$(git -C "$HOME/.codex" rev-parse HEAD 2>/dev/null || true)
+    if [ -n "$head" ]; then
+      printf '%s\n' "$head" >"$reviewer_dir/prompt_head"
+    fi
+    rm -f "$reviewer_dir/bypass"
+    if [ "$pre_reviewer_ready" = true ]; then
+      rm -f "$pre_reviewer_dir/bypass"
+    fi
+
+    if [ "$pre_reviewer_ready" = true ]; then
+      turn_key="$(codex_turn_state_key "$turn_id_json" 2>/dev/null || true)"
+      capture_prepared=false
+      if [ -n "$turn_key" ] && [ "$prompt_type" = "string" ] &&
+          prepare_current_turn_capture "$pre_reviewer_dir" "$turn_key"; then
+        capture_prepared=true
+      fi
+      if [ -n "$turn_key" ] && codex_lock_pre_reviewer_turn "$pre_reviewer_dir"; then
+        turn_capture="$(codex_turn_capture_path "$pre_reviewer_dir" "$turn_key")"
+        turn_claim="$(codex_turn_claim_path "$pre_reviewer_dir" "$turn_key")"
+        codex_prune_pre_reviewer_turn_state || true
+        if [ ! -e "$turn_claim" ] && [ ! -L "$turn_claim" ]; then
+          if rm -f -- "$turn_capture"; then
+            if [ "$capture_prepared" = true ]; then
+              if mv -f -- "$capture_json_tmp" "$turn_capture"; then
+                capture_json_tmp=""
+              fi
             fi
           fi
         fi
+        codex_unlock_pre_reviewer_turn
       fi
-      codex_unlock_pre_reviewer_turn
+      cleanup_capture_temps
+      trap - EXIT HUP INT TERM
     fi
-    cleanup_capture_temps
-    trap - EXIT HUP INT TERM
   fi
 
   if printf '%s\n' "$prompt" | grep -Eq '^[[:space:]]*/side([[:space:]]|$)'; then

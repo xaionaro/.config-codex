@@ -63,6 +63,8 @@ def validate_capture_bytes(data: bytes, expected_turn_id_json: str) -> bytes:
 
     if not isinstance(expected_turn_id, str):
         raise CaptureValidationError("expected turn ID is not a string")
+    if not expected_turn_id:
+        raise CaptureValidationError("expected turn ID is empty")
     if len(expected_turn_id.encode("utf-8")) > TURN_ID_BYTE_LIMIT:
         raise CaptureValidationError("turn ID exceeds byte limit")
     if not isinstance(capture, dict):
