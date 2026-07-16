@@ -38,9 +38,9 @@
 | Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current outer active. |
 
 - Without active ECI/ATE, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
-- Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Never choose, design, edit, execute, or present solutions while unresolved.
+- Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Without an active ECI/ATE outer, select the new root's workflow immediately afterward and before planning, solution framing, implementation-skill lookup, or solution-oriented tools. Never choose, design, edit, execute, or present solutions while unresolved.
 - Derive `M` and `C` only from task-intrinsic requirements; workflow selection and protocol-created choices/workstreams/coordination/review do not count.
-- `M` is task-intrinsic ambiguity whose reasonable resolutions materially change required work, outcome, consequential risk, or acceptance.
+- `M` is task-intrinsic decision uncertainty: at least two reasonable resolutions of a choice left open by the task materially change required work, outcome, consequential risk, or acceptance. Treat assumptions as candidate resolutions; silently choosing one does not make `M` false.
 - `C` means task-intrinsic substantial independent workstreams needing coordinated ownership, synchronization, or integrated review; it matters only under `M`.
 
 | Inferred condition | Workflow |
