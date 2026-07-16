@@ -22,7 +22,14 @@ turn_labels=(
 )
 turn_expected=(0 1 1 0 1 0 1 0 1)
 
-(cd "$ROOT/proofs" && lake build turnCaptureDiff >/dev/null)
+if [ "${CODEX_TEST_SKIP_LEAN_BUILD:-}" = 1 ]; then
+  [ -x "$ROOT/proofs/.lake/build/bin/turnCaptureDiff" ]
+else
+  build_log="$(mktemp "${TMPDIR:-/tmp}/turn-capture-lean-build.XXXXXX")"
+  trap 'rm -f "$build_log"' EXIT HUP INT TERM
+  python3 "$ROOT/hooks/tests/process-watchdog.py" --timeout 300 --log "$build_log" \
+    --cwd "$ROOT/proofs" -- lake build turnCaptureDiff || { cat "$build_log" >&2; exit 1; }
+fi
 mapfile -t lean_outputs < <("$ROOT/proofs/.lake/build/bin/turnCaptureDiff" "${labels[@]}")
 mapfile -t python_outputs < <(
   python3 - "$HELPER" "${labels[@]}" <<'PY'

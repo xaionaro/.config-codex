@@ -1158,7 +1158,8 @@ test_compose_reviewer_prompt_uses_codex_sources() {
 
   grep -q '# CODEX.md' "$out" &&
     grep -q '# stop-checklist.md' "$out" &&
-    grep -q 'Claim Verification' "$out" &&
+    grep -q '^# Response$' "$out" &&
+    grep -q '^## Evidence$' "$out" &&
     ! grep -Eq '[.]claude' "$out"
 }
 
@@ -1447,94 +1448,77 @@ test_stop_reviewer_timeout_and_hook_wiring() {
       bash "$ROOT/hooks/lib/reviewer-call.sh")" = 60 ]
 }
 
-write_accelerated_timeout_wrapper() {
-  local bin_dir="$1"
-  local real_timeout
-
-  real_timeout="$(command -v timeout)" || return 1
-  mkdir -p "$bin_dir" || return 1
-  cat >"$bin_dir/timeout" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "\$*" >"\$CODEX_TEST_TIMEOUT_ARGS"
-exec "$real_timeout" --signal=TERM --kill-after=0.2s 0.2s "\$CODEX_TEST_TIMEOUT_WORKER"
-EOF
-  chmod 0755 "$bin_dir/timeout"
-}
-
-write_partial_timeout_worker() {
-  local worker="$1"
+test_pre_reviewer_controller_is_split_preflighted_and_bounded() {
+  local clone worker out tmp_dir value invalid dep bin_dir name
+  clone="$TMP_ROOT/pre-reviewer-controller-clone"
+  worker="$clone/hooks/lib/edit-bash-pre-reviewer-worker.sh"
+  out="$TMP_ROOT/pre-reviewer-controller.out"
+  tmp_dir="$TMP_ROOT/pre-reviewer-controller-tmp"
+  mkdir -p "$clone/hooks/lib" "$tmp_dir" || return 1
+  cp "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$clone/hooks/" || return 1
 
   cat >"$worker" <<'SH'
 #!/usr/bin/env bash
-set -euo pipefail
-[[ -p /dev/stdin ]]
-printf '%s\n' "$PPID" >"$CODEX_TEST_TIMEOUT_CONTROLLER_PID"
-printf '%s\n' "$$" >"$CODEX_TEST_TIMEOUT_WORKER_PID"
-printf '{"partial":true'
-sleep 30 &
-grandchild=$!
-printf '%s\n' "$grandchild" >"$CODEX_TEST_TIMEOUT_GRANDCHILD_PID"
-wait "$grandchild"
+case "${CODEX_TEST_WORKER_MODE:-success}" in
+  success) printf '%s' "$CODEX_EDIT_PRE_REVIEWER_TIMEOUT" ;;
+  failure) printf 'partial'; exit 9 ;;
+esac
 SH
-  chmod 0755 "$worker"
+  chmod 0644 "$worker" || return 1
+
+  value="$(CODEX_EDIT_PRE_REVIEWER_TIMEOUT=37 \
+    bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null)" || return 1
+  [ "$value" = 37 ] || return 1
+  value="$(env -u CODEX_EDIT_PRE_REVIEWER_TIMEOUT \
+    bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null)" || return 1
+  [ "$value" = 60 ] || return 1
+  CODEX_TEST_WORKER_MODE=failure bash "$clone/hooks/edit-bash-pre-reviewer.sh" \
+    </dev/null >"$out" || return 1
+  expect_no_output "$out" || return 1
+
+  for invalid in '' 0 61 1.5 ' 1' '--help'; do
+    rm -f "$tmp_dir"/.edit-pre-reviewer.*
+    env CODEX_EDIT_PRE_REVIEWER_TIMEOUT="$invalid" TMPDIR="$tmp_dir" \
+      bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null >"$out" || return 1
+    expect_no_output "$out" &&
+      [ -z "$(find "$tmp_dir" -maxdepth 1 -name '.edit-pre-reviewer.*' -print -quit)" ] || return 1
+  done
+
+  for dep in timeout mktemp chmod cat rm; do
+    bin_dir="$TMP_ROOT/pre-reviewer-controller-bin-$dep"
+    mkdir -p "$bin_dir" || return 1
+    for name in timeout mktemp chmod cat rm; do
+      [ "$name" = "$dep" ] || ln -s "$(type -P "$name")" "$bin_dir/$name" || return 1
+    done
+    PATH="$bin_dir" "$BASH" "$clone/hooks/edit-bash-pre-reviewer.sh" \
+      </dev/null >"$out" || return 1
+    expect_no_output "$out" || return 1
+  done
+
+  bash -c 'BASH=relative; . "$1"' bash "$clone/hooks/edit-bash-pre-reviewer.sh" \
+    </dev/null >"$out" || return 1
+  expect_no_output "$out" || return 1
+  rm -f "$worker" || return 1
+  bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null >"$out" || return 1
+  expect_no_output "$out" || return 1
+
+  grep -Fq 'kill -TERM -- "-$controller_leader"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
+    grep -Fq 'kill -KILL -- "-$controller_leader"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
+    grep -Fq 'wait "$controller_leader"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
+    grep -Fq '"${CONTROLLER_TIMEOUT}s" "$BASH" "$worker"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
+    ! grep -q 'CODEX_EDIT_PRE_REVIEWER_WORKER' "$ROOT/hooks/edit-bash-pre-reviewer.sh"
 }
 
-test_pre_reviewer_self_timeout_starts_before_stdin_and_contains_process_group() {
-  local proof_root bin_dir input_fifo input_fd completion completion_fd launcher status out tmp_dir
-  local args worker controller_pid worker_pid grandchild_pid
-  proof_root="$(fresh_proof_root pre-reviewer-self-timeout)"
-  bin_dir="$TMP_ROOT/pre-reviewer-self-timeout-bin"
-  input_fifo="$TMP_ROOT/pre-reviewer-self-timeout-input"
-  completion="$TMP_ROOT/pre-reviewer-self-timeout-completion"
-  out="$TMP_ROOT/pre-reviewer-self-timeout.out"
-  tmp_dir="$TMP_ROOT/pre-reviewer-self-timeout-tmp"
-  worker="$TMP_ROOT/pre-reviewer-self-timeout-worker"
-  mkdir -p "$tmp_dir" || return 1
-  mkfifo "$input_fifo" "$completion" || return 1
-  exec {input_fd}<>"$input_fifo" || return 1
-  exec {completion_fd}<>"$completion" || { exec {input_fd}>&-; return 1; }
-  write_accelerated_timeout_wrapper "$bin_dir" || return 1
-  write_partial_timeout_worker "$worker" || return 1
+test_pre_reviewer_controller_matches_lean_lifecycle() {
+  "$ROOT/hooks/tests/differential/pre-reviewer-controller.sh" >/dev/null
+}
 
-  (
-    hook_status=0
-    /usr/bin/timeout --signal=TERM --kill-after=1s 3s \
-      env PATH="$bin_dir:$PATH" TMPDIR="$tmp_dir" HOME="$TMP_ROOT/home" \
-        CODEX_PROOF_ROOT="$proof_root" \
-        CODEX_TEST_TIMEOUT_ARGS="$TMP_ROOT/pre-reviewer-self-timeout.args" \
-        CODEX_TEST_TIMEOUT_WORKER="$worker" \
-        CODEX_TEST_TIMEOUT_CONTROLLER_PID="$TMP_ROOT/pre-reviewer-self-timeout-controller.pid" \
-        CODEX_TEST_TIMEOUT_WORKER_PID="$TMP_ROOT/pre-reviewer-self-timeout-worker.pid" \
-        CODEX_TEST_TIMEOUT_GRANDCHILD_PID="$TMP_ROOT/pre-reviewer-self-timeout-grandchild.pid" \
-        bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <&"$input_fd" >"$out" 2>"$out.err" || hook_status=$?
-    printf '%s\n' "$hook_status" >&"$completion_fd"
-  ) &
-  launcher=$!
+test_pre_reviewer_controller_mutations_are_killed() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_controller_mutations.py" >/dev/null
+}
 
-  if ! IFS= read -r -t 5 -u "$completion_fd" status; then
-    kill "$launcher" 2>/dev/null || true
-    wait "$launcher" 2>/dev/null || true
-    exec {input_fd}>&-
-    exec {completion_fd}>&-
-    rm -f "$input_fifo" "$completion"
-    return 1
-  fi
-  wait "$launcher" || return 1
-  exec {input_fd}>&-
-  exec {completion_fd}>&-
-  rm -f "$input_fifo" "$completion"
-
-  args="$(cat "$TMP_ROOT/pre-reviewer-self-timeout.args" 2>/dev/null)" || return 1
-  controller_pid="$(cat "$TMP_ROOT/pre-reviewer-self-timeout-controller.pid" 2>/dev/null)" || return 1
-  worker_pid="$(cat "$TMP_ROOT/pre-reviewer-self-timeout-worker.pid" 2>/dev/null)" || return 1
-  grandchild_pid="$(cat "$TMP_ROOT/pre-reviewer-self-timeout-grandchild.pid" 2>/dev/null)" || return 1
-  [ "$status" = 0 ] && expect_no_output "$out" &&
-    [[ "$args" == *"--signal=TERM"* ]] && [[ "$args" == *"--kill-after=2s"* ]] &&
-    [[ "$args" == *"70s"* ]] && [[ "$args" != *"--foreground"* ]] &&
-    ! kill -0 "$controller_pid" 2>/dev/null && ! kill -0 "$worker_pid" 2>/dev/null &&
-    ! kill -0 "$grandchild_pid" 2>/dev/null &&
-    [ -z "$(find "$tmp_dir" -maxdepth 1 -name '.edit-pre-reviewer.*' -print -quit)" ]
+test_pre_reviewer_timeout_compatibility_probe() {
+  "$ROOT/hooks/tests/probe-pre-reviewer-timeout.sh" >/dev/null
 }
 
 write_large_history_main_pre_reviewer_transcript() {
@@ -1821,8 +1805,9 @@ if [ -n "\${CODEX_TEST_CAPTURE_READY:-}" ]; then
   printf 'ready\n' >"\$CODEX_TEST_CAPTURE_READY"
   exec {release_fd}<>"\$CODEX_TEST_CAPTURE_RELEASE"
   cleanup_release_fd() { exec {release_fd}>&-; }
-  trap cleanup_release_fd EXIT HUP INT TERM
-  read -r -t 1 -u "\$release_fd" release
+  trap cleanup_release_fd EXIT
+  trap 'cleanup_release_fd; exit 0' HUP INT TERM
+  read -r -u "\$release_fd" release
   [ "\$release" = release ]
   cleanup_release_fd
   trap - EXIT HUP INT TERM
@@ -1846,8 +1831,9 @@ if [[ " \$* " == *turn_capture_validator.py* ]] && [ ! -e "\$CODEX_TEST_ONCE" ];
   printf 'ready\n' >"\$CODEX_TEST_VALIDATION_READY"
   exec {release_fd}<>"\$CODEX_TEST_VALIDATION_RELEASE"
   cleanup_release_fd() { exec {release_fd}>&-; }
-  trap cleanup_release_fd EXIT HUP INT TERM
-  read -r -t 1 -u "\$release_fd" release
+  trap cleanup_release_fd EXIT
+  trap 'cleanup_release_fd; exit 0' HUP INT TERM
+  read -r -u "\$release_fd" release
   [ "\$release" = release ]
   cleanup_release_fd
   trap - EXIT HUP INT TERM
@@ -2184,8 +2170,9 @@ if [[ "\${1:-}" == *prune_pre_reviewer_turn_state.py ]]; then
   printf 'ready\n' >"\$CODEX_TEST_PRUNE_READY"
   exec {release_fd}<>"\$CODEX_TEST_PRUNE_RELEASE"
   cleanup_release_fd() { exec {release_fd}>&-; }
-  trap cleanup_release_fd EXIT HUP INT TERM
-  IFS= read -r -t 1 -u "\$release_fd" release
+  trap cleanup_release_fd EXIT
+  trap 'cleanup_release_fd; exit 0' HUP INT TERM
+  IFS= read -r -u "\$release_fd" release
   [ "\$release" = release ]
   cleanup_release_fd
   trap - EXIT HUP INT TERM
@@ -2267,9 +2254,10 @@ test_prune_differential_disables_python_bytecode_with_parent_env_unset() {
   [ -z "$(find "$ROOT/hooks" -type d -name __pycache__ -print -quit)" ]
 }
 
-test_generated_fifo_wrappers_use_owned_bounded_release_descriptors() {
+test_generated_fifo_wrappers_use_owned_blocking_release_descriptors() {
   [ "$(grep -c 'exec {release_fd}<>"\\$CODEX_TEST_.*_RELEASE"' "$ROOT/hooks/tests/run.sh")" -eq 3 ] &&
-    [ "$(grep -c 'read -r -t 1 -u "\\$release_fd" release' "$ROOT/hooks/tests/run.sh")" -eq 3 ] ||
+    [ "$(grep -c 'read -r -u "\\$release_fd" release' "$ROOT/hooks/tests/run.sh")" -eq 3 ] &&
+    ! grep -q 'read -r -t 1 -u "\\$release_fd"' "$ROOT/hooks/tests/run.sh" ||
     return 1
   test_generated_fifo_wrapper_release_timeouts
 }
@@ -2311,9 +2299,28 @@ test_generated_fifo_wrapper_release_timeouts() {
     exec {ready_fd}<>"$ready" || return 1
     (
       wrapper_status=0
-      /usr/bin/timeout --signal=TERM --kill-after=0.2s 3s \
-        bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' \
-        bash "$pid_file" "${command[@]}" || wrapper_status=$?
+      python3 - "$pid_file" "${command[@]}" <<'PY' || wrapper_status=$?
+import os
+import signal
+import subprocess
+import sys
+
+pid_file, *command = sys.argv[1:]
+process = subprocess.Popen(command, start_new_session=True)
+with open(pid_file, "w", encoding="ascii") as stream:
+    print(process.pid, file=stream)
+try:
+    process.wait(timeout=0.3)
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    raise SystemExit(142)
+raise SystemExit(process.returncode)
+PY
       printf '%s\n' "$wrapper_status" >"$status_file"
     ) &
     launcher=$!
@@ -2372,10 +2379,11 @@ make_path_without_sha256sum() {
 
   mkdir -p "$bin_dir" || return 1
   for command_name in bash dirname jq sed mkdir mktemp cat awk cp rm python3 perl \
-      flock chmod mv find grep date stat id; do
+      flock chmod mv find grep date stat id timeout; do
     command_path="$(command -v "$command_name")" || return 1
     ln -s "$command_path" "$bin_dir/$command_name" || return 1
   done
+  [ ! -e "$bin_dir/sha256sum" ]
 }
 
 test_hash_fails_open_without_sha256_or_python() {
@@ -6460,8 +6468,14 @@ run_case "stop reviewer skips spawned subagent transcript" \
   test_stop_reviewer_skips_spawned_subagent_transcript
 run_case "reviewer timeout and hook wiring are configured" \
   test_stop_reviewer_timeout_and_hook_wiring
-run_case "pre reviewer self-timeout starts before stdin and contains its process group" \
-  test_pre_reviewer_self_timeout_starts_before_stdin_and_contains_process_group
+run_case "pre reviewer controller is split, preflighted, and bounded" \
+  test_pre_reviewer_controller_is_split_preflighted_and_bounded
+run_case "pre reviewer controller matches Lean lifecycle" \
+  test_pre_reviewer_controller_matches_lean_lifecycle
+run_case "pre reviewer controller mutations are killed" \
+  test_pre_reviewer_controller_mutations_are_killed
+run_case "pre reviewer timeout behavior is compatible" \
+  test_pre_reviewer_timeout_compatibility_probe
 run_case "pre reviewer lock is bounded and fileless" \
   test_pre_reviewer_lock_is_bounded_and_fileless
 run_case "pre reviewer lock timeout accepts only zero through one" \
@@ -6496,8 +6510,8 @@ run_case "pre reviewer pruning matches Lean namespace spec" \
   test_prune_pre_reviewer_turn_state_matches_lean_spec
 run_case "prune differential disables Python bytecode with parent env unset" \
   test_prune_differential_disables_python_bytecode_with_parent_env_unset
-run_case "generated FIFO wrappers own bounded release descriptors" \
-  test_generated_fifo_wrappers_use_owned_bounded_release_descriptors
+run_case "generated FIFO wrappers own blocking release descriptors" \
+  test_generated_fifo_wrappers_use_owned_blocking_release_descriptors
 run_case "present-turn pre reviewer claim uses hash fallback" \
   test_pre_reviewer_present_turn_claim_uses_hash_fallback
 run_case "hash fails open without SHA-256 or Python" \

@@ -7,7 +7,8 @@ lean_lib StopEci where
 
 lean_lib CodexHooksProofs where
   roots := #[`Spec.PruneTurnState, `Spec.TurnCapture, `Spec.Utf8Prefix,
-    `Proofs.PruneTurnState, `Proofs.TurnCapture, `Proofs.Utf8Prefix]
+    `Spec.PreReviewerController, `Proofs.PruneTurnState, `Proofs.TurnCapture,
+    `Proofs.Utf8Prefix, `Proofs.PreReviewerController]
 
 @[default_target]
 lean_exe utf8PrefixDiff where
@@ -20,3 +21,7 @@ lean_exe pruneTurnStateDiff where
 @[default_target]
 lean_exe turnCaptureDiff where
   root := `DiffTest.TurnCaptureMain
+
+@[default_target]
+lean_exe preReviewerControllerDiff where
+  root := `DiffTest.PreReviewerControllerMain

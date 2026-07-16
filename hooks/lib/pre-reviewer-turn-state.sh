@@ -4,15 +4,16 @@
 codex_hook_turn_id_json() {
   local input="${1:-}"
 
-  # This is a local hook resource ceiling, not an upstream turn-ID schema claim.
+  # Input is a valid UTF-8 JSON object. A malformed raw-byte alias is outside
+  # this shell helper's contract; valid U+FFFD remains an ordinary character.
   printf '%s' "$input" | jq -c \
-    '(.turn_id? // null) as $turn_id
+    'if type != "object" then empty else (.turn_id? // null) as $turn_id
     | if (($turn_id | type) == "string"
         and ($turn_id | utf8bytelength) > 0
         and ($turn_id | utf8bytelength) <= 4096)
       then $turn_id
       else empty
-      end' \
+      end end' \
     2>/dev/null || true
 }
 

@@ -24,7 +24,14 @@ for index in $(seq 0 23); do
   cases+=("$(printf "%${padding}s" '')${suffix}TAIL")
 done
 
-(cd "$ROOT/proofs" && lake build >/dev/null)
+if [ "${CODEX_TEST_SKIP_LEAN_BUILD:-}" = 1 ]; then
+  [ -x "$ROOT/proofs/.lake/build/bin/utf8PrefixDiff" ]
+else
+  build_log="$(mktemp "${TMPDIR:-/tmp}/utf8-prefix-lean-build.XXXXXX")"
+  trap 'rm -f "$build_log"' EXIT HUP INT TERM
+  python3 "$ROOT/hooks/tests/process-watchdog.py" --timeout 300 --log "$build_log" \
+    --cwd "$ROOT/proofs" -- lake build || { cat "$build_log" >&2; exit 1; }
+fi
 mapfile -t lean_outputs < <(
   "$ROOT/proofs/.lake/build/bin/utf8PrefixDiff" 4000 "${cases[@]}"
 )
