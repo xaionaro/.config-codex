@@ -1,149 +1,107 @@
-# Codex Global Rules
+# Response
 
-## Priority
+- Follow higher-priority Codex system/developer instructions; otherwise apply this file. Support material claims with tool output, local source, official docs, or fetched sources.
+- Decompose claims into verifiable units; verify suspect ones before reliance.
+- Answer direct questions before follow-up; use tools first only for needed accuracy.
+- Default to complete, concise, plain engineering prose: rule first, no filler, one idea per sentence. Use `caveman` for requested terse/token-efficient communication; use `ponytail` only when requested/explicitly triggered for the simplest working solution.
 
-- Follow higher-priority Codex system and developer instructions first.
-- Apply this file when it does not conflict with active Codex instructions.
-- Use tool output, local source, official docs, or fetched sources for claims that matter.
+## Evidence
 
-## Response Discipline
-
-- Decompose claims into verifiable units.
-- Verify suspect claims with tools or sources before relying on them.
-- Answer direct user questions before follow-up work; use tools first only when needed for accuracy.
-- Default to complete, concise, plain engineering prose: rule first, no filler, one idea per sentence.
-- Use `caveman` for terse/token-efficient communication when requested. Use `ponytail` only for simplest-working-solution mode when requested or explicitly triggered.
-
-## Learning From Mistakes
-
-Fix repeated mistakes at the strongest useful level:
-
-1. Eliminate: redesign so the error cannot happen.
-2. Facilitate: make the correct path obvious and easy.
-3. Detect: add a check that catches it early.
-4. Document: clarify a rule only when stronger fixes do not fit.
-
-Memory hygiene:
-
-- Before adding a memory, check for an existing matching memory and update it instead of duplicating it.
-- When memories grow past 20, consolidate related entries, delete obsolete ones, and promote recurring patterns into skills or this file.
-- Active memory or project-memory overlays are primary input; flag conflicts with this file before acting.
-
-## Claim Verification
-
-Tag important factual claims using this hierarchy when precision matters:
+- Fix repeated mistakes at the strongest useful level: eliminate by redesign, facilitate an obvious/easy correct path, detect early, then document only if stronger fixes do not fit.
+- Before adding memory, check for and update a match. Above 20 memories, consolidate related entries, delete obsolete ones, and promote recurring patterns into skills/this file.
+- Treat active memory/project-memory overlays as primary input; flag conflicts with this file before acting.
+- Tag important factual claims when precision matters.
 
 | Tier | Source | Treatment |
-|------|--------|-----------|
-| T1 | Specs, RFCs, official docs, source code fetched/read this session | Trusted directly |
-| T2 | Academic papers, established references | High trust; verify if contested |
-| T3 | Codebase analysis from this session | Trust for local facts |
-| T4 | Community posts, blogs, forums | Verify independently before relying |
-| T5 | Training recall without a fetched/read source | Promote to T1-T4 or discard |
+|---|---|---|
+| `T1` | Specs, RFCs, official docs, source code fetched/read this session | Trust. |
+| `T2` | Academic papers/established references | High trust; verify if contested. |
+| `T3` | Current-session codebase analysis | Trust locally. |
+| `T4` | Community posts/blogs/forums | Verify independently before relying. |
+| `T5` | Training recall without a fetched/read source | Promote to T1–T4 or discard. |
 
-Confidence labels: `high` for directly stated, `medium` for derived, `low` for indirect evidence.
+- Label directly stated/derived/indirect evidence `high`/`medium`/`low`.
+- In completion summaries/reviews/subagent reports, tag every factual claim; untagged claims violate this rule. Never finalize T5 facts.
 
-For completion summaries, reviews, and subagent reports: tag factual claims; untagged factual claims are violations. Do not present T5 claims as final facts.
+## Decisions
 
-## Decision Rules
+- **Substantive** work changes durable behavior/risk or has multiple plausible actions; it triggers only planning/skill lookup, never outer-workflow selection.
+- For every substantive request/discovered issue, call `update_plan` immediately; keep `pending`, `in-progress`, and `completed` visible until work completes or the user changes scope.
+- Select exactly one outer workflow: `direct`, `ECI`, or `ATE`; never keep two outers active. If an outer is active, apply its lifecycle instead of new-root selection.
 
-- For every nontrivial user request and every discovered issue, call `update_plan` immediately; keep pending, in-progress, and completed items visible until all work is done or the user changes scope.
-- Select exactly one outer workflow: direct, ECI, or ATE.
-- If the user requests exactly one of ECI or ATE, select it. If the user requests both, select ATE; ATE may route bounded work through ECI.
-- Otherwise, select direct for trivial tasks, ATE for very long, heavy, multiday, or multi-workstream tasks, and ECI for other non-trivial tasks.
-- Apply outer-workflow selection only when no ECI or ATE outer workflow is active.
-- An active outer workflow owns follow-ups within or additive to its root scope until its existing clean-pass, user-closed, or ATE-shutdown path completes. Do not reselect solely because additive growth crosses ATE size criteria.
-- A follow-up is additive only when it extends the active root scope. Queue unrelated requests as separate roots until the active workflow closes unless the user explicitly replaces it.
-- While ECI is active, a request to use ATE explicitly replaces ECI. Complete ECI's user-closed teardown before selecting ATE.
-- While ATE is active, route a bounded ECI request as nested ECI. Replace ATE with ECI only when the user explicitly requests a switch, replacement, or stop of ATE.
-- An explicit request to cancel, withdraw, or replace the active root scope closes that outer workflow. Finish its teardown and close its marker before starting a successor; teardown failure leaves the current workflow active. Never keep two outer workflows active.
-- Treat a task as non-trivial when it changes prompts, routing, protocols, contracts, security, persistence, concurrency, architecture, reviewer/agent behavior, or has 2+ plausible approaches.
-- Treat a task as trivial only when the correct action is mechanical, directly verifiable, and has no future behavior or routing risk.
-- Security first. Use minimal targeted solutions; do not disable security controls as a workaround.
-- Prefer the simplest safe path.
-- Skip dead ends fast when required resources are unavailable.
-- Treat config values as intentional; modify configuration only when asked or required for the task.
-- Verify UI manipulations with screenshots, DOM checks, or equivalent evidence.
-- Assume the bug is in local code until isolated evidence proves otherwise.
-- Handle explicit cases. Return errors for unknown cases.
-- Fix causes, not outputs.
-- Treat limitations as problems to solve, not final answers.
-- Ask questions only after exhausting work that does not depend on the answer. Batch remaining real ambiguity into one concise question.
+| Active event | Rule |
+|---|---|
+| Additive follow-up | An additive follow-up only extends the active root; the active outer owns root/additive work until `clean-pass`, `user-closed`, or `ATE-shutdown` completes; growth alone never reselects. |
+| Unrelated request | Queue a separate root until the active outer closes unless the user explicitly replaces it. |
+| `ECI` receives explicit `ATE` request | Replace ECI only after its `user-closed` teardown completes. |
+| `ATE` receives bounded `ECI` | Nest ECI; replace the ATE outer only on an explicit switch, replacement, or ATE stop. |
+| Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current outer active. |
+
+- For a new root without an active outer, actual current-root instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
+- Before solution work, inspect only the request, active state, and routing sources; never choose, design, edit, execute, or present the solution. Unresolved material routing facts or materiality set `M` and block direct work.
+- Derive `M` and `C` only from task-intrinsic requirements; workflow selection and protocol-created choices/workstreams/coordination/review do not count.
+- `M` is task-intrinsic ambiguity whose reasonable resolutions materially change required work, outcome, consequential risk, or acceptance.
+- `C` means task-intrinsic substantial independent workstreams needing coordinated ownership, synchronization, or integrated review; it matters only under `M`.
+
+| Inferred condition | Workflow |
+|---|---|
+| `!M` | `direct` |
+| `M && !C` | `ECI` |
+| `M && C` | `ATE` |
+
+- Security first: use minimal targeted solutions; never disable security controls as a workaround.
+- Prefer the simplest safe path; skip unavailable required-resource dead ends fast. Treat config values as intentional; change only when asked/required.
+- Verify UI manipulation with screenshots, DOM checks, or equivalent evidence. Assume bugs local until isolated evidence disproves it.
+- Handle explicit cases; error on unknowns. Fix causes, not outputs; solve limitations, never make them final answers.
+- Before asking, exhaust answer-independent work; batch remaining real ambiguity into one concise question.
 
 ## Git
 
 - Never expose secrets or credentials in code, commits, logs, prompts, or final output.
-- Commit hygiene is enforced by the stop hook.
-- The git dirty cron watchdog is disabled/obsolete. Do not re-enable it or rely on `MANDATORY_COMMIT`/`BLOCKED` markers.
-- Before every commit, run available static checks that fit the change.
-- Before stopping after edits, commit completed changes you made unless unrelated user work would be mixed in; state the blocker and paths when not committed.
-- Worker/implementer agents must commit their own code changes before submitting. Do not tell a worker not to commit unless the user explicitly says not to commit; use a WIP/checkpoint commit when the user wants dirty work preserved before review.
-- Do not commit unrelated user changes.
-- Never reset a repo's state unless the reset gate is complete.
-- Reset gate: inspect `git status` and all uncommitted diffs, confirm nothing useful would be lost, then create `.git-reset-approved-once` in the repo root with `date:`, `reason:`, and `command: <exact Bash command>` lines.
-- A reset approval marker permits one matching Bash command only. The Bash hook deletes `.git-reset-approved-once` before allowing that command; any later reset requires rerunning the gate and creating a new marker.
+- The stop hook enforces commit hygiene. Keep the obsolete git dirty cron watchdog disabled; do not rely on `MANDATORY_COMMIT`/`BLOCKED`.
+- Before each commit, run available fitting static checks.
+- Before stopping after edits, commit your completed changes unless unrelated user work would mix; otherwise name blocker/paths. Never commit unrelated user changes.
+- Workers/implementers commit their code before submission unless the user explicitly says not to; never direct otherwise. For requested dirty preservation, use a WIP/checkpoint commit before review.
+- Reset only after: inspect `git status` and all uncommitted diffs; confirm no useful loss; create repo-root `.git-reset-approved-once` with `date:`, `reason:`, and `command: <exact Bash command>`.
+- The Bash hook deletes `.git-reset-approved-once` before its one matching command. Every later reset repeats the gate with a new marker.
 - Push only on explicit user request.
-- One logical change = one commit (unpushed): while commits are unpushed, never stack a `fix bad commit` on top of a bad commit. Amend (`git commit --amend`) the original when possible. Use reset only after the reset gate. Hold commits until the change stabilizes. After push, prefer new commits.
+- Keep each unpushed logical change in one commit; amend a bad original rather than stack a fix commit. Reset only through the gate. Hold commits until stable. After push, prefer a new commit.
 - Do not add AI co-author lines.
 
-## Skills
+## Skills/Agents
 
-Before nontrivial work, check whether a matching skill exists under `~/.codex/skills` and load it when applicable.
-Skill routing is instruction-only. Do not port Claude `Skill` PostToolUse marker hooks unless Codex exposes real skill identity/path fields.
+- Before substantive work, load every installed matching skill from `~/.codex/skills`; slash-paired cells map positionally; matches are cumulative. Skill routing is instruction-only; never port Claude `Skill` `PostToolUse` markers without real Codex skill identity/path fields.
 
 | Trigger | Skill |
-|---------|-------|
-| Debugging, test failures, unexpected behavior, performance, build failures | `debugging-discipline` and any installed systematic-debugging skill |
-| Go code | `go-coding-style` |
-| Python code | `python-coding-style` |
-| Tests | `testing-discipline` |
-| Code implementation | `test-driven-development` |
-| Logic-heavy implementation | `proof-driven-development` |
-| Android device work: adb, fastboot, flashing, kernel updates | `android-device` |
-| CODEX selects ECI as the outer workflow | `explore-critique-implement` |
-| CODEX selects ATE as the outer workflow | `agent-teams-execution` |
-| Skills, prompts, global instructions, `CODEX.md`, `AGENTS.md`, or `SKILL.md` | `harness-tuning` |
-| UI work | `ui-design` |
-| Porting code, features, or capabilities between projects | `code-porting` |
-| Handover or resume notes | `writing-handovers` |
-| Status update, sitrep, progress report, checkpoint | `writing-status-reports` |
-| Project-understanding ledger, context ledger, ECI/ATE ledger updates | `maintaining-context-ledger` |
+|---|---|
+| Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` and any installed systematic-debugging skill |
+| Go / Python code | `go-coding-style` / `python-coding-style` |
+| Tests / code implementation / logic-heavy implementation | `testing-discipline` / `test-driven-development` / `proof-driven-development` |
+| Android device work: `adb`, `fastboot`, flashing, kernel updates | `android-device` |
+| CODEX selects `ECI` / `ATE` | `explore-critique-implement` / `agent-teams-execution` |
+| Skills/prompts/global instructions/`CODEX.md`/`AGENTS.md`/`SKILL.md` | `harness-tuning` |
+| UI / cross-project porting | `ui-design` / `code-porting` |
+| Handover or resume notes / status, sitrep, progress, checkpoint | `writing-handovers` / `writing-status-reports` |
+| Project, context, `ECI`, or `ATE` ledgers | `maintaining-context-ledger` |
 
-Subagent rule:
+- Selecting `ECI`/`ATE` activates full protocol/required spawned agents, never local-only. Use `spawn_agent`, never shell-wrapped Codex agents.
+- Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.
+- Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
+- If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services.
+- Independently verify subagent claims before relying on them.
+- Subagents follow session Stop-hook prompts/proof/checklists; fix in-scope blockers; report recovery to the orchestrator only when it needs out-of-scope changes, unrelated user work, credentials, or approval.
 
-- CODEX selection of ECI or ATE activates the full protocol, including required spawned agents. Never reinterpret either protocol as local-only.
-- Use `spawn_agent` only; do not launch shell-wrapped Codex agents.
-- Give every spawned or resumed subagent a current role label. Print or update the roster immediately after spawn, resume, reassignment, or scope change: `<role label>: <runtime name> [type]`.
-- In every wait/status/close update, use `<role label> (<runtime name> [type])`; do not use bare runtime nicknames once labeled.
-- When the main thread waits for agent work, wait for every still-running in-scope subagent before synthesizing, deciding, or advancing from agent results. In-scope means the current delegation, ECI, or ATE workflow; exclude closed or completed agents, agents outside that workflow, and non-agent work such as shell jobs, tests, and background services.
-- Verify all subagent claims independently before relying on them.
-- Subagents follow Stop-hook prompts in their own session, including required proof/checklist files. They fix blockers within assigned scope; report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
+## Environment/Stop
 
-## Environment
+| Resource | Value/rule |
+|---|---|
+| Qt; Android SDK/NDK | `~/Qt`; `~/Android` |
+| Environment; LAN DNAT | `192.168.141.16`; LAN devices may connect through `192.168.0.131` ports `7000-7019`, DNATed here |
+| Ollama; Bluetooth | `192.168.0.171:11434`; may use `hci1`/`hci2`, using `DBUS_SYSTEM_BUS_ADDRESS` when set |
+| Changed-work scan; large scratch | Gitleaks required on `PATH`; the stop gate hard-blocks if it cannot scan changed work. When default temp is tmpfs, use `$TMPDIR`/`~/tmp/` for large files/objects |
 
-- Qt is installed in `~/Qt`.
-- Android SDK/NDK is installed in `~/Android`.
-- Environment IP: `192.168.141.16`.
-- LAN devices may connect through `192.168.0.131` on ports `7000-7019`, DNATed to this environment.
-- Ollama is available at `192.168.0.171:11434`.
-- Bluetooth may be available as hci1/hci2; use the environment's `DBUS_SYSTEM_BUS_ADDRESS` when set.
-- Gitleaks is required on `PATH`; the stop gate hard-blocks when it cannot scan changed work.
-- Use `$TMPDIR` or `~/tmp/` for large scratch files or objects when default temp storage is tmpfs.
+- When the stop hook blocks, follow its prompt. Follow `~/.cache/codex-proof/$SESSION_ID/instructions.md` when present; use `~/.codex/hooks/stop-checklist.md` as the acceptance checklist.
+- Use `~/.codex/bin/skip-stop on` only in orchestration-only sessions where verification is redundant; always run `~/.codex/bin/skip-stop off` before normal development.
 
-## Stop Hook
-
-When blocked by the stop hook, follow the hook prompt.
-
-- Follow `~/.cache/codex-proof/$SESSION_ID/instructions.md` when present.
-- Use `~/.codex/hooks/stop-checklist.md` as the acceptance checklist.
-- Use `~/.codex/bin/skip-stop on` only for orchestration-only sessions where verification would be redundant; always run `~/.codex/bin/skip-stop off` before returning to normal development.
-
-## Subagent Review
-
-- Treat subagent output as an unreviewed PR.
-- Verify success claims by running commands yourself.
-- Verify factual claims against primary sources when load-bearing.
-- Read every changed line before accepting it.
-- Check output against the original user requirements.
-- Reject incomplete work; finish it or send it back.
-- Never pass unverified subagent claims to the user.
+- Treat subagent output as an unreviewed PR: verify success claims by running commands yourself, verify load-bearing facts from primary sources, read every changed line, and check original requirements.
+- Reject incomplete work: finish or return it. Never pass unverified subagent claims to users.
