@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
+import ctypes
 import os
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator
 from pathlib import Path
-from types import TracebackType
 from unittest import mock
 
 HOOKS_ROOT = Path(__file__).resolve().parents[1]
@@ -20,39 +21,20 @@ sys.path.insert(0, str(LIB_ROOT))
 import prune_pre_reviewer_turn_state
 
 
-class FakeEntry:
-    def __init__(self, name: str, error: OSError) -> None:
-        self.name = name
-        self._error = error
-
-    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
-        if follow_symlinks:
-            raise AssertionError("pruning must not follow links")
-        raise self._error
-
-
-class FakeScandir:
-    def __init__(self, entries: list[FakeEntry]) -> None:
-        self._entries = entries
-
-    def __enter__(self) -> FakeScandir:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        return None
-
-    def __iter__(self) -> Iterator[FakeEntry]:
-        return iter(self._entries)
-
-
 class PrunePreReviewerTurnStateTests(unittest.TestCase):
     def open_directory(self, path: Path) -> int:
         return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    def assert_valid_cursor_or_absent(self, state_dir: Path) -> None:
+        cursor = state_dir / prune_pre_reviewer_turn_state.CURSOR_NAME
+        if not cursor.exists():
+            return
+        metadata = cursor.stat(follow_symlinks=False)
+        self.assertTrue(stat.S_ISREG(metadata.st_mode))
+        self.assertEqual(metadata.st_uid, os.geteuid())
+        self.assertEqual(stat.S_IMODE(metadata.st_mode), 0o600)
+        self.assertEqual(metadata.st_nlink, 1)
+        self.assertTrue(cursor.read_bytes().strip().isdigit())
 
     def test_exact_age_boundary_is_retained_and_older_entry_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_root:
@@ -132,9 +114,12 @@ class PrunePreReviewerTurnStateTests(unittest.TestCase):
             fd = self.open_directory(state_dir)
             try:
                 self.assertTrue(prune_pre_reviewer_turn_state.prune(fd, now))
-                self.assertEqual({path.name for path in state_dir.iterdir()}, set(names) | {
+                retained = {path.name for path in state_dir.iterdir()}
+                retained.discard(prune_pre_reviewer_turn_state.CURSOR_NAME)
+                self.assertEqual(retained, set(names) | {
                     directory.name, fifo.name, target.name, symlink.name
                 })
+                self.assert_valid_cursor_or_absent(state_dir)
             finally:
                 os.close(fd)
 
@@ -167,19 +152,17 @@ class PrunePreReviewerTurnStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_root:
             state_dir = Path(temp_root)
             state_dir.chmod(0o700)
+            (state_dir / "claim-turn-gone").touch()
+            (state_dir / "claim-turn-error").touch()
             fd = self.open_directory(state_dir)
-            entries = [
-                FakeEntry("claim-turn-gone", FileNotFoundError()),
-                FakeEntry("claim-turn-error", PermissionError()),
-            ]
             try:
                 with mock.patch.object(
-                    prune_pre_reviewer_turn_state.os,
-                    "scandir",
-                    return_value=FakeScandir(entries),
-                ) as scandir:
+                    prune_pre_reviewer_turn_state,
+                    "_entry_metadata",
+                    side_effect=(FileNotFoundError(), PermissionError()),
+                ) as metadata:
                     self.assertTrue(prune_pre_reviewer_turn_state.prune(fd, 10_000))
-                scandir.assert_called_once_with(fd)
+                self.assertEqual(metadata.call_count, 2)
             finally:
                 os.close(fd)
 
@@ -222,6 +205,203 @@ class PrunePreReviewerTurnStateTests(unittest.TestCase):
                 self.assertTrue(stat.S_ISDIR(os.fstat(fd).st_mode))
             finally:
                 os.close(fd)
+
+    def test_each_incremental_batch_has_a_population_independent_visit_bound(self) -> None:
+        for population in (10, 1_000, 4_000):
+            with self.subTest(population=population), tempfile.TemporaryDirectory() as temp_root:
+                state_dir = Path(temp_root)
+                state_dir.chmod(0o700)
+                now = 10_000
+                for index in range(population):
+                    path = state_dir / f"claim-turn-old-{index}"
+                    path.touch()
+                    os.utime(path, (now - 3601, now - 3601))
+                fd = self.open_directory(state_dir)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    result = prune_pre_reviewer_turn_state.prune(fd, now)
+                    self.assertTrue(result.success)
+                    self.assertLessEqual(
+                        result.visited,
+                        prune_pre_reviewer_turn_state.MAX_VISITED_PER_BATCH,
+                    )
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+
+    def test_incremental_cursor_eventually_visits_all_expired_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            now = 10_000
+            population = 1_000
+            for index in range(population):
+                path = state_dir / f"claim-turn-old-{index}"
+                path.touch()
+                os.utime(path, (now - 3601, now - 3601))
+            fd = self.open_directory(state_dir)
+            try:
+                for _attempt in range(32):
+                    result = prune_pre_reviewer_turn_state.prune(fd, now)
+                    self.assertTrue(result.success)
+                    if result.complete:
+                        break
+                self.assertFalse(
+                    any(path.name.startswith("claim-turn-old-") for path in state_dir.iterdir())
+                )
+            finally:
+                os.close(fd)
+
+    def test_fifo_cursor_is_repaired_without_blocking(self) -> None:
+        helper = LIB_ROOT / "prune_pre_reviewer_turn_state.py"
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            cursor = state_dir / prune_pre_reviewer_turn_state.CURSOR_NAME
+            os.mkfifo(cursor, 0o600)
+            fd = self.open_directory(state_dir)
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(helper), str(fd), "10000"],
+                    pass_fds=(fd,),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=0.5,
+                    check=False,
+                )
+            finally:
+                os.close(fd)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assert_valid_cursor_or_absent(state_dir)
+
+    def test_huge_cursor_is_repaired_to_a_valid_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            cursor = state_dir / prune_pre_reviewer_turn_state.CURSOR_NAME
+            cursor.write_text("9" * 63 + "\n", encoding="ascii")
+            cursor.chmod(0o600)
+            fd = self.open_directory(state_dir)
+            try:
+                result = prune_pre_reviewer_turn_state.prune(fd, 10_000)
+            finally:
+                os.close(fd)
+            self.assertTrue(result.success)
+            self.assert_valid_cursor_or_absent(state_dir)
+
+    def test_hard_link_cursor_never_truncates_its_other_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            victim = root / "victim"
+            victim.write_bytes(b"DO_NOT_TRUNCATE")
+            victim.chmod(0o600)
+            for index in range(300):
+                (state_dir / f"unrelated-{index}").touch()
+            os.link(victim, state_dir / prune_pre_reviewer_turn_state.CURSOR_NAME)
+            fd = self.open_directory(state_dir)
+            try:
+                result = prune_pre_reviewer_turn_state.prune(fd, 10_000)
+            finally:
+                os.close(fd)
+            self.assertTrue(result.success)
+            self.assertEqual(victim.read_bytes(), b"DO_NOT_TRUNCATE")
+            self.assert_valid_cursor_or_absent(state_dir)
+
+    def test_abrupt_cursor_publication_keeps_pending_artifacts_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            fd = self.open_directory(state_dir)
+            try:
+                for cursor in (11, 22, 33):
+                    pid = os.fork()
+                    if pid == 0:
+                        real_rename = os.rename
+
+                        def stop_before_rename(*args, **kwargs):
+                            del args, kwargs
+                            os.kill(os.getpid(), signal.SIGSTOP)
+                            real_rename()
+
+                        prune_pre_reviewer_turn_state.os.rename = stop_before_rename
+                        prune_pre_reviewer_turn_state._write_cursor(fd, cursor)
+                        os._exit(97)
+                    waited, status = os.waitpid(pid, os.WUNTRACED)
+                    self.assertEqual(waited, pid)
+                    self.assertTrue(os.WIFSTOPPED(status))
+                    os.kill(pid, signal.SIGKILL)
+                    self.assertEqual(os.waitpid(pid, 0)[0], pid)
+            finally:
+                os.close(fd)
+
+            pending = [
+                path.name
+                for path in state_dir.iterdir()
+                if path.name != prune_pre_reviewer_turn_state.CURSOR_NAME
+            ]
+            self.assertLessEqual(len(pending), 1)
+            self.assertEqual(
+                pending,
+                [prune_pre_reviewer_turn_state.CURSOR_PENDING_NAME],
+            )
+
+    def test_missing_getdents64_symbol_fails_boundedly(self) -> None:
+        class MissingGetdents:
+            pass
+
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            fd = self.open_directory(state_dir)
+            try:
+                with mock.patch.object(
+                    prune_pre_reviewer_turn_state.ctypes,
+                    "CDLL",
+                    return_value=MissingGetdents(),
+                ):
+                    result = prune_pre_reviewer_turn_state.prune(fd, 10_000)
+            finally:
+                os.close(fd)
+            self.assertFalse(result.success)
+
+    def test_one_getdents_call_per_invocation(self) -> None:
+        class FakeGetdents:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.argtypes: object = None
+                self.restype: object = None
+
+            def __call__(self, _fd: int, buffer: object, _size: int) -> int:
+                self.calls += 1
+                name = b"x\0"
+                record_length = 24
+                record = prune_pre_reviewer_turn_state._DIRENT_HEADER.pack(
+                    1, 24, record_length, 8
+                ) + name
+                record += b"\0" * (record_length - len(record))
+                ctypes.memmove(buffer, record, record_length)
+                return record_length
+
+        fake_getdents = FakeGetdents()
+        fake_libc = type("FakeLibc", (), {})()
+        fake_libc.getdents64 = fake_getdents
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            fd = self.open_directory(state_dir)
+            try:
+                with mock.patch.object(
+                    prune_pre_reviewer_turn_state.ctypes,
+                    "CDLL",
+                    return_value=fake_libc,
+                ):
+                    result = prune_pre_reviewer_turn_state.prune(fd, 10_000)
+            finally:
+                os.close(fd)
+        self.assertTrue(result.success)
+        self.assertEqual(fake_getdents.calls, 1)
 
 
 if __name__ == "__main__":

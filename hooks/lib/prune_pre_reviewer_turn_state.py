@@ -1,15 +1,28 @@
 #!/usr/bin/env python3
+"""Cursor-backed bounded cleanup for private current-turn state."""
 
 from __future__ import annotations
 
+import ctypes
+from dataclasses import dataclass
+import errno
 import os
 import re
 import stat
+import struct
 import sys
 from collections.abc import Sequence
 
 PRIVATE_MODE = 0o700
 MAX_RETAINED_AGE_SECONDS = 3600
+DIRENT_BUFFER_BYTES = 4_096
+MIN_DIRENT_RECORD_BYTES = 24
+MAX_VISITED_PER_BATCH = DIRENT_BUFFER_BYTES // MIN_DIRENT_RECORD_BYTES
+CURSOR_NAME = ".prune-cursor"
+CURSOR_PENDING_NAME = ".prune-cursor.pending"
+MAX_CURSOR_BYTES = 64
+MAX_DIRECTORY_OFFSET = (1 << 63) - 1
+_DIRENT_HEADER = struct.Struct("=QqHB")
 _PRUNABLE_NAME: re.Pattern[str] = re.compile(
     r"(?:capture-turn-[A-Za-z0-9_-]+\.json|"
     r"claim-turn-[A-Za-z0-9_-]+|"
@@ -31,37 +44,213 @@ def _is_private_current_user_directory(metadata: os.stat_result) -> bool:
     )
 
 
-def prune(fd: int, now: int) -> bool:
+@dataclass(frozen=True)
+class PruneResult:
+    success: bool
+    visited: int = 0
+    removed: int = 0
+    complete: bool = False
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
+def _discard_cursor(fd: int) -> None:
+    try:
+        os.unlink(CURSOR_NAME, dir_fd=fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _read_cursor(fd: int) -> int:
+    try:
+        cursor_fd = os.open(
+            CURSOR_NAME,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=fd,
+        )
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        _discard_cursor(fd)
+        return 0
+    try:
+        metadata = os.fstat(cursor_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+        ):
+            _discard_cursor(fd)
+            return 0
+        raw = os.read(cursor_fd, MAX_CURSOR_BYTES + 1)
+        if not raw.isascii() or not raw.strip().isdigit():
+            _discard_cursor(fd)
+            return 0
+        cursor = int(raw.strip(), 10)
+        if len(raw) > MAX_CURSOR_BYTES or cursor > MAX_DIRECTORY_OFFSET:
+            _discard_cursor(fd)
+            return 0
+        return cursor
+    finally:
+        os.close(cursor_fd)
+
+
+def _write_cursor(fd: int, cursor: int) -> bool:
+    try:
+        os.unlink(CURSOR_PENDING_NAME, dir_fd=fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    if cursor == 0:
+        try:
+            os.unlink(CURSOR_NAME, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        return True
+    temporary = CURSOR_PENDING_NAME
+    try:
+        cursor_fd = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=fd,
+        )
+    except OSError:
+        return False
+    published = False
+    try:
+        payload = f"{cursor}\n".encode()
+        if os.write(cursor_fd, payload) != len(payload):
+            return False
+        os.fchmod(cursor_fd, 0o600)
+        metadata = os.fstat(cursor_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            return False
+        os.rename(
+            temporary,
+            CURSOR_NAME,
+            src_dir_fd=fd,
+            dst_dir_fd=fd,
+        )
+        published = True
+    except OSError:
+        return False
+    finally:
+        os.close(cursor_fd)
+        if not published:
+            try:
+                os.unlink(temporary, dir_fd=fd)
+            except OSError:
+                pass
+    return published
+
+
+def _read_directory_batch(fd: int, cursor: int) -> tuple[list[str], int, bool, int]:
+    scan_fd = os.open(
+        ".",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        dir_fd=fd,
+    )
+    try:
+        os.lseek(scan_fd, cursor, os.SEEK_SET)
+        libc = ctypes.CDLL(None, use_errno=True)
+        try:
+            getdents64 = libc.getdents64
+        except AttributeError as error:
+            raise OSError(errno.ENOSYS, "getdents64 is unavailable") from error
+        getdents64.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t)
+        getdents64.restype = ctypes.c_ssize_t
+        buffer = ctypes.create_string_buffer(DIRENT_BUFFER_BYTES)
+        count = getdents64(scan_fd, buffer, DIRENT_BUFFER_BYTES)
+        if count < 0:
+            raise OSError(ctypes.get_errno(), "getdents64 failed")
+        if count == 0:
+            return [], 0, True, 0
+        raw = buffer.raw[:count]
+        names: list[str] = []
+        position = 0
+        next_cursor = cursor
+        visited = 0
+        while position < count:
+            record = _DIRENT_HEADER.unpack_from(raw, position)
+            _inode, next_cursor, record_length, _entry_type = record
+            if (
+                record_length < MIN_DIRENT_RECORD_BYTES
+                or position + record_length > count
+            ):
+                raise OSError(errno.EIO, "invalid getdents64 record")
+            name_start = position + _DIRENT_HEADER.size
+            name_end = raw.find(b"\0", name_start, position + record_length)
+            if name_end < 0:
+                raise OSError(errno.EIO, "unterminated getdents64 name")
+            name = os.fsdecode(raw[name_start:name_end])
+            if name not in (".", ".."):
+                names.append(name)
+            visited += 1
+            position += record_length
+        return names, next_cursor, False, visited
+    finally:
+        os.close(scan_fd)
+
+
+def _entry_metadata(fd: int, name: str) -> os.stat_result:
+    return os.stat(name, dir_fd=fd, follow_symlinks=False)
+
+
+def prune(fd: int, now: int) -> PruneResult:
     """Prune expired state relative to one validated directory descriptor."""
     if type(fd) is not int or type(now) is not int:
-        return False
+        return PruneResult(False)
     try:
         directory_metadata = os.fstat(fd)
     except OSError:
-        return False
+        return PruneResult(False)
     if not _is_private_current_user_directory(directory_metadata):
-        return False
+        return PruneResult(False)
 
     try:
-        with os.scandir(fd) as entries:
-            for entry in entries:
-                if not is_prunable_name(entry.name):
-                    continue
-                try:
-                    metadata = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                if not stat.S_ISREG(metadata.st_mode):
-                    continue
-                if now - int(metadata.st_mtime) <= MAX_RETAINED_AGE_SECONDS:
-                    continue
-                try:
-                    os.unlink(entry.name, dir_fd=fd)
-                except OSError:
-                    continue
-    except OSError:
-        return False
-    return True
+        names, next_cursor, complete, visited = _read_directory_batch(
+            fd, _read_cursor(fd)
+        )
+    except (OSError, OverflowError):
+        return PruneResult(False)
+    removed = 0
+    for name in names:
+        if not is_prunable_name(name):
+            continue
+        try:
+            metadata = _entry_metadata(fd, name)
+        except OSError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            continue
+        if now - int(metadata.st_mtime) <= MAX_RETAINED_AGE_SECONDS:
+            continue
+        try:
+            os.unlink(name, dir_fd=fd)
+        except OSError:
+            continue
+        removed += 1
+    # Directory offsets are opaque and may be invalidated when entries in the
+    # scanned batch are removed.  Restart the next bounded pass so deletion
+    # cannot make a later expired entry permanently unreachable.
+    if removed:
+        next_cursor = 0
+        complete = False
+    if not _write_cursor(fd, next_cursor):
+        return PruneResult(False, visited, removed, complete)
+    return PruneResult(True, visited, removed, complete)
 
 
 def main(argv: Sequence[str]) -> int:
@@ -72,7 +261,7 @@ def main(argv: Sequence[str]) -> int:
         now = int(argv[2], 10)
     except ValueError:
         return 1
-    return 0 if prune(fd, now) else 1
+    return 0 if prune(fd, now).success else 1
 
 
 if __name__ == "__main__":

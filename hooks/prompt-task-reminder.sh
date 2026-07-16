@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: maintain per-prompt state without injecting context.
+# UserPromptSubmit hook: capture only this prompt; never scan transcript history.
+# See hooks/pre-reviewer-causal-scope.md for cleanup and timeout invariants.
 
 set -euo pipefail
 
@@ -8,7 +9,7 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/pre-reviewer-turn-state.sh"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
 
-input=$(cat)
+input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin)" || exit 0
 session_id=$(printf '%s' "$input" | jq -r 'if (.session_id? | type) == "string" then .session_id else "" end' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else "" end' 2>/dev/null || true)
 prompt=$(printf '%s' "$input" | jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' 2>/dev/null || true)

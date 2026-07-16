@@ -144,6 +144,7 @@ codex_unlock_pre_reviewer_turn() {
 codex_prune_pre_reviewer_turn_state() {
   local helper_dir now
 
+  # One cursor-backed directory batch bounds work while this shared lock is held.
   [ -n "${CODEX_TURN_LOCK_FD:-}" ] || return 1
   case "$CODEX_TURN_LOCK_FD" in
     *[!0123456789]*|"") return 1 ;;

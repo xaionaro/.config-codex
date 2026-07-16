@@ -10,6 +10,13 @@ if ! command -v strace >/dev/null 2>&1; then
   printf '%s\n' "FAIL setup strace is required"
   exit 1
 fi
+if ! lean_prefix="$(lean --print-prefix 2>/dev/null)" ||
+    [ ! -x "$(command -v lake 2>/dev/null)" ] ||
+    [ ! -f "$lean_prefix/lib/lean/Lake.olean" ] ||
+    [ ! -f "$lean_prefix/lib/lean/Lean/Data/Json.olean" ]; then
+  printf '%s\n' "FAIL setup complete Lean/Lake object closure is required"
+  exit 1
+fi
 TMP_ROOT=""
 if ! TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-hooks-tests.XXXXXX")"; then
   printf '%s\n' "FAIL setup could not create temporary test root"
@@ -122,7 +129,8 @@ run_hook() {
   local script="$2"
   local fixture="$3"
   shift 3
-  env -u CODEX_ROLE "$@" bash "$script" <"$fixture" >"$outfile" 2>"$outfile.err"
+  env -u CODEX_ROLE "$@" bash "$script" <"$fixture" 2>"$outfile.err" |
+    cat >"$outfile"
 }
 
 is_pretool_deny() {
@@ -900,7 +908,7 @@ invoke_state_helper() {
     >"$output" 2>"$output.err"
 }
 
-test_subagent_helper_processes_through_first_record_then_quits() {
+test_subagent_helper_rejects_oversize_first_record() {
   local label record_bytes transcript output trace
   for label in short boundary large; do
     case "$label" in
@@ -912,37 +920,47 @@ test_subagent_helper_processes_through_first_record_then_quits() {
     output="$TMP_ROOT/first-record-subagent-$label.out"
     trace="$TMP_ROOT/first-record-subagent-$label.strace"
     write_first_record_scoped_subagent_transcript "$transcript" "$record_bytes" || return 1
-    trace_first_record_helper codex_hook_is_subagent_context "$transcript" "$output" "$trace" || return 1
-    [ ! -s "$output" ] && trace_is_first_record_scoped "$trace" "$transcript" || return 1
     if [ "$label" = large ]; then
-      [ "$(grep -Ec '(^|[[:space:]])read\(' "$trace")" -gt 1 ] || return 1
+      if trace_first_record_helper codex_hook_is_subagent_context \
+          "$transcript" "$output" "$trace"; then
+        return 1
+      fi
+    else
+      trace_first_record_helper codex_hook_is_subagent_context \
+        "$transcript" "$output" "$trace" || return 1
     fi
+    [ ! -s "$output" ] && trace_is_first_record_scoped "$trace" "$transcript" || return 1
   done
 }
 
-test_parent_helper_processes_through_first_record_then_quits() {
+test_parent_helper_rejects_oversize_first_record() {
   local transcript output trace
   transcript="$TMP_ROOT/home/.codex/sessions/first-record-parent-large.jsonl"
   output="$TMP_ROOT/first-record-parent-large.out"
   trace="$TMP_ROOT/first-record-parent-large.strace"
   write_first_record_scoped_subagent_transcript "$transcript" 1048576 || return 1
 
-  trace_first_record_helper codex_hook_parent_session_id "$transcript" "$output" "$trace" &&
-    [ "$(cat "$output")" = "parent-session" ] &&
-    [ "$(grep -Ec '(^|[[:space:]])read\(' "$trace")" -gt 1 ] &&
-    trace_is_first_record_scoped "$trace" "$transcript"
+  if trace_first_record_helper codex_hook_parent_session_id \
+      "$transcript" "$output" "$trace"; then
+    return 1
+  fi
+  [ ! -s "$output" ] && trace_is_first_record_scoped "$trace" "$transcript"
 }
 
-test_first_record_helpers_accept_oversize_without_final_newline() {
+test_first_record_helpers_reject_oversize_without_final_newline() {
   local transcript input output
   transcript="$TMP_ROOT/home/.codex/sessions/first-record-no-final-newline.jsonl"
   output="$TMP_ROOT/first-record-no-final-newline.out"
   write_first_record_scoped_subagent_transcript "$transcript" 1048576 no no || return 1
   input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
 
-  invoke_state_helper codex_hook_is_subagent_context "$input" "$output" || return 1
-  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || return 1
-  [ "$(cat "$output")" = parent-session ]
+  if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then
+    return 1
+  fi
+  if invoke_state_helper codex_hook_parent_session_id "$input" "$output"; then
+    return 1
+  fi
+  [ ! -s "$output" ]
 }
 
 test_first_record_helpers_preserve_boundary_behavior() {
@@ -1445,22 +1463,108 @@ test_stop_reviewer_timeout_and_hook_wiring() {
     ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh")))
   ' "$ROOT/hooks.json" >/dev/null || return 1
   [ "$(bash -c '. "$1"; printf "%s" "$CODEX_EDIT_PRE_REVIEWER_TIMEOUT"' \
-      bash "$ROOT/hooks/lib/reviewer-call.sh")" = 60 ]
+      bash "$ROOT/hooks/lib/reviewer-call.sh")" = 58 ]
+}
+
+pre_reviewer_controller_has_only_exact_child_kill() {
+  python3 - "$1" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+
+class KillCallVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.function_names: list[str] = []
+        self.class_depth: int = 0
+        self.kill_count: int = 0
+        self.errors: list[str] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.class_depth += 1
+        self.generic_visit(node)
+        self.class_depth -= 1
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.function_names.append(node.name)
+        self.generic_visit(node)
+        self.function_names.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.function_names.append(node.name)
+        self.generic_visit(node)
+        self.function_names.pop()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        function = node.func
+        if isinstance(function, ast.Attribute) and function.attr == "killpg":
+            self.errors.append(f"line {node.lineno}: killpg is forbidden")
+
+        is_os_kill = (
+            isinstance(function, ast.Attribute)
+            and function.attr == "kill"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "os"
+        )
+        if is_os_kill:
+            self.kill_count += 1
+            in_failed_gated_fork = (
+                self.class_depth == 0
+                and self.function_names == ["_failed_gated_fork"]
+            )
+            exact_arguments = (
+                len(node.args) == 2
+                and not node.keywords
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "pid"
+                and isinstance(node.args[1], ast.Attribute)
+                and node.args[1].attr == "SIGKILL"
+                and isinstance(node.args[1].value, ast.Name)
+                and node.args[1].value.id == "signal"
+            )
+            if not in_failed_gated_fork or not exact_arguments:
+                self.errors.append(
+                    f"line {node.lineno}: only os.kill(pid, signal.SIGKILL) "
+                    "inside _failed_gated_fork is permitted"
+                )
+
+        self.generic_visit(node)
+
+
+source_path = Path(sys.argv[1])
+tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+visitor = KillCallVisitor()
+visitor.visit(tree)
+if visitor.kill_count != 1:
+    visitor.errors.append(f"expected one os.kill call, found {visitor.kill_count}")
+if visitor.errors:
+    raise SystemExit("\n".join(visitor.errors))
+PY
 }
 
 test_pre_reviewer_controller_is_split_preflighted_and_bounded() {
-  local clone worker out tmp_dir value invalid dep bin_dir name
+  local clone worker controller out tmp_dir value invalid
   clone="$TMP_ROOT/pre-reviewer-controller-clone"
   worker="$clone/hooks/lib/edit-bash-pre-reviewer-worker.sh"
   out="$TMP_ROOT/pre-reviewer-controller.out"
   tmp_dir="$TMP_ROOT/pre-reviewer-controller-tmp"
   mkdir -p "$clone/hooks/lib" "$tmp_dir" || return 1
   cp "$ROOT/hooks/edit-bash-pre-reviewer.sh" "$clone/hooks/" || return 1
+  controller="$clone/hooks/lib/edit_bash_pre_reviewer_controller.py"
+  cp "$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py" "$controller" || return 1
 
   cat >"$worker" <<'SH'
 #!/usr/bin/env bash
 case "${CODEX_TEST_WORKER_MODE:-success}" in
-  success) printf '%s' "$CODEX_EDIT_PRE_REVIEWER_TIMEOUT" ;;
+  success)
+    jq -n --arg timeout "${CODEX_EDIT_PRE_REVIEWER_TIMEOUT:-58}" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $timeout
+      }
+    }'
+    ;;
   failure) printf 'partial'; exit 9 ;;
 esac
 SH
@@ -1468,15 +1572,15 @@ SH
 
   value="$(CODEX_EDIT_PRE_REVIEWER_TIMEOUT=37 \
     bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null)" || return 1
-  [ "$value" = 37 ] || return 1
+  [ "$(printf '%s' "$value" | jq -r '.hookSpecificOutput.permissionDecisionReason')" = 37 ] || return 1
   value="$(env -u CODEX_EDIT_PRE_REVIEWER_TIMEOUT \
     bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null)" || return 1
-  [ "$value" = 60 ] || return 1
+  [ "$(printf '%s' "$value" | jq -r '.hookSpecificOutput.permissionDecisionReason')" = 58 ] || return 1
   CODEX_TEST_WORKER_MODE=failure bash "$clone/hooks/edit-bash-pre-reviewer.sh" \
     </dev/null >"$out" || return 1
   expect_no_output "$out" || return 1
 
-  for invalid in '' 0 61 1.5 ' 1' '--help'; do
+  for invalid in '' 0 59 61 1.5 ' 1' '--help'; do
     rm -f "$tmp_dir"/.edit-pre-reviewer.*
     env CODEX_EDIT_PRE_REVIEWER_TIMEOUT="$invalid" TMPDIR="$tmp_dir" \
       bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null >"$out" || return 1
@@ -1484,41 +1588,87 @@ SH
       [ -z "$(find "$tmp_dir" -maxdepth 1 -name '.edit-pre-reviewer.*' -print -quit)" ] || return 1
   done
 
-  for dep in timeout mktemp chmod cat rm; do
-    bin_dir="$TMP_ROOT/pre-reviewer-controller-bin-$dep"
-    mkdir -p "$bin_dir" || return 1
-    for name in timeout mktemp chmod cat rm; do
-      [ "$name" = "$dep" ] || ln -s "$(type -P "$name")" "$bin_dir/$name" || return 1
-    done
-    PATH="$bin_dir" "$BASH" "$clone/hooks/edit-bash-pre-reviewer.sh" \
-      </dev/null >"$out" || return 1
-    expect_no_output "$out" || return 1
-  done
-
-  bash -c 'BASH=relative; . "$1"' bash "$clone/hooks/edit-bash-pre-reviewer.sh" \
-    </dev/null >"$out" || return 1
-  expect_no_output "$out" || return 1
+  value="$(bash -c 'BASH=relative; . "$1"' bash \
+    "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null)" || return 1
+  [ "$(printf '%s' "$value" | jq -r '.hookSpecificOutput.permissionDecisionReason')" = 58 ] || return 1
   rm -f "$worker" || return 1
   bash "$clone/hooks/edit-bash-pre-reviewer.sh" </dev/null >"$out" || return 1
   expect_no_output "$out" || return 1
 
-  grep -Fq 'kill -TERM -- "-$controller_leader"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
-    grep -Fq 'kill -KILL -- "-$controller_leader"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
-    grep -Fq 'wait "$controller_leader"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
-    grep -Fq '"${CONTROLLER_TIMEOUT}s" "$BASH" "$worker"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
-    ! grep -q 'CODEX_EDIT_PRE_REVIEWER_WORKER' "$ROOT/hooks/edit-bash-pre-reviewer.sh"
+  grep -Fq 'exec "$python_command" "$controller"' "$ROOT/hooks/edit-bash-pre-reviewer.sh" &&
+    grep -Fq 'OUTPUT_CAP: Final = 4_096' "$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py" &&
+    grep -Fq 'signal.pidfd_send_signal' "$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py" &&
+    grep -Fq '"--kill-child=KILL"' "$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py" &&
+    ! grep -Fq 'CODEX_PRE_REVIEWER_TRACE_FD' "$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py" &&
+    pre_reviewer_controller_has_only_exact_child_kill \
+      "$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py"
 }
 
 test_pre_reviewer_controller_matches_lean_lifecycle() {
-  "$ROOT/hooks/tests/differential/pre-reviewer-controller.sh" >/dev/null
+  local executable stamp verifier
+  verifier="$ROOT/hooks/tests/differential/pre-reviewer-controller.sh"
+  executable="$ROOT/proofs/.lake/build/bin/preReviewerControllerDiff"
+  stamp="$executable.stamp"
+  "$verifier" >/dev/null || return 1
+  "$verifier" --verify-artifact "$executable" "$stamp" || return 1
+  export CODEX_PRE_REVIEWER_FORMAL_EXE="$executable"
+  export CODEX_PRE_REVIEWER_FORMAL_STAMP="$stamp"
 }
 
 test_pre_reviewer_controller_mutations_are_killed() {
   python3 "$ROOT/hooks/tests/test_pre_reviewer_controller_mutations.py" >/dev/null
 }
 
+test_pre_reviewer_identity_record_mutations_are_rejected() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_python_controller.py" >/dev/null
+}
+
+test_pre_reviewer_behavioral_mutations_are_rejected() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_behavioral_mutations.py" >/dev/null
+}
+
+test_pre_reviewer_gate_races_are_rejected() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_gate_races.py" >/dev/null
+}
+
+test_pre_reviewer_formal_stamps_are_bound() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_formal_stamp.py" >/dev/null
+}
+
+test_pre_reviewer_lifecycle_parser_is_exact() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_lifecycle.py" >/dev/null
+}
+
+test_pre_reviewer_admission_inputs_are_bounded() {
+  python3 "$ROOT/hooks/tests/test_bounded_hook_input.py" >/dev/null
+}
+
+test_pre_reviewer_backend_timeout_is_hard() {
+  python3 "$ROOT/hooks/tests/test_reviewer_backend_timeout.py" >/dev/null
+}
+
 test_pre_reviewer_timeout_compatibility_probe() {
   "$ROOT/hooks/tests/probe-pre-reviewer-timeout.sh" >/dev/null
+}
+
+test_pre_reviewer_capped_capture_probe() {
+  CODEX_TEST_SKIP_LEAN_BUILD=1 \
+    "$ROOT/hooks/tests/probe-pre-reviewer-cap.sh" >/dev/null
+}
+
+test_pre_reviewer_profile_uses_configured_pair() {
+  local profile="$TMP_ROOT/pre-reviewer-profile.out"
+
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_profile_ab.py" >/dev/null || return 1
+  "$ROOT/hooks/tests/profile-pre-reviewer.sh" >"$profile" || return 1
+  grep -Eq '^runtime-manifest-before \{"claim":' "$profile" &&
+    grep -Eq '^runtime-manifest-after \{"claim":' "$profile" &&
+    grep -Eq '^source-identities baseline_commit=[0-9a-f]{40} parent_commit=[0-9a-f]{40} candidate_commit=[0-9a-f]{40} parent_wrapper_sha256=[0-9a-f]{64} candidate_wrapper_sha256=[0-9a-f]{64} parent_python_controller_sha256=(absent|[0-9a-f]{64}) candidate_python_controller_sha256=[0-9a-f]{64} parent_manifest_sha256=[0-9a-f]{64} candidate_manifest_sha256=[0-9a-f]{64} parent_executed=true candidate_executed=true$' "$profile" &&
+    grep -Eq '^ab-no-capture parent_raw_ms=' "$profile" &&
+    grep -Eq '^ab-prepared-fake parent_raw_ms=' "$profile" &&
+    grep -Eq '^compatibility-backend status=(completed-observed|blocked-[^ ]+)' "$profile" &&
+    grep -Fxq 'causal-scope transcript_history_scans=0 lock_held_prune_records_max=170 backend_timeout_max_seconds=58 controller_timeout_seconds=70 hook_timeout_seconds=75' "$profile" &&
+    grep -Fq 'Two rows per matching Bash invocation are expected; displayed rows alone do not prove that all corresponding processes remain active.' "$profile"
 }
 
 write_large_history_main_pre_reviewer_transcript() {
@@ -1927,7 +2077,7 @@ test_prompt_capture_distinct_turns_overlap_without_overwrite() {
 }
 
 test_prompt_cap_failure_leaves_no_same_key_reusable_state() {
-  local proof_root state_dir capture claim bin_dir input out
+  local proof_root state_dir capture claim bin_dir input out real_python
   proof_root="$(fresh_proof_root prompt-cap-failure)"
   state_dir="$proof_root/pre-reviewer/t00-session"
   submit_current_turn "$proof_root" turn-cap-failure "OLD_CAPTURE" prompt-cap-failure-old || return 1
@@ -1935,9 +2085,13 @@ test_prompt_cap_failure_leaves_no_same_key_reusable_state() {
   claim="$(turn_claim_path "$proof_root" turn-cap-failure)" || return 1
   bin_dir="$TMP_ROOT/prompt-cap-failure-bin"
   mkdir -p "$bin_dir" || return 1
-  cat >"$bin_dir/python3" <<'SH'
+  real_python="$(command -v python3)" || return 1
+  cat >"$bin_dir/python3" <<SH
 #!/usr/bin/env bash
-exit 1
+if [[ "\${1:-}" == *utf8_prefix_cap.py ]]; then
+  exit 1
+fi
+exec "$real_python" "\$@"
 SH
   chmod 0755 "$bin_dir/python3"
   input="$TMP_ROOT/prompt-cap-failure.json"
@@ -2114,7 +2268,7 @@ test_present_turn_with_retained_state_skips_pruner() {
 
 test_prompt_retained_state_prunes_once_without_per_file_subprocesses() {
   local proof_root state_dir bin_dir trace command_trace baseline_stat baseline_rm
-  local input out capture captured
+  local input out capture captured remaining_old invocation max_invocations made_progress
   proof_root="$(fresh_proof_root prompt-retained-one-pass)"
   state_dir="$proof_root/pre-reviewer/t00-session"
   bin_dir="$TMP_ROOT/prompt-retained-one-pass-bin"
@@ -2136,6 +2290,7 @@ test_prompt_retained_state_prunes_once_without_per_file_subprocesses() {
   baseline_rm="$(trace_count rm "$command_trace")"
 
   populate_retained_turn_state "$state_dir" 2000 500 || return 1
+  rm -f "$state_dir/.prune-cursor" || return 1
   : >"$trace"
   : >"$command_trace"
   input="$TMP_ROOT/prompt-retained-populated.json"
@@ -2143,18 +2298,33 @@ test_prompt_retained_state_prunes_once_without_per_file_subprocesses() {
     '{session_id:"t00-session",hook_event_name:"UserPromptSubmit",cwd:$cwd,
       turn_id:"current-retained",prompt:"CURRENT_RETAINED"}' >"$input" || return 1
   out="$TMP_ROOT/prompt-retained-populated.out"
-  run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
-    PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
-    CODEX_TEST_PRUNE_TRACE="$trace" CODEX_TEST_COMMAND_TRACE="$command_trace" || return 1
-  capture="$(turn_capture_path "$proof_root" current-retained)" || return 1
-  captured="$(jq -r '.prompt' "$capture" 2>/dev/null)" || return 1
+  invocation=0
+  max_invocations=64
+  made_progress=0
+  remaining_old=2000
+  while [ "$invocation" -lt "$max_invocations" ]; do
+    invocation=$((invocation + 1))
+    : >"$trace"
+    : >"$command_trace"
+    run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
+      PATH="$bin_dir:$PATH" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      CODEX_TEST_PRUNE_TRACE="$trace" CODEX_TEST_COMMAND_TRACE="$command_trace" || return 1
+    capture="$(turn_capture_path "$proof_root" current-retained)" || return 1
+    captured="$(jq -r '.prompt' "$capture" 2>/dev/null)" || return 1
+    remaining_old="$(find "$state_dir" -maxdepth 1 -type f -name '*retained-old-*' | wc -l)"
 
-  expect_no_output "$out" && [ "$captured" = CURRENT_RETAINED ] &&
-    [ "$(trace_count prune "$trace")" -eq 1 ] &&
-    [ "$(trace_count stat "$command_trace")" -eq "$baseline_stat" ] &&
-    [ "$(trace_count rm "$command_trace")" -eq "$baseline_rm" ] &&
-    [ "$(find "$state_dir" -maxdepth 1 -type f -name '*retained-old-*' | wc -l)" -eq 0 ] &&
-    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'claim-turn-retained-fresh-*' | wc -l)" -eq 500 ]
+    expect_no_output "$out" && [ "$captured" = CURRENT_RETAINED ] &&
+      [ "$(trace_count prune "$trace")" -eq 1 ] &&
+      [ "$(trace_count stat "$command_trace")" -eq "$baseline_stat" ] &&
+      [ "$(trace_count rm "$command_trace")" -eq "$baseline_rm" ] &&
+      [ "$(find "$state_dir" -maxdepth 1 -type f -name 'claim-turn-retained-fresh-*' | wc -l)" -eq 500 ] || return 1
+    if [ "$remaining_old" -lt 2000 ]; then
+      made_progress=1
+      break
+    fi
+  done
+
+  [ "$made_progress" -eq 1 ] && [ "$remaining_old" -ge 1830 ]
 }
 
 write_pausing_prune_python_wrapper() {
@@ -2249,7 +2419,8 @@ test_prune_differential_disables_python_bytecode_with_parent_env_unset() {
   mkdir -p "$bin_dir" || return 1
   ln -s "$(type -P true)" "$bin_dir/lake" || return 1
   find "$ROOT/hooks" -type d -name __pycache__ -prune -exec rm -rf {} +
-  env -u PYTHONDONTWRITEBYTECODE PATH="$bin_dir:$PATH" \
+  env -u PYTHONDONTWRITEBYTECODE -u CODEX_TEST_SKIP_LEAN_BUILD \
+    PATH="$bin_dir:$PATH" \
     "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null || return 1
   [ -z "$(find "$ROOT/hooks" -type d -name __pycache__ -print -quit)" ]
 }
@@ -2363,7 +2534,8 @@ trace_present_pre_reviewer() {
       CODEX_EDIT_PRE_REVIEWER="ollama:http://127.0.0.1:11434:qwen3:4b" \
       CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
       CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"Captured current turn."}' \
-      bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <"$input" >"$out" 2>"$out.err"
+      bash "$ROOT/hooks/edit-bash-pre-reviewer.sh" <"$input" 2>"$out.err" |
+    cat >"$out"
 }
 
 present_pre_reviewer_trace_is_first_record_scoped() {
@@ -2379,7 +2551,7 @@ make_path_without_sha256sum() {
 
   mkdir -p "$bin_dir" || return 1
   for command_name in bash dirname jq sed mkdir mktemp cat awk cp rm python3 perl \
-      flock chmod mv find grep date stat id timeout; do
+      flock chmod mv find grep date stat id timeout unshare; do
     command_path="$(command -v "$command_name")" || return 1
     ln -s "$command_path" "$bin_dir/$command_name" || return 1
   done
@@ -3175,7 +3347,7 @@ test_prompt_capture_byte_cap_preserves_utf8_boundary() {
     case "$captured" in *$'\uFFFD'*|*é*|*TAIL*) false ;; *) true ;; esac
 }
 
-test_large_prompt_submission_publishes_bounded_capture() {
+test_large_prompt_submission_fails_open_before_capture() {
   local proof_root prompt_file input out capture
   proof_root="$(fresh_proof_root prompt-capture-large)"
   prompt_file="$TMP_ROOT/prompt-capture-large.txt"
@@ -3189,9 +3361,7 @@ test_large_prompt_submission_publishes_bounded_capture() {
   run_hook "$out" "$ROOT/hooks/prompt-task-reminder.sh" "$input" \
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   capture="$(turn_capture_path "$proof_root" turn-large-prompt)" || return 1
-  expect_no_output "$out" && jq -e . "$capture" >/dev/null &&
-    [ "$(jq -r '.prompt' "$capture" | wc -c)" -eq 4001 ] &&
-    [ "$(jq -r '.prompt' "$capture" | tr -d 'x\n' | wc -c)" -eq 0 ]
+  expect_no_output "$out" && [ ! -e "$capture" ]
 }
 
 test_prompt_capture_utf8_prefix_matches_lean_spec() {
@@ -3226,10 +3396,18 @@ esac
 if [ "$kind" != other ]; then
   child=closed
   parent=missing
+  parent_pid=""
+  while read -r status_key status_value _status_rest; do
+    if [ "$status_key" = PPid: ]; then
+      parent_pid="$status_value"
+      break
+    fi
+  done </proc/self/status
+  [ -n "$parent_pid" ] || exit 1
   for fd in /proc/$$/fd/*; do
     [ "$(readlink "$fd" 2>/dev/null || true)" = "$CODEX_TEST_STATE_DIR" ] && child=has
   done
-  for fd in /proc/$PPID/fd/*; do
+  for fd in /proc/$parent_pid/fd/*; do
     [ "$(readlink "$fd" 2>/dev/null || true)" = "$CODEX_TEST_STATE_DIR" ] && parent=has
   done
   printf '%s-child-%s\n%s-parent-%s\n' "$kind" "$child" "$kind" "$parent" >>"$CODEX_TEST_FD_TRACE"
@@ -3272,10 +3450,15 @@ test_capture_validator_child_closes_lock_fd_while_pruner_inherits() {
     CODEX_PRE_REVIEWER_DEBUG_BODY_PATH="$body" \
     CODEX_PRE_REVIEWER_FAKE_RESULT='{"verdict":"deny","reason":"FD test."}' || return 1
 
-  is_pretool_deny "$out" &&
-    grep -qx 'pruner-child-has' "$trace" && grep -qx 'pruner-parent-has' "$trace" &&
-    grep -qx 'validator-child-closed' "$trace" && grep -qx 'validator-parent-has' "$trace" &&
-    ! grep -qx 'validator-child-has' "$trace"
+  if ! is_pretool_deny "$out" ||
+      ! grep -qx 'pruner-child-has' "$trace" ||
+      ! grep -qx 'pruner-parent-has' "$trace" ||
+      ! grep -qx 'validator-child-closed' "$trace" ||
+      ! grep -qx 'validator-parent-has' "$trace" ||
+      grep -qx 'validator-child-has' "$trace"; then
+    printf 'FD predicates: %s\n' "$(sort "$trace" | tr '\n' ' ')" >&2
+    return 1
+  fi
 }
 
 test_hook_tests_leave_no_python_bytecode_cache() {
@@ -6426,12 +6609,12 @@ run_case "ECI gate blocks code apply_patch from session marker" \
   test_eci_gate_blocks_code_apply_patch_from_session_state
 run_case "ECI gate blocks CODEX_ROLE spoof through marker" \
   test_eci_gate_blocks_codex_role_spoof
-run_case "subagent helper processes through first record then quits" \
-  test_subagent_helper_processes_through_first_record_then_quits
-run_case "parent helper processes through first record then quits" \
-  test_parent_helper_processes_through_first_record_then_quits
-run_case "first-record helpers accept oversize record without final newline" \
-  test_first_record_helpers_accept_oversize_without_final_newline
+run_case "subagent helper rejects oversize first record" \
+  test_subagent_helper_rejects_oversize_first_record
+run_case "parent helper rejects oversize first record" \
+  test_parent_helper_rejects_oversize_first_record
+run_case "first-record helpers reject oversize record without final newline" \
+  test_first_record_helpers_reject_oversize_without_final_newline
 run_case "first-record helpers preserve boundary behavior" \
   test_first_record_helpers_preserve_boundary_behavior
 run_case "ECI gate allows spawned-agent transcript payload" \
@@ -6474,8 +6657,26 @@ run_case "pre reviewer controller matches Lean lifecycle" \
   test_pre_reviewer_controller_matches_lean_lifecycle
 run_case "pre reviewer controller mutations are killed" \
   test_pre_reviewer_controller_mutations_are_killed
+run_case "pre reviewer identity record mutations are rejected" \
+  test_pre_reviewer_identity_record_mutations_are_rejected
+run_case "pre reviewer behavioral mutations are rejected" \
+  test_pre_reviewer_behavioral_mutations_are_rejected
+run_case "pre reviewer gate races are rejected" \
+  test_pre_reviewer_gate_races_are_rejected
+run_case "pre reviewer formal stamps bind all evidence" \
+  test_pre_reviewer_formal_stamps_are_bound
+run_case "pre reviewer lifecycle parser is exact" \
+  test_pre_reviewer_lifecycle_parser_is_exact
+run_case "pre reviewer admission inputs are bounded" \
+  test_pre_reviewer_admission_inputs_are_bounded
+run_case "pre reviewer backend timeout is hard" \
+  test_pre_reviewer_backend_timeout_is_hard
 run_case "pre reviewer timeout behavior is compatible" \
   test_pre_reviewer_timeout_compatibility_probe
+run_case "pre reviewer capped capture is complete and bounded" \
+  test_pre_reviewer_capped_capture_probe
+run_case "pre reviewer profile uses the exact configured pair" \
+  test_pre_reviewer_profile_uses_configured_pair
 run_case "pre reviewer lock is bounded and fileless" \
   test_pre_reviewer_lock_is_bounded_and_fileless
 run_case "pre reviewer lock timeout accepts only zero through one" \
@@ -6558,8 +6759,8 @@ run_case "prompt capture redacts completely before byte cap" \
   test_prompt_capture_redacts_complete_prompt_before_byte_cap
 run_case "prompt capture byte cap preserves UTF-8 boundary" \
   test_prompt_capture_byte_cap_preserves_utf8_boundary
-run_case "large prompt submission publishes bounded capture" \
-  test_large_prompt_submission_publishes_bounded_capture
+run_case "large prompt submission fails open before capture" \
+  test_large_prompt_submission_fails_open_before_capture
 run_case "prompt capture UTF-8 prefix matches Lean spec" \
   test_prompt_capture_utf8_prefix_matches_lean_spec
 run_case "Python UTF-8 prefix cap unit suite" \

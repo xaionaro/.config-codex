@@ -434,7 +434,8 @@ codex_hook_is_subagent_context() {
   esac
 
   [ -f "$transcript_path" ] || return 1
-  first_record="$(sed -n '1{p;q;}' "$transcript_path" 2>/dev/null || true)"
+  first_record="$(python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
+    first-record "$transcript_path" 2>/dev/null)" || return 1
   printf '%s' "$first_record" | jq -e '
     .type == "session_meta" and
     (.payload.source.subagent.thread_spawn? != null)
@@ -447,7 +448,8 @@ codex_hook_parent_session_id() {
 
   transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
   [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || return 1
-  first_record="$(sed -n '1{p;q;}' "$transcript_path" 2>/dev/null || true)"
+  first_record="$(python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
+    first-record "$transcript_path" 2>/dev/null)" || return 1
   printf '%s' "$first_record" | jq -r '
     .payload.source.subagent.thread_spawn.parent_thread_id // empty
   ' 2>/dev/null

@@ -31,29 +31,52 @@ theorem takeUtf8Chars_isPrefix (budget : Nat) (chars : List Char) :
       next doesNotFit =>
         exact List.nil_prefix
 
-theorem stringOfList_utf8ByteSize (chars : List Char) :
-    (String.ofList chars).utf8ByteSize = utf8Bytes chars := by
+theorem stringMk_append (left right : List Char) :
+    String.mk (left ++ right) = String.mk left ++ String.mk right := by
+  rw [← String.toByteArray_inj]
+  simp [String.mk, List.utf8Encode_append]
+
+theorem stringMk_singleton (char : Char) :
+    String.mk [char] = char.toString := by
+  rw [← String.toByteArray_inj]
+  simp [String.mk, Char.toString, String.singleton]
+
+theorem stringMk_nil : String.mk [] = "" := by
+  rw [← String.toByteArray_inj]
+  simp [String.mk]
+
+theorem stringMk_toList (chars : List Char) :
+    (String.mk chars).toList = chars := by
   induction chars with
-  | nil => simp [utf8Bytes]
+  | nil => simp [stringMk_nil]
   | cons char chars ih =>
       rw [show char :: chars = [char] ++ chars by rfl]
-      rw [String.ofList_append, String.utf8ByteSize_append, ← String.singleton_eq_ofList]
+      rw [stringMk_append, String.toList_append, stringMk_singleton]
+      simp [ih]
+
+theorem stringMk_utf8ByteSize (chars : List Char) :
+    (String.mk chars).utf8ByteSize = utf8Bytes chars := by
+  induction chars with
+  | nil => simp [utf8Bytes, stringMk_nil]
+  | cons char chars ih =>
+      rw [show char :: chars = [char] ++ chars by rfl]
+      rw [stringMk_append, String.utf8ByteSize_append, stringMk_singleton]
       simp [utf8Bytes, utf8Width, ih]
 
 theorem takeUtf8Prefix_utf8ByteSize_le (budget : Nat) (input : String) :
     (takeUtf8Prefix budget input).utf8ByteSize ≤ budget := by
-  rw [takeUtf8Prefix, stringOfList_utf8ByteSize]
+  rw [takeUtf8Prefix, stringMk_utf8ByteSize]
   exact takeUtf8Chars_bytes_le budget input.toList
 
 theorem takeUtf8Prefix_isPrefix (budget : Nat) (input : String) :
     ∃ suffix : String, takeUtf8Prefix budget input ++ suffix = input := by
   rcases takeUtf8Chars_isPrefix budget input.toList with ⟨suffix, h⟩
-  refine ⟨String.ofList suffix, ?_⟩
+  refine ⟨String.mk suffix, ?_⟩
   simp only [takeUtf8Prefix]
-  have joined : String.ofList (takeUtf8Chars budget input.toList ++ suffix) = input := by
-    rw [h]
-    simp
-  simpa only [String.ofList_append] using joined
+  have joined : String.mk (takeUtf8Chars budget input.toList ++ suffix) = input := by
+    rw [← String.toByteArray_inj]
+    simp [String.mk, h]
+  simpa only [stringMk_append] using joined
 
 theorem takeUtf8Chars_next_not_fit (budget : Nat) (chars : List Char)
     (next : Char) (rest : List Char)
@@ -79,8 +102,8 @@ theorem takeUtf8Prefix_next_not_fit (budget : Nat) (input : String)
     (next : Char) (rest : List Char)
     (h : input.toList = (takeUtf8Prefix budget input).toList ++ next :: rest) :
     budget - (takeUtf8Prefix budget input).utf8ByteSize < utf8Width next := by
-  rw [takeUtf8Prefix, stringOfList_utf8ByteSize]
+  rw [takeUtf8Prefix, stringMk_utf8ByteSize]
   apply takeUtf8Chars_next_not_fit budget input.toList next rest
-  simpa [takeUtf8Prefix] using h
+  simpa only [takeUtf8Prefix, stringMk_toList] using h
 
 end CodexHooks

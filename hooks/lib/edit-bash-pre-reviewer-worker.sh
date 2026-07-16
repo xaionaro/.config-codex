@@ -12,7 +12,7 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
 codex_init_tmp || true
 
-input=$(cat)
+input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin)" || exit 0
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 turn_id_json="$(codex_hook_turn_id_json "$input")"

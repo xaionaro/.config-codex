@@ -16,6 +16,6 @@ def takeUtf8Chars : Nat → List Char → List Char
         []
 
 def takeUtf8Prefix (budget : Nat) (input : String) : String :=
-  String.ofList (takeUtf8Chars budget input.toList)
+  String.mk (takeUtf8Chars budget input.toList)
 
 end CodexHooks

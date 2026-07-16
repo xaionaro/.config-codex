@@ -23,7 +23,7 @@ else
   build_log="$(mktemp "${TMPDIR:-/tmp}/prune-lean-build.XXXXXX")"
   trap 'rm -f "$build_log"' EXIT HUP INT TERM
   python3 "$ROOT/hooks/tests/process-watchdog.py" --timeout 300 --log "$build_log" \
-    --cwd "$ROOT/proofs" -- lake build || { cat "$build_log" >&2; exit 1; }
+    --cwd "$ROOT/proofs" -- lake build pruneTurnStateDiff || { cat "$build_log" >&2; exit 1; }
 fi
 mapfile -t lean_outputs < <("$ROOT/proofs/.lake/build/bin/pruneTurnStateDiff" "${names[@]}")
 mapfile -t python_outputs < <(
@@ -35,6 +35,7 @@ spec = importlib.util.spec_from_file_location("pruner", sys.argv[1])
 if spec is None or spec.loader is None:
     raise SystemExit(1)
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 for name in sys.argv[2:]:
     print("1" if module.is_prunable_name(name) else "0")

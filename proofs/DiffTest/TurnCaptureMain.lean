@@ -4,7 +4,7 @@ import Std
 open CodexHooks
 
 def repeated (count : Nat) (char : Char) : String :=
-  String.ofList (List.replicate count char)
+  String.mk (List.replicate count char)
 
 def captureCase : String → Option (String × TurnCapture)
   | "exact" => some ("turn", { turnId := "turn", prompt := "prompt" })
@@ -52,7 +52,7 @@ def captureCase : String → Option (String × TurnCapture)
       let turnId := repeated 4090 'x' ++ "é😀"
       some (turnId, { turnId := turnId, prompt := "prompt" })
   | "empty" => some ("turn", { turnId := "turn", prompt := "" })
-  | "nul" => some ("turn", { turnId := "turn", prompt := String.ofList ['a', '\x00', 'b'] })
+  | "nul" => some ("turn", { turnId := "turn", prompt := String.mk ['a', '\x00', 'b'] })
   | "replacement" => some ("turn", { turnId := "turn", prompt := "before-�-after" })
   | _ => none
 
