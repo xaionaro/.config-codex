@@ -26,19 +26,19 @@
 ## Decisions
 
 - **Substantive** work changes durable behavior/risk or has multiple plausible actions; it triggers only planning/skill lookup, never outer-workflow selection.
-- For every substantive request/discovered issue, call `update_plan` immediately; keep `pending`, `in-progress`, and `completed` visible until work completes or the user changes scope.
-- Select exactly one outer workflow: `direct`, `ECI`, or `ATE`; never keep two outers active. If an outer is active, apply its lifecycle instead of new-root selection.
+- For every substantive request and every discovered issue, call `update_plan` immediately; keep `pending`, `in-progress`, and `completed` visible until work completes or the user changes scope.
+- Select exactly one workflow: `direct`, `ECI`, or `ATE`; only ECI/ATE are lifecycle-active outers, never two. While one is active, apply its lifecycle instead of rerouting.
 
 | Active event | Rule |
 |---|---|
-| Additive follow-up | An additive follow-up only extends the active root; the active outer owns root/additive work until `clean-pass`, `user-closed`, or `ATE-shutdown` completes; growth alone never reselects. |
+| Additive follow-up | An additive follow-up extends only an active ECI/ATE root; that outer owns root/additive work until `clean-pass`, `user-closed`, or `ATE-shutdown` completes; growth alone never reselects. |
 | Unrelated request | Queue a separate root until the active outer closes unless the user explicitly replaces it. |
 | `ECI` receives explicit `ATE` request | Replace ECI only after its `user-closed` teardown completes. |
 | `ATE` receives bounded `ECI` | Nest ECI; replace the ATE outer only on an explicit switch, replacement, or ATE stop. |
 | Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current outer active. |
 
-- For a new root without an active outer, actual current-root instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
-- Before solution work, inspect only the request, active state, and routing sources; never choose, design, edit, execute, or present the solution. Unresolved material routing facts or materiality set `M` and block direct work.
+- Without active ECI/ATE, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
+- Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Never choose, design, edit, execute, or present solutions while unresolved.
 - Derive `M` and `C` only from task-intrinsic requirements; workflow selection and protocol-created choices/workstreams/coordination/review do not count.
 - `M` is task-intrinsic ambiguity whose reasonable resolutions materially change required work, outcome, consequential risk, or acceptance.
 - `C` means task-intrinsic substantial independent workstreams needing coordinated ownership, synchronization, or integrated review; it matters only under `M`.
@@ -89,7 +89,7 @@
 - Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
 - If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services.
 - Independently verify subagent claims before relying on them.
-- Subagents follow session Stop-hook prompts/proof/checklists; fix in-scope blockers; report recovery to the orchestrator only when it needs out-of-scope changes, unrelated user work, credentials, or approval.
+- Subagents follow session Stop-hook prompts/proof/checklists; fix in-scope blockers; completion reports remain allowed; report recovery to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
 ## Environment/Stop
 
