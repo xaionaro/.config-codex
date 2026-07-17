@@ -300,6 +300,100 @@ class FormalStampTests(unittest.TestCase):
             executable.write_bytes(b"generated executable v2\n")
             self.assertEqual(private.read_bytes(), b"generated executable v1\n")
 
+    def test_build_artifact_tmpfs_failure_names_setup_stage(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="formal-build-artifact-ext4-", dir=ROOT
+        ) as inherited, tempfile.TemporaryDirectory(
+            prefix="formal-build-artifact-fixture-"
+        ) as temporary:
+            script, _executable, _stamp, environment = self.fixture(temporary)
+            publish = Path(temporary) / "published"
+            result = self.run_verifier(
+                script,
+                {**environment, "TMPDIR": inherited},
+                "--build-artifact",
+                str(publish),
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                b"pre-reviewer build-artifact failed: stage=build:tmpfs\n",
+                result.stderr,
+            )
+
+    def test_build_artifact_reuse_publishes_without_correspondence_checks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="formal-build-artifact-reuse-"
+        ) as temporary:
+            script, executable, stamp, environment = self.fixture(temporary)
+            invocation = Path(temporary) / "artifact-invoked"
+            executable.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' invoked >{invocation!s}\n"
+                "exit 97\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            written = self.run_verifier(
+                script, environment, "--write-stamp", str(executable), str(stamp)
+            )
+            self.assertEqual(written.returncode, 0, written.stderr.decode())
+            publish = Path(temporary) / "published"
+            reused = self.run_verifier(
+                script,
+                {
+                    **environment,
+                    "CODEX_TEST_SKIP_LEAN_BUILD": "1",
+                    "CODEX_PRE_REVIEWER_FORMAL_EXE": str(executable),
+                    "CODEX_PRE_REVIEWER_FORMAL_STAMP": str(stamp),
+                },
+                "--build-artifact",
+                str(publish),
+            )
+
+            self.assertEqual(reused.returncode, 0, reused.stderr.decode())
+            self.assertFalse(invocation.exists())
+            published = publish / "preReviewerControllerDiff"
+            published_stamp = publish / "preReviewerControllerDiff.stamp"
+            self.assertEqual(published.read_bytes(), executable.read_bytes())
+            self.assertEqual(published_stamp.read_bytes(), stamp.read_bytes())
+            verified = self.run_verifier(
+                script,
+                environment,
+                "--verify-artifact",
+                str(published),
+                str(published_stamp),
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr.decode())
+
+    def test_dedicated_mode_retains_all_correspondence_checks(self) -> None:
+        source = VERIFIER.read_text(encoding="utf-8")
+        build_artifact_exit = source.rindex(
+            'if [ "$build_artifact_mode" = true ]; then'
+        )
+        self.assertLess(
+            build_artifact_exit,
+            source.index("exit 0", build_artifact_exit),
+        )
+        lifecycle = source.index(
+            'python3 "$ROOT/hooks/tests/pre_reviewer_lifecycle.py"',
+            build_artifact_exit,
+        )
+        expected = (
+            'check_production_bounds "$private_executable"',
+            'check_transcript_path_correspondence "$private_executable"',
+            'check_generated_hook_supervision_correspondence "$private_executable"',
+            'check_declared_tool_identity_correspondence "$private_executable"',
+            'check_profile_interruption_correspondence "$private_executable"',
+            'check_process_watchdog_drain_correspondence "$private_executable"',
+            'check_profile_trace_publication_correspondence "$private_executable"',
+        )
+        positions = [source.index(call, build_artifact_exit) for call in expected]
+        self.assertEqual(positions, sorted(positions))
+        self.assertTrue(all(position < lifecycle for position in positions))
+
     def test_stamp_can_be_bound_to_exact_private_source_copies(self) -> None:
         with tempfile.TemporaryDirectory(prefix="formal-private-sources-") as temporary:
             script, executable, stamp, environment = self.fixture(temporary)

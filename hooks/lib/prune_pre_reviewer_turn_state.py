@@ -269,6 +269,56 @@ def _entry_metadata(fd: int, name: str) -> os.stat_result:
     return os.stat(name, dir_fd=fd, follow_symlinks=False)
 
 
+def _delete_after_revalidation(
+    lock_acquired: bool,
+    _observed_selected: bool,
+    current_selected: bool,
+) -> bool:
+    return lock_acquired and current_selected
+
+
+def _metadata_is_prunable(name: str, metadata: os.stat_result, now: int) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and is_prunable_name(name)
+        and now - int(metadata.st_mtime) > MAX_RETAINED_AGE_SECONDS
+    )
+
+
+def _remove_after_revalidation(
+    fd: int,
+    name: str,
+    now: int,
+    observed_selected: bool,
+) -> bool:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    try:
+        try:
+            current_metadata = _entry_metadata(fd, name)
+        except OSError:
+            return False
+        current_selected = _metadata_is_prunable(name, current_metadata, now)
+        if not _delete_after_revalidation(
+            True,
+            observed_selected,
+            current_selected,
+        ):
+            return False
+        try:
+            os.unlink(name, dir_fd=fd)
+        except OSError:
+            return False
+        return True
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+
+
 def prune(fd: int, now: int) -> PruneResult:
     """Prune expired state relative to one validated directory descriptor."""
     if type(fd) is not int or type(now) is not int:
@@ -294,13 +344,15 @@ def prune(fd: int, now: int) -> PruneResult:
             metadata = _entry_metadata(fd, name)
         except OSError:
             continue
-        if not stat.S_ISREG(metadata.st_mode):
+        observed_selected = _metadata_is_prunable(name, metadata, now)
+        if not observed_selected:
             continue
-        if now - int(metadata.st_mtime) <= MAX_RETAINED_AGE_SECONDS:
-            continue
-        try:
-            os.unlink(name, dir_fd=fd)
-        except OSError:
+        if not _remove_after_revalidation(
+            fd,
+            name,
+            now,
+            observed_selected,
+        ):
             continue
         removed += 1
     # Directory offsets are opaque and may be invalidated when entries in the

@@ -62,4 +62,8 @@ def isExpired (now modified : Int) : Bool :=
 def shouldPrune (name : String) (isRegular : Bool) (now modified : Int) : Bool :=
   isRegular && isPrunableName name && isExpired now modified
 
+def deleteAfterRevalidation
+    (lockAcquired _observedSelected currentSelected : Bool) : Bool :=
+  lockAcquired && currentSelected
+
 end CodexHooks

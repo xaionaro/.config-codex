@@ -8,14 +8,26 @@ import os
 from pathlib import Path
 import select
 import shutil
+import signal
 import subprocess
 import tempfile
-import time
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PROMPT_HOOK = ROOT / "hooks/prompt-task-reminder.sh"
+DEADLOCK_WATCHDOG_SECONDS = 15.0
+
+
+def stop_owned_group(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
 
 
 class PruneContentionTests(unittest.TestCase):
@@ -82,16 +94,10 @@ class PruneContentionTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 env=environment,
                 pass_fds=(ready_write_fd, release_read_fd),
+                start_new_session=True,
             )
             def cleanup_first() -> None:
-                if first.poll() is not None:
-                    return
-                first.terminate()
-                try:
-                    first.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    first.kill()
-                    first.wait(timeout=1.0)
+                stop_owned_group(first)
 
             self.addCleanup(cleanup_first)
             input_stream = first.stdin
@@ -109,22 +115,43 @@ class PruneContentionTests(unittest.TestCase):
             )
             self.assertEqual(os.read(ready_read_fd, 64), b"ready\n")
 
-            started = time.monotonic()
-            second = subprocess.run(
+            second = subprocess.Popen(
                 ["/bin/bash", str(PROMPT_HOOK)],
-                input=payload("turn-b"),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=2.0,
                 env=environment,
-                check=False,
+                start_new_session=True,
             )
-            elapsed = time.monotonic() - started
+            self.addCleanup(stop_owned_group, second)
+            try:
+                second_stdout, second_stderr = second.communicate(
+                    payload("turn-b"),
+                    timeout=DEADLOCK_WATCHDOG_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                stop_owned_group(second)
+                raise
+            self.assertIsNone(first.poll(), "maintenance was not paused during publication")
+            captures_while_paused = sorted(
+                (proof / "pre-reviewer/t00-session").glob("capture-turn-*.json")
+            )
+            observed_while_paused = {
+                json.loads(path.read_text())["turn_id"]
+                for path in captures_while_paused
+            }
+            self.assertIn("turn-b", observed_while_paused)
+
             os.write(release_write_fd, b"release\n")
-            first_stdout, first_stderr = first.communicate(timeout=2.0)
+            first_stdout, first_stderr = first.communicate(
+                timeout=DEADLOCK_WATCHDOG_SECONDS
+            )
             self.assertEqual((first.returncode, first_stdout), (0, b""), first_stderr)
-            self.assertEqual((second.returncode, second.stdout), (0, b""), second.stderr)
-            self.assertLess(elapsed, 1.0)
+            self.assertEqual(
+                (second.returncode, second_stdout),
+                (0, b""),
+                second_stderr,
+            )
             captures = sorted((proof / "pre-reviewer/t00-session").glob("capture-turn-*.json"))
             self.assertEqual(len(captures), 2)
             observed = {json.loads(path.read_text())["turn_id"] for path in captures}

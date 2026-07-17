@@ -157,6 +157,41 @@ def controllerDeadlineSeconds : Nat := 70
 
 def hookDeadlineSeconds : Nat := 75
 
+def generatedHookSupervisionAccepted
+    (newProcessGroup deadlineArmed exactGroupCleanup : Bool) : Bool :=
+  newProcessGroup && deadlineArmed && exactGroupCleanup
+
+def generatedHookCleanupTargetAllowed (sameOwnedGroup : Bool) : Bool :=
+  sameOwnedGroup
+
+def declaredToolIdentityAccepted
+    (uniqueRole exactCanonicalPath exactBytes : Bool) : Bool :=
+  uniqueRole && exactCanonicalPath && exactBytes
+
+def profileInterruptionSupervisionAccepted
+    (trapsAllModes trackedProfilerGroup exactGroupCleanup
+      preservesFailureEvidence : Bool) : Bool :=
+  trapsAllModes && trackedProfilerGroup && exactGroupCleanup &&
+    preservesFailureEvidence
+
+def profileInterruptExitStatus (signalNumber : Nat) : Nat :=
+  128 + signalNumber
+
+def processWatchdogDrainAccepted
+    (exactOwnedGroup independentGroupLiveness normalExitDrain
+      interruptionDrain unrelatedSurvives : Bool) : Bool :=
+  exactOwnedGroup && independentGroupLiveness && normalExitDrain &&
+    interruptionDrain && unrelatedSurvives
+
+def processWatchdogInterruptExitStatus (signalNumber : Nat) : Nat :=
+  128 + signalNumber
+
+def profileTracePublicationAccepted
+    (deterministicPrivatePaths noAliasesOrPreexisting atomicDurablePublish
+      reportDigestBinding runnerRevalidates preservesFailureEvidence : Bool) : Bool :=
+  deterministicPrivatePaths && noAliasesOrPreexisting && atomicDurablePublish &&
+    reportDigestBinding && runnerRevalidates && preservesFailureEvidence
+
 def admissionInputBudget : Nat := 65536
 
 def maintenancePrimaryCalls : Nat := 1
@@ -165,5 +200,41 @@ def maintenanceHoldsSharedTurnLock : Bool := false
 
 def maintenanceVisitCount (population : Nat) : Nat :=
   min population maintenanceVisitBudget
+
+def transcriptPathComponentAllowed (component : String) : Bool :=
+  !component.isEmpty && component != "." && component != ".."
+
+def transcriptRelativePartsAllowed (components : List String) : Bool :=
+  !components.isEmpty && components.all transcriptPathComponentAllowed
+
+def transcriptRawCharacterAllowed (character : Char) : Bool :=
+  let codepoint := character.toNat
+  decide (32 ≤ codepoint ∧ (codepoint < 127 ∨ 159 < codepoint))
+
+def transcriptRawStringAllowed (raw : String) : Bool :=
+  raw.toList.all transcriptRawCharacterAllowed
+
+def transcriptRawAbsolutePathAllowed (raw : String) : Bool :=
+  if transcriptRawStringAllowed raw && raw.startsWith "/" then
+    match raw.splitOn "/" with
+    | "" :: components => transcriptRelativePartsAllowed components
+    | _ => false
+  else
+    false
+
+structure ProfileEvidence where
+  controllerBuildCount : Nat
+  freshExecveSuccesses : Nat
+  reuseExecveSuccesses : Nat
+  freshControllerCompilation : Bool
+  reuseControllerCompilation : Bool
+deriving DecidableEq, Repr
+
+def profileEvidenceAccepted (evidence : ProfileEvidence) : Bool :=
+  evidence.controllerBuildCount == 1 &&
+    0 < evidence.freshExecveSuccesses &&
+    0 < evidence.reuseExecveSuccesses &&
+    evidence.freshControllerCompilation &&
+    !evidence.reuseControllerCompilation
 
 end CodexHooks

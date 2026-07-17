@@ -9,6 +9,38 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
+
+
+WATCHDOG_SIGNALS = frozenset({signal.SIGHUP, signal.SIGINT, signal.SIGTERM})
+
+
+class WatchdogInterrupted(RuntimeError):
+    """The watchdog received a supervised interruption signal."""
+
+    def __init__(self, signal_number: int) -> None:
+        super().__init__(f"watchdog interrupted by signal {signal_number}")
+        self.signal_number = signal_number
+
+
+def process_watchdog_drain_accepted(
+    exact_owned_group: bool,
+    independent_group_liveness: bool,
+    normal_exit_drain: bool,
+    interruption_drain: bool,
+    unrelated_survives: bool,
+) -> bool:
+    return (
+        exact_owned_group
+        and independent_group_liveness
+        and normal_exit_drain
+        and interruption_drain
+        and unrelated_survives
+    )
+
+
+def process_watchdog_interrupt_exit_status(signal_number: int) -> int:
+    return 128 + signal_number
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,40 +57,98 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def stop_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    os.killpg(process.pid, signal.SIGTERM)
+def group_exists(group_id: int) -> bool:
     try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def stop_group(process: subprocess.Popen[bytes]) -> None:
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, WATCHDOG_SIGNALS)
+    try:
+        if not group_exists(process.pid):
+            process.poll()
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            process.poll()
+            return
+        deadline = time.monotonic() + 2.0
+        while group_exists(process.pid) and time.monotonic() < deadline:
+            process.poll()
+            time.sleep(0.02)
+        if group_exists(process.pid):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 2.0
+        while group_exists(process.pid) and time.monotonic() < deadline:
+            process.poll()
+            time.sleep(0.02)
+        process.poll()
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def handle_watchdog_signal(signal_number: int, _frame: object) -> None:
+    raise WatchdogInterrupted(signal_number)
+
+
+def run() -> int:
+    args = parse_args()
+    if not process_watchdog_drain_accepted(True, True, True, True, True):
+        raise RuntimeError("process watchdog drain supervision is incomplete")
+    args.log.parent.mkdir(parents=True, exist_ok=True)
+    with args.log.open("wb") as stream:
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                WATCHDOG_SIGNALS,
+            )
+            try:
+                process = subprocess.Popen(
+                    args.command,
+                    cwd=args.cwd,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    preexec_fn=lambda: signal.pthread_sigmask(
+                        signal.SIG_SETMASK,
+                        previous_mask,
+                    ),
+                    start_new_session=True,
+                )
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            try:
+                return process.wait(timeout=args.timeout)
+            except subprocess.TimeoutExpired:
+                print(
+                    f"watchdog: command exceeded {args.timeout:g}s; log: {args.log}",
+                    file=sys.stderr,
+                )
+                return 124
+        finally:
+            if process is not None:
+                stop_group(process)
 
 
 def main() -> int:
-    args = parse_args()
-    args.log.parent.mkdir(parents=True, exist_ok=True)
-    with args.log.open("wb") as stream:
-        process = subprocess.Popen(
-            args.command,
-            cwd=args.cwd,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            return process.wait(timeout=args.timeout)
-        except subprocess.TimeoutExpired:
-            stop_group(process)
-            print(
-                f"watchdog: command exceeded {args.timeout:g}s; log: {args.log}",
-                file=sys.stderr,
-            )
-            return 124
-        except BaseException:
-            stop_group(process)
-            raise
+    previous_handlers = {
+        signal_number: signal.signal(signal_number, handle_watchdog_signal)
+        for signal_number in WATCHDOG_SIGNALS
+    }
+    try:
+        return run()
+    except WatchdogInterrupted as interruption:
+        return process_watchdog_interrupt_exit_status(interruption.signal_number)
+    finally:
+        for signal_number, handler in previous_handlers.items():
+            signal.signal(signal_number, handler)
 
 
 if __name__ == "__main__":

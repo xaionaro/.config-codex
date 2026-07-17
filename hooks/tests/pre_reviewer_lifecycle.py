@@ -950,6 +950,7 @@ def main() -> int:
     )
     artifact_root.mkdir(parents=True, exist_ok=True)
     fixture = make_fixture(args.root, artifact_root / "fixture")
+    completed = False
     try:
         labels = tuple(args.scenario) if args.scenario else SCENARIOS[:-1]
         for label in labels:
@@ -974,9 +975,12 @@ def main() -> int:
                 skip_lean=args.skip_lean,
             )
             print(f"publication-states\t{states}")
+        completed = True
     finally:
-        if cleanup:
-            shutil.rmtree(artifact_root)
+        if cleanup and completed:
+            shutil.rmtree(artifact_root, ignore_errors=True)
+        elif cleanup:
+            print(f"preserved lifecycle evidence: {artifact_root}", file=sys.stderr)
     return 0
 
 

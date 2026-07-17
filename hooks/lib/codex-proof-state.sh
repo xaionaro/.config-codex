@@ -423,19 +423,21 @@ codex_bind_side_stop_to_session() {
   cp "$file" "$dir/side_stop"
 }
 
+codex_hook_transcript_first_record() {
+  local input="${1:-}"
+  local first_record
+
+  first_record="$(printf '%s' "$input" | \
+    python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
+      hook-transcript-first-record "$HOME/.codex/sessions" 2>/dev/null)" || return 1
+  printf '%s\n' "$first_record"
+}
+
 codex_hook_is_subagent_context() {
   local input="${1:-}"
-  local transcript_path first_record
+  local first_record
 
-  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
-  case "$transcript_path" in
-    "$HOME/.codex/sessions/"*.jsonl) ;;
-    *) return 1 ;;
-  esac
-
-  [ -f "$transcript_path" ] || return 1
-  first_record="$(python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
-    first-record "$transcript_path" 2>/dev/null)" || return 1
+  first_record="$(codex_hook_transcript_first_record "$input")" || return 1
   printf '%s' "$first_record" | jq -e '
     .type == "session_meta" and
     (.payload.source.subagent.thread_spawn? != null)
@@ -444,28 +446,15 @@ codex_hook_is_subagent_context() {
 
 codex_hook_transcript_first_record_is_admissible() {
   local input="${1:-}"
-  local transcript_path first_record
 
-  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
-  [ -n "$transcript_path" ] || return 0
-  case "$transcript_path" in
-    "$HOME/.codex/sessions/"*.jsonl) ;;
-    *) return 0 ;;
-  esac
-  [ -e "$transcript_path" ] || [ -L "$transcript_path" ] || return 0
-  first_record="$(python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
-    first-record "$transcript_path" 2>/dev/null)" || return 1
-  printf '%s' "$first_record" | jq -e 'type == "object"' >/dev/null 2>&1
+  codex_hook_transcript_first_record "$input" >/dev/null
 }
 
 codex_hook_parent_session_id() {
   local input="${1:-}"
-  local transcript_path first_record
+  local first_record
 
-  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
-  [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || return 1
-  first_record="$(python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
-    first-record "$transcript_path" 2>/dev/null)" || return 1
+  first_record="$(codex_hook_transcript_first_record "$input")" || return 1
   printf '%s' "$first_record" | jq -r '
     .payload.source.subagent.thread_spawn.parent_thread_id // empty
   ' 2>/dev/null

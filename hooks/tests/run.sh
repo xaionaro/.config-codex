@@ -30,6 +30,13 @@ if ! TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-hooks-tests.XXXXXX")"; then
   exit 1
 fi
 
+FORMAL_PERSISTENT_ROOT=""
+if ! FORMAL_PERSISTENT_ROOT="$(codex_select_formal_persistent_storage)"; then
+  rm -rf -- "$TMP_ROOT" "$FORMAL_TMP_ROOT"
+  printf '%s\n' "FAIL setup private persistent formal evidence storage is required"
+  exit 1
+fi
+
 PASS_COUNT=0
 FAIL_COUNT=0
 XFAIL_COUNT=0
@@ -37,6 +44,8 @@ XPASS_COUNT=0
 TODO_COUNT=0
 
 cleanup() {
+  local status=$?
+  trap - EXIT
   if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
     rm -f "$(subagent_transcript_path 2>/dev/null || true)" 2>/dev/null || true
     rm -rf "$TMP_ROOT"
@@ -44,9 +53,83 @@ cleanup() {
   if [ -n "${FORMAL_TMP_ROOT:-}" ] && [ -d "$FORMAL_TMP_ROOT" ]; then
     rm -rf -- "$FORMAL_TMP_ROOT"
   fi
+  if [ -n "${FORMAL_PERSISTENT_ROOT:-}" ] && [ -d "$FORMAL_PERSISTENT_ROOT" ]; then
+    if [ "$status" -eq 0 ] && [ "${FAIL_COUNT:-1}" -eq 0 ]; then
+      rm -rf -- "$FORMAL_PERSISTENT_ROOT" 2>/dev/null || true
+    else
+      printf 'preserved formal evidence: %s\n' "$FORMAL_PERSISTENT_ROOT" >&2
+    fi
+  fi
+  exit "$status"
 }
 
 trap cleanup EXIT
+
+controller_verifier="$ROOT/hooks/tests/differential/pre-reviewer-controller.sh"
+controller_publish="$FORMAL_PERSISTENT_ROOT/artifacts/pre-reviewer"
+profile_report="$FORMAL_PERSISTENT_ROOT/evidence/pre-reviewer-profile.out"
+profile_audit="$FORMAL_PERSISTENT_ROOT/logs/controller-build.audit"
+profile_stdout="$TMP_ROOT/pre-reviewer-profile-setup.out"
+profile_expected_commit="$(git rev-parse --verify HEAD)"
+if ! "$ROOT/hooks/tests/profile-pre-reviewer.sh" \
+    --formal-tmp-root "$FORMAL_TMP_ROOT" \
+    --output-root "$FORMAL_PERSISTENT_ROOT" >"$profile_stdout"; then
+  printf '%s\n' "FAIL setup pre-reviewer single-build profile failed"
+  exit 1
+fi
+export CODEX_PRE_REVIEWER_FORMAL_EXE="$controller_publish/preReviewerControllerDiff"
+export CODEX_PRE_REVIEWER_FORMAL_STAMP="$CODEX_PRE_REVIEWER_FORMAL_EXE.stamp"
+if ! cmp -s -- "$profile_stdout" "$profile_report"; then
+  printf '%s\n' "FAIL setup pre-reviewer profile output binding failed"
+  exit 1
+fi
+if ! "$controller_verifier" --verify-artifact \
+    "$CODEX_PRE_REVIEWER_FORMAL_EXE" "$CODEX_PRE_REVIEWER_FORMAL_STAMP"; then
+  printf '%s\n' "FAIL setup pre-reviewer formal artifact verification failed"
+  exit 1
+fi
+if ! PROFILE_REPORT_SHA256="$(python3 - "$ROOT" "$profile_report" \
+    "$FORMAL_PERSISTENT_ROOT" "$profile_expected_commit" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+report_path = Path(sys.argv[2])
+output_root = Path(sys.argv[3])
+expected_commit = sys.argv[4]
+module_path = root / "hooks/tests/profile_pre_reviewer_ab.py"
+spec = importlib.util.spec_from_file_location("runner_profile_contract", module_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+print(module.validate_persisted_profile(report_path, output_root, expected_commit))
+PY
+)"; then
+  printf '%s\n' "FAIL setup pre-reviewer profile summary validation failed"
+  exit 1
+fi
+export PROFILE_REPORT_SHA256
+
+prune_verifier="$ROOT/hooks/tests/differential/prune-turn-state.sh"
+prune_publish="$FORMAL_PERSISTENT_ROOT/artifacts/prune"
+mkdir -p "$prune_publish"
+if ! codex_build_formal_artifact \
+    "$FORMAL_TMP_ROOT" "$FORMAL_PERSISTENT_ROOT" "$ROOT" \
+    "$ROOT/hooks/tests/process-watchdog.py" prune-build.log \
+    "$prune_verifier" --build-artifact "$prune_publish"; then
+  printf '%s\n' "FAIL setup prune formal artifact build failed"
+  exit 1
+fi
+export CODEX_PRUNE_FORMAL_EXE="$prune_publish/pruneTurnStateDiff"
+export CODEX_PRUNE_FORMAL_STAMP="$CODEX_PRUNE_FORMAL_EXE.stamp"
+if ! "$prune_verifier" --verify-artifact \
+    "$CODEX_PRUNE_FORMAL_EXE" "$CODEX_PRUNE_FORMAL_STAMP"; then
+  printf '%s\n' "FAIL setup prune formal artifact verification failed"
+  exit 1
+fi
 
 note() {
   printf '%s\n' "$*"
@@ -1031,8 +1114,8 @@ test_first_record_helpers_preserve_boundary_behavior() {
   write_subagent_transcript "$transcript" || return 1
   input="$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')"
   if invoke_state_helper codex_hook_is_subagent_context "$input" "$output"; then return 1; fi
-  invoke_state_helper codex_hook_parent_session_id "$input" "$output" || return 1
-  [ "$(cat "$output")" = parent-session ]
+  if invoke_state_helper codex_hook_parent_session_id "$input" "$output"; then return 1; fi
+  [ ! -s "$output" ]
 }
 
 write_main_transcript() {
@@ -1615,20 +1698,24 @@ SH
 }
 
 test_pre_reviewer_controller_matches_lean_lifecycle() {
-  local executable stamp verifier
+  local evidence executable stamp verifier
   verifier="$ROOT/hooks/tests/differential/pre-reviewer-controller.sh"
-  executable="$ROOT/proofs/.lake/build/bin/preReviewerControllerDiff"
-  stamp="$executable.stamp"
-  codex_run_formal_lifecycle_differential "$FORMAL_TMP_ROOT" "$verifier" \
-    >/dev/null || return 1
-  codex_run_formal_lifecycle_differential "$FORMAL_TMP_ROOT" "$verifier" \
-    --verify-artifact "$executable" "$stamp" || return 1
-  export CODEX_PRE_REVIEWER_FORMAL_EXE="$executable"
-  export CODEX_PRE_REVIEWER_FORMAL_STAMP="$stamp"
+  executable="$CODEX_PRE_REVIEWER_FORMAL_EXE"
+  stamp="$CODEX_PRE_REVIEWER_FORMAL_STAMP"
+  evidence="$FORMAL_PERSISTENT_ROOT/evidence/controller-lifecycle"
+  mkdir -p "$evidence" || return 1
+  CODEX_TEST_SKIP_LEAN_BUILD=1 \
+    "$verifier" --artifact-root "$evidence" >/dev/null || return 1
+  "$verifier" --verify-artifact "$executable" "$stamp"
 }
 
 test_pre_reviewer_controller_mutations_are_killed() {
-  python3 "$ROOT/hooks/tests/test_pre_reviewer_controller_mutations.py" >/dev/null
+  local audit="$FORMAL_PERSISTENT_ROOT/evidence/controller-mutation-build.audit"
+  CODEX_PRE_REVIEWER_BUILD_AUDIT="$audit" \
+    CODEX_PRE_REVIEWER_BUILD_AUDIT_ROOT="$FORMAL_PERSISTENT_ROOT" \
+    python3 "$ROOT/hooks/tests/test_pre_reviewer_controller_mutations.py" \
+      >/dev/null || return 1
+  [ ! -e "$audit" ]
 }
 
 test_pre_reviewer_identity_record_mutations_are_rejected() {
@@ -1659,6 +1746,10 @@ test_pre_reviewer_formal_tmpfs_setup_is_owned() {
   python3 "$ROOT/hooks/tests/test_formal_tmpfs.py" >/dev/null
 }
 
+test_process_watchdog_drains_exact_owned_group() {
+  python3 "$ROOT/hooks/tests/test_process_watchdog.py" >/dev/null
+}
+
 test_pre_reviewer_backend_timeout_is_hard() {
   python3 "$ROOT/hooks/tests/test_reviewer_backend_timeout.py" >/dev/null
 }
@@ -1673,10 +1764,38 @@ test_pre_reviewer_capped_capture_probe() {
 }
 
 test_pre_reviewer_profile_uses_configured_pair() {
-  local profile="$TMP_ROOT/pre-reviewer-profile.out"
+  local profile="$profile_report"
 
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_profile_contract.py" >/dev/null || return 1
   python3 "$ROOT/hooks/tests/test_pre_reviewer_profile_ab.py" >/dev/null || return 1
-  "$ROOT/hooks/tests/profile-pre-reviewer.sh" >"$profile" || return 1
+  python3 - "$ROOT" "$profile" "$FORMAL_PERSISTENT_ROOT" \
+      "$profile_expected_commit" "$PROFILE_REPORT_SHA256" <<'PY' || return 1
+import importlib.util
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+report_path = Path(sys.argv[2])
+output_root = Path(sys.argv[3])
+expected_commit = sys.argv[4]
+expected_sha256 = sys.argv[5]
+module_path = root / "hooks/tests/profile_pre_reviewer_ab.py"
+spec = importlib.util.spec_from_file_location("runner_profile_reuse", module_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.validate_persisted_profile(
+    report_path,
+    output_root,
+    expected_commit,
+    expected_sha256=expected_sha256,
+)
+PY
+  [ "$(grep -c '^controller-build$' "$profile_audit")" -eq 1 ] || return 1
+  "$controller_verifier" --verify-artifact \
+    "$CODEX_PRE_REVIEWER_FORMAL_EXE" "$CODEX_PRE_REVIEWER_FORMAL_STAMP" || return 1
   grep -Eq '^runtime-manifest-before \{"claim":' "$profile" &&
     grep -Eq '^runtime-manifest-after \{"claim":' "$profile" &&
     grep -Eq '^source-identities baseline_commit=[0-9a-f]{40} parent_commit=[0-9a-f]{40} candidate_commit=[0-9a-f]{40} parent_wrapper_sha256=[0-9a-f]{64} candidate_wrapper_sha256=[0-9a-f]{64} parent_python_controller_sha256=(absent|[0-9a-f]{64}) candidate_python_controller_sha256=[0-9a-f]{64} parent_manifest_sha256=[0-9a-f]{64} candidate_manifest_sha256=[0-9a-f]{64} parent_executed=true candidate_executed=true$' "$profile" &&
@@ -2428,17 +2547,13 @@ test_pre_reviewer_pruning_allows_concurrent_publication() {
 }
 
 test_prune_pre_reviewer_turn_state_matches_lean_spec() {
-  "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null
+  CODEX_TEST_SKIP_LEAN_BUILD=1 \
+    "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null
 }
 
 test_prune_differential_disables_python_bytecode_with_parent_env_unset() {
-  local bin_dir
-  bin_dir="$TMP_ROOT/prune-differential-no-bytecode-bin"
-  mkdir -p "$bin_dir" || return 1
-  ln -s "$(type -P true)" "$bin_dir/lake" || return 1
   find "$ROOT/hooks" -type d -name __pycache__ -prune -exec rm -rf {} +
-  env -u PYTHONDONTWRITEBYTECODE -u CODEX_TEST_SKIP_LEAN_BUILD \
-    PATH="$bin_dir:$PATH" \
+  env -u PYTHONDONTWRITEBYTECODE CODEX_TEST_SKIP_LEAN_BUILD=1 \
     "$ROOT/hooks/tests/differential/prune-turn-state.sh" >/dev/null || return 1
   [ -z "$(find "$ROOT/hooks" -type d -name __pycache__ -print -quit)" ]
 }
@@ -6689,6 +6804,8 @@ run_case "pre reviewer admission inputs are bounded" \
   test_pre_reviewer_admission_inputs_are_bounded
 run_case "pre reviewer formal tmpfs setup is owned" \
   test_pre_reviewer_formal_tmpfs_setup_is_owned
+run_case "process watchdog drains its exact owned group" \
+  test_process_watchdog_drains_exact_owned_group
 run_case "pre reviewer backend timeout is hard" \
   test_pre_reviewer_backend_timeout_is_hard
 run_case "pre reviewer timeout behavior is compatible" \
@@ -7167,6 +7284,13 @@ run_case "audit sync checker detects drift" \
   test_audit_sync_checker_detects_drift
 run_case "audit sync checker fails when synced files are missing" \
   test_audit_sync_checker_fails_when_synced_file_missing
+
+if [ -f "$profile_audit" ] &&
+    [ "$(grep -c '^controller-build$' "$profile_audit")" -eq 1 ]; then
+  pass "pre reviewer profile final build audit remains exactly one"
+else
+  fail "pre reviewer profile final build audit remains exactly one"
+fi
 
 note "SUMMARY pass=$PASS_COUNT fail=$FAIL_COUNT xfail=$XFAIL_COUNT xpass=$XPASS_COUNT todo=$TODO_COUNT"
 

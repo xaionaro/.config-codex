@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -186,6 +187,146 @@ class PrunePreReviewerTurnStateTests(unittest.TestCase):
                 self.assertTrue(old.exists())
             finally:
                 os.close(fd)
+
+    def test_fresh_same_name_replacement_is_not_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            capture = state_dir / "capture-turn-same.json"
+            capture.write_bytes(b"old")
+            now = 10_000
+            os.utime(capture, (now - 3601, now - 3601))
+            replacement = state_dir / ".capture-turn-same.json.FRESH"
+            fd = self.open_directory(state_dir)
+            real_entry_metadata = prune_pre_reviewer_turn_state._entry_metadata
+            replaced = False
+
+            def replace_after_observation(directory_fd: int, name: str) -> os.stat_result:
+                nonlocal replaced
+                metadata = real_entry_metadata(directory_fd, name)
+                if name == capture.name and not replaced:
+                    replaced = True
+                    replacement.write_bytes(b"fresh")
+                    os.utime(replacement, (now, now))
+                    os.replace(replacement, capture)
+                return metadata
+
+            try:
+                with mock.patch.object(
+                    prune_pre_reviewer_turn_state,
+                    "_entry_metadata",
+                    side_effect=replace_after_observation,
+                ):
+                    result = prune_pre_reviewer_turn_state.prune(fd, now)
+            finally:
+                os.close(fd)
+
+            self.assertTrue(result.success)
+            self.assertTrue(replaced)
+            self.assertEqual(result.removed, 0)
+            self.assertEqual(capture.read_bytes(), b"fresh")
+
+    def test_busy_publication_lock_skips_expired_entry_without_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            old = state_dir / "claim-turn-old"
+            old.touch()
+            now = 10_000
+            os.utime(old, (now - 3601, now - 3601))
+            publication_fd = self.open_directory(state_dir)
+            prune_fd = self.open_directory(state_dir)
+            results: list[prune_pre_reviewer_turn_state.PruneResult] = []
+
+            def run_prune() -> None:
+                results.append(prune_pre_reviewer_turn_state.prune(prune_fd, now))
+
+            worker = threading.Thread(target=run_prune)
+            try:
+                fcntl.flock(publication_fd, fcntl.LOCK_EX)
+                worker.start()
+                worker.join(timeout=0.5)
+                returned_without_waiting = not worker.is_alive()
+            finally:
+                fcntl.flock(publication_fd, fcntl.LOCK_UN)
+                worker.join(timeout=1.0)
+                os.close(prune_fd)
+                os.close(publication_fd)
+
+            self.assertTrue(returned_without_waiting)
+            self.assertEqual(len(results), 1)
+            result = results[0]
+            self.assertTrue(result.success)
+            self.assertEqual(result.removed, 0)
+            self.assertTrue(old.exists())
+
+    def test_publication_after_final_metadata_check_cannot_be_unlinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            capture = state_dir / "capture-turn-same.json"
+            capture.write_bytes(b"old")
+            now = 10_000
+            os.utime(capture, (now - 3601, now - 3601))
+            replacement = state_dir / ".capture-turn-same.json.FRESH"
+            replacement.write_bytes(b"fresh")
+            os.utime(replacement, (now, now))
+            fd = self.open_directory(state_dir)
+            real_entry_metadata = prune_pre_reviewer_turn_state._entry_metadata
+            metadata_calls = 0
+            publisher_blocked = threading.Event()
+            publisher_bypassed_lock = threading.Event()
+            publisher: threading.Thread | None = None
+
+            def publish() -> None:
+                publication_fd = self.open_directory(state_dir)
+                try:
+                    try:
+                        fcntl.flock(
+                            publication_fd,
+                            fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        )
+                    except BlockingIOError:
+                        publisher_blocked.set()
+                        fcntl.flock(publication_fd, fcntl.LOCK_EX)
+                    else:
+                        publisher_bypassed_lock.set()
+                    os.replace(replacement, capture)
+                finally:
+                    fcntl.flock(publication_fd, fcntl.LOCK_UN)
+                    os.close(publication_fd)
+
+            def publish_after_metadata(directory_fd: int, name: str) -> os.stat_result:
+                nonlocal metadata_calls, publisher
+                metadata = real_entry_metadata(directory_fd, name)
+                if name == capture.name:
+                    metadata_calls += 1
+                    if metadata_calls == 2:
+                        publisher = threading.Thread(target=publish)
+                        publisher.start()
+                        self.assertTrue(publisher_blocked.wait(timeout=1.0))
+                return metadata
+
+            try:
+                with mock.patch.object(
+                    prune_pre_reviewer_turn_state,
+                    "_entry_metadata",
+                    side_effect=publish_after_metadata,
+                ):
+                    result = prune_pre_reviewer_turn_state.prune(fd, now)
+            finally:
+                os.close(fd)
+            if publisher is not None:
+                publisher.join(timeout=1.0)
+
+            self.assertEqual(metadata_calls, 2)
+            self.assertIsNotNone(publisher)
+            self.assertFalse(publisher_bypassed_lock.is_set())
+            if publisher is not None:
+                self.assertFalse(publisher.is_alive())
+            self.assertTrue(result.success)
+            self.assertEqual(result.removed, 1)
+            self.assertEqual(capture.read_bytes(), b"fresh")
 
     def test_cli_is_silent_and_leaves_parent_descriptor_open(self) -> None:
         helper = LIB_ROOT / "prune_pre_reviewer_turn_state.py"

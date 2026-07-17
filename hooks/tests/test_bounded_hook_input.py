@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,38 @@ HELPER = ROOT / "hooks/lib/bounded_hook_input.py"
 PROMPT = ROOT / "hooks/prompt-task-reminder.sh"
 WORKER = ROOT / "hooks/lib/edit-bash-pre-reviewer-worker.sh"
 LIMIT = 65_536
+VALID_HOOK_WATCHDOG_SECONDS = 15.0
+PROCESS_GROUP_CLEANUP_SECONDS = 2.0
+
+
+def run_owned_process_group(
+    command: list[str],
+    *,
+    data: bytes,
+    environment: dict[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.communicate(timeout=PROCESS_GROUP_CLEANUP_SECONDS)
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 class BoundedHookInputTests(unittest.TestCase):
@@ -59,6 +92,54 @@ class BoundedHookInputTests(unittest.TestCase):
             )
         self.assertNotEqual(rejected.returncode, 0)
         self.assertEqual(rejected.stdout, b"")
+
+    def test_hook_json_transcript_mode_preserves_exact_path_string(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bounded-hook-transcript-") as temporary:
+            home = Path(temporary) / "home"
+            sessions = home / ".codex/sessions"
+            sessions.mkdir(parents=True)
+            transcript = sessions / "valid.jsonl"
+            first_record = b'{"type":"session_meta"}'
+            transcript.write_bytes(first_record + b"\n")
+            accepted = subprocess.run(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "hook-transcript-first-record",
+                    str(sessions),
+                ],
+                input=json.dumps(
+                    {"transcript_path": str(transcript)},
+                    separators=(",", ":"),
+                ).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(
+                (accepted.returncode, accepted.stdout, accepted.stderr),
+                (0, first_record, b""),
+            )
+            for suffix in ("\0", "\n", "\n\n", "\r", "\t", "\x1f", "\x7f", "\x9f"):
+                with self.subTest(codepoints=tuple(map(ord, suffix))):
+                    payload = json.dumps(
+                        {"transcript_path": f"{transcript}{suffix}"},
+                        separators=(",", ":"),
+                    ).encode()
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(HELPER),
+                            "hook-transcript-first-record",
+                            str(sessions),
+                        ],
+                        input=payload,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual((result.stdout, result.stderr), (b"", b""))
 
     def test_stdin_rejects_nul_and_non_strict_utf8_but_preserves_replacement(self) -> None:
         malformed = {
@@ -182,14 +263,11 @@ class BoundedHookInputTests(unittest.TestCase):
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode()
-            result = subprocess.run(
+            result = run_owned_process_group(
                 ["/bin/bash", str(PROMPT)],
-                input=payload,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=1.0,
-                check=False,
-                env={
+                data=payload,
+                timeout=VALID_HOOK_WATCHDOG_SECONDS,
+                environment={
                     **os.environ,
                     "HOME": str(home),
                     "CODEX_PROOF_ROOT": str(proof),

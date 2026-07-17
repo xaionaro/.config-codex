@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "product_sources": [
     "hooks.json",
     "hooks/validate-bash.sh",
@@ -25,7 +25,9 @@
     "hooks/tests/pre_reviewer_lifecycle.py",
     "hooks/tests/run.sh",
     "hooks/tests/lib/formal-tmpfs.sh",
-    "hooks/tests/differential/pre-reviewer-controller.sh"
+    "hooks/tests/process-watchdog.py",
+    "hooks/tests/differential/pre-reviewer-controller.sh",
+    "hooks/tests/differential/prune-turn-state.sh"
   ],
   "product_tools": [
     "awk",
@@ -72,12 +74,20 @@
     "chmod",
     "cmp",
     "cp",
+    "clang",
+    "date",
     "dirname",
+    "env",
     "findmnt",
+    "flock",
     "git",
+    "id",
+    "jq",
     "lake",
+    "ld.lld",
     "lean",
     "leanc",
+    "mkdir",
     "mktemp",
     "mv",
     "python3",
@@ -85,10 +95,15 @@
     "rm",
     "sha256sum",
     "sed",
+    "sleep",
+    "stat",
     "strace",
     "tar",
     "timeout",
     "unshare"
   ],
-  "claim": "Identity metadata covers the declared product/harness executable sets and the generated paths observed by the profiler; it supports correspondence and rerun diagnosis, but it is not a complete execution universe and not a bit-for-bit timing reproducibility claim."
+  "optional_harness_tools": [
+    "elan"
+  ],
+  "claim": "Identity metadata covers one generated controller build plus the declared executable sets observed across the profiler's actual fresh formal setup and verified-artifact reuse paths; it supports correspondence and rerun diagnosis for those paths, but it is not a complete execution universe, not evidence about already-running sessions or live-row retention, and not a bit-for-bit timing reproducibility or universal speedup claim."
 }

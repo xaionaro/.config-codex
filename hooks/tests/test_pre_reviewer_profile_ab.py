@@ -41,18 +41,13 @@ class ProfileIdentityTests(unittest.TestCase):
         self.assertEqual(set(MODULE.CANDIDATE_RUNTIME_SOURCE_PATHS), expected)
         self.assertEqual(set(MODULE.discover_runtime_sources(ROOT)), expected)
         MODULE.verify_manifest_closure(ROOT)
-        with tempfile.TemporaryDirectory(prefix="profile-harness-trace-") as temporary:
-            observed_harness = MODULE.observe_harness_runtime_tools(
-                ROOT / "hooks/tests/differential/pre-reviewer-controller.sh",
-                ROOT,
-                Path(temporary) / "harness.strace",
-            )
-        self.assertIn("findmnt", observed_harness)
-        MODULE.verify_tool_manifest_closure(
-            definition,
-            observed_product=set(),
-            observed_harness=observed_harness,
-        )
+        harness_source = (
+            ROOT / "hooks/tests/differential/pre-reviewer-controller.sh"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("--observe-harness-tools", harness_source)
+        self.assertIn("--build-artifact", harness_source)
+        for tool in ("env", "jq", "id", "stat"):
+            self.assertIn(tool, definition["harness_tools"])
 
     def test_runtime_tool_manifest_rejects_undeclared_observed_tool(self) -> None:
         definition = MODULE.load_runtime_manifest(ROOT)
@@ -63,28 +58,42 @@ class ProfileIdentityTests(unittest.TestCase):
                 observed_harness=set(),
             )
 
-    def test_harness_execution_trace_rejects_added_undeclared_executable(self) -> None:
+    def test_normal_harness_path_rejects_added_undeclared_executable(self) -> None:
         definition = MODULE.load_runtime_manifest(ROOT)
         with tempfile.TemporaryDirectory(prefix="profile-harness-mutation-") as temporary:
             scratch = Path(temporary)
             generated = scratch / "generated-undeclared"
             generated.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             generated.chmod(0o755)
-            wrapper = scratch / "harness.sh"
-            wrapper.write_text(
-                "#!/bin/bash\n"
-                f'"{generated}"\n'
-                f'exec "{ROOT / "hooks/tests/differential/pre-reviewer-controller.sh"}" "$@"\n',
+            (scratch / "mutated.strace").write_text(
+                f'1 execve("{generated}", ["{generated}"], 0x0) = 0\n',
                 encoding="utf-8",
             )
-            wrapper.chmod(0o755)
-            observed = MODULE.observe_harness_runtime_tools(
-                wrapper,
-                ROOT,
-                scratch / "mutated.strace",
-            )
+            observed = MODULE.discover_observed_runtime_tools(scratch, ROOT)
         self.assertIn("generated-undeclared", observed)
         with self.assertRaisesRegex(MODULE.ProfileError, "generated-undeclared"):
+            MODULE.verify_tool_manifest_closure(
+                definition,
+                observed_product=set(),
+                observed_harness=observed,
+            )
+
+    def test_reuse_harness_path_rejects_added_undeclared_executable(self) -> None:
+        definition = MODULE.load_runtime_manifest(ROOT)
+        with tempfile.TemporaryDirectory(prefix="profile-reuse-mutation-") as temporary:
+            scratch = Path(temporary)
+            generated = scratch / "generated-reuse-undeclared"
+            generated.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            generated.chmod(0o755)
+            (scratch / "reuse-mutated.strace").write_text(
+                f'1 execve("{generated}", ["{generated}"], 0x0) = 0\n',
+                encoding="utf-8",
+            )
+            observed = MODULE.discover_observed_runtime_tools(scratch, ROOT)
+        self.assertIn("generated-reuse-undeclared", observed)
+        with self.assertRaisesRegex(
+            MODULE.ProfileError, "generated-reuse-undeclared"
+        ):
             MODULE.verify_tool_manifest_closure(
                 definition,
                 observed_product=set(),
@@ -264,7 +273,7 @@ class ProfileIdentityTests(unittest.TestCase):
 
     def test_runtime_evidence_is_versioned_and_per_entry(self) -> None:
         evidence = MODULE.runtime_evidence_manifest(ROOT, ROOT)
-        self.assertEqual(evidence["schema_version"], 2)
+        self.assertEqual(evidence["schema_version"], 3)
         self.assertTrue(evidence["product"]["candidate"])
         self.assertTrue(evidence["harness"])
         self.assertTrue(evidence["product_tools"])

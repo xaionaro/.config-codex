@@ -113,8 +113,8 @@ REQUIRED: dict[Path, tuple[str, ...]] = {
         "capture_consumed",
         "call_attempted",
         "call_completed",
-        "Two rows per matching Bash invocation are expected; displayed rows alone ",
-        "do not prove that all corresponding processes remain active.",
+        "Two rows per matching Bash invocation are expected; displayed ",
+        "rows alone do not prove that all corresponding processes remain ",
     ),
 }
 

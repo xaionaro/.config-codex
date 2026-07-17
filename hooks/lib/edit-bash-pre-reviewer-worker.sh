@@ -13,7 +13,6 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 codex_init_tmp || true
 
 input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin)" || exit 0
-codex_hook_transcript_first_record_is_admissible "$input" || exit 0
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 turn_id_json="$(codex_hook_turn_id_json "$input")"
@@ -25,6 +24,7 @@ case "$tool_name" in
 esac
 
 [ -n "$turn_id_json" ] || exit 0
+codex_hook_transcript_first_record_is_admissible "$input" || exit 0
 
 if codex_hook_is_subagent_context "$input"; then
   exit 0

@@ -29,4 +29,27 @@ theorem unscopedIsRetained (name : String) (isRegular : Bool) (now modified : In
     shouldPrune name isRegular now modified = false := by
   simp [shouldPrune, unscoped]
 
+theorem deleteAfterRevalidation_sound
+    (lockAcquired observedSelected currentSelected : Bool)
+    (selected :
+      deleteAfterRevalidation lockAcquired observedSelected currentSelected = true) :
+    lockAcquired = true ∧ currentSelected = true := by
+  simpa [deleteAfterRevalidation] using selected
+
+theorem staleObservationDoesNotControlDeletion
+    (lockAcquired firstObservation secondObservation currentSelected : Bool) :
+    deleteAfterRevalidation lockAcquired firstObservation currentSelected =
+      deleteAfterRevalidation lockAcquired secondObservation currentSelected := by
+  rfl
+
+theorem freshReplacementIsRetained
+    (lockAcquired observedSelected : Bool) :
+    deleteAfterRevalidation lockAcquired observedSelected false = false := by
+  simp [deleteAfterRevalidation]
+
+theorem busyPublicationLockRetainsEntry
+    (observedSelected currentSelected : Bool) :
+    deleteAfterRevalidation false observedSelected currentSelected = false := by
+  simp [deleteAfterRevalidation]
+
 end CodexHooks
