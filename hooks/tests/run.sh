@@ -6,6 +6,7 @@ export PYTHONDONTWRITEBYTECODE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 FIXTURES="$ROOT/hooks/tests/fixtures"
+. "$ROOT/hooks/tests/lib/formal-tmpfs.sh"
 if ! command -v strace >/dev/null 2>&1; then
   printf '%s\n' "FAIL setup strace is required"
   exit 1
@@ -17,8 +18,14 @@ if ! lean_prefix="$(lean --print-prefix 2>/dev/null)" ||
   printf '%s\n' "FAIL setup complete Lean/Lake object closure is required"
   exit 1
 fi
+FORMAL_TMP_ROOT=""
+if ! FORMAL_TMP_ROOT="$(codex_select_formal_tmpfs_scratch)"; then
+  printf '%s\n' "FAIL setup private writable tmpfs is required for formal lifecycle checks"
+  exit 1
+fi
 TMP_ROOT=""
 if ! TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-hooks-tests.XXXXXX")"; then
+  rm -rf -- "$FORMAL_TMP_ROOT"
   printf '%s\n' "FAIL setup could not create temporary test root"
   exit 1
 fi
@@ -33,6 +40,9 @@ cleanup() {
   if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
     rm -f "$(subagent_transcript_path 2>/dev/null || true)" 2>/dev/null || true
     rm -rf "$TMP_ROOT"
+  fi
+  if [ -n "${FORMAL_TMP_ROOT:-}" ] && [ -d "$FORMAL_TMP_ROOT" ]; then
+    rm -rf -- "$FORMAL_TMP_ROOT"
   fi
 }
 
@@ -1609,8 +1619,10 @@ test_pre_reviewer_controller_matches_lean_lifecycle() {
   verifier="$ROOT/hooks/tests/differential/pre-reviewer-controller.sh"
   executable="$ROOT/proofs/.lake/build/bin/preReviewerControllerDiff"
   stamp="$executable.stamp"
-  "$verifier" >/dev/null || return 1
-  "$verifier" --verify-artifact "$executable" "$stamp" || return 1
+  codex_run_formal_lifecycle_differential "$FORMAL_TMP_ROOT" "$verifier" \
+    >/dev/null || return 1
+  codex_run_formal_lifecycle_differential "$FORMAL_TMP_ROOT" "$verifier" \
+    --verify-artifact "$executable" "$stamp" || return 1
   export CODEX_PRE_REVIEWER_FORMAL_EXE="$executable"
   export CODEX_PRE_REVIEWER_FORMAL_STAMP="$stamp"
 }
@@ -1643,6 +1655,10 @@ test_pre_reviewer_admission_inputs_are_bounded() {
   python3 "$ROOT/hooks/tests/test_bounded_hook_input.py" >/dev/null
 }
 
+test_pre_reviewer_formal_tmpfs_setup_is_owned() {
+  python3 "$ROOT/hooks/tests/test_formal_tmpfs.py" >/dev/null
+}
+
 test_pre_reviewer_backend_timeout_is_hard() {
   python3 "$ROOT/hooks/tests/test_reviewer_backend_timeout.py" >/dev/null
 }
@@ -1667,7 +1683,7 @@ test_pre_reviewer_profile_uses_configured_pair() {
     grep -Eq '^ab-no-capture parent_raw_ms=' "$profile" &&
     grep -Eq '^ab-prepared-fake parent_raw_ms=' "$profile" &&
     grep -Eq '^compatibility-backend status=(completed-observed|blocked-[^ ]+)' "$profile" &&
-    grep -Fxq 'causal-scope transcript_history_scans=0 lock_held_prune_records_max=170 backend_timeout_max_seconds=58 controller_timeout_seconds=70 hook_timeout_seconds=75' "$profile" &&
+    grep -Fxq 'causal-scope transcript_history_scans=0 shared_turn_lock_prune_records_max=0 maintenance_prune_records_max=170 backend_timeout_max_seconds=58 controller_timeout_seconds=70 hook_timeout_seconds=75' "$profile" &&
     grep -Fq 'Two rows per matching Bash invocation are expected; displayed rows alone do not prove that all corresponding processes remain active.' "$profile"
 }
 
@@ -2128,11 +2144,7 @@ test_turn_state_pruning_is_old_regular_file_and_namespace_scoped() {
     "$state_dir/capture-turn-old-directory.json" || return 1
 
   env HOME="$TMP_ROOT/home" bash -c \
-    '. "$1"; codex_lock_pre_reviewer_turn "$2" || exit 1
-      codex_prune_pre_reviewer_turn_state
-      status=$?
-      codex_unlock_pre_reviewer_turn
-      exit "$status"' \
+    '. "$1"; codex_prune_pre_reviewer_turn_state "$2"' \
     bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" || return 1
 
   [ ! -e "$old_capture" ] && [ ! -e "$old_temp" ] && [ ! -e "$old_claim" ] &&
@@ -2140,7 +2152,7 @@ test_turn_state_pruning_is_old_regular_file_and_namespace_scoped() {
     [ -d "$state_dir/capture-turn-old-directory.json" ]
 }
 
-test_turn_state_pruning_requires_held_lock_descriptor() {
+test_turn_state_pruning_rejects_shared_lock_and_runs_after_release() {
   local state_dir old_claim
   state_dir="$TMP_ROOT/prune-turn-state-unlocked"
   mkdir -m 0700 "$state_dir" || return 1
@@ -2148,12 +2160,14 @@ test_turn_state_pruning_requires_held_lock_descriptor() {
   : >"$old_claim"
   touch -d '2 hours ago' "$old_claim" || return 1
 
-  if env HOME="$TMP_ROOT/home" bash -c \
-    '. "$1"; codex_prune_pre_reviewer_turn_state' \
-    bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh"; then
-    return 1
-  fi
-  [ -e "$old_claim" ]
+  env HOME="$TMP_ROOT/home" bash -c \
+    '. "$1"
+      codex_lock_pre_reviewer_turn "$2" || exit 1
+      if codex_prune_pre_reviewer_turn_state "$2"; then exit 1; fi
+      codex_unlock_pre_reviewer_turn
+      codex_prune_pre_reviewer_turn_state "$2"' \
+    bash "$ROOT/hooks/lib/pre-reviewer-turn-state.sh" "$state_dir" || return 1
+  [ ! -e "$old_claim" ]
 }
 
 populate_retained_turn_state() {
@@ -2352,7 +2366,7 @@ EOF
   chmod 0755 "$bin_dir/python3"
 }
 
-test_paused_prompt_pruning_bounds_concurrent_pretool_wait() {
+test_paused_prompt_pruning_does_not_block_concurrent_pretool() {
   local proof_root state_dir transcript prompt_input prompt_out pre_input pre_out bin_dir
   local ready release ready_fd release_fd signal prompt_pid started_ns ended_ns elapsed_ms
   proof_root="$(fresh_proof_root paused-prompt-pruning)"
@@ -2401,12 +2415,16 @@ test_paused_prompt_pruning_bounds_concurrent_pretool_wait() {
   exec {release_fd}>&-
   rm -f "$ready" "$release"
 
-  expect_no_output "$pre_out" && [ "$elapsed_ms" -lt 2000 ] && expect_no_output "$prompt_out" &&
-    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'capture-turn-*.json' | wc -l)" -eq 1 ]
+  is_pretool_deny "$pre_out" && [ "$elapsed_ms" -lt 2000 ] && expect_no_output "$prompt_out" &&
+    [ "$(find "$state_dir" -maxdepth 1 -type f -name 'capture-turn-*.json' | wc -l)" -eq 0 ]
 }
 
 test_prune_pre_reviewer_turn_state_python_unit_suite() {
   python3 "$ROOT/hooks/tests/test_prune_pre_reviewer_turn_state.py" >/dev/null
+}
+
+test_pre_reviewer_pruning_allows_concurrent_publication() {
+  python3 "$ROOT/hooks/tests/test_pre_reviewer_prune_contention.py" >/dev/null
 }
 
 test_prune_pre_reviewer_turn_state_matches_lean_spec() {
@@ -6669,6 +6687,8 @@ run_case "pre reviewer lifecycle parser is exact" \
   test_pre_reviewer_lifecycle_parser_is_exact
 run_case "pre reviewer admission inputs are bounded" \
   test_pre_reviewer_admission_inputs_are_bounded
+run_case "pre reviewer formal tmpfs setup is owned" \
+  test_pre_reviewer_formal_tmpfs_setup_is_owned
 run_case "pre reviewer backend timeout is hard" \
   test_pre_reviewer_backend_timeout_is_hard
 run_case "pre reviewer timeout behavior is compatible" \
@@ -6697,14 +6717,16 @@ run_case "prompt cap failure leaves no same-key reusable state" \
   test_prompt_cap_failure_leaves_no_same_key_reusable_state
 run_case "turn state pruning is old regular-file and namespace scoped" \
   test_turn_state_pruning_is_old_regular_file_and_namespace_scoped
-run_case "turn state pruning requires held lock descriptor" \
-  test_turn_state_pruning_requires_held_lock_descriptor
+run_case "turn state pruning rejects shared lock and runs after release" \
+  test_turn_state_pruning_rejects_shared_lock_and_runs_after_release
 run_case "present-turn pre reviewer with retained state skips pruner" \
   test_present_turn_with_retained_state_skips_pruner
 run_case "prompt retained state prunes once without per-file subprocesses" \
   test_prompt_retained_state_prunes_once_without_per_file_subprocesses
-run_case "paused prompt pruning bounds concurrent pretool wait" \
-  test_paused_prompt_pruning_bounds_concurrent_pretool_wait
+run_case "paused prompt pruning does not block concurrent pretool" \
+  test_paused_prompt_pruning_does_not_block_concurrent_pretool
+run_case "pre reviewer pruning allows concurrent publication" \
+  test_pre_reviewer_pruning_allows_concurrent_publication
 run_case "Python pre reviewer pruning unit suite" \
   test_prune_pre_reviewer_turn_state_python_unit_suite
 run_case "pre reviewer pruning matches Lean namespace spec" \

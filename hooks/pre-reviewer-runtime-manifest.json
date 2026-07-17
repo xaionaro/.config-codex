@@ -23,6 +23,8 @@
     "hooks/tests/profile-pre-reviewer.sh",
     "hooks/tests/profile_pre_reviewer_ab.py",
     "hooks/tests/pre_reviewer_lifecycle.py",
+    "hooks/tests/run.sh",
+    "hooks/tests/lib/formal-tmpfs.sh",
     "hooks/tests/differential/pre-reviewer-controller.sh"
   ],
   "product_tools": [
@@ -64,12 +66,14 @@
     "xargs"
   ],
   "harness_tools": [
+    "awk",
     "bash",
     "cat",
     "chmod",
     "cmp",
     "cp",
     "dirname",
+    "findmnt",
     "git",
     "lake",
     "lean",
@@ -77,8 +81,10 @@
     "mktemp",
     "mv",
     "python3",
+    "readlink",
     "rm",
     "sha256sum",
+    "sed",
     "strace",
     "tar",
     "timeout",

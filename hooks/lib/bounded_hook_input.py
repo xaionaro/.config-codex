@@ -17,6 +17,12 @@ INPUT_BUDGET = 65_536
 def _emit_bounded(data: bytes) -> int:
     if len(data) > INPUT_BUDGET:
         return 2
+    if b"\0" in data:
+        return 2
+    try:
+        data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return 2
     view = memoryview(data)
     while view:
         written = os.write(1, view)

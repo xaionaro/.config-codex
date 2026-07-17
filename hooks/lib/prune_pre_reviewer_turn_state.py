@@ -6,6 +6,7 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 import errno
+import fcntl
 import os
 import re
 import stat
@@ -20,6 +21,7 @@ MIN_DIRENT_RECORD_BYTES = 24
 MAX_VISITED_PER_BATCH = DIRENT_BUFFER_BYTES // MIN_DIRENT_RECORD_BYTES
 CURSOR_NAME = ".prune-cursor"
 CURSOR_PENDING_NAME = ".prune-cursor.pending"
+MAINTENANCE_LOCK_NAME = ".prune-maintenance-lock"
 MAX_CURSOR_BYTES = 64
 MAX_DIRECTORY_OFFSET = (1 << 63) - 1
 _DIRENT_HEADER = struct.Struct("=QqHB")
@@ -42,6 +44,65 @@ def _is_private_current_user_directory(metadata: os.stat_result) -> bool:
         and metadata.st_uid == os.geteuid()
         and stat.S_IMODE(metadata.st_mode) == PRIVATE_MODE
     )
+
+
+def _is_private_current_user_regular_file(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+        and metadata.st_nlink == 1
+    )
+
+
+def _open_maintenance_lock(directory_fd: int) -> int | None:
+    flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    lock_fd: int | None = None
+    try:
+        lock_fd = os.open(
+            MAINTENANCE_LOCK_NAME,
+            flags | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        os.fchmod(lock_fd, 0o600)
+    except FileExistsError:
+        try:
+            lock_fd = os.open(
+                MAINTENANCE_LOCK_NAME,
+                flags,
+                dir_fd=directory_fd,
+            )
+        except OSError:
+            return None
+    except OSError:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        return None
+
+    try:
+        descriptor_metadata = os.fstat(lock_fd)
+        path_metadata = os.stat(
+            MAINTENANCE_LOCK_NAME,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not _is_private_current_user_regular_file(descriptor_metadata)
+            or descriptor_metadata.st_dev != path_metadata.st_dev
+            or descriptor_metadata.st_ino != path_metadata.st_ino
+        ):
+            os.close(lock_fd)
+            return None
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(lock_fd)
+            return None
+        return lock_fd
+    except OSError:
+        os.close(lock_fd)
+        return None
 
 
 @dataclass(frozen=True)
@@ -261,7 +322,14 @@ def main(argv: Sequence[str]) -> int:
         now = int(argv[2], 10)
     except ValueError:
         return 1
-    return 0 if prune(fd, now).success else 1
+    maintenance_lock_fd = _open_maintenance_lock(fd)
+    if maintenance_lock_fd is None:
+        return 0
+    try:
+        return 0 if prune(fd, now).success else 1
+    finally:
+        fcntl.flock(maintenance_lock_fd, fcntl.LOCK_UN)
+        os.close(maintenance_lock_fd)
 
 
 if __name__ == "__main__":

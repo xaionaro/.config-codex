@@ -142,16 +142,44 @@ codex_unlock_pre_reviewer_turn() {
 }
 
 codex_prune_pre_reviewer_turn_state() {
-  local helper_dir now
+  local state_dir="$1"
+  local helper_dir now path_metadata descriptor_metadata owner expected_metadata
 
-  # One cursor-backed directory batch bounds work while this shared lock is held.
-  [ -n "${CODEX_TURN_LOCK_FD:-}" ] || return 1
-  case "$CODEX_TURN_LOCK_FD" in
-    *[!0123456789]*|"") return 1 ;;
-  esac
-  now="$(date +%s)" || return 1
+  # Maintenance is deliberately outside the shared turn lock. The Python
+  # pruner uses its own nonblocking lock for one bounded cursor-backed batch.
+  [ -z "${CODEX_TURN_LOCK_FD:-}" ] || return 1
+  codex_ensure_private_pre_reviewer_state_dir "$state_dir" || return 1
+  owner="$(id -u)" || return 1
+  path_metadata="$(stat -c '%d:%i|%F|%u|%a' -- "$state_dir" 2>/dev/null)" || return 1
+  expected_metadata="${path_metadata%%|*}|directory|$owner|700"
+  [ "$path_metadata" = "$expected_metadata" ] || return 1
+  exec {CODEX_PRUNE_STATE_FD}<"$state_dir" || return 1
+  descriptor_metadata="$(stat -Lc '%d:%i|%F|%u|%a' \
+    -- "/proc/self/fd/$CODEX_PRUNE_STATE_FD" 2>/dev/null)" || {
+    exec {CODEX_PRUNE_STATE_FD}>&-
+    CODEX_PRUNE_STATE_FD=""
+    return 1
+  }
+  path_metadata="$(stat -c '%d:%i|%F|%u|%a' -- "$state_dir" 2>/dev/null)" || {
+    exec {CODEX_PRUNE_STATE_FD}>&-
+    CODEX_PRUNE_STATE_FD=""
+    return 1
+  }
+  if [ "$descriptor_metadata" != "$path_metadata" ] ||
+      [ "$descriptor_metadata" != "$expected_metadata" ]; then
+    exec {CODEX_PRUNE_STATE_FD}>&-
+    CODEX_PRUNE_STATE_FD=""
+    return 1
+  fi
+  now="$(date +%s)" || {
+    exec {CODEX_PRUNE_STATE_FD}>&-
+    CODEX_PRUNE_STATE_FD=""
+    return 1
+  }
   helper_dir="${BASH_SOURCE[0]%/*}"
   [ "$helper_dir" != "${BASH_SOURCE[0]}" ] || helper_dir=.
   python3 "$helper_dir/prune_pre_reviewer_turn_state.py" \
-    "$CODEX_TURN_LOCK_FD" "$now" >/dev/null 2>&1 || true
+    "$CODEX_PRUNE_STATE_FD" "$now" >/dev/null 2>&1 || true
+  exec {CODEX_PRUNE_STATE_FD}>&-
+  CODEX_PRUNE_STATE_FD=""
 }

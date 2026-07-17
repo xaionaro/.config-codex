@@ -69,6 +69,7 @@ REQUIRED: dict[Path, tuple[str, ...]] = {
         "def descriptorsClosed",
         "reviewerOwned",
         "publisherOwned",
+        "maintenanceHoldsSharedTurnLock",
     ),
     PROOFS: (
         "theorem controllerRun_confirmation_safe",
@@ -76,6 +77,7 @@ REQUIRED: dict[Path, tuple[str, ...]] = {
         "theorem cancelled_fold_cannot_confirm",
         "theorem descriptor_cleanup_idempotent",
         "theorem maintenance_visit_count_bounded",
+        "theorem maintenance_never_holds_shared_turn_lock",
     ),
     LIFECYCLE: (
         "def abrupt_controller_death(",

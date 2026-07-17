@@ -21,8 +21,10 @@ FORMAL_SOURCES = (
 )
 DIFFERENTIAL_SOURCES = (
     Path("hooks/edit-bash-pre-reviewer.sh"),
+    Path("hooks/prompt-task-reminder.sh"),
     Path("hooks/lib/edit_bash_pre_reviewer_controller.py"),
     Path("hooks/lib/bounded_hook_input.py"),
+    Path("hooks/lib/pre-reviewer-turn-state.sh"),
     Path("hooks/lib/prune_pre_reviewer_turn_state.py"),
     Path("hooks/lib/reviewer-call.sh"),
     Path("hooks.json"),
@@ -370,6 +372,11 @@ class FormalStampTests(unittest.TestCase):
                 "CONTROLLER_TIMEOUT_SECONDS: Final = 69.0",
             ),
             (Path("hooks.json"), '"timeout": 75', '"timeout": 74'),
+            (
+                Path("hooks/lib/pre-reviewer-turn-state.sh"),
+                '[ -z "${CODEX_TURN_LOCK_FD:-}" ] || return 1',
+                '[ -n "${CODEX_TURN_LOCK_FD:-}" ] || return 1',
+            ),
         )
         with tempfile.TemporaryDirectory(prefix="formal-bound-mutations-") as temporary:
             script, _executable, _stamp, environment = self.fixture(temporary)
@@ -378,7 +385,7 @@ class FormalStampTests(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "[ \"${1:-}\" = check-bounds ] || exit 2\n"
                 "shift\n"
-                "[ \"$*\" = \"4096 65536 170 58 70 75\" ] || exit 3\n"
+                "[ \"$*\" = \"4096 65536 170 58 70 75 0\" ] || exit 3\n"
                 "printf '%s\\n' bounds-ok\n",
                 encoding="utf-8",
             )

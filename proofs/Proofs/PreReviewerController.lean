@@ -117,4 +117,8 @@ theorem maintenance_uses_one_primary_call :
     maintenancePrimaryCalls = 1 ∧ maintenanceVisitBudget = 170 := by
   decide
 
+theorem maintenance_never_holds_shared_turn_lock :
+    maintenanceHoldsSharedTurnLock = false := by
+  rfl
+
 end CodexHooks

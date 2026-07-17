@@ -22,7 +22,8 @@ from typing import Final
 SAMPLES: Final = 5
 CAUSAL_SCOPE_RECORD: Final = (
     "causal-scope transcript_history_scans=0 "
-    "lock_held_prune_records_max=170 backend_timeout_max_seconds=58 "
+    "shared_turn_lock_prune_records_max=0 maintenance_prune_records_max=170 "
+    "backend_timeout_max_seconds=58 "
     "controller_timeout_seconds=70 hook_timeout_seconds=75"
 )
 BASELINE_COMMIT: Final = "72b8b3d62df89975b35ed5bda1a5231a2be4fe4b"
@@ -433,6 +434,40 @@ def discover_observed_runtime_tools(trace_root: Path, code_root: Path) -> set[st
                 continue
             observed.add(path.name)
     return observed
+
+
+def observe_harness_runtime_tools(
+    harness: Path,
+    code_root: Path,
+    trace_path: Path,
+) -> set[str]:
+    strace = shutil.which("strace")
+    bash = shutil.which("bash")
+    if strace is None or bash is None:
+        raise ProfileError("harness executable observation requires bash and strace")
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            strace,
+            "-f",
+            "-qq",
+            "-e",
+            "trace=execve",
+            "-o",
+            str(trace_path),
+            bash,
+            str(harness),
+            "--observe-harness-tools",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        cwd=code_root,
+        timeout=15.0,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ProfileError("harness executable observation failed")
+    return discover_observed_runtime_tools(trace_path.parent, code_root)
 
 
 def _file_entries(root: Path, paths: tuple[Path, ...]) -> list[dict[str, str]]:
@@ -946,12 +981,15 @@ def _run_profile(
         scratch / "source-evidence" / "candidate-state",
         candidate_snapshot,
     )
+    observed_harness = observe_harness_runtime_tools(
+        candidate_snapshot / "hooks/tests/differential/pre-reviewer-controller.sh",
+        candidate_snapshot,
+        scratch / "harness-executions" / "harness.strace",
+    )
     verify_tool_manifest_closure(
         definition,
         observed_product=observed_product,
-        observed_harness={
-            "bash", "git", "python3", "sha256sum", "strace", "tar",
-        },
+        observed_harness=observed_harness,
     )
     print(render_identity_record(source_evidence.parent, source_evidence.candidate))
     for anchor_root, scenario, anchor in (

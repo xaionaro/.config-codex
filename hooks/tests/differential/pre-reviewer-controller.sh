@@ -10,7 +10,9 @@ CONTROLLER="$ROOT/hooks/lib/edit_bash_pre_reviewer_controller.py"
 LIFECYCLE="$ROOT/hooks/tests/pre_reviewer_lifecycle.py"
 HARNESS="$ROOT/hooks/tests/differential/pre-reviewer-controller.sh"
 WRAPPER="$ROOT/hooks/edit-bash-pre-reviewer.sh"
+PROMPT_HOOK="$ROOT/hooks/prompt-task-reminder.sh"
 BOUNDED_INPUT="$ROOT/hooks/lib/bounded_hook_input.py"
+TURN_STATE="$ROOT/hooks/lib/pre-reviewer-turn-state.sh"
 PRUNER="$ROOT/hooks/lib/prune_pre_reviewer_turn_state.py"
 REVIEWER_CALL="$ROOT/hooks/lib/reviewer-call.sh"
 HOOK_CONFIG="$ROOT/hooks.json"
@@ -48,19 +50,23 @@ formal_artifact_identity() {
 }
 
 differential_run_identity() {
-  local executable="$1" python bash strace unshare jq
-  local python_version bash_version strace_version worker_sha256
+  local executable="$1" python bash strace unshare jq findmnt
+  local python_version bash_version strace_version findmnt_version worker_sha256
   python="$(resolve_tool python3)" || return 1
   bash="$(resolve_tool bash)" || return 1
   strace="$(resolve_tool strace)" || return 1
   unshare="$(resolve_tool unshare)" || return 1
   jq="$(resolve_tool jq)" || return 1
+  findmnt="$(resolve_tool findmnt)" || return 1
   python_version="$($python --version 2>&1)" || return 1
   bash_version="$($bash --version | sed -n '1p')" || return 1
   strace_version="$($strace --version | sed -n '1p')" || return 1
+  findmnt_version="$($findmnt --version | sed -n '1p')" || return 1
   printf 'format=pre-reviewer-differential-run-v1\n'
   printf 'controller_sha256=%s\n' "$(sha256sum "$CONTROLLER" | awk '{print $1}')"
   printf 'wrapper_sha256=%s\n' "$(sha256sum "$WRAPPER" | awk '{print $1}')"
+  printf 'prompt_hook_sha256=%s\n' "$(sha256sum "$PROMPT_HOOK" | awk '{print $1}')"
+  printf 'turn_state_sha256=%s\n' "$(sha256sum "$TURN_STATE" | awk '{print $1}')"
   printf 'lifecycle_sha256=%s\n' "$(sha256sum "$LIFECYCLE" | awk '{print $1}')"
   worker_sha256="$($python - "$LIFECYCLE" <<'PY' | sha256sum | awk '{print $1}'
 import importlib.util
@@ -90,7 +96,19 @@ PY
   printf 'strace_version_sha256=%s\n' "$(printf '%s' "$strace_version" | sha256sum | awk '{print $1}')"
   printf 'unshare_sha256=%s\n' "$(sha256sum "$unshare" | awk '{print $1}')"
   printf 'jq_sha256=%s\n' "$(sha256sum "$jq" | awk '{print $1}')"
+  printf 'findmnt_path=%s\n' "$findmnt"
+  printf 'findmnt_sha256=%s\n' "$(sha256sum "$findmnt" | awk '{print $1}')"
+  printf 'findmnt_version_sha256=%s\n' \
+    "$(printf '%s' "$findmnt_version" | sha256sum | awk '{print $1}')"
 }
+
+if [ "${1:-}" = --observe-harness-tools ]; then
+  [ "$#" -eq 1 ] || exit 2
+  differential_run_identity "$HARNESS" >/dev/null
+  findmnt_path="$(resolve_tool findmnt)" || exit 1
+  "$findmnt_path" -n -o FSTYPE --target /tmp >/dev/null
+  exit
+fi
 
 write_stamp() {
   local executable="$1" stamp="$2" temporary
@@ -132,6 +150,7 @@ formal_build_inputs_identity() {
 
 check_production_bounds() {
   local executable="$1" publication admission maintenance backend controller hook
+  local maintenance_shared_lock state_dir
   publication="$(python3 - "$CONTROLLER" <<'PY'
 import importlib.util
 import sys
@@ -179,8 +198,32 @@ PY
     '.hooks.PreToolUse[] | select(.matcher == "^Bash$") | .hooks[] | select(.statusMessage == "Checking first tool call") | .timeout' \
     "$HOOK_CONFIG")" || return 1
   [ -n "$hook" ] || return 1
+  state_dir="$(mktemp -d "${TMPDIR:-/tmp}/pre-reviewer-lock-check.XXXXXX")" || return 1
+  chmod 0700 "$state_dir" || { rm -rf -- "$state_dir"; return 1; }
+  maintenance_shared_lock="$(
+    python3 - "$PROMPT_HOOK" "$TURN_STATE" <<'PY'
+import sys
+
+prompt = open(sys.argv[1], encoding="utf-8").read()
+turn_state = open(sys.argv[2], encoding="utf-8").read()
+unlock = prompt.find("codex_unlock_pre_reviewer_turn\n        codex_prune_pre_reviewer_turn_state")
+guard = '[ -z "${CODEX_TURN_LOCK_FD:-}" ] || return 1'
+print("0" if unlock >= 0 and guard in turn_state else "1")
+PY
+  )" || { rm -rf -- "$state_dir"; return 1; }
+  if ! env -i PATH=/usr/bin:/bin HOME="${HOME:-/tmp}" bash -c '
+      . "$1"
+      codex_lock_pre_reviewer_turn "$2" || exit 1
+      if codex_prune_pre_reviewer_turn_state "$2"; then exit 1; fi
+      codex_unlock_pre_reviewer_turn
+      codex_prune_pre_reviewer_turn_state "$2"' \
+      bash "$TURN_STATE" "$state_dir"; then
+    maintenance_shared_lock=1
+  fi
+  rm -rf -- "$state_dir"
   [ "$($executable check-bounds \
-    "$publication" "$admission" "$maintenance" "$backend" "$controller" "$hook")" = \
+    "$publication" "$admission" "$maintenance" "$backend" "$controller" "$hook" \
+    "$maintenance_shared_lock")" = \
     bounds-ok ]
 }
 
@@ -304,7 +347,8 @@ if [ "${CODEX_TEST_SKIP_LEAN_BUILD:-}" = 1 ]; then
   published_executable="${CODEX_PRE_REVIEWER_FORMAL_EXE:-$ROOT/proofs/.lake/build/bin/preReviewerControllerDiff}"
   published_stamp="${CODEX_PRE_REVIEWER_FORMAL_STAMP:-$published_executable.stamp}"
 else
-  [ "$(findmnt -n -o FSTYPE --target "${TMPDIR:-/tmp}")" = tmpfs ] || {
+  findmnt_path="$(resolve_tool findmnt)" || exit 1
+  [ "$("$findmnt_path" -n -o FSTYPE --target "${TMPDIR:-/tmp}")" = tmpfs ] || {
     printf '%s\n' 'pre-reviewer formal build requires tmpfs TMPDIR' >&2
     exit 1
   }

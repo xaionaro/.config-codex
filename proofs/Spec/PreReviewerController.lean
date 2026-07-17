@@ -161,6 +161,8 @@ def admissionInputBudget : Nat := 65536
 
 def maintenancePrimaryCalls : Nat := 1
 
+def maintenanceHoldsSharedTurnLock : Bool := false
+
 def maintenanceVisitCount (population : Nat) : Nat :=
   min population maintenanceVisitBudget
 

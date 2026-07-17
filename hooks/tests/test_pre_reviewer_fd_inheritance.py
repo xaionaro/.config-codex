@@ -18,7 +18,7 @@ PRETOOL_HOOK = ROOT / "hooks/edit-bash-pre-reviewer.sh"
 
 
 class LockDescriptorInheritanceTests(unittest.TestCase):
-    def test_pruner_inherits_lock_and_validator_closes_child_copy(self) -> None:
+    def test_pruner_runs_after_shared_lock_release_and_validator_closes_child_copy(self) -> None:
         with tempfile.TemporaryDirectory(prefix="pre-reviewer-fd-") as temporary:
             root = Path(temporary)
             home = root / "home"
@@ -43,7 +43,7 @@ class LockDescriptorInheritanceTests(unittest.TestCase):
                 "  *turn_capture_validator.py*) kind=validator ;;\n"
                 "esac\n"
                 "if [ \"$kind\" != other ]; then\n"
-                "  child=closed; parent=missing\n"
+                "  child=closed; parent=missing; shared_lock=unknown\n"
                 "  parent_pid=\n"
                 "  while read -r status_key status_value _status_rest; do\n"
                 "    if [ \"$status_key\" = PPid: ]; then parent_pid=\"$status_value\"; break; fi\n"
@@ -55,7 +55,18 @@ class LockDescriptorInheritanceTests(unittest.TestCase):
                 "  for fd in /proc/$parent_pid/fd/*; do\n"
                 "    [ \"$(readlink \"$fd\" 2>/dev/null || true)\" = \"$CODEX_TEST_STATE_DIR\" ] && parent=has\n"
                 "  done\n"
+                "  if [ \"$kind\" = pruner ]; then\n"
+                "    exec {probe_fd}<\"$CODEX_TEST_STATE_DIR\"\n"
+                "    if flock -n \"$probe_fd\"; then\n"
+                "      shared_lock=free\n"
+                "      flock -u \"$probe_fd\"\n"
+                "    else\n"
+                "      shared_lock=held\n"
+                "    fi\n"
+                "    exec {probe_fd}>&-\n"
+                "  fi\n"
                 "  printf '%s-child-%s\\n%s-parent-%s\\n' \"$kind\" \"$child\" \"$kind\" \"$parent\" >>\"$CODEX_TEST_FD_TRACE\"\n"
+                "  [ \"$kind\" != pruner ] || printf 'pruner-shared-lock-%s\\n' \"$shared_lock\" >>\"$CODEX_TEST_FD_TRACE\"\n"
                 "fi\n"
                 "exec \"$REAL_PYTHON\" \"$@\"\n",
                 encoding="utf-8",
@@ -117,6 +128,7 @@ class LockDescriptorInheritanceTests(unittest.TestCase):
             expected = {
                 "pruner-child-has",
                 "pruner-parent-has",
+                "pruner-shared-lock-free",
                 "validator-child-closed",
                 "validator-parent-has",
             }

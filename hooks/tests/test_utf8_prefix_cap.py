@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
-from pathlib import Path
 
 HOOKS_ROOT = Path(__file__).resolve().parents[1]
 LIB_ROOT = HOOKS_ROOT / "lib"
+ROOT = HOOKS_ROOT.parent
 sys.path.insert(0, str(LIB_ROOT))
 
 import utf8_prefix_cap
@@ -120,6 +124,82 @@ class Utf8PrefixCapTests(unittest.TestCase):
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, b"")
+
+    def test_worker_preserves_strict_utf8_when_four_byte_codepoint_crosses_cap(self) -> None:
+        prompt_hook = HOOKS_ROOT / "prompt-task-reminder.sh"
+        worker = LIB_ROOT / "edit-bash-pre-reviewer-worker.sh"
+        with tempfile.TemporaryDirectory(prefix="worker-utf8-cap-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir()
+            proof = root / "proof"
+            environment = {
+                **os.environ,
+                "HOME": str(home),
+                "CODEX_HOME": str(ROOT),
+                "CODEX_PROOF_ROOT": str(proof),
+                "CODEX_EDIT_PRE_REVIEWER": "ollama:http://127.0.0.1:1/generated",
+                "CODEX_PRE_REVIEWER_FAKE_RESULT": '{"verdict":"allow","reason":"generated"}',
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            prompt = json.dumps(
+                {
+                    "session_id": "t00-session",
+                    "turn_id": "utf8-boundary",
+                    "prompt": "generated prompt",
+                    "cwd": str(ROOT),
+                },
+                separators=(",", ":"),
+            ).encode()
+            prompt_result = subprocess.run(
+                ["/bin/bash", str(prompt_hook)],
+                input=prompt,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual((prompt_result.returncode, prompt_result.stdout), (0, b""))
+
+            tool_input = {"command": "x" * 3986 + "😀" + "tail"}
+            compact = json.dumps(
+                tool_input,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+            emoji_offset = compact.index("😀".encode())
+            self.assertLess(emoji_offset, 4000)
+            self.assertGreater(emoji_offset + 4, 4000)
+            expected = utf8_prefix_cap.longest_complete_utf8_prefix(compact[:4000])
+            body = root / "reviewer-body.bin"
+            environment["CODEX_PRE_REVIEWER_DEBUG_BODY_PATH"] = str(body)
+            tool = json.dumps(
+                {
+                    "session_id": "t00-session",
+                    "turn_id": "utf8-boundary",
+                    "tool_name": "Bash",
+                    "cwd": str(ROOT),
+                    "tool_input": tool_input,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+            worker_result = subprocess.run(
+                ["/bin/bash", str(worker)],
+                input=tool,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(worker_result.returncode, 0, worker_result.stderr.decode())
+            body_bytes = body.read_bytes()
+            body_text = body_bytes.decode("utf-8", errors="strict")
+            transported = body_text.split("TOOL INPUT: ", 1)[1].rstrip("\n").encode()
+            self.assertEqual(transported, expected)
+            self.assertLessEqual(len(transported), 4000)
+            self.assertNotIn("�".encode(), transported)
+            self.assertNotIn("head -c 4000", worker.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

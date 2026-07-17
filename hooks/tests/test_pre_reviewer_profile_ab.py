@@ -41,10 +41,17 @@ class ProfileIdentityTests(unittest.TestCase):
         self.assertEqual(set(MODULE.CANDIDATE_RUNTIME_SOURCE_PATHS), expected)
         self.assertEqual(set(MODULE.discover_runtime_sources(ROOT)), expected)
         MODULE.verify_manifest_closure(ROOT)
+        with tempfile.TemporaryDirectory(prefix="profile-harness-trace-") as temporary:
+            observed_harness = MODULE.observe_harness_runtime_tools(
+                ROOT / "hooks/tests/differential/pre-reviewer-controller.sh",
+                ROOT,
+                Path(temporary) / "harness.strace",
+            )
+        self.assertIn("findmnt", observed_harness)
         MODULE.verify_tool_manifest_closure(
             definition,
-            observed_product=set(definition["product_tools"]),
-            observed_harness=set(definition["harness_tools"]),
+            observed_product=set(),
+            observed_harness=observed_harness,
         )
 
     def test_runtime_tool_manifest_rejects_undeclared_observed_tool(self) -> None:
@@ -54,6 +61,34 @@ class ProfileIdentityTests(unittest.TestCase):
                 definition,
                 observed_product={"generated-undeclared"},
                 observed_harness=set(),
+            )
+
+    def test_harness_execution_trace_rejects_added_undeclared_executable(self) -> None:
+        definition = MODULE.load_runtime_manifest(ROOT)
+        with tempfile.TemporaryDirectory(prefix="profile-harness-mutation-") as temporary:
+            scratch = Path(temporary)
+            generated = scratch / "generated-undeclared"
+            generated.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            generated.chmod(0o755)
+            wrapper = scratch / "harness.sh"
+            wrapper.write_text(
+                "#!/bin/bash\n"
+                f'"{generated}"\n'
+                f'exec "{ROOT / "hooks/tests/differential/pre-reviewer-controller.sh"}" "$@"\n',
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+            observed = MODULE.observe_harness_runtime_tools(
+                wrapper,
+                ROOT,
+                scratch / "mutated.strace",
+            )
+        self.assertIn("generated-undeclared", observed)
+        with self.assertRaisesRegex(MODULE.ProfileError, "generated-undeclared"):
+            MODULE.verify_tool_manifest_closure(
+                definition,
+                observed_product=set(),
+                observed_harness=observed,
             )
 
     def test_causal_scenarios_name_historical_work(self) -> None:
@@ -222,7 +257,8 @@ class ProfileIdentityTests(unittest.TestCase):
         self.assertEqual(
             MODULE.CAUSAL_SCOPE_RECORD,
             "causal-scope transcript_history_scans=0 "
-            "lock_held_prune_records_max=170 backend_timeout_max_seconds=58 "
+            "shared_turn_lock_prune_records_max=0 maintenance_prune_records_max=170 "
+            "backend_timeout_max_seconds=58 "
             "controller_timeout_seconds=70 hook_timeout_seconds=75",
         )
 

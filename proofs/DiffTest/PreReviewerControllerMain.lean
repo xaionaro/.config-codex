@@ -37,13 +37,16 @@ def tupleString (state : ControllerState) : String :=
   s!"{bit tuple.1} {bit tuple.2.1} {bit tuple.2.2.1} {bit tuple.2.2.2.1} {bit tuple.2.2.2.2.1} {bit tuple.2.2.2.2.2}"
 
 def checkBounds : List String → Bool
-  | [publication, admission, maintenance, backend, controller, hook] =>
+  | [publication, admission, maintenance, backend, controller, hook,
+      maintenanceSharedLock] =>
       publication.toNat? == some atomicPublicationBudget &&
       admission.toNat? == some admissionInputBudget &&
       maintenance.toNat? == some maintenanceVisitBudget &&
       backend.toNat? == some backendDeadlineSeconds &&
       controller.toNat? == some controllerDeadlineSeconds &&
-      hook.toNat? == some hookDeadlineSeconds
+      hook.toNat? == some hookDeadlineSeconds &&
+      maintenanceSharedLock.toNat? ==
+        some (if maintenanceHoldsSharedTurnLock then 1 else 0)
   | _ => false
 
 def main (args : List String) : IO UInt32 := do

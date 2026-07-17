@@ -442,6 +442,22 @@ codex_hook_is_subagent_context() {
   ' >/dev/null 2>&1
 }
 
+codex_hook_transcript_first_record_is_admissible() {
+  local input="${1:-}"
+  local transcript_path first_record
+
+  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+  [ -n "$transcript_path" ] || return 0
+  case "$transcript_path" in
+    "$HOME/.codex/sessions/"*.jsonl) ;;
+    *) return 0 ;;
+  esac
+  [ -e "$transcript_path" ] || [ -L "$transcript_path" ] || return 0
+  first_record="$(python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
+    first-record "$transcript_path" 2>/dev/null)" || return 1
+  printf '%s' "$first_record" | jq -e 'type == "object"' >/dev/null 2>&1
+}
+
 codex_hook_parent_session_id() {
   local input="${1:-}"
   local transcript_path first_record

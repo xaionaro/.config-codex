@@ -13,6 +13,7 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 codex_init_tmp || true
 
 input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin)" || exit 0
+codex_hook_transcript_first_record_is_admissible "$input" || exit 0
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 turn_id_json="$(codex_hook_turn_id_json "$input")"
@@ -117,7 +118,14 @@ rm -f -- "$consumed_capture_tmp" "$validated_prompt_tmp" 2>/dev/null || true
 consumed_capture_tmp=""
 validated_prompt_tmp=""
 trap - EXIT HUP INT TERM
-tool_input=$(printf '%s' "$input" | jq -c '.tool_input // {}' 2>/dev/null | redact_sensitive_text | head -c 4000)
+if ! tool_input="$(
+  printf '%s' "$input" |
+    jq -c '.tool_input // {}' 2>/dev/null |
+    redact_sensitive_text |
+    python3 "$HOOK_DIR/lib/utf8_prefix_cap.py"
+)"; then
+  exit 0
+fi
 
 sys_file=$(mktemp)
 usr_file=$(mktemp)

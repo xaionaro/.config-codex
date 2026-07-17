@@ -206,6 +206,108 @@ class PrunePreReviewerTurnStateTests(unittest.TestCase):
             finally:
                 os.close(fd)
 
+    def test_cli_maintenance_serialization_is_nonblocking(self) -> None:
+        helper = LIB_ROOT / "prune_pre_reviewer_turn_state.py"
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            old = state_dir / "claim-turn-old"
+            old.touch()
+            os.utime(old, (1, 1))
+            lock = state_dir / prune_pre_reviewer_turn_state.MAINTENANCE_LOCK_NAME
+            lock.touch(mode=0o600)
+            lock.chmod(0o600)
+            lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+            directory_fd = self.open_directory(state_dir)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                result = subprocess.run(
+                    [sys.executable, str(helper), str(directory_fd), "10000"],
+                    pass_fds=(directory_fd,),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=0.5,
+                    check=False,
+                )
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+                os.close(directory_fd)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+            self.assertTrue(old.exists())
+
+    def test_maintenance_lock_is_released_when_holder_is_killed(self) -> None:
+        helper = LIB_ROOT / "prune_pre_reviewer_turn_state.py"
+        with tempfile.TemporaryDirectory() as temp_root:
+            state_dir = Path(temp_root)
+            state_dir.chmod(0o700)
+            old = state_dir / "claim-turn-old"
+            old.touch()
+            os.utime(old, (1, 1))
+            directory_fd = self.open_directory(state_dir)
+            ready_read_fd, ready_write_fd = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                os.close(ready_read_fd)
+                lock_fd = prune_pre_reviewer_turn_state._open_maintenance_lock(
+                    directory_fd
+                )
+                if lock_fd is None:
+                    os._exit(2)
+                os.write(ready_write_fd, b"ready")
+                signal.pause()
+                os._exit(3)
+            os.close(ready_write_fd)
+            try:
+                self.assertEqual(os.read(ready_read_fd, 5), b"ready")
+                os.kill(pid, signal.SIGKILL)
+                waited, status = os.waitpid(pid, 0)
+                self.assertEqual(waited, pid)
+                self.assertTrue(os.WIFSIGNALED(status))
+                result = subprocess.run(
+                    [sys.executable, str(helper), str(directory_fd), "10000"],
+                    pass_fds=(directory_fd,),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=0.5,
+                    check=False,
+                )
+            finally:
+                os.close(ready_read_fd)
+                os.close(directory_fd)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+            self.assertFalse(old.exists())
+
+    def test_cli_rejects_non_private_maintenance_lock_without_following_it(self) -> None:
+        helper = LIB_ROOT / "prune_pre_reviewer_turn_state.py"
+        with tempfile.TemporaryDirectory() as temp_root:
+            root = Path(temp_root)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            victim = root / "victim"
+            victim.write_bytes(b"UNCHANGED")
+            (state_dir / prune_pre_reviewer_turn_state.MAINTENANCE_LOCK_NAME).symlink_to(
+                victim
+            )
+            old = state_dir / "claim-turn-old"
+            old.touch()
+            os.utime(old, (1, 1))
+            directory_fd = self.open_directory(state_dir)
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(helper), str(directory_fd), "10000"],
+                    pass_fds=(directory_fd,),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=0.5,
+                    check=False,
+                )
+            finally:
+                os.close(directory_fd)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+            self.assertEqual(victim.read_bytes(), b"UNCHANGED")
+            self.assertTrue(old.exists())
+
     def test_each_incremental_batch_has_a_population_independent_visit_bound(self) -> None:
         for population in (10, 1_000, 4_000):
             with self.subTest(population=population), tempfile.TemporaryDirectory() as temp_root:

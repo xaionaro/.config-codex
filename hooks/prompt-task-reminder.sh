@@ -110,7 +110,6 @@ if codex_valid_session_id "$session_id"; then
       if [ -n "$turn_key" ] && codex_lock_pre_reviewer_turn "$pre_reviewer_dir"; then
         turn_capture="$(codex_turn_capture_path "$pre_reviewer_dir" "$turn_key")"
         turn_claim="$(codex_turn_claim_path "$pre_reviewer_dir" "$turn_key")"
-        codex_prune_pre_reviewer_turn_state || true
         if [ ! -e "$turn_claim" ] && [ ! -L "$turn_claim" ]; then
           if rm -f -- "$turn_capture"; then
             if [ "$capture_prepared" = true ]; then
@@ -121,6 +120,7 @@ if codex_valid_session_id "$session_id"; then
           fi
         fi
         codex_unlock_pre_reviewer_turn
+        codex_prune_pre_reviewer_turn_state "$pre_reviewer_dir" || true
       fi
       cleanup_capture_temps
       trap - EXIT HUP INT TERM
