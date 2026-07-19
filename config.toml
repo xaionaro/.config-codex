@@ -1,5 +1,6 @@
 model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+#model_provider = "kimi_api"
+model_reasoning_effort = "max"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 developer_instructions = """
@@ -29,40 +30,42 @@ log_user_prompt = false
 
 [mcp_servers.context7]
 command = "/home/pheona/.codex/bin/context7-mcp"
-args = []
-
-[notice]
-hide_rate_limit_model_nudge = true
 
 [mcp_servers.omx_state]
 command = "omx"
 args = ["mcp-serve", "state"]
 enabled = false
-startup_timeout_sec = 5
+startup_timeout_sec = 5.0
 
 [mcp_servers.omx_memory]
 command = "omx"
 args = ["mcp-serve", "memory"]
 enabled = false
-startup_timeout_sec = 5
+startup_timeout_sec = 5.0
 
 [mcp_servers.omx_code_intel]
 command = "omx"
 args = ["mcp-serve", "code-intel"]
 enabled = false
-startup_timeout_sec = 10
+startup_timeout_sec = 10.0
 
 [mcp_servers.omx_trace]
 command = "omx"
 args = ["mcp-serve", "trace"]
 enabled = false
-startup_timeout_sec = 5
+startup_timeout_sec = 5.0
 
 [mcp_servers.omx_wiki]
 command = "omx"
 args = ["mcp-serve", "wiki"]
 enabled = false
-startup_timeout_sec = 5
+startup_timeout_sec = 5.0
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+[notice]
+hide_rate_limit_model_nudge = true
 
 [tui]
 status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]
@@ -83,6 +86,21 @@ wire_api = "responses"
 "HTTP-Referer" = "https://github.com/openai/codex"
 "X-Title" = "Codex CLI"
 
+[model_providers.kimi]
+name = "Kimi Code"
+base_url = "http://127.0.0.1:8463/v1"
+wire_api = "responses"
+
+[model_providers.kimi_api]
+name = "Kimi (Moonshot) via local responses-bridge proxy"
+base_url = "http://127.0.0.1:8463/v1"
+wire_api = "responses"
+
+[model_providers.zai]
+name = "Z.AI (GLM) via local responses-bridge proxy"
+base_url = "http://127.0.0.1:8463/v1"
+wire_api = "responses"
+
 [model_providers.deepseek_direct]
 name = "DeepSeek (direct via local proxy)"
 base_url = "http://127.0.0.1:5000/v1"
@@ -97,6 +115,26 @@ model_reasoning_effort = "xhigh"
 model = "deepseek-v4-flash"
 model_provider = "deepseek_direct"
 model_reasoning_effort = "xhigh"
+
+[profiles.gpt]
+model = "gpt-5.6-sol"
+model_provider = "openai"
+model_reasoning_effort = "high"
+
+[profiles.kimi-k3]
+model = "k3"
+model_provider = "kimi_api"
+model_reasoning_effort = "max"
+
+[profiles.kimi-k2-code]
+model = "kimi-for-coding-highspeed"
+model_provider = "kimi_api"
+model_reasoning_effort = "max"
+
+[profiles.glm]
+model = "zai-coding-plan/glm-5.2"
+model_provider = "zai"
+model_reasoning_effort = "max"
 
 [projects."/home/streaming/.codex"]
 trust_level = "trusted"
@@ -149,6 +187,36 @@ trust_level = "trusted"
 [projects."/home/xaionaro"]
 trust_level = "trusted"
 
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/jni-proxy"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/tmp/gate2"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/tmp/g4"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/tmp/g6"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/tmp/gate5"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/tmp/gate4"]
+trust_level = "trusted"
+
+[projects."/home/pheona/.kimi-code"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/speedtest"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/.cache/codex-proof/019f5309-1b58-7620-a1c6-be875a3a43fb"]
+trust_level = "trusted"
+
+[projects."/home/pheona/.config/opencode"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
@@ -197,10 +265,10 @@ trusted_hash = "sha256:010c625cb307ab76373a95325b3396299f28cc0e19709c3955f36448e
 trusted_hash = "sha256:1f7f0598df1a296c0942bb8fe6f144a96ea3bb72111b3c06eec1ac739eb7ba9a"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:8ef784389479243d336c364499fc8f37de6b29827150255bf1513d12154f8830"
+trusted_hash = "sha256:79102a94e895766e01b2ecf011f2a96a237c0056010357e34340f25589150778"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:0:1"]
-trusted_hash = "sha256:cf34fec48d7b917a1314ead7c0bf2d329b0ceffdfb6f534460513f5343437833"
+trusted_hash = "sha256:121624ab18ae91a6979f69911c1a19c6368f71aec17ad40920b19f707fe7fedd"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:1:0"]
 trusted_hash = "sha256:41c9346a7f9771f8d2b39c69d470282a6a67caa2781b02c9913f0d3159c40ed9"
@@ -215,7 +283,7 @@ trusted_hash = "sha256:da63cd5afcf2f9c629468b2fc84556ab89df65a2569a7f715dd7de792
 trusted_hash = "sha256:92c608d98deb1cf2f6a1c40a788ea76e2b72ca719bb7799c82b15771b39b4b9c"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:1:4"]
-trusted_hash = "sha256:bb92c091e52d4558080b32d6f46bb9f77cdce2406e199ad58e8cbd2d57406d87"
+trusted_hash = "sha256:336fd4c1cab68f54aadc664457e15cf703f668ac5cfa4de1c965778922429bab"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:2:0"]
 trusted_hash = "sha256:ab1caad99c8956bce051d91c4c00429780c6baabd172b4c97d10b56618b49b76"
@@ -230,7 +298,7 @@ trusted_hash = "sha256:2b9272de0401b4522f2e38f1e8c34bb3a3e2c085b9a5dfdca69532af5
 trusted_hash = "sha256:ad862083459f94099fad7c47ff61aa26ae181016c469608385da5556848ad065"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:2:4"]
-trusted_hash = "sha256:73579b756c4112876710629972a2cf2465d98f25182b2d6b56cad5d6cf27cb4c"
+trusted_hash = "sha256:81414eeea797f35696bc57ca06dba6ea65e254041713ad2df84e7800ec2bbb4e"
 
 [hooks.state."/home/pheona/.codex/hooks.json:session_start:0:0"]
 trusted_hash = "sha256:795fc65397d95787888f869b056e25c746d7bac92b1801acd8683b217b76a595"
