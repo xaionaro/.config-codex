@@ -223,6 +223,12 @@ trust_level = "trusted"
 [projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/codex-proxy"]
 trust_level = "trusted"
 
+[projects."/home/streaming/go/src/github.com/xaionaro-go/hoverdrone"]
+trust_level = "trusted"
+
+[projects."/home/streaming/grapheneos"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
