@@ -30,7 +30,29 @@ Maintain a project-understanding ledger for every ECI run. Use the `maintaining-
 
 ## Prerequisites
 
-Coding task? Every subagent prompt (explorer, critic, implementer) must include: "Before starting, load the `<language>-coding-style` skill and follow its rules."
+For coding tasks, every affected agent prompt names the governed scope and every matching installed coding-style skill. A matching skill is required when present and must be loaded before handling that scope; loading it is not evidence of compliance.
+
+### Coding-style admission
+
+Coding-style guidance is a presumptive baseline only when choosing among otherwise correct alternatives. It does not soften any non-style requirement. A requirement remains non-style when violating it would make behavior, a name or interface claim, security, root-cause analysis, a test/proof/TDD obligation, or an approved architecture, file-ownership, purpose, or interface contract false. Follow every applicable non-style skill requirement.
+
+For each governed scope, admit style once before its first durable write; group artifacts only when their governance matches. Reuse that admission until the scope, source, conflict, or deviation changes. Before admission, resolve the exact applicable governing instruction clauses, project/repository anchors, formatter/linter configuration, referenced standards, and matching installed coding-style skills. Use exact clause, `path#heading`, config-key/rule, or skill anchors, plus pertinent exclusions where scope could be confused. Load every matching installed style skill; a no-match result does not erase other sources, and invocation alone is not compliance.
+
+An independent reviewer re-resolves applicability and admits only the route or routes needed for each governed scope or covered portion:
+
+| Route | Required record |
+|-------|-----------------|
+| **Style Brief** | Governed scope; exact sources; grouped material guidance followed as `guidance -> choice`; every intentional deviation with baseline and purpose, exact scope, contemporaneous technical evidence, proportionality, and alternative/tradeoff; independent reviewer and workflow verdict. |
+| **Tool route** | Pre-write: governed scope, exact tool/config anchor, covered mechanical domain, and independent confirmation that no uncovered judgment, conflict, or deviation remains. Post-write: actual scope, command, and clean result. This discharges only the covered domain, including inside substantive work. |
+| **No-source verdict** | Governed scope; governing instruction ancestry; repository/config/reference discovery basis; installed style-skill catalog checked; independent reviewer and workflow verdict. |
+
+Create no empty record and no rule-by-rule inventory. A deviation may rely on governing sources, repository/task constraints, authoritative framework/toolchain documentation or source, or a faithful experiment. Convenience, deadline, authority, fatigue, sunk cost, precedent, and completed work establish no technical merit, alone or bundled. A higher-priority instruction mandating the concrete choice governs; otherwise resolve conflicting style baselines on technical merits.
+
+Explicitly disposable exploration, PoCs, and repros may proceed in isolated scope before admission, but may not be merged, copied, adapted, or cited as style precedent. After final-scope admission, reuse is limited to what it permits; a faithful experiment may supply technical evidence but never establishes precedent by itself.
+
+New scope, source, conflict, or deviation pauses only its affected work before the next write. Independently approve a local or tool-covered delta through `critic-step2`; route substantive drift through Steps 1 and 2. Final review independently reconciles actual changed scope, initial admission, approved deltas and deviations, and post-write tool evidence.
+
+Cosmetic style remains NIT. Missing or unverified admission, omitted material guidance, or an undeclared or unjustified deviation is a blocking requirement/design failure; an admitted deviation is compliant. This contract makes declared discovery and omissions auditable; it neither proves nor claims exhaustive discovery.
 
 ## Blocker handling
 
@@ -165,6 +187,8 @@ Polling cadence: re-check a working agent at most every 30 minutes; faster polli
 
 If any ECI agent, gate, or user followup discovers a concrete bug (failure, flake, perf regression, or incorrect behavior), route the bug through a debugging iteration or nested ECI pipeline. Main thread only coordinates.
 
+An explicitly isolated disposable repro may run before coding-style admission under the contract above. It may supply technical evidence, but a production fix or reuse of repro code waits for admission of the final governed scope.
+
 Map `debugging-discipline` to separate delegated ECI roles: repro -> `repro` worker; RCA/regression -> `rcaer` explorer; critic -> Step 2 critic; fix -> implementer; review -> Critic A/B + E2E gate. Every bug prompt says: "Load `debugging-discipline`; follow its repro/RCA-critic/fix-review loop. Determine `regression: yes/no/unknown`; if regression, explain how it happened. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
 
 Before sending the RCA/regression assignment, write or update a human-readable regression report file: `~/.cache/codex-proof/$SESSION_ID/eci-regression-reports/<task>.md` when `$SESSION_ID` exists; otherwise `./.codex-regression-reports/<task>.md`. Include bug statement, repro, previous/current test-run artifact paths, CI/log/release/QA evidence, known-good/current-bad anchors, regression status, missing evidence, and the regression explanation once known. Send the report path and evidence packet to `rcaer`. Human reading is optional; never block the pipeline waiting for user review.
@@ -175,6 +199,7 @@ Before sending the RCA/regression assignment, write or update a human-readable r
 - The problem/change for THIS iteration, in full context.
 - What's already been tried or ruled out (iterations 2+: include results from prior iterations, current codebase state, and last blocking gate issues verbatim if a prior cycle's gate failed).
 - Exact file paths of existing related code — explorer must re-read them this turn to avoid suggesting duplicates. "Re-read referenced files; do not trust prior turn reads."
+- For every governed coding scope, resolve applicable style sources and propose only the needed Style Brief, Tool route, and/or No-source verdict under **Coding-style admission**. Step 1 owns the proposal; Step 2 owns admission.
 - Required output: ranked options, each with {what, why, where it applies, cost, tradeoffs}.
 - Every factual claim in the report must carry a T1-T5 tag per CODEX.md Claim Verification protocol. Primary sources only for T1. Untagged factual claims are not allowed.
 - Word cap on the report (default: 1000 words).
@@ -189,6 +214,8 @@ Any proposed option whose core mechanism is unproven-in-practice (not a well-kno
 
 Proven-in-practice mechanisms need no PoC. State "proven by <link/citation>" when claiming exemption.
 
+An isolated disposable PoC may precede coding-style admission, but production reuse waits for the final-scope admission and is limited to what that admission permits. The experiment may be evidence; it is never style precedent.
+
 ## Step 2: Critique explorations
 
 Spawn a DIFFERENT agent — not the explorer, not the main thread. The critic identity must differ from explorer and implementer. Spawn or reuse the stable role label `critic-step2` (Step 2) or `critic-A` / `critic-B` (Step 4); put the round number in the assignment. Each new round must start with a clean critic context — either clear context when supported or shut it down and respawn under the same role label. MUST NOT reuse the persistent explorer or implementer agent for critic work.
@@ -198,6 +225,7 @@ The critic's prompt must include:
 - **"Step 0 — Independent baseline."** Read the source material (target file, existing code, prior art) and write your own 3-5 bullet assessment BEFORE opening the explorer's report. Include this baseline in the critique output.
 - "Assume every suggestion is wrong until you prove otherwise."
 - "Read the current state first" (the file/code/doc the explorer was working on) — verify duplication claims independently.
+- **Coding-style admission.** Before Step 3, independently re-resolve applicability and either admit the explorer's exact record or issue a REJECT. Do not accept skill invocation, the explorer's conclusion, or a bare no-match/no-source claim as proof. The admitted record is handed to the implementer verbatim.
 - **Claim-scope audit for governance/prompt/hook/protocol/reviewer changes:** record mechanism/predicate, emitted or user-facing wording, strongest wording evidence supports, and one boundary counterexample. REJECT certainty, classification, provenance, or authority wording beyond mechanism evidence. Silent `UserPromptSubmit` state maintenance does not prove the user's work is non-trivial. `prompt-task-reminder.sh` maintains prompt state silently; optional LLM first-tool admission review is separate `PreToolUse` behavior configured through `CODEX_EDIT_PRE_REVIEWER`, with `LLM_EDIT_PRE_REVIEWER` and `CLAUDE_EDIT_PRE_REVIEWER` accepted only as lower-precedence compatibility aliases when earlier variables are unset.
 - **Cite-verify and tag-discipline protocol:**
   - Untagged factual claim from explorer = REJECT-tagged issue on the option that depends on it.
@@ -225,6 +253,8 @@ The critic's prompt must include:
 
 Same vocabulary as Step 4; Effect column differs because receiver/artifact/remediation differ per phase.
 
+For coding-style issues, cosmetic preference is NIT; missing or unverified admission, omitted material guidance, or an undeclared or unjustified deviation is REJECT. An admitted deviation is compliant. Classify hard non-style failures by their existing requirement, not as style.
+
 ### Step 2 loop-logic
 
 | Critic verdict pattern | Action | Output |
@@ -238,14 +268,17 @@ Same vocabulary as Step 4; Effect column differs because receiver/artifact/remed
 
 ## Step 3: Implement
 
-`send_input` to the persistent `implementer` agent. One change, one diff per message. Code tasks: implementer invokes `test-driven-development`, `debugging-discipline`, and the applicable `<language>-coding-style` skill on each new task message; re-reads every file it intends to modify.
+`send_input` to the persistent `implementer` agent. One change, one diff per message. Code tasks: implementer invokes `test-driven-development` and `debugging-discipline`, loads every matching installed coding-style skill, applies the admitted coding-style record, and re-reads every file it intends to modify on each new task message.
 
 Each new task message to `implementer` includes:
 - The current iteration's concrete-text from the Step 2 critic (verbatim).
+- The current governed scope's admitted coding-style record and reviewer verdict (verbatim), including any approved deltas and applicable Tool route.
 - Iterations 2+: prior iteration's gate findings (verbatim) and files changed since the last message.
 - Step 2 CONDITIONAL fix-list (verbatim, if any) — implementer applies these alongside the concrete text.
 - Code/debugging submissions include root-cause rationale plus regression status/explanation when applicable. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation unless containment was explicitly requested.
 - Submission tags every factual claim. Untagged claim → orchestrator bounces back without spawning the gate (parallel to E2E-evidence rule).
+
+Before the next affected write, the implementer reports any new style scope, source, conflict, or deviation. Continue unaffected work; return a local or tool-covered delta to `critic-step2` for independent approval, and rerun Steps 1 and 2 for substantive drift. Do not create a new record for each edit when the admitted governed scope is unchanged.
 
 **Affected-path E2E before submit.** Runtime behavior reachable via UI/API/device/CLI: build, run full tests, exercise affected user path, cite output/screenshot/state. Proxy evidence alone insufficient. Skip docs, prompts, config-only, tests-only, pure refactors. If E2E unavailable, report BLOCKED with the exact missing resource; missing E2E/rationale → bounce before Step 4.
 
@@ -284,6 +317,8 @@ For governance/prompt/hook/protocol/reviewer changes, Critic A and Critic B perf
 
 Emit only issues affecting correctness, safety, or fidelity to the concrete text. Interface contract fulfillment — does every interface implementation actually work, not just compile? Polish and taste items are NITs at most.
 
+Under **Coding-style admission**, Critic A guards the non-style boundary by consequence. False behavior, name/interface claims, security, root-cause analysis, test/proof/TDD obligations, or approved architecture, file-ownership, purpose, and interface contracts remain hard failures; they cannot be excused as style deviations. Guidance selecting among otherwise correct alternatives remains style.
+
 Tag-discipline audit: every factual claim in the implementer's submission must carry a T1-T5 tag per CODEX.md Claim Verification protocol. Untagged factual claim = REJECT.
 
 ### Critic B — long-term health
@@ -302,7 +337,7 @@ Diff-only intention check:
 
 Focus — adversarial, long-term lens:
 - **Tech debt**: Coupling, hidden dependencies, or shortcuts costing more to fix later than now?
-- **Coding style**: Load the applicable `<language>-coding-style` skill. Does the diff follow naming, error handling, structure, and idiom conventions?
+- **Coding-style admission**: Independently re-resolve actual governed scope and matching installed skills, then reconcile the diff with the admitted record, approved deltas/deviations, and post-write Tool evidence. Loading a skill alone proves nothing. Missing or unverified admission is blocking; an admitted deviation is compliant, and cosmetic taste is NIT.
 - **Code smells**: God methods, feature envy, primitive obsession, duplicated logic, unclear names, missing/premature abstractions. Flag only smells that materially hurt readability or maintainability.
 - **Architectural fit**: Right layer? Respects module boundaries? Code in correct binary/package per its stated purpose?
 - **Tag-discipline**: every factual claim in submission carries T1-T5 per CODEX.md Claim Verification. Untagged factual claim = REJECT.
@@ -322,6 +357,8 @@ E2E capacity bottlenecked (device/browser/env slots, credentials, long setup): b
 ### Evaluating results
 
 Collect results from all three agents. Apply severity logic:
+
+Critic B's coding-style reconciliation is part of the gate. Route a substantive admission invalidation or substantive drift through Steps 1 and 2; return a local or tool-covered delta to `critic-step2` before the next affected write. Then apply the existing severity logic below. Final acceptance requires reconciliation of actual changed scope, admission, approved deltas/deviations, and Tool evidence.
 
 - At least one substantive REJECT or substantive CONDITIONAL, OR an E2E failure caused by design/API uncertainty → batch all REJECTs, CONDITIONALs, and E2E failures into one design-revision issue list → return to Step 1/Step 2 explorer/designer-critic loop → Step 3 implements the selected revised design plus the full batch → re-run gate.
 - At least one trivial REJECT from Critic A or Critic B, OR any trivial E2E failure → fix all REJECTs, CONDITIONALs, and E2E failures in one implementer message → re-run gate.
@@ -465,6 +502,10 @@ auth middleware swap
 | Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 `send_input` body. |
 | Orchestrator forgot to pass Step 2 CONDITIONALs to implementer | STOP. Step 3 message must include verbatim CONDITIONAL fix-list. |
 | Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B rule). |
+| A matching coding-style skill was loaded, but no independent admission exists | STOP. Invocation is not compliance; complete the applicable record and Step 2 admission before durable work. |
+| Durable work starts before admission, or affected work continues after scope/source/conflict/deviation drift | STOP affected work. Isolated disposable work may continue under the stated boundary; route local/tool-covered deltas to `critic-step2` and substantive drift through Steps 1/2. |
+| Empty Style Brief, bare no-source claim, or rule-by-rule style inventory | STOP. Use only the applicable admission route with exact discovery anchors and grouped material decisions. |
+| A false correctness, security, RCA, testing/proof/TDD, or approved architecture/ownership/purpose/interface result is labeled a style deviation | STOP. Critic A treats it as the corresponding hard non-style failure. |
 | Hook/protocol/reviewer wording claims a heuristic proves, classifies, or determines task nature without matching mechanism evidence and boundary tests | STOP. Reword to the strongest supported claim and add negative/boundary pressure. |
 | Code/debugging submission lacks root-cause rationale or required regression explanation | STOP. Bounce before gate; unknown "why" means unsubmittable. |
 | Bug RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |

@@ -127,7 +127,7 @@ Example mapping: one `explorer` for each independent research slice, one `worker
 
 **Root task:** the highest active task in the current task tree: no parent task can absorb its changes, proof, review, or commit. Sub-tasks, E2E findings, review fixes, and per-repo commits aggregate under that root until post-review E2E/proof passes.
 
-**Aggregate implementation.** Research and design are global. After design, executors finish root slices and discovered sub-tasks while sub-task/candidate-fix execution reviews run async. Each code target uses both reusable Execution Reviewer lens slots: correctness/fidelity and long-term health. Verdicts use APPROVED/CONDITIONAL/REJECTED. Root aggregate review blocks final proof/QA: REJECTED reruns both lenses after fixes, proof, and amend/squash; CONDITIONAL creates required pre-QA fix tasks that must be fixed and verified before final proof/QA. Async CONDITIONAL/REJECTED findings route through independent verification, then enter the next active iteration or queued async-followups if none remains. NITs stay optional. Async output never delays or reopens root aggregate review.
+**Aggregate implementation.** Research and design are global. After design, executors finish root slices and discovered sub-tasks while sub-task/candidate-fix execution reviews run async. Each code target uses both reusable Execution Reviewer lens slots: correctness/fidelity and long-term health. Verdicts use APPROVED/CONDITIONAL/REJECTED. Root aggregate review blocks final proof/QA: REJECTED reruns both lenses after fixes, proof, and amend/squash; CONDITIONAL creates required pre-QA fix tasks that must be fixed and verified before final proof/QA. Async CONDITIONAL/REJECTED findings route through independent verification, then enter the next active iteration or queued async-followups if none remains. NITs stay optional. Async output never delays or reopens root aggregate review except for a verified invalidation under **Coding-style admission**; that exception pauses only affected writes and cannot queue past root review or QA.
 
 **Queued async-followups.** Store each entry in the task list and project ledger with owner, source review, verified finding, verification evidence, target root/cycle, and replay trigger. Replay when the next execution iteration, pipeline cycle, or root-task cycle opens.
 
@@ -135,7 +135,7 @@ Example mapping: one `explorer` for each independent research slice, one `worker
 |-------|-------|---------------|
 | Research | Global | Immediately |
 | Design | Global | After research |
-| Execution | Per task/slice | After design approved. Sub-task/candidate-fix execution review runs async; no blocking code review yet. |
+| Execution | Per task/slice | After design and applicable coding-style admission are approved. Sub-task/candidate-fix execution review runs async; no blocking code review yet. |
 | E2E confirmation | Root task | After all known slices/sub-tasks land. Failures spawn tasks. |
 | Aggregate review | Root task | After E2E proves the root task is fulfilled. Loop until no REJECTED/CONDITIONAL remains. |
 | Post-review E2E + QA | Final | After aggregate review has no REJECTED/CONDITIONAL. |
@@ -149,8 +149,8 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 | Followup type | Pipeline |
 |---------------|----------|
 | Question / clarification | Explorer → answer to user. No code. |
-| Trivial config tweak (1-line, no logic) | Executor → E2E/targeted proof → aggregate review → rerun proof → QA |
-| Bug fix | Executor/debug roles → E2E confirmation → aggregate review → rerun E2E → QA |
+| Trivial config tweak (1-line, no logic) | Producer read-only admission discovery → Verifier admission → Executor → E2E/targeted proof → aggregate review → rerun proof → QA |
+| Bug fix | Executor read-only admission discovery → long-term-health Execution Reviewer admission for production code (isolated repro may continue) → Executor/debug roles → E2E confirmation → aggregate review → rerun E2E → QA |
 | Behavior change in existing feature | Designer → both Design Reviewers → execution → E2E confirmation → aggregate review → rerun E2E → QA |
 | New feature | Full pipeline: Research → Design → both Design Reviewers → execution → E2E confirmation → aggregate review → rerun E2E → QA |
 
@@ -162,20 +162,20 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 |------|-------|-------|---------------|
 | **Coordinator** | 1 | all | Task assignment, routing, phase management. Requests spawns from lead. **Never implements.** |
 | **Lead** | 1 | all | Spawns teammates. Audits coordinator's rule compliance. Reminds coordinator when it forgets enforcement. **Never implements.** |
-| **Explorer** | 1+ | 1 | Gather facts. Tag sources. Challenge each other. |
-| **Designer** | 1 | 2 | Architect from findings. Produce file ownership map. Ship a minimal proof-of-concept implementation for any unproven-in-practice mechanism the design relies on — see Designer PoC Requirement. |
-| **Design Reviewer** | 1+ | 2 | Adversarial design review against the design itself. Report only, never edit design. 2+ for large tasks. |
-| **Fundamentals Design Reviewer** | 1 | 2 | Runs in parallel with Design Reviewer. Challenges design fundamentals, not surface issues. Must obtain three separate standard-agent child reports: (1) brainstormer — list possible fundamental issues (premise, problem framing, architectural axioms, hidden assumptions, scope, alternatives); (2) reviewer — investigate design against each listed issue and report; (3) meta-reviewer — critically review the reviewer's report for missed angles, weak evidence, rubber-stamping. If FDR lacks agent tools, use the Lead-Mediated Nested Delegation Adapter; FDR defines/approves prompts and owns the final verdict. Report only, never edit design. |
-| **Executor** | 1+ | 3 | Implement assigned task + unit tests. One per independent unit of work. Actively look for code smell and design issues in code they study/touch, report all to coordinator. Broken infra or resorting to a workaround = notify coordinator before proceeding. |
-| **Execution Reviewer** | 2 reusable lens slots | 3 | Correctness/fidelity + long-term health. Review targets: root aggregate, sub-task, candidate fix. Root scope blocks. Async scopes queue follow-ups per Execution dual review. Report only. |
-| **Test Designer** | 1 | 3 | Write test specs. Waits for interface contracts. |
-| **Test Executor** | 1+ | 4 | Implement tests from specs. |
-| **Test Reviewer** | 0-1 per root task | final | Reviews test changes during aggregate/final review when needed. Report only, never edit tests. |
-| **Verifier** | 1+ | per task | For lightweight tasks (no code, no test pipeline). Adversarially checks deliverable against all expectations. Replaces test pipeline when testing is N/A. |
+| **Explorer** | 1+ | 1 | Gather facts, including applicable coding-style sources and exclusions. Tag sources. Challenge each other. |
+| **Designer** | 1 | 2 | Architect from findings, own style choices, and propose the applicable admission record. Produce file ownership map. Ship a minimal proof-of-concept implementation for any unproven-in-practice mechanism the design relies on — see Designer PoC Requirement. |
+| **Design Reviewer** | 1+ | 2 | Adversarially review the design and independently admit its coding-style record before durable execution. Report only, never edit design. 2+ for large tasks. |
+| **Fundamentals Design Reviewer** | 1 | 2 | Runs in parallel with Design Reviewer. Receives the style record and checks hidden premises and fundamental consequences without becoming an admission owner. Challenges design fundamentals, not surface issues. Must obtain three separate standard-agent child reports: (1) brainstormer — list possible fundamental issues (premise, problem framing, architectural axioms, hidden assumptions, scope, alternatives); (2) reviewer — investigate design against each listed issue and report; (3) meta-reviewer — critically review the reviewer's report for missed angles, weak evidence, rubber-stamping. If FDR lacks agent tools, use the Lead-Mediated Nested Delegation Adapter; FDR defines/approves prompts and owns the final verdict. Report only, never edit design. |
+| **Executor** | 1+ | 3 | Implement assigned task + unit tests from the admitted record. On skip-design routes, perform read-only admission discovery before writing. One per independent unit of work. Actively look for code smell and design issues in code they study/touch, report all to coordinator. Broken infra or resorting to a workaround = notify coordinator before proceeding. |
+| **Execution Reviewer** | 2 reusable lens slots | 3 | Correctness/fidelity guards hard contracts; long-term health owns skip-design code admission and all code reconciliation. Review targets: root aggregate, sub-task, candidate fix. Root scope blocks. Async scopes queue follow-ups per Execution dual review, subject to verified admission invalidation. Report only. |
+| **Test Designer** | 1 | 3 | Propose the applicable test-artifact admission record before writing test specs. Waits for interface contracts. |
+| **Test Executor** | 1+ | 4 | Implement tests from specs; propose the test-artifact record when no Test Designer does. |
+| **Test Reviewer** | 0-1 per root task | test/final | Independently admit test/spec artifacts before durable writes and review test changes during aggregate/final review. Report only, never edit tests. |
+| **Verifier** | 1+ | per task | Independently admit lightweight/non-code work and test artifacts when their usual reviewer is optional, before durable writes. Adversarially checks deliverables against all expectations. Replaces the test pipeline when testing is N/A. |
 | **RCAer** | 1 per debug task | debug | Explores root cause and regression status from repro evidence plus previous/current test-run artifacts. Reports RCA only; never fixes. |
 | **Brainstormer** | 1 | any | On-demand when a blocker emerges. Genius creative unblocker — thinks outside the box. Lists as many solution ideas as possible. Positives only — no negatives, no filtering, no feasibility judgment. Bigger list = better. |
 | **Snitch** | 1 | all | Snitch is async-only: CCs, reminders, audits, reports, verification requests, and silence create no prerequisite, wait, direct interruption, or gate. CCed on all submitted/blocked/completed claims and QA verdicts. Independently audits rule compliance and reports violations to lead/coordinator. Success = confirmed violations found. May push back once per report if lead dismisses: quote the exact rule/requirement violated and why no workaround is acceptable. On QA approvals, looks for testing gaps: insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On reviewer APPROVED messages, checks for rubber-stamping against the executor critique log and reports gaps to lead. Lead handles confirmed gaps under normal finding/priority rules. Lead or coordinator sends event-driven audit reminders with `send_input` at milestones, after long waits, and when execution resumes after user-waiting. Snitch uses available `wait_agent` results and teammate output to detect dead or drifting agents. On every audit, also check ledger freshness and asynchronously remind coordinator after activity bursts without updates. |
-| **QA** | 1 | final | Final integration check. Runs all tests. Last gate. |
+| **QA** | 1 | final | Final integration check. Runs all tests, reconciles coding-style admission evidence, and guards hard consequence contracts. Last gate. |
 
 ### Team Sizing
 
@@ -216,23 +216,42 @@ Confidence: `high` (directly stated), `medium` (logically derived), `low` (indir
 | Condition | Skill |
 |-----------|-------|
 | Debugging | `systematic-debugging` + `debugging-discipline` |
-| Go code (*.go) | `go-coding-style` |
-| Python code (*.py) | `python-coding-style` |
+| Any affected artifact | Every matching installed coding-style skill |
 | Tests | `testing-discipline` |
 | Code implementation | `test-driven-development` |
 | Logic implementation | `proof-driven-development` |
 | Android device | `android-device` |
 
-Executors invoke coding style + `proof-driven-development` + `test-driven-development`. Test executors invoke `testing-discipline`. Lead copies exact skill names into spawn prompts. Determine language from design doc, include matching coding style skill. No placeholders.
+Executors load every matching installed coding-style skill plus `proof-driven-development` and `test-driven-development`. Test executors invoke `testing-discipline`. Lead copies exact matches into spawn prompts; a real no-match is recorded under the admission contract and does not suppress repository, configuration, or referenced sources. No placeholders. Skill invocation alone is not compliance.
 
-**Code quality — semantic integrity is non-negotiable:**
+### Coding-style admission
+
+Coding-style guidance is a presumptive baseline only when choosing among otherwise correct alternatives. It does not soften any non-style requirement. A requirement remains non-style when violating it would make behavior, a name or interface claim, security, root-cause analysis, a test/proof/TDD obligation, or an approved architecture, file-ownership, purpose, or interface contract false. ATE correctness reviewers enforce this boundary; follow every applicable non-style skill requirement.
+
+For each governed scope, admit style once before its first durable write; group artifacts only when governance matches. Reuse that admission until scope, source, conflict, or deviation changes; do not create a record per edit. Before admission, resolve the exact applicable governing instruction clauses, project/repository anchors, formatter/linter configuration, referenced standards, and matching installed coding-style skills. Use exact clause, `path#heading`, config-key/rule, or skill anchors, plus pertinent exclusions where scope could be confused. Every matching installed style skill is required when present and must be loaded; record a real catalog no-match in whichever route applies. A no-match neither forces a No-source verdict nor erases other sources, and invocation alone is not compliance.
+
+An independent reviewer re-resolves applicability and admits only the route or routes needed for each governed scope or covered portion:
+
+| Route | Required record |
+|-------|-----------------|
+| **Style Brief** | Governed scope; exact sources; grouped material guidance followed as `guidance -> choice`; every intentional deviation with baseline and purpose, exact scope, contemporaneous technical evidence, proportionality, and alternative/tradeoff; independent reviewer and workflow verdict. |
+| **Tool route** | Pre-write: governed scope, exact tool/config anchor, covered mechanical domain, and independent confirmation that no uncovered judgment, conflict, or deviation remains. Post-write Tool evidence: actual scope, command, and clean result. This discharges only the covered domain, including inside substantive work. |
+| **No-source verdict** | Governed scope; governing instruction ancestry; repository/config/reference discovery basis; installed style-skill catalog checked; independent reviewer and workflow verdict. |
+
+Create no empty record and no rule-by-rule inventory. A deviation may rely on governing sources, repository/task constraints, authoritative framework/toolchain documentation or source, or a faithful experiment. Convenience, deadline, authority, fatigue, sunk cost, precedent, and completed work establish no technical merit, alone or bundled. A higher-priority instruction mandating the concrete choice governs; otherwise resolve conflicting style baselines on technical merits.
+
+Before admission, explicitly isolated disposable exploration, PoCs, and repros may proceed but may not be merged, copied, adapted, or cited as style precedent. After final-scope admission, production reuse is limited to what it permits; a faithful experiment may supply technical evidence but never establishes precedent by itself.
+
+New scope, source, conflict, or deviation pauses only its affected work before the next write; unaffected work continues. The current route's admission owner independently approves a local or tool-covered delta; substantive drift re-enters Research and Design. Verified admission invalidation is the narrow exception to async queue/no-reopen behavior and cannot pass root aggregate review or QA. Aggregate/final reviewers and QA reconcile actual changed scope, admissions, approved deltas/deviations, and post-write Tool evidence.
+
+Cosmetic style remains Minor/Nit. Missing or unverified admission, omitted material guidance, or an undeclared or unjustified deviation is a blocking requirement/design failure; an admitted deviation is compliant. This contract makes declared discovery and omissions auditable; it neither proves nor claims exhaustive discovery.
+
+**Code quality — classify by consequence:**
 - Names are contracts: implementation fulfills exactly what the name promises. No smuggled decisions or side effects.
-- Same concept = same name everywhere. Related concepts use parallel structure.
-- Strong typing for domain concepts. No bare primitives where named types belong.
-- Package/binary scope: code belongs in the binary whose stated purpose matches the code's function. A standalone CLI tool must not contain code requiring a running daemon.
-- Clean solution over hack, always. Reviewers reject shortcuts, workarounds, and "good enough for now."
+- Approved package/binary purpose is a contract: code belongs in the binary whose approved purpose matches its function. A standalone CLI tool must not contain code requiring a running daemon.
 - Root cause first. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation; reviewers reject it unless containment was explicitly requested.
 - Interface implementation is a contract: "I fulfill this interface." An always-erroring implementation is a false claim — same as naming a function Save that doesn't save. Stub implementations that always error must not exist in production code.
+- Among otherwise correct alternatives, consistent naming and parallel structure, named domain types instead of bare primitives, placement not fixed by an approved map, and clean solutions over shortcuts are admitted style baselines. Deviations follow **Coding-style admission**; shortcuts that violate a hard contract remain hard failures.
 
 ### Task States
 
@@ -256,7 +275,7 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 
 | Transition | Requirements |
 |------------|-------------|
-| pending → in_progress | Agent assigned. Executors: file ownership assigned |
+| pending → in_progress | Agent assigned. Executors: file ownership assigned; before admission, only read-only discovery or explicitly isolated disposable work may proceed |
 | pending → exploring | Research task: route to explorer |
 | exploring → submitted | Explorer findings complete (research-only tasks). CC lead + snitch |
 | exploring → in_progress | Exploration done, task needs execution next. Executors: file ownership assigned |
@@ -266,13 +285,13 @@ Executors invoke coding style + `proof-driven-development` + `test-driven-develo
 | blocked → unblocking | Coordinator runs `blocker-resolution-protocol` |
 | unblocking → in_progress | Feasible solution found and assigned. Blocker resolved |
 | unblocking → blocked | No feasible solution found. Escalate to user |
-| in_progress → submitted | All claims tagged. Critique log exists. Code/debugging tasks: RCA explains cause chain plus regression status/explanation when applicable; root-task E2E/targeted proof confirms fulfillment; aggregate changes committed once per touched repo. CC lead + snitch |
+| in_progress → submitted | All claims tagged. Critique log exists. Actual scope reconciles with coding-style admission, approved deltas/deviations, and Tool evidence. Code/debugging tasks: RCA explains cause chain plus regression status/explanation when applicable; root-task E2E/targeted proof confirms fulfillment; aggregate changes committed once per touched repo. CC lead + snitch |
 | submitted → in_progress | Coordinator bounces back: submission checklist failed |
-| submitted -> in_review | Coordinator verifies submission checklist passes. Code targets: route the full root-task diff to both reusable Execution Reviewer lens slots. Non-code targets: route to a verifier unless a role-specific paired reviewer applies. |
+| submitted -> in_review | Coordinator verifies submission checklist and current admission pass. Code targets: route the full root-task diff to both reusable Execution Reviewer lens slots. Non-code targets: route to a verifier unless a role-specific paired reviewer applies. |
 | in_review → in_progress | Root REJECTED/CONDITIONAL. Create/fix tasks. REJECTED reruns both lenses after proof/amend; CONDITIONAL fixes verify before final proof/QA |
-| in_review → in_testing | No root REJECTED/CONDITIONAL remains. Rerun full root-task E2E before completion/QA |
-| verified async CONDITIONAL/REJECTED → pending | Root/execution fix iteration opens. Create follow-up task there; do not interrupt current work/review |
-| verified async CONDITIONAL/REJECTED → queued_async_followup | No active execution/root-task cycle. Store per queued async-followups |
+| in_review → in_testing | No root REJECTED/CONDITIONAL or verified admission invalidation remains. Rerun full root-task E2E before completion/QA |
+| verified async non-admission CONDITIONAL/REJECTED → pending | Root/execution fix iteration opens. Create follow-up task there; do not interrupt current work/review |
+| verified async non-admission CONDITIONAL/REJECTED → queued_async_followup | No active execution/root-task cycle. Store per queued async-followups |
 | queued_async_followup → pending | Replay trigger fires. Route into next execution iteration, pipeline cycle, or root-task cycle |
 | in_test_design → in_testing | Test specs ready. Route to test executor |
 | in_test_design → in_progress | Test designer finds interface contracts wrong/incomplete. Routes back to executor |
@@ -310,7 +329,7 @@ Use a tree when work decomposes into sub-tasks, blockers, followups, or nested p
 
 After each root-task aggregate review + post-review E2E, coordinator records: **what was produced**, **who approved** (with evidence), **git SHA**.
 
-**Re-entry impact assessment:** Diff old vs new design. Invalidate only root aggregates touching changed interfaces (reset loop counters). Notify test designer. Unaffected tasks continue.
+**Re-entry impact assessment:** Diff old vs new design. Invalidate only root aggregates touching changed interfaces (reset loop counters). Notify test designer. Substantive coding-style drift re-enters Research/Design; local or tool-covered deltas return to the current admission owner before the next affected write. Unaffected tasks continue.
 
 ## Design Output Requirements
 
@@ -323,12 +342,15 @@ Phase 2 design **must include**:
 6. **Requirement traceability** -- component → user requirement mapping. Every requirement covered, every component justified.
 7. **Security design** (when applicable) -- trust boundaries, attack surfaces, security controls, auth strategy. OWASP at design time, not just code review.
 8. **Shared concerns register** -- logic/types/patterns needed by 2+ tasks. Each entry: {what, which tasks, designated shared location}. Executors consume this to avoid reimplementation.
+9. **Coding-style admission proposal** -- for each governed artifact scope, the applicable Style Brief, Tool route, and/or No-source verdict from Explorer source facts. Designer owns choices; Design Reviewer independently admits before durable execution. Fundamentals Design Reviewer receives the record and checks hidden premises/fundamental consequences without becoming a second admission owner.
 
 **Git worktrees:** 2+ parallel executors -> each gets own worktree. Merge before root-task E2E; squash/amend to one root-task commit per touched repo.
 
 ## Testing Protocol
 
 **Unit tests:** Written by executors alongside their code. Part of execution, not a separate phase.
+
+Before durable test or test-spec writes, the Test Designer or Test Executor performs read-only source discovery and proposes the applicable admission record. The Test Reviewer independently admits it; when that reviewer is optional, the Verifier admits it. `testing-discipline`, test behavior, coverage, interfaces, and all other test correctness requirements remain hard. An isolated disposable repro may proceed under **Coding-style admission**.
 
 **Integration/E2E tests (Phase 4):**
 - **Test designer** writes specs covering all applicable test types: integration tests (cross-task boundaries), full E2E tests (entire user-facing flows), and UI tests (screen manipulation, interaction sequences) when the project has a UI.
@@ -349,8 +371,10 @@ Paired roles communicate **directly**. All other feedback routes through coordin
 | Designer | Explorers | Needs info | Coordinator requests lead to re-spawn |
 | Executor | Execution Reviewers | Sub-task/candidate-fix ready | Direct, async. Assign/reuse both lens slots; spawn only missing lenses. Executor continues in-flight work. |
 | Execution Reviewers | Executor | Root aggregate issue | Direct during root aggregate review. |
-| Executor | Coordinator | Design issue or code smell found | Coordinator records {question, source, target}; routes a second agent for verification. Valid minor issue -> assigned executor fixes directly; design-level -> full pipeline |
-| Execution Reviewers | Coordinator | Async sub-task/candidate-fix verdict | Coordinator assigns independent verification for CONDITIONAL/REJECTED findings, then routes verified findings to the next active iteration or queued async-followups. NITs stay optional. Async output never delays or reopens root aggregate review. |
+| Executor | Coordinator | Design issue or code smell found | Coordinator records {question, source, target}; routes a second agent for verification. Valid minor issue -> assigned executor fixes after any required local admission; design-level -> full pipeline |
+| Execution Reviewers | Coordinator | Async sub-task/candidate-fix verdict | Coordinator assigns independent verification for CONDITIONAL/REJECTED findings, then routes verified findings to the next active iteration or queued async-followups. NITs stay optional. Async output never delays or reopens root aggregate review except for verified admission invalidation under **Coding-style admission**. |
+| Any writer | Coordinator | Coding-style scope/source/conflict/deviation changes | Pause only affected writes. Route local/tool-covered deltas to the current admission owner; substantive drift re-enters Research/Design. Unaffected work continues. |
+| Test Designer/Executor | Test Reviewer or Verifier | Test/spec admission proposal ready | Direct pre-write admission. Use Test Reviewer when present; otherwise Verifier. No durable test/spec write before the verdict. |
 | Test Reviewer | Test Executor | Aggregate/final test issue | Direct during final review |
 | Any agent | Coordinator | Findings received | Coordinator assigns independent verification before accepting |
 | Any teammate | Coordinator | Blocker claim | Route normal lane handling first. Missing attempt log -> bounce back. BRP only after normal handling fails. |
@@ -362,6 +386,8 @@ Paired roles communicate **directly**. All other feedback routes through coordin
 Applies: bug fix, build failure, flake, perf regression, any task whose deliverable is fixing observed broken behavior.
 
 - Any discovered bug enters Debug Mode: user followup, teammate finding, test failure, reviewer finding, or QA rejection. Coordinator/lead never debug or patch directly.
+- An isolated disposable repro may proceed before coding-style admission. On skip-design code paths, the Executor performs read-only discovery and the long-term-health Execution Reviewer independently admits the production scope before candidate production writes. Candidate fixes remain governed by every Debug Mode requirement plus the admitted scope.
+- Durable regression tests and test specs separately follow the Testing Protocol admission gate; only an explicitly isolated disposable repro may precede it. Thus an incident production fix and its durable test artifacts receive their respective code and test admission verdicts before writing.
 - Delegate `debugging-discipline` roles to separate agents: repro -> test executor/verifier; RCA/regression -> `rcaer` explorer; critic -> independent reviewer; fix -> executor; aggregate review -> both execution reviewers + final QA. Every bug-task prompt says: "Load `systematic-debugging` and `debugging-discipline`; follow their repro/RCA-critic/fix-review loop. Determine `regression: yes/no/unknown`; if regression, explain how it happened. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
 - Before assigning RCA/regression, coordinator writes or updates a human-readable regression report file in the proof directory: `regression-reports/<task>.md`. Include bug statement, repro, previous/current test-run artifact paths, CI/log/release/QA evidence, known-good/current-bad anchors, regression status, missing evidence, and the regression explanation once known. Send the report path and evidence packet to `rcaer`. Human reading is optional; never block the pipeline waiting for user review.
 - Coordinator validates RCA transitions against `debugging-discipline`: current repro, evidence-backed cause chain, regression status/explanation when applicable, alternatives, falsifying prediction tested or recorded as still required, and critic loop with no unresolved objections. Symptom bundle, suspected cause, or "needs more evidence" is not RCA acceptance.
@@ -370,7 +396,7 @@ Applies: bug fix, build failure, flake, perf regression, any task whose delivera
 - `confirmed-fixed` requires the domain-required acceptance proof on the real failing/user path. Missing, failing, or not-runnable required proof blocks `submitted`, `complete`, "fixed", and "RCA closed" wording; report it as source-only/progress plus next proof.
 - Executor iterates candidate fixes without per-attempt reviewer gate. No `submitted`/`in_review` transition until root-task E2E/proof passes.
 - Candidate-fix review verdicts are advisory during the debug loop; they are not a stop condition, lane handback, or prerequisite to the next proof run or still-red failure packet.
-- Candidate-fix reviews use sub-task/candidate-fix execution review rules: both lenses, async verdicts, independent verification, next active iteration or queued async-followups. Async output never delays or reopens root aggregate review.
+- Candidate-fix reviews use sub-task/candidate-fix execution review rules: both lenses, async verdicts, independent verification, next active iteration or queued async-followups. Async output never delays or reopens root aggregate review except for verified admission invalidation under **Coding-style admission**.
 - Proof while hunting = failing repro → passing on real path.
 - Before `submitted`, executor provides root-cause rationale: cause chain, evidence, regression status/explanation when applicable, and why the diff repairs the cause. Unknown "why" = not submitted.
 - After proof passes, task → `submitted` → `in_review`. Reviewers critique the full aggregate diff+rationale, reject mitigation, and improve cleanup, hardening, and semantic correctness.
@@ -413,9 +439,9 @@ Once confirmed unresponsive, **immediately** re-spawn under the same reusable ro
 Highest severity first. A finding interrupts the agent's current task **only if its severity is strictly higher** than the current task's severity. Same-or-lower → queue. Critical-on-Critical does not interrupt — let the in-flight Critical finish.
 
 Severity ladder (highest → lowest):
-1. **Critical** — security, correctness, spec violation
-2. **Major** — design deviation, missing edge case
-3. **Minor** — style, smell, sub-optimal but functional
+1. **Critical** — security, correctness, spec violation, or another hard consequence failure
+2. **Major** — design deviation, missing edge case, or blocking coding-style admission failure
+3. **Minor** — non-blocking smell or sub-optimal but functional choice
 4. **Nit** — preference, formatting, naming polish
 
 **Blocker severity inheritance.** Task A unavoidably blocks task B -> severity(A) >= severity(B). Transitive across chains: any chain terminating in Critical lifts every prerequisite to Critical. Lift only, never reduce. Re-scopable-around blocker is not unavoidable; route around it instead.
@@ -430,6 +456,8 @@ Severity ladder (highest → lowest):
 Applies to coordinator, lead, reviewer, and peer findings. Snitch findings are advisory inputs routed by lead/coordinator under this table. Queued findings batched into one consolidated message per submission, never streamed.
 
 Executor receiving a finding list: address in strict severity order, highest first. Defer everything at-or-below the current goal's severity until that goal is proven done.
+
+**Admission is a prerequisite, not a queueable severity finding.** Missing/unverified admission or verified invalidation withholds or revokes permission for the next affected durable write regardless of the current task's severity. Route it under **Coding-style admission** before standard priority handling; unaffected work continues. Only cosmetic Minor/Nit style findings may queue.
 
 ### Blocker Resolution
 
@@ -453,16 +481,18 @@ ATE adapter:
 
 **Reviewers report, never fix.** No editing code, designs, or tests. Describe the problem and suggest a fix direction. The paired executor implements all changes.
 
+Admission owners independently re-resolve applicability before their route's first durable write. On skip-design, lightweight, and non-code routes, the producer performs read-only discovery. Design Reviewer owns full-design admission; long-term-health Execution Reviewer owns skip-design code admission and code reconciliation; Test Reviewer or optional Verifier owns test-artifact admission; Verifier owns lightweight/non-code admission. A missing/unverified record makes the owner withhold admission; a CONDITIONAL label never authorizes durable work around that prerequisite. Correctness reviewers guard hard consequence contracts. Fundamentals Design Reviewer checks fundamental consequences without becoming an admission owner.
+
 0. **Does it work?** Before evaluating quality, verify code fulfills its stated purpose. If it doesn't — REJECT.
 1. **Root cause first.** Critique the executor's rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
 2. **Claim scope.** For governance/prompt/hook/protocol/reviewer changes, compare mechanism/predicate, emitted or user-facing wording, strongest supported wording, and one boundary counterexample. Reject certainty, classification, LLM provenance, or authority beyond evidence. Silent `UserPromptSubmit` state maintenance does not prove the user's work is non-trivial. `prompt-task-reminder.sh` maintains prompt state silently; optional LLM first-tool admission review is separate `PreToolUse` behavior configured through `CODEX_EDIT_PRE_REVIEWER`, with `LLM_EDIT_PRE_REVIEWER` and `CLAUDE_EDIT_PRE_REVIEWER` accepted only as lower-precedence compatibility aliases when earlier variables are unset.
 3. **Assume wrong.** Find errors. Look for what's missing.
-4. **Classify:** Critical (security, correctness, spec violation), Major (design deviation, missing edge case) — both block for blocking review gates. Minor (doesn't block), Nit (never blocks).
+4. **Classify by consequence:** Critical (security, correctness, spec violation, or another hard consequence failure), Major (design deviation, missing edge case, or blocking admission failure) — both block for blocking review gates. Minor (non-blocking maintainability concern), Nit (cosmetic preference; never blocks). An admitted deviation is compliant.
 5. **Outcomes:** Execution reviews use Execution dual review. Other gates: APPROVED (no Critical/Major, with evidence); CONDITIONAL (Minor/Nit listed; coordinator opens follow-ups per Priority Discipline); REJECTED (Critical/Major cited with fix direction). Every Critical/Major must cite `file:line`. Fix direction must name the exact symbol changed. Vague findings ("refactor this function", "clean this up") are inadmissible. Rejections must enumerate reasons before any approval statement — no mixed verdicts.
-6. **Check against:** design doc, coding style skill (semantic integrity, naming, typing, no shortcuts — every rule), root-cause rationale/regression explanation, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. No coding style invocation = reject. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
+6. **Check against:** design doc, admitted coding-style record and every matching installed style skill, root-cause rationale/regression explanation, OWASP top 10, edge cases, error handling, requirements, claim tags, critique log. Missing/unverified admission, omitted material guidance, or undeclared/unjustified deviation = reject; invocation alone proves nothing. Untagged factual claims = reject. T5 claims not promoted = reject. No critique log = reject.
 7. **Max 10 rounds.** 11th REJECTED pass becomes a protocol-limit blocker; run `blocker-resolution-protocol` before user escalation.
 
-**Sub-task/candidate-fix execution review effect:** Report, never fix. Use Execution dual review and the Execution Reviewer Checklist. Verdict labels match root aggregate review. Async CONDITIONAL/REJECTED findings route to coordinator for independent verification, then enter the next active iteration or queued async-followups if none remains. NITs stay optional. Executor continues in-flight work. Async output never delays, reopens, or retroactively blocks root aggregate review.
+**Sub-task/candidate-fix execution review effect:** Report, never fix. Use Execution dual review and the Execution Reviewer Checklist. Verdict labels match root aggregate review. Async CONDITIONAL/REJECTED findings route to coordinator for independent verification, then enter the next active iteration or queued async-followups if none remains. NITs stay optional. Executor continues in-flight work. Async output never delays, reopens, or retroactively blocks root aggregate review except for verified admission invalidation under **Coding-style admission**.
 
 Design creates a type/component but defers making it work = reject. Valid deferral: don't create it yet. Invalid deferral: create a broken version.
 
@@ -476,6 +506,8 @@ Any design whose core mechanism is unproven-in-practice (not a well-known patter
 
 Proven-in-practice mechanisms need no PoC. State "proven by <link/citation>" when claiming exemption.
 
+The PoC may precede admission only as isolated disposable work. Before production-scope admission it may not be merged, copied, adapted, or cited as style precedent. After admission, production reuse is limited to what the admitted record permits; the experiment may support technical evidence but never establishes precedent by itself.
+
 ### Design Reviewer — Additional Rejection Criteria
 
 REJECT if any are missing or incomplete:
@@ -484,6 +516,7 @@ REJECT if any are missing or incomplete:
 - Shared concerns register (item 8) — all cross-task logic/types identified with designated locations
 - Enriched interface contracts (item 4) — error modes, pre/postconditions, invariants, thread safety
 - File ownership map contradicts binary/service purpose map (items 2 vs 3)
+- Applicable coding-style proposal (item 9) — exact source facts, scoped choices/deviations, and an independently admitted route before durable execution
 
 ### Fundamentals Design Reviewer — Verdict
 
@@ -495,11 +528,13 @@ REJECT if any are missing or incomplete:
 
 The reviewer is not constrained to any fixed taxonomy of flaw types; the test for REJECT is impact, not category.
 
+The Fundamentals Design Reviewer receives the Style Brief and tests whether a purported style choice hides a false premise, architecture, ownership, purpose, interface, or other hard consequence. It reports that consequence through its normal verdict and does not replace the Design Reviewer's admission decision.
+
 ### Execution Reviewer Checklist
 
 Extends the general Reviewer Protocol above (which already covers OWASP, edge cases, error handling, claim tags, critique log). Execution reviewers additionally check:
 
-**Execution dual review:** Keep two reusable lens slots: correctness/fidelity and long-term health. Assign both to each target; spawn only missing lenses. Review independently first. Long-term health lens judges final state only: no change-history defense; artifact must stand on its own. Verdicts: REJECTED for Critical or Foundational; CONDITIONAL for Major; APPROVED when no blocking finding remains. APPROVED may include NIT notes. Root aggregate REJECTED reruns both lenses after fixes, proof, and amend/squash. Root aggregate CONDITIONAL creates required pre-QA fix tasks; fix and verify before final proof/QA. Async CONDITIONAL/REJECTED findings route to coordinator for independent verification. Verified findings enter the next active iteration. If none remains, record them in queued async-followups for the next pipeline/root-task cycle. Async output never delays, reopens, or retroactively blocks root aggregate review.
+**Execution dual review:** Keep two reusable lens slots: correctness/fidelity and long-term health. Assign both to each target; spawn only missing lenses. Review independently first. Correctness/fidelity guards every hard consequence contract. Long-term health independently admits skip-design code before writing and reconciles actual changed scope, admissions, approved deltas/deviations, and post-write Tool evidence. It judges final state only: no change-history defense; artifact must stand on its own. Verdicts: REJECTED for Critical or Foundational; CONDITIONAL for Major; APPROVED when no blocking finding remains. APPROVED may include NIT notes. Missing/unverified admission or verified invalidation is a prerequisite gate, not a CONDITIONAL authorization or async finding to queue. Root aggregate REJECTED reruns both lenses after fixes, proof, and amend/squash. Root aggregate CONDITIONAL creates required pre-QA fix tasks; fix and verify before final proof/QA. Async CONDITIONAL/REJECTED findings route to coordinator for independent verification. Verified findings enter the next active iteration. If none remains, record them in queued async-followups for the next pipeline/root-task cycle. Async output never delays, reopens, or retroactively blocks root aggregate review except for verified admission invalidation under **Coding-style admission**.
 
 **Long-term health diff-only intention check:**
 - Code targets only. Skip when there is no code diff.
@@ -511,7 +546,8 @@ Extends the general Reviewer Protocol above (which already covers OWASP, edge ca
 - Coordinator/lead compares reconstruction with actual root reason and desired effects.
 - If it misses root reason, relies on hidden context, or claims an undesired effect, create a `CONDITIONAL` follow-up task with normal Execution dual review verdict metadata to make code, tests, names, comments, or commit message self-explanatory.
 
-- [ ] Load the `<language>-coding-style` skill via skill instructions. Check every rule.
+- [ ] Correctness/fidelity: classify by consequence; false behavior/name/interface claims, security, RCA, testing/proof/TDD, and approved architecture/file-ownership/purpose/interface contracts remain hard failures.
+- [ ] Long-term health: load every matching installed style skill and reconcile actual scope, admitted record, approved deltas/deviations, and post-write Tool evidence. Invocation alone is not compliance.
 - [ ] Requirements coverage — each user requirement → code
 - [ ] Design compliance — implementation matches architecture + interface contracts (error modes, pre/postconditions, invariants, thread safety)
 - [ ] Root-cause rationale — cause chain complete; diff repairs the cause, not only symptoms
@@ -540,6 +576,8 @@ Review independently first — no reading peer findings before writing your own.
 3. **Obtain** — actually obtain the evidence. Run the commands. Execute the program. Reproduce the flow. **Always prefer direct evidence.** Proxy evidence alone never satisfies a criterion that can be verified directly.
 4. **Judge** — judge whether the evidence proves the criterion. Cite the exact output/observation. "Looks right" is not judgment — quote the evidence.
 
+QA independently reconciles actual governed scope, admissions, approved deltas/deviations, and post-write Tool evidence. Verified admission invalidation cannot be queued past QA. QA classifies hard contracts by consequence and treats admitted deviations as compliant.
+
 **Acceptance criteria checklist:**
 
 - [ ] Implementation matches design
@@ -556,21 +594,21 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Mandatory skills invoked by all teammates
 - [ ] Critique logs exist for all teammates
 - [ ] File ownership respected
-- [ ] Code quality: clean code, semantic integrity, no shortcuts, no workarounds, coding style fully followed
+- [ ] Code quality: hard consequence contracts hold; coding-style admission covers actual scope, approved deltas/deviations, and post-write Tool evidence; no blocking admission gap remains
 - [ ] Project-understanding ledger valid per `maintaining-context-ledger`
 
 ## Coordinator Responsibilities
 
 **NEVER do implementation work.** No code, research, exploration, investigation, or analysis. Your context is coordination state; work flows to teammates through the lead and the approved Codex agent mechanism. Agents make mistakes — never trust claims at face value. Reviewers validate completion; launch explorers to verify blockers and external blame.
 
-**AGGREGATE REVIEW INVARIANT:** Async execution reviews run during execution per Execution dual review. Start root aggregate review after known slices/sub-tasks land, root E2E/proof passes, and one commit per touched repo exists. Route arrived async output through independent verification; do not wait for pending output. If root aggregate review is running, hold verified async CONDITIONAL/REJECTED until review finishes; route into its next fix iteration, or queue as queued_async_followup if none opens. Root REJECTED findings become tasks; fix, re-prove, amend/squash, rerun both lenses. Root CONDITIONAL findings become required pre-QA fix tasks; fix and verify before final proof/QA. After no root REJECTED/CONDITIONAL remains, rerun full E2E/proof before QA.
+**AGGREGATE REVIEW INVARIANT:** Async execution reviews run during execution per Execution dual review. Start root aggregate review after known slices/sub-tasks land, root E2E/proof passes, and one commit per touched repo exists. Route arrived async output through independent verification; do not wait for pending output. If root aggregate review is running, hold verified async CONDITIONAL/REJECTED until review finishes; route into its next fix iteration, or queue as queued_async_followup if none opens. Verified coding-style admission invalidation instead follows **Coding-style admission**, pauses affected work, and cannot queue past root review or QA. Root REJECTED findings become tasks; fix, re-prove, amend/squash, rerun both lenses. Root CONDITIONAL findings become required pre-QA fix tasks; fix and verify before final proof/QA. After no root REJECTED/CONDITIONAL remains, rerun full E2E/proof before QA.
 
 **Proof waits:** Coordinator may wait on any proof only when the task records {question, cheapest faithful environment, rejected cheaper-environment reasons, active owner} and that owner is running the proof now. Missing record -> record before waiting; missing active owner -> assign one. Coordinator records and routes; teammates investigate. Each status cycle classifies every waiting lane as running proof, reassigned, closed, or blocked with failed unblock attempts.
 
 1. **Track EVERYTHING as tasks.** Every deliverable, sub-task, blocker = task. Task list is single source of truth. Keep the project-understanding ledger current with the high-level context behind those tasks.
 2. **Request spawns from lead.** Coordinator determines who is needed and when; lead creates the agent team and spawns teammates.
-3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description must include: "Tag all factual claims: `[T<tier>: source, confidence]`."
-4. **Assign file ownership** per design doc. **Create git worktrees** for 2+ parallel executors.
+3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description includes claim tagging plus its governed coding-style scope, admission role, and admitted record or read-only proposal duty when applicable.
+4. **Assign file ownership** per design doc. Durable writes start only after the route's admission owner approves. **Create git worktrees** for 2+ parallel executors.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise or accept at face value. Record the verification question, source finding, and target artifact; route to a second agent for independent verification before acting.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, check Crash Recovery signals. If confirmed unresponsive, follow the respawn sequence.
 7. **Handle root "submitted" tasks.** Verify grouped commit(s), claim tags, critique log, RCA/regression status when applicable, and root-task E2E/proof. Bounce if incomplete. If complete, route code diffs to both reusable Execution Reviewer lens slots; route non-code targets to a verifier unless a role-specific paired reviewer applies.
@@ -580,7 +618,7 @@ Review independently first — no reading peer findings before writing your own.
 11. **Crash recovery** -- detect unresponsive teammates, checkpoint executor diff/status, request lead to re-spawn. Max 2 re-spawns.
 12. **Manage lifetimes** per Teammate Lifecycle (below).
 13. **Enforce aggregate invariant.** No aggregate review before root E2E/proof. No QA before root review has no REJECTED/CONDITIONAL and post-review E2E passes.
-14. **Address all reported issues.** Every executor-reported issue becomes a task. Assign an executor to critically analyze it (code cleanness, semantic integrity, correctness). If dismissed: document rationale. If validated and minor: the analyzing executor fixes it directly. If validated and design-level: full pipeline. No report may be silently ignored.
+14. **Address all reported issues.** Every executor-reported issue becomes a task. Assign an executor to critically analyze it (code cleanness, semantic integrity, correctness). If dismissed: document rationale. If validated and minor: the analyzing executor fixes it after any required local admission. If validated and design-level: full pipeline. No report may be silently ignored.
 15. **Audit subordinates every 10 minutes.** Check each active teammate's recent output for rule violations: untagged claims, missing skill invocations, unreviewed code, shortcuts. Create a task for each violation found.
 16. **Interrupt violations immediately.** Same protocol as lead: send correction message first, then interrupt if the tool surface supports it. Do not wait for their turn to end when interruption is available.
 17. **Notify Snitch on idle/resume.** Notify Snitch asynchronously on idle/resume. Do not wait for Snitch audit before routing followups, QA verdicts, or shutdown.
@@ -626,16 +664,18 @@ Review independently first — no reading peer findings before writing your own.
 - [ ] Model override omitted unless the user explicitly requested one
 - [ ] Reasoning effort set to xhigh, or unavailable schema field recorded and prompt says "xhigh reasoning effort"
 - [ ] Reusable `agent_type` selected (`explorer`, `worker`, or `default`), or unavailable schema field recorded and prompt/roster state the intended type; task-specific details are in assignment text, not role/type
-- [ ] Correct coding style skill listed by exact name (not placeholder)
+- [ ] Governed artifact scopes and every matching installed coding-style skill listed by exact name; a real no-match and remaining repository/config/reference sources are recorded under **Coding-style admission**
 - [ ] Claim tagging instructions included verbatim
 - [ ] File ownership explicit (executor/test roles)
 - [ ] For executor spawns: sub-task/candidate-fix review trigger names correctness/fidelity + long-term health lenses and async route.
 - [ ] For execution review spawns: both lens slots assigned/reused before review starts; spawn only missing lenses.
 - [ ] For long-term-health execution reviews on code targets: reviewer context cleared or shutdown+respawned under the same stable lens label before Packet 1; Packet 1 excludes all normal context; Packet 2 normal review context is sent only after `reconstructed intention:` returns.
 - [ ] For debugging/RCA spawns: regression report artifact path plus previous/current test-run evidence packet included.
-- [ ] Reviewer/verifier normal review packets include: executor's original objective with full context, and all scrutiny rules (coding style, claim tagging, OWASP, semantic integrity, etc.)
+- [ ] Admission-owner packets include the producer's read-only source facts/proposal; Executor packets include the admitted record verbatim; Fundamentals Design Reviewer receives the record without admission ownership
+- [ ] Reviewer/verifier normal review packets include: executor's original objective with full context, admitted coding-style record/deltas/Tool evidence, and all scrutiny rules (claim tagging, OWASP, semantic integrity, etc.)
 - [ ] For governance/prompt/hook/protocol/reviewer changes, reviewer/verifier packets include claim-scope audit instructions plus boundary/negative evidence requirement.
-- [ ] Execution reviewer normal review packets include: scope, lens, effect, coding-style instruction, shared concerns register.
+- [ ] Execution reviewer normal review packets include: scope, lens, effect, admitted coding-style record, approved deltas/deviations, post-write Tool evidence, and shared concerns register
+- [ ] Skip-design code, lightweight/non-code, and test-artifact prompts name the existing admission owner and block durable writes until its verdict; isolated disposable repros remain permitted
 - [ ] Preemptive warnings included: coordinator anticipates the most likely mistakes this agent could make given the specific task and explicitly warns against them in the spawn prompt
 - [ ] Evidence-bearing spawn/routing prompt artifact exists in the proof directory; artifact path + SHA256 recorded and forwarded where relevant
 - [ ] Standard path: spawned with `spawn_agent`/`send_input`; when schema fields exist, correct agent type and `reasoning_effort: "xhigh"` were set; unavailable fields are in prompt text and recorded.
@@ -648,12 +688,14 @@ Downstream agents get **structured summaries**, not raw upstream output.
 
 | Role | Receives | Excludes |
 |------|----------|----------|
-| Designer | Explorer findings summary + source tags | Raw tool outputs, full files |
-| Executor | Own module's design + interface contracts | Other modules, explorer findings |
+| Designer | Explorer findings summary + source tags, including coding-style source facts/exclusions | Raw tool outputs, full files |
+| Fundamentals Design Reviewer | Design, applicable admission record (including any Style Brief), and fundamental-consequence context | Admission ownership, implementation details |
+| Executor | Own module's design + interface contracts + admitted coding-style record | Other modules, raw explorer findings |
 | RCAer | Repro, failing path, regression report/evidence packet, previous/current test-run artifact paths, known-good/current-bad anchors | Teammate histories, unrelated raw logs |
-| Reviewer | Executor's original objective (with full context), diff, relevant design, enriched interface contracts, shared concerns register, all scrutiny rules (coding style, claim tagging, OWASP, etc.) | Full codebase, other modules |
-| Test Executor | Test specs + contracts + public APIs | Implementation details |
-| QA | Original objectives (all tasks, with full context), phase summaries, test results, all scrutiny rules | Teammate conversation histories |
+| Reviewer | Executor's original objective (with full context), diff, relevant design, enriched interface contracts, admitted record/deltas/Tool evidence, shared concerns register, all scrutiny rules | Full codebase, other modules |
+| Test Designer | Interface contracts + test/spec style-source facts + proposal duty | Implementation details |
+| Test Executor | Test specs + contracts + public APIs + admitted test-artifact record | Implementation details |
+| QA | Original objectives (all tasks, with full context), phase summaries, test results, admissions/deltas/Tool evidence, all scrutiny rules | Teammate conversation histories |
 
 ### Teammate Lifecycle
 
@@ -696,6 +738,7 @@ Context:
 - Explorer findings: [summary or "see task list"]
 - Design doc: [location or "not yet created"]
 - File ownership: [YOUR FILES ONLY. Do not edit other files.]
+- Coding-style admission: state your assigned role/action, governed scope, and admitted record or read-only proposal.
 - Regression report/evidence (debugging only): [path + previous/current test-run artifacts, or N/A]
 
 Trust Hierarchy (tag ALL claims):
@@ -707,16 +750,13 @@ Format: [T<tier>: <source>, <confidence: high/medium/low>]
 Compliance:
 - Critically analyze ALL inputs. You own bugs from unverified inputs.
 - Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval.
-- BEFORE writing code, invoke applicable skills via the skill instructions:
-  go-coding-style (Go), python-coding-style (Python), testing-discipline (tests),
-  test-driven-development (code implementation), proof-driven-development (logic),
-  systematic-debugging + debugging-discipline (debugging).
-  Follow every rule from invoked skills. Reviewer rejects non-compliance.
+- BEFORE durable writes, perform the assigned **Coding-style admission** action for the governed scope. Load every exact matching installed style skill named in the assignment; a reviewed no-match leaves repository/config/reference sources applicable. Invocation alone is not compliance.
+- Invoke applicable non-style skills named in the assignment: `testing-discipline` (tests), `test-driven-development` (code implementation), `proof-driven-development` (logic), and `systematic-debugging` + `debugging-discipline` (debugging). Follow their requirements.
 - Tag ALL factual claims: [T<tier>: <source>, <confidence>]. Untagged claims = reviewer rejection.
 - Produce critique log (3+ issues found/fixed) before marking done
 - No secrets or credentials exposed; static checks before commits; never push
 
-[For execution reviewers:] Paired with [OTHER REVIEWER]. Scope: [root aggregate | sub-task/candidate-fix]. Lens: [correctness/fidelity | long-term health]. Long-term health: judge final state only; no change-history defense. For long-term-health code targets, do not use this full template for Packet 1. First clear context, or shutdown+respawn under the same stable lens label. Packet 1 contains only role label, required skill/stop-hook/claim-tag boilerplate, code diff, and reconstruction instruction. Send normal review context only as Packet 2 after `reconstructed intention:` returns. Root aggregate findings go directly to the paired executor: REJECTED reruns both lenses after fixes/proof/amend; CONDITIONAL creates required pre-QA fix tasks. Async sub-task/candidate-fix verdicts go to coordinator for independent verification, then next active iteration or queued async-followups. NITs stay optional. Load the exact applicable coding-style skill; check the shared concerns register provided in the assignment.
+[For execution reviewers:] Paired with [OTHER REVIEWER]. Scope: [root aggregate | sub-task/candidate-fix]. Lens: [correctness/fidelity | long-term health]. Correctness/fidelity guards hard consequence contracts. Long-term health owns skip-design admission and final reconciliation; judge final state only, with no change-history defense. For long-term-health code targets, do not use this full template for Packet 1. First clear context, or shutdown+respawn under the same stable lens label. Packet 1 contains only role label, required skill/stop-hook/claim-tag boilerplate, code diff, and reconstruction instruction. Send normal review context, including admission/delta/Tool evidence, only as Packet 2 after `reconstructed intention:` returns. Root aggregate findings go directly to the paired executor: REJECTED reruns both lenses after fixes/proof/amend; CONDITIONAL creates required pre-QA fix tasks. Async sub-task/candidate-fix verdicts go to coordinator for independent verification, then next active iteration or queued async-followups, except verified admission invalidation follows **Coding-style admission**. NITs stay optional. Check the shared concerns register provided in the assignment.
 
 - [ROLE-SPECIFIC RULES]
 - [FOR EXECUTORS:] While implementing, actively look for code smell and design issues in all code you study or touch. Report ALL findings to coordinator — do not silently work around them.
@@ -740,7 +780,7 @@ Compliance:
 | FDR triad collapsed into one simulated review | STOP. Spawn three separate standard agents for brainstormer, reviewer, and meta-reviewer. |
 | Spawning custom-named teammates outside defined roles | Unbounded growth. Use role names in prompts and roster mapping: executor-N, explorer-N. Reassign idle teammates. |
 | Async execution review lacks both lenses | STOP. Assign/reuse both Execution Reviewer lens slots; spawn only missing lenses. |
-| Pending/late async review delays or reopens root aggregate review | STOP. Route arrived outputs; queue late CONDITIONAL/REJECTED for the next available pipeline/root-task cycle. |
+| Pending/late async review delays or reopens root aggregate review | STOP. Route arrived outputs; queue late CONDITIONAL/REJECTED for the next available pipeline/root-task cycle. Verified admission invalidation is the narrow exception and cannot queue past root review/QA. |
 | Treating sub-task/candidate-fix REJECTED as root blocking loop | Route through independent verification, then next active iteration or queued async-followups. |
 | Root task produces multiple commits in one repo | Squash/amend to one root-task commit unless tooling/repo constraints are documented |
 | Executor using workaround without notifying coordinator | STOP. Executor reports broken infra to coordinator first |
@@ -755,6 +795,10 @@ Compliance:
 | No file ownership map in design | Reject design |
 | Root aggregate reviewer feedback ignored | Coordinator enforces REJECTED fixes and required pre-QA fix tasks. Async scope follows Execution dual review. |
 | Mandatory skill not invoked | Reviewer rejects |
+| Matching coding-style skill invoked but no independent admission exists | STOP. Invocation is not compliance; complete the applicable record and route-owner verdict before durable work. |
+| Durable work starts before admission, or affected writes continue after scope/source/conflict/deviation drift | STOP affected writes. Route local/tool-covered deltas to the admission owner and substantive drift through Research/Design; unaffected work continues. |
+| Empty Style Brief, bare no-source claim, or rule-by-rule style inventory | STOP. Use only the applicable route with exact discovery anchors and grouped material decisions. |
+| False behavior/name/interface, security, RCA, testing/proof/TDD, or approved architecture/ownership/purpose/interface result labeled a style deviation | STOP. Correctness reviewers apply the corresponding hard verdict. |
 | Untagged factual claims in deliverable | Reviewer rejects |
 | Submitted code/debugging fix lacks root-cause rationale or required regression explanation | Bounce before review. Unknown "why" means not submitted |
 | Debugging/RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |
@@ -767,7 +811,7 @@ Compliance:
 | Executor confirmed unresponsive | Checkpoint diff/status, then re-spawn for remaining work |
 | No critique log | Reviewer rejects |
 | Duplicated logic across modules | Check shared concerns register. Extract to designated shared location |
-| Execution reviewer not loading coding style skill | STOP. Both execution reviewers must load `<language>-coding-style` via skill instructions |
+| Execution reviewer omits matching style skills or the admitted record | STOP. Load every exact match; correctness guards hard contracts and long-term health reconciles admission/deltas/Tool evidence. |
 | Test specs don't match interfaces | Test designer waits for contracts |
 | Agent claim accepted without verification | Reviewers validate completion; explorers verify blockers and external blame |
 | BRP launched on a "blocker" without attempt log | Bounce back. Agent must show what was tried and why each failed before BRP. See `blocker-resolution-protocol` |

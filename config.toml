@@ -217,6 +217,12 @@ trust_level = "trusted"
 [projects."/home/pheona/.config/opencode"]
 trust_level = "trusted"
 
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/autocoder"]
+trust_level = "trusted"
+
+[projects."/mnt/sdcard/home/pheona/go/src/github.com/xaionaro-go/codex-proxy"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/streaming/.codex/hooks.json:pre_tool_use:0:0"]
