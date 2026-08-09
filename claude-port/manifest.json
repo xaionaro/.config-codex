@@ -1,8 +1,8 @@
 {
   "port": "claude-to-codex",
   "scope": "active-behavior-status",
-  "source_root": "/home/streaming/.claude",
-  "target_root": "/home/streaming/.codex",
+  "source_root": "~/.claude",
+  "target_root": "~/.codex",
   "verification": [
     {
       "command": "jq . claude-port/manifest.json >/dev/null",
@@ -31,8 +31,8 @@
       "status": "active",
       "summary": "hooks.json wires SessionStart matcher startup|resume|clear to hooks/session-snapshot.sh; the script stores a stop-proof baseline when possible, clears legacy skip_stop, prunes old proof-adjacent state, and emits the local guidance reminder.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks.json]",
-        "[T1: /home/streaming/.codex/hooks/session-snapshot.sh]"
+        "[T1: ~/.codex/hooks.json]",
+        "[T1: ~/.codex/hooks/session-snapshot.sh]"
       ]
     },
     {
@@ -40,8 +40,8 @@
       "status": "active",
       "summary": "hooks.json wires UserPromptSubmit to hooks/prompt-task-reminder.sh; the script records reviewer prompt HEAD, clears reviewer bypass files, and records /side prompt state.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks.json]",
-        "[T1: /home/streaming/.codex/hooks/prompt-task-reminder.sh]"
+        "[T1: ~/.codex/hooks.json]",
+        "[T1: ~/.codex/hooks/prompt-task-reminder.sh]"
       ]
     },
     {
@@ -49,12 +49,12 @@
       "status": "active",
       "summary": "Bash runs validate-bash.sh and the opt-in first-tool reviewer. apply_patch, Edit, Write, MultiEdit, and NotebookEdit run file-edit validators, the security reminder, ECI and ATE gates where wired, and the opt-in first-tool reviewer. Edit validators reject protected session-owned paths when the current session is not an owner.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks.json]",
-        "[T1: /home/streaming/.codex/hooks/validate-bash.sh]",
-        "[T1: /home/streaming/.codex/hooks/validate-apply-patch.sh]",
-        "[T1: /home/streaming/.codex/hooks/validate-edit-write.sh]",
-        "[T1: /home/streaming/.codex/hooks/security-reminder.py]",
-        "[T1: /home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh]"
+        "[T1: ~/.codex/hooks.json]",
+        "[T1: ~/.codex/hooks/validate-bash.sh]",
+        "[T1: ~/.codex/hooks/validate-apply-patch.sh]",
+        "[T1: ~/.codex/hooks/validate-edit-write.sh]",
+        "[T1: ~/.codex/hooks/security-reminder.py]",
+        "[T1: ~/.codex/hooks/edit-bash-pre-reviewer.sh]"
       ]
     },
     {
@@ -62,9 +62,9 @@
       "status": "active",
       "summary": "eci-active-gate.sh blocks main-thread code edits while session-scoped ECI state is active at $CODEX_PROOF_ROOT/$SESSION_ID/eci_active, allows markdown-only edits, and exempts spawned subagents only through transcript metadata. It ignores legacy cwd-scoped ECI markers. CODEX_ROLE is not an ECI bypass.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/eci-active-gate.sh]",
-        "[T1: /home/streaming/.codex/hooks/lib/codex-proof-state.sh]",
-        "[T1: /home/streaming/.codex/hooks/tests/run.sh]"
+        "[T1: ~/.codex/hooks/eci-active-gate.sh]",
+        "[T1: ~/.codex/hooks/lib/codex-proof-state.sh]",
+        "[T1: ~/.codex/hooks/tests/run.sh]"
       ]
     },
     {
@@ -72,9 +72,9 @@
       "status": "active",
       "summary": "ate-orchestrator-gate.sh treats CODEX_ROLE=lead and CODEX_ROLE=coordinator as legacy hook metadata that blocks direct edits. Standard teammates use spawn_agent, send_input, and wait_agent; CODEX_ROLE must not launch teammates.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/ate-orchestrator-gate.sh]",
-        "[T1: /home/streaming/.codex/CODEX.md]",
-        "[T1: /home/streaming/.codex/skills/agent-teams-execution/SKILL.md]"
+        "[T1: ~/.codex/hooks/ate-orchestrator-gate.sh]",
+        "[T1: ~/.codex/CODEX.md]",
+        "[T1: ~/.codex/skills/agent-teams-execution/SKILL.md]"
       ]
     },
     {
@@ -82,10 +82,10 @@
       "status": "active",
       "summary": "hooks.json wires only hooks/stop-gate.sh for Stop. stop-gate.sh invokes hooks/system-prompt-reviewer.sh internally; that reviewer is opt-in and fail-open, and only runs when CODEX_STOP_REVIEWER parses to a supported backend.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks.json]",
-        "[T1: /home/streaming/.codex/hooks/stop-gate.sh]",
-        "[T1: /home/streaming/.codex/hooks/system-prompt-reviewer.sh]",
-        "[T1: /home/streaming/.codex/hooks/lib/reviewer-backend.sh]"
+        "[T1: ~/.codex/hooks.json]",
+        "[T1: ~/.codex/hooks/stop-gate.sh]",
+        "[T1: ~/.codex/hooks/system-prompt-reviewer.sh]",
+        "[T1: ~/.codex/hooks/lib/reviewer-backend.sh]"
       ]
     },
     {
@@ -93,8 +93,8 @@
       "status": "active",
       "summary": "Stop, ECI, and reviewer exemptions depend on Codex transcript metadata: first transcript event type session_meta with .payload.source.subagent.thread_spawn. They do not depend on agent_id, CODEX_ROLE, or shell-launched wrappers.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/lib/codex-proof-state.sh]",
-        "[T1: /home/streaming/.codex/hooks/tests/run.sh]"
+        "[T1: ~/.codex/hooks/lib/codex-proof-state.sh]",
+        "[T1: ~/.codex/hooks/tests/run.sh]"
       ]
     },
     {
@@ -102,9 +102,9 @@
       "status": "active",
       "summary": "bin/skip-stop manages session-scoped or cwd-scoped skip_stop markers. stop-gate.sh allows a fresh marker younger than 60 minutes, and session-snapshot.sh prunes stale marker state.",
       "evidence": [
-        "[T1: /home/streaming/.codex/bin/skip-stop]",
-        "[T1: /home/streaming/.codex/hooks/stop-gate.sh]",
-        "[T1: /home/streaming/.codex/hooks/session-snapshot.sh]"
+        "[T1: ~/.codex/bin/skip-stop]",
+        "[T1: ~/.codex/hooks/stop-gate.sh]",
+        "[T1: ~/.codex/hooks/session-snapshot.sh]"
       ]
     },
     {
@@ -112,8 +112,8 @@
       "status": "active",
       "summary": "bin/eci-active manages only session-scoped ECI markers under $CODEX_PROOF_ROOT/$SESSION_ID/eci_active. Without CODEX_SESSION_ID, it targets the newest session directory under the proof root; it never creates cwd-scoped ECI state. off requires a validated disengage report before removing the marker.",
       "evidence": [
-        "[T1: /home/streaming/.codex/bin/eci-active]",
-        "[T1: /home/streaming/.codex/hooks/stop-gate.sh]"
+        "[T1: ~/.codex/bin/eci-active]",
+        "[T1: ~/.codex/hooks/stop-gate.sh]"
       ]
     },
     {
@@ -121,9 +121,9 @@
       "status": "active",
       "summary": "A prompt beginning with /side writes side-stop markers for the parent session and cwd. stop-gate.sh allows a different session covered by that marker, but the parent session remains subject to active ECI blocking.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/prompt-task-reminder.sh]",
-        "[T1: /home/streaming/.codex/hooks/stop-gate.sh]",
-        "[T1: /home/streaming/.codex/hooks/tests/run.sh]"
+        "[T1: ~/.codex/hooks/prompt-task-reminder.sh]",
+        "[T1: ~/.codex/hooks/stop-gate.sh]",
+        "[T1: ~/.codex/hooks/tests/run.sh]"
       ]
     }
   ],
@@ -135,7 +135,7 @@
       "codex_behavior": "Codex has no active PostToolUse Skill marker wiring. Skill routing remains instruction-only through CODEX.md, developer instructions, and skill trigger metadata.",
       "probe_evidence": [
         {
-          "artifact": "/home/streaming/.codex/hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl",
+          "artifact": "~/.codex/hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl",
           "status": "historical_sanitized_fixture",
           "active_wiring": false,
           "observed_rows": [
@@ -169,11 +169,11 @@
         "Do not add a Codex skill marker gate until sanitized active Codex payload evidence exposes both skill identity and edit target path fields."
       ],
       "evidence": [
-        "[T1: /home/streaming/.claude/settings.json]",
-        "[T1: /home/streaming/.claude/hooks/skill-marker-record.sh]",
-        "[T1: /home/streaming/.claude/hooks/skill-marker-gate.sh]",
-        "[T1: /home/streaming/.codex/hooks.json]",
-        "[T1: /home/streaming/.codex/hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl]"
+        "[T1: ~/.claude/settings.json]",
+        "[T1: ~/.claude/hooks/skill-marker-record.sh]",
+        "[T1: ~/.claude/hooks/skill-marker-gate.sh]",
+        "[T1: ~/.codex/hooks.json]",
+        "[T1: ~/.codex/hooks/tests/fixtures/runtime-hook-probe-evidence.jsonl]"
       ]
     }
   ],
@@ -183,9 +183,9 @@
       "status": "degraded",
       "summary": "Stop and first-tool reviewers are opt-in and fail open. Missing env vars, malformed backend specs, failed calls, and malformed reviewer verdicts skip review rather than blocking.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/system-prompt-reviewer.sh]",
-        "[T1: /home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh]",
-        "[T1: /home/streaming/.codex/hooks/lib/reviewer-backend.sh]"
+        "[T1: ~/.codex/hooks/system-prompt-reviewer.sh]",
+        "[T1: ~/.codex/hooks/edit-bash-pre-reviewer.sh]",
+        "[T1: ~/.codex/hooks/lib/reviewer-backend.sh]"
       ]
     },
     {
@@ -193,8 +193,8 @@
       "status": "unsupported",
       "summary": "Supported reviewer backend specs are limited to ollama:URL:MODEL and opencode-zen:URL:MODEL. Credential-oriented, shell-oriented, and CODEX_ROLE-oriented backend specs are not supported.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/lib/reviewer-backend.sh]",
-        "[T1: /home/streaming/.codex/hooks/tests/run.sh]"
+        "[T1: ~/.codex/hooks/lib/reviewer-backend.sh]",
+        "[T1: ~/.codex/hooks/tests/run.sh]"
       ]
     },
     {
@@ -202,8 +202,8 @@
       "status": "degraded",
       "summary": "A reviewer verdict of pass exits 0 without producing a positive proof artifact; fail verdicts can block with filtered violations.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/system-prompt-reviewer.sh]",
-        "[T1: /home/streaming/.codex/hooks/edit-bash-pre-reviewer.sh]"
+        "[T1: ~/.codex/hooks/system-prompt-reviewer.sh]",
+        "[T1: ~/.codex/hooks/edit-bash-pre-reviewer.sh]"
       ]
     },
     {
@@ -211,8 +211,8 @@
       "status": "degraded",
       "summary": "Subagent exemption depends on transcript_path pointing under $HOME/.codex/sessions and the first event containing .payload.source.subagent.thread_spawn. Without that shape, hooks treat the context as a main session.",
       "evidence": [
-        "[T1: /home/streaming/.codex/hooks/lib/codex-proof-state.sh]",
-        "[T1: /home/streaming/.codex/hooks/tests/run.sh]"
+        "[T1: ~/.codex/hooks/lib/codex-proof-state.sh]",
+        "[T1: ~/.codex/hooks/tests/run.sh]"
       ]
     },
     {
@@ -220,8 +220,8 @@
       "status": "degraded_substitute",
       "summary": "Claude enabled rust-analyzer-lsp. Codex has omx_code_intel enabled, but this is not rust-analyzer parity.",
       "evidence": [
-        "[T1: /home/streaming/.claude/settings.json]",
-        "[T1: /home/streaming/.codex/config.toml]"
+        "[T1: ~/.claude/settings.json]",
+        "[T1: ~/.codex/config.toml]"
       ]
     },
     {
@@ -229,8 +229,8 @@
       "status": "unsupported_without_artifact",
       "summary": "Codex has omx_memory enabled in local config. This ledger does not claim Claude memory data was imported because no verified import artifact was found in the inspected local files.",
       "evidence": [
-        "[T1: /home/streaming/.codex/config.toml]",
-        "[T1: /home/streaming/.codex/.omx/project-memory.json]"
+        "[T1: ~/.codex/config.toml]",
+        "[T1: ~/.codex/.omx/project-memory.json]"
       ]
     }
   ]
