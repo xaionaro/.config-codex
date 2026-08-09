@@ -25,7 +25,7 @@ Maintain a project-understanding ledger for every ECI run. Use the `maintaining-
 - Start ECI only when CODEX selects it as the outer workflow or active ATE routes bounded work through it. Loading this skill alone does not start ECI.
 - ECI includes its required spawned agents.
 - A request to use ATE while ECI is active, or to cancel, withdraw, or replace ECI's root scope, is user closure for ECI teardown. Checkpoint unfinished work and record its successor handoff or scope removal before using `user-closed:`.
-- Claude `TeamCreate` / named Agent / `SendMessage` / `TeamDelete` maps to Codex `spawn_agent` / `send_input` / `wait_agent` / `close_agent`.
+- Codex uses `spawn_agent`, `followup_task`, `send_message`, `wait_agent`, and `interrupt_agent` according to the lifecycle below. These are provider-native transitions, not aliases for another provider's team controls.
 - Codex ECI uses standard agent management tools only. Do not launch shell-wrapped Codex agents. If `spawn_agent` or related agent tools are unavailable, ECI cannot run; hard-escalate to the user.
 
 ## Prerequisites
@@ -83,30 +83,27 @@ Do not disengage mid-task to escape the gate — that is the regression this mar
 
 ## Team setup
 
-**Persistent agent** = spawned once with `spawn_agent`, then reused with `send_input`. **One-shot agent** = spawned for one bounded assignment, then closed. ECI uses persistent agents for every cycle role when reuse is available.
+**Reusable role** = spawned once with `spawn_agent`, then given a new turn with `followup_task` only while idle. `send_message` delivers information to an already-running turn; it does not start a new turn. ECI reuses producer roles and uses isolated critic identities as described below.
 
-Persistent agents handle Step 1 (explorer) and Step 3 (implementer) across iterations. Critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, loop-breaker) is also done by persistent agents — not the explorer or implementer, but separately-spawned critic agents with their own identity. E2E agent is also a persistent agent. The producer (explorer/implementer) must never act as critic.
+Reusable agents handle Step 1 (explorer) and Step 3 (implementer) across iterations. Each critic-role invocation (Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, loop-breaker, and E2E) gets a separate blind identity. The producer (explorer/implementer) must never act as critic.
 
-**"Persistent" != "carries cross-iteration context".** The persistent agent's spawn-prompt baseline already forces fresh-assignment treatment each message (re-read referenced files, no prior-turn trust). Spawning a new agent for Step 1 or Step 3 because "fresh context is needed" defeats the persistent role — `send_input` to the existing agent already gives that. The producer-vs-critic split is about *agent identity for adversarial separation* (critic must not be the producer), not about context staleness.
+**"Reusable" != "trust prior context".** The reusable agent's spawn-prompt baseline forces fresh-assignment treatment on every `followup_task` (re-read referenced files, no prior-turn trust). Producer-vs-critic separation is identity separation, not a claim that transport reuse clears context.
 
-**Reusable role rule.** Spawn stable role slots, not task/round-specific identities. Use the tool's reusable `agent_type` values (`explorer`, `worker`, `default`); carry ECI identity in the spawn prompt, roster label, and `send_input` messages. Put changing details (`round`, `gate`, `scope`, `lens`) in the assignment, not the role name.
+**Reusable role rule.** Use a stable `task_name` for a reused producer slot and carry the semantic role in its self-contained prompt and roster label. Put changing details (`round`, `gate`, `scope`, `lens`) in the assignment. Do not claim or pass schema fields that `spawn_agent` does not expose.
 
-**Critic identity rule.** Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, and loop-breaker are spawned as separate reusable role slots (`critic-step2`, `critic-A`, `critic-B`, `brainstormer`, `brp-feasibility-validator`, `loop-breaker`). Adversarial separation = identity rule (critic != producer). Bias-freedom between rounds/invocations is achieved by clearing context when reuse is available or shutting down and respawning under the same role name. Do not rely on persistent-context "carrying over" — each round must start clean.
+**Blind critic rule.** Every critic-class invocation is a newly isolated `spawn_agent` with `fork_turns: "none"` and a unique transport `task_name`. Its prompt must be fully self-contained: role label, original requirements when allowed by the packet protocol, exact files/scope, sources to reread, expected output, and all applicable review rules. Never assume the critic inherited orchestrator context. The producer must not be the critic.
 
-Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, or independent tmux/CLI agents for ECI. Role identity is carried in the spawn prompt, roster label, and subsequent `send_input` messages.
+Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, context-clear commands, terminal-agent close operations, or independent shell/CLI agents for ECI. Role identity is carried in the prompt, roster, and provider agent id.
 
 ### Spawning
 
 | Action | Command |
 |--------|---------|
-| Spawn explorer | `spawn_agent` with `agent_type: "explorer"` and role label `explorer` |
-| Spawn implementer | `spawn_agent` with `agent_type: "worker"`, role label `implementer`, and explicit file/module ownership |
-| Spawn Step 2 critic | `spawn_agent` with `agent_type: "explorer"` or `default`; role label `critic-step2`; assignment includes round number |
-| Spawn Step 4 critic-A / critic-B | Parallel `spawn_agent` calls with role labels `critic-A` / `critic-B` |
-| Spawn E2E agent | `spawn_agent` with `agent_type: "worker"` or `default`; role label `e2e-gate`; assignment includes gate number |
-| Spawn brainstormer | `spawn_agent` with `agent_type: "explorer"` and role label `brainstormer` |
-| Spawn BRP feasibility validator | `spawn_agent` with `agent_type: "explorer"` or `default`; role label `brp-feasibility-validator` |
-| Spawn loop-breaker | `spawn_agent` with `agent_type: "explorer"` and role label `loop-breaker` |
+| Spawn explorer | `spawn_agent({task_name: "explorer", fork_turns: "all", message: <self-contained prompt>})` |
+| Spawn implementer | `spawn_agent({task_name: "implementer", fork_turns: "all", message: <self-contained prompt with explicit ownership>})` |
+| Reassign idle producer | `followup_task({target: <agent id>, message: <fresh self-contained assignment>})` |
+| Deliver to running producer | `send_message({target: <agent id>, message: <bounded in-turn information>})` |
+| Spawn any critic / E2E / brainstormer / validator / loop-breaker | New `spawn_agent({task_name: <unique transport name>, fork_turns: "none", message: <self-contained blind prompt>})`; parallel calls where required |
 
 Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel. Exception: Critic B Packet 1 for code diffs contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction; omit original requirements, exact scope, ledger/task/design context, rationale, commit message, and prior review output until Packet 2.
 Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
@@ -131,9 +128,9 @@ Per-message body in Step 3.
 Run in this exact order on disengage. Stopping mid-sequence keeps the gate armed.
 
 1. Write disengage-report markdown (content per **Disengage report** below).
-2. `send_input` `commit any uncommitted work and confirm clean tree` to `implementer`; await ack.
-3. `send_input` `{"type": "shutdown_request"}` to active ECI agents; await shutdown reports.
-4. `close_agent` completed ECI agents. If an agent does not respond, report the blocker and close it when possible.
+2. For an idle implementer, use `followup_task` to request `commit any uncommitted work and confirm clean tree`; if it is running, use `send_message`. Observe the delivered completion event or make one outstanding `wait_agent` call for that expected event.
+3. Record each role as completed, idle/addressable, cancelled, or still running from delivered status. Use `interrupt_agent` only when the workflow explicitly cancels active work; never use it to close or clean up a terminal agent.
+4. Do not close terminal agents. Their terminal status is the lifecycle boundary; timeout or silence is not terminal. A timed-out `wait_agent` must not trigger an immediate retry or polling loop.
 5. `~/.codex/bin/eci-active off <report.md>` (LAST — keeps gate armed if teardown fails partway).
 
 If the orchestrator's next Stop blocks, follow the hook prompt and use the disengage report as the verification summary.
@@ -173,15 +170,15 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 
 | Step | Phase | Actor | Output |
 |------|-------|-------|--------|
-| 1 | Explore | Persistent `explorer` agent (`send_input`) | Ranked options + cited sources |
-| 2 | Critique explorations | `critic-step2` agent (per round, clear context or shutdown+respawn under same role label) | Winner with concrete text + tagged CONDITIONAL/NIT list (one explorer revision round permitted on all-REJECT) |
-| 3 | Implement | Persistent `implementer` agent (`send_input`) | One diff |
+| 1 | Explore | Reusable `explorer` agent (`followup_task` while idle) | Ranked options + cited sources |
+| 2 | Critique explorations | New blind `critic-step2` agent per round (`fork_turns: "none"`) | Winner with concrete text + tagged CONDITIONAL/NIT list (one explorer revision round permitted on all-REJECT) |
+| 3 | Implement | Reusable `implementer` agent (`followup_task` while idle) | One diff |
 | 4 | Review gate (parallel) | Critic A + Critic B + E2E agents in parallel | All three run concurrently; wait for all |
 | Exit | Main thread | Apply / commit / report |
 
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
 
-Polling cadence: re-check a working agent at most every 30 minutes; faster polling produces no new signal and burns context. Use `wait_agent` for waiting.
+Completion is event-driven. For each expected completion not yet delivered, use at most one outstanding `wait_agent`; call `wait_agent({timeout_ms:3600000})` for that wait. `3600000` milliseconds is the current exposed maximum. If a future schema exposes a different maximum, use that exposed maximum. Never omit `timeout_ms`, rely on its default, or choose a shorter timeout for this wait. A timeout is non-terminal and never causes immediate retry or periodic polling.
 
 ### Bug-discovery routing
 
@@ -195,7 +192,7 @@ Before sending the RCA/regression assignment, write or update a human-readable r
 
 ## Step 1: Explore
 
-`send_input` to the persistent `explorer` agent. Each per-message body must include:
+Use `followup_task` to start the idle reusable `explorer` role's turn. Use `send_message` only to deliver bounded information while that turn is running. Each fresh assignment body must include:
 - The problem/change for THIS iteration, in full context.
 - What's already been tried or ruled out (iterations 2+: include results from prior iterations, current codebase state, and last blocking gate issues verbatim if a prior cycle's gate failed).
 - Exact file paths of existing related code — explorer must re-read them this turn to avoid suggesting duplicates. "Re-read referenced files; do not trust prior turn reads."
@@ -218,7 +215,7 @@ An isolated disposable PoC may precede coding-style admission, but production re
 
 ## Step 2: Critique explorations
 
-Spawn a DIFFERENT agent — not the explorer, not the main thread. The critic identity must differ from explorer and implementer. Spawn or reuse the stable role label `critic-step2` (Step 2) or `critic-A` / `critic-B` (Step 4); put the round number in the assignment. Each new round must start with a clean critic context — either clear context when supported or shut it down and respawn under the same role label. MUST NOT reuse the persistent explorer or implementer agent for critic work.
+Spawn a DIFFERENT agent — not the explorer, implementer, or main thread — with `fork_turns: "none"`. Use a unique transport `task_name` for every blind critic invocation and put the stable semantic role plus round in the self-contained prompt. MUST NOT reuse a producer or prior critic identity for blind critic work.
 
 The critic's prompt must include:
 - **Original user requirements verbatim.** The critic must verify options against what the user actually asked for, not just technical soundness.
@@ -260,15 +257,15 @@ For coding-style issues, cosmetic preference is NIT; missing or unverified admis
 | Critic verdict pattern | Action | Output |
 |---|---|---|
 | ≥1 option with zero REJECTs | Pick highest-ranked clean option as winner | Winner + that option's CONDITIONAL fix-text list + NITs |
-| Every option has ≥1 REJECT, round 1 | Bounce verbatim REJECT reasons to explorer; explorer revises; reset/reuse `critic-step2` for round 2 | Bounce-back |
+| Every option has ≥1 REJECT, round 1 | Bounce verbatim REJECT reasons to the idle explorer with `followup_task`; spawn a new blind `critic-step2` identity for round 2 | Bounce-back |
 | Every option has ≥1 REJECT, round 2 | Trigger brainstormer per Brainstormer trigger row; new explorer round | Escalation per Escalation table |
 | Only NITs across all options | Pick highest-ranked option directly | Winner + NITs |
 
-**Critic emits issues only.** CONDITIONAL absorption happens at the orchestrator's hand-off to Step 3 — orchestrator folds the winner's CONDITIONAL fix-text into the Step 3 implementer `send_input` body. The critic does NOT rewrite options.
+**Critic emits issues only.** CONDITIONAL absorption happens at the orchestrator's hand-off to Step 3 — orchestrator folds the winner's CONDITIONAL fix-text into the Step 3 implementer `followup_task` body. The critic does NOT rewrite options.
 
 ## Step 3: Implement
 
-`send_input` to the persistent `implementer` agent. One change, one diff per message. Code tasks: implementer invokes `test-driven-development` and `debugging-discipline`, loads every matching installed coding-style skill, applies the admitted coding-style record, and re-reads every file it intends to modify on each new task message.
+Use `followup_task` to start the idle reusable `implementer` role's next turn; use `send_message` only for bounded information while that turn is running. One change, one diff per assignment. Code tasks: implementer invokes `test-driven-development` and `debugging-discipline`, loads every matching installed coding-style skill, applies the admitted coding-style record, and re-reads every file it intends to modify on each new task message.
 
 Each new task message to `implementer` includes:
 - The current iteration's concrete-text from the Step 2 critic (verbatim).
@@ -282,15 +279,15 @@ Before the next affected write, the implementer reports any new style scope, sou
 
 **Affected-path E2E before submit.** Runtime behavior reachable via UI/API/device/CLI: build, run full tests, exercise affected user path, cite output/screenshot/state. Proxy evidence alone insufficient. Skip docs, prompts, config-only, tests-only, pure refactors. If E2E unavailable, report BLOCKED with the exact missing resource; missing E2E/rationale → bounce before Step 4.
 
-If applicable E2E evidence is missing, `send_input`: "Missing E2E evidence — build, run full suite, exercise user path, cite output/screenshot/state. Do not resubmit without evidence."
+If applicable E2E evidence is missing, reassign the idle implementer with `followup_task`: "Missing E2E evidence — build, run full suite, exercise user path, cite output/screenshot/state. Do not resubmit without evidence."
 
 ## Step 4: Review gate (parallel)
 
-Spawn all three as critic agents in a single message (three parallel `spawn_agent` tool calls with role labels `critic-A` / `critic-B` / `e2e-gate`; assignment includes gate number). Each MUST NOT message the persistent `explorer` or `implementer` agent. Wait for all three to complete before evaluating results. Every reviewer prompt must include the **original user requirements verbatim** — reviewers catch requirement deviations, not just technical issues.
+Spawn all three as new blind critic agents in a single message: three parallel `spawn_agent` calls, each with `fork_turns: "none"`, a unique transport `task_name`, and a self-contained role prompt for `critic-A`, `critic-B`, or `e2e-gate`. Each MUST NOT message the reusable explorer or implementer. Completion is an automatically delivered event; if an expected event has not arrived, keep at most one outstanding `wait_agent` call for it. Timeout never authorizes an immediate retry or polling. Evaluate only after all three terminal events arrive. Every reviewer prompt includes the **original user requirements verbatim**.
 
 Critic B code-diff exception:
 - Code diffs use two packets. Skip Packet 1 when there is no code diff.
-- Packet 1 is diff-only isolation. If Critic B is reused, clear context first when supported; otherwise shutdown+respawn under `critic-B`.
+- Packet 1 is diff-only isolation and goes to a newly spawned blind Critic B (`fork_turns: "none"`).
 - Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction. It is exempt from original requirements, exact scope, and normal review context.
 - After `reconstructed intention:` returns, send Packet 2 with original requirements and full Critic B context.
 - Gate incomplete until Packet 2 returns.
@@ -327,7 +324,7 @@ Different agent from Critic A.
 
 Diff-only intention check:
 - Code diffs only. Skip when there is no code diff.
-- Before Packet 1, clear `critic-B` context when supported; otherwise shutdown+respawn under `critic-B`.
+- Before Packet 1, spawn a new blind Critic B with `fork_turns: "none"` and a self-contained Packet 1 prompt.
 - Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction.
 - Exclude original requirements, exact scope, ledger/task/design context, rationale, commit message, implementer or teammate summaries, and prior review output.
 - Output `reconstructed intention:` with 2-4 bullets covering apparent root reason and intended behavior change, then stop.
@@ -403,7 +400,7 @@ Fresh idea generator — fires on-demand when the cycle stalls. Output is raw id
 
 - Spawn as separate `brainstormer` agent; never message the explorer or implementer agent.
 - Must NOT be any other cycle agent (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E, brp-feasibility-validator, loop-breaker).
-- Each invocation refreshes context via `/clear` or shutdown+respawn — start each idea-burst clean.
+- Each invocation is a new blind `spawn_agent` with `fork_turns: "none"` and a self-contained prompt.
 - Ideas only — `brp-feasibility-validator` filters BRP-triggered ideas.
 - Brainstormer output never goes directly to explorer/implementer after a BRP trigger; only validator-approved ideas may be routed onward.
 
@@ -429,7 +426,7 @@ A separate agent — not any of the cycle agents — gets one chance to break th
 
 ### Constraints
 
-- Spawn as separate `loop-breaker` agent; refresh context by clearing when supported or shutdown+respawn between invocations.
+- Spawn each loop-breaker invocation as a new blind agent with `fork_turns: "none"` and a self-contained prompt.
 - Must NOT be any of the 6 cycle agents (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent).
 - Reads code and issues independently — no reliance on prior agent summaries.
 - One invocation per change. Granted retry fails -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned.
@@ -494,12 +491,12 @@ auth middleware swap
 | Winner lacks concrete text | Critic under-specified. Re-spawn with "concrete text required" |
 | No rejected list in Step 2 | Critic is not adversarial. Re-spawn |
 | Brainstormer output filters/judges/picks a winner | Brainstormer is idea-only. Re-spawn with "no filtering, no negatives" |
-| Persistent explorer or implementer agent addressed for any critic-role work (Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, loop-breaker) | STOP. Spawn a separate critic agent; the producer (explorer/implementer) must never act as critic. |
-| Disengage without teardown sequence | STOP. Shutdown/close agents → eci-active off, in that order. |
-| Shell-launched Codex process used as an agent | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`/`close_agent`, or hard-escalate if unavailable. |
+| Reusable explorer or implementer addressed for critic-role work, or blind critic spawned without `fork_turns: "none"` and a self-contained prompt | STOP. Spawn a new isolated critic identity; the producer must never act as critic. |
+| Disengage without teardown sequence | STOP. Observe terminal states or cancel exact active work, then run eci-active off last. Never close a terminal agent. |
+| Shell-launched Codex process used as an agent | STOP. Use standard collaboration tools (`spawn_agent`, `followup_task`, `send_message`, `wait_agent`, `interrupt_agent`), or hard-escalate if unavailable. |
 | Status report uses task/iteration numbers, or flat-lists nested work | See **Status reports** section. |
-| "Fresh context needed" → spawned a separate agent for Step 1 or Step 3 instead of using `send_input` with the existing agent | The persistent agent provides fresh context per message via the spawn-prompt baseline. Use `send_input` to existing explorer/implementer; do not spawn fresh. |
-| Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 `send_input` body. |
+| New producer spawned although its prior role is idle/addressable | Use `followup_task` with a self-contained assignment. `send_message` is only for a currently running turn. |
+| Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 `followup_task` body. |
 | Orchestrator forgot to pass Step 2 CONDITIONALs to implementer | STOP. Step 3 message must include verbatim CONDITIONAL fix-list. |
 | Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B rule). |
 | A matching coding-style skill was loaded, but no independent admission exists | STOP. Invocation is not compliance; complete the applicable record and Step 2 admission before durable work. |

@@ -12,9 +12,6 @@
 !proofs/**
 !skills/**
 
-# Standard Codex system skills are provided by Codex, not user config.
-skills/.system/**
-
 # Sensitive or machine/session-local material.
 worktrees/
 auth.json

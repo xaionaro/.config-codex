@@ -10,10 +10,11 @@ Phased agent team with adversarial review loops and tiered information trust.
 ## Delegation Rules
 
 - CODEX selection starts this pipeline. Loading this skill alone does not.
-- Use standard `spawn_agent`, `send_input`, and `wait_agent` for role execution.
-- When waiting on teammates, call `wait_agent` with `timeout_ms: 900000` (15 minutes). Do not use shorter polling or describe waits as "short polls".
-- Map explorers/reviewers to `explorer`; map executors/designers/verifiers to `worker` or `default`.
-- Spawn with reusable `agent_type` roles only: `explorer`, `worker`, `default`. Team roles (`designer`, `executor`, `qa`) are stable roster labels, not custom `agent_type`s. If the spawn schema lacks `agent_type`, put the intended reusable type in the prompt/roster and record the limitation.
+- Use provider-native collaboration transitions: `spawn_agent` starts a new role, `followup_task` starts a new turn only for an idle role, and `send_message` delivers bounded information to a running turn.
+- Completion is delivered as an event. For an expected event not yet delivered, keep at most one outstanding `wait_agent`; call `wait_agent({timeout_ms:3600000})` for that wait. `3600000` milliseconds is the current exposed maximum. If a future schema exposes a different maximum, use that exposed maximum. Never omit `timeout_ms`, rely on its default, or choose a shorter timeout for this wait. Timeout is non-terminal and never triggers immediate retry or periodic polling.
+- `interrupt_agent` is cancellation of exact active work only. Never use it for status, normal completion, or terminal cleanup; terminal agents are never closed.
+- `list_agents` is permitted only to maintain the roster or recover after a crash. It is not a completion-polling or ordinary assignment mechanism.
+- Semantic roles (`designer`, `executor`, `qa`) live in the self-contained prompt and roster. Use stable `task_name` values for reusable slots and unique transport names for isolated reviews; do not claim schema arguments that `spawn_agent` does not expose.
 - Give every worker explicit file/module ownership and warn that other agents may edit in parallel.
 - Every subagent prompt must include: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
 - If the main/orchestrator lacks standard agent tools, do not run this pipeline; hard-escalate instead of launching shell-based Codex sessions.
@@ -34,16 +35,16 @@ Before spawning, reassigning, or routing any teammate whose output may become ev
 2. Record artifact path + `sha256sum` in roster/ledger state.
 3. Include or forward artifact path + SHA wherever that evidence is consumed.
 
-If `agent_type`, `reasoning_effort`, or another spawn field is unavailable, record the limitation in the prompt artifact and roster/ledger state. Trivial status pings need no prompt artifact when no review, proof, or stale-packet guard depends on them.
+If `reasoning_effort` or another requested spawn field is unavailable, record the limitation in the prompt artifact and roster/ledger state. Never pass or claim an unavailable field. Trivial status pings need no prompt artifact when no review, proof, or stale-packet guard depends on them.
 
 ### Lead-Mediated Nested Delegation Adapter
 
-Use only when an ATE role must create child agents but its session lacks `spawn_agent`/`send_input`/`wait_agent`, while the main/orchestrator can use standard agent tools.
+Use only when an ATE role must create child agents but its session lacks `spawn_agent`/`followup_task`/`send_message`/`wait_agent`, while the main/orchestrator can use standard agent tools.
 
 | Step | Owner | Rule |
 |------|-------|------|
 | 1 | Blocked role | Defines or approves each child prompt, stop criterion, context packet, and expected output. Prompts include exactly: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval." |
-| 2 | Lead | Materializes each child prompt per Prompt Artifact Protocol before spawn. Spawns each child as a separate standard agent, verifies the Spawn Checklist, waits with `timeout_ms: 900000`, and records any unavailable spawn fields per Model and Effort Level. |
+| 2 | Lead | Materializes each child prompt per Prompt Artifact Protocol before spawn. Spawns each child as a separate standard agent, verifies the Spawn Checklist, and consumes its delivered completion event; when an expected event is missing, the lead may hold one outstanding `wait_agent` for it. Timeout is non-terminal and is not retried immediately. |
 | 3 | Lead/coordinator | Mechanically forwards child prompt artifact paths, SHAs, outputs, evidence, and followups. No analysis, filtering, synthesis, or substituted verdicts. |
 | 4 | Blocked role | Reviews child outputs, requests followups if needed, and owns the final role verdict. No final verdict until forwarded child evidence is received. |
 
@@ -174,7 +175,7 @@ After the team reports a QA verdict, the user may send followups (bug reports, t
 | **Verifier** | 1+ | per task | Independently admit lightweight/non-code work and test artifacts when their usual reviewer is optional, before durable writes. Adversarially checks deliverables against all expectations. Replaces the test pipeline when testing is N/A. |
 | **RCAer** | 1 per debug task | debug | Explores root cause and regression status from repro evidence plus previous/current test-run artifacts. Reports RCA only; never fixes. |
 | **Brainstormer** | 1 | any | On-demand when a blocker emerges. Genius creative unblocker — thinks outside the box. Lists as many solution ideas as possible. Positives only — no negatives, no filtering, no feasibility judgment. Bigger list = better. |
-| **Snitch** | 1 | all | Snitch is async-only: CCs, reminders, audits, reports, verification requests, and silence create no prerequisite, wait, direct interruption, or gate. CCed on all submitted/blocked/completed claims and QA verdicts. Independently audits rule compliance and reports violations to lead/coordinator. Success = confirmed violations found. May push back once per report if lead dismisses: quote the exact rule/requirement violated and why no workaround is acceptable. On QA approvals, looks for testing gaps: insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On reviewer APPROVED messages, checks for rubber-stamping against the executor critique log and reports gaps to lead. Lead handles confirmed gaps under normal finding/priority rules. Lead or coordinator sends event-driven audit reminders with `send_input` at milestones, after long waits, and when execution resumes after user-waiting. Snitch uses available `wait_agent` results and teammate output to detect dead or drifting agents. On every audit, also check ledger freshness and asynchronously remind coordinator after activity bursts without updates. |
+| **Snitch** | 1 | all | Snitch is async-only: CCs, reminders, audits, reports, verification requests, and silence create no prerequisite, wait, direct interruption, or gate. CCed on all submitted/blocked/completed claims and QA verdicts. Independently audits rule compliance and reports violations to lead/coordinator. Success = confirmed violations found. May push back once per report if lead dismisses: quote the exact rule/requirement violated and why no workaround is acceptable. On QA approvals, looks for testing gaps: insufficient coverage, proxy-only evidence where direct was possible, untested criteria. On reviewer APPROVED messages, checks for rubber-stamping against the executor critique log and reports gaps to lead. Lead handles confirmed gaps under normal finding/priority rules. Lead or coordinator uses `followup_task` for an idle Snitch and `send_message` for a running Snitch at event-driven milestones. Delivered events, not polling, drive audits. On every audit, also check ledger freshness and asynchronously remind coordinator after activity bursts without updates. |
 | **QA** | 1 | final | Final integration check. Runs all tests, reconciles coding-style admission evidence, and guards hard consequence contracts. Last gate. |
 
 ### Team Sizing
@@ -187,11 +188,11 @@ One execution lane per independent unit. Keep two Execution Reviewer lens slots 
 
 Blocker handling uses `blocker-resolution-protocol` (BRP). Lead includes that skill name in prompts for blocker-resolution tasks.
 
-**Manual skill refresh (coordinator, lead, snitch).** Lead uses `send_input` to remind active teammates to re-invoke `agent-teams-execution` after context compaction, phase changes, long waits, and user-waiting resume. Use `wait_agent` status before treating silence as a failure.
+**Manual skill refresh (coordinator, lead, snitch).** Lead uses `followup_task` for an idle role or `send_message` for a running role to request re-invocation after context compaction, phase changes, long waits, and user-waiting resume. Silence is non-terminal; do not create a wait-retry loop.
 
 ### Model and Effort Level
 
-All teammates: configured Codex model, xhigh effort. Current Codex spawn schemas may not expose `reasoning_effort` or `agent_type`. When a field exists, set it. When unavailable, put the requirement in prompt text and record the schema limitation; do not claim an unavailable argument was set. Omit model overrides unless the user explicitly requested one.
+All teammates: configured Codex model, xhigh effort. Current Codex spawn schemas may not expose `reasoning_effort`. When unavailable, put the requirement in prompt text and record the schema limitation; do not claim an unavailable argument was set. Omit model overrides unless the user explicitly requested one.
 
 ### Critical Analysis of All Inputs
 
@@ -416,13 +417,15 @@ Round = one REJECTED review pass (initial submission is not a round).
 **Stale floor:** A teammate is not stale until at least 30 minutes have passed since its last assignment, output, file/git activity, or observed process activity. Before 30 minutes: no status requests, no checkpoint prompts, no "are you blocked?" messages, no interruption for progress.
 
 **Not responding to messages ≠ dead.** Coordinator checks coordination signals before declaring unresponsive:
-1. Check: does the teammate have an active running process? (compilation, test suite, build, context compaction) → working, not hung.
-2. Check: are files or git state changing in their worktree? → working, not hung.
-3. If 30+ minutes elapsed with no active process and no file/git activity: **interrupt first** — send a message asking for status, then interrupt if the tool surface supports it. Wait for response.
-4. Only if no response after interrupt → confirmed unresponsive.
+1. Use `list_agents` once for crash-recovery roster state; do not reuse it as a completion poll.
+2. Check whether owned files or git state are changing and whether already-recorded proof/build evidence shows ongoing work.
+3. If 30+ minutes elapsed with no activity, use `send_message` for a running turn or `followup_task` for an idle role to request a checkpoint. Consume a delivered event or hold one outstanding `wait_agent`; timeout remains non-terminal and is not retried immediately.
+4. Only a provider terminal event, explicit cancellation, or independently established crash evidence changes lifecycle state. Silence alone never does.
 Skipping any step = false positive. Coordinator must document evidence of all checks before requesting re-spawn.
 
-Once confirmed unresponsive, **immediately** re-spawn under the same reusable role label — no delays. The task must not stall.
+Allow one checkpoint request per unchanged silence episode; do not send another while that silence remains unchanged. New output, assignment, owned file/git activity, or observed process activity resets the silence episode. After a reset, the 30-minute stale floor starts again before another checkpoint is eligible.
+
+Once a crash is confirmed, re-spawn under the same semantic role label and update the roster. If exact active work must be abandoned, `interrupt_agent` is its explicit cancellation transition, not a status query.
 **Executors:** preserve unreviewed output for the root-task aggregate review before closure. Re-spawn only after checkpointing diff/status.
 **Non-executors:** Re-spawn immediately under the same reusable role label. Max 2 re-spawns per role, then escalate to user.
 
@@ -432,7 +435,7 @@ Once confirmed unresponsive, **immediately** re-spawn under the same reusable ro
 
 **Repeated violations (3+ on same rule):** Counts only corrections the agent received and still violated afterward. Acknowledgement not required; receipt is. Coordinator verifies receipt before counting a cycle. Trigger: 3+ confirmed receive-then-violate cycles. Then restart the agent with a fresh prompt to re-read the skill and continue. If still misbehaving, escalate to user.
 
-**Force-deliver corrections.** Agent busy or mid-turn may not see `send_input` until its turn ends. Interrupt when available, then re-send the correction.
+**Deliver corrections by state.** Use `send_message` for a running turn and `followup_task` for an idle role. Use `interrupt_agent` only when the strictly-higher-severity rule explicitly cancels active work; after cancellation becomes terminal, start a new turn with `followup_task` rather than treating interruption as message delivery.
 
 ### Priority Discipline
 
@@ -619,8 +622,8 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 12. **Manage lifetimes** per Teammate Lifecycle (below).
 13. **Enforce aggregate invariant.** No aggregate review before root E2E/proof. No QA before root review has no REJECTED/CONDITIONAL and post-review E2E passes.
 14. **Address all reported issues.** Every executor-reported issue becomes a task. Assign an executor to critically analyze it (code cleanness, semantic integrity, correctness). If dismissed: document rationale. If validated and minor: the analyzing executor fixes it after any required local admission. If validated and design-level: full pipeline. No report may be silently ignored.
-15. **Audit subordinates every 10 minutes.** Check each active teammate's recent output for rule violations: untagged claims, missing skill invocations, unreviewed code, shortcuts. Create a task for each violation found.
-16. **Interrupt violations immediately.** Same protocol as lead: send correction message first, then interrupt if the tool surface supports it. Do not wait for their turn to end when interruption is available.
+15. **Audit on delivered events and phase transitions.** Check recent teammate output for rule violations: untagged claims, missing skill invocations, unreviewed code, shortcuts. Create a task for each violation found.
+16. **Route violations by state and severity.** Send a running role its correction with `send_message`; use `followup_task` for an idle role. Only a strictly-higher-severity finding may cancel exact active work with `interrupt_agent`.
 17. **Notify Snitch on idle/resume.** Notify Snitch asynchronously on idle/resume. Do not wait for Snitch audit before routing followups, QA verdicts, or shutdown.
 18. **Report QA verdict to user, then wait.** Never declare mission accomplished. Never auto-shutdown teammates. Mission complete only when user explicitly confirms. Followups → route per User Followups table.
 19. **Shutdown only on a lifecycle shutdown request.** Run Shutdown procedure. On protocol replacement, preserve every unfinished task state in the successor handoff. On root-scope replacement, record unfinished tasks as removed from scope. Mark only fully verified tasks complete.
@@ -629,13 +632,11 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 
 **NEVER implement. The lead enforces all skill rules.** Reactive, not proactive — the lead reacts to events rather than actively observing. On every event, the lead verifies that all applicable rules were followed. On violation, the lead reminds the agent of the specific rule and the required correction — never blocks, always corrects.
 
-**Interrupting violations:** A message alone is insufficient — agents won't see it until their turn ends. To interrupt:
-1. Send the correction with the specific rule + required fix.
-2. Interrupt the agent if the tool surface supports it.
+**Violation delivery:** Send the correction with `send_message` during a running turn or `followup_task` while idle. Use `interrupt_agent` only when Priority Discipline requires cancellation for a strictly-higher-severity finding; otherwise queue the correction.
 
 **Events and enforcement:**
 
-**On every event:** check for rule violations (untagged claims, missing skills, skipped reviews, shortcuts). Interrupt + remind the violating agent.
+**On every event:** check for rule violations (untagged claims, missing skills, skipped reviews, shortcuts). Route a correction under Priority Discipline.
 
 | Event | Lead action |
 |-------|-------------|
@@ -651,11 +652,11 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 | CCed blocker claim received | Missing/thin attempt log -> bounce, not BRP. Present record -> verify normal handling failed; otherwise route normal handling. |
 | Reviewer/verifier/QA approves | Scrutinize the approval: does it cite specific evidence? Does it address all scrutiny rules? A shallow "LGTM" is not an approval — send back with specific areas to examine |
 | Any agent ignores reminder (3+ on same rule) | Misbehavior Recovery: force `/compact`, re-read skill, continue. If still misbehaving, escalate to user |
-| Coordinator not responding | Check spawned-agent status and last `wait_agent`/`send_input` result. Still thinking/processing = acceptable (up to 1 hour). Stuck > 1 hour = re-spawn. Max 2 re-spawns, then escalate to user |
+| Coordinator not responding | Enter Crash Recovery: use one `list_agents` roster snapshot, inspect delivered events and owned activity, then route by documented lifecycle state. Silence or wait timeout alone never proves a crash. |
 | Coordinator declares mission accomplished without explicit user confirmation | Reject. Force coordinator to report verdict + evidence to user and wait |
 | Coordinator initiates shutdown without explicit user request | Reject. Team stays alive for followups |
 | Coordinator skips pipeline stages on user followup | Verify against User Followups table. Demand justification or reject |
-| Manual audit reminder | Use `send_input` after milestones, long waits, user-waiting resume, or suspicious coordinator silence. Spot-check agent output + ledger freshness for missed violations. Activity burst without ledger update → remind. Only intervene if coordinator missed |
+| Manual audit reminder | Use `followup_task` for an idle role or `send_message` for a running role after milestones, user-waiting resume, or suspicious silence. Spot-check delivered output + ledger freshness; only intervene if coordinator missed. |
 
 ### Spawn Checklist (lead verifies before every spawn)
 
@@ -663,7 +664,7 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 - [ ] Stop condition stated as observable criterion; false-stops enumerated
 - [ ] Model override omitted unless the user explicitly requested one
 - [ ] Reasoning effort set to xhigh, or unavailable schema field recorded and prompt says "xhigh reasoning effort"
-- [ ] Reusable `agent_type` selected (`explorer`, `worker`, or `default`), or unavailable schema field recorded and prompt/roster state the intended type; task-specific details are in assignment text, not role/type
+- [ ] Stable semantic role and transport `task_name` recorded; task-specific details are in the self-contained assignment, and no unavailable spawn field is claimed
 - [ ] Governed artifact scopes and every matching installed coding-style skill listed by exact name; a real no-match and remaining repository/config/reference sources are recorded under **Coding-style admission**
 - [ ] Claim tagging instructions included verbatim
 - [ ] File ownership explicit (executor/test roles)
@@ -678,7 +679,7 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 - [ ] Skip-design code, lightweight/non-code, and test-artifact prompts name the existing admission owner and block durable writes until its verdict; isolated disposable repros remain permitted
 - [ ] Preemptive warnings included: coordinator anticipates the most likely mistakes this agent could make given the specific task and explicitly warns against them in the spawn prompt
 - [ ] Evidence-bearing spawn/routing prompt artifact exists in the proof directory; artifact path + SHA256 recorded and forwarded where relevant
-- [ ] Standard path: spawned with `spawn_agent`/`send_input`; when schema fields exist, correct agent type and `reasoning_effort: "xhigh"` were set; unavailable fields are in prompt text and recorded.
+- [ ] Standard path: new role uses `spawn_agent`; idle reuse uses `followup_task`; mid-turn delivery uses `send_message`; requested unavailable fields are in prompt text and recorded.
 
 Lead rejects spawn if any item unchecked.
 
@@ -716,13 +717,11 @@ Downstream agents get **structured summaries**, not raw upstream output.
 
 Re-entry: original designer handles Phase 2 re-entry directly — full context preserved.
 
-**Shutdown procedure:** Always prefer graceful. First request: ask the agent to commit or report any uncommitted work, then stop cleanly. If the agent does not respond after one 15-minute wait, second request: interrupt when available and send the forceful shutdown request, e.g. "Stand down immediately."
-
-If graceful shutdown fails, escalate to the user before terminating work. After a spawned agent is complete, use `close_agent` so future coordination does not wait on a stale agent.
+**Shutdown procedure:** First request a final report or commit confirmation with `followup_task` when the role is idle, or `send_message` when it is running. Consume the delivered completion event; if it is absent, make at most one outstanding `wait_agent` call for that event. Timeout is non-terminal and never triggers a retry loop. Cancel with `interrupt_agent` only when the lifecycle request explicitly requires cancellation of exact known-active work. A completed or cancelled agent is terminal and is never closed.
 
 ### Leaked Work Containment
 
-After closing or abandoning an agent that may have launched proof/test/build shell work, do not rely on `close_agent` alone. Scan owned proof root, cwd, command substring, descendants, PGID/SID, and recorded PID files. Terminate only matched leaked child groups; never terminate the coordinator or main session. Record before/after `ps`/`pgrep`, exact PIDs/PGIDs, and marker/log update. If leakage recurs, open a normal ATE lifecycle issue and assign RCA + verification.
+After cancellation of an agent that may have launched proof/test/build shell work, treat the collaboration event only as agent-state evidence; it does not prove arbitrary child processes exited. Independently inspect only the owned proof scope and recorded process evidence, terminate only exact matched leaked child groups, and never terminate the coordinator or main session. Record before/after evidence and assign RCA + verification if leakage recurs.
 
 ### Spawn Prompt Template
 
@@ -771,11 +770,11 @@ Compliance:
 | Symptom | Fix |
 |---------|-----|
 | Spawning without a skill-defined role, ownership, or stop condition | STOP. Use bounded Codex agents with explicit role, ownership, and expected output |
-| Spawning with task-specific role/type labels | STOP. Use reusable `agent_type` + stable roster label; put task details in assignment text |
+| Spawning with task-specific semantic roles or unavailable schema fields | STOP. Use a stable roster role and transport `task_name`; put task details in assignment text |
 | Work without corresponding task | Create task immediately |
 | Status report uses task/phase/lane numbers, or flat-lists nested work | Use **Status Reports**. |
 | Aggregate review starts before all known sub-tasks land and root-task E2E/proof passes | STOP. Finish/fix tasks first; review only the proven aggregate |
-| Shell-launched Codex process used as a teammate | STOP. Use standard `spawn_agent`/`send_input`/`wait_agent`; hard-escalate only if main/orchestrator standard tools are unavailable. |
+| Shell-launched Codex process used as a teammate | STOP. Use `spawn_agent`, `followup_task`, `send_message`, `wait_agent`, and cancellation-only `interrupt_agent`; hard-escalate only if main/orchestrator standard tools are unavailable. |
 | Nested delegation blocked because a spawned role lacks agent tools | Use the Lead-Mediated Nested Delegation Adapter if main/orchestrator has standard tools; hard-escalate only when main/orchestrator lacks them. |
 | FDR triad collapsed into one simulated review | STOP. Spawn three separate standard agents for brainstormer, reviewer, and meta-reviewer. |
 | Spawning custom-named teammates outside defined roles | Unbounded growth. Use role names in prompts and roster mapping: executor-N, explorer-N. Reassign idle teammates. |

@@ -128,7 +128,7 @@ func (n *NodeWithCustomData[C, T]) RemovePushTo(
 
 ## General discipline
 
-- After every change: reduce code in related pieces. Remove logic, not lines. Keep readable.
+- Remove logic, not lines. Keep readable.
 - When a workaround feels ugly, treat it as a design smell — find the elegant approach.
 - Validate inputs with strong expectations. When there's no error channel, use assert/invariant.
 - Small functions, but keep semantically self-sufficient thoughts whole.
@@ -138,6 +138,12 @@ func (n *NodeWithCustomData[C, T]) RemovePushTo(
 - **Eliminate tech debt on contact**: Fix generators rather than editing generated files.
 - **Use authoritative sources over generation**: Download or reference canonical sources (LICENSE, .gitignore templates, config schemas) instead of generating from memory.
 - **No hidden assumptions.** Handle exactly the cases you expect. Return errors for everything else. A condition like `x > y` silently accepts cases you didn't consider — use explicit checks for each supported case and error on the rest.
+
+## Complexity
+
+- **Justify every increase.** A new abstraction, indirection, parameter, dependency, goroutine, or special case needs a concrete reason a simpler design cannot satisfy. No reason — no addition.
+- **Decrease by default.** When touching code, remove moving parts, state, and call depth.
+- **Simplify by understanding, not amputation.** Deeper understanding of the code yields a more elegant expression of the same semantics. Never cut behavior, blur contracts, or drop handled cases to look simpler — that sacrifices semantic integrity.
 
 ## Semantic integrity
 
