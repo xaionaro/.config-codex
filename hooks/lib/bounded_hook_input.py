@@ -10,9 +10,19 @@ from pathlib import Path
 import stat
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 
 INPUT_BUDGET = 65_536
+
+
+@dataclass(frozen=True)
+class ThreadSpawnMetadata:
+    parent_thread_id: str | None
+
+
+class MetadataPrefixError(ValueError):
+    pass
 
 
 def transcript_relative_parts_are_allowed(parts: Sequence[str]) -> bool:
@@ -89,6 +99,146 @@ def _read_first_record(fd: int) -> bytes | None:
     return record
 
 
+def _read_first_record_prefix(fd: int) -> bytes | None:
+    try:
+        retained = bytearray()
+        while len(retained) < INPUT_BUDGET and b"\n" not in retained:
+            chunk = os.read(fd, min(4096, INPUT_BUDGET - len(retained)))
+            if not chunk:
+                break
+            retained.extend(chunk)
+    except OSError as error:
+        if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+            return None
+        return None
+    return bytes(retained).partition(b"\n")[0]
+
+
+class SessionMetadataPrefixReader:
+    def __init__(self, text: str) -> None:
+        self._decoder = json.JSONDecoder()
+        self._text = text
+        self._position = 0
+
+    def read_thread_spawn_metadata(self) -> ThreadSpawnMetadata | None:
+        self._expect("{")
+        record_type: str | None = None
+
+        while True:
+            key = self._read_string()
+            self._expect(":")
+            if key == "type":
+                record_type = self._read_string()
+            elif key == "payload" and record_type == "session_meta":
+                return self._read_payload_thread_spawn_metadata()
+            else:
+                self._skip_value()
+
+            if self._consume("}"):
+                return None
+            self._expect(",")
+
+    def _read_payload_thread_spawn_metadata(self) -> ThreadSpawnMetadata | None:
+        self._expect("{")
+
+        while True:
+            key = self._read_string()
+            self._expect(":")
+            if key == "source":
+                return self._read_source_thread_spawn_metadata()
+            self._skip_value()
+
+            if self._consume("}"):
+                return None
+            self._expect(",")
+
+    def _read_source_thread_spawn_metadata(self) -> ThreadSpawnMetadata | None:
+        self._expect("{")
+
+        while True:
+            key = self._read_string()
+            self._expect(":")
+            if key == "subagent":
+                return self._read_subagent_thread_spawn_metadata()
+            self._skip_value()
+
+            if self._consume("}"):
+                return None
+            self._expect(",")
+
+    def _read_subagent_thread_spawn_metadata(self) -> ThreadSpawnMetadata | None:
+        if not self._consume("{"):
+            self._skip_value()
+            return None
+
+        while True:
+            key = self._read_string()
+            self._expect(":")
+            if key == "thread_spawn":
+                return self._read_thread_spawn_metadata()
+            self._skip_value()
+
+            if self._consume("}"):
+                return None
+            self._expect(",")
+
+    def _read_thread_spawn_metadata(self) -> ThreadSpawnMetadata | None:
+        if not self._consume("{"):
+            self._skip_value()
+            return None
+
+        parent_thread_id: str | None = None
+        while True:
+            key = self._read_string()
+            self._expect(":")
+            if key == "parent_thread_id":
+                parent_thread_id = self._read_string()
+            else:
+                self._skip_value()
+
+            if self._consume("}"):
+                return ThreadSpawnMetadata(parent_thread_id=parent_thread_id)
+            self._expect(",")
+
+    def _read_string(self) -> str:
+        self._skip_whitespace()
+        if self._position >= len(self._text) or self._text[self._position] != '"':
+            raise MetadataPrefixError
+        try:
+            value, self._position = self._decoder.raw_decode(
+                self._text, self._position
+            )
+        except json.JSONDecodeError as error:
+            raise MetadataPrefixError from error
+        if not isinstance(value, str):
+            raise MetadataPrefixError
+        return value
+
+    def _skip_value(self) -> None:
+        self._skip_whitespace()
+        try:
+            _, self._position = self._decoder.raw_decode(self._text, self._position)
+        except json.JSONDecodeError as error:
+            raise MetadataPrefixError from error
+
+    def _expect(self, expected: str) -> None:
+        self._skip_whitespace()
+        if not self._text.startswith(expected, self._position):
+            raise MetadataPrefixError
+        self._position += len(expected)
+
+    def _consume(self, expected: str) -> bool:
+        self._skip_whitespace()
+        if not self._text.startswith(expected, self._position):
+            return False
+        self._position += len(expected)
+        return True
+
+    def _skip_whitespace(self) -> None:
+        while self._position < len(self._text) and self._text[self._position] in " \t\r\n":
+            self._position += 1
+
+
 def _open_regular_file(path: Path) -> int | None:
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
@@ -141,12 +291,10 @@ def _open_contained_transcript(sessions_root: Path, path: Path) -> int | None:
         return None
 
     try:
-        trusted_parent = sessions_root.parent.resolve(strict=True)
+        trusted_sessions_root = sessions_root.resolve(strict=True)
     except OSError:
         return None
-    directory_fd = _open_absolute_directory_without_symlinks(
-        trusted_parent / sessions_root.name
-    )
+    directory_fd = _open_absolute_directory_without_symlinks(trusted_sessions_root)
     if directory_fd is None:
         return None
     directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY
@@ -201,6 +349,34 @@ def read_transcript_first_record(sessions_root: Path, raw_path: str) -> int:
     return _emit_bounded(record) if isinstance(value, dict) else 2
 
 
+def read_transcript_thread_spawn_metadata(
+    sessions_root: Path,
+    raw_path: str,
+) -> int:
+    if not transcript_raw_absolute_path_is_allowed(raw_path):
+        return 2
+    path = Path(raw_path)
+    fd = _open_contained_transcript(sessions_root, path)
+    if fd is None:
+        return 2
+    try:
+        prefix = _read_first_record_prefix(fd)
+    finally:
+        os.close(fd)
+    if prefix is None or (decoded := _decode_bounded(prefix)) is None:
+        return 2
+    try:
+        metadata = SessionMetadataPrefixReader(decoded).read_thread_spawn_metadata()
+    except MetadataPrefixError:
+        return 2
+    if metadata is None:
+        return 2
+    payload = json.dumps(
+        {"parent_thread_id": metadata.parent_thread_id}, separators=(",", ":")
+    ).encode()
+    return _emit_bounded(payload)
+
+
 def read_hook_transcript_first_record(sessions_root: Path) -> int:
     data = _read_bounded_stdin()
     if data is None or (decoded := _decode_bounded(data)) is None:
@@ -217,6 +393,22 @@ def read_hook_transcript_first_record(sessions_root: Path) -> int:
     return read_transcript_first_record(sessions_root, raw_path)
 
 
+def read_hook_transcript_thread_spawn_metadata(sessions_root: Path) -> int:
+    data = _read_bounded_stdin()
+    if data is None or (decoded := _decode_bounded(data)) is None:
+        return 2
+    try:
+        value = json.loads(decoded)
+    except json.JSONDecodeError:
+        return 2
+    if not isinstance(value, dict):
+        return 2
+    raw_path = value.get("transcript_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return 2
+    return read_transcript_thread_spawn_metadata(sessions_root, raw_path)
+
+
 def main(argv: Sequence[str]) -> int:
     if argv == ["stdin"]:
         return read_stdin()
@@ -226,6 +418,8 @@ def main(argv: Sequence[str]) -> int:
         return read_transcript_first_record(Path(argv[1]), argv[2])
     if len(argv) == 2 and argv[0] == "hook-transcript-first-record":
         return read_hook_transcript_first_record(Path(argv[1]))
+    if len(argv) == 2 and argv[0] == "hook-transcript-thread-spawn-metadata":
+        return read_hook_transcript_thread_spawn_metadata(Path(argv[1]))
     return 2
 
 

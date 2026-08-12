@@ -52,11 +52,11 @@ When work is flat and has no task IDs, omit `Task ID` and `Parent ID`.
 
 | Task ID | Parent ID | Lane | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next proof/action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<lane result wanted>` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `BLOCKED` / `CLOSED` | `none` or `<exact blocker; impact; owner; exact unblock action; artifact/path when applicable>` | `<next evidence/action>` |
+| `1.3.2` or `none` | `1.3` or `none` | `<lane result wanted>` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `<next evidence/action>` |
 
 | Rule | Behavior |
 | --- | --- |
-| Status vocabulary | In each status column, use only `NEW`, `IN PROGRESS`, `BLOCKED`, `CLOSED`. |
+| Status vocabulary | In each status column, use only `NEW`, `IN PROGRESS`, `PAUSED`, `BLOCKED`, `CLOSED`. |
 | Implementation Status | Covers exploration, RCA, design, code changes, code review, build checks, unit/component/integration auto-tests, and source-level readiness. `CLOSED` means source-level work is accepted with relevant automated checks. |
 | Test Status | Covers E2E validation in the non-production test environment, including real devices, test services, UI manipulation, and mission/test-plan helpers. `CLOSED` means test-environment E2E passed or was explicitly waived. |
 | Prod Status | Covers E2E validation in production, including deploy provenance, real production services/devices, UI manipulation where relevant, and user-visible behavior. `CLOSED` means production E2E passed or was explicitly waived. |
@@ -64,12 +64,13 @@ When work is flat and has no task IDs, omit `Task ID` and `Parent ID`.
 | Evidence states | Put worker completions, reviews, source fixes, deploys, and partial proofs in `Next proof/action`, not by collapsing status columns. |
 | RCA/fix closure | For bug/debug lanes, missing, failing, or not-runnable domain-required acceptance proof keeps RCA/fix open. Source approval may close Implementation only; wording must say source-only/progress, not fixed/closed. |
 | `CLOSED` | Use only in the specific column whose required evidence is proven or explicitly removed from scope. |
-| `BLOCKED` | Name exact blocker, stalled impact, owner, exact unblock action, and target artifact/path when applicable. |
+| `PAUSED` | Use only when this lane's next required action is progress from another in-scope lane. No user input or decision is pending for this lane's next action. Name the dependency lane, impact, owner, and resume condition in `Blocker` or `Next proof/action`. If the dependency lane is `BLOCKED`, keep this lane `PAUSED` and mark the dependency lane `BLOCKED`. |
+| `BLOCKED` | Use only when this lane cannot make any more progress until the user provides a named input or decision. Name the exact user input/decision, impact, owner (`user`), exact unblock action, and target artifact/path. Do not use `BLOCKED` for another lane's progress. |
 | Coverage | Do not omit lanes because they are idle, waiting, paused, under review, deployment-only, or proof-only. |
 
 ## Pressure Scenario
 
-Under time pressure, do not write "blocked on review" or "risk in tests" alone. Write impact, owner, exact action, and target artifact/path: "Blocked on API contract review; checkout validation may be wrong until Alex reviews docs/api-contract.md and confirms required fields."
+Under time pressure, classify by the lane's next required action. Use: "PAUSED on API-contract lane; impact: checkout validation cannot make progress; owner: API-contract lane; resume: lane 2 publishes docs/api-contract.md." Use `BLOCKED` only for user input: "BLOCKED on user decision: choose required API fields; impact: checkout validation cannot make further progress; owner: user; unblock: record the choice in docs/api-contract.md."
 
 ## Common Failures
 
@@ -96,5 +97,8 @@ Under time pressure, do not write "blocked on review" or "risk in tests" alone. 
 | Hierarchy | Parent/child work is shown as a tree or with `Task ID` + `Parent ID`; nested work is not flattened. |
 | Task IDs | Existing task IDs use hierarchical form such as `1.3.2`. |
 | Multi-lane coverage | Every in-scope lane is listed, including idle/waiting/review/deploy/proof/paused lanes. |
-| Lane statuses | Each Implementation/Test/Prod status is exactly `NEW`, `IN PROGRESS`, `BLOCKED`, or `CLOSED`. |
+| Lane statuses | Each Implementation/Test/Prod status is exactly `NEW`, `IN PROGRESS`, `PAUSED`, `BLOCKED`, or `CLOSED`. |
+| PAUSED semantics | A lane waiting for progress from another in-scope lane, with no user input/decision pending, is labeled `PAUSED`, not `BLOCKED`. |
+| BLOCKED semantics | A lane unable to make more progress until the user supplies a named input/decision is labeled `BLOCKED` with `owner=user` and an exact unblock action; dependency-only waiting is not `BLOCKED`. |
+| Dependency propagation | If a dependency lane is `BLOCKED` on user input, the dependent lane remains `PAUSED` until its own next required action needs user input. |
 | Status separation | Source-level completion, test E2E, and production E2E are never merged into one status. |

@@ -222,7 +222,7 @@ run_hook() {
   local script="$2"
   local fixture="$3"
   shift 3
-  env -u CODEX_ROLE "$@" bash "$script" <"$fixture" 2>"$outfile.err" |
+  env -u CODEX_HOME -u CODEX_ROLE "$@" bash "$script" <"$fixture" 2>"$outfile.err" |
     cat >"$outfile"
 }
 
@@ -940,8 +940,9 @@ write_first_record_scoped_subagent_transcript() {
   local record_bytes="$2"
   local include_newline="${3:-yes}"
   local include_history="${4:-yes}"
+  local parent_session_id="${5:-parent-session}"
   local prefix suffix newline_bytes padding_length history_prefix history_suffix
-  prefix='{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session"}}}},"padding":"'
+  prefix="{\"type\":\"session_meta\",\"payload\":{\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"$parent_session_id\"}}}},\"padding\":\""
   suffix='"}'
   newline_bytes=1
   [ "$include_newline" = yes ] || newline_bytes=0
@@ -965,7 +966,7 @@ trace_first_record_helper() {
   local trace="$4"
 
   strace -f -qq -s 8192 -e trace=read -P "$transcript" -o "$trace" \
-    env HOME="$TMP_ROOT/home" bash -c '. "$1"; "$2" "$3"' \
+    env -u CODEX_HOME HOME="$TMP_ROOT/home" bash -c '. "$1"; "$2" "$3"' \
     bash "$ROOT/hooks/lib/codex-proof-state.sh" "$helper" \
     "$(jq -cn --arg transcript "$transcript" '{transcript_path: $transcript}')" \
     >"$output" 2>"$output.err"
@@ -980,13 +981,15 @@ trace_read_bytes() {
 trace_is_first_record_scoped() {
   local trace="$1"
   local transcript="$2"
-  local first_record_bytes total_bytes read_bytes
+  local first_record_bytes maximum_read_bytes total_bytes read_bytes
   first_record_bytes="$(sed -n '1{p;q;}' "$transcript" | wc -c)"
+  maximum_read_bytes=$((first_record_bytes + 8192))
+  [ "$maximum_read_bytes" -le 73728 ] || maximum_read_bytes=73728
   total_bytes="$(wc -c <"$transcript")"
   read_bytes="$(trace_read_bytes "$trace")"
 
   [ -s "$trace" ] &&
-    [ "$read_bytes" -le $((first_record_bytes + 8192)) ] &&
+    [ "$read_bytes" -le "$maximum_read_bytes" ] &&
     { [ "$first_record_bytes" -eq "$total_bytes" ] || [ "$read_bytes" -lt "$total_bytes" ]; } &&
     ! grep -Fq 'DEEP_SECOND_RECORD_SENTINEL' "$trace"
 }
@@ -996,12 +999,12 @@ invoke_state_helper() {
   local input="$2"
   local output="$3"
 
-  env HOME="$TMP_ROOT/home" bash -c '. "$1"; "$2" "$3"' \
+  env -u CODEX_HOME HOME="$TMP_ROOT/home" bash -c '. "$1"; "$2" "$3"' \
     bash "$ROOT/hooks/lib/codex-proof-state.sh" "$helper" "$input" \
     >"$output" 2>"$output.err"
 }
 
-test_subagent_helper_rejects_oversize_first_record() {
+test_subagent_helper_reads_oversize_metadata_prefix() {
   local label record_bytes transcript output trace
   for label in short boundary large; do
     case "$label" in
@@ -1013,31 +1016,22 @@ test_subagent_helper_rejects_oversize_first_record() {
     output="$TMP_ROOT/first-record-subagent-$label.out"
     trace="$TMP_ROOT/first-record-subagent-$label.strace"
     write_first_record_scoped_subagent_transcript "$transcript" "$record_bytes" || return 1
-    if [ "$label" = large ]; then
-      if trace_first_record_helper codex_hook_is_subagent_context \
-          "$transcript" "$output" "$trace"; then
-        return 1
-      fi
-    else
-      trace_first_record_helper codex_hook_is_subagent_context \
-        "$transcript" "$output" "$trace" || return 1
-    fi
+    trace_first_record_helper codex_hook_is_subagent_context \
+      "$transcript" "$output" "$trace" || return 1
     [ ! -s "$output" ] && trace_is_first_record_scoped "$trace" "$transcript" || return 1
   done
 }
 
-test_parent_helper_rejects_oversize_first_record() {
+test_parent_helper_reads_oversize_metadata_prefix() {
   local transcript output trace
   transcript="$TMP_ROOT/home/.codex/sessions/first-record-parent-large.jsonl"
   output="$TMP_ROOT/first-record-parent-large.out"
   trace="$TMP_ROOT/first-record-parent-large.strace"
   write_first_record_scoped_subagent_transcript "$transcript" 1048576 || return 1
 
-  if trace_first_record_helper codex_hook_parent_session_id \
-      "$transcript" "$output" "$trace"; then
-    return 1
-  fi
-  [ ! -s "$output" ] && trace_is_first_record_scoped "$trace" "$transcript"
+  trace_first_record_helper codex_hook_parent_session_id \
+    "$transcript" "$output" "$trace" || return 1
+  [ "$(<"$output")" = parent-session ] && trace_is_first_record_scoped "$trace" "$transcript"
 }
 
 test_first_record_helpers_reject_oversize_without_final_newline() {
@@ -1199,6 +1193,65 @@ test_eci_gate_allows_spawned_agent_transcript_payload() {
   expect_no_output "$out"
 }
 
+test_eci_gate_allows_oversize_spawned_agent_transcript_payload() {
+  local proof_root input out transcript
+  proof_root="$(fresh_proof_root eci-oversize-subagent-transcript)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  transcript="$TMP_ROOT/home/.codex/sessions/eci-oversize-subagent.jsonl"
+  write_first_record_scoped_subagent_transcript "$transcript" 1048576 yes no t00-session || return 1
+  input="$TMP_ROOT/eci-oversize-subagent-transcript.json"
+  jq --arg transcript "$transcript" '.transcript_path = $transcript' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-oversize-subagent-transcript.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out"
+}
+
+test_eci_gate_allows_spawned_agent_through_sessions_root_symlink() {
+  local proof_root input out sessions_root sessions_target transcript
+  proof_root="$(fresh_proof_root eci-subagent-sessions-symlink)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  sessions_root="$TMP_ROOT/home/.codex/sessions"
+  sessions_target="$TMP_ROOT/eci-subagent-sessions-target"
+  mkdir -p "$TMP_ROOT/home/.codex" "$sessions_target"
+  ln -s "$sessions_target" "$sessions_root"
+  transcript="$sessions_root/child.jsonl"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/eci-subagent-sessions-symlink.json"
+  jq --arg transcript "$transcript" '.transcript_path = $transcript' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-subagent-sessions-symlink.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out"
+}
+
+test_eci_gate_allows_split_root_logical_child_transcript() {
+  local proof_root input out physical_sessions logical_codex transcript
+  proof_root="$(fresh_proof_root eci-split-root-logical-child)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  physical_sessions="$TMP_ROOT/home/.codex/sessions"
+  logical_codex="$TMP_ROOT/logical-codex"
+  mkdir -p "$physical_sessions" "$logical_codex"
+  ln -s "$physical_sessions" "$logical_codex/sessions"
+  transcript="$logical_codex/sessions/child.jsonl"
+  write_subagent_transcript "$transcript" || return 1
+  input="$TMP_ROOT/eci-split-root-logical-child.json"
+  jq --arg transcript "$transcript" '.transcript_path = $transcript' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-split-root-logical-child.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_HOME="$logical_codex" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  expect_no_output "$out"
+}
+
 test_eci_gate_blocks_main_transcript_payload() {
   local proof_root input out transcript
   proof_root="$(fresh_proof_root eci-main-transcript)"
@@ -1212,6 +1265,27 @@ test_eci_gate_blocks_main_transcript_payload() {
 
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_pretool_deny "$out"
+}
+
+test_eci_gate_blocks_split_root_logical_main_transcript() {
+  local proof_root input out physical_sessions logical_codex transcript
+  proof_root="$(fresh_proof_root eci-split-root-logical-main)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  physical_sessions="$TMP_ROOT/home/.codex/sessions"
+  logical_codex="$TMP_ROOT/logical-codex"
+  mkdir -p "$physical_sessions" "$logical_codex"
+  ln -s "$physical_sessions" "$logical_codex/sessions"
+  transcript="$logical_codex/sessions/main.jsonl"
+  write_main_transcript "$transcript" || return 1
+  input="$TMP_ROOT/eci-split-root-logical-main.json"
+  jq --arg transcript "$transcript" '.transcript_path = $transcript' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-split-root-logical-main.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    HOME="$TMP_ROOT/home" CODEX_HOME="$logical_codex" CODEX_PROOF_ROOT="$proof_root" || return 1
 
   is_pretool_deny "$out"
 }
@@ -6295,6 +6369,29 @@ test_stop_gate_blocks_main_transcript_with_eci_state() {
     json_field_contains "$out" '.reason // empty' "ECI is active"
 }
 
+test_stop_gate_blocks_report_based_eci_exception() {
+  local proof_root input out report
+  proof_root="$(fresh_proof_root stop-report-eci-exception)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  printf 'scope: report exception regression\n' >"$proof_root/t00-session/eci_active"
+  report="$proof_root/t00-session/eci-blocker-report.md"
+  printf '%s\n' \
+    '## Blocker Requiring User Input' \
+    'fresh user-owned resume action' \
+    '' \
+    '## Why ECI Was Not Disengaged' \
+    'the active marker remains armed' >"$report"
+
+  input="$TMP_ROOT/stop-report-eci-exception.json"
+  jq --arg cwd "$ROOT" '.cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/stop-report-eci-exception.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "ECI is active"
+}
+
 test_stop_gate_allows_session_skip_state() {
   local proof_root input out
   proof_root="$(fresh_proof_root stop-session-skip)"
@@ -6742,18 +6839,26 @@ run_case "ECI gate blocks code apply_patch from session marker" \
   test_eci_gate_blocks_code_apply_patch_from_session_state
 run_case "ECI gate blocks CODEX_ROLE spoof through marker" \
   test_eci_gate_blocks_codex_role_spoof
-run_case "subagent helper rejects oversize first record" \
-  test_subagent_helper_rejects_oversize_first_record
-run_case "parent helper rejects oversize first record" \
-  test_parent_helper_rejects_oversize_first_record
+run_case "subagent helper reads oversize metadata prefix" \
+  test_subagent_helper_reads_oversize_metadata_prefix
+run_case "parent helper reads oversize metadata prefix" \
+  test_parent_helper_reads_oversize_metadata_prefix
 run_case "first-record helpers reject oversize record without final newline" \
   test_first_record_helpers_reject_oversize_without_final_newline
 run_case "first-record helpers preserve boundary behavior" \
   test_first_record_helpers_preserve_boundary_behavior
 run_case "ECI gate allows spawned-agent transcript payload" \
   test_eci_gate_allows_spawned_agent_transcript_payload
+run_case "ECI gate allows oversize spawned-agent transcript payload" \
+  test_eci_gate_allows_oversize_spawned_agent_transcript_payload
+run_case "ECI gate allows spawned-agent transcript through sessions-root symlink" \
+  test_eci_gate_allows_spawned_agent_through_sessions_root_symlink
+run_case "ECI gate allows split-root logical child transcript" \
+  test_eci_gate_allows_split_root_logical_child_transcript
 run_case "ECI gate blocks main transcript payload" \
   test_eci_gate_blocks_main_transcript_payload
+run_case "ECI gate blocks split-root logical main transcript" \
+  test_eci_gate_blocks_split_root_logical_main_transcript
 run_case "reviewer backend parser accepts no-credential backends" \
   test_reviewer_backend_parser_accepts_no_credential_backends
 run_case "reviewer backend parser rejects credential backends" \
@@ -7246,6 +7351,8 @@ run_case "stop gate allows subagent committed clean repo" \
   test_stop_gate_allows_subagent_committed_clean_repo
 run_case "stop gate blocks main transcript with ECI state" \
   test_stop_gate_blocks_main_transcript_with_eci_state
+run_case "stop gate blocks report-based ECI exception" \
+  test_stop_gate_blocks_report_based_eci_exception
 run_case "stop gate allows session-scoped skip marker" \
   test_stop_gate_allows_session_skip_state
 run_case "stop gate allows cwd-scoped skip marker" \

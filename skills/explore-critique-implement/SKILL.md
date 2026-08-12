@@ -219,6 +219,7 @@ Spawn a DIFFERENT agent — not the explorer, implementer, or main thread — wi
 
 The critic's prompt must include:
 - **Original user requirements verbatim.** The critic must verify options against what the user actually asked for, not just technical soundness.
+- **Pre-routing packet and report.** Carry `loop-id`, each `decision-id`, objectives/criteria, and the general pre-routing record; carry `started`, deadline, and `sealed-at` only for a potential defer. Run **Impact-proportional pre-routing** before candidate REJECT/deferral; report the result and record reference. Only `critic-step2` approves a Step 2 deadline-qualified defer after verifying `sealed-at <= started + 2 minutes`; scope-creep debt queues under its scope-screen record; every other in-scope case is `now`.
 - **"Step 0 — Independent baseline."** Read the source material (target file, existing code, prior art) and write your own 3-5 bullet assessment BEFORE opening the explorer's report. Include this baseline in the critique output.
 - "Assume every suggestion is wrong until you prove otherwise."
 - "Read the current state first" (the file/code/doc the explorer was working on) — verify duplication claims independently.
@@ -232,10 +233,10 @@ The critic's prompt must include:
   - Quote the exact supporting passage. Flag hallucinated URLs, misquotes, and training-recall mislabeled as T1.
   - Non-load-bearing citations may be skipped if explicitly marked "non-load-bearing: no verdict depends on this source."
   - T3/T4: sample, not exhaustive.
-- Per-issue severity code (table below). Issues attach to specific options. Aggregate per-option verdict = strongest severity.
+- Per remaining in-scope issue severity code (table below). Issues attach to specific options. Aggregate per-option verdict = strongest severity.
 - **DUPLICATE-of-#N marker** (orthogonal to severity): set when one option restates another option's substance.
-- **If at least one option has zero REJECTs**: pick winner from that set with CONCRETE TEXT. Output winner + that option's CONDITIONAL fix-text list (verbatim) + NITs (informational).
-- **If every option has REJECTs**: do not pick. Return REJECT issues verbatim to orchestrator for bounce per Loop-logic table.
+- **If at least one option has zero remaining `now` REJECTs**: pick winner from that set with CONCRETE TEXT. Output winner + that option's `treatment: now` fix-text list (verbatim) + pre-routing record references + NITs (informational).
+- **If every option has remaining `now` REJECTs**: do not pick. Return those REJECT issues verbatim to orchestrator for bounce per Loop-logic table.
 - Single-option explorations get the same adversarial treatment.
 - "Be harsh. Most suggestions are noise. Zero survivors is a valid outcome."
 - Each retry round uses a clean critic context under the same reusable critic role label.
@@ -245,23 +246,45 @@ The critic's prompt must include:
 | Code | Meaning | Effect on the option |
 |------|---------|----------------------|
 | **REJECT** | Option is wrong-shaped: violates user requirements, rests on unsound assumption, lacks a critical capability, or is unfixable without re-exploration | Option cannot be the winner. If ALL options have ≥1 REJECT, see Loop-logic. |
-| **CONDITIONAL** | Option is sound; needs a specific tweak the critic spells out as one-or-two lines of fix-text | Option remains viable. Orchestrator folds the fix-text into Step 3 (see below). |
+| **CONDITIONAL** | Option is sound; needs a specific tweak the critic spells out as one-or-two lines of fix-text | Option remains viable. `treatment: now` goes to Step 3; a deadline-qualified `defer` or scope-creep debt is recorded below. |
 | **NIT** | Soft preference; doesn't affect viability | May be ignored when picking the winner |
 
 Same vocabulary as Step 4; Effect column differs because receiver/artifact/remediation differ per phase.
 
 For coding-style issues, cosmetic preference is NIT; missing or unverified admission, omitted material guidance, or an undeclared or unjustified deviation is REJECT. An admitted deviation is compliant. Classify hard non-style failures by their existing requirement, not as style.
 
+### Impact-proportional pre-routing
+
+Run this before every normal severity, priority, async, revision, or deferred-work route. This replaces other impact-triage rules. The stated objective and acceptance criteria are the critical path.
+
+**Scope screen before severity.** Before coding, pre-route a wholly separable scope-creep remedy as a scope-creep-debt record, not a critic issue, code, or gate verdict. For a mixed remedy, record only the separable added portion as debt; code and gate the necessary original-scope portion.
+
+First screen scope. A remedy necessary to satisfy the original objective, acceptance criteria, or required quality enforcement is `now`: security, correctness, specification, contract/interface, persistence, concurrency, admission, TDD, proof, regression, verification, or required test. A separable added outcome, problem, interface, or criterion that is not necessary for those originals is scope-creep debt, not `now`, regardless of when discovered. Queue it; it cannot replace, waive, or reduce any original criterion or required proof. A mixed remedy splits: necessary original portions are `now`; only the separable added portion is scope-creep debt.
+
+A scope-creep-debt record names `loop-id`, `decision-id`, the checked original objective/criteria and required quality evidence, added outcome/problem/interface/criterion, source, owner, specific tracker reference, bounded risk, technical revisit trigger, and `primary-capacity: none`. Scope-creep debt needs no deadline qualification.
+
+Only after that screen, an in-scope potential defer creates one append-only record with `loop-id`, `decision-id`, and `started`. By `started + 2 minutes`, append and seal exactly one terminal entry `{elapsed, sealed-at, treatment, evidence/result}`. A record is deadline-sealed only when `sealed-at <= started + 2 minutes`. No deadline-sealed terminal entry makes that in-scope finding `now`; a late entry is audit-only and cannot authorize deferral. The terminal entry is immutable. Later reviewers verify only the same record’s `sealed-at`; they cannot reset or reopen it.
+
+Eligibility search, reading, testing, classification, discussion, recording, and comment drafting count against the deferral window. Rewording, recasting, a later iteration, or a later reviewer cannot create another deferral window. New evidence makes the in-scope finding `now`.
+
+Compare REJECT remedies only when `loop-id` and `decision-id` match. Directly mutually exclusive remedies from different iterations for the same unresolved criterion are `ignored-contradictory`: record and ignore the directives; do not repair, review, or cycle them. Ignoring directives never resolves their underlying criterion; any still-unmet hard criterion remains `now`. Different criteria, targets, evidence, compatible remedies, roots, nested ECI runs, or later user scope are separate decisions.
+
+Only an in-scope finding may defer: it must be non-hard, impact-trivial, deadline-sealed, and its evidence must show bounded risk, an isolated cause, and no material accumulated recurrence through a template, generator, contract, common path, policy, or reviewer habit. Missing, new, or late evidence, a hard category, or unresolved sharing makes that in-scope finding `now`. Effort, deadline, fatigue, sunk cost, authority, completed work, and calendar date never qualify.
+
+A valid deferred record names objective/criterion, finding/severity, direct/shared evidence, accumulated-impact result, owner, specific tracker reference, bounded risk, and technical revisit trigger. Each queued code-level future action with an affected source gets a concise, searchable, language-appropriate source comment with its specific tracker reference: `tech-debt(<specific-tracker-ref>): <specific debt>; risk: <bounded risk>; revisit: <technical trigger>`. Without an affected source, the record carries that specific tracker reference. Never use a vague TODO or comment to defer `now` or hard work.
+
+Scope-creep debt is queued and consumes no primary time, owner, proof, or critical-path capacity. Other secondary work may proceed only if it consumes no primary time, owner, proof, or critical-path capacity. Otherwise queue it; required original-scope quality work remains `now`.
+
 ### Step 2 loop-logic
 
 | Critic verdict pattern | Action | Output |
 |---|---|---|
-| ≥1 option with zero REJECTs | Pick highest-ranked clean option as winner | Winner + that option's CONDITIONAL fix-text list + NITs |
-| Every option has ≥1 REJECT, round 1 | Bounce verbatim REJECT reasons to the idle explorer with `followup_task`; spawn a new blind `critic-step2` identity for round 2 | Bounce-back |
-| Every option has ≥1 REJECT, round 2 | Trigger brainstormer per Brainstormer trigger row; new explorer round | Escalation per Escalation table |
+| ≥1 option with zero remaining `now` REJECTs | Pick highest-ranked clean option as winner | Winner + `treatment: now` fix-text + pre-routing record references + NITs |
+| Every option has ≥1 remaining `now` REJECT, round 1 | Bounce verbatim REJECT reasons to the idle explorer with `followup_task`; spawn a new blind `critic-step2` identity for round 2 | Bounce-back |
+| Every option has ≥1 remaining `now` REJECT, round 2 | Trigger brainstormer per Brainstormer trigger row; new explorer round | Escalation per Escalation table |
 | Only NITs across all options | Pick highest-ranked option directly | Winner + NITs |
 
-**Critic emits issues only.** CONDITIONAL absorption happens at the orchestrator's hand-off to Step 3 — orchestrator folds the winner's CONDITIONAL fix-text into the Step 3 implementer `followup_task` body. The critic does NOT rewrite options.
+**Critic emits issues only.** At hand-off, the orchestrator folds only `treatment: now` fix-text into the Step 3 implementer `followup_task`; deadline-qualified defer or scope-creep debt, and `ignored-contradictory` directives are recorded, not implemented. The critic does NOT rewrite options.
 
 ## Step 3: Implement
 
@@ -271,7 +294,8 @@ Each new task message to `implementer` includes:
 - The current iteration's concrete-text from the Step 2 critic (verbatim).
 - The current governed scope's admitted coding-style record and reviewer verdict (verbatim), including any approved deltas and applicable Tool route.
 - Iterations 2+: prior iteration's gate findings (verbatim) and files changed since the last message.
-- Step 2 CONDITIONAL fix-list (verbatim, if any) — implementer applies these alongside the concrete text.
+- Only `treatment: now` fix-list (verbatim, if any) — implementer applies it alongside the concrete text.
+- `deadline-qualified defer` or scope-creep-debt records (verbatim) — implementer does not implement deferred/debt work; an affected source gets the exact source comment with its specific tracker reference; otherwise include the specific tracker record.
 - Code/debugging submissions include root-cause rationale plus regression status/explanation when applicable. A fix must identify and repair the mechanism that causes the failure. No causal link may remain unexplained. Any change that only alters the failure's frequency, timing, visibility, or blast radius is mitigation unless containment was explicitly requested.
 - Submission tags every factual claim. Untagged claim → orchestrator bounces back without spawning the gate (parallel to E2E-evidence rule).
 
@@ -283,7 +307,7 @@ If applicable E2E evidence is missing, reassign the idle implementer with `follo
 
 ## Step 4: Review gate (parallel)
 
-Spawn all three as new blind critic agents in a single message: three parallel `spawn_agent` calls, each with `fork_turns: "none"`, a unique transport `task_name`, and a self-contained role prompt for `critic-A`, `critic-B`, or `e2e-gate`. Each MUST NOT message the reusable explorer or implementer. Completion is an automatically delivered event; if an expected event has not arrived, keep at most one outstanding `wait_agent` call for it. Timeout never authorizes an immediate retry or polling. Evaluate only after all three terminal events arrive. Every reviewer prompt includes the **original user requirements verbatim**.
+Spawn all three as new blind critic agents in a single message: three parallel `spawn_agent` calls, each with `fork_turns: "none"`, a unique transport `task_name`, and a self-contained role prompt for `critic-A`, `critic-B`, or `e2e-gate`. Each MUST NOT message the reusable explorer or implementer. Completion is an automatically delivered event; if an expected event has not arrived, keep at most one outstanding `wait_agent` call for it. Timeout never authorizes an immediate retry or polling. Evaluate only after all three terminal events arrive. Every normal reviewer prompt includes the **original user requirements verbatim**, `loop-id`, applicable `decision-id`, objectives/criteria, and the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer.
 
 Critic B code-diff exception:
 - Code diffs use two packets. Skip Packet 1 when there is no code diff.
@@ -294,7 +318,7 @@ Critic B code-diff exception:
 
 ### Issue severity codes
 
-Every issue from Critic A and Critic B must carry exactly one code:
+Every remaining in-scope issue from Critic A and Critic B must carry exactly one code:
 
 | Code | Meaning | Effect |
 |------|---------|--------|
@@ -329,7 +353,7 @@ Diff-only intention check:
 - Exclude original requirements, exact scope, ledger/task/design context, rationale, commit message, implementer or teammate summaries, and prior review output.
 - Output `reconstructed intention:` with 2-4 bullets covering apparent root reason and intended behavior change, then stop.
 - Main thread compares the reconstruction with the actual root reason and desired effects.
-- If it misses the root reason, relies on hidden context, or claims an undesired effect, add a `CONDITIONAL` follow-up with the normal `impact:` tag to make code, tests, names, comments, or commit message explain the change.
+- If it misses the root reason, relies on hidden context, or claims an undesired effect, pre-route the `CONDITIONAL` remedy with the normal `impact:` tag to make code, tests, names, comments, or commit message explain the change.
 - Packet 2: continue normal long-term-health review with full context.
 
 Focus — adversarial, long-term lens:
@@ -357,22 +381,24 @@ Collect results from all three agents. Apply severity logic:
 
 Critic B's coding-style reconciliation is part of the gate. Route a substantive admission invalidation or substantive drift through Steps 1 and 2; return a local or tool-covered delta to `critic-step2` before the next affected write. Then apply the existing severity logic below. Final acceptance requires reconciliation of actual changed scope, admission, approved deltas/deviations, and Tool evidence.
 
-- At least one substantive REJECT or substantive CONDITIONAL, OR an E2E failure caused by design/API uncertainty → batch all REJECTs, CONDITIONALs, and E2E failures into one design-revision issue list → return to Step 1/Step 2 explorer/designer-critic loop → Step 3 implements the selected revised design plus the full batch → re-run gate.
-- At least one trivial REJECT from Critic A or Critic B, OR any trivial E2E failure → fix all REJECTs, CONDITIONALs, and E2E failures in one implementer message → re-run gate.
-- Zero REJECTs but only trivial CONDITIONALs exist → fix all CONDITIONALs in one implementer message → gate passes (no re-run).
-- Only NITs → gate passes.
+Pre-route gate findings before evaluation. Scope-creep debt queues with its scope-screen record regardless of deadline. For queued future work, verifiers require the exact source comment with its specific tracker reference when an affected source exists; otherwise require the specific tracker record. An in-scope gate defer is valid only when Critic A and Critic B independently confirm the same terminal `sealed-at <= deadline` and that requirement. Every other in-scope case is `treatment: now`.
+
+- At least one remaining substantive `now` REJECT or CONDITIONAL, OR an E2E failure caused by design/API uncertainty → batch all remaining `now` REJECTs, CONDITIONALs, and E2E failures into one design-revision issue list → return to Step 1/Step 2 explorer/designer-critic loop → Step 3 implements the selected revised design plus the full batch → re-run gate.
+- At least one remaining trivial `now` REJECT from Critic A or Critic B, OR any trivial E2E failure → fix all remaining `now` REJECTs, CONDITIONALs, and E2E failures in one implementer message → re-run gate.
+- Zero remaining `now` REJECTs but only trivial `now` CONDITIONALs exist → fix them in one implementer message; deadline-qualified deferred work or scope-creep debt is recorded → gate passes (no re-run).
+- No remaining `now` issue → gate passes. `ignored-contradictory` directives, scope-creep debt, and deadline-qualified deferment open no repair, review, or cycle.
 
 Gate retry and cycle limits defined in Escalation table.
 
-**Clean pass** = zero REJECTs + zero CONDITIONALs + E2E pass, all from the same gate run.
+**Clean pass** = every original criterion and required E2E/proof pass, zero remaining `now` REJECTs/CONDITIONALs, and E2E pass from the same gate run. Independently confirmed deadline-qualified deferrals and queued scope-creep debt are future work, not unresolved findings.
 
 ### Design-revision issue batch
 
 When the gate routes back to design revision, batch issues before contacting any agent. Do not run one loop per issue.
 
 The batch must include:
-- All REJECTs, CONDITIONALs, and E2E failures from the completed gate, grouped by affected artifact/API/contract.
-- Source agent, severity, impact tag, file:line or direct evidence, and the exact quoted issue text.
+- All remaining `now` REJECTs, CONDITIONALs, and E2E failures from the completed gate, grouped by affected artifact/API/contract.
+- Source agent, severity, impact tag, file:line or direct evidence, exact quoted issue text, and the `deadline-qualified defer` or scope-creep-debt record reference where audit needs it.
 - Acceptance criteria for resolving the whole batch.
 
 Step 1 explorer re-reads current code and researches options that resolve the full batch. Step 2 critic reviews those options as the designer-critic and either selects one concrete revised design or bounces all-REJECT outcomes per Step 2 loop-logic. Step 3 implementer receives the selected revised design and the full issue batch verbatim. No direct patching of substantive findings before this loop.
@@ -408,28 +434,31 @@ Fresh idea generator — fires on-demand when the cycle stalls. Output is raw id
 
 A separate agent — not any of the cycle agents — gets one chance to break the loop before escalating to the user.
 
-**One loop-breaker invocation per change**, regardless of trigger. If the granted retry fails -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned. ECI stays active.
+**One loop-breaker invocation per change**, regardless of trigger. A failed granted retry or `BLOCKED` result creates a protocol-limit blocker record, runs `blocker-resolution-protocol`, and hard escalates only if BRP finds no feasible internal path or the blocker is user-owned. ECI stays active.
 
 ### Prompt must include
 
 - Original problem statement.
 - All cycle attempts: what was tried, what failed, remaining issues verbatim.
 - Current code state (file paths — loop-breaker reads them independently).
+- Pre-routing outcome, completed gate output, E2E/proof evidence, and clean-pass evaluation.
 - "You are a fresh reviewer. Read the code and issues yourself. Do not trust prior agents' assessments."
 
-### Decision — exactly one of
+### Decision — exactly one of three
 
 | Decision | Meaning | Effect |
 |----------|---------|--------|
-| **ACCEPT** | Remaining issues are cosmetic, speculative, or not worth another iteration | Accept current state with reasoning. Gate passes. |
-| **RETRY** | Remaining issues are real and fixable | Grant exactly one more attempt (gate retry or full cycle, matching the trigger). Provide specific guidance. |
+| **ACCEPT** | Pre-routing leaves no `now` issue and clean pass already holds: every original criterion and required E2E/proof passes, zero `now` REJECT/CONDITIONAL remains, and the same gate's required E2E/proof passes | Record evidence; authorizes only normal clean-pass exit and waives nothing. |
+| **RETRY** | A `now` issue or required clean-pass evidence gap remains and another attempt can resolve it | Grant exactly one matching retry (gate retry or full cycle) with specific guidance. |
+| **BLOCKED** | Clean pass does not hold and no retry can establish it | Create a protocol-limit blocker record, then run `blocker-resolution-protocol`; hard escalate only as BRP allows. |
 
 ### Constraints
 
 - Spawn each loop-breaker invocation as a new blind agent with `fork_turns: "none"` and a self-contained prompt.
 - Must NOT be any of the 6 cycle agents (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent).
 - Reads code and issues independently — no reliance on prior agent summaries.
-- One invocation per change. Granted retry fails -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned.
+- Never ACCEPT with a remaining `now` issue or failed/missing original criterion, required E2E, or required proof.
+- One invocation per change. A granted retry fails or BLOCKED result -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned.
 
 ## Escalation
 
@@ -450,8 +479,7 @@ Cycle limit defined in Escalation table (3 full cycles per change).
 
 ## Exit conditions
 
-- All changes landed with clean pass and clean-pass teardown completed, OR
-- Loop-breaker ACCEPT → current state accepted with reasoning and clean-pass teardown completed, OR
+- Normal clean pass is demonstrated and clean-pass teardown completed, OR
 - User closes ECI by requesting ATE or by cancelling, withdrawing, or replacing its root scope, and user-closed teardown completes, OR
 - Hard escalate triggered → blocker/user decision request reported; ECI remains active.
 
@@ -496,8 +524,8 @@ auth middleware swap
 | Shell-launched Codex process used as an agent | STOP. Use standard collaboration tools (`spawn_agent`, `followup_task`, `send_message`, `wait_agent`, `interrupt_agent`), or hard-escalate if unavailable. |
 | Status report uses task/iteration numbers, or flat-lists nested work | See **Status reports** section. |
 | New producer spawned although its prior role is idle/addressable | Use `followup_task` with a self-contained assignment. `send_message` is only for a currently running turn. |
-| Critic absorbed CONDITIONALs by rewriting option | STOP. Critic tags only — orchestrator folds CONDITIONALs into Step 3 `followup_task` body. |
-| Orchestrator forgot to pass Step 2 CONDITIONALs to implementer | STOP. Step 3 message must include verbatim CONDITIONAL fix-list. |
+| Critic absorbed pre-routed work by rewriting option | STOP. Critic tags only — orchestrator folds only `treatment: now` text into Step 3. |
+| Orchestrator forgot pre-routing or the `now` fix-list | STOP. Include the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer; include only `treatment: now` fixes in Step 3. |
 | Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B rule). |
 | A matching coding-style skill was loaded, but no independent admission exists | STOP. Invocation is not compliance; complete the applicable record and Step 2 admission before durable work. |
 | Durable work starts before admission, or affected work continues after scope/source/conflict/deviation drift | STOP affected work. Isolated disposable work may continue under the stated boundary; route local/tool-covered deltas to `critic-step2` and substantive drift through Steps 1/2. |
@@ -507,7 +535,7 @@ auth middleware swap
 | Code/debugging submission lacks root-cause rationale or required regression explanation | STOP. Bounce before gate; unknown "why" means unsubmittable. |
 | Bug RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |
 | Critic fails to critique root-cause rationale or regression explanation | STOP. Re-prompt or re-spawn critic. |
-| Substantive REJECT/CONDITIONAL fixed directly after review gate | STOP. Batch all gate issues and return to Step 1/Step 2 explorer/designer-critic loop. |
+| Remaining substantive `now` REJECT/CONDITIONAL fixed directly after review gate | STOP. Batch all remaining `now` gate issues and return to Step 1/Step 2 explorer/designer-critic loop. |
 | Gate issues handled one-by-one | STOP. Batch by affected artifact/API/contract before re-exploration or implementation. |
 
 ## Relationship to other skills

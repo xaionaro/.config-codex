@@ -14,6 +14,7 @@ image_generation = false
 child_agents_md = true
 multi_agent = true
 sqlite = false
+multi_agent_v2 = true
 
 [history]
 persistence = "none"
@@ -138,6 +139,42 @@ model_reasoning_effort = "max"
 trust_level = "trusted"
 
 [projects."/home/pheona/.codex"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/kimi-proof/session_49bc9334-005c-467e-a403-5b145f0afd2b/codex-jobs"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/src/worldcontrol"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/ffstream"]
+trust_level = "trusted"
+
+[projects."/home/pheona/.kimi-code"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/youtube-live-chat-downloader"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/streaming-e2e"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/avpipeline"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/streamer"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/avd"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/streamctl"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/wingout"]
 trust_level = "trusted"
 
 [hooks.state]

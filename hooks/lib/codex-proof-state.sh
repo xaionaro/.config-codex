@@ -423,25 +423,43 @@ codex_bind_side_stop_to_session() {
   cp "$file" "$dir/side_stop"
 }
 
+codex_hook_sessions_root() {
+  local configured_root="${CODEX_HOME:-$HOME/.codex}"
+
+  case "$configured_root" in
+    /*) printf '%s/sessions\n' "$configured_root" ;;
+    *) return 1 ;;
+  esac
+}
+
 codex_hook_transcript_first_record() {
   local input="${1:-}"
-  local first_record
+  local sessions_root first_record
 
+  sessions_root="$(codex_hook_sessions_root)" || return 1
   first_record="$(printf '%s' "$input" | \
     python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
-      hook-transcript-first-record "$HOME/.codex/sessions" 2>/dev/null)" || return 1
+      hook-transcript-first-record "$sessions_root" 2>/dev/null)" || return 1
   printf '%s\n' "$first_record"
+}
+
+codex_hook_thread_spawn_metadata() {
+  local input="${1:-}"
+  local sessions_root metadata
+
+  sessions_root="$(codex_hook_sessions_root)" || return 1
+  metadata="$(printf '%s' "$input" | \
+    python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
+      hook-transcript-thread-spawn-metadata "$sessions_root" 2>/dev/null)" || return 1
+  printf '%s\n' "$metadata"
 }
 
 codex_hook_is_subagent_context() {
   local input="${1:-}"
-  local first_record
+  local metadata
 
-  first_record="$(codex_hook_transcript_first_record "$input")" || return 1
-  printf '%s' "$first_record" | jq -e '
-    .type == "session_meta" and
-    (.payload.source.subagent.thread_spawn? != null)
-  ' >/dev/null 2>&1
+  metadata="$(codex_hook_thread_spawn_metadata "$input")" || return 1
+  printf '%s' "$metadata" | jq -e 'has("parent_thread_id")' >/dev/null 2>&1
 }
 
 codex_hook_transcript_first_record_is_admissible() {
@@ -452,12 +470,10 @@ codex_hook_transcript_first_record_is_admissible() {
 
 codex_hook_parent_session_id() {
   local input="${1:-}"
-  local first_record
+  local metadata
 
-  first_record="$(codex_hook_transcript_first_record "$input")" || return 1
-  printf '%s' "$first_record" | jq -r '
-    .payload.source.subagent.thread_spawn.parent_thread_id // empty
-  ' 2>/dev/null
+  metadata="$(codex_hook_thread_spawn_metadata "$input")" || return 1
+  printf '%s' "$metadata" | jq -r '.parent_thread_id // empty' 2>/dev/null
 }
 
 codex_path_owner_session_id() {

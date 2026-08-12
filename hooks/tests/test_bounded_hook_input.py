@@ -317,6 +317,7 @@ class BoundedHookInputTests(unittest.TestCase):
                     env={
                         **os.environ,
                         "HOME": str(home),
+                        "CODEX_HOME": str(home / ".codex"),
                         "CODEX_PROOF_ROOT": str(proof),
                         "CODEX_EDIT_PRE_REVIEWER": "ollama:http://127.0.0.1:1/generated",
                         "CODEX_PRE_REVIEWER_FAKE_RESULT": '{"verdict":"deny","reason":"bad"}',

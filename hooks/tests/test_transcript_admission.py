@@ -28,11 +28,21 @@ def invoke(
     helper: str,
     transcript: Path | str,
     home: Path,
+    *,
+    codex_home: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     hook_input = json.dumps(
         {"transcript_path": str(transcript)},
         separators=(",", ":"),
     )
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    environment.pop("CODEX_HOME", None)
+    if codex_home is not None:
+        environment["CODEX_HOME"] = str(codex_home)
     return subprocess.run(
         [
             "/bin/bash",
@@ -45,11 +55,7 @@ def invoke(
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={
-            **os.environ,
-            "HOME": str(home),
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
+        env=environment,
         timeout=3.0,
         check=False,
     )
@@ -60,10 +66,17 @@ class TranscriptAdmissionTests(unittest.TestCase):
         self,
         transcript: Path | str,
         home: Path,
+        *,
+        codex_home: Path | None = None,
     ) -> None:
         for helper in HELPERS:
             with self.subTest(helper=helper, transcript=transcript):
-                result = invoke(helper, transcript, home)
+                result = invoke(
+                    helper,
+                    transcript,
+                    home,
+                    codex_home=codex_home,
+                )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((result.stdout, result.stderr), (b"", b""))
 
@@ -100,6 +113,49 @@ class TranscriptAdmissionTests(unittest.TestCase):
 
             self.assertEqual((admission.returncode, admission.stdout), (0, b""))
             self.assertEqual((parent.returncode, parent.stdout), (0, b"parent-session\n"))
+
+    def test_configured_sessions_root_allows_logical_child_and_rejects_physical_alias(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="transcript-admission-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            physical_sessions = home / ".codex/sessions"
+            logical_codex = root / "logical-codex"
+            logical_sessions = logical_codex / "sessions"
+            physical_sessions.mkdir(parents=True)
+            logical_codex.mkdir()
+            logical_sessions.symlink_to(physical_sessions, target_is_directory=True)
+            logical_transcript = logical_sessions / "valid.jsonl"
+            logical_transcript.write_bytes(SUBAGENT_RECORD)
+
+            admission = invoke(
+                HELPERS[0],
+                logical_transcript,
+                home,
+                codex_home=logical_codex,
+            )
+            subagent = invoke(
+                HELPERS[1],
+                logical_transcript,
+                home,
+                codex_home=logical_codex,
+            )
+            parent = invoke(
+                HELPERS[2],
+                logical_transcript,
+                home,
+                codex_home=logical_codex,
+            )
+
+            self.assertEqual((admission.returncode, admission.stdout), (0, b""))
+            self.assertEqual((subagent.returncode, subagent.stdout), (0, b""))
+            self.assertEqual((parent.returncode, parent.stdout), (0, b"parent-session\n"))
+            self.assert_all_reject(
+                physical_sessions / "valid.jsonl",
+                home,
+                codex_home=logical_codex,
+            )
 
     def test_nonexistent_and_nonregular_transcripts_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="transcript-admission-") as temporary:

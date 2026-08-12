@@ -12,7 +12,7 @@ Require explicit causality: trigger -> mechanism -> failure -> repaired link. An
 
 ## Required Procedure
 
-Follow this loop:
+Debugging pipeline:
 
 ```text
 loop(loop(RCA, critic), repro), loop(fix, review)

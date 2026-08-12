@@ -80,28 +80,12 @@ active_eci_marker_for_stop() {
   codex_legacy_eci_markers_for_cwd "$cwd" 2>/dev/null | head -n1
 }
 
-eci_blocker_report_allows_stop() {
-  local marker="$1"
-  local report
-
-  [ -n "$marker" ] && [ -f "$marker" ] || return 1
-  report="${marker%/*}/eci-blocker-report.md"
-  [ -f "$report" ] || return 1
-  [ -n "$(find "$report" -mmin -1440 -print 2>/dev/null)" ] || return 1
-  codex_markdown_section_has_body "$report" "Blocker Requiring User Input" || return 1
-  codex_markdown_section_has_body "$report" "Why ECI Was Not Disengaged" || return 1
-}
-
 block_if_eci_active_for_stop() {
   local marker
 
   marker="$(active_eci_marker_for_stop || true)"
   [ -n "$marker" ] && [ -f "$marker" ] || return 1
   codex_valid_session_id "$session_id" && codex_note_state_session_id "$marker" "$session_id" || true
-  if eci_blocker_report_allows_stop "$marker"; then
-    json_continue
-    return 0
-  fi
   json_block "ECI is active for this stop attempt via marker $marker. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
   return 0
 }
@@ -549,10 +533,6 @@ block_proof_validation() {
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
   codex_note_state_session_id "$eci_active" "$session_id" || true
-  if eci_blocker_report_allows_stop "$eci_active"; then
-    json_continue
-    exit 0
-  fi
   json_block "ECI is active for this session. Never stop until the ECI task is complete. If work is not done, dispatch remaining work to subagents and use wait_agent; do not stop while they run. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
   exit 0
 fi
