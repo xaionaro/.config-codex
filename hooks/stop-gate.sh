@@ -23,7 +23,7 @@ json_string_field() {
 session_id="$(json_string_field session_id)"
 transcript_path="$(json_string_field transcript_path)"
 stop_active="false"
-if [[ "$input" =~ "stop_hook_active"[[:space:]]*:[[:space:]]*(true|false) ]]; then
+if [[ "$input" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*(true|false) ]]; then
   stop_active="${BASH_REMATCH[1]}"
 fi
 cwd="$(json_string_field cwd)"

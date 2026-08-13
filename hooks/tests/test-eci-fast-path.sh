@@ -23,6 +23,21 @@ run_once() {
   [ "$(jq -r '.decision // empty' "$out")" = block ]
 }
 
+# A recursive stop callback must honor the scalar stop_hook_active flag. The
+# closing JSON quote is part of the field token; keep this regression on the
+# lightweight path so a malformed match cannot re-enter manual bookkeeping.
+recursive_input="$tmp/recursive-input.json"
+recursive_out="$tmp/recursive-out.json"
+mkdir -p "$proof_root/activity/sessions/recursive-session"
+printf '%s\n' 'created_utc: probe' >"$proof_root/activity/sessions/recursive-session/shell"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"recursive-session", transcript_path:"/tmp/nonexistent-codex-transcript.jsonl", stop_hook_active:true, cwd:$cwd}' \
+  >"$recursive_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$proof_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$recursive_input" >"$recursive_out"
+[ "$(jq -r '.continue // empty' "$recursive_out")" = true ]
+[ ! -e "$proof_root/activity/sessions/recursive-session/shell" ]
+
 max_ms=0
 for _ in $(seq 1 5); do
   start_ns="$(date +%s%N)"
