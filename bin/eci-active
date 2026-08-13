@@ -29,8 +29,10 @@ validate_proof_root() {
     *) echo "ECI proof root must be an absolute path: $root" >&2; return 1 ;;
   esac
   parent="$(dirname -- "$root")"
-  if [ -L "$root" ] || [ -L "$parent" ]; then
-    echo "ECI proof root is a symlink; refusing to use it: $root" >&2
+  if [ -L "$root" ] || {
+    { [ -e "$parent" ] || [ -L "$parent" ]; } && [ ! -d "$parent" ];
+  }; then
+    echo "ECI proof root or its parent is unsafe: $root" >&2
     return 1
   fi
 }

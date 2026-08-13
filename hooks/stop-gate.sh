@@ -84,51 +84,23 @@ json_block() {
   jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
 
-# Validate an ECI marker without following symlinks.  Return 0 for a regular
-# marker, 1 for an absent marker, and 2 for an unsafe existing path.  The
-# distinct unsafe result lets the caller fail closed before generic stop-state
-# bookkeeping can write timestamps or repair marker contents.
-eci_path_has_symlink_component() {
-  local path="$1"
-  local component current="/"
-  local -a components=()
-
-  case "$path" in
-    /*) ;;
-    *) return 2 ;;
-  esac
-
-  IFS='/' read -r -a components <<<"${path#/}"
-  for component in "${components[@]}"; do
-    case "$component" in
-      ""|.) continue ;;
-      ..) current="$(dirname -- "$current")" ;;
-      *)
-        current="${current%/}/$component"
-        [ -L "$current" ] && return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
+# Validate an ECI marker without following the final session/marker symlinks.
+# Return 0 for a regular marker, 1 for an absent marker, and 2 for an unsafe
+# existing path.  Ancestor cache symlinks are allowed when they resolve to the
+# stable directories checked by eci_root_is_safe_for_stop.
 eci_marker_is_safe_regular() {
   local marker="$1"
-  local parent root_status parent_status
+  local parent
 
   case "$marker" in
     "$root"/*/eci_active) ;;
     *) return 2 ;;
   esac
 
-  root_status=0
-  eci_path_has_symlink_component "$root" || root_status=$?
-  [ "$root_status" -eq 1 ] || return 2
+  eci_root_is_safe_for_stop || return 2
 
   parent="${marker%/*}"
-  parent_status=0
-  eci_path_has_symlink_component "$parent" || parent_status=$?
-  [ "$parent_status" -eq 1 ] || return 2
+  [ ! -L "$parent" ] || return 2
   if [ ! -d "$parent" ]; then
     [ ! -e "$parent" ] && return 1
     return 2
@@ -155,7 +127,7 @@ eci_root_is_safe_for_stop() {
   if [ -e "$root" ]; then
     [ -d "$root" ] || return 2
   fi
-  if [ -e "$parent" ]; then
+  if [ -e "$parent" ] || [ -L "$parent" ]; then
     [ -d "$parent" ] || return 2
   fi
   return 0

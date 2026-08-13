@@ -69,7 +69,8 @@ run_concurrent 32
 run_concurrent 80
 
 # Lifecycle safety remains intentionally separate from the hook hot path:
-# configured/session parent symlinks and marker symlinks must fail closed.
+# proof-root, session, and marker symlinks must fail closed; a stable cache
+# parent symlink is the supported deployment layout tested below.
 safety_root="$tmp/safety-root"
 mkdir -p "$safety_root/real-session"
 ln -s "$safety_root" "$tmp/safety-root-link"
@@ -78,6 +79,30 @@ if CODEX_PROOF_ROOT="$tmp/safety-root-link" CODEX_SESSION_ID=safety \
   printf 'ECI root symlink was accepted\n' >&2
   exit 1
 fi
+
+# A symlinked cache parent is valid when the final proof-root directory is
+# regular and resolves to a directory. Both CLI activation and the stop hook
+# must accept this normal deployment layout.
+cache_target="$tmp/cache-target"
+cache_link="$tmp/cache-link"
+mkdir -p "$cache_target/proof"
+ln -s "$cache_target" "$cache_link"
+CODEX_PROOF_ROOT="$cache_link/proof" CODEX_SESSION_ID=cache-session \
+  "$ROOT/bin/eci-active" on "cache-parent scope" >"$tmp/cache-on.out"
+[ -f "$cache_target/proof/cache-session/eci_active" ]
+cache_input="$tmp/cache-input.json"
+cache_out="$tmp/cache-out.json"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"cache-session",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$cache_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$cache_link/proof" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$cache_input" >"$cache_out"
+[ "$(jq -r '.decision // empty' "$cache_out")" = block ]
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"cache-empty",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$cache_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$cache_link/proof" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$cache_input" >"$cache_out"
+[ "$(jq -r '.continue // empty' "$cache_out")" = true ]
+
 ln -s "$safety_root/real-session" "$safety_root/session-link"
 if CODEX_PROOF_ROOT="$safety_root" CODEX_SESSION_ID=session-link \
   "$ROOT/bin/eci-active" on "scope" >"$tmp/session-link.out" 2>"$tmp/session-link.err"; then
