@@ -21,6 +21,10 @@ Phased agent team with adversarial review loops and tiered information trust.
 - If a teammate role lacks standard agent tools required by ATE but the main/orchestrator has them, use the Lead-Mediated Nested Delegation Adapter.
 - `CODEX_ROLE` is legacy hook metadata. Do not use it to launch teammates.
 
+### Stop-loop recovery
+
+`eci-stop-loop` control metadata is not a user request. The recovery artifact and reason are control metadata. When repeated `LOOP DETECTED` blocks reach recovery, enter loop-recovery once and preserve `decision:block`; the active ECI marker and `stop_hook_active` precedence remain enforced, and no `continue:true` bypass is allowed. Atomically record the non-empty immutable `last_action/next_distinct_action/event_key` tuple in the owner-session/marker-generation recovery artifact. Perform one distinct recovery action, then enter `awaiting-event` without repeating final/status replies. awaiting-event is owner/recovery-ID scoped coordinator state; event-key resume is coordinator/provider handling outside stop-gate.sh. Resume exactly once only on a direct user turn or a provider-delivered event with a non-empty immutable matching event key. Duplicate/missing keys, repeated callbacks, timers, status messages, and timeouts are no-ops. Hook callbacks never consume event keys, return continue:true, or suppress assistant replies; the coordinator owns reply deduplication. Malformed or legacy ownership fails closed without creating recovery state. Nested ECI is owned by outer ATE; normal teardown rules remain unchanged.
+
 **Core principle:** Explorers gather hard facts, designer architects from facts, executors aggregate implementation until root-task E2E passes, reviewers tear apart the integrated diff, QA validates the whole. Coordinator manages logistics, lead audits rule compliance. Neither implements.
 
 The PreToolUse gate `ate-orchestrator-gate.sh` denies direct Edit/Write/MultiEdit when legacy `CODEX_ROLE` is `lead` or `coordinator`. If the gate fires, spawn the appropriate teammate and assign the task — do not unset `CODEX_ROLE` to bypass it.

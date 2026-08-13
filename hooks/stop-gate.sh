@@ -22,11 +22,619 @@ json_continue() {
   jq -n '{continue: true}'
 }
 
+eci_recovery_owner=""
+eci_recovery_generation=""
+eci_recovery_artifact=""
+eci_recovery_lock=""
+eci_recovery_count=""
+eci_recovery_marker=""
+eci_recovery_owner_dir=""
+eci_recovery_lock_owner=""
+eci_recovery_lock_token=""
+eci_recovery_lock_lease_seconds=60
+eci_marker_owner=""
+eci_marker_cwd=""
+eci_marker_created=""
+eci_marker_scope=""
+
+eci_hash_file() {
+  local file="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -- "$file" | awk '{print $1}'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+  else
+    return 1
+  fi
+}
+
+eci_canonical_path() {
+  local path="$1"
+  local canonical
+
+  canonical="$(realpath -m -- "$path" 2>/dev/null || true)"
+  case "$canonical" in
+    /*) printf '%s\n' "$canonical" ;;
+    *) return 1 ;;
+  esac
+}
+
+eci_marker_has_no_control() {
+  local value="$1"
+
+  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    return 1
+  fi
+  return 0
+}
+
+eci_marker_bytes_are_safe() {
+  local marker="$1"
+
+  python3 - "$marker" <<'PY'
+import os
+import stat
+import sys
+
+fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit(1)
+    data = b""
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > 1048576:
+            raise SystemExit(1)
+finally:
+    os.close(fd)
+
+if b"\x00" in data or any(byte < 0x20 and byte != 0x0a for byte in data) or 0x7f in data:
+    raise SystemExit(1)
+if not data.endswith(b"\n"):
+    raise SystemExit(1)
+PY
+}
+
+eci_validate_marker() {
+  local marker="$1"
+  local last_byte cwd_canonical
+  local -a lines=()
+
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  eci_marker_bytes_are_safe "$marker" || return 1
+  last_byte="$(tail -c 1 -- "$marker" 2>/dev/null | od -An -t x1 | tr -d ' \n' || true)"
+  [ "$last_byte" = 0a ] || return 1
+  mapfile -t lines <"$marker" || return 1
+  [ "${#lines[@]}" -eq 4 ] || return 1
+  [[ "${lines[0]}" == "scope: "* ]] || return 1
+  [[ "${lines[1]}" == "cwd: "* ]] || return 1
+  [[ "${lines[2]}" == "session_id: "* ]] || return 1
+  [[ "${lines[3]}" == "created_utc: "* ]] || return 1
+
+  eci_marker_scope="${lines[0]#scope: }"
+  eci_marker_cwd="${lines[1]#cwd: }"
+  eci_marker_owner="${lines[2]#session_id: }"
+  eci_marker_created="${lines[3]#created_utc: }"
+  [ -n "$eci_marker_scope" ] && [ -n "$eci_marker_cwd" ] || return 1
+  eci_marker_has_no_control "$eci_marker_scope" || return 1
+  eci_marker_has_no_control "$eci_marker_cwd" || return 1
+  eci_marker_has_no_control "$eci_marker_owner" || return 1
+  eci_marker_has_no_control "$eci_marker_created" || return 1
+  [[ "$eci_marker_cwd" = /* ]] || return 1
+  cwd_canonical="$(eci_canonical_path "$eci_marker_cwd" || true)"
+  [ -n "$cwd_canonical" ] || return 1
+  [ "$cwd_canonical" = "$eci_marker_cwd" ] || return 1
+  codex_valid_session_id "$eci_marker_owner" || return 1
+  codex_reserved_proof_dir "$eci_marker_owner" && return 1
+  [[ "$eci_marker_created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  [ "$(date -u -d "$eci_marker_created" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)" = "$eci_marker_created" ] || return 1
+  return 0
+}
+
+eci_recovery_identity() {
+  local marker="$1"
+  local root marker_canonical expected_marker owner_dir marker_generation
+
+  eci_validate_marker "$marker" || return 1
+  root="$(eci_canonical_path "$(codex_proof_root)" || true)"
+  marker_canonical="$(eci_canonical_path "$marker" || true)"
+  [ -n "$root" ] && [ -n "$marker_canonical" ] || return 1
+  owner_dir="$root/$eci_marker_owner"
+  expected_marker="$owner_dir/eci_active"
+  [ "$marker_canonical" = "$expected_marker" ] || return 1
+  [ -d "$owner_dir" ] && [ ! -L "$owner_dir" ] || return 1
+  [ -f "$marker_canonical" ] && [ ! -L "$marker_canonical" ] || return 1
+  marker_generation="$(eci_hash_file "$marker_canonical" || true)"
+  [[ "$marker_generation" =~ ^[0-9a-f]{64}$ ]] || return 1
+
+  eci_recovery_owner="$eci_marker_owner"
+  eci_recovery_generation="$marker_generation"
+  eci_recovery_marker="$marker_canonical"
+  eci_recovery_owner_dir="$owner_dir"
+  eci_recovery_artifact="$owner_dir/eci-stop-loop-recovery.$marker_generation.json"
+  eci_recovery_lock="$owner_dir/eci-stop-loop-recovery.$marker_generation.lock"
+  eci_recovery_lock_owner="$eci_recovery_lock/owner"
+  eci_recovery_count="$owner_dir/eci-stop-loop-recovery.$marker_generation.timestamps"
+  return 0
+}
+
+eci_marker_identity_unchanged() {
+  local marker="$1"
+  local marker_canonical marker_generation
+
+  eci_validate_marker "$marker" || return 1
+  marker_canonical="$(eci_canonical_path "$marker" || true)"
+  [ "$marker_canonical" = "$eci_recovery_marker" ] || return 1
+  [ "$eci_marker_owner" = "$eci_recovery_owner" ] || return 1
+  marker_generation="$(eci_hash_file "$marker_canonical" || true)"
+  [ "$marker_generation" = "$eci_recovery_generation" ] || return 1
+  return 0
+}
+
+eci_recovery_paths_are_safe() {
+  local state_path
+
+  [ ! -L "$eci_recovery_artifact" ] || return 1
+  [ ! -L "$eci_recovery_count" ] || return 1
+  [ ! -L "$eci_recovery_lock" ] || return 1
+  if [ -e "$eci_recovery_artifact" ] && [ ! -f "$eci_recovery_artifact" ]; then
+    return 1
+  fi
+  if [ -e "$eci_recovery_count" ] && [ ! -f "$eci_recovery_count" ]; then
+    return 1
+  fi
+  if [ -e "$eci_recovery_lock" ] && [ ! -d "$eci_recovery_lock" ]; then
+    return 1
+  fi
+  if [ -e "$eci_recovery_lock_owner" ] && [ ! -f "$eci_recovery_lock_owner" ]; then
+    return 1
+  fi
+  if [ -e "$eci_recovery_lock_owner" ] && [ -L "$eci_recovery_lock_owner" ]; then
+    return 1
+  fi
+  for state_path in "$eci_recovery_artifact" "$eci_recovery_count" "$eci_recovery_lock_owner"; do
+    if [ -e "$state_path" ] && [ "$(stat -c '%h' -- "$state_path" 2>/dev/null || printf '0')" -ne 1 ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+eci_flush_file() {
+  local file="$1"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" <<'PY'
+import os
+import stat
+import sys
+
+fd = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  elif command -v sync >/dev/null 2>&1; then
+    sync -d -- "$file" 2>/dev/null || sync >/dev/null 2>&1 || true
+  fi
+}
+
+eci_flush_directory() {
+  local directory="$1"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$directory" <<'PY'
+import os
+import sys
+
+fd = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  fi
+}
+
+eci_write_existing_temp() {
+  local file="$1"
+  local mode="${2:-}"
+
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import os
+import stat
+import sys
+
+flags = os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    stat_result = os.fstat(fd)
+    if not stat.S_ISREG(stat_result.st_mode) or stat_result.st_nlink != 1:
+        raise RuntimeError("temporary state is not a regular file")
+    while True:
+        chunk = sys.stdin.buffer.read(65536)
+        if not chunk:
+            break
+        view = memoryview(chunk)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+    if sys.argv[2]:
+        os.fchmod(fd, int(sys.argv[2], 8))
+    os.fsync(fd)
+finally:
+    os.close(fd)
+' "$file" "$mode"
+    return $?
+  fi
+  return 1
+}
+
+eci_expected_recovery_reason() {
+  local event_key="eci-stop-loop-recovery:$eci_recovery_owner:$eci_recovery_generation"
+
+  printf 'ECI stop-loop recovery active for owner session %s and marker generation %s. Perform exactly one distinct recovery action, then await an event with matching key %s; duplicate or missing keys, repeated callbacks, timers, status, and timeouts are no-ops.\n' \
+    "$eci_recovery_owner" "$eci_recovery_generation" "$event_key"
+}
+
+eci_verify_exact_file() {
+  local file="$1"
+  local expected="$2"
+
+  python3 - "$file" "$expected" <<'PY'
+import os
+import stat
+import sys
+
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit(1)
+    actual = b""
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        actual += chunk
+    expected = (sys.argv[2] + "\n").encode("utf-8")
+    raise SystemExit(0 if actual == expected else 1)
+finally:
+    os.close(fd)
+PY
+}
+
+eci_read_epoch_lines() {
+  local file="$1"
+  local cutoff="$2"
+  local now="$3"
+
+  python3 - "$file" "$cutoff" "$now" <<'PY'
+import os
+import stat
+import sys
+
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit(2)
+    data = b""
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > 1048576:
+            raise SystemExit(2)
+finally:
+    os.close(fd)
+
+if data and not data.endswith(b"\n"):
+    raise SystemExit(2)
+cutoff = int(sys.argv[2])
+now = int(sys.argv[3])
+for raw in data.split(b"\n"):
+    if not raw or (raw.startswith(b"0") and raw != b"0"):
+        continue
+    if not raw.isdigit():
+        continue
+    value = int(raw)
+    if cutoff <= value <= now:
+        print(value)
+PY
+}
+
+eci_read_recovery_reason() {
+  local expected_reason expected_json
+
+  [ -f "$eci_recovery_artifact" ] && [ ! -L "$eci_recovery_artifact" ] || return 1
+  expected_reason="$(eci_expected_recovery_reason)"
+  expected_json="$(jq -cn \
+    --arg owner "$eci_recovery_owner" \
+    --arg marker "$eci_recovery_marker" \
+    --arg generation "$eci_recovery_generation" \
+    --arg reason "$expected_reason" \
+    --arg event_key "eci-stop-loop-recovery:$eci_recovery_owner:$eci_recovery_generation" \
+    '{schema:"eci-stop-loop-recovery/v1",owner_session_id:$owner,marker_path:$marker,marker_generation:$generation,threshold:5,last_action:"stop-hook block emitted",next_distinct_action:"read instructions or stop-checklist and identify the failing step",event_key:$event_key,reason:$reason}')" || return 1
+  eci_verify_exact_file "$eci_recovery_artifact" "$expected_json" || return 1
+  printf '%s' "$expected_reason"
+}
+
+eci_process_start_time() {
+  local pid="$1"
+
+  python3 - "$pid" <<'PY'
+import pathlib
+import sys
+
+record = pathlib.Path("/proc") / sys.argv[1] / "stat"
+data = record.read_bytes()
+tail = data.rsplit(b")", 1)[-1].split()
+print(tail[19].decode("ascii"))
+PY
+}
+
+eci_lock_metadata_valid() {
+  local last_byte now
+  local -a fields=()
+
+  [ -f "$eci_recovery_lock_owner" ] && [ ! -L "$eci_recovery_lock_owner" ] || return 1
+  [ "$(stat -c '%h' -- "$eci_recovery_lock_owner" 2>/dev/null || printf '0')" -eq 1 ] || return 1
+  last_byte="$(tail -c 1 -- "$eci_recovery_lock_owner" 2>/dev/null | od -An -t x1 | tr -d ' \n' || true)"
+  [ "$last_byte" = 0a ] || return 1
+  mapfile -t fields <"$eci_recovery_lock_owner" || return 1
+  [ "${#fields[@]}" -eq 4 ] || return 1
+  [[ "${fields[0]}" == "pid: "* ]] || return 1
+  [[ "${fields[1]}" == "start_time: "* ]] || return 1
+  [[ "${fields[2]}" == "lease_until: "* ]] || return 1
+  [[ "${fields[3]}" == "token: "* ]] || return 1
+  eci_lock_pid="${fields[0]#pid: }"
+  eci_lock_start="${fields[1]#start_time: }"
+  eci_lock_lease_until="${fields[2]#lease_until: }"
+  eci_lock_token_on_disk="${fields[3]#token: }"
+  [[ "$eci_lock_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$eci_lock_start" =~ ^[0-9]+$ ]] || return 1
+  [[ "$eci_lock_lease_until" =~ ^[0-9]+$ ]] || return 1
+  [[ "$eci_lock_token_on_disk" =~ ^[0-9a-f]{64}$ ]] || return 1
+  now="$(date +%s)"
+  [ "$eci_lock_lease_until" -le $((now + eci_recovery_lock_lease_seconds * 2)) ] || return 1
+  return 0
+}
+
+eci_lock_is_stale() {
+  local now lock_mtime age current_start
+
+  [ -d "$eci_recovery_lock" ] && [ ! -L "$eci_recovery_lock" ] || return 1
+  now="$(date +%s)"
+  if eci_lock_metadata_valid; then
+    if [ "$eci_lock_lease_until" -ge "$now" ]; then
+      return 1
+    fi
+    current_start="$(eci_process_start_time "$eci_lock_pid" 2>/dev/null || true)"
+    if [ "$current_start" = "$eci_lock_start" ] && kill -0 "$eci_lock_pid" 2>/dev/null &&
+      [ "$now" -lt $((eci_lock_lease_until + eci_recovery_lock_lease_seconds)) ]; then
+      return 1
+    fi
+    return 0
+  fi
+  lock_mtime="$(stat -c '%Y' -- "$eci_recovery_lock" 2>/dev/null || printf '0')"
+  age=$((now - lock_mtime))
+  [ "$age" -ge $((eci_recovery_lock_lease_seconds * 2)) ] ||
+    [ "$age" -le $((-eci_recovery_lock_lease_seconds * 2)) ]
+}
+
+eci_reclaim_stale_lock() {
+  local candidate
+
+  eci_lock_is_stale || return 1
+  [ -d "$eci_recovery_lock" ] && [ ! -L "$eci_recovery_lock" ] || return 1
+  if [ -e "$eci_recovery_lock_owner" ]; then
+    [ -f "$eci_recovery_lock_owner" ] && [ ! -L "$eci_recovery_lock_owner" ] || return 1
+    rm -f -- "$eci_recovery_lock_owner" || return 1
+  fi
+  for candidate in "$eci_recovery_lock"/.owner.*; do
+    [ -e "$candidate" ] || continue
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || return 1
+    rm -f -- "$candidate" || return 1
+  done
+  rmdir -- "$eci_recovery_lock" 2>/dev/null
+}
+
+eci_write_lock_owner() {
+  local now start owner_tmp
+
+  start="$(eci_process_start_time "$$" 2>/dev/null || true)"
+  [ -n "$start" ] || return 1
+  now="$(date +%s)"
+  eci_recovery_lock_token="$(printf '%s:%s:%s:%s' "$eci_recovery_owner" "$$" "$start" "$now" | sha256sum | awk '{print $1}')"
+  owner_tmp="$(mktemp "$eci_recovery_lock/.owner.XXXXXX" 2>/dev/null || true)"
+  [ -n "$owner_tmp" ] || return 1
+  if ! {
+    printf 'pid: %s\n' "$$"
+    printf 'start_time: %s\n' "$start"
+    printf 'lease_until: %s\n' "$((now + eci_recovery_lock_lease_seconds))"
+    printf 'token: %s\n' "$eci_recovery_lock_token"
+  } | eci_write_existing_temp "$owner_tmp" 600; then
+    rm -f -- "$owner_tmp"
+    return 1
+  fi
+  if ! ln -P -- "$owner_tmp" "$eci_recovery_lock_owner" 2>/dev/null; then
+    rm -f -- "$owner_tmp"
+    return 1
+  fi
+  rm -f -- "$owner_tmp"
+  eci_flush_directory "$eci_recovery_lock" || true
+  return 0
+}
+
+eci_acquire_recovery_lock() {
+  local attempt
+
+  for ((attempt = 1; attempt <= 500; attempt++)); do
+    eci_recovery_paths_are_safe || return 1
+    if mkdir -- "$eci_recovery_lock" 2>/dev/null; then
+      if eci_write_lock_owner; then
+        return 0
+      fi
+      rm -f -- "$eci_recovery_lock_owner" 2>/dev/null || true
+      rmdir -- "$eci_recovery_lock" 2>/dev/null || true
+      return 1
+    fi
+    [ ! -L "$eci_recovery_lock" ] || return 1
+    [ -d "$eci_recovery_lock" ] || return 1
+    if eci_reclaim_stale_lock; then
+      continue
+    fi
+    sleep 0.01
+  done
+  return 1
+}
+
+eci_release_recovery_lock() {
+  if [ ! -d "$eci_recovery_lock" ] || [ -L "$eci_recovery_lock" ]; then
+    return 0
+  fi
+  if eci_lock_metadata_valid && [ "${eci_lock_token_on_disk:-}" = "${eci_recovery_lock_token:-}" ] &&
+    [ "${eci_lock_pid:-}" = "$$" ]; then
+    rm -f -- "$eci_recovery_lock_owner" 2>/dev/null || true
+    rmdir -- "$eci_recovery_lock" 2>/dev/null || true
+  fi
+}
+
+eci_recovery_reason() {
+  local marker="$1"
+  local now cutoff tmp recent_count recovery_reason verified_reason artifact_tmp expected_reason recent_content
+  local initial_generation initial_marker
+
+  eci_recovery_identity "$marker" || return 1
+  eci_recovery_paths_are_safe || return 1
+  initial_generation="$eci_recovery_generation"
+  initial_marker="$eci_recovery_marker"
+  eci_acquire_recovery_lock || return 1
+  if ! eci_marker_identity_unchanged "$marker" ||
+    [ "$eci_recovery_generation" != "$initial_generation" ] ||
+    [ "$eci_recovery_marker" != "$initial_marker" ]; then
+    eci_release_recovery_lock
+    return 1
+  fi
+  eci_recovery_paths_are_safe || {
+    eci_release_recovery_lock
+    return 1
+  }
+  if [ -e "$eci_recovery_artifact" ]; then
+    recovery_reason="$(eci_read_recovery_reason || true)"
+    [ -n "$recovery_reason" ] || recovery_reason="ECI stop-loop recovery artifact is invalid or conflicting; remain blocked."
+    eci_release_recovery_lock
+    printf '%s' "$recovery_reason"
+    return 0
+  fi
+
+  now="$(date +%s)"
+  cutoff=$((now - 300))
+  tmp="$(mktemp "$eci_recovery_owner_dir/.eci-stop-loop-recovery-count.XXXXXX" 2>/dev/null || true)"
+  [ -n "$tmp" ] || { eci_release_recovery_lock; return 1; }
+  if [ -e "$eci_recovery_count" ]; then
+    if ! recent_content="$(eci_read_epoch_lines "$eci_recovery_count" "$cutoff" "$now" 2>/dev/null)"; then
+      rm -f -- "$tmp"
+      eci_release_recovery_lock
+      return 1
+    fi
+  else
+    recent_content=""
+  fi
+  if [ -n "$recent_content" ]; then
+    recent_content="$recent_content
+$now"
+  else
+    recent_content="$now"
+  fi
+  if ! printf '%s\n' "$recent_content" | eci_write_existing_temp "$tmp"; then
+    rm -f -- "$tmp"
+    eci_release_recovery_lock
+    return 1
+  fi
+  recent_count="$(awk 'END { print NR + 0 }' "$tmp")"
+  [ ! -L "$eci_recovery_count" ] || {
+    rm -f -- "$tmp"
+    eci_release_recovery_lock
+    return 1
+  }
+  if ! mv -f -- "$tmp" "$eci_recovery_count"; then
+    rm -f -- "$tmp"
+    eci_release_recovery_lock
+    return 1
+  fi
+  eci_flush_directory "$eci_recovery_owner_dir" || true
+
+  if [ "$recent_count" -ge 5 ]; then
+    expected_reason="$(eci_expected_recovery_reason)"
+    artifact_tmp="$(mktemp "$eci_recovery_owner_dir/.eci-stop-loop-recovery-artifact.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$artifact_tmp" ] || ! jq -cn \
+      --arg owner "$eci_recovery_owner" \
+      --arg marker "$eci_recovery_marker" \
+      --arg generation "$eci_recovery_generation" \
+      --arg reason "$expected_reason" \
+      --arg event_key "eci-stop-loop-recovery:$eci_recovery_owner:$eci_recovery_generation" \
+      '{schema:"eci-stop-loop-recovery/v1",owner_session_id:$owner,marker_path:$marker,marker_generation:$generation,threshold:5,last_action:"stop-hook block emitted",next_distinct_action:"read instructions or stop-checklist and identify the failing step",event_key:$event_key,reason:$reason}' \
+      | eci_write_existing_temp "$artifact_tmp" 444; then
+      [ -n "$artifact_tmp" ] && rm -f -- "$artifact_tmp"
+      eci_release_recovery_lock
+      return 1
+    fi
+    if [ -L "$eci_recovery_artifact" ]; then
+      recovery_reason="ECI stop-loop recovery artifact is invalid or conflicting; remain blocked."
+    elif ln -P -- "$artifact_tmp" "$eci_recovery_artifact" 2>/dev/null; then
+      if ! rm -f -- "$artifact_tmp" 2>/dev/null; then
+        recovery_reason="ECI stop-loop recovery could not finalize its immutable artifact; remain blocked."
+        eci_release_recovery_lock
+        printf '%s' "$recovery_reason"
+        return 0
+      fi
+      eci_flush_directory "$eci_recovery_owner_dir" || true
+      recovery_reason="$(eci_read_recovery_reason || true)"
+      [ -n "$recovery_reason" ] || recovery_reason="ECI stop-loop recovery could not verify its immutable artifact; remain blocked."
+    elif [ -f "$eci_recovery_artifact" ]; then
+      recovery_reason="$(eci_read_recovery_reason || true)"
+      [ -n "$recovery_reason" ] || recovery_reason="ECI stop-loop recovery artifact is invalid or conflicting; remain blocked."
+    else
+      recovery_reason="ECI stop-loop recovery could not install its immutable artifact; remain blocked."
+    fi
+    rm -f -- "$artifact_tmp" 2>/dev/null || true
+    eci_release_recovery_lock
+    printf '%s' "$recovery_reason"
+    return 0
+  fi
+
+  eci_release_recovery_lock
+  return 1
+}
+
 json_block() {
   local reason="$1"
-  local timestamps now cutoff tmp recent_count
+  local eci_marker="${2:-}" recovery_reason
 
-  if [ -n "${proof_dir:-}" ]; then
+  if [ -n "$eci_marker" ]; then
+    recovery_reason="$(eci_recovery_reason "$eci_marker" || true)"
+    [ -n "$recovery_reason" ] && reason="$recovery_reason"
+  elif [ -n "${proof_dir:-}" ]; then
+    local timestamps now cutoff tmp recent_count
     mkdir -p "$proof_dir"
     timestamps="$proof_dir/stop_timestamps"
     now="$(date +%s)"
@@ -85,8 +693,7 @@ block_if_eci_active_for_stop() {
 
   marker="$(active_eci_marker_for_stop || true)"
   [ -n "$marker" ] && [ -f "$marker" ] || return 1
-  codex_valid_session_id "$session_id" && codex_note_state_session_id "$marker" "$session_id" || true
-  json_block "ECI is active for this stop attempt via marker $marker. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  json_block "ECI is active for this stop attempt via marker $marker. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>." "$marker"
   return 0
 }
 
@@ -532,13 +1139,12 @@ block_proof_validation() {
 }
 
 if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
-  codex_note_state_session_id "$eci_active" "$session_id" || true
-  json_block "ECI is active for this session. Never stop until the ECI task is complete. If work is not done, dispatch remaining work to subagents and use wait_agent; do not stop while they run. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  json_block "ECI is active for this session. Never stop until the ECI task is complete. If work is not done, dispatch remaining work to subagents and use wait_agent; do not stop while they run. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>." "$eci_active"
   exit 0
 fi
 
 if [ -n "$legacy_eci_active" ] && [ -f "$legacy_eci_active" ]; then
-  json_block "ECI is active for this workspace via legacy marker $legacy_eci_active. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  json_block "ECI is active for this workspace via legacy marker $legacy_eci_active. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>." "$legacy_eci_active"
   exit 0
 fi
 
@@ -552,7 +1158,6 @@ if [ -n "$ate_active" ] && [ -f "$ate_active" ]; then
   case "$ate_phase" in
     awaiting_user|closed) ;;
     *)
-      codex_note_state_session_id "$ate_active" "$session_id" || true
       json_block "ATE is active for this session. Continue the agent team task, update the session project-understanding ledger, use blocker-resolution-protocol before reporting a real blocker, or close ATE before stopping."
       exit 0
       ;;

@@ -28,6 +28,10 @@ Maintain a project-understanding ledger for every ECI run. Use the `maintaining-
 - Codex uses `spawn_agent`, `followup_task`, `send_message`, `wait_agent({timeout_ms:3600000})`, and `interrupt_agent` according to the lifecycle below. These are provider-native transitions, not aliases for another provider's team controls.
 - Codex ECI uses standard agent management tools only. Do not launch shell-wrapped Codex agents. If `spawn_agent` or related agent tools are unavailable, ECI cannot run; hard-escalate to the user.
 
+### Stop-loop recovery
+
+`eci-stop-loop` control metadata is not a user request. The recovery artifact and reason are control metadata. When repeated `LOOP DETECTED` blocks reach recovery, enter loop-recovery once and preserve `decision:block`; the active ECI marker and `stop_hook_active` precedence remain enforced, and no `continue:true` bypass is allowed. Atomically record the non-empty immutable `last_action/next_distinct_action/event_key` tuple in the owner-session/marker-generation recovery artifact. Perform one distinct recovery action, then enter `awaiting-event` without repeating final/status replies. awaiting-event is owner/recovery-ID scoped coordinator state; event-key resume is coordinator/provider handling outside stop-gate.sh. Resume exactly once only on a direct user turn or a provider-delivered event with a non-empty immutable matching event key. Duplicate/missing keys, repeated callbacks, timers, status messages, and timeouts are no-ops. Hook callbacks never consume event keys, return continue:true, or suppress assistant replies; the coordinator owns reply deduplication. Malformed or legacy ownership fails closed without creating recovery state. Nested ECI is owned by outer ATE; normal teardown rules remain unchanged.
+
 ## Highest-priority pause-all-work guard
 
 Evaluate this guard before every ECI decision or phase/event transition: normal work, blocker handling/BRP, autonomy, review, routing, teardown, and `awaiting_user`. It precedes every other decision below.

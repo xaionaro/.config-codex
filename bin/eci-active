@@ -22,7 +22,9 @@ EOF
 
 resolve_session_dir() {
   local root name newest="" newest_mtime=0 d mtime session_id session_var
-  root="$(codex_proof_root)"
+  local reject_reserved="${1:-false}"
+  root="$(canonical_path "$(codex_proof_root)" || true)"
+  [ -n "$root" ] || return 1
 
   if [ -n "${CODEX_SESSION_ID:-}" ]; then
     session_id="$CODEX_SESSION_ID"
@@ -37,6 +39,10 @@ resolve_session_dir() {
       echo "Invalid $session_var; use only letters, digits, '_' or '-'." >&2
       exit 1
     }
+    if [ "$reject_reserved" = true ] && codex_reserved_proof_dir "$session_id"; then
+      echo "Reserved $session_var cannot be activated: $session_id" >&2
+      exit 1
+    fi
     printf '%s/%s\n' "$root" "$session_id"
     return
   fi
@@ -57,6 +63,468 @@ resolve_session_dir() {
   shopt -u nullglob
   [ -n "$newest" ] || return 1
   printf '%s\n' "$newest"
+}
+
+canonical_path() {
+  local path="$1"
+  local canonical
+
+  canonical="$(realpath -m -- "$path" 2>/dev/null || true)"
+  case "$canonical" in
+    /*) printf '%s\n' "$canonical" ;;
+    *) return 1 ;;
+  esac
+}
+
+hash_file() {
+  local file="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -- "$file" | awk '{print $1}'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+  else
+    return 1
+  fi
+}
+
+marker_has_no_control() {
+  local value="$1"
+
+  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    return 1
+  fi
+  return 0
+}
+
+marker_bytes_are_safe() {
+  local marker="$1"
+
+  python3 - "$marker" <<'PY'
+import os
+import stat
+import sys
+
+fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit(1)
+    data = b""
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > 1048576:
+            raise SystemExit(1)
+finally:
+    os.close(fd)
+
+if b"\x00" in data or any(byte < 0x20 and byte != 0x0a for byte in data) or 0x7f in data:
+    raise SystemExit(1)
+if not data.endswith(b"\n"):
+    raise SystemExit(1)
+PY
+}
+
+flush_directory() {
+  local directory="$1"
+
+  python3 - "$directory" <<'PY'
+import os
+import sys
+
+fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+write_existing_temp() {
+  local file="$1"
+  local mode="${2:-}"
+
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  python3 -c '
+import os
+import stat
+import sys
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0))
+try:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError("temporary state is not a private regular file")
+    while True:
+        chunk = sys.stdin.buffer.read(65536)
+        if not chunk:
+            break
+        view = memoryview(chunk)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+    if sys.argv[2]:
+        os.fchmod(fd, int(sys.argv[2], 8))
+    os.fsync(fd)
+finally:
+    os.close(fd)
+' "$file" "$mode"
+}
+
+install_marker_no_overwrite() {
+  local temporary="$1"
+  local directory="$2"
+
+  python3 - "$temporary" "$directory" <<'PY'
+import os
+import stat
+import sys
+
+temporary, directory = sys.argv[1:]
+directory_fd = os.open(
+    directory,
+    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+)
+try:
+    temporary_name = os.path.basename(temporary)
+    source_fd = os.open(
+        temporary_name,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=directory_fd,
+    )
+    try:
+        info = os.fstat(source_fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SystemExit(1)
+        os.link(
+            temporary_name,
+            "eci_active",
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        try:
+            marker_fd = os.open(
+                "eci_active",
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+        except OSError:
+            os.unlink("eci_active", dir_fd=directory_fd)
+            raise SystemExit(1)
+        try:
+            installed = os.fstat(marker_fd)
+            if (
+                not stat.S_ISREG(installed.st_mode)
+                or installed.st_nlink != 2
+                or installed.st_dev != info.st_dev
+                or installed.st_ino != info.st_ino
+            ):
+                os.unlink("eci_active", dir_fd=directory_fd)
+                raise SystemExit(1)
+        finally:
+            os.close(marker_fd)
+    finally:
+        os.close(source_fd)
+finally:
+    os.close(directory_fd)
+PY
+}
+
+marker_scope=""
+marker_cwd=""
+marker_owner=""
+marker_created=""
+marker_canonical_path=""
+marker_owner_dir=""
+marker_generation=""
+recovery_artifact=""
+recovery_count=""
+recovery_lock=""
+recovery_lock_owner=""
+recovery_lock_token=""
+recovery_lock_lease_seconds=60
+recovery_lock_pid=""
+recovery_lock_start=""
+recovery_lock_lease_until=""
+recovery_lock_token_on_disk=""
+marker_is_legacy=false
+
+validate_eci_marker_identity() {
+  local marker="$1"
+  local last_byte cwd_canonical root marker_canonical owner_dir
+  local -a lines=()
+
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  marker_bytes_are_safe "$marker" || return 1
+  last_byte="$(tail -c 1 -- "$marker" 2>/dev/null | od -An -t x1 | tr -d ' \n' || true)"
+  [ "$last_byte" = 0a ] || return 1
+  mapfile -t lines <"$marker" || return 1
+  [ "${#lines[@]}" -eq 4 ] || return 1
+  [[ "${lines[0]}" == "scope: "* ]] || return 1
+  [[ "${lines[1]}" == "cwd: "* ]] || return 1
+  [[ "${lines[2]}" == "session_id: "* ]] || return 1
+  [[ "${lines[3]}" == "created_utc: "* ]] || return 1
+
+  marker_scope="${lines[0]#scope: }"
+  marker_cwd="${lines[1]#cwd: }"
+  marker_owner="${lines[2]#session_id: }"
+  marker_created="${lines[3]#created_utc: }"
+  [ -n "$marker_scope" ] && [ -n "$marker_cwd" ] || return 1
+  marker_has_no_control "$marker_scope" || return 1
+  marker_has_no_control "$marker_cwd" || return 1
+  marker_has_no_control "$marker_owner" || return 1
+  marker_has_no_control "$marker_created" || return 1
+  [[ "$marker_cwd" = /* ]] || return 1
+  cwd_canonical="$(canonical_path "$marker_cwd" || true)"
+  [ -n "$cwd_canonical" ] || return 1
+  [ "$cwd_canonical" = "$marker_cwd" ] || return 1
+  codex_valid_session_id "$marker_owner" || return 1
+  codex_reserved_proof_dir "$marker_owner" && return 1
+  [[ "$marker_created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  [ "$(date -u -d "$marker_created" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)" = "$marker_created" ] || return 1
+
+  root="$(canonical_path "$(codex_proof_root)" || true)"
+  marker_canonical="$(canonical_path "$marker" || true)"
+  [ -n "$root" ] && [ -n "$marker_canonical" ] || return 1
+  owner_dir="$root/$marker_owner"
+  [ "$marker_canonical" = "$owner_dir/eci_active" ] || return 1
+  [ -d "$owner_dir" ] && [ ! -L "$owner_dir" ] || return 1
+  [ -f "$marker_canonical" ] && [ ! -L "$marker_canonical" ] || return 1
+
+  marker_canonical_path="$marker_canonical"
+  marker_owner_dir="$owner_dir"
+  marker_generation="$(hash_file "$marker_canonical" || true)"
+  [[ "$marker_generation" =~ ^[0-9a-f]{64}$ ]] || return 1
+  recovery_artifact="$owner_dir/eci-stop-loop-recovery.$marker_generation.json"
+  recovery_count="$owner_dir/eci-stop-loop-recovery.$marker_generation.timestamps"
+  recovery_lock="$owner_dir/eci-stop-loop-recovery.$marker_generation.lock"
+  recovery_lock_owner="$recovery_lock/owner"
+  marker_is_legacy=false
+  return 0
+}
+
+validate_legacy_eci_marker_identity() {
+  local marker="$1"
+  local last_byte cwd_canonical root marker_canonical owner_dir
+  local -a lines=()
+
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  marker_bytes_are_safe "$marker" || return 1
+  last_byte="$(tail -c 1 -- "$marker" 2>/dev/null | od -An -t x1 | tr -d ' \n' || true)"
+  [ "$last_byte" = 0a ] || return 1
+  mapfile -t lines <"$marker" || return 1
+  [ "${#lines[@]}" -eq 3 ] || return 1
+  [[ "${lines[0]}" == "scope: "* ]] || return 1
+  [[ "${lines[1]}" == "cwd: "* ]] || return 1
+  [[ "${lines[2]}" == "session_id: "* ]] || return 1
+
+  marker_scope="${lines[0]#scope: }"
+  marker_cwd="${lines[1]#cwd: }"
+  marker_owner="${lines[2]#session_id: }"
+  [ -n "$marker_scope" ] && [ -n "$marker_cwd" ] || return 1
+  marker_has_no_control "$marker_scope" || return 1
+  marker_has_no_control "$marker_cwd" || return 1
+  marker_has_no_control "$marker_owner" || return 1
+  [[ "$marker_cwd" = /* ]] || return 1
+  cwd_canonical="$(canonical_path "$marker_cwd" || true)"
+  [ -n "$cwd_canonical" ] && [ "$cwd_canonical" = "$marker_cwd" ] || return 1
+  codex_valid_session_id "$marker_owner" || return 1
+  codex_reserved_proof_dir "$marker_owner" || return 1
+
+  root="$(canonical_path "$(codex_proof_root)" || true)"
+  marker_canonical="$(canonical_path "$marker" || true)"
+  [ -n "$root" ] && [ -n "$marker_canonical" ] || return 1
+  owner_dir="$root/$marker_owner"
+  [ "$marker_canonical" = "$owner_dir/eci_active" ] || return 1
+  [ -d "$owner_dir" ] && [ ! -L "$owner_dir" ] || return 1
+  [ -f "$marker_canonical" ] && [ ! -L "$marker_canonical" ] || return 1
+
+  marker_canonical_path="$marker_canonical"
+  marker_owner_dir="$owner_dir"
+  marker_generation="$(hash_file "$marker_canonical" || true)"
+  [[ "$marker_generation" =~ ^[0-9a-f]{64}$ ]] || return 1
+  recovery_artifact="$owner_dir/eci-stop-loop-recovery.$marker_generation.json"
+  recovery_count="$owner_dir/eci-stop-loop-recovery.$marker_generation.timestamps"
+  recovery_lock="$owner_dir/eci-stop-loop-recovery.$marker_generation.lock"
+  recovery_lock_owner="$recovery_lock/owner"
+  marker_is_legacy=true
+  return 0
+}
+
+recovery_paths_are_safe() {
+  [ ! -L "$recovery_artifact" ] || return 1
+  [ ! -L "$recovery_count" ] || return 1
+  [ ! -L "$recovery_lock" ] || return 1
+  if [ -e "$recovery_artifact" ] && [ ! -f "$recovery_artifact" ]; then
+    return 1
+  fi
+  if [ -e "$recovery_count" ] && [ ! -f "$recovery_count" ]; then
+    return 1
+  fi
+  if [ -e "$recovery_lock" ] && [ ! -d "$recovery_lock" ] && [ ! -f "$recovery_lock" ]; then
+    return 1
+  fi
+  if [ "$marker_is_legacy" != true ] && [ -e "$recovery_lock" ] && [ ! -d "$recovery_lock" ]; then
+    return 1
+  fi
+  if [ -e "$recovery_lock_owner" ] && { [ ! -f "$recovery_lock_owner" ] || [ -L "$recovery_lock_owner" ]; }; then
+    return 1
+  fi
+  for state_path in "$recovery_artifact" "$recovery_count" "$recovery_lock_owner"; do
+    if [ -e "$state_path" ] && [ "$(stat -c '%h' -- "$state_path" 2>/dev/null || printf '0')" -ne 1 ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+process_start_time() {
+  local pid="$1"
+
+  python3 - "$pid" <<'PY'
+import pathlib
+import sys
+
+record = pathlib.Path("/proc") / sys.argv[1] / "stat"
+data = record.read_bytes()
+tail = data.rsplit(b")", 1)[-1].split()
+print(tail[19].decode("ascii"))
+PY
+}
+
+lock_metadata_valid() {
+  local last_byte now
+  local -a fields=()
+
+  [ -f "$recovery_lock_owner" ] && [ ! -L "$recovery_lock_owner" ] || return 1
+  last_byte="$(tail -c 1 -- "$recovery_lock_owner" 2>/dev/null | od -An -t x1 | tr -d ' \n' || true)"
+  [ "$last_byte" = 0a ] || return 1
+  mapfile -t fields <"$recovery_lock_owner" || return 1
+  [ "${#fields[@]}" -eq 4 ] || return 1
+  [[ "${fields[0]}" == "pid: "* ]] || return 1
+  [[ "${fields[1]}" == "start_time: "* ]] || return 1
+  [[ "${fields[2]}" == "lease_until: "* ]] || return 1
+  [[ "${fields[3]}" == "token: "* ]] || return 1
+  recovery_lock_pid="${fields[0]#pid: }"
+  recovery_lock_start="${fields[1]#start_time: }"
+  recovery_lock_lease_until="${fields[2]#lease_until: }"
+  recovery_lock_token_on_disk="${fields[3]#token: }"
+  [[ "$recovery_lock_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$recovery_lock_start" =~ ^[0-9]+$ ]] || return 1
+  [[ "$recovery_lock_lease_until" =~ ^[0-9]+$ ]] || return 1
+  [[ "$recovery_lock_token_on_disk" =~ ^[0-9a-f]{64}$ ]] || return 1
+  now="$(date +%s)"
+  [ "$recovery_lock_lease_until" -le $((now + recovery_lock_lease_seconds * 2)) ] || return 1
+  return 0
+}
+
+lock_is_stale() {
+  local now lock_mtime age current_start
+
+  [ -d "$recovery_lock" ] && [ ! -L "$recovery_lock" ] || return 1
+  now="$(date +%s)"
+  if lock_metadata_valid; then
+    [ "$recovery_lock_lease_until" -lt "$now" ] || return 1
+    current_start="$(process_start_time "$recovery_lock_pid" 2>/dev/null || true)"
+    if [ "$current_start" = "$recovery_lock_start" ] && kill -0 "$recovery_lock_pid" 2>/dev/null &&
+      [ "$now" -lt $((recovery_lock_lease_until + recovery_lock_lease_seconds)) ]; then
+      return 1
+    fi
+    return 0
+  fi
+  lock_mtime="$(stat -c '%Y' -- "$recovery_lock" 2>/dev/null || printf '0')"
+  age=$((now - lock_mtime))
+  [ "$age" -ge $((recovery_lock_lease_seconds * 2)) ] ||
+    [ "$age" -le $((-recovery_lock_lease_seconds * 2)) ]
+}
+
+reclaim_stale_lock() {
+  local candidate
+
+  lock_is_stale || return 1
+  [ -d "$recovery_lock" ] && [ ! -L "$recovery_lock" ] || return 1
+  if [ -e "$recovery_lock_owner" ]; then
+    [ -f "$recovery_lock_owner" ] && [ ! -L "$recovery_lock_owner" ] || return 1
+    [ "$(stat -c '%h' -- "$recovery_lock_owner" 2>/dev/null || printf '0')" -eq 1 ] || return 1
+    rm -f -- "$recovery_lock_owner" || return 1
+  fi
+  for candidate in "$recovery_lock"/.owner.*; do
+    [ -e "$candidate" ] || continue
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || return 1
+    [ "$(stat -c '%h' -- "$candidate" 2>/dev/null || printf '0')" -eq 1 ] || return 1
+    rm -f -- "$candidate" || return 1
+  done
+  rmdir -- "$recovery_lock" 2>/dev/null
+}
+
+write_lock_owner() {
+  local now start owner_tmp
+
+  start="$(process_start_time "$$" 2>/dev/null || true)"
+  [ -n "$start" ] || return 1
+  now="$(date +%s)"
+  recovery_lock_token="$(printf '%s:%s:%s:%s' "$marker_owner" "$$" "$start" "$now" | sha256sum | awk '{print $1}')"
+  owner_tmp="$(mktemp "$recovery_lock/.owner.XXXXXX" 2>/dev/null || true)"
+  [ -n "$owner_tmp" ] || return 1
+  if ! {
+    printf 'pid: %s\n' "$$"
+    printf 'start_time: %s\n' "$start"
+    printf 'lease_until: %s\n' "$((now + recovery_lock_lease_seconds))"
+    printf 'token: %s\n' "$recovery_lock_token"
+  } | write_existing_temp "$owner_tmp" 600; then
+    rm -f -- "$owner_tmp"
+    return 1
+  fi
+  if ! ln -P -- "$owner_tmp" "$recovery_lock_owner" 2>/dev/null; then
+    rm -f -- "$owner_tmp"
+    return 1
+  fi
+  rm -f -- "$owner_tmp"
+  flush_directory "$recovery_lock" || true
+  return 0
+}
+
+acquire_recovery_lock() {
+  local attempt
+
+  for ((attempt = 1; attempt <= 500; attempt++)); do
+    recovery_paths_are_safe || return 1
+    if mkdir -- "$recovery_lock" 2>/dev/null; then
+      if write_lock_owner; then
+        return 0
+      fi
+      rm -f -- "$recovery_lock_owner" 2>/dev/null || true
+      rmdir -- "$recovery_lock" 2>/dev/null || true
+      return 1
+    fi
+    [ ! -L "$recovery_lock" ] && [ -d "$recovery_lock" ] || return 1
+    if reclaim_stale_lock; then
+      continue
+    fi
+    sleep 0.01
+  done
+  return 1
+}
+
+release_recovery_lock() {
+  if [ ! -d "$recovery_lock" ] || [ -L "$recovery_lock" ]; then
+    return 0
+  fi
+  if lock_metadata_valid && [ "${recovery_lock_token_on_disk:-}" = "${recovery_lock_token:-}" ] &&
+    [ "${recovery_lock_pid:-}" = "$$" ]; then
+    rm -f -- "$recovery_lock_owner" 2>/dev/null || true
+    rmdir -- "$recovery_lock" 2>/dev/null || true
+  fi
 }
 
 validate_disengage_report() {
@@ -126,18 +594,58 @@ case "$cmd" in
     shift
     scope="${*:-}"
     [ -n "$scope" ] || { usage; exit 2; }
-    session_dir="$(resolve_session_dir)" || {
+    marker_has_no_control "$scope" || {
+      echo "ECI scope contains control characters; refusing to create a malformed marker." >&2
+      exit 1
+    }
+    session_dir="$(resolve_session_dir true)" || {
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
     marker="$session_dir/eci_active"
+    if [ -L "$session_dir" ] || { [ -e "$session_dir" ] && [ ! -d "$session_dir" ]; }; then
+      echo "ECI session directory is an unsafe symlink or non-directory: $session_dir" >&2
+      exit 1
+    fi
     mkdir -p "$session_dir"
-    {
+    if [ -L "$marker" ]; then
+      echo "ECI marker is a symlink; refusing to replace it: $marker" >&2
+      exit 1
+    fi
+    if [ -e "$marker" ]; then
+      echo "ECI marker already exists; refusing a non-atomic generation replacement: $marker" >&2
+      exit 1
+    fi
+    [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || {
+      echo "ECI session directory is not a canonical directory: $session_dir" >&2
+      exit 1
+    }
+    canonical_cwd="$(codex_canonical_cwd "$PWD")"
+    marker_tmp="$(mktemp "$session_dir/.eci_active.XXXXXX" 2>/dev/null || true)"
+    [ -n "$marker_tmp" ] || {
+      echo "Unable to allocate a private ECI marker temporary file." >&2
+      exit 1
+    }
+    if ! {
       printf 'scope: %s\n' "$scope"
-      printf 'cwd: %s\n' "$PWD"
+      printf 'cwd: %s\n' "$canonical_cwd"
       printf 'session_id: %s\n' "${session_dir##*/}"
       date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
-    } >"$marker"
+    } | write_existing_temp "$marker_tmp" 600; then
+      rm -f -- "$marker_tmp"
+      echo "Unable to write the ECI marker safely." >&2
+      exit 1
+    fi
+    if ! install_marker_no_overwrite "$marker_tmp" "$session_dir" 2>/dev/null; then
+      rm -f -- "$marker_tmp"
+      echo "ECI marker installation raced or already exists: $marker" >&2
+      exit 1
+    fi
+    rm -f -- "$marker_tmp"
+    flush_directory "$session_dir" || {
+      echo "Unable to flush the installed ECI marker directory." >&2
+      exit 1
+    }
     remove_legacy_eci_markers_for_cwd "$marker"
     printf 'ECI active: %s\n' "$marker"
     ;;
@@ -159,7 +667,147 @@ case "$cmd" in
     done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
     [ "${#markers[@]}" -gt 0 ] || { echo "ECI marker is not active: $marker" >&2; exit 1; }
     validate_disengage_report "$report"
-    rm -f "${markers[@]}"
+    marker_records=()
+    declare -A seen_markers=()
+    for marker in "${markers[@]}"; do
+      marker_mode="current"
+      if ! validate_eci_marker_identity "$marker"; then
+        validate_legacy_eci_marker_identity "$marker" || {
+          echo "ECI marker is malformed, legacy, or not owned by its canonical session path: $marker" >&2
+          exit 1
+        }
+        marker_mode="legacy"
+      fi
+      recovery_paths_are_safe || {
+        echo "ECI recovery state has an unsafe symlink or conflicting path for: $marker" >&2
+        exit 1
+      }
+      if [ -n "${seen_markers[$marker_canonical_path]+x}" ]; then
+        continue
+      fi
+      seen_markers["$marker_canonical_path"]=1
+      marker_records+=("$marker_canonical_path|$marker_mode|$marker_generation")
+    done
+    for record in "${marker_records[@]}"; do
+      IFS='|' read -r record_marker record_mode record_generation <<<"$record"
+      if [ "$record_mode" = current ]; then
+        validate_eci_marker_identity "$record_marker" || {
+          echo "ECI marker changed or became invalid before cleanup: $record_marker" >&2
+          exit 1
+        }
+      else
+        validate_legacy_eci_marker_identity "$record_marker" || {
+          echo "Legacy ECI marker changed or became invalid before cleanup: $record_marker" >&2
+          exit 1
+        }
+      fi
+      [ "$marker_canonical_path" = "$record_marker" ] &&
+        [ "$marker_generation" = "$record_generation" ] || {
+          echo "ECI marker generation changed before cleanup: $record_marker" >&2
+          exit 1
+        }
+      recovery_paths_are_safe || {
+        echo "ECI recovery state became unsafe before cleanup: $record_marker" >&2
+        exit 1
+      }
+
+      lock_held=false
+      if [ "$record_mode" = current ] &&
+        { [ ! -e "$recovery_lock" ] || [ -d "$recovery_lock" ]; }; then
+        acquire_recovery_lock || {
+          echo "ECI recovery lock is busy or cannot be safely reclaimed: $recovery_lock" >&2
+          exit 1
+        }
+        lock_held=true
+        if [ "$record_mode" = current ]; then
+          validate_eci_marker_identity "$record_marker" || {
+            release_recovery_lock
+            echo "ECI marker changed while waiting for cleanup lock: $record_marker" >&2
+            exit 1
+          }
+        else
+          validate_legacy_eci_marker_identity "$record_marker" || {
+            release_recovery_lock
+            echo "Legacy ECI marker changed while waiting for cleanup lock: $record_marker" >&2
+            exit 1
+          }
+        fi
+        [ "$marker_canonical_path" = "$record_marker" ] &&
+          [ "$marker_generation" = "$record_generation" ] || {
+            release_recovery_lock
+            echo "ECI marker generation changed while waiting for cleanup lock: $record_marker" >&2
+            exit 1
+          }
+        recovery_paths_are_safe || {
+          release_recovery_lock
+          echo "ECI recovery state became unsafe while holding cleanup lock: $record_marker" >&2
+          exit 1
+        }
+      elif [ "$record_mode" = legacy ] && [ -d "$recovery_lock" ]; then
+        acquire_recovery_lock || {
+          echo "Legacy ECI recovery lock is busy or cannot be safely reclaimed: $recovery_lock" >&2
+          exit 1
+        }
+        lock_held=true
+        validate_legacy_eci_marker_identity "$record_marker" || {
+          release_recovery_lock
+          echo "Legacy ECI marker changed while waiting for cleanup lock: $record_marker" >&2
+          exit 1
+        }
+        [ "$marker_canonical_path" = "$record_marker" ] &&
+          [ "$marker_generation" = "$record_generation" ] || {
+            release_recovery_lock
+            echo "Legacy ECI marker generation changed while waiting for cleanup lock: $record_marker" >&2
+            exit 1
+          }
+        recovery_paths_are_safe || {
+          release_recovery_lock
+          echo "Legacy ECI recovery state became unsafe while holding cleanup lock: $record_marker" >&2
+          exit 1
+        }
+      fi
+
+      for path in "$recovery_artifact" "$recovery_count"; do
+        [ -e "$path" ] || continue
+        [ -f "$path" ] && [ ! -L "$path" ] &&
+          [ "$(stat -c '%h' -- "$path" 2>/dev/null || printf '0')" -eq 1 ] || {
+            [ "$lock_held" = true ] && release_recovery_lock
+            echo "Refusing to remove unsafe ECI recovery state: $path" >&2
+            exit 1
+          }
+        rm -f -- "$path" || {
+          [ "$lock_held" = true ] && release_recovery_lock
+          exit 1
+        }
+      done
+      if [ -e "$recovery_lock" ] && [ ! -d "$recovery_lock" ]; then
+        [ -f "$recovery_lock" ] && [ ! -L "$recovery_lock" ] &&
+          [ "$(stat -c '%h' -- "$recovery_lock" 2>/dev/null || printf '0')" -eq 1 ] || {
+            [ "$lock_held" = true ] && release_recovery_lock
+            echo "Refusing to remove unsafe ECI recovery lock state: $recovery_lock" >&2
+            exit 1
+          }
+        rm -f -- "$recovery_lock" || {
+          [ "$lock_held" = true ] && release_recovery_lock
+          exit 1
+        }
+      fi
+      [ -f "$record_marker" ] && [ ! -L "$record_marker" ] || {
+        [ "$lock_held" = true ] && release_recovery_lock
+        echo "Refusing to remove an unsafe ECI marker: $record_marker" >&2
+        exit 1
+      }
+      [ "$(stat -c '%h' -- "$record_marker" 2>/dev/null || printf '0')" -eq 1 ] || {
+        [ "$lock_held" = true ] && release_recovery_lock
+        echo "Refusing to remove a multiply-linked ECI marker: $record_marker" >&2
+        exit 1
+      }
+      rm -f -- "$record_marker" || {
+        [ "$lock_held" = true ] && release_recovery_lock
+        exit 1
+      }
+      [ "$lock_held" = true ] && release_recovery_lock
+    done
     printf 'ECI inactive. Disengage report validated: %s\n' "$report"
     ;;
   status)
