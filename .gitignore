@@ -6,6 +6,7 @@
 !.gitignore
 !CODEX.md
 !config.toml
+!sol-high.config.toml
 !hooks.json
 !bin/**
 !hooks/**
