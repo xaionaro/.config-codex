@@ -10,7 +10,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 proof_root="$tmp/proof"
 home="$tmp/home"
-mkdir -p "$proof_root/t00-session" "$home/tmp"
+mkdir -p "$proof_root/t00-session" "$home"
 printf '%s\n' 'scope: fast-path probe' >"$proof_root/t00-session/eci_active"
 
 input="$tmp/input.json"
@@ -35,13 +35,24 @@ done
 # counters.  The only proof-root file is the marker itself.
 [ ! -e "$proof_root/t00-session/stop_timestamps" ]
 [ "$(find "$proof_root" -type f ! -name eci_active -print -quit)" = "" ]
+[ ! -e "$home/tmp" ]
 
 if command -v strace >/dev/null 2>&1; then
   trace="$tmp/trace"
   strace -f -qq -e trace=file -o "$trace" \
     env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$proof_root" \
     bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$out"
-  ! grep -Eq 'O_(WRONLY|RDWR|CREAT|TRUNC)|mkdir\(|rename\(|unlink\(' "$trace"
+  state_writes="$(awk -v proof_root="$proof_root" -v home="$home" '
+    /O_(WRONLY|RDWR|CREAT|TRUNC)|mkdir\(|rename\(|unlink\(/ &&
+      (index($0, proof_root) || index($0, home)) {
+      print
+    }
+  ' "$trace" || true)"
+  if [ -n "$state_writes" ]; then
+    printf 'active path performed a state write:\n' >&2
+    printf '%s\n' "$state_writes" >&2
+    exit 1
+  fi
 fi
 
 # Each fresh callback stays below one second on the supported fast path;

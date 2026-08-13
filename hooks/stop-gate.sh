@@ -6,7 +6,6 @@ set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
 . "$HOOK_DIR/lib/codex-tmp.sh"
-codex_init_tmp || true
 codex_install_fail_open_trap stop-gate
 
 input=$(cat)
@@ -109,6 +108,10 @@ if [ -z "$transcript_path" ]; then
   json_continue
   exit 0
 fi
+
+# The active-ECI path above is intentionally read-only.  Initialize scratch
+# storage only after that authoritative fast path has declined the callback.
+codex_init_tmp || true
 
 git_change_summary() {
   local repo="$1"

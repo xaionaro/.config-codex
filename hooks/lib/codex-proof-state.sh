@@ -344,7 +344,8 @@ codex_state_value() {
 
 codex_legacy_eci_markers_for_cwd() {
   local cwd="${1:-}"
-  local root marker dir name marker_cwd canonical_cwd canonical_marker_cwd found=false
+  local root marker dir name marker_cwd marker_owner line_count
+  local canonical_cwd canonical_marker_cwd found=false
 
   [ -n "$cwd" ] || return 1
   root="$(codex_proof_root)"
@@ -353,12 +354,38 @@ codex_legacy_eci_markers_for_cwd() {
 
   shopt -s nullglob
   for marker in "$root"/*/eci_active; do
-    [ -f "$marker" ] || continue
+    [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+    [ "$(wc -c <"$marker" 2>/dev/null || printf '0')" -le 1048576 ] || continue
     dir="${marker%/*}"
     name="${dir##*/}"
     codex_reserved_proof_dir "$name" || continue
+    line_count="$(awk 'END { print NR + 0 }' "$marker" 2>/dev/null || printf '0')"
+    case "$line_count" in
+      3|4) ;;
+      *) continue ;;
+    esac
+    case "$(sed -n '1p' "$marker" 2>/dev/null || true)" in
+      "scope: "*) ;;
+      *) continue ;;
+    esac
+    case "$(sed -n '2p' "$marker" 2>/dev/null || true)" in
+      "cwd: "*) ;;
+      *) continue ;;
+    esac
+    case "$(sed -n '3p' "$marker" 2>/dev/null || true)" in
+      "session_id: "*) ;;
+      *) continue ;;
+    esac
+    if [ "$line_count" -eq 4 ]; then
+      case "$(sed -n '4p' "$marker" 2>/dev/null || true)" in
+        "created_utc: "*) ;;
+        *) continue ;;
+      esac
+    fi
     marker_cwd="$(codex_state_value "$marker" cwd || true)"
     [ -n "$marker_cwd" ] || continue
+    marker_owner="$(codex_state_value "$marker" session_id || true)"
+    [ "$marker_owner" = "$name" ] || continue
     canonical_marker_cwd="$(codex_canonical_cwd "$marker_cwd")"
     [ "$canonical_marker_cwd" = "$canonical_cwd" ] || continue
     printf '%s\n' "$marker"

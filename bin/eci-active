@@ -22,7 +22,12 @@ EOF
 
 resolve_session_dir() {
   local root name newest="" newest_mtime=0 d mtime session_id session_var
+  local reject_reserved="${1:-false}"
   root="$(codex_proof_root)"
+  if [ -L "$root" ]; then
+    echo "ECI proof root is a symlink; refusing to use it: $root" >&2
+    exit 1
+  fi
 
   if [ -n "${CODEX_SESSION_ID:-}" ]; then
     session_id="$CODEX_SESSION_ID"
@@ -37,6 +42,10 @@ resolve_session_dir() {
       echo "Invalid $session_var; use only letters, digits, '_' or '-'." >&2
       exit 1
     }
+    if [ "$reject_reserved" = true ] && codex_reserved_proof_dir "$session_id"; then
+      echo "Reserved $session_var cannot be activated: $session_id" >&2
+      exit 1
+    fi
     printf '%s/%s\n' "$root" "$session_id"
     return
   fi
@@ -126,18 +135,40 @@ case "$cmd" in
     shift
     scope="${*:-}"
     [ -n "$scope" ] || { usage; exit 2; }
-    session_dir="$(resolve_session_dir)" || {
+    if printf '%s' "$scope" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+      echo "ECI scope contains control characters; refusing to create a malformed marker." >&2
+      exit 1
+    fi
+    session_dir="$(resolve_session_dir true)" || {
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
     marker="$session_dir/eci_active"
+    if [ -L "$session_dir" ] || { [ -e "$session_dir" ] && [ ! -d "$session_dir" ]; }; then
+      echo "ECI session directory is not a directory: $session_dir" >&2
+      exit 1
+    fi
     mkdir -p "$session_dir"
-    {
-      printf 'scope: %s\n' "$scope"
-      printf 'cwd: %s\n' "$PWD"
-      printf 'session_id: %s\n' "${session_dir##*/}"
-      date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
-    } >"$marker"
+    [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || {
+      echo "ECI session directory is not a canonical directory: $session_dir" >&2
+      exit 1
+    }
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+      echo "ECI marker already exists or is unsafe: $marker" >&2
+      exit 1
+    fi
+    if ! (
+      set -C
+      {
+        printf 'scope: %s\n' "$scope"
+        printf 'cwd: %s\n' "$PWD"
+        printf 'session_id: %s\n' "${session_dir##*/}"
+        date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
+      } >"$marker"
+    ); then
+      echo "ECI marker already exists or is unsafe: $marker" >&2
+      exit 1
+    fi
     remove_legacy_eci_markers_for_cwd "$marker"
     printf 'ECI active: %s\n' "$marker"
     ;;
