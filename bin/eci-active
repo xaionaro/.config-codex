@@ -161,13 +161,25 @@ remove_legacy_eci_markers_for_cwd() {
   done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
 }
 
+scope_has_control_bytes() {
+  local scope="$1"
+
+  # grep is line-oriented, so check LF in the shell value first; do not use
+  # command substitution here because it strips trailing newlines.  The
+  # byte-class check covers the remaining C0 controls and DEL.
+  case "$scope" in
+    *$'\n'*) return 0 ;;
+  esac
+  LC_ALL=C printf '%s' "$scope" | LC_ALL=C grep -q '[[:cntrl:]]'
+}
+
 cmd="${1:-}"
 case "$cmd" in
   on)
     shift
     scope="${*:-}"
     [ -n "$scope" ] || { usage; exit 2; }
-    if printf '%s' "$scope" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    if scope_has_control_bytes "$scope"; then
       echo "ECI scope contains control characters; refusing to create a malformed marker." >&2
       exit 1
     fi

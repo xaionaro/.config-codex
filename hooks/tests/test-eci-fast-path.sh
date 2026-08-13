@@ -98,6 +98,16 @@ ln -s "$tmp/legacy-target" "$safety_root/pre-reviewer"
 CODEX_PROOF_ROOT="$safety_root" CODEX_SESSION_ID=safety2 \
   "$ROOT/bin/eci-active" on "scope" >/dev/null
 [ -f "$tmp/legacy-target/eci_active" ]
+
+# Scope validation must reject LF without command-substitution newline loss.
+scope_root="$tmp/scope-root"
+mkdir -p "$scope_root/scope-session"
+if CODEX_PROOF_ROOT="$scope_root" CODEX_SESSION_ID=scope-session \
+  "$ROOT/bin/eci-active" on $'line one\nline two' >"$tmp/scope.out" 2>"$tmp/scope.err"; then
+  printf 'ECI newline scope was accepted\n' >&2
+  exit 1
+fi
+[ ! -e "$scope_root/scope-session/eci_active" ]
 mkdir -p "$safety_root/reviewer"
 printf 'scope: bad\tc0\ncwd: %s\nsession_id: reviewer\n' "$ROOT" \
   >"$safety_root/reviewer/eci_active"
