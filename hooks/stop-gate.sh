@@ -80,8 +80,64 @@ json_block() {
   jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
 
+# Validate an ECI marker without following symlinks.  Return 0 for a regular
+# marker, 1 for an absent marker, and 2 for an unsafe existing path.  The
+# distinct unsafe result lets the caller fail closed before generic stop-state
+# bookkeeping can write timestamps or repair marker contents.
+eci_path_has_symlink_component() {
+  local path="$1"
+  local component current="/"
+  local -a components=()
+
+  case "$path" in
+    /*) ;;
+    *) return 2 ;;
+  esac
+
+  IFS='/' read -r -a components <<<"${path#/}"
+  for component in "${components[@]}"; do
+    case "$component" in
+      ""|.) continue ;;
+      ..) current="$(dirname -- "$current")" ;;
+      *)
+        current="${current%/}/$component"
+        [ -L "$current" ] && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+eci_marker_is_safe_regular() {
+  local marker="$1"
+  local parent root_status parent_status
+
+  case "$marker" in
+    "$root"/*/eci_active) ;;
+    *) return 2 ;;
+  esac
+
+  root_status=0
+  eci_path_has_symlink_component "$root" || root_status=$?
+  [ "$root_status" -eq 1 ] || return 2
+
+  parent="${marker%/*}"
+  parent_status=0
+  eci_path_has_symlink_component "$parent" || parent_status=$?
+  [ "$parent_status" -eq 1 ] || return 2
+  if [ ! -d "$parent" ]; then
+    [ ! -e "$parent" ] && return 1
+    return 2
+  fi
+
+  [ ! -L "$marker" ] || return 2
+  [ -e "$marker" ] || return 1
+  [ -f "$marker" ] || return 2
+  [ "$(stat -c '%F' -- "$marker" 2>/dev/null || true)" = "regular file" ] || return 2
+}
+
 active_eci_marker_for_stop() {
-  local marker side_stop parent_session_id is_subagent_context=false
+  local marker side_stop parent_session_id is_subagent_context=false marker_status
   local transcript_owner="" subagent_metadata=""
 
   # A normal transcript path carries its session UUID.  This lets the direct
@@ -95,10 +151,15 @@ active_eci_marker_for_stop() {
 
     # A missing transcript or a path owned by this session is authoritative:
     # do not run the Python transcript scanner or enumerate legacy state.
-    if [ -f "$marker" ] && [ ! -L "$marker" ] &&
-      { [ -z "$transcript_path" ] || [ "$transcript_owner" = "$session_id" ]; }; then
-      printf '%s\n' "$marker"
-      return 0
+    if [ -z "$transcript_path" ] || [ "$transcript_owner" = "$session_id" ]; then
+      marker_status=0
+      if eci_marker_is_safe_regular "$marker"; then
+        printf '%s\n' "$marker"
+        return 0
+      else
+        marker_status=$?
+        [ "$marker_status" -eq 2 ] && return 2
+      fi
     fi
 
     # Unknown/synthetic transcript paths retain the historical parent/subagent
@@ -121,10 +182,28 @@ active_eci_marker_for_stop() {
     fi
 
     if [ "$is_subagent_context" = true ]; then
-      [ "$session_id" = "$parent_session_id" ] && return 1
+      if [ "$session_id" = "$parent_session_id" ]; then
+        # The parent session owns the stop decision, but an unsafe own marker
+        # must still fail closed before the generic branch can write state.
+        marker_status=0
+        if eci_marker_is_safe_regular "$marker"; then
+          return 1
+        else
+          marker_status=$?
+          [ "$marker_status" -eq 2 ] && return 2
+          return 1
+        fi
+      fi
     fi
 
-    [ -f "$marker" ] && [ ! -L "$marker" ] && { printf '%s\n' "$marker"; return 0; }
+    marker_status=0
+    if eci_marker_is_safe_regular "$marker"; then
+      printf '%s\n' "$marker"
+      return 0
+    else
+      marker_status=$?
+      [ "$marker_status" -eq 2 ] && return 2
+    fi
 
     [ "$is_subagent_context" = true ] && return 1
 
@@ -132,23 +211,48 @@ active_eci_marker_for_stop() {
     parent_session_id="$(codex_state_value "$side_stop" parent_session_id || true)"
     if codex_valid_session_id "$parent_session_id"; then
       marker="$root/$parent_session_id/eci_active"
-      [ -f "$marker" ] && [ ! -L "$marker" ] && { printf '%s\n' "$marker"; return 0; }
+      marker_status=0
+      if eci_marker_is_safe_regular "$marker"; then
+        printf '%s\n' "$marker"
+        return 0
+      else
+        marker_status=$?
+        [ "$marker_status" -eq 2 ] && return 2
+      fi
     fi
   fi
 
   [ "$is_subagent_context" = true ] && return 1
 
-  codex_legacy_eci_markers_for_cwd "$cwd" 2>/dev/null | head -n1
+  marker="$(codex_legacy_eci_markers_for_cwd "$cwd" 2>/dev/null | head -n1 || true)"
+  [ -n "$marker" ] || return 1
+  marker_status=0
+  if eci_marker_is_safe_regular "$marker"; then
+    printf '%s\n' "$marker"
+    return 0
+  fi
+  marker_status=$?
+  [ "$marker_status" -eq 2 ] && return 2
+  return 1
 }
 
 block_if_eci_active_for_stop() {
-  local marker
+  local marker marker_status=0
 
-  marker="$(active_eci_marker_for_stop || true)"
-  [ -n "$marker" ] && [ -f "$marker" ] || return 1
-  [ ! -L "$marker" ] || return 1
-  json_block_fast "$marker"
-  return 0
+  if marker="$(active_eci_marker_for_stop)"; then
+    [ -n "$marker" ] || return 1
+    json_block_fast "$marker"
+    return 0
+  else
+    marker_status=$?
+    # An existing symlink/non-regular ECI marker is unsafe control state.
+    # Block without exposing or repairing it, and before generic bookkeeping.
+    if [ "$marker_status" -eq 2 ]; then
+      json_block_fast ""
+      return 0
+    fi
+    return 1
+  fi
 }
 
 case "$session_id" in
@@ -596,15 +700,32 @@ block_proof_validation() {
   exit 0
 }
 
-if [ -n "$eci_active" ] && [ -f "$eci_active" ]; then
-  codex_note_state_session_id "$eci_active" "$session_id" || true
-  json_block "ECI is active for this session. Never stop until the ECI task is complete. If work is not done, dispatch remaining work to subagents and use wait_agent; do not stop while they run. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
-  exit 0
+if [ -n "$eci_active" ]; then
+  marker_status=0
+  if eci_marker_is_safe_regular "$eci_active"; then
+    json_block_fast "$eci_active"
+    exit 0
+  else
+    marker_status=$?
+    if [ "$marker_status" -eq 2 ]; then
+      json_block_fast ""
+      exit 0
+    fi
+  fi
 fi
 
-if [ -n "$legacy_eci_active" ] && [ -f "$legacy_eci_active" ]; then
-  json_block "ECI is active for this workspace via legacy marker $legacy_eci_active. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
-  exit 0
+if [ -n "$legacy_eci_active" ]; then
+  marker_status=0
+  if eci_marker_is_safe_regular "$legacy_eci_active"; then
+    json_block_fast "$legacy_eci_active"
+    exit 0
+  else
+    marker_status=$?
+    if [ "$marker_status" -eq 2 ]; then
+      json_block_fast ""
+      exit 0
+    fi
+  fi
 fi
 
 if [ -n "$skip" ] && [ -f "$skip" ] && [ -n "$(find "$skip" -mmin -60 -print 2>/dev/null)" ]; then

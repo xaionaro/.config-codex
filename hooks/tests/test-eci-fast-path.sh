@@ -108,6 +108,46 @@ if CODEX_PROOF_ROOT="$safety_root" bash -c \
   exit 1
 fi
 
+# Stop-gate regression: unsafe own and parent markers must fail closed before
+# generic json_block can create stop_timestamps or append session ownership.
+stop_safety_root="$tmp/stop-safety-root"
+mkdir -p "$stop_safety_root/t00-session" "$stop_safety_root/t00-parent" \
+  "$stop_safety_root/side-stop/sessions/t00-side" "$tmp/stop-target"
+printf 'scope: target\n' >"$tmp/stop-target/eci_active"
+ln -s "$tmp/stop-target/eci_active" "$stop_safety_root/t00-session/eci_active"
+stop_input="$tmp/stop-input.json"
+stop_out="$tmp/stop-out.json"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-session",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$stop_safety_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$stop_safety_root/t00-session/stop_timestamps" ]
+[ ! -e "$stop_safety_root/stop_timestamps" ]
+[ "$(cat "$tmp/stop-target/eci_active")" = 'scope: target' ]
+
+mkdir -p "$home/.codex/sessions"
+printf '%s\n' '{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"t00-session"}}}}}' \
+  >"$home/.codex/sessions/child.jsonl"
+jq --arg transcript "$home/.codex/sessions/child.jsonl" \
+  '.transcript_path = $transcript' "$stop_input" >"$stop_input.next"
+mv "$stop_input.next" "$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$stop_safety_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$stop_safety_root/t00-session/stop_timestamps" ]
+
+printf 'command: /side\nparent_session_id: t00-parent\n' \
+  >"$stop_safety_root/side-stop/sessions/t00-side/side_stop"
+ln -s "$tmp/stop-target/eci_active" "$stop_safety_root/t00-parent/eci_active"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-side",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$stop_safety_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$stop_safety_root/t00-side/stop_timestamps" ]
+[ ! -e "$stop_safety_root/stop_timestamps" ]
+
 # The active path must not create/update recovery state or generic callback
 # counters.  The only proof-root file is the marker itself.
 [ ! -e "$proof_root/t00-session/stop_timestamps" ]
