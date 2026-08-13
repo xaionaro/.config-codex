@@ -5988,7 +5988,7 @@ test_stop_gate_eci_loop_recovery_uses_parent_owner() {
 }
 
 test_stop_gate_eci_loop_recovery_parallel_calls_are_exactly_once() {
-  local proof_root input marker out_dir i artifact count stable_count=0 reason
+  local proof_root input marker out_dir i artifact count stable_count=0 reason generation count_file now
   proof_root="$(fresh_proof_root stop-eci-loop-recovery-parallel)"
   marker="$proof_root/t00-session/eci_active"
   out_dir="$TMP_ROOT/stop-eci-loop-recovery-parallel-outs"
@@ -6001,6 +6001,10 @@ test_stop_gate_eci_loop_recovery_parallel_calls_are_exactly_once() {
   } >"$marker"
   input="$TMP_ROOT/stop-eci-loop-recovery-parallel.json"
   with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  count_file="$proof_root/t00-session/eci-stop-loop-recovery.$generation.timestamps"
+  now="$(date +%s)"
+  printf '%s\n%s\n%s\n%s\n' "$now" "$now" "$now" "$now" >"$count_file" || return 1
 
   for i in 1 2 3 4 5 6 7 8; do
     run_hook "$out_dir/$i.out" "$ROOT/hooks/stop-gate.sh" "$input" \
@@ -6019,12 +6023,64 @@ test_stop_gate_eci_loop_recovery_parallel_calls_are_exactly_once() {
     is_stop_block "$out_dir/$i.out" || return 1
     if json_field_equals "$out_dir/$i.out" '.reason // empty' "$reason"; then
       stable_count=$((stable_count + 1))
+    elif json_field_contains "$out_dir/$i.out" '.reason // empty' \
+      'ECI stop-loop recovery remains blocked'; then
+      stable_count=$((stable_count + 1))
     else
       json_field_contains "$out_dir/$i.out" '.reason // empty' \
         'ECI is active for this stop attempt' || return 1
     fi
   done
   [ "$stable_count" -ge 1 ]
+}
+
+test_stop_gate_eci_recovery_concurrent_threshold_responses_are_stable() {
+  local fanout proof_root input marker out_dir i artifact output reason
+  for fanout in 8 80; do
+    proof_root="$(fresh_proof_root "stop-eci-recovery-concurrent-$fanout")"
+    marker="$proof_root/t00-session/eci_active"
+    out_dir="$TMP_ROOT/stop-eci-recovery-concurrent-$fanout-outs"
+    mkdir -p "${marker%/*}" "$out_dir" || return 1
+    {
+      printf 'scope: concurrent threshold test\n'
+      printf 'cwd: %s\n' "$ROOT"
+      printf 'session_id: t00-session\n'
+      printf 'created_utc: 2026-05-04T00:00:00Z\n'
+    } >"$marker"
+    input="$TMP_ROOT/stop-eci-recovery-concurrent-$fanout.json"
+    with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+    for i in 1 2 3 4; do
+      run_hook "$out_dir/pre-$i.out" "$ROOT/hooks/stop-gate.sh" "$input" \
+        CODEX_PROOF_ROOT="$proof_root" || return 1
+    done
+    run_hook "$out_dir/prewarm.out" "$ROOT/hooks/stop-gate.sh" "$input" \
+      CODEX_PROOF_ROOT="$proof_root" || return 1
+    artifact="$(find "$proof_root/t00-session" -maxdepth 1 -type f \
+      -name 'eci-stop-loop-recovery.*.json' -print | head -n1)"
+    [ -n "$artifact" ] || return 1
+    for i in $(seq 1 "$fanout"); do
+      run_hook "$out_dir/$i.out" "$ROOT/hooks/stop-gate.sh" "$input" \
+        CODEX_PROOF_ROOT="$proof_root" &
+    done
+    wait
+    for i in $(seq 1 "$fanout"); do
+      output="$out_dir/$i.out"
+      jq -e '.decision == "block" and (.reason | type == "string")' "$output" >/dev/null || return 1
+      reason="$(jq -r '.reason' "$output")"
+      case "$reason" in
+        *"ECI stop-loop recovery active"*|*"ECI stop-loop recovery remains blocked"*) ;;
+        *) return 1 ;;
+      esac
+      case "$reason" in
+        *"ECI is active for this stop attempt via marker"*) return 1 ;;
+      esac
+      [ ! -s "$output.err" ] || return 1
+    done
+    artifact="$(find "$proof_root/t00-session" -maxdepth 1 -type f \
+      -name 'eci-stop-loop-recovery.*.json' -print | head -n1)"
+    [ -n "$artifact" ] || return 1
+    jq -e '.schema == "eci-stop-loop-recovery/v1"' "$artifact" >/dev/null || return 1
+  done
 }
 
 test_eci_stop_loop_recovery_skill_contract() {
@@ -6236,34 +6292,64 @@ test_stop_gate_eci_recovery_ignores_malformed_timestamp_lines() {
     [ "$(find "$proof_root/t00-session" -maxdepth 1 -type f -name 'eci-stop-loop-recovery.*.json' -print | wc -l)" -eq 0 ]
 }
 
-test_stop_gate_eci_recovery_rejects_raced_artifact_temp_symlink() {
-  local proof_root input out marker victim before after fake_bin real_mktemp
-  proof_root="$(fresh_proof_root stop-eci-recovery-temp-symlink)"
+test_stop_gate_eci_recovery_rejects_owner_directory_swap() {
+  local proof_root input out marker generation owner old_owner lock victim victim_file before after
+  proof_root="$(fresh_proof_root stop-eci-recovery-owner-swap)"
   marker="$(write_valid_eci_marker "$proof_root")" || return 1
-  victim="$TMP_ROOT/eci-recovery-temp-victim"
-  printf 'do not modify\n' >"$victim" || return 1
-  before="$(sha256sum "$victim" | awk '{print $1}')" || return 1
-  fake_bin="$TMP_ROOT/eci-recovery-fake-mktemp"
-  mkdir -p "$fake_bin" || return 1
-  real_mktemp="$(command -v mktemp)" || return 1
+  owner="$proof_root/t00-session"
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  lock="$owner/eci-stop-loop-recovery.$generation.lock"
+  mkdir -p "$lock" || return 1
   {
-    printf '%s\n' '#!/usr/bin/env bash' 'set -u' 'template="${1:-}"'
-    printf '%s\n' 'if [[ "$template" == *eci-stop-loop-recovery-artifact* ]]; then'
-    printf '%s\n' '  raced="${template%XXXXXX}raced"' '  ln -s "$ECI_TEST_VICTIM" "$raced"'
-    printf '%s\n' '  printf "%s\\n" "$raced"' '  exit 0' 'fi'
-    printf 'exec %q "$@"\n' "$real_mktemp"
-  } >"$fake_bin/mktemp" || return 1
-  chmod +x "$fake_bin/mktemp" || return 1
+    printf 'pid: %s\n' "$$"
+    printf 'start_time: %s\n' "$(awk '{print $22}' "/proc/$$/stat")"
+    printf 'lease_until: %s\n' "$(( $(date +%s) + 60 ))"
+    printf 'token: %064d\n' 0
+  } >"$lock/owner" || return 1
+  victim="$TMP_ROOT/eci-recovery-owner-swap-victim"
+  mkdir -p "$victim" || return 1
+  cp "$marker" "$victim/eci_active" || return 1
+  victim_file="$victim/sentinel"
+  printf 'do not modify\n' >"$victim_file" || return 1
+  before="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  old_owner="$proof_root/t00-session-original"
+  mv "$owner" "$old_owner" || return 1
+  ln -s "$victim" "$owner" || return 1
   input="$TMP_ROOT/stop-eci-recovery-temp-symlink.json"
   with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
   out="$TMP_ROOT/stop-eci-recovery-temp-symlink.out"
 
-  run_eci_stop_attempts "$proof_root" "$input" "$out" 5 \
-    PATH="$fake_bin:$PATH" ECI_TEST_VICTIM="$victim" || return 1
-  after="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  after="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
   is_stop_block "$out" &&
     [ "$before" = "$after" ] &&
-    [ "$(find "$proof_root/t00-session" -maxdepth 1 -type f -name 'eci-stop-loop-recovery.*.json' -print | wc -l)" -eq 0 ]
+    [ ! -s "$out.err" ] &&
+    json_field_contains "$out" '.reason // empty' \
+      'ECI stop-loop recovery remains blocked' &&
+    [ -L "$owner" ] &&
+    [ "$(find "$victim" -maxdepth 1 -type f -name 'eci-stop-loop-recovery.*' -print | wc -l)" -eq 0 ]
+}
+
+test_stop_gate_eci_recovery_rejects_oversized_lock_metadata() {
+  local proof_root input out marker generation lock
+  proof_root="$(fresh_proof_root stop-eci-recovery-oversized-lock)"
+  marker="$(write_valid_eci_marker "$proof_root")" || return 1
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  lock="$proof_root/t00-session/eci-stop-loop-recovery.$generation.lock"
+  mkdir -p "$lock" || return 1
+  head -c 5000 /dev/zero >"$lock/owner" || return 1
+  input="$TMP_ROOT/stop-eci-recovery-oversized-lock.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-recovery-oversized-lock.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    [ ! -s "$out.err" ] &&
+    json_field_contains "$out" '.reason // empty' \
+      'ECI stop-loop recovery remains blocked' &&
+    [ ! -e "$proof_root/t00-session/eci-stop-loop-recovery.$generation.timestamps" ]
 }
 
 test_stop_gate_eci_recovery_root_alias_has_one_generation() {
@@ -6317,7 +6403,7 @@ test_stop_gate_eci_recovery_tampered_reason_stays_blocked() {
 }
 
 test_eci_active_off_cleans_recovery_generation() {
-  local proof_root marker input out report old_artifact old_generation old_lock new_artifact new_generation
+  local proof_root marker input out report old_artifact old_generation old_lock new_artifact new_generation old_count old_temp artifact_temp
   proof_root="$(fresh_proof_root eci-off-recovery-cleanup)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" on "cleanup test" >/dev/null 2>&1 || return 1
@@ -6333,6 +6419,11 @@ test_eci_active_off_cleans_recovery_generation() {
   old_lock="$proof_root/t00-session/eci-stop-loop-recovery.$old_generation.lock"
   [ ! -e "$old_lock" ] || return 1
   : >"$old_lock" || return 1
+  old_count="$proof_root/t00-session/eci-stop-loop-recovery.$old_generation.timestamps"
+  old_temp="$proof_root/t00-session/.eci-stop-loop-recovery-count.$old_generation.stale"
+  artifact_temp="$proof_root/t00-session/.eci-stop-loop-recovery-artifact.$old_generation.stale"
+  printf 'stale temp\n' >"$old_temp" || return 1
+  printf 'stale artifact temp\n' >"$artifact_temp" || return 1
 
   report="$TMP_ROOT/eci-off-recovery-cleanup.md"
   write_user_closed_eci_report "$report"
@@ -6340,8 +6431,10 @@ test_eci_active_off_cleans_recovery_generation() {
     "$ROOT/bin/eci-active" off "$report" >/dev/null 2>&1 || return 1
   [ ! -e "$marker" ] &&
     [ ! -e "$old_artifact" ] &&
-    [ ! -e "$proof_root/t00-session/eci-stop-loop-recovery.$old_generation.timestamps" ] &&
-    [ ! -e "$old_lock" ] || return 1
+    [ ! -e "$old_count" ] &&
+    [ ! -e "$old_lock" ] &&
+    [ ! -e "$old_temp" ] &&
+    [ ! -e "$artifact_temp" ] || return 1
 
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" on "cleanup reengaged" >/dev/null 2>&1 || return 1
@@ -6351,6 +6444,24 @@ test_eci_active_off_cleans_recovery_generation() {
   [ -n "$new_artifact" ] || return 1
   new_generation="$(jq -r '.marker_generation' "$new_artifact")" || return 1
   [ "$old_generation" != "$new_generation" ]
+}
+
+test_eci_active_off_removes_four_line_legacy_reserved_marker() {
+  local proof_root marker out
+  proof_root="$(fresh_proof_root eci-off-four-line-legacy)"
+  marker="$proof_root/pre-reviewer/eci_active"
+  mkdir -p "${marker%/*}" || return 1
+  {
+    printf 'scope: four-line legacy off\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+    printf 'created_utc: 2026-05-04T00:00:00Z\n'
+  } >"$marker" || return 1
+  out="$TMP_ROOT/eci-off-four-line-legacy.out"
+
+  env -u CODEX_SESSION_ID CODEX_THREAD_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err" || return 1
+  [ ! -e "$marker" ] && grep -q 'ECI inactive' "$out"
 }
 
 test_eci_active_off_protects_symlinked_recovery_target() {
@@ -7874,6 +7985,8 @@ run_case "stop gate ECI loop recovery uses parent owner" \
   test_stop_gate_eci_loop_recovery_uses_parent_owner
 run_case "stop gate ECI loop recovery parallel calls are exactly once" \
   test_stop_gate_eci_loop_recovery_parallel_calls_are_exactly_once
+run_case "stop gate ECI recovery concurrent threshold responses are stable" \
+  test_stop_gate_eci_recovery_concurrent_threshold_responses_are_stable
 run_case "ECI and ATE skills define stop-loop recovery contract" \
   test_eci_stop_loop_recovery_skill_contract
 run_case "stop gate ECI recovery rejects tampered reason" \
@@ -7890,12 +8003,16 @@ run_case "stop gate ECI recovery rejects control marker without mutation" \
   test_stop_gate_eci_recovery_rejects_control_marker_without_mutation
 run_case "stop gate ECI recovery ignores malformed timestamp lines" \
   test_stop_gate_eci_recovery_ignores_malformed_timestamp_lines
-run_case "stop gate ECI recovery rejects raced artifact temp symlink" \
-  test_stop_gate_eci_recovery_rejects_raced_artifact_temp_symlink
+run_case "stop gate ECI recovery rejects owner directory swap" \
+  test_stop_gate_eci_recovery_rejects_owner_directory_swap
+run_case "stop gate ECI recovery rejects oversized lock metadata" \
+  test_stop_gate_eci_recovery_rejects_oversized_lock_metadata
 run_case "stop gate ECI recovery canonicalizes root aliases" \
   test_stop_gate_eci_recovery_root_alias_has_one_generation
 run_case "eci-active cleanup removes one recovery generation" \
   test_eci_active_off_cleans_recovery_generation
+run_case "eci-active cleanup removes four-line legacy reserved marker" \
+  test_eci_active_off_removes_four_line_legacy_reserved_marker
 run_case "eci-active cleanup protects symlinked recovery targets" \
   test_eci_active_off_protects_symlinked_recovery_target
 run_case "eci-active on rejects reserved IDs and installs atomically" \
