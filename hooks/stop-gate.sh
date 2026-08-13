@@ -40,6 +40,10 @@ json_continue() {
 # returns the block decision.
 json_block_fast() {
   local marker="$1"
+  if [ -z "$marker" ]; then
+    printf '%s\n' '{"decision":"block","reason":"ECI stop state is unsafe or unavailable. Do not stop; continue the ECI task and resolve the marker or proof-root integrity issue first."}'
+    return 0
+  fi
   # Session IDs are restricted and normal proof roots are path-safe.  If a
   # caller supplies unusual JSON characters, omit the path rather than
   # invoking a serializer on the hot path.
@@ -134,6 +138,27 @@ eci_marker_is_safe_regular() {
   [ -e "$marker" ] || return 1
   [ -f "$marker" ] || return 2
   [ "$(stat -c '%F' -- "$marker" 2>/dev/null || true)" = "regular file" ] || return 2
+}
+
+eci_root_is_safe_for_stop() {
+  local parent
+
+  parent="${root%/*}"
+  [ -n "$parent" ] || parent="/"
+
+  # A missing default root is normal.  Existing root/parent paths must still
+  # be directories; this catches a directory-to-file swap without writing to
+  # the replaced path.  Symlink roots are unsafe, while an existing symlink
+  # parent is allowed when it still resolves to a directory (the default
+  # deployment may use a symlinked cache parent).
+  [ ! -L "$root" ] || return 2
+  if [ -e "$root" ]; then
+    [ -d "$root" ] || return 2
+  fi
+  if [ -e "$parent" ]; then
+    [ -d "$parent" ] || return 2
+  fi
+  return 0
 }
 
 active_eci_marker_for_stop() {
@@ -254,6 +279,13 @@ block_if_eci_active_for_stop() {
     return 1
   fi
 }
+
+root_status=0
+eci_root_is_safe_for_stop || root_status=$?
+if [ "$root_status" -eq 2 ]; then
+  json_block_fast ""
+  exit 0
+fi
 
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;

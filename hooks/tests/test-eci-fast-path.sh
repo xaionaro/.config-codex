@@ -148,6 +148,31 @@ env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$stop_safety_root
 [ ! -e "$stop_safety_root/t00-side/stop_timestamps" ]
 [ ! -e "$stop_safety_root/stop_timestamps" ]
 
+# Root-integrity regression: replacing an active proof root or its parent with
+# a regular file must block read-only before transcriptless continuation.
+swap_root="$tmp/swap-root"
+mkdir -p "$swap_root/t00-session"
+printf 'scope: before root swap\n' >"$swap_root/t00-session/eci_active"
+mv "$swap_root" "$swap_root.original"
+printf 'root replaced\n' >"$swap_root"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-session",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$swap_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ "$(cat "$swap_root")" = 'root replaced' ]
+
+swap_parent="$tmp/swap-parent"
+mkdir -p "$swap_parent/proof/t00-session"
+printf 'scope: before parent swap\n' >"$swap_parent/proof/t00-session/eci_active"
+mv "$swap_parent" "$swap_parent.original"
+printf 'parent replaced\n' >"$swap_parent"
+swap_parent_root="$swap_parent/proof"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$swap_parent_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ "$(cat "$swap_parent")" = 'parent replaced' ]
+
 # The active path must not create/update recovery state or generic callback
 # counters.  The only proof-root file is the marker itself.
 [ ! -e "$proof_root/t00-session/stop_timestamps" ]
