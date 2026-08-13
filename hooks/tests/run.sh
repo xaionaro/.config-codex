@@ -6245,6 +6245,84 @@ test_stop_gate_eci_recovery_reclaims_stale_lock() {
     [ -f "$proof_root/t00-session/eci-stop-loop-recovery.$generation.timestamps" ]
 }
 
+test_stop_gate_eci_recovery_stale_reclaimer_fanout_is_exactly_once() {
+  local proof_root input marker generation lock out_dir artifact count timestamps i
+  proof_root="$(fresh_proof_root stop-eci-recovery-stale-fanout)"
+  marker="$(write_valid_eci_marker "$proof_root")" || return 1
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  lock="$proof_root/t00-session/eci-stop-loop-recovery.$generation.lock"
+  mkdir -p "$lock" || return 1
+  {
+    printf 'pid: 999999999\n'
+    printf 'start_time: 1\n'
+    printf 'lease_until: 1\n'
+    printf 'token: %064d\n' 0
+  } >"$lock/owner" || return 1
+  printf '%s\n%s\n%s\n%s\n' "$(date +%s)" "$(date +%s)" "$(date +%s)" "$(date +%s)" \
+    >"$proof_root/t00-session/eci-stop-loop-recovery.$generation.timestamps" || return 1
+  timestamps="$proof_root/t00-session/eci-stop-loop-recovery.$generation.timestamps"
+  input="$TMP_ROOT/stop-eci-recovery-stale-fanout.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out_dir="$TMP_ROOT/stop-eci-recovery-stale-fanout-outs"
+  mkdir -p "$out_dir" || return 1
+  for i in 1 2 3 4 5 6 7 8; do
+    run_hook "$out_dir/$i.out" "$ROOT/hooks/stop-gate.sh" "$input" \
+      CODEX_PROOF_ROOT="$proof_root" &
+  done
+  wait
+  artifact="$(find "$proof_root/t00-session" -maxdepth 1 -type f \
+    -name 'eci-stop-loop-recovery.*.json' -print | head -n1)"
+  count="$(find "$proof_root/t00-session" -maxdepth 1 -type f \
+    -name 'eci-stop-loop-recovery.*.json' -print | wc -l)"
+  [ -n "$artifact" ] && [ "$count" -eq 1 ] &&
+    [ -f "$timestamps" ] &&
+    [ ! -e "$lock" ] &&
+    [ "$(find "$proof_root/t00-session" -maxdepth 1 -name '.eci-stop-loop-recovery-*.*' -print | wc -l)" -eq 0 ] &&
+    for i in 1 2 3 4 5 6 7 8; do
+      jq -e '.decision == "block" and (.reason | type == "string")' \
+        "$out_dir/$i.out" >/dev/null || return 1
+    done
+}
+
+test_stop_gate_eci_recovery_preserves_slow_live_lock() {
+  local proof_root input out marker generation lock owner_pid owner_start heartbeat_pid
+  proof_root="$(fresh_proof_root stop-eci-recovery-slow-live-lock)"
+  marker="$(write_valid_eci_marker "$proof_root")" || return 1
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  lock="$proof_root/t00-session/eci-stop-loop-recovery.$generation.lock"
+  mkdir -p "$lock" || return 1
+  sleep 30 &
+  owner_pid="$!"
+  owner_start="$(awk '{print $22}' "/proc/$owner_pid/stat")" || return 1
+  {
+    printf 'pid: %s\n' "$owner_pid"
+    printf 'start_time: %s\n' "$owner_start"
+    printf 'lease_until: %s\n' "$(( $(date +%s) - 1 ))"
+    printf 'token: %064d\n' 0
+  } >"$lock/owner" || return 1
+  (
+    while kill -0 "$owner_pid" 2>/dev/null; do
+      touch "$lock/owner"
+      sleep 0.1
+    done
+  ) &
+  heartbeat_pid="$!"
+  input="$TMP_ROOT/stop-eci-recovery-slow-live-lock.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-recovery-slow-live-lock.out"
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || {
+    kill "$heartbeat_pid" "$owner_pid" 2>/dev/null || true
+    wait "$heartbeat_pid" "$owner_pid" 2>/dev/null || true
+    return 1
+  }
+  kill "$heartbeat_pid" 2>/dev/null || true
+  wait "$heartbeat_pid" 2>/dev/null || true
+  wait "$owner_pid" 2>/dev/null || true
+  is_stop_block "$out" &&
+    [ -d "$lock" ] &&
+    [ ! -e "$proof_root/t00-session/eci-stop-loop-recovery.$generation.json" ]
+}
+
 test_stop_gate_eci_recovery_rejects_control_marker_without_mutation() {
   local kind proof_root input out marker before after
   for kind in control nul; do
@@ -6374,6 +6452,171 @@ test_stop_gate_eci_recovery_root_alias_has_one_generation() {
     jq -e --arg marker "$marker" '.marker_path == $marker' "$artifact" >/dev/null
 }
 
+test_stop_gate_eci_recovery_root_swap_stays_anchored() {
+  local proof_root old_root victim marker generation lock input out victim_file before after stat_bin real_stat stat_count
+  proof_root="$(fresh_proof_root stop-eci-recovery-root-swap)"
+  marker="$(write_valid_eci_marker "$proof_root")" || return 1
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  lock="$proof_root/t00-session/eci-stop-loop-recovery.$generation.lock"
+  mkdir -p "$lock" || return 1
+  {
+    printf 'pid: %s\n' "$$"
+    printf 'start_time: %s\n' "$(awk '{print $22}' "/proc/$$/stat")"
+    printf 'lease_until: %s\n' "$(( $(date +%s) + 30 ))"
+    printf 'token: %064d\n' 0
+  } >"$lock/owner" || return 1
+  old_root="$TMP_ROOT/stop-eci-recovery-root-swap-original"
+  victim="$TMP_ROOT/stop-eci-recovery-root-swap-victim"
+  mkdir -p "$victim/t00-session" || return 1
+  victim_file="$victim/sentinel"
+  printf 'do not modify\n' >"$victim_file" || return 1
+  before="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  input="$TMP_ROOT/stop-eci-recovery-root-swap.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-recovery-root-swap.out"
+  stat_bin="$TMP_ROOT/stop-eci-recovery-root-swap-stat"
+  real_stat="$(command -v stat)" || return 1
+  stat_count="$TMP_ROOT/stop-eci-recovery-root-swap-stat-count"
+  mkdir -p "$stat_bin" || return 1
+  cat >"$stat_bin/stat" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+real_stat="${ECI_REAL_STAT:?}"
+last="${!#}"
+result="$("$real_stat" "$@")" || exit $?
+if [ "$last" = "${ECI_ROOT_SWAP_ROOT:?}" ]; then
+  count="$(cat "${ECI_ROOT_SWAP_COUNT:?}" 2>/dev/null || printf '0')"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"${ECI_ROOT_SWAP_COUNT:?}"
+  if [ "$count" -ge 2 ] && [ -e "${ECI_ROOT_SWAP_SENTINEL:?}" ]; then
+    rm -f -- "$ECI_ROOT_SWAP_SENTINEL"
+    mv -- "$ECI_ROOT_SWAP_ROOT" "$ECI_ROOT_SWAP_BACKUP"
+    ln -s -- "$ECI_ROOT_SWAP_VICTIM" "$ECI_ROOT_SWAP_ROOT"
+  fi
+fi
+printf '%s\n' "$result"
+SCRIPT
+  chmod +x "$stat_bin/stat" || return 1
+  : >"$TMP_ROOT/stop-eci-recovery-root-swap-trigger" || return 1
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" \
+    PATH="$stat_bin:$PATH" ECI_REAL_STAT="$real_stat" \
+    ECI_ROOT_SWAP_ROOT="$proof_root" ECI_ROOT_SWAP_BACKUP="$old_root" \
+    ECI_ROOT_SWAP_VICTIM="$victim" ECI_ROOT_SWAP_COUNT="$stat_count" \
+    ECI_ROOT_SWAP_SENTINEL="$TMP_ROOT/stop-eci-recovery-root-swap-trigger" || return 1
+  after="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  is_stop_block "$out" &&
+    [ "$before" = "$after" ] &&
+    [ -L "$proof_root" ] &&
+    [ "$(find "$victim" -maxdepth 2 -type f -name 'eci-stop-loop-recovery.*' -print | wc -l)" -eq 0 ] &&
+    [ ! -s "$out.err" ]
+}
+
+test_stop_gate_eci_recovery_root_parent_swap_stays_anchored() {
+  local root_parent proof_root old_parent victim marker generation lock input out victim_file before after stat_bin real_stat stat_count
+  root_parent="$TMP_ROOT/stop-eci-recovery-root-parent"
+  proof_root="$root_parent/proof"
+  old_parent="$TMP_ROOT/stop-eci-recovery-root-parent-original"
+  victim="$TMP_ROOT/stop-eci-recovery-root-parent-victim"
+  mkdir -p "$proof_root/t00-session" "$victim/proof/t00-session" || return 1
+  marker="$proof_root/t00-session/eci_active"
+  {
+    printf 'scope: repair test\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: t00-session\n'
+    printf 'created_utc: 2026-05-04T00:00:00Z\n'
+  } >"$marker" || return 1
+  generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  lock="$proof_root/t00-session/eci-stop-loop-recovery.$generation.lock"
+  mkdir -p "$lock" || return 1
+  {
+    printf 'pid: %s\n' "$$"
+    printf 'start_time: %s\n' "$(awk '{print $22}' "/proc/$$/stat")"
+    printf 'lease_until: %s\n' "$(( $(date +%s) + 30 ))"
+    printf 'token: %064d\n' 0
+  } >"$lock/owner" || return 1
+  victim_file="$victim/proof/sentinel"
+  printf 'do not modify\n' >"$victim_file" || return 1
+  before="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  input="$TMP_ROOT/stop-eci-recovery-root-parent-swap.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-recovery-root-parent-swap.out"
+  stat_bin="$TMP_ROOT/stop-eci-recovery-root-parent-swap-stat"
+  real_stat="$(command -v stat)" || return 1
+  stat_count="$TMP_ROOT/stop-eci-recovery-root-parent-swap-stat-count"
+  mkdir -p "$stat_bin" || return 1
+  cat >"$stat_bin/stat" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+real_stat="${ECI_REAL_STAT:?}"
+last="${!#}"
+result="$("$real_stat" "$@")" || exit $?
+if [ "$last" = "${ECI_ROOT_SWAP_TRIGGER:?}" ]; then
+  count="$(cat "${ECI_ROOT_SWAP_COUNT:?}" 2>/dev/null || printf '0')"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"${ECI_ROOT_SWAP_COUNT:?}"
+  if [ "$count" -ge 2 ] && [ -e "${ECI_ROOT_SWAP_SENTINEL:?}" ]; then
+    rm -f -- "$ECI_ROOT_SWAP_SENTINEL"
+    mv -- "$ECI_ROOT_SWAP_PARENT" "$ECI_ROOT_SWAP_PARENT_BACKUP"
+    ln -s -- "$ECI_ROOT_SWAP_VICTIM" "$ECI_ROOT_SWAP_PARENT"
+  fi
+fi
+printf '%s\n' "$result"
+SCRIPT
+  chmod +x "$stat_bin/stat" || return 1
+  : >"$TMP_ROOT/stop-eci-recovery-root-parent-swap-trigger" || return 1
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" \
+    PATH="$stat_bin:$PATH" ECI_REAL_STAT="$real_stat" \
+    ECI_ROOT_SWAP_TRIGGER="$proof_root" \
+    ECI_ROOT_SWAP_PARENT="$root_parent" ECI_ROOT_SWAP_PARENT_BACKUP="$old_parent" \
+    ECI_ROOT_SWAP_VICTIM="$victim" ECI_ROOT_SWAP_COUNT="$stat_count" \
+    ECI_ROOT_SWAP_SENTINEL="$TMP_ROOT/stop-eci-recovery-root-parent-swap-trigger" || return 1
+  after="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  is_stop_block "$out" &&
+    [ "$before" = "$after" ] &&
+    [ -L "$root_parent" ] &&
+    [ "$(find "$victim" -type f -name 'eci-stop-loop-recovery.*' -print | wc -l)" -eq 0 ] &&
+    [ ! -s "$out.err" ]
+}
+
+test_stop_gate_eci_recovery_temp_inode_swap_fails_closed() {
+  local proof_root input out wrapper real_python victim before after marker
+  proof_root="$(fresh_proof_root stop-eci-recovery-temp-inode-swap)"
+  marker="$(write_valid_eci_marker "$proof_root")" || return 1
+  input="$TMP_ROOT/stop-eci-recovery-temp-inode-swap.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-recovery-temp-inode-swap.out"
+  victim="$TMP_ROOT/stop-eci-recovery-temp-inode-victim"
+  printf 'external victim\n' >"$victim" || return 1
+  before="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  wrapper="$TMP_ROOT/stop-eci-recovery-temp-inode-bin"
+  mkdir -p "$wrapper" || return 1
+  real_python="$(command -v python3)" || return 1
+  cat >"$wrapper/python3" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+real_python="${ECI_REAL_PYTHON:?}"
+if [ "${1:-}" = "-c" ] && [[ "${2:-}" == *"file_name, mode, expected_dir"* ]]; then
+  for candidate in "${ECI_TEMP_OWNER:?}"/.eci-stop-loop-recovery-count.*; do
+    [ -f "$candidate" ] || continue
+    rm -f -- "$candidate"
+    cp -- "${ECI_TEMP_VICTIM:?}" "$candidate"
+    break
+  done
+fi
+exec "$real_python" "$@"
+SCRIPT
+  chmod +x "$wrapper/python3" || return 1
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" PATH="$wrapper:$PATH" \
+    ECI_REAL_PYTHON="$real_python" ECI_TEMP_OWNER="$proof_root/t00-session" \
+    ECI_TEMP_VICTIM="$victim" || return 1
+  after="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  is_stop_block "$out" &&
+    [ "$before" = "$after" ] &&
+    [ "$(find "$proof_root/t00-session" -maxdepth 1 -type f -name 'eci-stop-loop-recovery.*.json' -print | wc -l)" -eq 0 ]
+}
+
 test_stop_gate_eci_recovery_tampered_reason_stays_blocked() {
   local proof_root marker input out artifact tampered before after first second
   proof_root="$(fresh_proof_root stop-eci-recovery-tampered-reason)"
@@ -6444,6 +6687,47 @@ test_eci_active_off_cleans_recovery_generation() {
   [ -n "$new_artifact" ] || return 1
   new_generation="$(jq -r '.marker_generation' "$new_artifact")" || return 1
   [ "$old_generation" != "$new_generation" ]
+}
+
+test_eci_active_off_cleans_replaced_marker_generations() {
+  local proof_root marker input out report old_generation new_generation old_artifact old_count old_lock
+  local new_artifact new_count new_lock keep_file before after
+  proof_root="$(fresh_proof_root eci-off-recovery-generation-a-b)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "generation A" >/dev/null 2>&1 || return 1
+  marker="$proof_root/t00-session/eci_active"
+  input="$TMP_ROOT/eci-off-recovery-generation-a-b.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/eci-off-recovery-generation-a-b.out"
+  run_eci_stop_attempts "$proof_root" "$input" "$out" 5 || return 1
+  old_generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  old_artifact="$proof_root/t00-session/eci-stop-loop-recovery.$old_generation.json"
+  old_count="$proof_root/t00-session/eci-stop-loop-recovery.$old_generation.timestamps"
+  old_lock="$proof_root/t00-session/eci-stop-loop-recovery.$old_generation.lock"
+  [ -f "$old_artifact" ] && [ -f "$old_count" ] || return 1
+
+  sed 's/^scope: generation A$/scope: generation B/' "$marker" >"$marker.new" || return 1
+  mv -- "$marker.new" "$marker" || return 1
+  new_generation="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+  [ "$old_generation" != "$new_generation" ] || return 1
+  new_artifact="$proof_root/t00-session/eci-stop-loop-recovery.$new_generation.json"
+  new_count="$proof_root/t00-session/eci-stop-loop-recovery.$new_generation.timestamps"
+  new_lock="$proof_root/t00-session/eci-stop-loop-recovery.$new_generation.lock"
+  printf 'old generation B artifact\n' >"$new_artifact" || return 1
+  printf '%s\n' "$(date +%s)" >"$new_count" || return 1
+  : >"$new_lock" || return 1
+  keep_file="$proof_root/t00-session/unrelated-state"
+  printf 'keep me\n' >"$keep_file" || return 1
+  before="$(sha256sum "$keep_file" | awk '{print $1}')" || return 1
+  report="$TMP_ROOT/eci-off-recovery-generation-a-b.md"
+  write_user_closed_eci_report "$report"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$report" >/dev/null 2>&1 || return 1
+  after="$(sha256sum "$keep_file" | awk '{print $1}')" || return 1
+  [ ! -e "$marker" ] &&
+    [ ! -e "$old_artifact" ] && [ ! -e "$old_count" ] && [ ! -e "$old_lock" ] &&
+    [ ! -e "$new_artifact" ] && [ ! -e "$new_count" ] && [ ! -e "$new_lock" ] &&
+    [ "$before" = "$after" ]
 }
 
 test_eci_active_off_removes_four_line_legacy_reserved_marker() {
@@ -6525,6 +6809,120 @@ test_eci_active_on_rejects_reserved_and_installs_atomically() {
   fi
   after="$(sha256sum "$target" | awk '{print $1}')" || return 1
   [ "$before" = "$after" ] && [ -L "$marker" ]
+}
+
+test_eci_active_on_root_swap_stays_anchored() {
+  local proof_root victim old_root date_bin real_date marker victim_file before after out
+  proof_root="$(fresh_proof_root eci-on-root-swap)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  victim="$TMP_ROOT/eci-on-root-swap-victim"
+  mkdir -p "$victim/t00-session" || return 1
+  victim_file="$victim/sentinel"
+  printf 'do not modify\n' >"$victim_file" || return 1
+  before="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  old_root="$TMP_ROOT/eci-on-root-swap-original"
+  date_bin="$TMP_ROOT/eci-on-root-swap-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+if [ -e "${ECI_ROOT_SWAP_SENTINEL:?}" ]; then
+  rm -f -- "$ECI_ROOT_SWAP_SENTINEL"
+  mv -- "${ECI_ROOT_SWAP_ROOT:?}" "${ECI_ROOT_SWAP_BACKUP:?}"
+  ln -s -- "${ECI_ROOT_SWAP_VICTIM:?}" "$ECI_ROOT_SWAP_ROOT"
+fi
+exec "${ECI_REAL_DATE:?}" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+  : >"$TMP_ROOT/eci-on-root-swap-trigger" || return 1
+  out="$TMP_ROOT/eci-on-root-swap.out"
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    PATH="$date_bin:$PATH" ECI_REAL_DATE="$real_date" \
+    ECI_ROOT_SWAP_SENTINEL="$TMP_ROOT/eci-on-root-swap-trigger" \
+    ECI_ROOT_SWAP_ROOT="$proof_root" ECI_ROOT_SWAP_BACKUP="$old_root" \
+    ECI_ROOT_SWAP_VICTIM="$victim" \
+    "$ROOT/bin/eci-active" on "root swap activation" >"$out" 2>&1; then
+    return 1
+  fi
+  after="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  [ "$before" = "$after" ] &&
+    [ -L "$proof_root" ] &&
+    [ ! -e "$victim/t00-session/eci_active" ]
+}
+
+test_eci_active_on_root_parent_swap_stays_anchored() {
+  local root_parent proof_root old_parent victim date_bin real_date victim_file before after out
+  root_parent="$TMP_ROOT/eci-on-root-parent-swap"
+  proof_root="$root_parent/proof"
+  old_parent="$TMP_ROOT/eci-on-root-parent-swap-original"
+  victim="$TMP_ROOT/eci-on-root-parent-swap-victim"
+  mkdir -p "$proof_root/t00-session" "$victim/proof/t00-session" || return 1
+  victim_file="$victim/proof/sentinel"
+  printf 'do not modify\n' >"$victim_file" || return 1
+  before="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  date_bin="$TMP_ROOT/eci-on-root-parent-swap-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+if [ -e "${ECI_ROOT_SWAP_SENTINEL:?}" ]; then
+  rm -f -- "$ECI_ROOT_SWAP_SENTINEL"
+  mv -- "${ECI_ROOT_SWAP_PARENT:?}" "${ECI_ROOT_SWAP_PARENT_BACKUP:?}"
+  ln -s -- "${ECI_ROOT_SWAP_VICTIM:?}" "$ECI_ROOT_SWAP_PARENT"
+fi
+exec "${ECI_REAL_DATE:?}" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+  : >"$TMP_ROOT/eci-on-root-parent-swap-trigger" || return 1
+  out="$TMP_ROOT/eci-on-root-parent-swap.out"
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    PATH="$date_bin:$PATH" ECI_REAL_DATE="$real_date" \
+    ECI_ROOT_SWAP_SENTINEL="$TMP_ROOT/eci-on-root-parent-swap-trigger" \
+    ECI_ROOT_SWAP_PARENT="$root_parent" ECI_ROOT_SWAP_PARENT_BACKUP="$old_parent" \
+    ECI_ROOT_SWAP_VICTIM="$victim" \
+    "$ROOT/bin/eci-active" on "root parent swap activation" >"$out" 2>&1; then
+    return 1
+  fi
+  after="$(sha256sum "$victim_file" | awk '{print $1}')" || return 1
+  [ "$before" = "$after" ] &&
+    [ -L "$root_parent" ] &&
+    [ ! -e "$victim/proof/t00-session/eci_active" ]
+}
+
+test_eci_active_on_temp_inode_swap_fails_closed() {
+  local proof_root victim date_bin real_date marker before after out
+  proof_root="$(fresh_proof_root eci-on-temp-inode-swap)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  victim="$TMP_ROOT/eci-on-temp-inode-victim"
+  printf 'external marker victim\n' >"$victim" || return 1
+  before="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  date_bin="$TMP_ROOT/eci-on-temp-inode-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+for candidate in "${ECI_TEMP_OWNER:?}"/.eci_active.*; do
+  [ -f "$candidate" ] || continue
+  rm -f -- "$candidate"
+  cp -- "${ECI_TEMP_VICTIM:?}" "$candidate"
+  break
+done
+exec "${ECI_REAL_DATE:?}" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+  out="$TMP_ROOT/eci-on-temp-inode-swap.out"
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    PATH="$date_bin:$PATH" ECI_REAL_DATE="$real_date" \
+    ECI_TEMP_OWNER="$proof_root/t00-session" ECI_TEMP_VICTIM="$victim" \
+    "$ROOT/bin/eci-active" on "temp inode swap" >"$out" 2>&1; then
+    return 1
+  fi
+  marker="$proof_root/t00-session/eci_active"
+  after="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  [ "$before" = "$after" ] && [ ! -e "$marker" ]
 }
 
 test_stop_gate_ignores_cwd_eci_state() {
@@ -8009,14 +8407,32 @@ run_case "stop gate ECI recovery rejects oversized lock metadata" \
   test_stop_gate_eci_recovery_rejects_oversized_lock_metadata
 run_case "stop gate ECI recovery canonicalizes root aliases" \
   test_stop_gate_eci_recovery_root_alias_has_one_generation
+run_case "stop gate ECI recovery stays anchored across root swap" \
+  test_stop_gate_eci_recovery_root_swap_stays_anchored
+run_case "stop gate ECI recovery stays anchored across root parent swap" \
+  test_stop_gate_eci_recovery_root_parent_swap_stays_anchored
+run_case "stop gate ECI recovery rejects temp inode replacement" \
+  test_stop_gate_eci_recovery_temp_inode_swap_fails_closed
+run_case "stop gate ECI recovery stale reclaimer fanout is exactly once" \
+  test_stop_gate_eci_recovery_stale_reclaimer_fanout_is_exactly_once
+run_case "stop gate ECI recovery preserves a slow live lock" \
+  test_stop_gate_eci_recovery_preserves_slow_live_lock
 run_case "eci-active cleanup removes one recovery generation" \
   test_eci_active_off_cleans_recovery_generation
+run_case "eci-active cleanup removes replaced marker generations" \
+  test_eci_active_off_cleans_replaced_marker_generations
 run_case "eci-active cleanup removes four-line legacy reserved marker" \
   test_eci_active_off_removes_four_line_legacy_reserved_marker
 run_case "eci-active cleanup protects symlinked recovery targets" \
   test_eci_active_off_protects_symlinked_recovery_target
 run_case "eci-active on rejects reserved IDs and installs atomically" \
   test_eci_active_on_rejects_reserved_and_installs_atomically
+run_case "eci-active on stays anchored across root swap" \
+  test_eci_active_on_root_swap_stays_anchored
+run_case "eci-active on stays anchored across root parent swap" \
+  test_eci_active_on_root_parent_swap_stays_anchored
+run_case "eci-active on rejects temp inode replacement" \
+  test_eci_active_on_temp_inode_swap_fails_closed
 run_case "stop gate ignores cwd-scoped ECI marker" \
   test_stop_gate_ignores_cwd_eci_state
 run_case "stop gate ignores cwd-scoped ECI marker without cwd field" \

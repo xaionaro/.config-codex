@@ -16,7 +16,32 @@ stop_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/n
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
 root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
-proof_dir="$root/$session_id"
+proof_root_canonical="$(realpath -m -- "$root" 2>/dev/null || true)"
+proof_root_dev=""
+proof_root_ino=""
+if [ -d "$proof_root_canonical" ] && [ ! -L "$proof_root_canonical" ]; then
+  proof_root_identity="$(stat -Lc '%d:%i' -- "$proof_root_canonical" 2>/dev/null || true)"
+  if [[ "$proof_root_identity" == *:* ]]; then
+    proof_root_dev="${proof_root_identity%%:*}"
+    proof_root_ino="${proof_root_identity#*:}"
+  fi
+fi
+if [ -n "$proof_root_canonical" ]; then
+  proof_dir="$proof_root_canonical/$session_id"
+else
+  proof_dir="$root/$session_id"
+fi
+
+proof_root_is_stable() {
+  local current_identity current_path
+
+  [ -n "$proof_root_dev" ] && [ -n "$proof_root_ino" ] || return 0
+  [ -d "$proof_root_canonical" ] && [ ! -L "$proof_root_canonical" ] || return 1
+  current_identity="$(stat -Lc '%d:%i' -- "$proof_root_canonical" 2>/dev/null || true)"
+  [ "$current_identity" = "$proof_root_dev:$proof_root_ino" ] || return 1
+  current_path="$(realpath -m -- "$root" 2>/dev/null || true)"
+  [ "$current_path" = "$proof_root_canonical" ]
+}
 
 json_continue() {
   jq -n '{continue: true}'
@@ -29,6 +54,9 @@ eci_recovery_lock=""
 eci_recovery_count=""
 eci_recovery_marker=""
 eci_recovery_owner_dir=""
+eci_recovery_root=""
+eci_recovery_root_dev=""
+eci_recovery_root_ino=""
 eci_recovery_owner_dev=""
 eci_recovery_owner_ino=""
 eci_recovery_lock_owner=""
@@ -37,6 +65,10 @@ eci_recovery_lock_lease_seconds=60
 eci_recovery_lock_attempts=160
 eci_recovery_lock_dev=""
 eci_recovery_lock_ino=""
+eci_recovery_observed_lock_dev=""
+eci_recovery_observed_lock_ino=""
+eci_recovery_observed_lock_token=""
+eci_recovery_heartbeat_pid=""
 eci_recovery_marker_valid=false
 eci_marker_owner=""
 eci_marker_cwd=""
@@ -167,7 +199,7 @@ eci_validate_marker() {
 
 eci_recovery_identity() {
   local marker="$1"
-  local root root_lexical marker_lexical marker_canonical expected_marker owner_dir marker_generation owner_identity
+  local root root_lexical marker_lexical marker_canonical expected_marker owner_dir marker_generation owner_identity root_identity
 
   eci_recovery_marker_valid=false
   eci_validate_marker "$marker" || return 1
@@ -175,6 +207,14 @@ eci_recovery_identity() {
   root_lexical="$(eci_lexical_path "$(codex_proof_root)" || true)"
   marker_lexical="$(eci_lexical_path "$marker" || true)"
   [ -n "$root" ] && [ -n "$root_lexical" ] && [ -n "$marker_lexical" ] || return 1
+  [ -d "$root" ] && [ ! -L "$root" ] || return 2
+  root_identity="$(stat -Lc '%d:%i' -- "$root" 2>/dev/null || true)"
+  [ -n "$root_identity" ] || return 2
+  eci_recovery_root="$root"
+  eci_recovery_root_dev="${root_identity%%:*}"
+  eci_recovery_root_ino="${root_identity#*:}"
+  [[ "$eci_recovery_root_dev" =~ ^[0-9]+$ ]] &&
+    [[ "$eci_recovery_root_ino" =~ ^[0-9]+$ ]] || return 2
   owner_dir="$root/$eci_marker_owner"
   [ "$marker_lexical" = "$root_lexical/$eci_marker_owner/eci_active" ] || return 1
   marker_canonical="$owner_dir/eci_active"
@@ -219,6 +259,9 @@ eci_marker_identity_unchanged() {
 eci_owner_dir_is_stable() {
   local identity
 
+  [ -d "$eci_recovery_root" ] && [ ! -L "$eci_recovery_root" ] || return 1
+  identity="$(stat -Lc '%d:%i' -- "$eci_recovery_root" 2>/dev/null || true)"
+  [ "$identity" = "$eci_recovery_root_dev:$eci_recovery_root_ino" ] || return 1
   [ -d "$eci_recovery_owner_dir" ] && [ ! -L "$eci_recovery_owner_dir" ] || return 1
   identity="$(stat -Lc '%d:%i' -- "$eci_recovery_owner_dir" 2>/dev/null || true)"
   [ "$identity" = "$eci_recovery_owner_dev:$eci_recovery_owner_ino" ]
@@ -305,6 +348,9 @@ eci_write_existing_temp() {
   local expected_dir="${3:-}"
   local expected_dev="${4:-}"
   local expected_ino="${5:-}"
+  local expected_file_dev="${6:-}"
+  local expected_file_ino="${7:-}"
+  local expected_token="${8:-}"
 
   if command -v python3 >/dev/null 2>&1; then
     python3 -c '
@@ -312,7 +358,7 @@ import os
 import stat
 import sys
 
-file_name, mode, expected_dir, expected_dev, expected_ino = sys.argv[1:]
+file_name, mode, expected_dir, expected_dev, expected_ino, expected_file_dev, expected_file_ino, expected_token = sys.argv[1:]
 if not expected_dir or not expected_dev or not expected_ino:
     raise SystemExit(1)
 if os.path.normpath(os.path.dirname(file_name)) != os.path.normpath(expected_dir):
@@ -327,13 +373,21 @@ try:
         raise SystemExit(1)
     fd = os.open(
         os.path.basename(file_name),
-        os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
         dir_fd=directory_fd,
     )
     try:
         stat_result = os.fstat(fd)
         if not stat.S_ISREG(stat_result.st_mode) or stat_result.st_nlink != 1:
             raise RuntimeError("temporary state is not a regular file")
+        if expected_file_dev and (str(stat_result.st_dev), str(stat_result.st_ino)) != (expected_file_dev, expected_file_ino):
+            raise RuntimeError("temporary state inode changed")
+        if expected_token:
+            os.lseek(fd, 0, os.SEEK_SET)
+            if os.read(fd, len(expected_token) + 1) != (expected_token + "\n").encode("ascii"):
+                raise RuntimeError("temporary state token changed")
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
         while True:
             chunk = sys.stdin.buffer.read(65536)
             if not chunk:
@@ -350,7 +404,8 @@ try:
     os.fsync(directory_fd)
 finally:
     os.close(directory_fd)
-' "$file" "$mode" "$expected_dir" "$expected_dev" "$expected_ino"
+' "$file" "$mode" "$expected_dir" "$expected_dev" "$expected_ino" \
+    "$expected_file_dev" "$expected_file_ino" "$expected_token"
     return $?
   fi
   return 1
@@ -418,13 +473,19 @@ eci_remove_temp_in_directory() {
   local directory="$2"
   local expected_dev="$3"
   local expected_ino="$4"
+  local expected_file_dev="${5:-}"
+  local expected_file_ino="${6:-}"
+  local expected_token="${7:-}"
+  local expected_hash="${8:-}"
 
-  python3 - "$file" "$directory" "$expected_dev" "$expected_ino" <<'PY'
+  python3 - "$file" "$directory" "$expected_dev" "$expected_ino" \
+    "$expected_file_dev" "$expected_file_ino" "$expected_token" "$expected_hash" <<'PY'
+import hashlib
 import os
 import stat
 import sys
 
-file_name, directory, expected_dev, expected_ino = sys.argv[1:]
+file_name, directory, expected_dev, expected_ino, expected_file_dev, expected_file_ino, expected_token, expected_hash = sys.argv[1:]
 if os.path.normpath(os.path.dirname(file_name)) != os.path.normpath(directory):
     raise SystemExit(0)
 directory_fd = os.open(
@@ -440,6 +501,29 @@ try:
         entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except FileNotFoundError:
         raise SystemExit(0)
+    if (expected_file_dev and
+        (str(entry.st_dev), str(entry.st_ino)) != (expected_file_dev, expected_file_ino)):
+        raise SystemExit(0)
+    if expected_token:
+        fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        try:
+            if os.read(fd, len(expected_token) + 1) != (expected_token + "\n").encode("ascii"):
+                raise SystemExit(0)
+        finally:
+            os.close(fd)
+    if expected_hash:
+        fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        try:
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        finally:
+            os.close(fd)
+        if digest.hexdigest() != expected_hash:
+            raise SystemExit(0)
     if stat.S_ISREG(entry.st_mode) and entry.st_nlink <= 2 or stat.S_ISLNK(entry.st_mode):
         os.unlink(name, dir_fd=directory_fd)
     os.fsync(directory_fd)
@@ -454,13 +538,19 @@ eci_link_temp_in_directory() {
   local directory="$3"
   local expected_dev="$4"
   local expected_ino="$5"
+  local expected_file_dev="${6:-}"
+  local expected_file_ino="${7:-}"
+  local expected_hash="${8:-}"
 
-  python3 - "$file" "$target" "$directory" "$expected_dev" "$expected_ino" <<'PY'
+  python3 - "$file" "$target" "$directory" "$expected_dev" "$expected_ino" \
+    "$expected_file_dev" "$expected_file_ino" "$expected_hash" <<'PY'
+import ctypes
+import hashlib
 import os
 import stat
 import sys
 
-file_name, target_name, directory, expected_dev, expected_ino = sys.argv[1:]
+file_name, target_name, directory, expected_dev, expected_ino, expected_file_dev, expected_file_ino, expected_hash = sys.argv[1:]
 if (os.path.normpath(os.path.dirname(file_name)) != os.path.normpath(directory) or
         os.path.normpath(os.path.dirname(target_name)) != os.path.normpath(directory)):
     raise SystemExit(3)
@@ -472,26 +562,46 @@ try:
     info = os.fstat(directory_fd)
     if (str(info.st_dev), str(info.st_ino)) != (expected_dev, expected_ino):
         raise SystemExit(3)
-    source = os.stat(os.path.basename(file_name), dir_fd=directory_fd, follow_symlinks=False)
-    if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
-        raise SystemExit(3)
+    source_name = os.path.basename(file_name)
+    source_fd = os.open(source_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
     try:
-        target = os.stat(os.path.basename(target_name), dir_fd=directory_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        target = None
-    if target is not None:
-        if stat.S_ISREG(target.st_mode) and target.st_nlink == 1:
-            raise SystemExit(2)
-        raise SystemExit(3)
-    os.link(
-        os.path.basename(file_name),
-        os.path.basename(target_name),
-        src_dir_fd=directory_fd,
-        dst_dir_fd=directory_fd,
-        follow_symlinks=False,
-    )
-    os.unlink(os.path.basename(file_name), dir_fd=directory_fd)
-    os.fsync(directory_fd)
+        source = os.fstat(source_fd)
+        if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
+            raise SystemExit(3)
+        if expected_file_dev and (str(source.st_dev), str(source.st_ino)) != (expected_file_dev, expected_file_ino):
+            raise SystemExit(3)
+        if expected_hash:
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(source_fd, 65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            if digest.hexdigest() != expected_hash:
+                raise SystemExit(3)
+        try:
+            target = os.stat(os.path.basename(target_name), dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target = None
+        if target is not None:
+            if stat.S_ISREG(target.st_mode) and target.st_nlink == 1:
+                raise SystemExit(2)
+            raise SystemExit(3)
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        libc.linkat.restype = ctypes.c_int
+        if libc.linkat(-100, f"/proc/self/fd/{source_fd}".encode(), directory_fd,
+                      os.path.basename(target_name).encode(), 0x400) != 0:
+            raise OSError(ctypes.get_errno(), "descriptor-anchored install failed")
+        try:
+            current = os.stat(source_name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            current = None
+        if current is not None and (current.st_dev, current.st_ino) == (source.st_dev, source.st_ino):
+            os.unlink(source_name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally:
+        os.close(source_fd)
 finally:
     os.close(directory_fd)
 PY
@@ -503,13 +613,19 @@ eci_replace_temp_in_directory() {
   local directory="$3"
   local expected_dev="$4"
   local expected_ino="$5"
+  local expected_file_dev="${6:-}"
+  local expected_file_ino="${7:-}"
+  local expected_hash="${8:-}"
 
-  python3 - "$file" "$target" "$directory" "$expected_dev" "$expected_ino" <<'PY'
+  python3 - "$file" "$target" "$directory" "$expected_dev" "$expected_ino" \
+    "$expected_file_dev" "$expected_file_ino" "$expected_hash" <<'PY'
+import ctypes
+import hashlib
 import os
 import stat
 import sys
 
-file_name, target_name, directory, expected_dev, expected_ino = sys.argv[1:]
+file_name, target_name, directory, expected_dev, expected_ino, expected_file_dev, expected_file_ino, expected_hash = sys.argv[1:]
 if (os.path.normpath(os.path.dirname(file_name)) != os.path.normpath(directory) or
         os.path.normpath(os.path.dirname(target_name)) != os.path.normpath(directory)):
     raise SystemExit(1)
@@ -521,22 +637,49 @@ try:
     info = os.fstat(directory_fd)
     if (str(info.st_dev), str(info.st_ino)) != (expected_dev, expected_ino):
         raise SystemExit(1)
-    source = os.stat(os.path.basename(file_name), dir_fd=directory_fd, follow_symlinks=False)
-    if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
-        raise SystemExit(1)
+    source_name = os.path.basename(file_name)
+    source_fd = os.open(source_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
     try:
-        target = os.stat(os.path.basename(target_name), dir_fd=directory_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        target = None
-    if target is not None and (not stat.S_ISREG(target.st_mode) or target.st_nlink != 1):
-        raise SystemExit(1)
-    os.replace(
-        os.path.basename(file_name),
-        os.path.basename(target_name),
-        src_dir_fd=directory_fd,
-        dst_dir_fd=directory_fd,
-    )
-    os.fsync(directory_fd)
+        source = os.fstat(source_fd)
+        if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
+            raise SystemExit(1)
+        if expected_file_dev and (str(source.st_dev), str(source.st_ino)) != (expected_file_dev, expected_file_ino):
+            raise SystemExit(1)
+        if expected_hash:
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(source_fd, 65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            if digest.hexdigest() != expected_hash:
+                raise SystemExit(1)
+        try:
+            target = os.stat(os.path.basename(target_name), dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target = None
+        if target is not None:
+            if not stat.S_ISREG(target.st_mode) or target.st_nlink != 1:
+                raise SystemExit(1)
+            current_target = os.stat(os.path.basename(target_name), dir_fd=directory_fd, follow_symlinks=False)
+            if (current_target.st_dev, current_target.st_ino) != (target.st_dev, target.st_ino):
+                raise SystemExit(1)
+            os.unlink(os.path.basename(target_name), dir_fd=directory_fd)
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        libc.linkat.restype = ctypes.c_int
+        if libc.linkat(-100, f"/proc/self/fd/{source_fd}".encode(), directory_fd,
+                      os.path.basename(target_name).encode(), 0x400) != 0:
+            raise OSError(ctypes.get_errno(), "descriptor-anchored replacement failed")
+        try:
+            current = os.stat(source_name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            current = None
+        if current is not None and (current.st_dev, current.st_ino) == (source.st_dev, source.st_ino):
+            os.unlink(source_name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally:
+        os.close(source_fd)
 finally:
     os.close(directory_fd)
 PY
@@ -605,10 +748,13 @@ try:
             if not stat.S_ISREG(created.st_mode) or created.st_nlink != 1:
                 os.unlink(name, dir_fd=directory_fd)
                 raise SystemExit(1)
+            token = secrets.token_hex(16)
+            os.write(fd, (token + "\n").encode("ascii"))
+            os.fsync(fd)
         finally:
             os.close(fd)
         os.fsync(directory_fd)
-        print(os.path.join(directory, name))
+        print(f"{os.path.join(directory, name)}|{created.st_dev}:{created.st_ino}|{token}")
         raise SystemExit(0)
     raise SystemExit(1)
 finally:
@@ -781,17 +927,24 @@ eci_lock_metadata_valid() {
 }
 
 eci_lock_is_stale() {
-  local now lock_mtime age current_start
+  local now lock_mtime age current_start lock_identity owner_mtime
 
   [ -d "$eci_recovery_lock" ] && [ ! -L "$eci_recovery_lock" ] || return 1
+  lock_identity="$(stat -Lc '%d:%i' -- "$eci_recovery_lock" 2>/dev/null || true)"
+  [[ "$lock_identity" == *:* ]] || return 1
+  eci_recovery_observed_lock_dev="${lock_identity%%:*}"
+  eci_recovery_observed_lock_ino="${lock_identity#*:}"
+  eci_recovery_observed_lock_token=""
   now="$(date +%s)"
   if eci_lock_metadata_valid; then
+    eci_recovery_observed_lock_token="$eci_lock_token_on_disk"
     if [ "$eci_lock_lease_until" -ge "$now" ]; then
       return 1
     fi
     current_start="$(eci_process_start_time "$eci_lock_pid" 2>/dev/null || true)"
+    owner_mtime="$(stat -c '%Y' -- "$eci_recovery_lock_owner" 2>/dev/null || printf '0')"
     if [ "$current_start" = "$eci_lock_start" ] && kill -0 "$eci_lock_pid" 2>/dev/null &&
-      [ "$now" -lt $((eci_lock_lease_until + eci_recovery_lock_lease_seconds)) ]; then
+      [ "$now" -lt $((owner_mtime + eci_recovery_lock_lease_seconds * 2)) ]; then
       return 1
     fi
     return 0
@@ -803,15 +956,25 @@ eci_lock_is_stale() {
 }
 
 eci_reclaim_stale_lock() {
+  local current_identity
+
   eci_lock_is_stale || return 1
   [ -d "$eci_recovery_lock" ] && [ ! -L "$eci_recovery_lock" ] || return 1
+  current_identity="$(stat -Lc '%d:%i' -- "$eci_recovery_lock" 2>/dev/null || true)"
+  [ "$current_identity" = "$eci_recovery_observed_lock_dev:$eci_recovery_observed_lock_ino" ] || return 1
+  if [ -n "$eci_recovery_observed_lock_token" ]; then
+    eci_lock_metadata_valid || return 1
+    [ "$eci_lock_token_on_disk" = "$eci_recovery_observed_lock_token" ] || return 1
+  fi
   eci_remove_recovery_lock_directory "$eci_recovery_owner_dir" \
     "$(basename "$eci_recovery_lock")" "$eci_recovery_owner_dev" \
-    "$eci_recovery_owner_ino" 2>/dev/null
+    "$eci_recovery_owner_ino" "$eci_recovery_observed_lock_dev" \
+    "$eci_recovery_observed_lock_ino" 2>/dev/null
 }
 
 eci_write_lock_owner() {
-  local now start owner_tmp lock_identity
+  local now start owner_tmp owner_tmp_record owner_tmp_identity lock_identity
+  local owner_tmp_dev owner_tmp_ino owner_tmp_token owner_tmp_hash
 
   start="$(eci_process_start_time "$$" 2>/dev/null || true)"
   [ -n "$start" ] || return 1
@@ -823,8 +986,15 @@ eci_write_lock_owner() {
     [[ "$eci_recovery_lock_ino" =~ ^[0-9]+$ ]] || return 1
   now="$(date +%s)"
   eci_recovery_lock_token="$(printf '%s:%s:%s:%s' "$eci_recovery_owner" "$$" "$start" "$now" | sha256sum | awk '{print $1}')"
-  owner_tmp="$(eci_create_temp_in_directory "$eci_recovery_lock" \
+  owner_tmp_record="$(eci_create_temp_in_directory "$eci_recovery_lock" \
     "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" '.owner.' 2>/dev/null || true)"
+  owner_tmp="${owner_tmp_record%%|*}"
+  owner_tmp_identity="${owner_tmp_record#*|}"
+  owner_tmp_dev="${owner_tmp_identity%%:*}"
+  owner_tmp_ino="${owner_tmp_identity#*:}"
+  owner_tmp_ino="${owner_tmp_ino%%|*}"
+  owner_tmp_token="${owner_tmp_record##*|}"
+  [[ "$owner_tmp_record" == *'|'*'|'* ]] || return 1
   [ -n "$owner_tmp" ] || return 1
   if ! {
     printf 'pid: %s\n' "$$"
@@ -832,20 +1002,73 @@ eci_write_lock_owner() {
     printf 'lease_until: %s\n' "$((now + eci_recovery_lock_lease_seconds))"
     printf 'token: %s\n' "$eci_recovery_lock_token"
   } | eci_write_existing_temp "$owner_tmp" 600 "$eci_recovery_lock" \
-    "$eci_recovery_lock_dev" "$eci_recovery_lock_ino"; then
+    "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" "$owner_tmp_dev" "$owner_tmp_ino" "$owner_tmp_token"; then
     eci_remove_temp_in_directory "$owner_tmp" "$eci_recovery_lock" \
-      "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" || true
+      "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" "$owner_tmp_dev" "$owner_tmp_ino" "$owner_tmp_token" || true
     return 1
   fi
+  owner_tmp_hash="$(eci_hash_file "$owner_tmp" || true)"
+  [[ "$owner_tmp_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
   if ! eci_link_temp_in_directory "$owner_tmp" "$eci_recovery_lock_owner" \
-    "$eci_recovery_lock" "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" 2>/dev/null; then
+    "$eci_recovery_lock" "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" \
+    "$owner_tmp_dev" "$owner_tmp_ino" "$owner_tmp_hash" 2>/dev/null; then
     eci_remove_temp_in_directory "$owner_tmp" "$eci_recovery_lock" \
-      "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" || true
+      "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" "$owner_tmp_dev" "$owner_tmp_ino" "" "$owner_tmp_hash" || true
     return 1
   fi
   eci_flush_directory "$eci_recovery_lock" "$eci_recovery_lock_dev" \
     "$eci_recovery_lock_ino" || return 1
   return 0
+}
+
+eci_touch_lock_owner() {
+  python3 - "$eci_recovery_lock" "$eci_recovery_lock_dev" \
+    "$eci_recovery_lock_ino" <<'PY'
+import os
+import stat
+import sys
+
+lock_path, expected_dev, expected_ino = sys.argv[1:]
+lock_fd = os.open(
+    lock_path,
+    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+)
+try:
+    info = os.fstat(lock_fd)
+    if (str(info.st_dev), str(info.st_ino)) != (expected_dev, expected_ino):
+        raise SystemExit(1)
+    owner = os.stat("owner", dir_fd=lock_fd, follow_symlinks=False)
+    if not stat.S_ISREG(owner.st_mode) or owner.st_nlink != 1:
+        raise SystemExit(1)
+    os.utime("owner", None, dir_fd=lock_fd, follow_symlinks=False)
+    os.fsync(lock_fd)
+finally:
+    os.close(lock_fd)
+PY
+}
+
+eci_start_lock_heartbeat() {
+  local parent_pid="$$"
+  local parent_start
+
+  parent_start="$(eci_process_start_time "$parent_pid" 2>/dev/null || true)"
+  [ -n "$parent_start" ] || return 1
+  (
+    while [ "$(eci_process_start_time "$parent_pid" 2>/dev/null || true)" = "$parent_start" ] &&
+      kill -0 "$parent_pid" 2>/dev/null; do
+      sleep 1
+      eci_touch_lock_owner 2>/dev/null || exit 0
+    done
+  ) &
+  eci_recovery_heartbeat_pid="$!"
+}
+
+eci_stop_lock_heartbeat() {
+  if [ -n "${eci_recovery_heartbeat_pid:-}" ]; then
+    kill "$eci_recovery_heartbeat_pid" 2>/dev/null || true
+    wait "$eci_recovery_heartbeat_pid" 2>/dev/null || true
+    eci_recovery_heartbeat_pid=""
+  fi
 }
 
 eci_acquire_recovery_lock() {
@@ -855,6 +1078,13 @@ eci_acquire_recovery_lock() {
     eci_recovery_paths_are_safe || return 1
     if [ ! -e "$eci_recovery_lock" ] && eci_mkdir_lock_in_owner 2>/dev/null; then
       if eci_write_lock_owner; then
+        eci_start_lock_heartbeat || {
+          eci_remove_recovery_lock_directory "$eci_recovery_owner_dir" \
+            "$(basename "$eci_recovery_lock")" "$eci_recovery_owner_dev" \
+            "$eci_recovery_owner_ino" "$eci_recovery_lock_dev" "$eci_recovery_lock_ino" \
+            2>/dev/null || true
+          return 1
+        }
         return 0
       fi
       eci_remove_recovery_lock_directory "$eci_recovery_owner_dir" \
@@ -874,6 +1104,7 @@ eci_acquire_recovery_lock() {
 }
 
 eci_release_recovery_lock() {
+  eci_stop_lock_heartbeat
   if [ ! -d "$eci_recovery_lock" ] || [ -L "$eci_recovery_lock" ]; then
     return 0
   fi
@@ -889,6 +1120,8 @@ eci_release_recovery_lock() {
 eci_recovery_reason() {
   local marker="$1"
   local now cutoff tmp recent_count recovery_reason verified_reason artifact_tmp expected_reason recent_content
+  local tmp_record tmp_identity tmp_dev tmp_ino tmp_token tmp_hash
+  local artifact_tmp_record artifact_tmp_identity artifact_tmp_dev artifact_tmp_ino artifact_tmp_token artifact_tmp_hash
   local initial_generation initial_marker identity_status
 
   if eci_recovery_identity "$marker"; then
@@ -939,9 +1172,16 @@ eci_recovery_reason() {
 
   now="$(date +%s)"
   cutoff=$((now - 300))
-  tmp="$(eci_create_temp_in_directory "$eci_recovery_owner_dir" \
+  tmp_record="$(eci_create_temp_in_directory "$eci_recovery_owner_dir" \
     "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" \
     ".eci-stop-loop-recovery-count.$eci_recovery_generation." 2>/dev/null || true)"
+  tmp="${tmp_record%%|*}"
+  tmp_identity="${tmp_record#*|}"
+  tmp_dev="${tmp_identity%%:*}"
+  tmp_ino="${tmp_identity#*:}"
+  tmp_ino="${tmp_ino%%|*}"
+  tmp_token="${tmp_record##*|}"
+  [[ "$tmp_record" == *'|'*'|'* ]] || tmp=""
   [ -n "$tmp" ] || {
     eci_release_recovery_lock
     eci_recovery_blocked_reason
@@ -950,7 +1190,7 @@ eci_recovery_reason() {
   if [ -e "$eci_recovery_count" ]; then
     if ! recent_content="$(eci_read_epoch_lines "$eci_recovery_count" "$cutoff" "$now" 2>/dev/null)"; then
       eci_remove_temp_in_directory "$tmp" "$eci_recovery_owner_dir" \
-        "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" || true
+        "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$tmp_dev" "$tmp_ino" "$tmp_token" || true
       eci_release_recovery_lock
       eci_recovery_blocked_reason
       return 0
@@ -965,25 +1205,35 @@ $now"
     recent_content="$now"
   fi
   if ! printf '%s\n' "$recent_content" | eci_write_existing_temp "$tmp" "" \
-    "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino"; then
+    "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" \
+    "$tmp_dev" "$tmp_ino" "$tmp_token"; then
     eci_remove_temp_in_directory "$tmp" "$eci_recovery_owner_dir" \
-      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" || true
+      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$tmp_dev" "$tmp_ino" "$tmp_token" || true
     eci_release_recovery_lock
     eci_recovery_blocked_reason
     return 0
   fi
   recent_count="$(awk 'END { print NR + 0 }' "$tmp")"
+  tmp_hash="$(eci_hash_file "$tmp" || true)"
+  [[ "$tmp_hash" =~ ^[0-9a-f]{64}$ ]] || {
+    eci_remove_temp_in_directory "$tmp" "$eci_recovery_owner_dir" \
+      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$tmp_dev" "$tmp_ino" "" "$tmp_hash" || true
+    eci_release_recovery_lock
+    eci_recovery_blocked_reason
+    return 0
+  }
   [ ! -L "$eci_recovery_count" ] || {
     eci_remove_temp_in_directory "$tmp" "$eci_recovery_owner_dir" \
-      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" || true
+      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$tmp_dev" "$tmp_ino" "$tmp_token" || true
     eci_release_recovery_lock
     eci_recovery_blocked_reason
     return 0
   }
   if ! eci_replace_temp_in_directory "$tmp" "$eci_recovery_count" \
-    "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino"; then
+    "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" \
+    "$tmp_dev" "$tmp_ino" "" "" "$tmp_hash"; then
     eci_remove_temp_in_directory "$tmp" "$eci_recovery_owner_dir" \
-      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" || true
+      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$tmp_dev" "$tmp_ino" "" "$tmp_hash" || true
     eci_release_recovery_lock
     eci_recovery_blocked_reason
     return 0
@@ -993,9 +1243,16 @@ $now"
 
   if [ "$recent_count" -ge 5 ]; then
     expected_reason="$(eci_expected_recovery_reason)"
-    artifact_tmp="$(eci_create_temp_in_directory "$eci_recovery_owner_dir" \
+    artifact_tmp_record="$(eci_create_temp_in_directory "$eci_recovery_owner_dir" \
       "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" \
       ".eci-stop-loop-recovery-artifact.$eci_recovery_generation." 2>/dev/null || true)"
+    artifact_tmp="${artifact_tmp_record%%|*}"
+    artifact_tmp_identity="${artifact_tmp_record#*|}"
+    artifact_tmp_dev="${artifact_tmp_identity%%:*}"
+    artifact_tmp_ino="${artifact_tmp_identity#*:}"
+    artifact_tmp_ino="${artifact_tmp_ino%%|*}"
+    artifact_tmp_token="${artifact_tmp_record##*|}"
+    [[ "$artifact_tmp_record" == *'|'*'|'* ]] || artifact_tmp=""
     if [ -z "$artifact_tmp" ] || ! jq -cn \
       --arg owner "$eci_recovery_owner" \
       --arg marker "$eci_recovery_marker" \
@@ -1004,9 +1261,18 @@ $now"
       --arg event_key "eci-stop-loop-recovery:$eci_recovery_owner:$eci_recovery_generation" \
       '{schema:"eci-stop-loop-recovery/v1",owner_session_id:$owner,marker_path:$marker,marker_generation:$generation,threshold:5,last_action:"stop-hook block emitted",next_distinct_action:"read instructions or stop-checklist and identify the failing step",event_key:$event_key,reason:$reason}' \
       | eci_write_existing_temp "$artifact_tmp" 444 "$eci_recovery_owner_dir" \
-        "$eci_recovery_owner_dev" "$eci_recovery_owner_ino"; then
+        "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$artifact_tmp_dev" "$artifact_tmp_ino" "$artifact_tmp_token"; then
       [ -n "$artifact_tmp" ] && eci_remove_temp_in_directory "$artifact_tmp" \
-        "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" || true
+        "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" \
+        "$artifact_tmp_dev" "$artifact_tmp_ino" "$artifact_tmp_token" || true
+      eci_release_recovery_lock
+      eci_recovery_blocked_reason
+      return 0
+    fi
+    artifact_tmp_hash="$(eci_hash_file "$artifact_tmp" || true)"
+    if [[ ! "$artifact_tmp_hash" =~ ^[0-9a-f]{64}$ ]]; then
+      eci_remove_temp_in_directory "$artifact_tmp" "$eci_recovery_owner_dir" \
+        "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$artifact_tmp_dev" "$artifact_tmp_ino" "" "$artifact_tmp_hash" || true
       eci_release_recovery_lock
       eci_recovery_blocked_reason
       return 0
@@ -1014,7 +1280,8 @@ $now"
     if [ -L "$eci_recovery_artifact" ]; then
       recovery_reason="ECI stop-loop recovery artifact is invalid or conflicting; remain blocked."
     elif eci_link_temp_in_directory "$artifact_tmp" "$eci_recovery_artifact" \
-      "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" 2>/dev/null; then
+      "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" \
+      "$artifact_tmp_dev" "$artifact_tmp_ino" "$artifact_tmp_hash" 2>/dev/null; then
       eci_flush_directory "$eci_recovery_owner_dir" "$eci_recovery_owner_dev" \
         "$eci_recovery_owner_ino" || true
       recovery_reason="$(eci_read_recovery_reason || true)"
@@ -1026,7 +1293,7 @@ $now"
       recovery_reason="ECI stop-loop recovery could not install its immutable artifact; remain blocked."
     fi
     eci_remove_temp_in_directory "$artifact_tmp" "$eci_recovery_owner_dir" \
-      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" || true
+      "$eci_recovery_owner_dev" "$eci_recovery_owner_ino" "$artifact_tmp_dev" "$artifact_tmp_ino" "" "$artifact_tmp_hash" || true
     eci_release_recovery_lock
     printf '%s' "$recovery_reason"
     return 0
@@ -1040,12 +1307,21 @@ json_block() {
   local reason="$1"
   local eci_marker="${2:-}" recovery_reason
 
+  if ! proof_root_is_stable; then
+    jq -n '{decision: "block", reason: "Configured proof root changed or became unavailable; remain blocked without writing recovery state."}'
+    return 0
+  fi
+
   if [ -n "$eci_marker" ]; then
     recovery_reason="$(eci_recovery_reason "$eci_marker" 2>/dev/null || true)"
     [ -n "$recovery_reason" ] && reason="$recovery_reason"
   elif [ -n "${proof_dir:-}" ]; then
     local timestamps now cutoff tmp recent_count
     mkdir -p "$proof_dir"
+    proof_root_is_stable || {
+      jq -n '{decision: "block", reason: "Configured proof root changed during stop handling; remain blocked without writing recovery state."}'
+      return 0
+    }
     timestamps="$proof_dir/stop_timestamps"
     now="$(date +%s)"
     cutoff=$((now - 300))
@@ -1117,6 +1393,11 @@ fi
 
 if [ -z "$transcript_path" ]; then
   json_continue
+  exit 0
+fi
+
+if ! proof_root_is_stable; then
+  jq -n '{decision: "block", reason: "Configured proof root changed or became unavailable; remain blocked without writing recovery state."}'
   exit 0
 fi
 
