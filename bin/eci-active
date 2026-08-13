@@ -23,25 +23,121 @@ EOF
 root_path=""
 root_dev=""
 root_ino=""
+root_input_path=""
+root_parent_path=""
+root_parent_dev=""
+root_parent_ino=""
 
 capture_root_identity() {
-  local root_identity
+  local root_identity parent_identity configured_root_parent
 
-  root_path="$(canonical_path "$(codex_proof_root)" || true)"
+  root_input_path="$(codex_proof_root)"
+  root_path="$(canonical_path "$root_input_path" || true)"
   [ -n "$root_path" ] && [ -d "$root_path" ] && [ ! -L "$root_path" ] || return 1
   root_identity="$(stat -Lc '%d:%i' -- "$root_path" 2>/dev/null || true)"
   [[ "$root_identity" == *:* ]] || return 1
   root_dev="${root_identity%%:*}"
   root_ino="${root_identity#*:}"
-  [[ "$root_dev" =~ ^[0-9]+$ ]] && [[ "$root_ino" =~ ^[0-9]+$ ]]
+  configured_root_parent="$(canonical_path "$(dirname -- "$root_input_path")" || true)"
+  [ -n "$configured_root_parent" ] || return 1
+  parent_identity="$(stat -Lc '%d:%i' -- "$configured_root_parent" 2>/dev/null || true)"
+  [[ "$root_dev" =~ ^[0-9]+$ ]] && [[ "$root_ino" =~ ^[0-9]+$ ]] || return 1
+  [[ "$parent_identity" == *:* ]] || return 1
+  root_parent_path="$configured_root_parent"
+  root_parent_dev="${parent_identity%%:*}"
+  root_parent_ino="${parent_identity#*:}"
+  [[ "$root_parent_dev" =~ ^[0-9]+$ ]] && [[ "$root_parent_ino" =~ ^[0-9]+$ ]]
 }
 
 root_is_stable() {
-  local root_identity
+  local root_identity parent_identity current_root current_parent
 
   [ -d "$root_path" ] && [ ! -L "$root_path" ] || return 1
   root_identity="$(stat -Lc '%d:%i' -- "$root_path" 2>/dev/null || true)"
-  [ "$root_identity" = "$root_dev:$root_ino" ]
+  [ "$root_identity" = "$root_dev:$root_ino" ] || return 1
+  [ -d "$root_parent_path" ] && [ ! -L "$root_parent_path" ] || return 1
+  parent_identity="$(stat -Lc '%d:%i' -- "$root_parent_path" 2>/dev/null || true)"
+  [ "$parent_identity" = "$root_parent_dev:$root_parent_ino" ] || return 1
+  current_root="$(canonical_path "$root_input_path" || true)"
+  [ "$current_root" = "$root_path" ] || return 1
+  current_parent="$(canonical_path "$(dirname -- "$root_input_path")" || true)"
+  [ "$current_parent" = "$root_parent_path" ]
+}
+
+cat_marker_from_root_safe() {
+  local marker="$1"
+  local marker_dir marker_name session_name
+
+  marker_dir="${marker%/*}"
+  marker_name="${marker##*/}"
+  [ "$marker_name" = eci_active ] || return 2
+  session_name="${marker_dir##*/}"
+  [ "$marker_dir" = "$root_path/$session_name" ] || return 2
+  python3 - "$root_path" "$session_name" "$root_dev" "$root_ino" <<'PY'
+import os
+import stat
+import sys
+
+root, session_name, expected_dev, expected_ino = sys.argv[1:]
+flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+try:
+    root_fd = os.open(root, flags)
+except FileNotFoundError:
+    raise SystemExit(1)
+except OSError:
+    raise SystemExit(2)
+try:
+    root_info = os.fstat(root_fd)
+    if (str(root_info.st_dev), str(root_info.st_ino)) != (expected_dev, expected_ino):
+        raise SystemExit(2)
+    try:
+        path_info = os.stat(root, follow_symlinks=False)
+    except OSError:
+        raise SystemExit(2)
+    if (not stat.S_ISDIR(path_info.st_mode) or
+            (str(path_info.st_dev), str(path_info.st_ino)) != (expected_dev, expected_ino)):
+        raise SystemExit(2)
+    try:
+        session_fd = os.open(session_name, flags, dir_fd=root_fd)
+    except FileNotFoundError:
+        raise SystemExit(1)
+    except OSError:
+        raise SystemExit(2)
+    try:
+        session_info = os.fstat(session_fd)
+        if not stat.S_ISDIR(session_info.st_mode):
+            raise SystemExit(2)
+        try:
+            marker_fd = os.open(
+                "eci_active",
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=session_fd,
+            )
+        except FileNotFoundError:
+            raise SystemExit(1)
+        except OSError:
+            raise SystemExit(2)
+        try:
+            marker_info = os.fstat(marker_fd)
+            if (not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1 or
+                    marker_info.st_size > 1048576):
+                raise SystemExit(2)
+            data = bytearray()
+            while True:
+                chunk = os.read(marker_fd, 65536)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > 1048576:
+                    raise SystemExit(2)
+            sys.stdout.buffer.write(data)
+        finally:
+            os.close(marker_fd)
+    finally:
+        os.close(session_fd)
+finally:
+    os.close(root_fd)
+PY
 }
 
 ensure_session_directory() {
@@ -74,6 +170,68 @@ try:
     os.fsync(root_fd)
 finally:
     os.close(root_fd)
+PY
+}
+
+remove_stale_marker_temps() {
+  local directory="$1"
+  local expected_dev="$2"
+  local expected_ino="$3"
+
+  python3 - "$directory" "$expected_dev" "$expected_ino" <<'PY'
+import os
+import stat
+import sys
+
+directory, expected_dev, expected_ino = sys.argv[1:]
+flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+directory_fd = os.open(directory, flags)
+try:
+    info = os.fstat(directory_fd)
+    if (not stat.S_ISDIR(info.st_mode) or
+            (str(info.st_dev), str(info.st_ino)) != (expected_dev, expected_ino)):
+        raise SystemExit(1)
+    names = sorted(name for name in os.listdir(directory_fd) if name.startswith(".eci_active."))
+    if len(names) > 64:
+        raise SystemExit(1)
+    # A closed private temp is recoverable activation residue; an open inode
+    # belongs to a live activation and is left for its owner to finish.
+    def is_open_elsewhere(entry):
+        for pid_name in os.listdir("/proc"):
+            if not pid_name.isdigit():
+                continue
+            fd_dir = os.path.join("/proc", pid_name, "fd")
+            try:
+                fd_names = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd_name in fd_names:
+                fd_path = os.path.join(fd_dir, fd_name)
+                try:
+                    opened = os.stat(fd_path)
+                except OSError:
+                    continue
+                if ((opened.st_dev, opened.st_ino) == (entry.st_dev, entry.st_ino) and
+                        stat.S_ISREG(opened.st_mode)):
+                    return True
+        return False
+
+    for name in names:
+        entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISLNK(entry.st_mode):
+            raise SystemExit(1)
+        if not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1:
+            raise SystemExit(1)
+        if is_open_elsewhere(entry):
+            continue
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if ((current.st_dev, current.st_ino) != (entry.st_dev, entry.st_ino) or
+                not stat.S_ISREG(current.st_mode) or current.st_nlink != 1):
+            raise SystemExit(1)
+        os.unlink(name, dir_fd=directory_fd)
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
 PY
 }
 
@@ -131,6 +289,133 @@ canonical_path() {
     /*) printf '%s\n' "$canonical" ;;
     *) return 1 ;;
   esac
+}
+
+legacy_eci_markers_for_cwd_safe() {
+  local canonical_cwd
+
+  [ -n "$root_path" ] && [ -n "$root_dev" ] && [ -n "$root_ino" ] || return 1
+  canonical_cwd="$(codex_canonical_cwd "$PWD")" || return 1
+  python3 - "$root_path" "$root_dev" "$root_ino" "$canonical_cwd" <<'PY'
+import os
+import stat
+import sys
+
+root, expected_dev, expected_ino, wanted_cwd = sys.argv[1:]
+reserved = {
+    "activity", "audit", "eci", "history", "pre-reviewer", "reviewer",
+    "reviewer-dumps", "side-stop", "skip-stop", "skills",
+}
+
+def is_reserved(name):
+    return name in reserved or name.startswith("security-warnings-")
+
+def safe_read_marker(fd, expected_owner):
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        return None
+    data = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > 1048576:
+            return None
+    if (not data.endswith(b"\n") or b"\x00" in data or
+            any(byte < 0x20 and byte != 0x0a for byte in data) or 0x7f in data):
+        return None
+    try:
+        lines = bytes(data).decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    if (len(lines) not in (3, 4) or
+            not lines[0].startswith("scope: ") or
+            not lines[1].startswith("cwd: ") or
+            not lines[2].startswith("session_id: ")):
+        return None
+    scope = lines[0][len("scope: "):]
+    marker_cwd = lines[1][len("cwd: "):]
+    marker_owner = lines[2][len("session_id: "):]
+    if not scope or not marker_cwd or marker_owner != expected_owner or not is_reserved(marker_owner):
+        return None
+    if not marker_cwd.startswith("/") or os.path.realpath(marker_cwd) != wanted_cwd:
+        return None
+    if len(lines) == 4:
+        if not lines[3].startswith("created_utc: "):
+            return None
+        created = lines[3][len("created_utc: "):]
+        try:
+            parsed = __import__("datetime").datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return None
+        if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != created:
+            return None
+    return True
+
+flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+root_fd = os.open(root, flags)
+invalid = False
+try:
+    root_info = os.fstat(root_fd)
+    if (str(root_info.st_dev), str(root_info.st_ino)) != (expected_dev, expected_ino):
+        raise SystemExit(1)
+    try:
+        path_info = os.stat(root, follow_symlinks=False)
+    except OSError:
+        raise SystemExit(1)
+    if (not stat.S_ISDIR(path_info.st_mode) or
+            (str(path_info.st_dev), str(path_info.st_ino)) != (expected_dev, expected_ino)):
+        raise SystemExit(1)
+    for name in sorted(os.listdir(root_fd)):
+        if not is_reserved(name):
+            continue
+        try:
+            session_info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(session_info.st_mode):
+            continue
+        try:
+            session_fd = os.open(name, flags, dir_fd=root_fd)
+        except OSError:
+            continue
+        try:
+            opened_session = os.fstat(session_fd)
+            if (opened_session.st_dev, opened_session.st_ino) != (session_info.st_dev, session_info.st_ino):
+                continue
+            try:
+                marker_info = os.stat("eci_active", dir_fd=session_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(marker_info.st_mode):
+                continue
+            if not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1:
+                invalid = True
+                continue
+            try:
+                marker_fd = os.open("eci_active", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=session_fd)
+            except OSError:
+                invalid = True
+                continue
+            try:
+                opened_marker = os.fstat(marker_fd)
+                if (opened_marker.st_dev, opened_marker.st_ino) != (marker_info.st_dev, marker_info.st_ino):
+                    invalid = True
+                    continue
+                if safe_read_marker(marker_fd, name):
+                    print(os.path.join(root, name, "eci_active"))
+                else:
+                    invalid = True
+            finally:
+                os.close(marker_fd)
+        finally:
+            os.close(session_fd)
+finally:
+    os.close(root_fd)
+if invalid:
+    raise SystemExit(2)
+PY
 }
 
 hash_file() {
@@ -528,14 +813,15 @@ remove_lock_directory_in_directory() {
   local expected_ino="$4"
   local expected_lock_dev="${5:-}"
   local expected_lock_ino="${6:-}"
+  local expected_token="${7:-}"
 
   python3 - "$directory" "$lock_name" "$expected_dev" "$expected_ino" \
-    "$expected_lock_dev" "$expected_lock_ino" <<'PY'
+    "$expected_lock_dev" "$expected_lock_ino" "$expected_token" <<'PY'
 import os
 import stat
 import sys
 
-directory, lock_name, expected_dev, expected_ino, expected_lock_dev, expected_lock_ino = sys.argv[1:]
+directory, lock_name, expected_dev, expected_ino, expected_lock_dev, expected_lock_ino, expected_token = sys.argv[1:]
 parent_fd = os.open(
     directory,
     os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
@@ -561,6 +847,26 @@ try:
         lock_info = os.fstat(lock_fd)
         if expected_lock_dev and (str(lock_info.st_dev), str(lock_info.st_ino)) != (expected_lock_dev, expected_lock_ino):
             raise SystemExit(1)
+        if expected_token:
+            try:
+                owner_fd = os.open("owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=lock_fd)
+            except OSError:
+                raise SystemExit(1)
+            try:
+                owner_info = os.fstat(owner_fd)
+                if not stat.S_ISREG(owner_info.st_mode) or owner_info.st_nlink != 1 or owner_info.st_size > 4096:
+                    raise SystemExit(1)
+                owner_bytes = os.read(owner_fd, 4097)
+            finally:
+                os.close(owner_fd)
+            if len(owner_bytes) > 4096 or not owner_bytes.endswith(b"\n"):
+                raise SystemExit(1)
+            try:
+                owner_lines = owner_bytes.decode("ascii").splitlines()
+            except UnicodeDecodeError:
+                raise SystemExit(1)
+            if len(owner_lines) != 4 or owner_lines[3] != "token: " + expected_token:
+                raise SystemExit(1)
         for name in os.listdir(lock_fd):
             if name != "owner" and not name.startswith(".owner."):
                 raise SystemExit(1)
@@ -689,6 +995,7 @@ recovery_lock_dev=""
 recovery_lock_ino=""
 observed_lock_dev=""
 observed_lock_ino=""
+recovery_lock_removable_token=""
 heartbeat_pid=""
 marker_is_legacy=false
 
@@ -880,6 +1187,7 @@ recovery_lock_directory_is_removable() {
   local snapshot pid start lease token now current_start owner_mtime
   local -a fields=()
 
+  recovery_lock_removable_token=""
   [ -d "$lock_dir" ] && [ ! -L "$lock_dir" ] || return 1
   if [ ! -e "$owner_file" ]; then
     return 0
@@ -928,6 +1236,7 @@ PY
     [ "$now" -lt $((owner_mtime + recovery_lock_lease_seconds * 2)) ]; then
     return 1
   fi
+  recovery_lock_removable_token="$token"
   return 0
 }
 
@@ -959,7 +1268,8 @@ remove_all_recovery_generations() {
           lock_dev="${lock_identity%%:*}"
           lock_ino="${lock_identity#*:}"
           remove_lock_directory_in_directory "$marker_owner_dir" "$base" \
-            "$marker_owner_dev" "$marker_owner_ino" "$lock_dev" "$lock_ino" || return 1
+            "$marker_owner_dev" "$marker_owner_ino" "$lock_dev" "$lock_ino" \
+            "$recovery_lock_removable_token" || return 1
         elif [ -f "$path" ]; then
           [ "$(stat -c '%h' -- "$path" 2>/dev/null || printf '0')" -eq 1 ] || return 1
           identity="$(stat -Lc '%d:%i' -- "$path" 2>/dev/null || true)"
@@ -1057,7 +1367,7 @@ lock_metadata_valid() {
 }
 
 lock_is_stale() {
-  local now lock_mtime age current_start lock_identity owner_mtime
+  local now lock_mtime age current_start lock_identity owner_mtime stale_token=""
 
   [ -d "$recovery_lock" ] && [ ! -L "$recovery_lock" ] || return 1
   lock_identity="$(stat -Lc '%d:%i' -- "$recovery_lock" 2>/dev/null || true)"
@@ -1067,6 +1377,7 @@ lock_is_stale() {
   recovery_lock_token_on_disk=""
   now="$(date +%s)"
   if lock_metadata_valid; then
+    stale_token="$recovery_lock_token_on_disk"
     [ "$recovery_lock_lease_until" -lt "$now" ] || return 1
     current_start="$(process_start_time "$recovery_lock_pid" 2>/dev/null || true)"
     owner_mtime="$(stat -c '%Y' -- "$recovery_lock_owner" 2>/dev/null || printf '0')"
@@ -1074,6 +1385,7 @@ lock_is_stale() {
       [ "$now" -lt $((owner_mtime + recovery_lock_lease_seconds * 2)) ]; then
       return 1
     fi
+    recovery_lock_token_on_disk="$stale_token"
     return 0
   fi
   lock_mtime="$(stat -c '%Y' -- "$recovery_lock" 2>/dev/null || printf '0')"
@@ -1083,9 +1395,10 @@ lock_is_stale() {
 }
 
 reclaim_stale_lock() {
-  local current_identity observed_token="${recovery_lock_token_on_disk:-}"
+  local current_identity observed_token
 
   lock_is_stale || return 1
+  observed_token="${recovery_lock_token_on_disk:-}"
   [ -d "$recovery_lock" ] && [ ! -L "$recovery_lock" ] || return 1
   current_identity="$(stat -Lc '%d:%i' -- "$recovery_lock" 2>/dev/null || true)"
   [ "$current_identity" = "$observed_lock_dev:$observed_lock_ino" ] || return 1
@@ -1095,7 +1408,7 @@ reclaim_stale_lock() {
   fi
   remove_lock_directory_in_directory "$marker_owner_dir" \
     "$(basename "$recovery_lock")" "$marker_owner_dev" \
-    "$marker_owner_ino" "$observed_lock_dev" "$observed_lock_ino" 2>/dev/null
+    "$marker_owner_ino" "$observed_lock_dev" "$observed_lock_ino" "$observed_token" 2>/dev/null
 }
 
 write_lock_owner() {
@@ -1237,7 +1550,7 @@ release_recovery_lock() {
     remove_lock_directory_in_directory "$marker_owner_dir" \
       "$(basename "$recovery_lock")" "$marker_owner_dev" \
       "$marker_owner_ino" "$recovery_lock_dev" "$recovery_lock_ino" \
-      2>/dev/null || true
+      "$recovery_lock_token" 2>/dev/null || true
   fi
 }
 
@@ -1293,13 +1606,145 @@ validate_disengage_report() {
 
 remove_legacy_eci_markers_for_cwd() {
   local keep="${1:-}"
-  local marker
+  local canonical_cwd keep_canonical
 
-  while IFS= read -r marker; do
-    [ -n "$marker" ] || continue
-    [ -n "$keep" ] && [ "$marker" = "$keep" ] && continue
-    rm -f "$marker"
-  done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
+  [ -n "$root_path" ] && [ -n "$root_dev" ] && [ -n "$root_ino" ] || return 1
+  canonical_cwd="$(codex_canonical_cwd "$PWD")" || return 1
+  keep_canonical="$(canonical_path "$keep" 2>/dev/null || true)"
+  python3 - "$root_path" "$root_dev" "$root_ino" "$canonical_cwd" "$keep_canonical" <<'PY'
+import os
+import stat
+import sys
+
+root, expected_dev, expected_ino, wanted_cwd, keep = sys.argv[1:]
+reserved = {
+    "activity", "audit", "eci", "history", "pre-reviewer", "reviewer",
+    "reviewer-dumps", "side-stop", "skip-stop", "skills",
+}
+
+def is_reserved(name):
+    return name in reserved or name.startswith("security-warnings-")
+
+def root_is_current():
+    try:
+        info = os.stat(root, follow_symlinks=False)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(info.st_mode) and
+            (str(info.st_dev), str(info.st_ino)) == (expected_dev, expected_ino))
+
+def marker_matches(fd, expected_owner):
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        return False
+    data = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > 1048576:
+            return False
+    if (not data.endswith(b"\n") or b"\x00" in data or
+            any(byte < 0x20 and byte != 0x0a for byte in data) or 0x7f in data):
+        return False
+    try:
+        lines = bytes(data).decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return False
+    if len(lines) not in (3, 4) or not lines[0].startswith("scope: ") or \
+            not lines[1].startswith("cwd: ") or not lines[2].startswith("session_id: "):
+        return False
+    scope = lines[0][len("scope: "):]
+    marker_cwd = lines[1][len("cwd: "):]
+    marker_owner = lines[2][len("session_id: "):]
+    if not scope or not marker_cwd or marker_owner != expected_owner or not is_reserved(marker_owner):
+        return False
+    if not marker_cwd.startswith("/") or os.path.realpath(marker_cwd) != wanted_cwd:
+        return False
+    if len(lines) == 4:
+        if not lines[3].startswith("created_utc: "):
+            return False
+        created = lines[3][len("created_utc: "):]
+        try:
+            parsed = __import__("datetime").datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return False
+        if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != created:
+            return False
+    return True
+
+flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+root_fd = os.open(root, flags)
+changed = False
+invalid = False
+try:
+    root_info = os.fstat(root_fd)
+    if ((str(root_info.st_dev), str(root_info.st_ino)) != (expected_dev, expected_ino) or
+            not root_is_current()):
+        raise SystemExit(1)
+    for name in sorted(os.listdir(root_fd)):
+        if not is_reserved(name):
+            continue
+        try:
+            session_info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(session_info.st_mode):
+            continue
+        try:
+            session_fd = os.open(name, flags, dir_fd=root_fd)
+        except OSError:
+            continue
+        try:
+            opened_session = os.fstat(session_fd)
+            if (opened_session.st_dev, opened_session.st_ino) != (session_info.st_dev, session_info.st_ino):
+                continue
+            try:
+                marker_info = os.stat("eci_active", dir_fd=session_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(marker_info.st_mode):
+                continue
+            if not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1:
+                invalid = True
+                continue
+            marker_path = os.path.join(root, name, "eci_active")
+            if os.path.normpath(marker_path) == os.path.normpath(keep):
+                continue
+            marker_fd = os.open("eci_active", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=session_fd)
+            try:
+                opened_marker = os.fstat(marker_fd)
+                if ((opened_marker.st_dev, opened_marker.st_ino) != (marker_info.st_dev, marker_info.st_ino) or
+                        not marker_matches(marker_fd, name)):
+                    invalid = True
+                    continue
+            finally:
+                os.close(marker_fd)
+            if not root_is_current():
+                raise SystemExit(1)
+            current_session = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            if (not stat.S_ISDIR(current_session.st_mode) or
+                    (current_session.st_dev, current_session.st_ino) != (session_info.st_dev, session_info.st_ino)):
+                raise SystemExit(1)
+            current_marker = os.stat("eci_active", dir_fd=session_fd, follow_symlinks=False)
+            if ((not stat.S_ISREG(current_marker.st_mode) or current_marker.st_nlink != 1) or
+                    (current_marker.st_dev, current_marker.st_ino) != (marker_info.st_dev, marker_info.st_ino)):
+                raise SystemExit(1)
+            os.unlink("eci_active", dir_fd=session_fd)
+            os.fsync(session_fd)
+            changed = True
+        finally:
+            os.close(session_fd)
+    if changed:
+        if not root_is_current():
+            raise SystemExit(1)
+        os.fsync(root_fd)
+finally:
+    os.close(root_fd)
+if invalid:
+    raise SystemExit(2)
+PY
 }
 
 cmd="${1:-}"
@@ -1358,6 +1803,10 @@ case "$cmd" in
         echo "Unable to identify the ECI session directory safely." >&2
         exit 1
       }
+    remove_stale_marker_temps "$session_dir" "$marker_owner_dev" "$marker_owner_ino" || {
+      echo "Unable to safely clean stale ECI marker temporaries." >&2
+      exit 1
+    }
     canonical_cwd="$(codex_canonical_cwd "$PWD")"
     marker_tmp_record="$(create_temp_in_directory "$session_dir" "$marker_owner_dev" \
       "$marker_owner_ino" '.eci_active.' 2>/dev/null || true)"
@@ -1369,6 +1818,12 @@ case "$cmd" in
     marker_tmp_token="${marker_tmp_record##*|}"
     [ -n "$marker_tmp" ] && [[ "$marker_tmp_record" == *'|'*'|'* ]] || {
       echo "Unable to allocate a private ECI marker temporary file." >&2
+      exit 1
+    }
+    root_is_stable || {
+      remove_regular_in_directory "$marker_tmp" "$session_dir" \
+        "$marker_owner_dev" "$marker_owner_ino" 1 "$marker_tmp_dev" "$marker_tmp_ino" || true
+      echo "ECI proof root alias or parent changed before marker installation." >&2
       exit 1
     }
     if ! {
@@ -1406,7 +1861,24 @@ case "$cmd" in
       echo "Unable to flush the installed ECI marker directory." >&2
       exit 1
     }
-    remove_legacy_eci_markers_for_cwd "$marker"
+    if ! root_is_stable; then
+      remove_regular_in_directory "$marker" "$session_dir" \
+        "$marker_owner_dev" "$marker_owner_ino" 1 || true
+      flush_directory "$session_dir" || true
+      echo "ECI proof-root alias or parent changed during activation; marker was not retained." >&2
+      exit 1
+    fi
+    remove_legacy_eci_markers_for_cwd "$marker" || {
+      legacy_cleanup_status="$?"
+      [ "$legacy_cleanup_status" -eq 2 ] || {
+        echo "Unable to safely inventory legacy ECI markers during activation." >&2
+        exit 1
+      }
+    }
+    root_is_stable || {
+      echo "ECI proof-root alias or parent changed during activation cleanup." >&2
+      exit 1
+    }
     printf 'ECI active: %s\n' "$marker"
     ;;
   off)
@@ -1428,11 +1900,15 @@ case "$cmd" in
     }
     marker="$session_dir/eci_active"
     [ -f "$marker" ] && markers+=("$marker")
+    legacy_marker_output="$(legacy_eci_markers_for_cwd_safe 2>/dev/null)" || {
+      echo "ECI legacy marker inventory is malformed or unsafe; refusing cleanup." >&2
+      exit 1
+    }
     while IFS= read -r legacy_marker; do
       [ -n "$legacy_marker" ] || continue
       [ "$legacy_marker" = "$marker" ] && continue
       markers+=("$legacy_marker")
-    done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
+    done <<<"$legacy_marker_output"
     [ "${#markers[@]}" -gt 0 ] || { echo "ECI marker is not active: $marker" >&2; exit 1; }
     validate_disengage_report "$report"
     marker_records=()
@@ -1597,16 +2073,44 @@ case "$cmd" in
     printf 'ECI inactive. Disengage report validated: %s\n' "$report"
     ;;
   status)
+    capture_root_identity || {
+      echo "ECI proof root is not a stable canonical directory." >&2
+      exit 1
+    }
     session_dir="$(resolve_session_dir)" || {
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
+    root_is_stable || {
+      echo "ECI proof root changed while reading status." >&2
+      exit 1
+    }
     marker="$session_dir/eci_active"
-    if [ -n "${marker:-}" ] && [ -f "$marker" ]; then
-      cat "$marker"
-    elif legacy_marker="$(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null | head -n1)" &&
-      [ -n "$legacy_marker" ] && [ -f "$legacy_marker" ]; then
-      cat "$legacy_marker"
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+      validate_eci_marker_identity "$marker" || {
+        echo "ECI current marker is malformed, unowned, or changed while reading status: $marker" >&2
+        exit 1
+      }
+      root_is_stable || {
+        echo "ECI proof root changed while validating status." >&2
+        exit 1
+      }
+      cat_marker_from_root_safe "$marker" || {
+        echo "ECI current marker is unsafe or changed while reading status: $marker" >&2
+        exit 1
+      }
+      exit 0
+    fi
+    legacy_marker_output="$(legacy_eci_markers_for_cwd_safe 2>/dev/null)" || {
+      echo "ECI legacy marker inventory is malformed or unsafe; refusing status." >&2
+      exit 1
+    }
+    legacy_marker="$(printf '%s\n' "$legacy_marker_output" | head -n1)"
+    if [ -n "$legacy_marker" ]; then
+      cat_marker_from_root_safe "$legacy_marker" || {
+        echo "ECI legacy marker is unsafe or changed while reading status: $legacy_marker" >&2
+        exit 1
+      }
     else
       echo "ECI inactive"
     fi

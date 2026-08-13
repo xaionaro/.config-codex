@@ -5859,6 +5859,222 @@ test_stop_gate_adds_loop_reminder_after_five_blocks() {
     json_field_contains "$out" '.reason // empty' "do not retry same approach"
 }
 
+test_stop_gate_generic_timestamp_root_swap_stays_anchored() {
+  local proof_root victim old_root date_bin real_date input out timestamp victim_timestamp
+  proof_root="$(fresh_proof_root stop-generic-timestamp-root-swap)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  mkdir -p "$proof_root/activity/sessions/t00-session" || return 1
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell" || return 1
+  printf '%s\n' "$(( $(date +%s) - 10 ))" >"$proof_root/t00-session/stop_timestamps" || return 1
+  victim="$TMP_ROOT/stop-generic-timestamp-root-swap-victim"
+  mkdir -p "$victim/t00-session" || return 1
+  victim_timestamp="$victim/t00-session/stop_timestamps"
+  old_root="$TMP_ROOT/stop-generic-timestamp-root-swap-original"
+  date_bin="$TMP_ROOT/stop-generic-timestamp-root-swap-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = '+%s' ] && [ -e "${STOP_GENERIC_ROOT_SWAP_SENTINEL:?}" ]; then
+  rm -f -- "$STOP_GENERIC_ROOT_SWAP_SENTINEL"
+  mv -- "$STOP_GENERIC_ROOT_SWAP_ROOT" "$STOP_GENERIC_ROOT_SWAP_BACKUP"
+  ln -s -- "$STOP_GENERIC_ROOT_SWAP_VICTIM" "$STOP_GENERIC_ROOT_SWAP_ROOT"
+fi
+exec "$STOP_GENERIC_ROOT_SWAP_REAL_DATE" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+  touch "$TMP_ROOT/stop-generic-timestamp-root-swap-trigger" || return 1
+  input="$TMP_ROOT/stop-generic-timestamp-root-swap.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-generic-timestamp-root-swap.out"
+
+  PATH="$date_bin:$PATH" \
+    STOP_GENERIC_ROOT_SWAP_SENTINEL="$TMP_ROOT/stop-generic-timestamp-root-swap-trigger" \
+    STOP_GENERIC_ROOT_SWAP_ROOT="$proof_root" \
+    STOP_GENERIC_ROOT_SWAP_BACKUP="$old_root" \
+    STOP_GENERIC_ROOT_SWAP_VICTIM="$victim" \
+    STOP_GENERIC_ROOT_SWAP_REAL_DATE="$real_date" \
+    run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  timestamp="$proof_root/t00-session/stop_timestamps"
+  is_stop_block "$out" &&
+    [ -L "$proof_root" ] &&
+    [ -e "$old_root/t00-session/stop_timestamps" ] &&
+    [ ! -e "$victim_timestamp" ] &&
+    [ ! -e "$victim/t00-session/stop_timestamps.tmp" ] &&
+    [ ! -e "$timestamp" ]
+}
+
+test_stop_gate_generic_timestamp_root_parent_swap_stays_anchored() {
+  local root_parent proof_root victim_parent victim old_parent date_bin real_date input out
+  root_parent="$TMP_ROOT/stop-generic-timestamp-parent-swap-root-parent"
+  proof_root="$root_parent/proof"
+  mkdir -p "$proof_root/t00-session" || return 1
+  mkdir -p "$proof_root/activity/sessions/t00-session" || return 1
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell" || return 1
+  printf '%s\n' "$(( $(date +%s) - 10 ))" >"$proof_root/t00-session/stop_timestamps" || return 1
+  victim_parent="$TMP_ROOT/stop-generic-timestamp-parent-swap-victim-parent"
+  victim="$victim_parent/proof"
+  mkdir -p "$victim/t00-session" || return 1
+  old_parent="$TMP_ROOT/stop-generic-timestamp-parent-swap-original-parent"
+  date_bin="$TMP_ROOT/stop-generic-timestamp-parent-swap-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = '+%s' ] && [ -e "${STOP_GENERIC_PARENT_SWAP_SENTINEL:?}" ]; then
+  rm -f -- "$STOP_GENERIC_PARENT_SWAP_SENTINEL"
+  mv -- "$STOP_GENERIC_PARENT_SWAP_PARENT" "$STOP_GENERIC_PARENT_SWAP_BACKUP"
+  ln -s -- "$STOP_GENERIC_PARENT_SWAP_VICTIM_PARENT" "$STOP_GENERIC_PARENT_SWAP_PARENT"
+fi
+exec "$STOP_GENERIC_PARENT_SWAP_REAL_DATE" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+  touch "$TMP_ROOT/stop-generic-timestamp-parent-swap-trigger" || return 1
+  input="$TMP_ROOT/stop-generic-timestamp-parent-swap.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-generic-timestamp-parent-swap.out"
+
+  PATH="$date_bin:$PATH" \
+    STOP_GENERIC_PARENT_SWAP_SENTINEL="$TMP_ROOT/stop-generic-timestamp-parent-swap-trigger" \
+    STOP_GENERIC_PARENT_SWAP_PARENT="$root_parent" \
+    STOP_GENERIC_PARENT_SWAP_BACKUP="$old_parent" \
+    STOP_GENERIC_PARENT_SWAP_VICTIM_PARENT="$victim_parent" \
+    STOP_GENERIC_PARENT_SWAP_REAL_DATE="$real_date" \
+    run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_stop_block "$out" &&
+    [ -L "$root_parent" ] &&
+    [ -e "$old_parent/proof/t00-session/stop_timestamps" ] &&
+    [ ! -e "$victim/t00-session/stop_timestamps" ] &&
+    [ ! -e "$victim/t00-session/stop_timestamps.tmp" ]
+}
+
+test_stop_gate_generic_timestamp_concurrency_is_serialized() {
+  local trial proof_root input out_dir i output lines loop_count repo
+  repo="$(make_git_repo stop-generic-timestamp-concurrency)" || return 1
+  for trial in $(seq 1 100); do
+    proof_root="$(fresh_proof_root "stop-generic-timestamp-concurrency-$trial")" || return 1
+    mkdir -p "$proof_root/t00-session" || return 1
+    mkdir -p "$proof_root/activity/sessions/t00-session" || return 1
+    printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell" || return 1
+    printf '%s\n' "$(( $(date +%s) - 10 ))" >"$proof_root/t00-session/stop_timestamps" || return 1
+    input="$TMP_ROOT/stop-generic-timestamp-concurrency-$trial.json"
+    with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+    out_dir="$TMP_ROOT/stop-generic-timestamp-concurrency-$trial-outs"
+    mkdir -p "$out_dir" || return 1
+    for i in 1 2 3 4; do
+      run_hook "$out_dir/$i.out" "$ROOT/hooks/stop-gate.sh" "$input" \
+        CODEX_PROOF_ROOT="$proof_root" &
+    done
+    wait
+    lines="$(awk 'END { print NR + 0 }' "$proof_root/t00-session/stop_timestamps")" || return 1
+    [ "$lines" -eq 5 ] || return 1
+    loop_count=0
+    for i in 1 2 3 4; do
+      output="$out_dir/$i.out"
+      jq -e '.decision == "block" and (.reason | type == "string")' "$output" >/dev/null || return 1
+      [ ! -s "$output.err" ] || return 1
+      if json_field_contains "$output" '.reason // empty' 'LOOP DETECTED'; then
+        loop_count=$((loop_count + 1))
+      fi
+    done
+    [ "$loop_count" -ge 1 ] || return 1
+  done
+}
+
+test_stop_gate_generic_timestamp_out_of_order_clock_preserves_lines() {
+  local proof_root input out date_bin real_date clock_file repo base lines
+
+  proof_root="$(fresh_proof_root stop-generic-timestamp-out-of-order)"
+  repo="$(make_git_repo stop-generic-timestamp-out-of-order)" || return 1
+  mkdir -p "$proof_root/t00-session" "$proof_root/activity/sessions/t00-session" || return 1
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell" || return 1
+  base="$(date +%s)" || return 1
+  printf '%s\n' "$((base - 10))" >"$proof_root/t00-session/stop_timestamps" || return 1
+  input="$TMP_ROOT/stop-generic-timestamp-out-of-order.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-generic-timestamp-out-of-order.out"
+  date_bin="$TMP_ROOT/stop-generic-timestamp-out-of-order-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  clock_file="$TMP_ROOT/stop-generic-timestamp-out-of-order-count"
+  : >"$clock_file" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = '+%s' ]; then
+  count="$(cat "${STOP_GENERIC_OOO_COUNT:?}" 2>/dev/null || printf '0')"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"${STOP_GENERIC_OOO_COUNT:?}"
+  if [ "$count" -eq 1 ]; then
+    printf '%s\n' "${STOP_GENERIC_OOO_BASE:?}"
+  else
+    printf '%s\n' "$((STOP_GENERIC_OOO_BASE - 2))"
+  fi
+  exit 0
+fi
+exec "${STOP_GENERIC_OOO_REAL_DATE:?}" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+
+  PATH="$date_bin:$PATH" STOP_GENERIC_OOO_COUNT="$clock_file" \
+    STOP_GENERIC_OOO_BASE="$base" STOP_GENERIC_OOO_REAL_DATE="$real_date" \
+    run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  PATH="$date_bin:$PATH" STOP_GENERIC_OOO_COUNT="$clock_file" \
+    STOP_GENERIC_OOO_BASE="$base" STOP_GENERIC_OOO_REAL_DATE="$real_date" \
+    run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  lines="$(awk 'END { print NR + 0 }' "$proof_root/t00-session/stop_timestamps")" || return 1
+  is_stop_block "$out" && [ "$lines" -eq 3 ] &&
+    grep -Fxq "$base" "$proof_root/t00-session/stop_timestamps"
+}
+
+test_stop_gate_generic_timestamp_rejects_noncanonical_lines() {
+  local proof_root input out now valid output future
+  proof_root="$(fresh_proof_root stop-generic-timestamp-strict-lines)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  mkdir -p "$proof_root/activity/sessions/t00-session" || return 1
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell" || return 1
+  now="$(date +%s)"
+  valid="$((now - 10))"
+  future="$((now + 3600))"
+  {
+    printf '%s\n' "$valid"
+    printf '0%s\n' "$valid"
+    printf '+%s\n' "$valid"
+    printf '%s.5\n' "$valid"
+    printf ' %s\n' "$valid"
+    printf '%s \n' "$valid"
+    printf '%s\n' "$future"
+  } >"$proof_root/t00-session/stop_timestamps" || return 1
+  input="$TMP_ROOT/stop-generic-timestamp-strict-lines.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  output="$TMP_ROOT/stop-generic-timestamp-strict-lines.out"
+  run_hook "$output" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  [ "$(awk 'END { print NR + 0 }' "$proof_root/t00-session/stop_timestamps")" -eq 2 ] || return 1
+  ! grep -Eq '[^0-9[:space:]]|^[[:space:]]|[[:space:]]$' \
+    "$proof_root/t00-session/stop_timestamps" || return 1
+  ! json_field_contains "$output" '.reason // empty' 'LOOP DETECTED'
+}
+
+test_stop_gate_generic_timestamp_cleans_stale_temps() {
+  local proof_root input output stale
+  proof_root="$(fresh_proof_root stop-generic-timestamp-stale-temp)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  mkdir -p "$proof_root/activity/sessions/t00-session" || return 1
+  printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell" || return 1
+  stale="$proof_root/t00-session/.stop_timestamps.tmp.crashed.1"
+  printf 'stale\n' >"$stale" || return 1
+  input="$TMP_ROOT/stop-generic-timestamp-stale-temp.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  output="$TMP_ROOT/stop-generic-timestamp-stale-temp.out"
+  run_hook "$output" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$output" && [ ! -e "$stale" ]
+}
+
 test_stop_gate_eci_loop_recovery_artifact_exactly_once() {
   local proof_root input out artifact reason next_reason marker expected_generation artifact_hash final_hash i
   proof_root="$(fresh_proof_root stop-eci-loop-recovery-artifact)"
@@ -6511,6 +6727,52 @@ SCRIPT
     [ ! -s "$out.err" ]
 }
 
+test_stop_gate_active_marker_root_swap_blocks_transcriptless_path() {
+  local proof_root old_root victim marker input out stat_bin real_stat stat_count
+  proof_root="$(fresh_proof_root stop-active-marker-root-swap-transcriptless)" || return 1
+  marker="$(write_valid_eci_marker "$proof_root")" || return 1
+  old_root="$TMP_ROOT/stop-active-marker-root-swap-transcriptless-original"
+  victim="$TMP_ROOT/stop-active-marker-root-swap-transcriptless-victim"
+  mkdir -p "$victim/t00-session" || return 1
+  stat_bin="$TMP_ROOT/stop-active-marker-root-swap-transcriptless-stat"
+  mkdir -p "$stat_bin" || return 1
+  real_stat="$(command -v stat)" || return 1
+  stat_count="$TMP_ROOT/stop-active-marker-root-swap-transcriptless-count"
+  cat >"$stat_bin/stat" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+real_stat="$ECI_REAL_STAT"
+last="$(printf '%s\n' "$@" | tail -n1)"
+result="$("$real_stat" "$@")" || exit $?
+if [ "$last" = "$ECI_ROOT_SWAP_ROOT" ]; then
+  count="$(cat "$ECI_ROOT_SWAP_COUNT" 2>/dev/null || printf '0')"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$ECI_ROOT_SWAP_COUNT"
+  if [ "$count" -ge 2 ] && [ -e "$ECI_ROOT_SWAP_SENTINEL" ]; then
+    rm -f -- "$ECI_ROOT_SWAP_SENTINEL"
+    mv -- "$ECI_ROOT_SWAP_ROOT" "$ECI_ROOT_SWAP_BACKUP"
+    ln -s -- "$ECI_ROOT_SWAP_VICTIM" "$ECI_ROOT_SWAP_ROOT"
+  fi
+fi
+printf '%s\n' "$result"
+SCRIPT
+  chmod +x "$stat_bin/stat" || return 1
+  : >"$TMP_ROOT/stop-active-marker-root-swap-transcriptless-trigger" || return 1
+  input="$TMP_ROOT/stop-active-marker-root-swap-transcriptless.json"
+  jq '.transcript_path = null' "$FIXTURES/stop-basic.json" >"$input" || return 1
+  out="$TMP_ROOT/stop-active-marker-root-swap-transcriptless.out"
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" \
+    PATH="$stat_bin:$PATH" ECI_REAL_STAT="$real_stat" \
+    ECI_ROOT_SWAP_ROOT="$proof_root" ECI_ROOT_SWAP_BACKUP="$old_root" \
+    ECI_ROOT_SWAP_VICTIM="$victim" ECI_ROOT_SWAP_COUNT="$stat_count" \
+    ECI_ROOT_SWAP_SENTINEL="$TMP_ROOT/stop-active-marker-root-swap-transcriptless-trigger" || return 1
+  is_stop_block "$out" &&
+    json_field_not_contains "$out" '.continue // false' 'true' &&
+    [ -e "$old_root/t00-session/eci_active" ] &&
+    [ ! -e "$victim/t00-session/eci_active" ]
+}
+
 test_stop_gate_eci_recovery_root_parent_swap_stays_anchored() {
   local root_parent proof_root old_parent victim marker generation lock input out victim_file before after stat_bin real_stat stat_count
   root_parent="$TMP_ROOT/stop-eci-recovery-root-parent"
@@ -6811,6 +7073,46 @@ test_eci_active_on_rejects_reserved_and_installs_atomically() {
   [ "$before" = "$after" ] && [ -L "$marker" ]
 }
 
+test_eci_active_on_protects_legacy_marker_under_symlinked_reserved_dir() {
+  local proof_root victim legacy marker before after
+  proof_root="$(fresh_proof_root eci-on-legacy-symlink-dir)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  victim="$TMP_ROOT/eci-on-legacy-symlink-dir-victim"
+  mkdir -p "$victim" || return 1
+  legacy="$victim/eci_active"
+  {
+    printf 'scope: legacy symlink test\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+  } >"$legacy" || return 1
+  before="$(sha256sum "$legacy" | awk '{print $1}')" || return 1
+  ln -s -- "$victim" "$proof_root/pre-reviewer" || return 1
+
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "legacy symlink safety" >/dev/null 2>&1 || return 1
+  marker="$proof_root/t00-session/eci_active"
+  after="$(sha256sum "$legacy" | awk '{print $1}')" || return 1
+  [ "$before" = "$after" ] &&
+    [ -f "$legacy" ] &&
+    [ -L "$proof_root/pre-reviewer" ] &&
+    [ -f "$marker" ]
+}
+
+test_eci_active_on_rejects_legacy_marker_with_extra_fields() {
+  local proof_root marker
+  proof_root="$(fresh_proof_root eci-on-legacy-extra-field)"
+  mkdir -p "$proof_root/t00-session" "$proof_root/pre-reviewer" || return 1
+  {
+    printf 'scope: malformed legacy\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+    printf 'unexpected: field\n'
+  } >"$proof_root/pre-reviewer/eci_active" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "legacy malformed safety" >/dev/null 2>&1 || return 1
+  [ -f "$proof_root/pre-reviewer/eci_active" ]
+}
+
 test_eci_active_on_root_swap_stays_anchored() {
   local proof_root victim old_root date_bin real_date marker victim_file before after out
   proof_root="$(fresh_proof_root eci-on-root-swap)"
@@ -6891,6 +7193,118 @@ SCRIPT
     [ ! -e "$victim/proof/t00-session/eci_active" ]
 }
 
+test_eci_active_on_alias_swap_stays_anchored() {
+  local proof_root root_alias victim old_alias date_bin real_date marker victim_marker out
+  proof_root="$(fresh_proof_root eci-on-alias-swap)"
+  root_alias="$TMP_ROOT/eci-on-alias-swap-link"
+  ln -s -- "$proof_root" "$root_alias" || return 1
+  mkdir -p "$proof_root/t00-session" || return 1
+  victim="$TMP_ROOT/eci-on-alias-swap-victim"
+  mkdir -p "$victim/t00-session" || return 1
+  victim_marker="$victim/t00-session/eci_active"
+  old_alias="$TMP_ROOT/eci-on-alias-swap-original-link"
+  date_bin="$TMP_ROOT/eci-on-alias-swap-date"
+  mkdir -p "$date_bin" || return 1
+  real_date="$(command -v date)" || return 1
+  cat >"$date_bin/date" <<'SCRIPT'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = '-u' ] && [ "${2:-}" = '+created_utc: %Y-%m-%dT%H:%M:%SZ' ] &&
+    [ -e "${ECI_ALIAS_SWAP_SENTINEL:?}" ]; then
+  rm -f -- "$ECI_ALIAS_SWAP_SENTINEL"
+  mv -- "$ECI_ALIAS_SWAP_ROOT_ALIAS" "$ECI_ALIAS_SWAP_BACKUP"
+  ln -s -- "$ECI_ALIAS_SWAP_VICTIM" "$ECI_ALIAS_SWAP_ROOT_ALIAS"
+fi
+exec "$ECI_ALIAS_SWAP_REAL_DATE" "$@"
+SCRIPT
+  chmod +x "$date_bin/date" || return 1
+  touch "$TMP_ROOT/eci-on-alias-swap-trigger" || return 1
+  out="$TMP_ROOT/eci-on-alias-swap.out"
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$root_alias" \
+    PATH="$date_bin:$PATH" ECI_ALIAS_SWAP_REAL_DATE="$real_date" \
+    ECI_ALIAS_SWAP_SENTINEL="$TMP_ROOT/eci-on-alias-swap-trigger" \
+    ECI_ALIAS_SWAP_ROOT_ALIAS="$root_alias" ECI_ALIAS_SWAP_BACKUP="$old_alias" \
+    ECI_ALIAS_SWAP_VICTIM="$victim" \
+    "$ROOT/bin/eci-active" on "alias swap activation" >"$out" 2>&1; then
+    return 1
+  fi
+  marker="$proof_root/t00-session/eci_active"
+  [ -L "$root_alias" ] &&
+    [ ! -e "$victim_marker" ] &&
+    [ ! -e "$marker" ]
+}
+
+test_eci_active_status_rejects_symlinked_current_state() {
+  local kind proof_root victim marker out before after
+  for kind in marker session; do
+    proof_root="$(fresh_proof_root "eci-status-symlink-$kind")"
+    victim="$TMP_ROOT/eci-status-symlink-$kind-victim"
+    mkdir -p "$victim/t00-session" || return 1
+    marker="$victim/t00-session/eci_active"
+    {
+      printf 'scope: external marker\n'
+      printf 'cwd: %s\n' "$ROOT"
+      printf 'session_id: t00-session\n'
+      printf 'created_utc: 2026-05-04T00:00:00Z\n'
+    } >"$marker" || return 1
+    before="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+    mkdir -p "$proof_root" || return 1
+    if [ "$kind" = marker ]; then
+      mkdir -p "$proof_root/t00-session" || return 1
+      ln -s -- "$marker" "$proof_root/t00-session/eci_active" || return 1
+    else
+      ln -s -- "$victim/t00-session" "$proof_root/t00-session" || return 1
+    fi
+    out="$TMP_ROOT/eci-status-symlink-$kind.out"
+    if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+      "$ROOT/bin/eci-active" status >"$out" 2>&1; then
+      return 1
+    fi
+    after="$(sha256sum "$marker" | awk '{print $1}')" || return 1
+    [ "$before" = "$after" ] && ! grep -q 'external marker' "$out"
+  done
+}
+
+test_eci_active_status_rejects_malformed_current_marker() {
+  local kind proof_root marker out
+  for kind in extra duplicate owner cwd created; do
+    proof_root="$(fresh_proof_root "eci-status-malformed-$kind")" || return 1
+    marker="$proof_root/t00-session/eci_active"
+    mkdir -p "${marker%/*}" || return 1
+    {
+      printf 'scope: malformed status marker\n'
+      if [ "$kind" = duplicate ]; then
+        printf 'scope: duplicate\n'
+      else
+        printf 'cwd: %s\n' "$ROOT"
+      fi
+      if [ "$kind" = owner ]; then
+        printf 'session_id: other-session\n'
+      else
+        printf 'session_id: t00-session\n'
+      fi
+      if [ "$kind" = cwd ]; then
+        printf 'cwd: /tmp\n'
+        printf 'created_utc: 2026-05-04T00:00:00Z\n'
+      elif [ "$kind" = created ]; then
+        printf 'created_utc: not-a-timestamp\n'
+      elif [ "$kind" = extra ]; then
+        printf 'cwd: %s\n' "$ROOT"
+        printf 'created_utc: 2026-05-04T00:00:00Z\n'
+        printf 'unexpected: field\n'
+      else
+        printf 'created_utc: 2026-05-04T00:00:00Z\n'
+      fi
+    } >"$marker" || return 1
+    out="$TMP_ROOT/eci-status-malformed-$kind.out"
+    if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+      "$ROOT/bin/eci-active" status >"$out" 2>&1; then
+      return 1
+    fi
+    ! grep -q 'malformed status marker' "$out" || return 1
+  done
+}
+
 test_eci_active_on_temp_inode_swap_fails_closed() {
   local proof_root victim date_bin real_date marker before after out
   proof_root="$(fresh_proof_root eci-on-temp-inode-swap)"
@@ -6923,6 +7337,37 @@ SCRIPT
   marker="$proof_root/t00-session/eci_active"
   after="$(sha256sum "$victim" | awk '{print $1}')" || return 1
   [ "$before" = "$after" ] && [ ! -e "$marker" ]
+}
+
+test_eci_active_on_cleans_stale_marker_temps() {
+  local proof_root marker stale victim out before after
+
+  proof_root="$(fresh_proof_root eci-on-stale-marker-temp)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  stale="$proof_root/t00-session/.eci_active.crashed.123"
+  printf 'stale activation temporary\n' >"$stale" || return 1
+  out="$TMP_ROOT/eci-on-stale-marker-temp.out"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "stale temporary cleanup" >"$out" 2>&1 || return 1
+  marker="$proof_root/t00-session/eci_active"
+  [ -f "$marker" ] && [ ! -e "$stale" ] || return 1
+  [ "$(find "$proof_root/t00-session" -maxdepth 1 -name '.eci_active.*' -print | wc -l)" -eq 0 ] || return 1
+
+  proof_root="$(fresh_proof_root eci-on-stale-marker-symlink)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  victim="$TMP_ROOT/eci-on-stale-marker-symlink-victim"
+  printf 'external temporary victim\n' >"$victim" || return 1
+  before="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  stale="$proof_root/t00-session/.eci_active.crashed-link"
+  ln -s "$victim" "$stale" || return 1
+  out="$TMP_ROOT/eci-on-stale-marker-symlink.out"
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "protect stale symlink" >"$out" 2>&1; then
+    return 1
+  fi
+  after="$(sha256sum "$victim" | awk '{print $1}')" || return 1
+  [ "$before" = "$after" ] && [ -L "$stale" ] &&
+    [ ! -e "$proof_root/t00-session/eci_active" ]
 }
 
 test_stop_gate_ignores_cwd_eci_state() {
@@ -7045,6 +7490,61 @@ test_stop_gate_ignores_legacy_reserved_eci_marker_other_cwd() {
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   json_field_equals "$out" '.continue // false' "true"
+}
+
+test_stop_gate_ignores_oversized_or_malformed_legacy_marker() {
+  local proof_root input out marker status_out report
+  proof_root="$(fresh_proof_root stop-legacy-invalid-size)"
+  marker="$proof_root/pre-reviewer/eci_active"
+  mkdir -p "${marker%/*}" || return 1
+  python3 - "$marker" "$ROOT" <<'PY'
+import pathlib
+import sys
+
+marker, cwd = sys.argv[1:]
+prefix = (
+    "scope: legacy oversized\n"
+    f"cwd: {cwd}\n"
+    "session_id: pre-reviewer\n"
+)
+payload = prefix + ("x\n" * ((1048576 - len(prefix)) // 2 + 2))
+pathlib.Path(marker).write_text(payload, encoding="utf-8")
+PY
+  input="$TMP_ROOT/stop-legacy-invalid-size.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-legacy-invalid-size.out"
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_not_contains "$out" '.reason // empty' 'ECI is active' || return 1
+  status_out="$TMP_ROOT/stop-legacy-invalid-size-status.out"
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" status >"$status_out" 2>&1; then
+    return 1
+  fi
+  report="$TMP_ROOT/stop-legacy-invalid-size-off.md"
+  write_user_closed_eci_report "$report" || return 1
+  if env -u CODEX_SESSION_ID CODEX_THREAD_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/stop-legacy-invalid-size-off.out" 2>&1; then
+    return 1
+  fi
+  [ -f "$marker" ]
+}
+
+test_stop_gate_does_not_block_malformed_legacy_extra_field() {
+  local proof_root input out marker
+  proof_root="$(fresh_proof_root stop-legacy-extra-field)"
+  marker="$proof_root/pre-reviewer/eci_active"
+  mkdir -p "${marker%/*}" || return 1
+  {
+    printf 'scope: malformed legacy\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: pre-reviewer\n'
+    printf 'unexpected: field\n'
+  } >"$marker" || return 1
+  input="$TMP_ROOT/stop-legacy-extra-field.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-legacy-extra-field.out"
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  json_field_not_contains "$out" '.reason // empty' 'ECI is active' && [ -f "$marker" ]
 }
 
 test_stop_gate_skips_invalid_session_before_legacy_eci_state() {
@@ -8373,6 +8873,18 @@ run_case "stop gate blocks pre-existing commit after HEAD advance" \
   test_stop_gate_blocks_preexisting_commit_after_head_advance
 run_case "stop gate adds loop reminder after five blocks" \
   test_stop_gate_adds_loop_reminder_after_five_blocks
+run_case "stop gate generic timestamps stay anchored across root swap" \
+  test_stop_gate_generic_timestamp_root_swap_stays_anchored
+run_case "stop gate generic timestamps stay anchored across root parent swap" \
+  test_stop_gate_generic_timestamp_root_parent_swap_stays_anchored
+run_case "stop gate generic timestamp concurrency is serialized" \
+  test_stop_gate_generic_timestamp_concurrency_is_serialized
+run_case "stop gate generic timestamps preserve out-of-order callbacks" \
+  test_stop_gate_generic_timestamp_out_of_order_clock_preserves_lines
+run_case "stop gate generic timestamps reject noncanonical lines" \
+  test_stop_gate_generic_timestamp_rejects_noncanonical_lines
+run_case "stop gate generic timestamps clean stale temps" \
+  test_stop_gate_generic_timestamp_cleans_stale_temps
 run_case "stop gate ECI loop recovery artifact is exactly once" \
   test_stop_gate_eci_loop_recovery_artifact_exactly_once
 run_case "stop gate ECI loop recovery rejects invalid marker ownership" \
@@ -8409,6 +8921,8 @@ run_case "stop gate ECI recovery canonicalizes root aliases" \
   test_stop_gate_eci_recovery_root_alias_has_one_generation
 run_case "stop gate ECI recovery stays anchored across root swap" \
   test_stop_gate_eci_recovery_root_swap_stays_anchored
+run_case "stop gate active marker root swap blocks transcriptless path" \
+  test_stop_gate_active_marker_root_swap_blocks_transcriptless_path
 run_case "stop gate ECI recovery stays anchored across root parent swap" \
   test_stop_gate_eci_recovery_root_parent_swap_stays_anchored
 run_case "stop gate ECI recovery rejects temp inode replacement" \
@@ -8427,12 +8941,24 @@ run_case "eci-active cleanup protects symlinked recovery targets" \
   test_eci_active_off_protects_symlinked_recovery_target
 run_case "eci-active on rejects reserved IDs and installs atomically" \
   test_eci_active_on_rejects_reserved_and_installs_atomically
+run_case "eci-active on protects legacy markers under symlinked reserved dirs" \
+  test_eci_active_on_protects_legacy_marker_under_symlinked_reserved_dir
+run_case "eci-active on rejects legacy extra fields" \
+  test_eci_active_on_rejects_legacy_marker_with_extra_fields
+run_case "eci-active on stays anchored across root alias swap" \
+  test_eci_active_on_alias_swap_stays_anchored
+run_case "eci-active status rejects symlinked current state" \
+  test_eci_active_status_rejects_symlinked_current_state
+run_case "eci-active status rejects malformed current marker" \
+  test_eci_active_status_rejects_malformed_current_marker
 run_case "eci-active on stays anchored across root swap" \
   test_eci_active_on_root_swap_stays_anchored
 run_case "eci-active on stays anchored across root parent swap" \
   test_eci_active_on_root_parent_swap_stays_anchored
 run_case "eci-active on rejects temp inode replacement" \
   test_eci_active_on_temp_inode_swap_fails_closed
+run_case "eci-active on cleans stale marker temporaries safely" \
+  test_eci_active_on_cleans_stale_marker_temps
 run_case "stop gate ignores cwd-scoped ECI marker" \
   test_stop_gate_ignores_cwd_eci_state
 run_case "stop gate ignores cwd-scoped ECI marker without cwd field" \
@@ -8447,6 +8973,10 @@ run_case "stop gate blocks legacy reserved ECI marker for same cwd" \
   test_stop_gate_blocks_legacy_reserved_eci_marker_same_cwd
 run_case "stop gate ignores legacy reserved ECI marker for other cwd" \
   test_stop_gate_ignores_legacy_reserved_eci_marker_other_cwd
+run_case "stop gate ignores oversized or malformed legacy markers" \
+  test_stop_gate_ignores_oversized_or_malformed_legacy_marker
+run_case "stop gate does not block malformed legacy extra fields" \
+  test_stop_gate_does_not_block_malformed_legacy_extra_field
 run_case "stop gate skips invalid session before legacy ECI state" \
   test_stop_gate_skips_invalid_session_before_legacy_eci_state
 run_case "stop gate matches ECI marker decision table" \
