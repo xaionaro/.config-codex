@@ -357,8 +357,12 @@ codex_legacy_eci_markers_for_cwd() {
     [ -f "$marker" ] && [ ! -L "$marker" ] || continue
     [ "$(wc -c <"$marker" 2>/dev/null || printf '0')" -le 1048576 ] || continue
     dir="${marker%/*}"
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     name="${dir##*/}"
     codex_reserved_proof_dir "$name" || continue
+    # Newline is the record separator; every other C0/DEL byte makes the
+    # legacy marker malformed and therefore ineligible for control flow.
+    LC_ALL=C grep -q '[[:cntrl:]]' "$marker" 2>/dev/null && continue
     line_count="$(awk 'END { print NR + 0 }' "$marker" 2>/dev/null || printf '0')"
     case "$line_count" in
       3|4) ;;

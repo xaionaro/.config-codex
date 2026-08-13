@@ -9,10 +9,24 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 codex_install_fail_open_trap stop-gate
 
 input=$(cat)
-session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
-transcript_path=$(printf '%s' "$input" | jq -r 'if (.transcript_path? | type) == "string" then .transcript_path else "" end' 2>/dev/null || true)
-stop_active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null || true)
-cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
+json_string_field() {
+  local key="$1"
+  local pattern="\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  if [[ "$input" =~ $pattern ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# Keep the hot-path admission parse in-process and scalar-only.  Session IDs
+# are validated below; malformed/non-scalar input fails open without invoking
+# a parser process.  Generic inactive-turn logic retains its existing jq use.
+session_id="$(json_string_field session_id)"
+transcript_path="$(json_string_field transcript_path)"
+stop_active="false"
+if [[ "$input" =~ "stop_hook_active"[[:space:]]*:[[:space:]]*(true|false) ]]; then
+  stop_active="${BASH_REMATCH[1]}"
+fi
+cwd="$(json_string_field cwd)"
 [ -z "$cwd" ] && cwd="$PWD"
 root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
 proof_dir="$root/$session_id"
@@ -25,8 +39,18 @@ json_continue() {
 # free of recovery-state disk I/O; the hook only reads the active marker and
 # returns the block decision.
 json_block_fast() {
-  local reason="$1"
-  jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
+  local marker="$1"
+  # Session IDs are restricted and normal proof roots are path-safe.  If a
+  # caller supplies unusual JSON characters, omit the path rather than
+  # invoking a serializer on the hot path.
+  case "$marker" in
+    *[!A-Za-z0-9_./:-]*)
+      printf '%s\n' '{"decision":"block","reason":"ECI is active for this stop attempt. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."}'
+      ;;
+    *)
+      printf '{"decision":"block","reason":"ECI is active for this stop attempt via marker %s. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."}\n' "$marker"
+      ;;
+  esac
 }
 
 json_block() {
@@ -58,19 +82,38 @@ json_block() {
 
 active_eci_marker_for_stop() {
   local marker side_stop parent_session_id is_subagent_context=false
+  local transcript_owner=""
 
-  if codex_hook_is_subagent_context "$input"; then
-    is_subagent_context=true
+  # A normal transcript path carries its session UUID.  This lets the direct
+  # marker decision avoid opening/parsing transcript data on the hot path.
+  if [ -n "$transcript_path" ]; then
+    transcript_owner="$(codex_path_owner_session_id "$transcript_path" 2>/dev/null || true)"
   fi
 
   if codex_valid_session_id "$session_id"; then
+    marker="$root/$session_id/eci_active"
+
+    # A missing transcript or a path owned by this session is authoritative:
+    # do not run the Python transcript scanner or enumerate legacy state.
+    if [ -f "$marker" ] && [ ! -L "$marker" ] &&
+      { [ -z "$transcript_path" ] || [ "$transcript_owner" = "$session_id" ]; }; then
+      printf '%s\n' "$marker"
+      return 0
+    fi
+
+    # Unknown/synthetic transcript paths retain the historical parent/subagent
+    # precedence check.  It is off the direct-marker fast path and bounded by
+    # the existing helper's input budget.
+    if [ -n "$transcript_path" ] && codex_hook_is_subagent_context "$input"; then
+      is_subagent_context=true
+    fi
+
     if [ "$is_subagent_context" = true ]; then
       parent_session_id="$(codex_hook_parent_session_id "$input" 2>/dev/null || true)"
       [ "$session_id" = "$parent_session_id" ] && return 1
     fi
 
-    marker="$root/$session_id/eci_active"
-    [ -f "$marker" ] && { printf '%s\n' "$marker"; return 0; }
+    [ -f "$marker" ] && [ ! -L "$marker" ] && { printf '%s\n' "$marker"; return 0; }
 
     [ "$is_subagent_context" = true ] && return 1
 
@@ -78,7 +121,7 @@ active_eci_marker_for_stop() {
     parent_session_id="$(codex_state_value "$side_stop" parent_session_id || true)"
     if codex_valid_session_id "$parent_session_id"; then
       marker="$root/$parent_session_id/eci_active"
-      [ -f "$marker" ] && { printf '%s\n' "$marker"; return 0; }
+      [ -f "$marker" ] && [ ! -L "$marker" ] && { printf '%s\n' "$marker"; return 0; }
     fi
   fi
 
@@ -92,7 +135,8 @@ block_if_eci_active_for_stop() {
 
   marker="$(active_eci_marker_for_stop || true)"
   [ -n "$marker" ] && [ -f "$marker" ] || return 1
-  json_block_fast "ECI is active for this stop attempt via marker $marker. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."
+  [ ! -L "$marker" ] || return 1
+  json_block_fast "$marker"
   return 0
 }
 

@@ -20,14 +20,43 @@ created.
 EOF
 }
 
+validate_proof_root() {
+  local root="$1"
+  local parent
+
+  case "$root" in
+    /*) ;;
+    *) echo "ECI proof root must be an absolute path: $root" >&2; return 1 ;;
+  esac
+  parent="$(dirname -- "$root")"
+  if [ -L "$root" ] || [ -L "$parent" ]; then
+    echo "ECI proof root is a symlink; refusing to use it: $root" >&2
+    return 1
+  fi
+}
+
+validate_session_dir() {
+  local root="$1"
+  local session_id="$2"
+  local session_dir="$root/$session_id"
+
+  validate_proof_root "$root" || return 1
+  [ -d "$root" ] || return 0
+  [ ! -L "$session_dir" ] || {
+    echo "ECI session directory is a symlink; refusing to use it: $session_dir" >&2
+    return 1
+  }
+  [ ! -e "$session_dir" ] || [ -d "$session_dir" ] || {
+    echo "ECI session directory is not a directory: $session_dir" >&2
+    return 1
+  }
+}
+
 resolve_session_dir() {
   local root name newest="" newest_mtime=0 d mtime session_id session_var
   local reject_reserved="${1:-false}"
   root="$(codex_proof_root)"
-  if [ -L "$root" ]; then
-    echo "ECI proof root is a symlink; refusing to use it: $root" >&2
-    exit 1
-  fi
+  validate_proof_root "$root" || return 1
 
   if [ -n "${CODEX_SESSION_ID:-}" ]; then
     session_id="$CODEX_SESSION_ID"
@@ -46,6 +75,7 @@ resolve_session_dir() {
       echo "Reserved $session_var cannot be activated: $session_id" >&2
       exit 1
     fi
+    validate_session_dir "$root" "$session_id" || return 1
     printf '%s/%s\n' "$root" "$session_id"
     return
   fi
@@ -54,6 +84,8 @@ resolve_session_dir() {
   shopt -s nullglob
   for d in "$root"/*/; do
     d="${d%/}"
+    [ -L "$d" ] && continue
+    [ -d "$d" ] || continue
     name="${d##*/}"
     codex_valid_session_id "$name" || continue
     codex_reserved_proof_dir "$name" && continue
@@ -182,6 +214,10 @@ case "$cmd" in
       exit 1
     }
     marker="$session_dir/eci_active"
+    if [ -L "$marker" ]; then
+      echo "ECI marker is a symlink; refusing to use it: $marker" >&2
+      exit 1
+    fi
     [ -f "$marker" ] && markers+=("$marker")
     while IFS= read -r legacy_marker; do
       [ -n "$legacy_marker" ] || continue
@@ -199,7 +235,11 @@ case "$cmd" in
       exit 1
     }
     marker="$session_dir/eci_active"
-    if [ -n "${marker:-}" ] && [ -f "$marker" ]; then
+    if [ -L "$marker" ]; then
+      echo "ECI marker is a symlink; refusing to read it: $marker" >&2
+      exit 1
+    fi
+    if [ -n "${marker:-}" ] && [ -f "$marker" ] && [ ! -L "$marker" ]; then
       cat "$marker"
     elif legacy_marker="$(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null | head -n1)" &&
       [ -n "$legacy_marker" ] && [ -f "$legacy_marker" ]; then
