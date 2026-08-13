@@ -82,7 +82,7 @@ json_block() {
 
 active_eci_marker_for_stop() {
   local marker side_stop parent_session_id is_subagent_context=false
-  local transcript_owner=""
+  local transcript_owner="" subagent_metadata=""
 
   # A normal transcript path carries its session UUID.  This lets the direct
   # marker decision avoid opening/parsing transcript data on the hot path.
@@ -104,12 +104,23 @@ active_eci_marker_for_stop() {
     # Unknown/synthetic transcript paths retain the historical parent/subagent
     # precedence check.  It is off the direct-marker fast path and bounded by
     # the existing helper's input budget.
-    if [ -n "$transcript_path" ] && codex_hook_is_subagent_context "$input"; then
-      is_subagent_context=true
+    if [ -n "$transcript_path" ]; then
+      # Read the bounded metadata prefix once.  The helper emits a closed
+      # object, so a shell match avoids a second jq/Python process.
+      subagent_metadata="$(codex_hook_thread_spawn_metadata "$input" 2>/dev/null || true)"
+      case "$subagent_metadata" in
+        *'"parent_thread_id":'*)
+          is_subagent_context=true
+          if [[ "$subagent_metadata" =~ \"parent_thread_id\":\"([^\"]*)\" ]]; then
+            parent_session_id="${BASH_REMATCH[1]}"
+          else
+            parent_session_id=""
+          fi
+          ;;
+      esac
     fi
 
     if [ "$is_subagent_context" = true ]; then
-      parent_session_id="$(codex_hook_parent_session_id "$input" 2>/dev/null || true)"
       [ "$session_id" = "$parent_session_id" ] && return 1
     fi
 

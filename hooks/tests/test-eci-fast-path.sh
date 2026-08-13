@@ -98,6 +98,15 @@ ln -s "$tmp/legacy-target" "$safety_root/pre-reviewer"
 CODEX_PROOF_ROOT="$safety_root" CODEX_SESSION_ID=safety2 \
   "$ROOT/bin/eci-active" on "scope" >/dev/null
 [ -f "$tmp/legacy-target/eci_active" ]
+mkdir -p "$safety_root/reviewer"
+printf 'scope: bad\tc0\ncwd: %s\nsession_id: reviewer\n' "$ROOT" \
+  >"$safety_root/reviewer/eci_active"
+if CODEX_PROOF_ROOT="$safety_root" bash -c \
+  '. "$1/hooks/lib/codex-proof-state.sh"; codex_legacy_eci_markers_for_cwd "$2"' \
+  bash "$ROOT" "$ROOT" | grep -q .; then
+  printf 'legacy control-byte marker was accepted\n' >&2
+  exit 1
+fi
 
 # The active path must not create/update recovery state or generic callback
 # counters.  The only proof-root file is the marker itself.
