@@ -5027,7 +5027,11 @@ test_validate_bash_blocks_subagent_eci_user_wait_wrappers() {
   for command in \
     "env CODEX_ROLE=coordinator ~/.codex/bin/eci-active resume aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
     "bash -c 'exec ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md'" \
-    "timeout 5 ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md"; do
+    "timeout -k 1 5 ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md" \
+    "command -p ~/.codex/bin/eci-active resume aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+    "exec -a eci ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md" \
+    "env -C /tmp ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md" \
+    "systemd-run --unit eci ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md"; do
     input="$TMP_ROOT/bash-subagent-eci-wait-wrapper-$index.json"
     jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
       '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
@@ -6699,7 +6703,7 @@ test_eci_active_wait_accepts_main_and_validates_report() {
     grep -q '^report_sha256: [0-9a-f]\{64\}$' "$state"
 }
 
-test_stop_gate_retains_user_owned_wait_until_resume() {
+test_stop_gate_retains_valid_bound_wait_until_resume() {
   local proof_root report input out second marker state
   proof_root="$(fresh_proof_root stop-eci-wait)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
@@ -6742,6 +6746,44 @@ test_stop_gate_retains_user_owned_wait_until_resume() {
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
     json_field_contains "$out" '.reason // empty' "Never stop until the ECI task is complete"
+}
+
+test_stop_gate_blocks_missing_wait_report() {
+  local proof_root report input out state
+  proof_root="$(fresh_proof_root stop-eci-wait-missing-report)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-eci-wait-missing-on.out" 2>&1 || return 1
+  report="$proof_root/t00-session/eci_user_owned_wait.md"
+  write_eci_user_owned_wait_report "$report" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" wait "$report" >"$TMP_ROOT/stop-eci-wait-missing-arm.out" 2>&1 || return 1
+  state="$proof_root/t00-session/eci_wait"
+  rm -f "$report" || return 1
+  input="$TMP_ROOT/stop-eci-wait-missing.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-wait-missing.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" && [ -s "$state" ]
+}
+
+test_stop_gate_blocks_tampered_wait_report() {
+  local proof_root report input out state
+  proof_root="$(fresh_proof_root stop-eci-wait-tampered-report)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-eci-wait-tampered-on.out" 2>&1 || return 1
+  report="$proof_root/t00-session/eci_user_owned_wait.md"
+  write_eci_user_owned_wait_report "$report" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" wait "$report" >"$TMP_ROOT/stop-eci-wait-tampered-arm.out" 2>&1 || return 1
+  state="$proof_root/t00-session/eci_wait"
+  sed -i 's/user-owned input required/user-owned input changed/' "$report" || return 1
+  input="$TMP_ROOT/stop-eci-wait-tampered.json"
+  with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
+  out="$TMP_ROOT/stop-eci-wait-tampered.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" && [ -s "$state" ]
 }
 
 test_eci_active_resume_requires_changed_fingerprint() {
@@ -7631,8 +7673,12 @@ run_case "eci-active off rejects mixed hard-escalation report" \
   test_eci_active_off_rejects_mixed_hard_escalation_report
 run_case "eci-active wait accepts main and canonical report" \
   test_eci_active_wait_accepts_main_and_validates_report
-run_case "stop gate retains user-owned wait state until resume" \
-  test_stop_gate_retains_user_owned_wait_until_resume
+run_case "stop gate retains valid bound wait state until resume" \
+  test_stop_gate_retains_valid_bound_wait_until_resume
+run_case "stop gate blocks missing wait report" \
+  test_stop_gate_blocks_missing_wait_report
+run_case "stop gate blocks tampered wait report" \
+  test_stop_gate_blocks_tampered_wait_report
 run_case "eci-active resume requires changed fingerprint" \
   test_eci_active_resume_requires_changed_fingerprint
 run_case "eci-active resume rejects tampered report" \

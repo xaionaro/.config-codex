@@ -197,6 +197,26 @@ def basename(token):
     return os.path.basename(token)
 
 
+def skip_options(segment, index, with_argument=(), without_argument=()):
+    with_argument = set(with_argument)
+    without_argument = set(without_argument)
+    while index < len(segment):
+        token = segment[index]
+        if token == "--":
+            return index + 1
+        if token in with_argument:
+            index += 2
+            continue
+        if any(token.startswith(option + "=") for option in with_argument):
+            index += 1
+            continue
+        if token in without_argument or token.startswith("-"):
+            index += 1
+            continue
+        break
+    return index
+
+
 def inspect(segment, depth=0):
     if depth > 4:
         return False
@@ -208,36 +228,31 @@ def inspect(segment, depth=0):
 
     command = basename(segment[index])
     if command == "env":
-        index += 1
-        while index < len(segment):
-            token = segment[index]
-            if is_assignment(token):
-                index += 1
-                continue
-            if token in {"-i", "--ignore-environment", "--"}:
-                index += 1
-                if token == "--":
-                    break
-                continue
-            if token == "-u" and index + 1 < len(segment):
-                index += 2
-                continue
-            if token.startswith("-"):
-                index += 1
-                continue
-            break
+        index = skip_options(
+            segment,
+            index + 1,
+            with_argument={"-C", "--chdir", "-u", "--unset"},
+            without_argument={"-i", "--ignore-environment"},
+        )
+        while index < len(segment) and is_assignment(segment[index]):
+            index += 1
         return inspect(segment[index:], depth + 1)
 
     if command in {"command", "builtin", "exec"}:
-        return inspect(segment[index + 1:], depth + 1)
+        if command == "command":
+            next_index = skip_options(segment, index + 1, without_argument={"-p", "-v", "-V"})
+        elif command == "exec":
+            next_index = skip_options(segment, index + 1, with_argument={"-a"}, without_argument={"-c", "-l"})
+        else:
+            next_index = index + 1
+        return inspect(segment[next_index:], depth + 1)
 
     if command in {"nohup", "setsid", "doas", "sudo"}:
-        option_index = index + 1
-        while option_index < len(segment) and segment[option_index].startswith("-"):
-            if segment[option_index] in {"-u", "--user", "-g", "--group", "-C", "--chdir", "-D"}:
-                option_index += 2
-            else:
-                option_index += 1
+        option_index = skip_options(
+            segment,
+            index + 1,
+            with_argument={"-u", "--user", "-g", "--group", "-C", "--chdir", "-D"},
+        )
         return inspect(segment[option_index:], depth + 1)
 
     if command in {"bash", "sh", "dash", "zsh"}:
@@ -255,12 +270,15 @@ def inspect(segment, depth=0):
         return False
 
     if command in {"timeout", "nice", "chronic", "systemd-run", "prlimit", "time"}:
-        option_index = index + 1
-        while option_index < len(segment) and segment[option_index].startswith("-"):
-            if segment[option_index] in {"-n", "--adjustment", "-p", "--property", "--scope", "-C", "--chdir"}:
-                option_index += 2
-            else:
-                option_index += 1
+        option_index = skip_options(
+            segment,
+            index + 1,
+            with_argument={
+                "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
+                "-p", "--property", "--unit", "--setenv", "--working-directory", "-C", "--chdir",
+            },
+            without_argument={"--foreground", "--preserve-status", "--scope", "--user", "--system", "--wait", "--pipe", "--quiet"},
+        )
         if command == "timeout" and option_index < len(segment):
             option_index += 1
         return inspect(segment[option_index:], depth + 1)

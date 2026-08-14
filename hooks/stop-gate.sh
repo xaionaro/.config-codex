@@ -35,9 +35,9 @@ json_continue() {
   jq -n '{continue: true}'
 }
 
-# Active ECI is a coordinator concern.  Keep this authoritative fast path
-# free of recovery-state disk I/O; the hook only reads the active marker and
-# returns the block decision.
+# Active ECI is a main/orchestrator concern. Keep the ordinary authoritative
+# fast path to marker probes; only a direct-session validated wait state reads
+# bounded state/report data, and that exceptional path never mutates it.
 json_block_fast() {
   local marker="$1"
   if [ -z "$marker" ]; then
@@ -133,15 +133,19 @@ eci_root_is_safe_for_stop() {
   return 0
 }
 
-eci_wait_state_consume() {
+eci_wait_state_allows() {
   local marker="$1"
   local state="${marker%/*}/eci_wait"
-  local -a lines=()
-  local unblock state_bytes
+  local report="${marker%/*}/eci_user_owned_wait.md"
+  local state_bytes report_bytes report_sha256
+  local state_blocker_id state_fingerprint state_unblock_kind state_unblock state_report_sha256
+  local report_blocker_id report_fingerprint report_unblock_kind report_unblock
+  local -a lines=() report_lines=()
 
-  # The ordinary active path does only this existence check and returns.
-  # A state is considered only for the direct session marker, never a parent
-  # or subagent marker.  The coordinator CLI writes the same closed schema.
+  # The ordinary active path does only this existence/type probe.  A wait
+  # state is considered only for the direct session marker, never a parent or
+  # subagent marker.  Validated state remains in place; this function never
+  # consumes or deletes it.
   [ -e "$state" ] || [ -L "$state" ] || return 1
   [ -f "$state" ] && [ ! -L "$state" ] || return 1
   state_bytes="$(wc -c <"$state" 2>/dev/null || true)"
@@ -149,6 +153,7 @@ eci_wait_state_consume() {
     ''|*[!0-9]*) return 1 ;;
   esac
   [ "$state_bytes" -le 8192 ] || return 1
+  [ "$(tail -c 1 -- "$state" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
   mapfile -t lines <"$state" || return 1
   local terminated_lines=0
   while IFS= read -r _; do
@@ -165,16 +170,59 @@ eci_wait_state_consume() {
   [[ "${lines[6]}" == unblock_kind:\ * ]] || return 1
   [[ "${lines[7]}" == unblock:\ * ]] || return 1
   [[ "${lines[8]}" == report_sha256:\ * ]] || return 1
-  [[ "${lines[1]#blocker_id: }" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
-  [[ "${lines[2]#state_fingerprint: }" =~ ^[0-9a-f]{64}$ ]] || return 1
-  case "${lines[6]#unblock_kind: }" in
+  state_blocker_id="${lines[1]#blocker_id: }"
+  state_fingerprint="${lines[2]#state_fingerprint: }"
+  state_unblock_kind="${lines[6]#unblock_kind: }"
+  state_unblock="${lines[7]#unblock: }"
+  state_report_sha256="${lines[8]#report_sha256: }"
+  [[ "$state_blocker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$state_fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+  case "$state_unblock_kind" in
     input|resource|decision) ;;
     *) return 1 ;;
   esac
-  unblock="${lines[7]#unblock: }"
-  [ -n "$unblock" ] || return 1
-  [[ "$unblock" != *[[:cntrl:]]* ]] || return 1
-  [[ "${lines[8]#report_sha256: }" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ -n "$state_unblock" ] || return 1
+  [[ "$state_unblock" != *[[:cntrl:]]* ]] || return 1
+  [[ "$state_report_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+
+  [ -f "$report" ] && [ ! -L "$report" ] || return 1
+  report_bytes="$(wc -c <"$report" 2>/dev/null || true)"
+  case "$report_bytes" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$report_bytes" -le 8192 ] || return 1
+  [ "$(tail -c 1 -- "$report" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  mapfile -t report_lines <"$report" || return 1
+  [ "${#report_lines[@]}" -eq 9 ] || return 1
+  [ "${report_lines[0]}" = "# ECI User-Owned Wait" ] || return 1
+  [ "${report_lines[1]}" = "state: user-owned-wait" ] || return 1
+  [[ "${report_lines[2]}" == blocker_id:\ * ]] || return 1
+  [[ "${report_lines[3]}" == state_fingerprint:\ * ]] || return 1
+  [[ "${report_lines[4]}" = "owner: user" ]] || return 1
+  [[ "${report_lines[5]}" = "brp_result: exhausted-no-feasible-internal-path" ]] || return 1
+  [[ "${report_lines[6]}" = "user_owned_input: unobtainable" ]] || return 1
+  [[ "${report_lines[7]}" == unblock_kind:\ * ]] || return 1
+  [[ "${report_lines[8]}" == unblock:\ * ]] || return 1
+  report_blocker_id="${report_lines[2]#blocker_id: }"
+  report_fingerprint="${report_lines[3]#state_fingerprint: }"
+  report_unblock_kind="${report_lines[7]#unblock_kind: }"
+  report_unblock="${report_lines[8]#unblock: }"
+  [[ "$report_blocker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$report_fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+  case "$report_unblock_kind" in
+    input|resource|decision) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$report_unblock" ] || return 1
+  [[ "$report_unblock" != *[[:cntrl:]]* ]] || return 1
+  command -v sha256sum >/dev/null 2>&1 || return 1
+  report_sha256="$(sha256sum -- "$report" 2>/dev/null | awk '{print $1}')"
+  [[ "$report_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ "$state_blocker_id" = "$report_blocker_id" ] || return 1
+  [ "$state_fingerprint" = "$report_fingerprint" ] || return 1
+  [ "$state_unblock_kind" = "$report_unblock_kind" ] || return 1
+  [ "$state_unblock" = "$report_unblock" ] || return 1
+  [ "$state_report_sha256" = "$report_sha256" ] || return 1
   printf '%s\n' '{"continue":true}'
 }
 
@@ -284,7 +332,7 @@ block_if_eci_active_for_stop() {
   if marker="$(active_eci_marker_for_stop)"; then
     [ -n "$marker" ] || return 1
     if [ "$marker" = "$root/$session_id/eci_active" ] &&
-      eci_wait_state_consume "$marker"; then
+      eci_wait_state_allows "$marker"; then
       return 0
     fi
     json_block_fast "$marker"
