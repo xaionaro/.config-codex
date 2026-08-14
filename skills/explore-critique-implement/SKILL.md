@@ -152,13 +152,17 @@ Do not disengage mid-task to escape the gate — that is the regression this mar
 
 **Reusable role** = spawned once with `spawn_agent`, then given a new turn with `followup_task` only while idle. `send_message` delivers information to an already-running turn; it does not start a new turn. ECI reuses producer roles and uses isolated critic identities as described below.
 
-Reusable agents handle Step 1 (explorer) and Step 3 (implementer) across iterations. Each critic-role invocation (Step 2 critic, Critic A, Critic B, brainstormer, brp-feasibility-validator, loop-breaker, and E2E) gets a separate blind identity. The producer (explorer/implementer) must never act as critic.
+Reusable agents handle Step 1 (explorer) and Step 3 (implementer) across iterations. Each critic-role invocation (Step 2 critic, Critic A coding style, Critic B correctness/fidelity, Critic C long-term health, brainstormer, brp-feasibility-validator, loop-breaker, and E2E) gets a separate blind identity. The producer (explorer/implementer) must never act as critic.
 
 **"Reusable" != "trust prior context".** The reusable agent's spawn-prompt baseline forces fresh-assignment treatment on every `followup_task` (re-read referenced files, no prior-turn trust). Producer-vs-critic separation is identity separation, not a claim that transport reuse clears context.
 
 **Reusable role rule.** Use a stable `task_name` for a reused producer slot and carry the semantic role in its self-contained prompt and roster label. Put changing details (`round`, `gate`, `scope`, `lens`) in the assignment. Do not claim or pass schema fields that `spawn_agent` does not expose.
 
 **Blind critic rule.** Every critic-class invocation is a newly isolated `spawn_agent` with `fork_turns: "none"` and a unique transport `task_name`. Its prompt must be fully self-contained: role label, original requirements when allowed by the packet protocol, exact files/scope, sources to reread, expected output, and all applicable review rules. Never assume the critic inherited orchestrator context. The producer must not be the critic.
+
+### Context-compaction refresh
+
+When ECI is engaged, immediately after every context compaction the coordinator and lead must re-read this entire `skills/explore-critique-implement/SKILL.md` and re-invoke its instructions before any next decision or tool call. There is no dedicated compaction hook. A `SessionStart` `startup|resume|clear` signal may provide a best-effort lifecycle refresh, but it is not proof that compaction occurred; when that signal arrives while ECI is active, perform the refresh before the next decision.
 
 Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, context-clear commands, terminal-agent close operations, or independent shell/CLI agents for ECI. Role identity is carried in the prompt, roster, and provider agent id.
 
@@ -172,7 +176,7 @@ Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, context-clear comma
 | Deliver to running producer | `send_message({target: <agent id>, message: <bounded in-turn information>})` |
 | Spawn any critic / E2E / brainstormer / validator / loop-breaker | New `spawn_agent({task_name: <unique transport name>, fork_turns: "none", message: <self-contained blind prompt>})`; parallel calls where required |
 
-Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel. Exception: Critic B Packet 1 for code diffs contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction; omit original requirements, exact scope, ledger/task/design context, rationale, commit message, and prior review output until Packet 2.
+Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel. Exception: Critic C Packet 1 for code diffs contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction; omit original requirements, exact scope, ledger/task/design context, rationale, commit message, and prior review output until Packet 2.
 Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
 
 ### Special model profile and role boundary
@@ -191,11 +195,11 @@ Only the exact invocation record proves the requested selectors. A successful no
 
 Every assignment artifact and roster entry has exactly one category—`exploration-only`, `design`, `mixed`, or `implementation`—and one semantic role. The independent category-role boundary artifact is canonical UTF-8 compact JSON with exactly one final LF and exactly the ordered fields `{category,semantic_role,authority,required_model_class,artifact_sha256,verdict}`. `artifact_sha256` is the SHA-256 of that same canonical body after substituting a fixed 64-zero sentinel for its `artifact_sha256` value; the verifier substitutes the sentinel and recomputes, while the artifact path and resulting hash are recorded externally in the prompt artifact, roster, and project-understanding ledger. `authority` is the closed enum `non-authoritative|authoritative|combined`; `required_model_class` is `ordinary|special`; `verdict` must be `APPROVED`. Unknown, duplicate, missing, reordered, non-UTF-8, noncompact, non-final-LF, mismatched, or unlisted fields block the spawn.
 
-Normalize operational stable labels exactly before boundary validation: `explorer`→`Explorer`; `researcher`→`researcher`; `brainstormer`→`Brainstormer`; `critic-step2`→`ECI critic-step2`; `critic-A`→`ECI Critic A`; `critic-B`→`ECI Critic B`; `e2e-gate`→`E2E gate`; `implementer`→`implementer`; `executor`→`Executor`; `qa`→`QA`; `fdr-reviewer`→`FDR reviewer`; `fdr-meta-reviewer`→`FDR meta-reviewer`; `ate-design-reviewer`→`ATE Design Reviewer`; `ate-meta-reviewer`→`ATE meta-reviewer`; `execution-reviewer-correctness`→`Execution Reviewer: correctness/fidelity`; `execution-reviewer-long-term-health`→`Execution Reviewer: long-term-health`. Unknown labels block. Normalization occurs before exact role, category, authority, and model checks.
+Normalize operational stable labels exactly before boundary validation: `explorer`→`Explorer`; `researcher`→`researcher`; `brainstormer`→`Brainstormer`; `critic-step2`→`ECI critic-step2`; `critic-A`→`ECI Critic A`; `critic-B`→`ECI Critic B`; `critic-C`→`ECI Critic C`; `e2e-gate`→`E2E gate`; `implementer`→`implementer`; `executor`→`Executor`; `qa`→`QA`; `fdr-reviewer`→`FDR reviewer`; `fdr-meta-reviewer`→`FDR meta-reviewer`; `ate-design-reviewer`→`ATE Design Reviewer`; `ate-meta-reviewer`→`ATE meta-reviewer`; `execution-reviewer-correctness`→`Execution Reviewer: correctness/fidelity`; `execution-reviewer-long-term-health`→`Execution Reviewer: long-term-health`. Unknown labels block. Normalization occurs before exact role, category, authority, and model checks.
 
-The closed semantic-role map and cross-field invariants are: `exploration-only` → `Explorer`, `researcher`, `fact/issue brainstormer`, `Brainstormer`, `brp primary explorer`, `brp-feasibility-validator`, `loop-breaker`, `repro`, `RCAer`, `Snitch`, `Coordinator`, or `Lead`; each requires `authority=non-authoritative` and `required_model_class=ordinary`, and may gather facts, describe candidate architectures/options, compare/rank them, and report evidence but may not author or adjudicate authoritative architecture, interfaces, ownership, components, data flow, or admission. `design` → `Designer`, `Design Reviewer`, `Fundamentals Design Reviewer`, `FDR reviewer`, `FDR meta-reviewer`, `ECI critic-step2`, `ECI Critic B`, `ATE Design Reviewer`, `ATE meta-reviewer`, `authoritative architecture/design`, or `Execution Reviewer: long-term-health`; each requires `authority=authoritative` and `required_model_class=special`. `mixed` is only the explicit semantic role `combined fact-and-authority`; it requires `category=mixed`, `authority=combined`, and `required_model_class=special`, may combine fact gathering with authority only when the assignment explicitly requests that combination, and must never be inferred. `implementation` → `Executor`, `implementer`, `ECI implementer`, `ECI Critic A`, `Execution Reviewer: correctness/fidelity`, `Test Designer`, `Test Executor`, `Test Reviewer`, `Verifier`, `E2E`, `E2E gate`, or `QA`; each requires `authority=non-authoritative` and `required_model_class=ordinary`. Unknown or ambiguous roles and any cross-field mismatch block. An otherwise ordinary role assigned authoritative architecture/design or long-term-health review must use a fresh boundary artifact and fresh special spawn under the corresponding exact design role; never infer a fallback or upgrade by followup. Reclassification requires a fresh special spawn, never a followup.
+The closed semantic-role map and cross-field invariants are: `exploration-only` → `Explorer`, `researcher`, `fact/issue brainstormer`, `Brainstormer`, `brp primary explorer`, `brp-feasibility-validator`, `loop-breaker`, `repro`, `RCAer`, `Snitch`, `Coordinator`, or `Lead`; each requires `authority=non-authoritative` and `required_model_class=ordinary`, and may gather facts, describe candidate architectures/options, compare/rank them, and report evidence but may not author or adjudicate authoritative architecture, interfaces, ownership, components, data flow, or admission. `design` → `Designer`, `Design Reviewer`, `Fundamentals Design Reviewer`, `FDR reviewer`, `FDR meta-reviewer`, `ECI critic-step2`, `ECI Critic C`, `ATE Design Reviewer`, `ATE meta-reviewer`, `authoritative architecture/design`, or `Execution Reviewer: long-term-health`; each requires `authority=authoritative` and `required_model_class=special`. `mixed` is only the explicit semantic role `combined fact-and-authority`; it requires `category=mixed`, `authority=combined`, and `required_model_class=special`, may combine fact gathering with authority only when the assignment explicitly requests that combination, and must never be inferred. `implementation` → `Executor`, `implementer`, `ECI implementer`, `ECI Critic A`, `ECI Critic B`, `Execution Reviewer: correctness/fidelity`, `Test Designer`, `Test Executor`, `Test Reviewer`, `Verifier`, `E2E`, `E2E gate`, or `QA`; each requires `authority=non-authoritative` and `required_model_class=ordinary`. Unknown or ambiguous roles and any cross-field mismatch block. An otherwise ordinary role assigned authoritative architecture/design or long-term-health review must use a fresh boundary artifact and fresh special spawn under the corresponding exact design role; never infer a fallback or upgrade by followup. Reclassification requires a fresh special spawn, never a followup.
 
-Reusable producers keep stable role/transport names. Every special semantic-role spawn—`Designer`, `Design Reviewer`, `Fundamentals Design Reviewer`, FDR special reviewer/meta-reviewer, `ECI critic-step2`, `ECI Critic B`, `ATE Design Reviewer`, `ATE meta-reviewer`, authoritative architecture/design, `mixed`/`combined fact-and-authority`, and `Execution Reviewer: long-term-health`—uses a fresh `spawn_agent({fork_turns:"none"})` with a unique transport identity and fresh boundary/profile evidence. Record requested-special plus child identity and, when effective telemetry is unavailable, also record effective-unavailable. An unexposed selector is unavailable_by_schema, while absent post-spawn telemetry is effective-unavailable. Retire the prior special slot without shutdown or terminal cleanup. ECI blind special critics therefore use fresh unique identities; an ordinary `followup_task` cannot upgrade a role. Ordinary `Explorer`, `implementer`, and `Execution Reviewer: correctness/fidelity` producer slots remain reusable under the stable-role rules. FDR obtains exactly three distinct child identities and reports—one ordinary fact/issue brainstormer, one special reviewer, and one special meta-reviewer—with no reuse, collapse, or simulation; no FDR verdict precedes all three reports.
+Reusable producers keep stable role/transport names. Every special semantic-role spawn—`Designer`, `Design Reviewer`, `Fundamentals Design Reviewer`, FDR special reviewer/meta-reviewer, `ECI critic-step2`, `ECI Critic C`, `ATE Design Reviewer`, `ATE meta-reviewer`, authoritative architecture/design, `mixed`/`combined fact-and-authority`, and `Execution Reviewer: long-term-health`—uses a fresh `spawn_agent({fork_turns:"none"})` with a unique transport identity and fresh boundary/profile evidence. Record requested-special plus child identity and, when effective telemetry is unavailable, also record effective-unavailable. An unexposed selector is unavailable_by_schema, while absent post-spawn telemetry is effective-unavailable. Retire the prior special slot without shutdown or terminal cleanup. ECI blind special critics therefore use fresh unique identities; an ordinary `followup_task` cannot upgrade a role. Ordinary `Explorer`, `implementer`, and `Execution Reviewer: correctness/fidelity` producer slots remain reusable under the stable-role rules; ECI Critic A and ECI Critic B use ordinary models but remain fresh blind critic invocations. FDR obtains exactly three distinct child identities and reports—one ordinary fact/issue brainstormer, one special reviewer, and one special meta-reviewer—with no reuse, collapse, or simulation; no FDR verdict precedes all three reports.
 
 If the current collaboration schema exposes no effective telemetry, record requested-special plus child identity and, when effective telemetry is unavailable, also record effective-unavailable after all exposed selectors are accepted. A selector unavailable because it is unexposed is unavailable_by_schema; absent post-spawn telemetry is effective-unavailable. Missing or rejected exposed selectors and conflicting returned effective telemetry reject only that child dependency; continue ECI/ATE and BRP without ordinary fallback, reuse, or downgrade.
 
@@ -264,7 +268,7 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 | 1 | Explore | Reusable `explorer` agent (`followup_task` while idle) | Ranked options + cited sources |
 | 2 | Critique explorations | New blind `critic-step2` agent per round (`fork_turns: "none"`) | Winner with concrete text + tagged CONDITIONAL/NIT list (one explorer revision round permitted on all-REJECT) |
 | 3 | Implement | Reusable `implementer` agent (`followup_task` while idle) | One diff |
-| 4 | Review gate (parallel) | Critic A + Critic B + E2E agents in parallel | All three run concurrently; wait for all |
+| 4 | Review gate (parallel) | Critic A coding style + Critic B correctness/fidelity + Critic C long-term health + E2E where code applies | All three critics run concurrently; wait for all critic reports and E2E when applicable |
 | Exit | Main thread | Apply / commit / report |
 
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
@@ -277,7 +281,7 @@ If any ECI agent, gate, or user followup discovers a concrete bug (failure, flak
 
 An explicitly isolated disposable repro may run before coding-style admission under the contract above. It may supply technical evidence, but a production fix or reuse of repro code waits for admission of the final governed scope.
 
-Map `debugging-discipline` to separate delegated ECI roles: repro -> `repro` worker; RCA/regression -> `rcaer` explorer; critic -> Step 2 critic; fix -> implementer; review -> Critic A/B + E2E gate. Every bug prompt says: "Load `debugging-discipline`; follow its repro/RCA-critic/fix-review loop. Determine `regression: yes/no/unknown`; if regression, explain how it happened. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
+Map `debugging-discipline` to separate delegated ECI roles: repro -> `repro` worker; RCA/regression -> `rcaer` explorer; critic -> Step 2 critic; fix -> implementer; review -> Critic A/B/C + E2E gate. Every bug prompt says: "Load `debugging-discipline`; follow its repro/RCA-critic/fix-review loop. Determine `regression: yes/no/unknown`; if regression, explain how it happened. Do not submit until root cause is falsifiable and the fix is proven on the real failing path."
 
 Before sending the RCA/regression assignment, write or update a human-readable regression report file: `~/.cache/codex-proof/$SESSION_ID/eci-regression-reports/<task>.md` when `$SESSION_ID` exists; otherwise `./.codex-regression-reports/<task>.md`. Include bug statement, repro, previous/current test-run artifact paths, CI/log/release/QA evidence, known-good/current-bad anchors, regression status, missing evidence, and the regression explanation once known. Send the report path and evidence packet to `rcaer`. Human reading is optional; never block the pipeline waiting for user review.
 
@@ -398,18 +402,20 @@ If applicable E2E evidence is missing, reassign the idle implementer with `follo
 
 ## Step 4: Review gate (parallel)
 
-Spawn all three as new blind critic agents in a single message: three parallel `spawn_agent` calls, each with `fork_turns: "none"`, a unique transport `task_name`, and a self-contained role prompt for `critic-A`, `critic-B`, or `e2e-gate`. Each MUST NOT message the reusable explorer or implementer. Completion is an automatically delivered event; if an expected event has not arrived, keep at most one outstanding `wait_agent({timeout_ms:3600000})` call for it. Timeout never authorizes an immediate retry or polling. Evaluate only after all three terminal events arrive. Every normal reviewer prompt includes the **original user requirements verbatim**, `loop-id`, applicable `decision-id`, objectives/criteria, and the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer.
+Spawn Critic A, Critic B, and Critic C as new blind critic agents in one parallel message, plus E2E when code applies: each critic uses `fork_turns: "none"`, a unique transport `task_name`, and a self-contained role prompt for `critic-A`, `critic-B`, or `critic-C`; E2E uses `e2e-gate`. Each MUST NOT message the reusable explorer or implementer. Completion is an automatically delivered event; if an expected event has not arrived, keep at most one outstanding `wait_agent({timeout_ms:3600000})` call for it. Timeout never authorizes an immediate retry or polling. All three critic reports are required; the aggregate verdict is withheld until they arrive, and until E2E arrives when code applies. Every normal reviewer prompt includes the **original user requirements verbatim**, `loop-id`, applicable `decision-id`, objectives/criteria, and the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer.
 
-Critic B code-diff exception:
+**Required-critic admission:** At ECI engagement and for every current root diff, the coordinator records a required-critic manifest keyed by the current diff SHA-256 and child identity: Critic A coding style, Critic B correctness/fidelity, Critic C long-term health, and E2E when code applies. No implementation acceptance, commit/final gate, or clean teardown is valid while a required report is missing, stale against that diff hash, contradictory, or unverified. A missing report routes back to spawning that critic; never silently skip one. This is coordinator/session-ledger state, not provider telemetry or a new runtime artifact.
+
+Critic C code-diff exception:
 - Code diffs use two packets. Skip Packet 1 when there is no code diff.
-- Packet 1 is diff-only isolation and goes to a newly spawned blind Critic B (`fork_turns: "none"`).
+- Packet 1 is diff-only isolation and goes to a newly spawned blind Critic C (`fork_turns: "none"`).
 - Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction. It is exempt from original requirements, exact scope, and normal review context.
-- After `reconstructed intention:` returns, send Packet 2 with original requirements and full Critic B context.
+- After `reconstructed intention:` returns, send Packet 2 with original requirements and full Critic C context.
 - Gate incomplete until Packet 2 returns.
 
 ### Issue severity codes
 
-Every remaining in-scope issue from Critic A and Critic B must carry exactly one code:
+Every remaining in-scope issue from Critic A, Critic B, and Critic C must carry exactly one code:
 
 | Code | Meaning | Effect |
 |------|---------|--------|
@@ -417,29 +423,37 @@ Every remaining in-scope issue from Critic A and Critic B must carry exactly one
 | **CONDITIONAL** | Fix needed, but specific enough for the implementer to apply without redesign unless impact requires it | Must be fixed; routing follows impact/evaluation rules below |
 | **NIT** | Soft recommendation | May be ignored |
 
-Both critics tag every issue per the severity codes table above. Same vocabulary as Step 2; Effect differs (re-implement vs. re-explore).
+All three critics tag every issue per the severity codes table above. Same vocabulary as Step 2; Effect differs (re-implement vs. re-explore).
 
 For every REJECT or CONDITIONAL, reviewers must also tag `impact: trivial` or `impact: substantive` with a one-line rationale. `substantive` means non-trivial, major, API-changing, contract-changing, architecture-changing, security-sensitive, persistence-affecting, concurrency-affecting, or requiring a design tradeoff. Use the Triviality rule above for impact tags. Small patches are substantive when they alter future behavior, decision rules, contracts, prompts/instructions, or review routing. Missing impact tag = REJECT against the review output; re-prompt that reviewer before evaluating the gate.
 
-Both critics critique the implementer's root-cause rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
+All three critics critique the implementer's root-cause rationale and regression explanation when applicable. Unknown causal link or symptom-only change = REJECT unless containment was explicitly requested.
 
-For governance/prompt/hook/protocol/reviewer changes, Critic A and Critic B perform the Step 2 claim-scope audit. REJECT overclaims and missing boundary/negative tests; silent `UserPromptSubmit` state maintenance must not be described as reminder emission or an LLM reviewer/classifier. Optional LLM first-tool admission review is separate `PreToolUse` behavior configured through `CODEX_EDIT_PRE_REVIEWER`, with `LLM_EDIT_PRE_REVIEWER` and `CLAUDE_EDIT_PRE_REVIEWER` accepted only as lower-precedence compatibility aliases when earlier variables are unset.
+For governance/prompt/hook/protocol/reviewer changes, all three critics perform the Step 2 claim-scope audit within their lens. REJECT overclaims and missing boundary/negative tests; silent `UserPromptSubmit` state maintenance must not be described as reminder emission or an LLM reviewer/classifier. Optional LLM first-tool admission review is separate `PreToolUse` behavior configured through `CODEX_EDIT_PRE_REVIEWER`, with `LLM_EDIT_PRE_REVIEWER` and `CLAUDE_EDIT_PRE_REVIEWER` accepted only as lower-precedence compatibility aliases when earlier variables are unset.
 
-### Critic A — correctness
+### Critic A — coding style
 
-Emit only issues affecting correctness, safety, or fidelity to the concrete text. Interface contract fulfillment — does every interface implementation actually work, not just compile? Polish and taste items are NITs at most.
+Critic A is an ordinary, non-authoritative reviewer. The style critic reports findings only; the implementer fixes them. Before reviewing a governed code scope, load every matching installed coding-style skill: Go files, go.mod, or go.sum => go-coding-style; non-Go files => every matching installed style skill. Resolve the repository formatter/linter/config and exact source anchors, then review actual adherence rather than treating invocation as compliance.
 
-Under **Coding-style admission**, Critic A guards the non-style boundary by consequence. False behavior, name/interface claims, security, root-cause analysis, test/proof/TDD obligations, or approved architecture, file-ownership, purpose, and interface contracts remain hard failures; they cannot be excused as style deviations. Guidance selecting among otherwise correct alternatives remains style.
+Enforce material style and quality rules, hard contracts in the admitted style record, and declared deviations. A missing or unverified style admission is blocking. A cosmetic-only issue is a NIT. Critic A must not edit, rewrite, or route its own fix. A style label cannot downgrade behavior, security, interface, test/proof, architecture, or ownership failures; those remain hard findings for Critic B or Critic C under their lenses.
 
 Tag-discipline audit: every factual claim in the implementer's submission must carry a T1-T5 tag per CODEX.md Claim Verification protocol. Untagged factual claim = REJECT.
 
-### Critic B — long-term health
+### Critic B — correctness/fidelity
 
-Different agent from Critic A.
+Critic B is an ordinary, non-authoritative reviewer and is distinct from Critic A and Critic C. Emit only issues affecting correctness, safety, or fidelity to the concrete text. Interface contract fulfillment — does every interface implementation actually work, not just compile? Polish and taste items are NITs at most.
+
+Under **Coding-style admission**, Critic B guards the non-style boundary by consequence. False behavior, name/interface claims, security, root-cause analysis, test/proof/TDD obligations, or approved architecture, file-ownership, purpose, and interface contracts remain hard failures; they cannot be excused as style deviations. Guidance selecting among otherwise correct alternatives remains style.
+
+Tag-discipline audit: every factual claim in the implementer's submission must carry a T1-T5 tag per CODEX.md Claim Verification protocol. Untagged factual claim = REJECT.
+
+### Critic C — long-term health
+
+Critic C is a fresh special `sol-high` reviewer, distinct from Critic A and Critic B. It reports findings only and never edits.
 
 Diff-only intention check:
 - Code diffs only. Skip when there is no code diff.
-- Before Packet 1, spawn a new blind Critic B with `fork_turns: "none"` and a self-contained Packet 1 prompt.
+- Before Packet 1, spawn a new blind Critic C with `fork_turns: "none"` and a self-contained Packet 1 prompt.
 - Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction.
 - Exclude original requirements, exact scope, ledger/task/design context, rationale, commit message, implementer or teammate summaries, and prior review output.
 - Output `reconstructed intention:` with 2-4 bullets covering apparent root reason and intended behavior change, then stop.
@@ -468,14 +482,14 @@ E2E capacity bottlenecked (device/browser/env slots, credentials, long setup): b
 
 ### Evaluating results
 
-Collect results from all three agents. Apply severity logic:
+Collect Critic A, Critic B, Critic C, and E2E results when applicable. Apply severity logic only after all required reports arrive:
 
-Critic B's coding-style reconciliation is part of the gate. Route a substantive admission invalidation or substantive drift through Steps 1 and 2; return a local or tool-covered delta to `critic-step2` before the next affected write. Then apply the existing severity logic below. Final acceptance requires reconciliation of actual changed scope, admission, approved deltas/deviations, and Tool evidence.
+Critic A's coding-style reconciliation is part of the gate. Route a substantive admission invalidation or substantive drift through Steps 1 and 2; return a local or tool-covered delta to `critic-step2` before the next affected write. Then apply the existing severity logic below. Final acceptance requires reconciliation of actual changed scope, admission, approved deltas/deviations, and Tool evidence.
 
-Pre-route gate findings before evaluation. Scope-creep debt queues with its scope-screen record regardless of deadline. For queued future work, verifiers require the exact source comment with its specific tracker reference when an affected source exists; otherwise require the specific tracker record. An in-scope gate defer is valid only when Critic A and Critic B independently confirm the same terminal `sealed-at <= deadline` and that requirement. Every other in-scope case is `treatment: now`.
+Pre-route gate findings before evaluation. Scope-creep debt queues with its scope-screen record regardless of deadline. For queued future work, verifiers require the exact source comment with its specific tracker reference when an affected source exists; otherwise require the specific tracker record. An in-scope gate defer is valid only when Critic A, Critic B, and Critic C independently confirm the same terminal `sealed-at <= deadline` and that requirement. Every other in-scope case is `treatment: now`.
 
 - At least one remaining substantive `now` REJECT or CONDITIONAL, OR an E2E failure caused by design/API uncertainty → batch all remaining `now` REJECTs, CONDITIONALs, and E2E failures into one design-revision issue list → return to Step 1/Step 2 explorer/designer-critic loop → Step 3 implements the selected revised design plus the full batch → re-run gate.
-- At least one remaining trivial `now` REJECT from Critic A or Critic B, OR any trivial E2E failure → fix all remaining `now` REJECTs, CONDITIONALs, and E2E failures in one implementer message → re-run gate.
+- At least one remaining trivial `now` REJECT from Critic A, Critic B, or Critic C, OR any trivial E2E failure → fix all remaining `now` REJECTs, CONDITIONALs, and E2E failures in one implementer message → re-run gate.
 - Zero remaining `now` REJECTs but only trivial `now` CONDITIONALs exist → fix them in one implementer message; deadline-qualified deferred work or scope-creep debt is recorded → gate passes (no re-run).
 - No remaining `now` issue → gate passes. `ignored-contradictory` directives, scope-creep debt, and deadline-qualified deferment open no repair, review, or cycle.
 
@@ -516,7 +530,7 @@ Fresh idea generator — fires on-demand when the cycle stalls. Output is raw id
 ### Constraints
 
 - Spawn as separate `brainstormer` agent; never message the explorer or implementer agent.
-- Must NOT be any other cycle agent (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E, brp-feasibility-validator, loop-breaker).
+- Must NOT be any other cycle agent (explorer, Step 2 critic, implementer, Critic A, Critic B, Critic C, E2E, brp-feasibility-validator, loop-breaker).
 - Each invocation is a new blind `spawn_agent` with `fork_turns: "none"` and a self-contained prompt.
 - Ideas only — `brp-feasibility-validator` filters BRP-triggered ideas.
 - Brainstormer output never goes directly to explorer/implementer after a BRP trigger; only validator-approved ideas may be routed onward.
@@ -546,7 +560,7 @@ A separate agent — not any of the cycle agents — gets one chance to break th
 ### Constraints
 
 - Spawn each loop-breaker invocation as a new blind agent with `fork_turns: "none"` and a self-contained prompt.
-- Must NOT be any of the 6 cycle agents (explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent).
+- Must NOT be any of the 7 cycle agents (explorer, Step 2 critic, implementer, Critic A, Critic B, Critic C, E2E agent).
 - Reads code and issues independently — no reliance on prior agent summaries.
 - Never ACCEPT with a remaining `now` issue or failed/missing original criterion, required E2E, or required proof.
 - One invocation per change. A granted retry fails or BLOCKED result -> create a protocol-limit blocker record, run `blocker-resolution-protocol`, and hard escalate only if BRP finds no feasible internal path or the blocker is user-owned.
@@ -628,6 +642,13 @@ Apply these scenarios within the nine counters above:
 - `keyless-new-evidence`: a missing event key neither resumes nor suppresses; new normalized source/test evidence changes the fingerprint and permits one new action.
 - `solvable-blocker`: a feasible internal ECI/BRP path exists; continue it and do not quiet or escalate.
 - `exhausted-concrete-user-owned-input`: BRP proves no feasible internal path and identifies unobtainable user-owned input/resource/decision; emit one blocker report/question, then quiet.
+- `go-style-admission`: a governed diff containing Go files, `go.mod`, or `go.sum` loads `go-coding-style`, resolves formatter/linter/config anchors, and checks material adherence; invocation alone is not compliance.
+- `non-go-style-admission`: a non-Go governed diff loads every matching installed coding-style skill and records missing or unverified admission as blocking.
+- `style-finding-no-edit`: Critic A reports a material style issue with evidence and leaves all edits to the implementer.
+- `cosmetic-style-nit`: a cosmetic-only style preference is classified as NIT and does not block the gate.
+- `hard-consequence-not-style`: behavior, security, interface, test/proof, architecture, or ownership failures remain hard Critic B/C findings and cannot be downgraded as style.
+- `omitted-required-critic`: an absent Critic A, B, or C report routes back to spawning that exact fresh blind critic; no gate, commit, or teardown proceeds.
+- `stale-diff-report`: a report whose bound diff SHA-256 or child identity does not match the current manifest is unverified and cannot satisfy the gate.
 
 ## Red flags
 
@@ -635,8 +656,8 @@ Apply these scenarios within the nine counters above:
 |---------|-----|
 | Implementing 2+ changes before re-critiquing | Stop. One at a time |
 | "Good enough" at cycle 3 | Invoke loop-breaker, don't settle or force |
-| Any two of {explorer, Step 2 critic, implementer, Critic A, Critic B, E2E agent, brainstormer, brp-feasibility-validator, loop-breaker} are the same agent | Banned. Up to nine distinct agents (six per normal cycle + brainstormer/validator for BRP + loop-breaker at limits) |
-| Review-gate Critic A returned before Critic B was spawned | Sequential gate. Spawn Critic A + Critic B (+ E2E when in scope) in one message with parallel `spawn_agent` tool calls; do not serialize even if one critic's view seems sufficient. |
+| Any two of {explorer, Step 2 critic, implementer, Critic A, Critic B, Critic C, E2E agent, brainstormer, brp-feasibility-validator, loop-breaker} are the same agent | Banned. Up to ten distinct agents (seven per normal cycle + brainstormer/validator for BRP + loop-breaker at limits) |
+| Review-gate Critic A returned before Critic B or Critic C was spawned | Sequential gate. Spawn Critic A + Critic B + Critic C (+ E2E when in scope) in one message with parallel `spawn_agent` tool calls; do not serialize even if one critic's view seems sufficient. |
 | Task/round-specific role labels (`critic-r3`, `e2e-gate-7`) used instead of reusable role slots | STOP. Use stable labels (`critic-step2`, `e2e-gate`) and put round/gate details in the assignment. |
 | Skipping E2E inside loop | E2E is part of the review gate — runs every iteration, not at the end |
 | Skipping exploration or critique for later iterations | Every iteration runs all four steps — none are optional |
@@ -650,11 +671,11 @@ Apply these scenarios within the nine counters above:
 | New producer spawned although its prior role is idle/addressable | Use `followup_task` with a self-contained assignment. `send_message` is only for a currently running turn. |
 | Critic absorbed pre-routed work by rewriting option | STOP. Critic tags only — orchestrator folds only `treatment: now` text into Step 3. |
 | Orchestrator forgot pre-routing or the `now` fix-list | STOP. Include the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer; include only `treatment: now` fixes in Step 3. |
-| Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B rule). |
+| Submission accepted with untagged factual claims | STOP. Tag-audit failure = REJECT in current gate (per Critic A/B/C rule). |
 | A matching coding-style skill was loaded, but no independent admission exists | STOP. Invocation is not compliance; complete the applicable record and Step 2 admission before durable work. |
 | Durable work starts before admission, or affected work continues after scope/source/conflict/deviation drift | STOP affected work. Isolated disposable work may continue under the stated boundary; route local/tool-covered deltas to `critic-step2` and substantive drift through Steps 1/2. |
 | Empty Style Brief, bare no-source claim, or rule-by-rule style inventory | STOP. Use only the applicable admission route with exact discovery anchors and grouped material decisions. |
-| A false correctness, security, RCA, testing/proof/TDD, or approved architecture/ownership/purpose/interface result is labeled a style deviation | STOP. Critic A treats it as the corresponding hard non-style failure. |
+| A false correctness, security, RCA, testing/proof/TDD, or approved architecture/ownership/purpose/interface result is labeled a style deviation | STOP. Critic B or Critic C treats it as the corresponding hard non-style failure. |
 | Hook/protocol/reviewer wording claims a heuristic proves, classifies, or determines task nature without matching mechanism evidence and boundary tests | STOP. Reword to the strongest supported claim and add negative/boundary pressure. |
 | Code/debugging submission lacks root-cause rationale or required regression explanation | STOP. Bounce before gate; unknown "why" means unsubmittable. |
 | Bug RCA prompt lacks regression report path or previous/current test-run evidence packet | STOP. Write/update the report artifact, then resend the RCA assignment. |
