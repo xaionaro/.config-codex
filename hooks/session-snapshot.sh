@@ -72,7 +72,14 @@ prune_marker_dirs "$root/skip-stop/sessions" skip_stop
 prune_marker_dirs "$root/skip-stop/cwd" skip_stop
 prune_marker_dirs "$root/side-stop/sessions" side_stop
 
-jq -n --arg ctx 'Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.' '{
+ctx='Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.'
+eci_marker="$proof_dir/eci_active"
+if [ -d "$proof_dir" ] && [ ! -L "$proof_dir" ] &&
+    [ -f "$eci_marker" ] && [ ! -L "$eci_marker" ]; then
+  ctx='ECI is active. ECI refresh signal (not proof of compaction): after compaction, the coordinator/lead must immediately re-read the entire skills/explore-critique-implement/SKILL.md and re-invoke it before the next decision/tool.'
+fi
+
+jq -n --arg ctx "$ctx" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: $ctx
