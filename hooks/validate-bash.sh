@@ -156,6 +156,23 @@ command_invokes_eci_off() {
     '
 }
 
+command_invokes_eci_wait_or_resume() {
+  printf '%s' "$1" |
+    tr "\"';&|()" '       ' |
+    awk '
+      {
+        for (i = 1; i < NF; i++) {
+          token = $i
+          sub(/^.*\//, "", token)
+          if (token == "eci-active" && $(i + 1) ~ /^(wait|resume)$/) {
+            found = 1
+          }
+        }
+      }
+      END { exit found ? 0 : 1 }
+    '
+}
+
 git_reset_dirs() {
   python3 - "$command" "${cwd:-$PWD}" <<'PY'
 import os
@@ -877,6 +894,10 @@ fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_off "$command"; then
   deny 'Only the main thread/orchestrator may disengage ECI with eci-active off. Subagents must report completion or blockers to the orchestrator while ECI remains active.'
+fi
+
+if [ "$hook_is_subagent" = true ] && command_invokes_eci_wait_or_resume "$command"; then
+  deny 'Only the coordinator may create or clear the validated ECI user-owned wait state. Subagents must report the BRP result and concrete user-owned unblock to the orchestrator.'
 fi
 
 enforce_git_reset_gate

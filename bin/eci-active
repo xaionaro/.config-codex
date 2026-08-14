@@ -11,6 +11,8 @@ usage() {
 Usage:
   eci-active on "<task + scope>"
   eci-active off <disengage-report.md>
+  eci-active wait <user-owned-wait-report.md>
+  eci-active resume <new-state-fingerprint>
   eci-active status
 
 Set CODEX_SESSION_ID, or CODEX_THREAD_ID when CODEX_SESSION_ID is
@@ -175,6 +177,156 @@ scope_has_control_bytes() {
   LC_ALL=C printf '%s' "$scope" | LC_ALL=C grep -q '[[:cntrl:]]'
 }
 
+require_coordinator() {
+  [ "${CODEX_ROLE:-}" = "coordinator" ] || {
+    echo "Only the coordinator may create or clear ECI user-owned wait state." >&2
+    return 1
+  }
+}
+
+wait_text_is_safe() {
+  local value="${1:-}"
+
+  [ -n "$value" ] || return 1
+  if LC_ALL=C printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    return 1
+  fi
+  return 0
+}
+
+validate_active_marker() {
+  local root="$1"
+  local session_id="$2"
+  local dir="$root/$session_id"
+  local marker="$dir/eci_active"
+
+  validate_session_dir "$root" "$session_id" || return 1
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  printf '%s\n' "$marker"
+}
+
+validate_eci_wait_report() {
+  local report="$1"
+  local last_byte
+  local -a lines=()
+
+  [ -n "$report" ] || return 1
+  [ -f "$report" ] && [ ! -L "$report" ] || {
+    echo "ECI user-owned wait report must be a regular, non-symlink file: $report" >&2
+    return 1
+  }
+  if ! last_byte="$(tail -c 1 -- "$report" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"; then
+    return 1
+  fi
+  [ "$last_byte" = "0a" ] || {
+    echo "ECI user-owned wait report must end with one final LF: $report" >&2
+    return 1
+  }
+  mapfile -t lines <"$report" || return 1
+  [ "${#lines[@]}" -eq 8 ] || {
+    echo "ECI user-owned wait report has a non-canonical line count: $report" >&2
+    return 1
+  }
+  [ "${lines[0]}" = "# ECI User-Owned Wait" ] || return 1
+  [ "${lines[1]}" = "state: user-owned-wait" ] || return 1
+
+  wait_blocker_id="${lines[2]#blocker_id: }"
+  wait_state_fingerprint="${lines[3]#state_fingerprint: }"
+  wait_owner="${lines[4]#owner: }"
+  wait_brp_result="${lines[5]#brp_result: }"
+  wait_user_owned_input="${lines[6]#user_owned_input: }"
+  wait_unblock="${lines[7]#unblock: }"
+  [[ "${lines[2]}" == blocker_id:\ * ]] || return 1
+  [[ "${lines[3]}" == state_fingerprint:\ * ]] || return 1
+  [[ "${lines[4]}" == owner:\ * ]] || return 1
+  [[ "${lines[5]}" == brp_result:\ * ]] || return 1
+  [[ "${lines[6]}" == user_owned_input:\ * ]] || return 1
+  [[ "${lines[7]}" == unblock:\ * ]] || return 1
+  [[ "$wait_blocker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$wait_state_fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ "$wait_owner" = user ] || return 1
+  [ "$wait_brp_result" = exhausted-no-feasible-internal-path ] || return 1
+  [ "$wait_user_owned_input" = unobtainable ] || return 1
+  wait_text_is_safe "$wait_unblock" || return 1
+  case "$wait_unblock" in
+    *input*|*resource*|*decision*) ;;
+    *) return 1 ;;
+  esac
+  command -v sha256sum >/dev/null 2>&1 || {
+    echo "sha256sum is required to validate the ECI user-owned wait report." >&2
+    return 1
+  }
+  wait_report_sha256="$(sha256sum -- "$report" | awk '{print $1}')" || return 1
+  [[ "$wait_report_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+}
+
+validate_eci_wait_state() {
+  local state="$1"
+  local last_byte
+  local -a lines=()
+
+  [ -f "$state" ] && [ ! -L "$state" ] || return 1
+  if ! last_byte="$(tail -c 1 -- "$state" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"; then
+    return 1
+  fi
+  [ "$last_byte" = "0a" ] || return 1
+  mapfile -t lines <"$state" || return 1
+  [ "${#lines[@]}" -eq 8 ] || return 1
+  [ "${lines[0]}" = "state: user-owned-wait" ] || return 1
+  wait_blocker_id="${lines[1]#blocker_id: }"
+  wait_state_fingerprint="${lines[2]#state_fingerprint: }"
+  wait_owner="${lines[3]#owner: }"
+  wait_brp_result="${lines[4]#brp_result: }"
+  wait_user_owned_input="${lines[5]#user_owned_input: }"
+  wait_unblock="${lines[6]#unblock: }"
+  wait_report_sha256="${lines[7]#report_sha256: }"
+  [[ "${lines[1]}" == blocker_id:\ * ]] || return 1
+  [[ "${lines[2]}" == state_fingerprint:\ * ]] || return 1
+  [[ "${lines[3]}" == owner:\ * ]] || return 1
+  [[ "${lines[4]}" == brp_result:\ * ]] || return 1
+  [[ "${lines[5]}" == user_owned_input:\ * ]] || return 1
+  [[ "${lines[6]}" == unblock:\ * ]] || return 1
+  [[ "${lines[7]}" == report_sha256:\ * ]] || return 1
+  [[ "$wait_blocker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$wait_state_fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ "$wait_owner" = user ] || return 1
+  [ "$wait_brp_result" = exhausted-no-feasible-internal-path ] || return 1
+  [ "$wait_user_owned_input" = unobtainable ] || return 1
+  wait_text_is_safe "$wait_unblock" || return 1
+  case "$wait_unblock" in
+    *input*|*resource*|*decision*) ;;
+    *) return 1 ;;
+  esac
+  [[ "$wait_report_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+}
+
+write_eci_wait_state() {
+  local state="$1"
+
+  if [ -e "$state" ] || [ -L "$state" ]; then
+    echo "ECI user-owned wait state already exists or is unsafe: $state" >&2
+    return 1
+  fi
+  if ! (
+    set -C
+    {
+      printf 'state: user-owned-wait\n'
+      printf 'blocker_id: %s\n' "$wait_blocker_id"
+      printf 'state_fingerprint: %s\n' "$wait_state_fingerprint"
+      printf 'owner: user\n'
+      printf 'brp_result: exhausted-no-feasible-internal-path\n'
+      printf 'user_owned_input: unobtainable\n'
+      printf 'unblock: %s\n' "$wait_unblock"
+      printf 'report_sha256: %s\n' "$wait_report_sha256"
+    } >"$state"
+  ); then
+    echo "ECI user-owned wait state could not be created: $state" >&2
+    return 1
+  fi
+  [ -f "$state" ] && [ ! -L "$state" ] || return 1
+}
+
 cmd="${1:-}"
 case "$cmd" in
   on)
@@ -203,6 +355,10 @@ case "$cmd" in
       echo "ECI marker already exists or is unsafe: $marker" >&2
       exit 1
     fi
+    if [ -e "$session_dir/eci_wait" ] || [ -L "$session_dir/eci_wait" ]; then
+      echo "ECI user-owned wait state already exists or is unsafe: $session_dir/eci_wait" >&2
+      exit 1
+    fi
     if ! (
       set -C
       {
@@ -217,6 +373,63 @@ case "$cmd" in
     fi
     remove_legacy_eci_markers_for_cwd "$marker"
     printf 'ECI active: %s\n' "$marker"
+    ;;
+  wait)
+    shift
+    report="${1:-}"
+    [ "$#" -eq 1 ] || { usage; exit 2; }
+    require_coordinator || exit 1
+    session_dir="$(resolve_session_dir)" || {
+      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+      exit 1
+    }
+    marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
+      echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
+      exit 1
+    }
+    validate_eci_wait_report "$report" || {
+      echo "ECI user-owned wait report validation failed: $report" >&2
+      exit 1
+    }
+    write_eci_wait_state "$session_dir/eci_wait" || exit 1
+    printf 'ECI user-owned wait state armed: %s\n' "$session_dir/eci_wait"
+    ;;
+  resume)
+    shift
+    new_fingerprint="${1:-}"
+    [ "$#" -eq 1 ] || { usage; exit 2; }
+    require_coordinator || exit 1
+    [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]] || {
+      echo "ECI resume fingerprint must be 64 lowercase hexadecimal characters." >&2
+      exit 1
+    }
+    session_dir="$(resolve_session_dir)" || {
+      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+      exit 1
+    }
+    marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
+      echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
+      exit 1
+    }
+    wait_state="$session_dir/eci_wait"
+    [ ! -L "$wait_state" ] || {
+      echo "ECI user-owned wait state is a symlink; refusing to use it: $wait_state" >&2
+      exit 1
+    }
+    validate_eci_wait_state "$wait_state" || {
+      echo "ECI user-owned wait state is missing or invalid: $wait_state" >&2
+      exit 1
+    }
+    [ "$new_fingerprint" != "$wait_state_fingerprint" ] || {
+      echo "ECI resume fingerprint is unchanged; provide materially changed normalized content." >&2
+      exit 1
+    }
+    rm -f "$wait_state"
+    [ ! -e "$wait_state" ] && [ ! -L "$wait_state" ] || {
+      echo "ECI user-owned wait state could not be cleared: $wait_state" >&2
+      exit 1
+    }
+    printf 'ECI user-owned wait state cleared for materially changed content: %s\n' "$marker"
     ;;
   off)
     report="${2:-}"
@@ -239,7 +452,23 @@ case "$cmd" in
       markers+=("$legacy_marker")
     done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
     [ "${#markers[@]}" -gt 0 ] || { echo "ECI marker is not active: $marker" >&2; exit 1; }
+    wait_state="$session_dir/eci_wait"
+    [ ! -L "$wait_state" ] || {
+      echo "ECI user-owned wait state is a symlink; refusing to remove it: $wait_state" >&2
+      exit 1
+    }
+    if [ -e "$wait_state" ] && [ ! -f "$wait_state" ]; then
+      echo "ECI user-owned wait state is not a regular file: $wait_state" >&2
+      exit 1
+    fi
+    if [ -f "$wait_state" ]; then
+      validate_eci_wait_state "$wait_state" || {
+        echo "ECI user-owned wait state is invalid: $wait_state" >&2
+        exit 1
+      }
+    fi
     validate_disengage_report "$report"
+    [ -f "$wait_state" ] && rm -f "$wait_state"
     rm -f "${markers[@]}"
     printf 'ECI inactive. Disengage report validated: %s\n' "$report"
     ;;
