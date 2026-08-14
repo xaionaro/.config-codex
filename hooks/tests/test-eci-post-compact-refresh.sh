@@ -87,12 +87,45 @@ test_post_compact_rejects_malformed_session_or_cwd() {
   [ ! -s "$out" ]
 }
 
+test_post_compact_requires_event_and_trigger_contract() {
+  local proof_root="$TMP_ROOT/event-contract-proof" out
+  mkdir -p "$proof_root/t00-session"
+  printf '%s\n' 'scope: event contract' >"$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/event-contract.out"
+  jq -cn --arg cwd "$ROOT" '{hook_event_name:"SessionStart",session_id:"t00-session",cwd:$cwd}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
+  [ ! -s "$out" ]
+  jq -cn --arg cwd "$ROOT" '{hook_event_name:"PostCompact",trigger:"timer",session_id:"t00-session",cwd:$cwd}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
+  [ ! -s "$out" ]
+  jq -cn --arg cwd "$ROOT" '{hook_event_name:"PostCompact",trigger:"manual",session_id:"t00-session",cwd:$cwd}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
+  jq -e '.hookSpecificOutput.hookEventName == "PostCompact"' "$out" >/dev/null
+}
+
+test_post_compact_nested_marker_is_explicit_and_bounded() {
+  local proof_root="$TMP_ROOT/nested-proof" out
+  mkdir -p "$proof_root/t00-session"
+  printf 'outer_session_id: t00-session\nstep: 2\niteration: 3\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  out="$TMP_ROOT/nested.out"
+  run_post_compact "$proof_root" "$out"
+  jq -e '.hookSpecificOutput.additionalContext | contains("PostCompact ECI refresh signal")' "$out" >/dev/null
+  printf 'outer_session_id: wrong-session\nstep: 2\niteration: 3\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  run_post_compact "$proof_root" "$out"
+  [ ! -s "$out" ]
+}
+
 test_post_compact_hook_is_registered_and_session_start_is_restricted() {
   jq -e '
     (.hooks.SessionStart | all(.matcher == "startup|resume|clear")) and
     ([.hooks.PostCompact[]?.hooks[]?.command]
       | any(contains("/hooks/eci-post-compact-refresh.sh")))
   ' "$ROOT/hooks.json" >/dev/null
+  grep -Fq '[hooks.state."/home/pheona/.codex/hooks.json:post_compact:0:0"]' "$ROOT/config.toml"
+  grep -Fq 'trusted_hash = "sha256:345b8572ed36ac7a7415b2415d34e05c2c4b6d6c158c02876e75308184dfd1a0"' "$ROOT/config.toml"
 }
 
 test_policy_names_post_compact_authority_and_exact_manifest_schema() {
@@ -103,8 +136,10 @@ test_policy_names_post_compact_authority_and_exact_manifest_schema() {
     grep -Fq 'PostCompact` is the authoritative compaction refresh signal' "$skill"
     grep -Fq 'SessionStart` `startup|resume|clear`' "$skill"
     grep -Fq 'best-effort resume/clear reminder' "$skill"
+    grep -Fq '"schema":"eci-required-critics/v1"' "$skill"
+    grep -Fq 'each target record is ordered `{target_id,target_kind,diff_artifact,diff_sha256,e2e_required}`' "$skill"
     grep -Fq '"target_id":string,"target_kind":"root|subtask|candidate-fix"' "$skill"
-    grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex,"critic_role":"A|B|C","child_identity":string' "$skill"
+    grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex,"critic_role":"A|B|C","gate_phase":"prewrite|postwrite","child_identity":string' "$skill"
     grep -Fq '"spawn_request_artifact":string,"spawn_request_sha256":lowercase64hex,"report_artifact":string,"report_sha256":lowercase64hex' "$skill"
     grep -Fq '"verdict":string,"e2e_required":boolean,"e2e_artifact":string|null,"e2e_sha256":lowercase64hex|null' "$skill"
     grep -Fq 'Critic C pre-write skip-design admission report' "$skill"
@@ -126,6 +161,8 @@ test_post_compact_inactive_eci_is_silent
 test_post_compact_symlink_marker_is_silent
 test_post_compact_does_not_scan_or_mutate_state
 test_post_compact_rejects_malformed_session_or_cwd
+test_post_compact_requires_event_and_trigger_contract
+test_post_compact_nested_marker_is_explicit_and_bounded
 test_post_compact_hook_is_registered_and_session_start_is_restricted
 test_policy_names_post_compact_authority_and_exact_manifest_schema
 printf '%s\n' 'PostCompact ECI refresh tests: PASS'

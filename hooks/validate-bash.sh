@@ -294,6 +294,110 @@ sys.exit(0 if found else 1)
 PY
 }
 
+command_invokes_git_commit() {
+  python3 - "$1" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+operators = {";", "&", "&&", "|", "||", "(", ")"}
+
+
+def tokenize(value):
+    lexer = shlex.shlex(value, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def segments(tokens):
+    result, current = [], []
+    for token in tokens + [";"]:
+        if token in operators:
+            if current:
+                result.append(current)
+            current = []
+        else:
+            current.append(token)
+    return result
+
+
+def assignment(token):
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+
+
+def skip_options(segment, index, with_argument=(), without_argument=()):
+    with_argument = set(with_argument)
+    without_argument = set(without_argument)
+    while index < len(segment):
+        token = segment[index]
+        if token == "--":
+            return index + 1
+        if token in with_argument:
+            index += 2
+        elif any(token.startswith(option + "=") for option in with_argument):
+            index += 1
+        elif token in without_argument or token.startswith("-"):
+            index += 1
+        else:
+            break
+    return index
+
+
+def inspect(segment, depth=0):
+    if depth > 4:
+        return False
+    index = 0
+    while index < len(segment) and assignment(segment[index]):
+        index += 1
+    if index >= len(segment):
+        return False
+    command = os.path.basename(segment[index])
+    if command == "env":
+        index = skip_options(segment, index + 1, with_argument={"-C", "--chdir", "-u", "--unset"}, without_argument={"-i", "--ignore-environment"})
+        while index < len(segment) and assignment(segment[index]):
+            index += 1
+        return inspect(segment[index:], depth + 1)
+    if command in {"command", "builtin", "exec"}:
+        args = {"command": ((), ("-p", "-v", "-V")), "builtin": ((), ()), "exec": (("-a",), ("-c", "-l"))}[command]
+        index = skip_options(segment, index + 1, with_argument=args[0], without_argument=args[1])
+        return inspect(segment[index:], depth + 1)
+    if command in {"timeout", "nice", "chronic", "systemd-run", "prlimit", "time"}:
+        index = skip_options(segment, index + 1, with_argument={"-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-p", "--property", "--unit", "--setenv", "--working-directory", "-C", "--chdir"}, without_argument={"--foreground", "--preserve-status", "--scope", "--user", "--system", "--wait", "--pipe", "--quiet"})
+        if command == "timeout" and index < len(segment):
+            index += 1
+        return inspect(segment[index:], depth + 1)
+    if command in {"bash", "sh", "dash", "zsh"}:
+        for option_index, option in enumerate(segment[index + 1:], index + 1):
+            if option in {"-c", "-lc", "-cl"} or (option.startswith("-") and not option.startswith("--") and "c" in option[1:]):
+                if option_index + 1 >= len(segment):
+                    return False
+                return any(inspect(part, depth + 1) for part in segments(tokenize(segment[option_index + 1])))
+        return False
+    if command != "git":
+        return False
+    index += 1
+    while index < len(segment):
+        token = segment[index]
+        if token in {"-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "--exec-path"} and index + 1 < len(segment):
+            index += 2
+        elif token.startswith("--") and "=" in token:
+            index += 1
+        elif token.startswith("-"):
+            index += 1
+        else:
+            return token == "commit"
+    return False
+
+
+try:
+    found = any(inspect(part) for part in segments(tokenize(sys.argv[1])))
+except (TypeError, ValueError):
+    found = False
+sys.exit(0 if found else 1)
+PY
+}
+
 git_reset_dirs() {
   python3 - "$command" "${cwd:-$PWD}" <<'PY'
 import os
@@ -1019,6 +1123,18 @@ fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_wait_or_resume "$command"; then
   deny 'Only the main/orchestrator may create or clear the validated ECI user-owned wait state. Subagents must report the BRP result and concrete user-owned unblock to the orchestrator.'
+fi
+
+if [ "$hook_is_subagent" != true ] && command_invokes_git_commit "$command"; then
+  review_marker="$(codex_proof_root)/$session_id/eci_active"
+  if codex_valid_session_id "$session_id" &&
+    codex_session_dir_is_safe "$(codex_proof_root)" "$session_id" &&
+    [ -f "$review_marker" ] && [ ! -L "$review_marker" ]; then
+    review_gate_error=""
+    if ! review_gate_error="$("$HOOK_DIR/eci-review-gate.sh" commit "$session_id" 2>&1)"; then
+      deny "ECI commit boundary denied: $review_gate_error"
+    fi
+  fi
 fi
 
 enforce_git_reset_gate

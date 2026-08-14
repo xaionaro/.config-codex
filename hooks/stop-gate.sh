@@ -1092,6 +1092,15 @@ if [ -f "$proof" ]; then
     rm -f "$audit_hashes"
   fi
 
+  if { [ -f "$proof_dir/eci_active" ] && [ ! -L "$proof_dir/eci_active" ]; } ||
+    [ -e "$proof_dir/eci-required-critics.json" ] ||
+    codex_markdown_section_has_body "$proof" "ECI completion certificate"; then
+    review_gate_error=""
+    if ! review_gate_error="$("$HOOK_DIR/eci-review-gate.sh" final "$session_id" 2>&1)"; then
+      block_proof_validation "Required ECI critic manifest rejected at final-proof acceptance: $review_gate_error"
+    fi
+  fi
+
   activity_dir=$(codex_session_state_dir activity "$session_id" 2>/dev/null || true)
   task_dir=$(codex_session_state_dir active-task "$session_id" 2>/dev/null || true)
   [ -n "$activity_dir" ] && rm -rf "$activity_dir"

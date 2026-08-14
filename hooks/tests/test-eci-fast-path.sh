@@ -33,7 +33,7 @@ printf '%s\n' 'created_utc: probe' >"$proof_root/activity/sessions/recursive-ses
 jq -n --arg cwd "$ROOT" \
   '{session_id:"recursive-session", transcript_path:"/tmp/nonexistent-codex-transcript.jsonl", stop_hook_active:true, cwd:$cwd}' \
   >"$recursive_input"
-env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$proof_root" \
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_TMPDIR="$tmp/recursive-tmp" CODEX_PROOF_ROOT="$proof_root" \
   bash "$ROOT/hooks/stop-gate.sh" <"$recursive_input" >"$recursive_out"
 [ "$(jq -r '.continue // empty' "$recursive_out")" = true ]
 [ ! -e "$proof_root/activity/sessions/recursive-session/shell" ]
@@ -49,22 +49,32 @@ done
 run_concurrent() {
   local workers="$1"
   local worker_dir="$tmp/workers-$workers"
-  local start_ns end_ns wall_ms worker_ms worker_max=0
+  local start_ns end_ns wall_ms worker_ms worker_max=0 batch_size
   local i pid
   local -a pids=()
 
   mkdir -p "$worker_dir"
+  # Keep the probe itself from saturating a small CI host: 80 total callbacks
+  # still exercise concurrent waves, while each callback's wall time remains
+  # a useful latency signal rather than scheduler queue time.
+  batch_size=32
   start_ns="$(date +%s%N)"
   for i in $(seq 1 "$workers"); do
     (
       local_start="$(date +%s%N)"
       env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$proof_root" \
         bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$worker_dir/$i.out"
-      [ "$(jq -r '.decision // empty' "$worker_dir/$i.out")" = block ]
       local_end="$(date +%s%N)"
       printf '%s\n' "$(( (local_end - local_start) / 1000000 ))" >"$worker_dir/$i.ms"
+      [ "$(jq -r '.decision // empty' "$worker_dir/$i.out")" = block ]
     ) &
     pids+=("$!")
+    if [ "${#pids[@]}" -ge "$batch_size" ]; then
+      for pid in "${pids[@]}"; do
+        wait "$pid"
+      done
+      pids=()
+    fi
   done
   for pid in "${pids[@]}"; do
     wait "$pid"
@@ -226,7 +236,8 @@ env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$swap_parent_root
 # The active path must not create/update recovery state or generic callback
 # counters.  The only proof-root file is the marker itself.
 [ ! -e "$proof_root/t00-session/stop_timestamps" ]
-[ "$(find "$proof_root" -type f ! -name eci_active -print -quit)" = "" ]
+found_state="$(find "$proof_root" -type f ! -name eci_active -print -quit)"
+[ -z "$found_state" ]
 [ ! -e "$home/tmp" ]
 
 if command -v strace >/dev/null 2>&1; then

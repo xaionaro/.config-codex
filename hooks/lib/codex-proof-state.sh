@@ -12,6 +12,79 @@ codex_valid_session_id() {
   esac
 }
 
+# State writers use these no-follow final-component checks before mkdir or
+# marker mutation.  Ancestor cache symlinks are allowed when they resolve to
+# directories; the configured proof root and session directory themselves may
+# not be symlinks or non-directories.
+codex_proof_root_is_safe() {
+  local root parent
+
+  root="$(codex_proof_root)"
+  case "$root" in
+    ""|*[![:print:]]*) return 1 ;;
+    /*) ;;
+    *) return 1 ;;
+  esac
+  parent="$(dirname -- "$root")"
+  [ ! -L "$root" ] || return 1
+  if [ -e "$root" ] || [ -L "$root" ]; then
+    [ -d "$root" ] || return 1
+  fi
+  if [ -e "$parent" ] || [ -L "$parent" ]; then
+    [ -d "$parent" ] || return 1
+  fi
+  return 0
+}
+
+codex_state_path_is_safe() {
+  local path="$1"
+  local root="$2"
+  local rest component current
+
+  codex_proof_root_is_safe || return 1
+  [ "$root" = "$(codex_proof_root)" ] || return 1
+  case "$path" in
+    "$root"/*) rest="${path#"$root"/}" ;;
+    *) return 1 ;;
+  esac
+  current="$root"
+  while [ -n "$rest" ]; do
+    component="${rest%%/*}"
+    [ -n "$component" ] || return 1
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+    if [ -e "$current" ]; then
+      [ -d "$current" ] || return 1
+    fi
+    if [ "$rest" = "$component" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
+  done
+}
+
+codex_session_dir_is_safe() {
+  local root="$1"
+  local session_id="$2"
+  local dir
+
+  codex_valid_session_id "$session_id" || return 1
+  [ "$root" = "$(codex_proof_root)" ] || return 1
+  codex_proof_root_is_safe || return 1
+  dir="$root/$session_id"
+  [ ! -L "$dir" ] || return 1
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    [ -d "$dir" ] || return 1
+  fi
+  return 0
+}
+
+codex_eci_lock_path() {
+  codex_proof_root_is_safe || return 1
+  printf '%s/.eci-active.lock\n' "$(codex_proof_root)"
+}
+
 codex_reserved_proof_dir() {
   case "${1:-}" in
     activity|audit|eci|history|pre-reviewer|reviewer|reviewer-dumps|security-warnings-*|side-stop|skip-stop|skills)
@@ -131,14 +204,22 @@ codex_cwd_key() {
 codex_session_state_dir() {
   local kind="$1"
   local session_id="$2"
+  local dir
   codex_valid_session_id "$session_id" || return 1
-  printf '%s/%s/sessions/%s\n' "$(codex_proof_root)" "$kind" "$session_id"
+  codex_proof_root_is_safe || return 1
+  dir="$(codex_proof_root)/$kind/sessions/$session_id"
+  codex_state_path_is_safe "$dir" "$(codex_proof_root)" || return 1
+  printf '%s\n' "$dir"
 }
 
 codex_cwd_state_dir() {
   local kind="$1"
   local cwd="${2:-$PWD}"
-  printf '%s/%s/cwd/%s\n' "$(codex_proof_root)" "$kind" "$(codex_cwd_key "$cwd")"
+  local dir
+  codex_proof_root_is_safe || return 1
+  dir="$(codex_proof_root)/$kind/cwd/$(codex_cwd_key "$cwd")"
+  codex_state_path_is_safe "$dir" "$(codex_proof_root)" || return 1
+  printf '%s\n' "$dir"
 }
 
 codex_ensure_cwd_state_dir() {
@@ -147,6 +228,7 @@ codex_ensure_cwd_state_dir() {
   local dir
   dir="$(codex_cwd_state_dir "$kind" "$cwd")" || return 1
   mkdir -p "$dir" || return 1
+  codex_state_path_is_safe "$dir" "$(codex_proof_root)" || return 1
   codex_canonical_cwd "$cwd" >"$dir/cwd"
   printf '%s\n' "$dir"
 }
@@ -158,7 +240,10 @@ codex_cli_state_dir() {
 
   if [ -n "${CODEX_SESSION_ID:-}" ]; then
     dir="$(codex_session_state_dir "$kind" "$CODEX_SESSION_ID")" || return 1
-    [ "$create" = "true" ] && mkdir -p "$dir"
+    if [ "$create" = "true" ]; then
+      mkdir -p "$dir" || return 1
+      codex_state_path_is_safe "$dir" "$(codex_proof_root)" || return 1
+    fi
     printf '%s\n' "$dir"
     return 0
   fi
@@ -200,7 +285,11 @@ codex_existing_state_file() {
 
   if codex_valid_session_id "$session_id"; then
     path="$(codex_proof_root)/$session_id/$filename"
-    [ -f "$path" ] && { printf '%s\n' "$path"; return 0; }
+    if codex_session_dir_is_safe "$(codex_proof_root)" "$session_id" &&
+      [ -f "$path" ] && [ ! -L "$path" ]; then
+      printf '%s\n' "$path"
+      return 0
+    fi
   fi
 
   return 1
@@ -349,6 +438,7 @@ codex_legacy_eci_markers_for_cwd() {
 
   [ -n "$cwd" ] || return 1
   root="$(codex_proof_root)"
+  codex_proof_root_is_safe || return 1
   [ -d "$root" ] || return 1
   canonical_cwd="$(codex_canonical_cwd "$cwd")"
 

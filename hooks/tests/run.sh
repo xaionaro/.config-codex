@@ -6642,8 +6642,8 @@ test_eci_active_off_rejects_hard_escalation_report() {
     grep -q "clean-pass: or user-closed:" "$out.err"
 }
 
-test_eci_active_off_accepts_user_closed_report() {
-  local proof_root out report marker
+test_eci_active_off_requires_critic_manifest() {
+  local proof_root out report marker status
   proof_root="$(fresh_proof_root eci-off-user-closed)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-user-closed-on.out" 2>&1 || return 1
   report="$TMP_ROOT/eci-off-user-closed.md"
@@ -6652,11 +6652,12 @@ test_eci_active_off_accepts_user_closed_report() {
   [ -s "$marker" ] || return 1
 
   out="$TMP_ROOT/eci-off-user-closed.out"
-  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$report" >"$out" 2>"$out.err" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" off "$report" >"$out" 2>"$out.err"
+  status=$?
 
-  [ ! -e "$marker" ] &&
-    [ ! -e "$proof_root/t00-session/proof.md" ] &&
-    grep -q "ECI inactive" "$out"
+  [ "$status" -ne 0 ] &&
+    [ -s "$marker" ] &&
+    grep -q "manifest" "$out.err"
 }
 
 test_eci_active_off_rejects_mixed_hard_escalation_report() {
@@ -6868,8 +6869,8 @@ test_eci_active_status_uses_legacy_reserved_marker_same_cwd() {
     grep -q "session_id: pre-reviewer" "$out"
 }
 
-test_eci_active_off_removes_legacy_reserved_marker_same_cwd() {
-  local proof_root out
+test_eci_active_off_requires_manifest_for_legacy_marker_same_cwd() {
+  local proof_root out status
   proof_root="$(fresh_proof_root eci-off-legacy-reserved)"
   mkdir -p "$proof_root/pre-reviewer" || return 1
   {
@@ -6880,10 +6881,12 @@ test_eci_active_off_removes_legacy_reserved_marker_same_cwd() {
   out="$TMP_ROOT/eci-off-legacy-reserved.out"
 
   env -u CODEX_SESSION_ID CODEX_THREAD_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
-    "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err" || return 1
+    "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err"
+  status=$?
 
-  [ ! -e "$proof_root/pre-reviewer/eci_active" ] &&
-    grep -q "ECI inactive" "$out"
+  [ "$status" -ne 0 ] &&
+    [ -s "$proof_root/pre-reviewer/eci_active" ] &&
+    grep -q "manifest" "$out.err"
 }
 
 test_eci_active_on_uses_newest_session_without_session_id() {
@@ -6947,7 +6950,7 @@ test_eci_active_on_ignores_reserved_dirs_without_session_id() {
     grep -q "ECI active: $proof_root/019df400-0000-7000-8000-000000000001/eci_active" "$out"
 }
 
-test_eci_active_off_uses_newest_session_without_session_id() {
+test_eci_active_off_requires_manifest_without_session_id() {
   local proof_root out status
   proof_root="$(fresh_proof_root eci-off-newest-session)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-off-requires-session-on.out" 2>&1 || return 1
@@ -6957,9 +6960,9 @@ test_eci_active_off_uses_newest_session_without_session_id() {
     "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err"
   status=$?
 
-  [ "$status" -eq 0 ] &&
-    [ ! -e "$proof_root/t00-session/eci_active" ] &&
-    grep -q "ECI inactive" "$out"
+  [ "$status" -ne 0 ] &&
+    [ -e "$proof_root/t00-session/eci_active" ] &&
+    grep -q "manifest" "$out.err"
 }
 
 test_skip_stop_uses_cwd_state_without_session() {
@@ -7121,6 +7124,8 @@ run_case "session snapshot refresh and active-marker cleanup safety" \
   "$ROOT/hooks/tests/test-session-snapshot-refresh.sh"
 run_case "PostCompact ECI refresh and policy contracts" \
   "$ROOT/hooks/tests/test-eci-post-compact-refresh.sh"
+run_case "ECI required-critic manifest gate contracts" \
+  "$ROOT/hooks/tests/test-eci-review-gate.sh"
 run_case "side session start is silent and binds stop bypass" \
   test_side_session_start_is_silent_and_binds_stop_bypass
 run_case "ECI gate blocks code apply_patch when marker exists" \
@@ -7671,8 +7676,8 @@ run_case "stop gate rejects mixed hard-escalation ECI proof" \
   test_stop_gate_rejects_mixed_hard_escalation_eci_proof
 run_case "eci-active off rejects hard-escalation report" \
   test_eci_active_off_rejects_hard_escalation_report
-run_case "eci-active off accepts user-closed report" \
-  test_eci_active_off_accepts_user_closed_report
+run_case "eci-active off requires critic manifest" \
+  test_eci_active_off_requires_critic_manifest
 run_case "eci-active off rejects mixed hard-escalation report" \
   test_eci_active_off_rejects_mixed_hard_escalation_report
 run_case "eci-active wait accepts main and canonical report" \
@@ -7691,16 +7696,16 @@ run_case "stop gate rejects invalid user-owned wait state" \
   test_stop_gate_rejects_invalid_user_owned_wait_state
 run_case "eci-active status uses legacy reserved marker for same cwd" \
   test_eci_active_status_uses_legacy_reserved_marker_same_cwd
-run_case "eci-active off removes legacy reserved marker for same cwd" \
-  test_eci_active_off_removes_legacy_reserved_marker_same_cwd
+run_case "eci-active off requires manifest for legacy marker" \
+  test_eci_active_off_requires_manifest_for_legacy_marker_same_cwd
 run_case "eci-active on uses newest session without CODEX_SESSION_ID" \
   test_eci_active_on_uses_newest_session_without_session_id
 run_case "eci-active on prefers CODEX_THREAD_ID without CODEX_SESSION_ID" \
   test_eci_active_on_prefers_thread_id_without_session_id
 run_case "eci-active on ignores reserved proof dirs without CODEX_SESSION_ID" \
   test_eci_active_on_ignores_reserved_dirs_without_session_id
-run_case "eci-active off uses newest session without CODEX_SESSION_ID" \
-  test_eci_active_off_uses_newest_session_without_session_id
+run_case "eci-active off requires manifest without CODEX_SESSION_ID" \
+  test_eci_active_off_requires_manifest_without_session_id
 run_case "skip-stop uses cwd state without CODEX_SESSION_ID" \
   test_skip_stop_uses_cwd_state_without_session
 run_case "audit sync checker reports ok" \

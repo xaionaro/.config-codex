@@ -39,6 +39,18 @@ test_active_eci_refresh_signal_for_session_start_reminder() {
   ' "$out" >/dev/null
 }
 
+test_nested_eci_refresh_signal_is_explicit() {
+  local proof_root="$TMP_ROOT/nested-proof" out
+  mkdir -p "$proof_root/t00-session"
+  printf 'outer_session_id: t00-session\nstep: 4\niteration: 1\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  out="$TMP_ROOT/nested.out"
+  run_snapshot "$proof_root" resume "$out"
+  jq -e '.hookSpecificOutput.additionalContext | contains("ECI is active")' "$out" >/dev/null
+  printf 'outer_session_id: wrong\nstep: 4\niteration: 1\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  run_snapshot "$proof_root" resume "$out"
+  jq -e '.hookSpecificOutput.additionalContext == "Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable."' "$out" >/dev/null
+}
+
 test_inactive_session_keeps_baseline_context() {
   local proof_root="$TMP_ROOT/inactive-proof" out
   out="$TMP_ROOT/inactive.out"
@@ -58,6 +70,85 @@ test_session_start_matcher_uses_supported_lifecycle_sources() {
     (.hooks.SessionStart | length > 0) and
     (.hooks.SessionStart | all(.matcher == "startup|resume|clear"))
   ' "$ROOT/hooks.json" >/dev/null
+}
+
+test_session_start_rejects_malformed_types() {
+  local proof_root="$TMP_ROOT/malformed-proof" out
+  mkdir -p "$proof_root"
+  out="$TMP_ROOT/malformed.out"
+  printf '%s\n' '{"session_id":[],"transcript_path":"/tmp/x","cwd":"/tmp"}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/session-snapshot.sh" >"$out"
+  [ ! -s "$out" ]
+  printf '%s\n' '{"session_id":"t00-session","transcript_path":"/tmp/x","cwd":[]}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/session-snapshot.sh" >"$out"
+  [ ! -s "$out" ]
+}
+
+test_session_start_rejects_root_and_session_symlinks() {
+  local root_link="$TMP_ROOT/root-link" root_target="$TMP_ROOT/root-target" out target
+  mkdir -p "$root_target/t00-session" "$TMP_ROOT/home/tmp"
+  ln -s "$root_target" "$root_link"
+  out="$TMP_ROOT/root-link.out"
+  jq -cn '{session_id:"t00-session",transcript_path:"/tmp/x",cwd:"/tmp"}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$root_link" bash "$ROOT/hooks/session-snapshot.sh" >"$out"
+  [ ! -s "$out" ]
+
+  root_target="$TMP_ROOT/session-link-root"
+  target="$TMP_ROOT/session-link-target"
+  mkdir -p "$root_target" "$target"
+  ln -s "$target" "$root_target/t00-session"
+  out="$TMP_ROOT/session-link.out"
+  jq -cn '{session_id:"t00-session",transcript_path:"/tmp/x",cwd:"/tmp"}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$root_target" bash "$ROOT/hooks/session-snapshot.sh" >"$out"
+  [ ! -s "$out" ]
+}
+
+test_eci_active_mutations_fail_closed_when_lock_is_busy() {
+  local proof_root="$TMP_ROOT/mutation-lock-proof" session_dir report out lock_fd
+  session_dir="$proof_root/t00-session"
+  report="$session_dir/disengage.md"
+  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
+  printf 'scope: lock test\n' >"$session_dir/eci_active"
+  printf '%s\n' '# lock test' >"$report"
+  exec {lock_fd}>>"$proof_root/.eci-active.lock"
+  flock -n "$lock_fd"
+
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+      "$ROOT/bin/eci-active" on 'blocked on' >"$TMP_ROOT/on-lock.out" 2>"$TMP_ROOT/on-lock.err"; then
+    return 1
+  fi
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+      "$ROOT/bin/eci-active" wait "$session_dir/eci_user_owned_wait.md" >"$TMP_ROOT/wait-lock.out" 2>"$TMP_ROOT/wait-lock.err"; then
+    return 1
+  fi
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+      "$ROOT/bin/eci-active" resume "$(printf '%064d' 1)" >"$TMP_ROOT/resume-lock.out" 2>"$TMP_ROOT/resume-lock.err"; then
+    return 1
+  fi
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+      "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/off-lock.out" 2>"$TMP_ROOT/off-lock.err"; then
+    return 1
+  fi
+  [ -f "$session_dir/eci_active" ]
+  [ ! -e "$session_dir/eci_wait" ]
+  flock -u "$lock_fd"
+  eval "exec ${lock_fd}>&-"
+}
+
+test_session_start_skips_pruning_when_mutation_lock_is_busy() {
+  local proof_root="$TMP_ROOT/lock-proof" out old_dir lock_fd
+  old_dir="$proof_root/019df400-0000-7000-8000-000000000002"
+  mkdir -p "$old_dir"
+  printf 'old marker\n' >"$old_dir/eci_active"
+  touch -t 202001010000 "$old_dir" "$old_dir/eci_active"
+  mkdir -p "$proof_root"
+  exec {lock_fd}>>"$proof_root/.eci-active.lock"
+  flock -n "$lock_fd"
+  out="$TMP_ROOT/lock.out"
+  run_snapshot "$proof_root" resume "$out" t00-session
+  [ -e "$old_dir/eci_active" ]
+  flock -u "$lock_fd"
+  eval "exec ${lock_fd}>&-"
 }
 
 test_old_uuid_session_with_active_eci_marker_survives_cleanup() {
@@ -92,8 +183,13 @@ test_old_marker_dir_with_symlink_eci_marker_is_pruned() {
 }
 
 test_active_eci_refresh_signal_for_session_start_reminder
+test_nested_eci_refresh_signal_is_explicit
 test_inactive_session_keeps_baseline_context
 test_session_start_matcher_uses_supported_lifecycle_sources
+test_session_start_rejects_malformed_types
+test_session_start_rejects_root_and_session_symlinks
+test_eci_active_mutations_fail_closed_when_lock_is_busy
+test_session_start_skips_pruning_when_mutation_lock_is_busy
 test_old_uuid_session_with_active_eci_marker_survives_cleanup
 test_old_marker_dir_with_symlink_eci_marker_is_pruned
 printf '%s\n' 'session-snapshot refresh tests: PASS'

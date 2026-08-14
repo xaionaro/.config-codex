@@ -30,6 +30,10 @@ validate_proof_root() {
     /*) ;;
     *) echo "ECI proof root must be an absolute path: $root" >&2; return 1 ;;
   esac
+  [ "$root" = "$(codex_proof_root)" ] || {
+    echo "ECI proof root does not match the configured root: $root" >&2
+    return 1
+  }
   parent="$(dirname -- "$root")"
   if [ -L "$root" ] || {
     { [ -e "$parent" ] || [ -L "$parent" ]; } && [ ! -d "$parent" ];
@@ -37,6 +41,14 @@ validate_proof_root() {
     echo "ECI proof root or its parent is unsafe: $root" >&2
     return 1
   fi
+  if [ -e "$root" ] && [ ! -d "$root" ]; then
+    echo "ECI proof root is not a directory: $root" >&2
+    return 1
+  fi
+  codex_proof_root_is_safe || {
+    echo "ECI proof root is unsafe: $root" >&2
+    return 1
+  }
 }
 
 validate_session_dir() {
@@ -46,7 +58,7 @@ validate_session_dir() {
 
   validate_proof_root "$root" || return 1
   [ -d "$root" ] || return 0
-  [ ! -L "$session_dir" ] || {
+  codex_session_dir_is_safe "$root" "$session_id" || {
     echo "ECI session directory is a symlink; refusing to use it: $session_dir" >&2
     return 1
   }
@@ -54,6 +66,47 @@ validate_session_dir() {
     echo "ECI session directory is not a directory: $session_dir" >&2
     return 1
   }
+}
+
+acquire_eci_mutation_lock() {
+  local root lock_path
+
+  [ "${ECI_MUTATION_LOCK_HELD:-false}" = true ] && return 0
+  root="$(codex_proof_root)"
+  codex_proof_root_is_safe || {
+    echo "ECI proof root is unsafe; refusing state mutation." >&2
+    return 1
+  }
+  [ -d "$root" ] || {
+    echo "ECI proof root is unavailable; refusing state mutation." >&2
+    return 1
+  }
+  lock_path="$(codex_eci_lock_path 2>/dev/null || true)"
+  [ -n "$lock_path" ] || return 1
+  if [ -L "$lock_path" ] || { [ -e "$lock_path" ] && [ ! -f "$lock_path" ]; }; then
+    echo "ECI mutation lock is unsafe: $lock_path" >&2
+    return 1
+  fi
+  if ! exec {eci_lock_fd}>>"$lock_path" 2>/dev/null; then
+    echo "ECI mutation lock is unavailable: $lock_path" >&2
+    return 1
+  fi
+  if ! flock -n "$eci_lock_fd" 2>/dev/null; then
+    eval "exec ${eci_lock_fd}>&-" 2>/dev/null || true
+    echo "ECI mutation lock is busy; refusing state mutation: $lock_path" >&2
+    return 1
+  fi
+  ECI_MUTATION_LOCK_HELD=true
+  export ECI_MUTATION_LOCK_HELD
+  trap 'flock -u "$eci_lock_fd" 2>/dev/null || true; eval "exec ${eci_lock_fd}>&-"' EXIT
+}
+
+run_eci_review_gate() {
+  local phase="$1"
+  local session_id="$2"
+
+  ECI_REVIEW_GATE_LOCK_HELD=true \
+    "$base_dir/hooks/eci-review-gate.sh" "$phase" "$session_id"
 }
 
 resolve_session_dir() {
@@ -391,6 +444,8 @@ case "$cmd" in
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
+    acquire_eci_mutation_lock || exit 1
+    validate_session_dir "$(codex_proof_root)" "${session_dir##*/}" || exit 1
     marker="$session_dir/eci_active"
     if [ -L "$session_dir" ] || { [ -e "$session_dir" ] && [ ! -d "$session_dir" ]; }; then
       echo "ECI session directory is not a directory: $session_dir" >&2
@@ -432,6 +487,7 @@ case "$cmd" in
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
+    acquire_eci_mutation_lock || exit 1
     marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
       echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
       exit 1
@@ -460,6 +516,7 @@ case "$cmd" in
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
+    acquire_eci_mutation_lock || exit 1
     marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
       echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
       exit 1
@@ -498,6 +555,7 @@ case "$cmd" in
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
+    acquire_eci_mutation_lock || exit 1
     marker="$session_dir/eci_active"
     if [ -L "$marker" ]; then
       echo "ECI marker is a symlink; refusing to use it: $marker" >&2
@@ -527,6 +585,10 @@ case "$cmd" in
       }
     fi
     validate_disengage_report "$report"
+    run_eci_review_gate off "${session_dir##*/}" || {
+      echo "ECI required-critic review gate rejected teardown; marker retained." >&2
+      exit 1
+    }
     [ -f "$wait_state" ] && rm -f "$wait_state"
     rm -f "${markers[@]}"
     printf 'ECI inactive. Disengage report validated: %s\n' "$report"

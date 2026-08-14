@@ -223,3 +223,6 @@ trusted_hash = "sha256:1f7f0598df1a296c0942bb8fe6f144a96ea3bb72111b3c06eec1ac739
 
 [hooks.state."/home/pheona/.codex/hooks.json:stop:0:0"]
 trusted_hash = "sha256:010c625cb307ab76373a95325b3396299f28cc0e19709c3955f36448e1414307"
+
+[hooks.state."/home/pheona/.codex/hooks.json:post_compact:0:0"]
+trusted_hash = "sha256:345b8572ed36ac7a7415b2415d34e05c2c4b6d6c158c02876e75308184dfd1a0"
