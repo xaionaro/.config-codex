@@ -10,23 +10,25 @@ run_snapshot() {
   local proof_root="$1"
   local input_source="$2"
   local out="$3"
+  local session_id="${4:-t00-session}"
 
   mkdir -p "$TMP_ROOT/home/tmp" "$proof_root"
   jq -cn \
+    --arg session_id "$session_id" \
     --arg source "$input_source" \
     --arg cwd "$ROOT" \
-    '{session_id:"t00-session", transcript_path:"/tmp/session.jsonl", cwd:$cwd, source:$source}' |
+    '{session_id:$session_id, transcript_path:"/tmp/session.jsonl", cwd:$cwd, source:$source}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/session-snapshot.sh" >"$out"
 }
 
-test_active_eci_refresh_signal_for_generic_session_start() {
+test_active_eci_refresh_signal_for_session_start_reminder() {
   local proof_root="$TMP_ROOT/active-proof" out
   mkdir -p "$proof_root/t00-session"
   printf '%s\n' 'scope: refresh test' >"$proof_root/t00-session/eci_active"
   out="$TMP_ROOT/active.out"
 
-  run_snapshot "$proof_root" compaction "$out"
+  run_snapshot "$proof_root" resume "$out"
 
   jq -e '
     (.hookSpecificOutput.hookEventName == "SessionStart") and
@@ -51,14 +53,31 @@ test_inactive_session_keeps_baseline_context() {
   fi
 }
 
-test_session_start_matcher_catches_any_source() {
+test_session_start_matcher_uses_supported_lifecycle_sources() {
   jq -e '
     (.hooks.SessionStart | length > 0) and
-    (.hooks.SessionStart | all(.matcher == ""))
+    (.hooks.SessionStart | all(.matcher == "startup|resume|clear"))
   ' "$ROOT/hooks.json" >/dev/null
 }
 
-test_active_eci_refresh_signal_for_generic_session_start
+test_old_uuid_session_with_active_eci_marker_survives_cleanup() {
+  local proof_root="$TMP_ROOT/old-uuid-proof" session_dir out
+  session_dir="$proof_root/019df400-0000-7000-8000-000000000001"
+  mkdir -p "$session_dir"
+  printf '%s\n' 'baseline' >"$session_dir/baseline_head"
+  printf '%s\n' 'scope: old active session' >"$session_dir/eci_active"
+  touch -t 202001010000 "$session_dir" "$session_dir/baseline_head" "$session_dir/eci_active"
+  out="$TMP_ROOT/old-uuid.out"
+
+  run_snapshot "$proof_root" compaction "$out" 019df400-0000-7000-8000-000000000001
+
+  [ -s "$session_dir/baseline_head" ] &&
+    [ -s "$session_dir/eci_active" ] &&
+    grep -q '^scope: old active session$' "$session_dir/eci_active"
+}
+
+test_active_eci_refresh_signal_for_session_start_reminder
 test_inactive_session_keeps_baseline_context
-test_session_start_matcher_catches_any_source
+test_session_start_matcher_uses_supported_lifecycle_sources
+test_old_uuid_session_with_active_eci_marker_survives_cleanup
 printf '%s\n' 'session-snapshot refresh tests: PASS'

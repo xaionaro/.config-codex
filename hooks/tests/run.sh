@@ -7117,8 +7117,10 @@ run_case "session snapshot skips ephemeral threads" \
   test_session_snapshot_skips_ephemeral_threads
 run_case "session snapshot preserves fresh markers in old state dirs" \
   test_session_snapshot_preserves_fresh_markers_in_old_state_dirs
-run_case "session snapshot refresh signal covers active ECI and generic sources" \
+run_case "session snapshot refresh and active-marker cleanup safety" \
   "$ROOT/hooks/tests/test-session-snapshot-refresh.sh"
+run_case "PostCompact ECI refresh and policy contracts" \
+  "$ROOT/hooks/tests/test-eci-post-compact-refresh.sh"
 run_case "side session start is silent and binds stop bypass" \
   test_side_session_start_is_silent_and_binds_stop_bypass
 run_case "ECI gate blocks code apply_patch when marker exists" \

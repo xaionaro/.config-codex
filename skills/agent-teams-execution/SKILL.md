@@ -216,7 +216,7 @@ Example mapping: one `explorer` for each independent research slice, one `worker
 
 For every governed code diff, spawn three fresh blind critics in parallel and await all reports: Critic A coding style (ordinary, non-authoritative), Critic B correctness/fidelity (ordinary, non-authoritative), and Critic C long-term health (special `sol-high`). Add the E2E agent when code applies and withhold the aggregate verdict until E2E returns. The producer never reviews its own output; all critics report findings only and the implementer fixes them. Critic C uses the long-term-health diff-only intention packet when applicable; Critic A and Critic B remain distinct ordinary lenses.
 
-**Required-critic admission:** At ECI engagement or an ATE root diff, the coordinator records a required-critic manifest keyed by the current diff SHA-256 and child identity: Critic A coding style, Critic B correctness/fidelity, Critic C long-term health, and E2E when code applies. No implementation acceptance, commit/final gate, or clean teardown is valid while a required report is missing, stale against that diff hash, contradictory, or unverified. A missing report routes back to spawning that critic; never silently skip one. This is coordinator/session-ledger state, not provider telemetry or a new runtime artifact.
+**Required-critic admission:** For every governed target—root, subtask, and candidate-fix—the coordinator records one immutable compact ledger row per required critic. The exact ordered row schema is `{"target_id":string,"target_kind":"root|subtask|candidate-fix","diff_artifact":string,"diff_sha256":lowercase64hex,"critic_role":"A|B|C","child_identity":string,"spawn_request_artifact":string,"spawn_request_sha256":lowercase64hex,"report_artifact":string,"report_sha256":lowercase64hex,"verdict":string,"e2e_required":boolean,"e2e_artifact":string|null,"e2e_sha256":lowercase64hex|null}`. Every spawn request, report, and required E2E artifact binds to the same `(target_id,target_kind,diff_sha256,critic_role,child_identity)` tuple. Every present hash is exact lowercase 64-hex; `e2e_artifact` and `e2e_sha256` are non-null exact artifact/hash values when `e2e_required` is true and null exactly when it is false. Rows are immutable once admitted. Missing, stale, contradictory, or unverified rows block implementation acceptance, commit, final gate, and clean teardown and route back to the exact missing fresh critic; never silently skip one. This is coordinator/session-ledger evidence, not provider telemetry or a hook runtime artifact.
 
 #### Critic A — coding style
 
@@ -275,7 +275,7 @@ One execution lane per independent unit. Spawn fresh blind Critic A and Critic B
 
 Blocker handling uses `blocker-resolution-protocol` (BRP). Lead includes that skill name in prompts for blocker-resolution tasks.
 
-**Manual skill refresh (coordinator, lead, snitch).** Lead uses `followup_task` for an idle role or `send_message` for a running role to request re-invocation after context compaction, phase changes, long waits, and user-waiting resume. When a nested ECI is active, the coordinator and lead must also re-read the entire `skills/explore-critique-implement/SKILL.md` and re-invoke its instructions before any next decision or tool call after compaction. There is no dedicated compaction hook; `SessionStart` `startup|resume|clear` is only a best-effort refresh signal, not proof that compaction occurred. Silence is non-terminal; do not create a wait-retry loop.
+**Manual skill refresh (coordinator, lead, snitch).** Lead uses `followup_task` for an idle role or `send_message` for a running role to request re-invocation after context compaction, phase changes, long waits, and user-waiting resume. When a nested ECI is active, the coordinator and lead must also re-read the entire `skills/explore-critique-implement/SKILL.md` and re-invoke its instructions immediately after the authoritative `PostCompact` compaction refresh signal and before any next decision or tool call. `PostCompact` is the authoritative compaction refresh signal. `SessionStart` `startup|resume|clear` is only a best-effort resume/clear reminder, not proof that compaction occurred. Silence is non-terminal; do not create a wait-retry loop.
 
 ### Model and Effort Level
 
@@ -687,6 +687,8 @@ Extends the general Reviewer Protocol above (which already covers OWASP, edge ca
 - Coordinator/lead compares reconstruction with actual root reason and desired effects.
 - If it misses root reason, relies on hidden context, or claims an undesired effect, pre-route the `CONDITIONAL` remedy with the normal three-critic review metadata to make code, tests, names, comments, or commit message self-explanatory.
 
+**Separate Critic C gates:** The `Critic C pre-write skip-design admission report` is a fresh special Critic C report owned by Critic C before the first production write; it covers read-only discovery and the admitted production scope, and its gate is permission for that write. The `Critic C post-write reconciliation report` is a separate fresh special Critic C report owned by Critic C after writes; the coordinator/lead verifies actual scope, approved deltas/deviations, and post-write Tool evidence, and its gate is aggregate acceptance, commit, final proof, and teardown. Neither report substitutes for the other.
+
 - [ ] Critic A coding style: load every matching installed style skill; Go files, go.mod, or go.sum => go-coding-style; resolve formatter/linter/config anchors; report material findings only and leave edits to the implementer; cosmetic-only issues are NITs.
 - [ ] Critic B correctness/fidelity: classify by consequence; false behavior/name/interface claims, security, RCA, testing/proof/TDD, and approved architecture/file-ownership/purpose/interface contracts remain hard failures and cannot be downgraded as style.
 - [ ] Critic C long-term health: load every matching installed style skill and reconcile actual scope, admitted record, approved deltas/deviations, and post-write Tool evidence. Invocation alone is not compliance. Use the fresh special `sol-high` route and diff-only intention packet where applicable.
@@ -784,7 +786,7 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 | Coordinator requests re-spawn (crash recovery) | Verify hang proof, then spawn |
 | Coordinator reports phase transition | Verify rules: aggregate invariant, reviews completed, issues addressed, ledger updated |
 | Coordinator reports milestone (per top-of-skill ledger rule) | Verify ledger reflects new state. Stale → remind coordinator |
-| Coordinator assigns new task to executor | Verify file ownership, dependencies, root-task grouping, and sub-task/candidate-fix review trigger with both execution-review lenses |
+| Coordinator assigns new task to executor | Verify file ownership, dependencies, root-task grouping, and sub-task/candidate-fix review trigger with Critic A coding-style + Critic B correctness/fidelity + Critic C long-term-health + E2E where code applies |
 | Teammate reports coordinator doing work directly | Remind coordinator to delegate |
 | Teammate reports unaddressed issue | Remind coordinator to create a verification task with {question, source, target} and assign a second agent |
 | CCed "submitted" claim received | Verify the claim has sufficient proof. If not, remind coordinator not to accept it — demand evidence before marking complete |
@@ -952,6 +954,9 @@ Apply these scenarios within the nine counters above:
 - `hard-consequence-not-style`: behavior, security, interface, test/proof, architecture, or ownership failures remain hard Critic B/C findings and cannot be downgraded as style.
 - `omitted-required-critic`: an absent Critic A, B, or C report routes back to spawning that exact fresh blind critic; no gate, commit, or teardown proceeds.
 - `stale-diff-report`: a report whose bound diff SHA-256 or child identity does not match the current manifest is unverified and cannot satisfy the gate.
+- `target-scoped-critic-ledger-row`: root, subtask, and candidate-fix each receive one immutable A/B/C row with the exact schema, lowercase hashes, and shared target+diff+child tuple; missing, stale, contradictory, or unverified rows block the gate.
+- `critic-c-prewrite-postwrite`: Critic C's pre-write skip-design admission report and post-write reconciliation report are separate fresh reports with separate write and final-acceptance gates; neither substitutes for the other.
+- `postcompact-refresh-signal`: PostCompact is authoritative for compaction refresh; SessionStart startup/resume/clear is only a best-effort reminder.
 
 ## Red Flags
 

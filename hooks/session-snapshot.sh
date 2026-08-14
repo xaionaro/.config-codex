@@ -60,7 +60,14 @@ prune_marker_dirs() {
     done
 }
 
-find "$root" -mindepth 1 -maxdepth 1 -type d -name '019*' -mtime +30 -exec rm -rf {} + 2>/dev/null || true
+while IFS= read -r -d '' dir; do
+  marker="$dir/eci_active"
+  if [ -d "$dir" ] && [ ! -L "$dir" ] &&
+      [ -f "$marker" ] && [ ! -L "$marker" ]; then
+    continue
+  fi
+  rm -rf -- "$dir"
+done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name '019*' -mtime +30 -print0 2>/dev/null)
 find "$root/history" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
 for state_root in skills audit reviewer reviewer-dumps; do
   find "$root/$state_root" -mindepth 1 -maxdepth 1 -mtime +30 -exec rm -rf {} + 2>/dev/null || true

@@ -2,12 +2,23 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "",
+        "matcher": "startup|resume|clear",
         "hooks": [
           {
             "type": "command",
             "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/session-snapshot.sh\"'",
             "statusMessage": "Loading Codex session rules"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-post-compact-refresh.sh\"'",
+            "statusMessage": "Refreshing ECI rules after compaction"
           }
         ]
       }
