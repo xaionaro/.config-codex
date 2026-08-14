@@ -73,7 +73,8 @@ marker="$(codex_proof_root)/$session_id/eci_active"
 codex_note_state_session_id "$marker" "$session_id" || true
 
 marker_text=$(cat "$marker" 2>/dev/null || true)
-jq -n --arg reason "ECI is active for this session. Never stop until the ECI task is complete. Continue the ECI task, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>. Marker: $marker_text" '{
+reason="ECI is active for this ${tool_name} edit. Delegate repository edits to the assigned implementer; direct main-thread edits are prohibited. This is an edit-routing restriction, not a stop/teardown decision. Continue the ECI task, or report a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>. Marker: $marker_text"
+jq -n --arg reason "$reason" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",

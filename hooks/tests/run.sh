@@ -864,7 +864,7 @@ test_eci_gate_skips_invalid_session_id() {
   expect_no_output "$out"
 }
 
-test_eci_gate_message_mentions_clean_pass_user_closed() {
+test_eci_gate_message_routes_edits_without_stop_language() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-message)"
   mkdir -p "$proof_root/t00-session"
@@ -875,12 +875,29 @@ test_eci_gate_message_mentions_clean_pass_user_closed() {
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   is_pretool_deny "$out" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Never stop until the ECI task is complete" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Delegate repository edits" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "edit-routing restriction" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "direct main-thread edits are prohibited" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Never stop until the ECI task is complete" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Continue the ECI task" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Disengage only with clean-pass or user-closed" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Route edits" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "implementer role" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "request"
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Disengage only with clean-pass or user-closed"
+}
+
+test_stop_gate_message_retains_stop_language() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root eci-stop-message)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: test\n' >"$proof_root/t00-session/eci_active"
+  input="$TMP_ROOT/eci-stop-message.json"
+  jq --arg cwd "$ROOT" '.cwd = $cwd' "$FIXTURES/stop-basic.json" >"$input"
+  out="$TMP_ROOT/eci-stop-message.out"
+
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Never stop until the ECI task is complete" &&
+    json_field_not_contains "$out" '.reason // empty' "edit-routing restriction"
 }
 
 test_eci_gate_ignores_code_apply_patch_from_cwd_state() {
@@ -6831,8 +6848,10 @@ run_case "ECI gate blocks code apply_patch when marker exists" \
   test_eci_gate_blocks_code_apply_patch
 run_case "ECI gate skips invalid session id" \
   test_eci_gate_skips_invalid_session_id
-run_case "ECI gate message names clean-pass/user-closed teardown" \
-  test_eci_gate_message_mentions_clean_pass_user_closed
+run_case "ECI gate routes edits without stop language" \
+  test_eci_gate_message_routes_edits_without_stop_language
+run_case "stop gate retains stop language" \
+  test_stop_gate_message_retains_stop_language
 run_case "ECI gate ignores code apply_patch from cwd marker" \
   test_eci_gate_ignores_code_apply_patch_from_cwd_state
 run_case "ECI gate blocks code apply_patch from session marker" \
