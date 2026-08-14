@@ -48,7 +48,7 @@ prune_marker_dirs() {
   find "$state_root" -mindepth 1 -maxdepth 1 -type d -mtime +30 -print 2>/dev/null |
     while IFS= read -r dir; do
       marker="$dir/$marker_name"
-      if [ -f "$marker" ]; then
+      if [ -f "$marker" ] && [ ! -L "$marker" ]; then
         case "$marker_name" in
           eci_active) continue ;;
           skip_stop)
