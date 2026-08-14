@@ -265,6 +265,7 @@ write_eci_user_owned_wait_report() {
     printf 'owner: user\n'
     printf 'brp_result: exhausted-no-feasible-internal-path\n'
     printf 'user_owned_input: unobtainable\n'
+    printf 'unblock_kind: input\n'
     printf 'unblock: user-owned input required\n'
   } >"$report"
 }
@@ -5000,7 +5001,7 @@ test_validate_bash_blocks_subagent_eci_user_wait_state() {
 
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
   is_pretool_deny "$out" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the coordinator"
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main/orchestrator"
 }
 
 test_validate_bash_allows_main_eci_user_wait_state() {
@@ -5016,6 +5017,44 @@ test_validate_bash_allows_main_eci_user_wait_state() {
 
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
   expect_no_output "$out"
+}
+
+test_validate_bash_blocks_subagent_eci_user_wait_wrappers() {
+  local input out transcript command index
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  index=0
+  for command in \
+    "env CODEX_ROLE=coordinator ~/.codex/bin/eci-active resume aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+    "bash -c 'exec ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md'" \
+    "timeout 5 ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md"; do
+    input="$TMP_ROOT/bash-subagent-eci-wait-wrapper-$index.json"
+    jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
+      '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+      "$FIXTURES/pre-reviewer-bash.json" >"$input"
+    out="$TMP_ROOT/bash-subagent-eci-wait-wrapper-$index.out"
+    run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
+    is_pretool_deny "$out" &&
+      json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main/orchestrator" || return 1
+    index=$((index + 1))
+  done
+}
+
+test_validate_bash_ignores_quoted_eci_user_wait_text() {
+  local input out transcript command
+  transcript="$(subagent_transcript_path)"
+  write_subagent_transcript "$transcript" || return 1
+  for command in \
+    "printf '%s\\n' 'eci-active wait /tmp/eci-user-owned-wait.md'" \
+    "rg -n 'eci-active resume' hooks/validate-bash.sh"; do
+    input="$TMP_ROOT/bash-subagent-eci-wait-quoted.json"
+    jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
+      '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+      "$FIXTURES/pre-reviewer-bash.json" >"$input"
+    out="$TMP_ROOT/bash-subagent-eci-wait-quoted.out"
+    run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
+    expect_no_output "$out" || return 1
+  done
 }
 
 test_validate_bash_blocks_git_reset_without_marker() {
@@ -6635,37 +6674,39 @@ test_eci_active_off_rejects_mixed_hard_escalation_report() {
     grep -q "hard-escalation:" "$out.err"
 }
 
-test_eci_active_wait_requires_coordinator_and_validates_report() {
-  local proof_root report state out
-  proof_root="$(fresh_proof_root eci-wait-coordinator)"
+test_eci_active_wait_accepts_main_and_validates_report() {
+  local proof_root report external_report state out
+  proof_root="$(fresh_proof_root eci-wait-main)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-wait-on.out" 2>&1 || return 1
-  report="$TMP_ROOT/eci-wait-coordinator.md"
-  write_eci_user_owned_wait_report "$report" || return 1
-  state="$proof_root/t00-session/eci_wait"
-  out="$TMP_ROOT/eci-wait-coordinator.out"
-
-  if CODEX_ROLE=implementer CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
-      "$ROOT/bin/eci-active" wait "$report" >"$TMP_ROOT/eci-wait-implementer.out" 2>"$TMP_ROOT/eci-wait-implementer.err"; then
+  report="$proof_root/t00-session/eci_user_owned_wait.md"
+  external_report="$TMP_ROOT/eci-wait-external.md"
+  write_eci_user_owned_wait_report "$external_report" || return 1
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+      "$ROOT/bin/eci-active" wait "$external_report" >"$TMP_ROOT/eci-wait-external.out" 2>"$TMP_ROOT/eci-wait-external.err"; then
     return 1
   fi
-  [ ! -e "$state" ] || return 1
+  [ ! -e "$proof_root/t00-session/eci_wait" ] || return 1
+  write_eci_user_owned_wait_report "$report" || return 1
+  state="$proof_root/t00-session/eci_wait"
+  out="$TMP_ROOT/eci-wait-main.out"
 
-  CODEX_ROLE=coordinator CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" wait "$report" >"$out" 2>"$out.err" || return 1
   [ -s "$state" ] &&
     grep -q '^state: user-owned-wait$' "$state" &&
+    grep -q '^unblock_kind: input$' "$state" &&
     grep -q '^report_sha256: [0-9a-f]\{64\}$' "$state"
 }
 
-test_stop_gate_consumes_user_owned_wait_once() {
+test_stop_gate_retains_user_owned_wait_until_resume() {
   local proof_root report input out second marker state
   proof_root="$(fresh_proof_root stop-eci-wait)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/stop-eci-wait-on.out" 2>&1 || return 1
-  report="$TMP_ROOT/stop-eci-wait.md"
+  report="$proof_root/t00-session/eci_user_owned_wait.md"
   write_eci_user_owned_wait_report "$report" || return 1
-  CODEX_ROLE=coordinator CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" wait "$report" >"$TMP_ROOT/stop-eci-wait-arm.out" 2>&1 || return 1
   input="$TMP_ROOT/stop-eci-wait.json"
   with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
@@ -6676,12 +6717,31 @@ test_stop_gate_consumes_user_owned_wait_once() {
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   json_field_equals "$out" '.continue // empty' "true" &&
     [ -s "$marker" ] &&
-    [ ! -e "$state" ] || return 1
+    [ -s "$state" ] || return 1
 
   second="$TMP_ROOT/stop-eci-wait-second.out"
   run_hook "$second" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$second" &&
-    json_field_contains "$second" '.reason // empty' "Never stop until the ECI task is complete"
+  json_field_equals "$second" '.continue // empty' "true" &&
+    [ -s "$marker" ] && [ -s "$state" ] || return 1
+
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+      "$ROOT/bin/eci-active" resume \
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      >"$TMP_ROOT/stop-eci-wait-resume-same.out" 2>"$TMP_ROOT/stop-eci-wait-resume-same.err"; then
+    return 1
+  fi
+  [ -s "$state" ] || return 1
+
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" resume \
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    >"$TMP_ROOT/stop-eci-wait-resume-changed.out" 2>"$TMP_ROOT/stop-eci-wait-resume-changed.err" || return 1
+  [ ! -e "$state" ] && [ -s "$marker" ] || return 1
+
+  out="$TMP_ROOT/stop-eci-wait-after-resume.out"
+  run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Never stop until the ECI task is complete"
 }
 
 test_eci_active_resume_requires_changed_fingerprint() {
@@ -6689,15 +6749,15 @@ test_eci_active_resume_requires_changed_fingerprint() {
   proof_root="$(fresh_proof_root eci-wait-resume)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-wait-resume-on.out" 2>&1 || return 1
-  report="$TMP_ROOT/eci-wait-resume.md"
+  report="$proof_root/t00-session/eci_user_owned_wait.md"
   write_eci_user_owned_wait_report "$report" || return 1
-  CODEX_ROLE=coordinator CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" wait "$report" >"$TMP_ROOT/eci-wait-resume-arm.out" 2>&1 || return 1
   state="$proof_root/t00-session/eci_wait"
   marker="$proof_root/t00-session/eci_active"
   out="$TMP_ROOT/eci-wait-resume.out"
 
-  if CODEX_ROLE=coordinator CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
       "$ROOT/bin/eci-active" resume \
       aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
       >"$TMP_ROOT/eci-wait-resume-same.out" 2>"$TMP_ROOT/eci-wait-resume-same.err"; then
@@ -6705,11 +6765,32 @@ test_eci_active_resume_requires_changed_fingerprint() {
   fi
   [ -s "$state" ] || return 1
 
-  CODEX_ROLE=coordinator CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
     "$ROOT/bin/eci-active" resume \
     bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     >"$out" 2>"$out.err" || return 1
   [ ! -e "$state" ] && [ -s "$marker" ]
+}
+
+test_eci_active_resume_rejects_tampered_report() {
+  local proof_root report state
+  proof_root="$(fresh_proof_root eci-wait-tampered-report)"
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "test scope" >"$TMP_ROOT/eci-wait-tampered-on.out" 2>&1 || return 1
+  report="$proof_root/t00-session/eci_user_owned_wait.md"
+  write_eci_user_owned_wait_report "$report" || return 1
+  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" wait "$report" >"$TMP_ROOT/eci-wait-tampered-arm.out" 2>&1 || return 1
+  state="$proof_root/t00-session/eci_wait"
+  sed -i 's/user-owned input required/user-owned input changed/' "$report" || return 1
+
+  if CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+      "$ROOT/bin/eci-active" resume \
+      bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+      >"$TMP_ROOT/eci-wait-tampered-resume.out" 2>"$TMP_ROOT/eci-wait-tampered-resume.err"; then
+    return 1
+  fi
+  [ -s "$state" ]
 }
 
 test_stop_gate_rejects_invalid_user_owned_wait_state() {
@@ -7334,6 +7415,10 @@ run_case "validate-bash blocks subagent ECI user wait state" \
   test_validate_bash_blocks_subagent_eci_user_wait_state
 run_case "validate-bash allows main ECI user wait state" \
   test_validate_bash_allows_main_eci_user_wait_state
+run_case "validate-bash blocks wrapped subagent ECI user wait state" \
+  test_validate_bash_blocks_subagent_eci_user_wait_wrappers
+run_case "validate-bash ignores quoted ECI user wait text" \
+  test_validate_bash_ignores_quoted_eci_user_wait_text
 run_case "validate-bash blocks git reset without marker" \
   test_validate_bash_blocks_git_reset_without_marker
 run_case "validate-bash consumes git reset marker" \
@@ -7544,12 +7629,14 @@ run_case "eci-active off accepts user-closed report" \
   test_eci_active_off_accepts_user_closed_report
 run_case "eci-active off rejects mixed hard-escalation report" \
   test_eci_active_off_rejects_mixed_hard_escalation_report
-run_case "eci-active wait requires coordinator and canonical report" \
-  test_eci_active_wait_requires_coordinator_and_validates_report
-run_case "stop gate consumes user-owned wait state once" \
-  test_stop_gate_consumes_user_owned_wait_once
+run_case "eci-active wait accepts main and canonical report" \
+  test_eci_active_wait_accepts_main_and_validates_report
+run_case "stop gate retains user-owned wait state until resume" \
+  test_stop_gate_retains_user_owned_wait_until_resume
 run_case "eci-active resume requires changed fingerprint" \
   test_eci_active_resume_requires_changed_fingerprint
+run_case "eci-active resume rejects tampered report" \
+  test_eci_active_resume_rejects_tampered_report
 run_case "stop gate rejects invalid user-owned wait state" \
   test_stop_gate_rejects_invalid_user_owned_wait_state
 run_case "eci-active status uses legacy reserved marker for same cwd" \

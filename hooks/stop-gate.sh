@@ -137,40 +137,44 @@ eci_wait_state_consume() {
   local marker="$1"
   local state="${marker%/*}/eci_wait"
   local -a lines=()
-  local unblock
+  local unblock state_bytes
 
   # The ordinary active path does only this existence check and returns.
   # A state is considered only for the direct session marker, never a parent
   # or subagent marker.  The coordinator CLI writes the same closed schema.
   [ -e "$state" ] || [ -L "$state" ] || return 1
   [ -f "$state" ] && [ ! -L "$state" ] || return 1
+  state_bytes="$(wc -c <"$state" 2>/dev/null || true)"
+  case "$state_bytes" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$state_bytes" -le 8192 ] || return 1
   mapfile -t lines <"$state" || return 1
   local terminated_lines=0
   while IFS= read -r _; do
     terminated_lines=$((terminated_lines + 1))
   done <"$state"
-  [ "$terminated_lines" -eq 8 ] || return 1
-  [ "${#lines[@]}" -eq 8 ] || return 1
+  [ "$terminated_lines" -eq 9 ] || return 1
+  [ "${#lines[@]}" -eq 9 ] || return 1
   [ "${lines[0]}" = "state: user-owned-wait" ] || return 1
   [[ "${lines[1]}" == blocker_id:\ * ]] || return 1
   [[ "${lines[2]}" == state_fingerprint:\ * ]] || return 1
   [[ "${lines[3]}" = "owner: user" ]] || return 1
   [[ "${lines[4]}" = "brp_result: exhausted-no-feasible-internal-path" ]] || return 1
   [[ "${lines[5]}" = "user_owned_input: unobtainable" ]] || return 1
-  [[ "${lines[6]}" == unblock:\ * ]] || return 1
-  [[ "${lines[7]}" == report_sha256:\ * ]] || return 1
+  [[ "${lines[6]}" == unblock_kind:\ * ]] || return 1
+  [[ "${lines[7]}" == unblock:\ * ]] || return 1
+  [[ "${lines[8]}" == report_sha256:\ * ]] || return 1
   [[ "${lines[1]#blocker_id: }" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   [[ "${lines[2]#state_fingerprint: }" =~ ^[0-9a-f]{64}$ ]] || return 1
-  unblock="${lines[6]#unblock: }"
-  [ -n "$unblock" ] || return 1
-  [[ "$unblock" != *[[:cntrl:]]* ]] || return 1
-  case "$unblock" in
-    *input*|*resource*|*decision*) ;;
+  case "${lines[6]#unblock_kind: }" in
+    input|resource|decision) ;;
     *) return 1 ;;
   esac
-  [[ "${lines[7]#report_sha256: }" =~ ^[0-9a-f]{64}$ ]] || return 1
-  rm -f -- "$state" || return 1
-  [ ! -e "$state" ] && [ ! -L "$state" ] || return 1
+  unblock="${lines[7]#unblock: }"
+  [ -n "$unblock" ] || return 1
+  [[ "$unblock" != *[[:cntrl:]]* ]] || return 1
+  [[ "${lines[8]#report_sha256: }" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s\n' '{"continue":true}'
 }
 

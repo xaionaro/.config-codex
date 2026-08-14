@@ -157,20 +157,123 @@ command_invokes_eci_off() {
 }
 
 command_invokes_eci_wait_or_resume() {
-  printf '%s' "$1" |
-    tr "\"';&|()" '       ' |
-    awk '
-      {
-        for (i = 1; i < NF; i++) {
-          token = $i
-          sub(/^.*\//, "", token)
-          if (token == "eci-active" && $(i + 1) ~ /^(wait|resume)$/) {
-            found = 1
-          }
-        }
-      }
-      END { exit found ? 0 : 1 }
-    '
+  python3 - "$1" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+text = sys.argv[1]
+operators = {";", "&", "&&", "|", "||", "(", ")"}
+targets = {"wait", "resume"}
+
+
+def tokens(value):
+    lexer = shlex.shlex(value, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def segments(value):
+    result = []
+    current = []
+    for token in value:
+        if token in operators:
+            if current:
+                result.append(current)
+            current = []
+        else:
+            current.append(token)
+    if current:
+        result.append(current)
+    return result
+
+
+def is_assignment(token):
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+
+
+def basename(token):
+    return os.path.basename(token)
+
+
+def inspect(segment, depth=0):
+    if depth > 4:
+        return False
+    index = 0
+    while index < len(segment) and is_assignment(segment[index]):
+        index += 1
+    if index >= len(segment):
+        return False
+
+    command = basename(segment[index])
+    if command == "env":
+        index += 1
+        while index < len(segment):
+            token = segment[index]
+            if is_assignment(token):
+                index += 1
+                continue
+            if token in {"-i", "--ignore-environment", "--"}:
+                index += 1
+                if token == "--":
+                    break
+                continue
+            if token == "-u" and index + 1 < len(segment):
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            break
+        return inspect(segment[index:], depth + 1)
+
+    if command in {"command", "builtin", "exec"}:
+        return inspect(segment[index + 1:], depth + 1)
+
+    if command in {"nohup", "setsid", "doas", "sudo"}:
+        option_index = index + 1
+        while option_index < len(segment) and segment[option_index].startswith("-"):
+            if segment[option_index] in {"-u", "--user", "-g", "--group", "-C", "--chdir", "-D"}:
+                option_index += 2
+            else:
+                option_index += 1
+        return inspect(segment[option_index:], depth + 1)
+
+    if command in {"bash", "sh", "dash", "zsh"}:
+        for option_index in range(index + 1, len(segment)):
+            option = segment[option_index]
+            if option in {"-c", "-lc", "-cl"} or (
+                option.startswith("-") and not option.startswith("--") and "c" in option[1:]
+            ):
+                if option_index + 1 >= len(segment):
+                    return False
+                try:
+                    return any(inspect(part, depth + 1) for part in segments(tokens(segment[option_index + 1])))
+                except ValueError:
+                    return False
+        return False
+
+    if command in {"timeout", "nice", "chronic", "systemd-run", "prlimit", "time"}:
+        option_index = index + 1
+        while option_index < len(segment) and segment[option_index].startswith("-"):
+            if segment[option_index] in {"-n", "--adjustment", "-p", "--property", "--scope", "-C", "--chdir"}:
+                option_index += 2
+            else:
+                option_index += 1
+        if command == "timeout" and option_index < len(segment):
+            option_index += 1
+        return inspect(segment[option_index:], depth + 1)
+
+    return index + 1 < len(segment) and command == "eci-active" and segment[index + 1] in targets
+
+
+try:
+    found = any(inspect(part) for part in segments(tokens(text)))
+except (TypeError, ValueError):
+    found = False
+sys.exit(0 if found else 1)
+PY
 }
 
 git_reset_dirs() {
@@ -897,7 +1000,7 @@ if [ "$hook_is_subagent" = true ] && command_invokes_eci_off "$command"; then
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_wait_or_resume "$command"; then
-  deny 'Only the coordinator may create or clear the validated ECI user-owned wait state. Subagents must report the BRP result and concrete user-owned unblock to the orchestrator.'
+  deny 'Only the main/orchestrator may create or clear the validated ECI user-owned wait state. Subagents must report the BRP result and concrete user-owned unblock to the orchestrator.'
 fi
 
 enforce_git_reset_gate

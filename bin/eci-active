@@ -177,13 +177,6 @@ scope_has_control_bytes() {
   LC_ALL=C printf '%s' "$scope" | LC_ALL=C grep -q '[[:cntrl:]]'
 }
 
-require_coordinator() {
-  [ "${CODEX_ROLE:-}" = "coordinator" ] || {
-    echo "Only the coordinator may create or clear ECI user-owned wait state." >&2
-    return 1
-  }
-}
-
 wait_text_is_safe() {
   local value="${1:-}"
 
@@ -192,6 +185,20 @@ wait_text_is_safe() {
     return 1
   fi
   return 0
+}
+
+eci_wait_report_name='eci_user_owned_wait.md'
+eci_wait_max_bytes=8192
+
+wait_file_is_bounded() {
+  local path="$1"
+  local bytes
+
+  bytes="$(wc -c <"$path" 2>/dev/null || true)"
+  case "$bytes" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$bytes" -le "$eci_wait_max_bytes" ]
 }
 
 validate_active_marker() {
@@ -216,6 +223,10 @@ validate_eci_wait_report() {
     echo "ECI user-owned wait report must be a regular, non-symlink file: $report" >&2
     return 1
   }
+  wait_file_is_bounded "$report" || {
+    echo "ECI user-owned wait report exceeds ${eci_wait_max_bytes} bytes: $report" >&2
+    return 1
+  }
   if ! last_byte="$(tail -c 1 -- "$report" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"; then
     return 1
   fi
@@ -224,7 +235,7 @@ validate_eci_wait_report() {
     return 1
   }
   mapfile -t lines <"$report" || return 1
-  [ "${#lines[@]}" -eq 8 ] || {
+  [ "${#lines[@]}" -eq 9 ] || {
     echo "ECI user-owned wait report has a non-canonical line count: $report" >&2
     return 1
   }
@@ -236,23 +247,25 @@ validate_eci_wait_report() {
   wait_owner="${lines[4]#owner: }"
   wait_brp_result="${lines[5]#brp_result: }"
   wait_user_owned_input="${lines[6]#user_owned_input: }"
-  wait_unblock="${lines[7]#unblock: }"
+  wait_unblock_kind="${lines[7]#unblock_kind: }"
+  wait_unblock="${lines[8]#unblock: }"
   [[ "${lines[2]}" == blocker_id:\ * ]] || return 1
   [[ "${lines[3]}" == state_fingerprint:\ * ]] || return 1
   [[ "${lines[4]}" == owner:\ * ]] || return 1
   [[ "${lines[5]}" == brp_result:\ * ]] || return 1
   [[ "${lines[6]}" == user_owned_input:\ * ]] || return 1
-  [[ "${lines[7]}" == unblock:\ * ]] || return 1
+  [[ "${lines[7]}" == unblock_kind:\ * ]] || return 1
+  [[ "${lines[8]}" == unblock:\ * ]] || return 1
   [[ "$wait_blocker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   [[ "$wait_state_fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
   [ "$wait_owner" = user ] || return 1
   [ "$wait_brp_result" = exhausted-no-feasible-internal-path ] || return 1
   [ "$wait_user_owned_input" = unobtainable ] || return 1
-  wait_text_is_safe "$wait_unblock" || return 1
-  case "$wait_unblock" in
-    *input*|*resource*|*decision*) ;;
+  case "$wait_unblock_kind" in
+    input|resource|decision) ;;
     *) return 1 ;;
   esac
+  wait_text_is_safe "$wait_unblock" || return 1
   command -v sha256sum >/dev/null 2>&1 || {
     echo "sha256sum is required to validate the ECI user-owned wait report." >&2
     return 1
@@ -267,47 +280,76 @@ validate_eci_wait_state() {
   local -a lines=()
 
   [ -f "$state" ] && [ ! -L "$state" ] || return 1
+  wait_file_is_bounded "$state" || return 1
   if ! last_byte="$(tail -c 1 -- "$state" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"; then
     return 1
   fi
   [ "$last_byte" = "0a" ] || return 1
   mapfile -t lines <"$state" || return 1
-  [ "${#lines[@]}" -eq 8 ] || return 1
+  [ "${#lines[@]}" -eq 9 ] || return 1
   [ "${lines[0]}" = "state: user-owned-wait" ] || return 1
   wait_blocker_id="${lines[1]#blocker_id: }"
   wait_state_fingerprint="${lines[2]#state_fingerprint: }"
   wait_owner="${lines[3]#owner: }"
   wait_brp_result="${lines[4]#brp_result: }"
   wait_user_owned_input="${lines[5]#user_owned_input: }"
-  wait_unblock="${lines[6]#unblock: }"
-  wait_report_sha256="${lines[7]#report_sha256: }"
+  wait_unblock_kind="${lines[6]#unblock_kind: }"
+  wait_unblock="${lines[7]#unblock: }"
+  wait_report_sha256="${lines[8]#report_sha256: }"
   [[ "${lines[1]}" == blocker_id:\ * ]] || return 1
   [[ "${lines[2]}" == state_fingerprint:\ * ]] || return 1
   [[ "${lines[3]}" == owner:\ * ]] || return 1
   [[ "${lines[4]}" == brp_result:\ * ]] || return 1
   [[ "${lines[5]}" == user_owned_input:\ * ]] || return 1
-  [[ "${lines[6]}" == unblock:\ * ]] || return 1
-  [[ "${lines[7]}" == report_sha256:\ * ]] || return 1
+  [[ "${lines[6]}" == unblock_kind:\ * ]] || return 1
+  [[ "${lines[7]}" == unblock:\ * ]] || return 1
+  [[ "${lines[8]}" == report_sha256:\ * ]] || return 1
   [[ "$wait_blocker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   [[ "$wait_state_fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
   [ "$wait_owner" = user ] || return 1
   [ "$wait_brp_result" = exhausted-no-feasible-internal-path ] || return 1
   [ "$wait_user_owned_input" = unobtainable ] || return 1
-  wait_text_is_safe "$wait_unblock" || return 1
-  case "$wait_unblock" in
-    *input*|*resource*|*decision*) ;;
+  case "$wait_unblock_kind" in
+    input|resource|decision) ;;
     *) return 1 ;;
   esac
+  wait_text_is_safe "$wait_unblock" || return 1
+  [ -n "$wait_unblock" ] || return 1
   [[ "$wait_report_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+}
+
+validate_eci_wait_state_report_binding() {
+  local state="$1"
+  local report="$2"
+  local state_blocker_id state_fingerprint state_unblock_kind state_unblock state_report_sha256
+
+  validate_eci_wait_state "$state" || return 1
+  state_blocker_id="$wait_blocker_id"
+  state_fingerprint="$wait_state_fingerprint"
+  state_unblock_kind="$wait_unblock_kind"
+  state_unblock="$wait_unblock"
+  state_report_sha256="$wait_report_sha256"
+  validate_eci_wait_report "$report" || return 1
+  [ "$state_blocker_id" = "$wait_blocker_id" ] &&
+    [ "$state_fingerprint" = "$wait_state_fingerprint" ] &&
+    [ "$state_unblock_kind" = "$wait_unblock_kind" ] &&
+    [ "$state_unblock" = "$wait_unblock" ] &&
+    [ "$state_report_sha256" = "$wait_report_sha256" ] || return 1
+  validated_wait_state_fingerprint="$state_fingerprint"
 }
 
 write_eci_wait_state() {
   local state="$1"
+  local tmp="${state}.tmp.$$"
 
   if [ -e "$state" ] || [ -L "$state" ]; then
     echo "ECI user-owned wait state already exists or is unsafe: $state" >&2
     return 1
   fi
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || {
+    echo "ECI temporary wait state already exists or is unsafe: $tmp" >&2
+    return 1
+  }
   if ! (
     set -C
     {
@@ -317,13 +359,21 @@ write_eci_wait_state() {
       printf 'owner: user\n'
       printf 'brp_result: exhausted-no-feasible-internal-path\n'
       printf 'user_owned_input: unobtainable\n'
+      printf 'unblock_kind: %s\n' "$wait_unblock_kind"
       printf 'unblock: %s\n' "$wait_unblock"
       printf 'report_sha256: %s\n' "$wait_report_sha256"
-    } >"$state"
+    } >"$tmp"
   ); then
+    rm -f -- "$tmp"
     echo "ECI user-owned wait state could not be created: $state" >&2
     return 1
   fi
+  if ! ln -- "$tmp" "$state" 2>/dev/null; then
+    rm -f -- "$tmp"
+    echo "ECI user-owned wait state could not be created: $state" >&2
+    return 1
+  fi
+  rm -f -- "$tmp"
   [ -f "$state" ] && [ ! -L "$state" ] || return 1
 }
 
@@ -378,13 +428,17 @@ case "$cmd" in
     shift
     report="${1:-}"
     [ "$#" -eq 1 ] || { usage; exit 2; }
-    require_coordinator || exit 1
     session_dir="$(resolve_session_dir)" || {
       echo "eci-active: no session directory found under $(codex_proof_root)" >&2
       exit 1
     }
     marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
       echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
+      exit 1
+    }
+    expected_report="$session_dir/$eci_wait_report_name"
+    [ "$report" = "$expected_report" ] || {
+      echo "ECI user-owned wait report must use the current session path: $expected_report" >&2
       exit 1
     }
     validate_eci_wait_report "$report" || {
@@ -398,7 +452,6 @@ case "$cmd" in
     shift
     new_fingerprint="${1:-}"
     [ "$#" -eq 1 ] || { usage; exit 2; }
-    require_coordinator || exit 1
     [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]] || {
       echo "ECI resume fingerprint must be 64 lowercase hexadecimal characters." >&2
       exit 1
@@ -416,11 +469,16 @@ case "$cmd" in
       echo "ECI user-owned wait state is a symlink; refusing to use it: $wait_state" >&2
       exit 1
     }
-    validate_eci_wait_state "$wait_state" || {
-      echo "ECI user-owned wait state is missing or invalid: $wait_state" >&2
+    expected_report="$session_dir/$eci_wait_report_name"
+    validate_eci_wait_state_report_binding "$wait_state" "$expected_report" || {
+      if ! [ -f "$expected_report" ] || [ -L "$expected_report" ]; then
+        echo "ECI user-owned wait report is missing or invalid: $expected_report" >&2
+      else
+        echo "ECI user-owned wait report does not match its state: $wait_state" >&2
+      fi
       exit 1
     }
-    [ "$new_fingerprint" != "$wait_state_fingerprint" ] || {
+    [ "$new_fingerprint" != "$validated_wait_state_fingerprint" ] || {
       echo "ECI resume fingerprint is unchanged; provide materially changed normalized content." >&2
       exit 1
     }
@@ -429,7 +487,7 @@ case "$cmd" in
       echo "ECI user-owned wait state could not be cleared: $wait_state" >&2
       exit 1
     }
-    printf 'ECI user-owned wait state cleared for materially changed content: %s\n' "$marker"
+    printf 'ECI user-owned wait state cleared for supplied changed fingerprint: %s\n' "$marker"
     ;;
   off)
     report="${2:-}"
@@ -462,8 +520,9 @@ case "$cmd" in
       exit 1
     fi
     if [ -f "$wait_state" ]; then
-      validate_eci_wait_state "$wait_state" || {
-        echo "ECI user-owned wait state is invalid: $wait_state" >&2
+      expected_wait_report="$session_dir/$eci_wait_report_name"
+      validate_eci_wait_state_report_binding "$wait_state" "$expected_wait_report" || {
+        echo "ECI user-owned wait state/report is invalid or unbound: $wait_state" >&2
         exit 1
       }
     fi
