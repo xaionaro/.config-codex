@@ -11,6 +11,7 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/reviewer-filter.sh"
 . "$HOOK_DIR/lib/reviewer-call.sh"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
+. "$HOOK_DIR/lib/eci-diagnostic.sh"
 codex_init_tmp || true
 
 input=$(cat)
@@ -241,7 +242,7 @@ if [ -n "${CODEX_REVIEWER_FAKE_RESULT:-}" ]; then
   model="fake"
 else
   result=$(reviewer_call_chat "stop_reviewer" "$rules_file" "$body_file" "$HOOK_DIR/lib/reviewer-schema.json" "$CODEX_STOP_REVIEWER_TIMEOUT" 2>/dev/null) || {
-    printf 'system-prompt-reviewer: reviewer call failed; review skipped.\n' >&2
+    printf '%s\n' "$(eci_diagnostic_reason "ECI_REVIEW_BACKEND_CALL_FAILED" "Stop" "external-review" "reviewer=$(eci_diagnostic_value "$REVIEWER_BACKEND"),session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "$cwd")" "reviewer call failed; review skipped" "retry the reviewer when the backend is available; Stop admission remains unchanged")" >&2
     exit 0
   }
 fi
@@ -273,12 +274,13 @@ case "$verdict" in
       printf '\n---\n\n## External-reviewer result\n\n'
       printf -- '- Elapsed: %ss\n- Backend: %s\n- Model: %s\n- Verdict: fail\n\n%s\n' "$elapsed" "$REVIEWER_BACKEND" "$model" "$violations"
     } >"$state_dir/last-result.md" 2>/dev/null || true
-    reason=$(printf 'External compliance reviewer (%s via %s) flagged violations in your last turn.\n\nViolations:\n%s\n\nPRIMARY ACTION: fix the violations this turn.' "$model" "$REVIEWER_BACKEND" "$violations")
+    detail=$(printf 'External compliance reviewer (%s via %s) flagged violations in your last turn.\n\nViolations:\n%s\n\nPRIMARY ACTION: fix the violations this turn.' "$model" "$REVIEWER_BACKEND" "$violations")
+    reason="$(eci_diagnostic_reason "$(eci_diagnostic_code_for_reason "$detail")" "Stop" "external-review" "session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "$cwd"),state=$(eci_diagnostic_value "$state_dir/last-result.md")" "$detail" "fix every listed violation in this turn, then invoke Stop again")"
     jq -n --arg reason "$reason" '{decision:"block", reason:$reason}'
     exit 0
     ;;
   *)
-    printf 'system-prompt-reviewer: malformed reviewer verdict; review skipped.\n' >&2
+    printf '%s\n' "$(eci_diagnostic_reason "ECI_REVIEW_VERDICT_MALFORMED" "Stop" "external-review" "reviewer=$(eci_diagnostic_value "$REVIEWER_BACKEND"),session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "$cwd")" "malformed reviewer verdict; review skipped" "return a schema-valid pass/fail verdict and retry the reviewer")" >&2
     exit 0
     ;;
 esac

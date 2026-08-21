@@ -3,7 +3,6 @@
 # Lightweight contract/timing probe for the active-ECI stop path.  This is
 # intentionally independent of the full formal hooks harness.
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/codex-eci-fast.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
@@ -11,11 +10,51 @@ trap 'rm -rf -- "$tmp"' EXIT
 proof_root="$tmp/proof"
 home="$tmp/home"
 mkdir -p "$proof_root/t00-session" "$home"
-printf '%s\n' 'scope: fast-path probe' >"$proof_root/t00-session/eci_active"
+printf '%s\n' \
+  'scope: fast-path probe' \
+  "cwd: $ROOT" \
+  'session_id: t00-session' \
+  'created_utc: 2026-08-15T00:00:00Z' \
+  >"$proof_root/t00-session/eci_active"
 
 input="$tmp/input.json"
 out="$tmp/out.json"
 jq -n --arg cwd "$ROOT" '{session_id:"t00-session", transcript_path:"", stop_hook_active:false, cwd:$cwd}' >"$input"
+
+# The callback path must not recurse through arbitrary proof-root descendants.
+# Keep this structural assertion beside a non-marker directory stress fixture.
+! grep -Fq 'find "$root" -mindepth 2 -maxdepth 2 -print0' "$ROOT/hooks/stop-gate.sh"
+grep -Fq 'eci_stop_max_root_entries=' "$ROOT/hooks/stop-gate.sh"
+grep -Fq 'find "$root" -mindepth 1 -maxdepth 1 -print0' "$ROOT/hooks/stop-gate.sh"
+! grep -Fq 'for marker in "$root"/*/eci_active' "$ROOT/hooks/stop-gate.sh"
+non_marker_root="$tmp/non-marker-root"
+mkdir -p "$non_marker_root"
+for i in $(seq 1 2000); do
+  mkdir -p "$non_marker_root/t00-no-marker-$i"
+done
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-no-marker-caller",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$input"
+timeout 1s env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$non_marker_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$out"
+[ "$(jq -r '.continue // empty' "$out")" = true ]
+jq -n --arg cwd "$ROOT" '{session_id:"t00-session", transcript_path:"", stop_hook_active:false, cwd:$cwd}' >"$input"
+
+# An inherited helper override must not redirect Stop away from the configured
+# proof root.  The canonical active marker remains authoritative.
+override_root="$tmp/stop-gate-override-root"
+mkdir -p "$override_root"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$proof_root" CODEX_STOP_GATE_ROOT="$override_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$out"
+[ "$(jq -r '.decision // empty' "$out")" = block ]
+jq -e '.reason |
+  contains("[ECI_STOP_ACTIVE_ECI]") and
+  contains("valid and bound") and
+  contains("no marker repair") and
+  contains("control metadata, not a new user request") and
+  contains("do not emit another final/status/question") and
+  contains("do not retry or poll Stop") and
+  contains("one distinct recovery action") and
+  contains("remediation: do not retry or poll Stop while the marker and normalized control state are unchanged")' "$out" >/dev/null
 
 run_once() {
   env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$proof_root" \
@@ -45,6 +84,7 @@ for _ in $(seq 1 5); do
   elapsed_ms=$(( ($(date +%s%N) - start_ns) / 1000000 ))
   [ "$elapsed_ms" -gt "$max_ms" ] && max_ms="$elapsed_ms"
 done
+[ "$max_ms" -lt 1000 ]
 
 run_concurrent() {
   local workers="$1"
@@ -85,7 +125,9 @@ run_concurrent() {
     worker_ms="$(cat "$worker_dir/$i.ms")"
     [ "$worker_ms" -gt "$worker_max" ] && worker_max="$worker_ms"
   done
-  [ "$worker_max" -lt 1000 ]
+  # Concurrent wall time includes scheduler queueing.  Keep it as a bounded
+  # liveness check; the serial probe above is the configured-chain <1s gate.
+  [ "$wall_ms" -lt 10000 ]
   printf 'PASS active ECI concurrent fast path: %s callbacks, max %sms, wall %sms\n' \
     "$workers" "$worker_max" "$wall_ms"
 }
@@ -158,6 +200,29 @@ if CODEX_PROOF_ROOT="$scope_root" CODEX_SESSION_ID=scope-session \
   exit 1
 fi
 [ ! -e "$scope_root/scope-session/eci_active" ]
+
+long_scope_root="$tmp/long-scope-root"
+mkdir -p "$long_scope_root/long-session"
+long_scope="$(head -c 5000 /dev/zero | tr '\0' x)"
+if CODEX_PROOF_ROOT="$long_scope_root" CODEX_SESSION_ID=long-session \
+  "$ROOT/bin/eci-active" on "$long_scope" >"$tmp/long-scope.out" 2>"$tmp/long-scope.err"; then
+  printf 'ECI oversized scope was accepted\n' >&2
+  exit 1
+fi
+[ ! -e "$long_scope_root/long-session/eci_active" ]
+
+partial_root="$tmp/partial-marker-root"
+mkdir -p "$partial_root/partial-session"
+partial_marker="$partial_root/partial-session/eci_active"
+printf '%s\n' 'scope: pre-existing partial marker' >"$partial_marker"
+if CODEX_PROOF_ROOT="$partial_root" CODEX_SESSION_ID=partial-session \
+  "$ROOT/bin/eci-active" on "replacement must not occur" >"$tmp/partial.out" 2>"$tmp/partial.err"; then
+  printf 'ECI activation replaced a pre-existing marker\n' >&2
+  exit 1
+fi
+[ "$(cat "$partial_marker")" = 'scope: pre-existing partial marker' ]
+[ ! -e "$partial_marker.tmp" ]
+
 mkdir -p "$safety_root/reviewer"
 printf 'scope: bad\tc0\ncwd: %s\nsession_id: reviewer\n' "$ROOT" \
   >"$safety_root/reviewer/eci_active"
@@ -182,6 +247,7 @@ jq -n --arg cwd "$ROOT" \
 env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$stop_safety_root" \
   bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
 [ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+jq -e '.reason | contains("[ECI_MARKER_UNSAFE_PATH]") and contains("symlink")' "$stop_out" >/dev/null
 [ ! -e "$stop_safety_root/t00-session/stop_timestamps" ]
 [ ! -e "$stop_safety_root/stop_timestamps" ]
 [ "$(cat "$tmp/stop-target/eci_active")" = 'scope: target' ]
@@ -208,6 +274,153 @@ env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$stop_safety_root
 [ ! -e "$stop_safety_root/t00-side/stop_timestamps" ]
 [ ! -e "$stop_safety_root/stop_timestamps" ]
 
+# Marker ownership regression: duplicate validated owners and malformed typed
+# identities must fail closed without creating recovery state.
+duplicate_root="$tmp/duplicate-root"
+mkdir -p "$duplicate_root/t00-one" "$duplicate_root/t00-two"
+printf 'scope: one\ncwd: %s\nsession_id: t00-one\n' "$ROOT" >"$duplicate_root/t00-one/eci_active"
+printf 'scope: two\ncwd: %s\nsession_id: t00-two\n' "$ROOT" >"$duplicate_root/t00-two/eci_active"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-one",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$duplicate_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$duplicate_root/t00-one/stop_timestamps" ]
+
+# A direct typed marker must not bypass duplicate-owner detection merely
+# because the proof root contains many unrelated session directories.  Arm a
+# valid wait state on the direct session as well: the duplicate ambiguity is
+# authoritative and must retain both marker and wait state while returning a
+# block.
+large_duplicate_root="$tmp/large-duplicate-root"
+mkdir -p "$large_duplicate_root/t00-direct" "$large_duplicate_root/t00-duplicate"
+CODEX_SESSION_ID=t00-direct CODEX_PROOF_ROOT="$large_duplicate_root" \
+  "$ROOT/bin/eci-active" on "direct wait probe" >"$tmp/large-duplicate-on.out" 2>&1
+printf 'scope: duplicate\ncwd: %s\nsession_id: t00-duplicate\n' "$ROOT" \
+  >"$large_duplicate_root/t00-duplicate/eci_active"
+for i in $(seq 1 2000); do
+  mkdir -p "$large_duplicate_root/t00-unrelated-$i"
+done
+large_wait_report="$(realpath -m -- "$large_duplicate_root/t00-direct/eci_user_owned_wait.md")"
+{
+  printf '# ECI User-Owned Wait\n'
+  printf 'state: user-owned-wait\n'
+  printf 'blocker_id: fast-path-duplicate\n'
+  printf 'state_fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+  printf 'owner: user\n'
+  printf 'brp_result: exhausted-no-feasible-internal-path\n'
+  printf 'user_owned_input: unobtainable\n'
+  printf 'unblock_kind: input\n'
+  printf 'unblock: user-owned input required\n'
+} >"$large_wait_report"
+CODEX_SESSION_ID=t00-direct CODEX_PROOF_ROOT="$large_duplicate_root" \
+  "$ROOT/bin/eci-active" wait "$large_wait_report" >"$tmp/large-duplicate-wait.out" 2>&1
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-direct",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$large_duplicate_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ -s "$large_duplicate_root/t00-direct/eci_active" ]
+[ -s "$large_duplicate_root/t00-direct/eci_wait" ]
+[ ! -e "$large_duplicate_root/t00-direct/stop_timestamps" ]
+
+invalid_identity_root="$tmp/invalid-identity-root"
+mkdir -p "$invalid_identity_root/t00-one"
+printf 'scope: active\ncwd: %s\nsession_id: t00-one\n' "$ROOT" >"$invalid_identity_root/t00-one/eci_active"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"invalid!",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$invalid_identity_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+jq -e '.reason | contains("[ECI_MARKER_SCOPE_MISMATCH]") and contains("session/cwd binding")' "$stop_out" >/dev/null
+
+# The active-marker scan has a fixed resource bound.  Valid markers for other
+# cwds must not turn an oversized proof root into an unbounded callback.
+overflow_root="$tmp/overflow-root"
+mkdir -p "$overflow_root"
+for i in $(seq 1 65); do
+  overflow_sid="t00-overflow-$i"
+  mkdir -p "$overflow_root/$overflow_sid"
+  printf 'scope: overflow\ncwd: /other/cwd\nsession_id: %s\n' "$overflow_sid" \
+    >"$overflow_root/$overflow_sid/eci_active"
+done
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"invalid!",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$overflow_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$overflow_root/t00-overflow-caller/stop_timestamps" ]
+
+# A single oversized marker is also unsafe before metadata validation.
+oversized_root="$tmp/oversized-root"
+mkdir -p "$oversized_root/t00-oversized"
+{
+  printf 'scope: '
+  head -c 5000 /dev/zero | tr '\0' x
+  printf '\ncwd: /other/cwd\nsession_id: t00-oversized\n'
+} >"$oversized_root/t00-oversized/eci_active"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"invalid!",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$oversized_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$oversized_root/t00-oversized-caller/stop_timestamps" ]
+if CODEX_SESSION_ID=t00-oversized CODEX_PROOF_ROOT="$oversized_root" \
+    "$ROOT/bin/eci-active" status >"$tmp/oversized-status.out" 2>"$tmp/oversized-status.err"; then
+  printf 'oversized marker was read by eci-active status\n' >&2
+  exit 1
+fi
+
+# A duplicate identity key must not be resolved by the first regex match. The
+# active-marker path performs one strict object/duplicate/type check and blocks
+# without creating callback bookkeeping.
+duplicate_json_root="$tmp/duplicate-json-root"
+mkdir -p "$duplicate_json_root/t00-one"
+printf 'scope: duplicate json\ncwd: %s\nsession_id: t00-one\n' "$ROOT" >"$duplicate_json_root/t00-one/eci_active"
+printf '{"session_id":"t00-one","session_id":"t00-two","cwd":"%s","transcript_path":"","stop_hook_active":false}\n' "$ROOT" >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$duplicate_json_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$duplicate_json_root/t00-one/stop_timestamps" ]
+
+invalid_symlink_identity_root="$tmp/invalid-symlink-identity-root"
+mkdir -p "$invalid_symlink_identity_root/t00-one"
+printf '%s\n' 'scope: unsafe marker target' >"$tmp/unsafe-marker-target"
+ln -s "$tmp/unsafe-marker-target" "$invalid_symlink_identity_root/t00-one/eci_active"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$invalid_symlink_identity_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+
+# A proof marker must not be consumable through a hardlink alias.  The
+# metadata is identical, but the link count proves that an unrelated path can
+# mutate the same control bytes; readers fail closed before treating it as an
+# active owner.
+hardlink_identity_root="$tmp/hardlink-identity-root"
+mkdir -p "$hardlink_identity_root/t00-one"
+printf 'scope: hardlink\ncwd: %s\nsession_id: t00-one\n' "$ROOT" \
+  >"$hardlink_identity_root/t00-one/eci_active"
+ln "$hardlink_identity_root/t00-one/eci_active" "$tmp/eci-active-hardlink-alias"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-one",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$hardlink_identity_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$hardlink_identity_root/t00-one/stop_timestamps" ]
+
+# The path owner is part of the marker identity.  A marker embedded with a
+# different session must not become invisible simply because the requested
+# session has no matching directory; discovery scans it and fails closed.
+mismatched_owner_root="$tmp/mismatched-owner-root"
+mkdir -p "$mismatched_owner_root/t00-one"
+printf 'scope: mismatch\ncwd: %s\nsession_id: t00-two\n' "$ROOT" \
+  >"$mismatched_owner_root/t00-one/eci_active"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"invalid!",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$mismatched_owner_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+[ ! -e "$mismatched_owner_root/t00-two/stop_timestamps" ]
+
 # Root-integrity regression: replacing an active proof root or its parent with
 # a regular file must block read-only before transcriptless continuation.
 swap_root="$tmp/swap-root"
@@ -232,6 +445,28 @@ env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$swap_parent_root
   bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
 [ "$(jq -r '.decision // empty' "$stop_out")" = block ]
 [ "$(cat "$swap_parent")" = 'parent replaced' ]
+
+# A worker with a different session id must still route through its validated
+# parent marker when unrelated proof-root entries exhaust the bounded scan.
+# Parent metadata is resolved directly from the bounded transcript record.
+overflow_edit_root="$tmp/overflow-edit-root"
+mkdir -p "$overflow_edit_root"
+for i in $(seq 1 65); do
+  mkdir -p "$overflow_edit_root/t00-edit-unrelated-$i"
+done
+mkdir -p "$overflow_edit_root/parent-session"
+printf 'scope: parent worker\ncwd: %s\nsession_id: parent-session\n' "$ROOT" \
+  >"$overflow_edit_root/parent-session/eci_active"
+mkdir -p "$home/.codex/sessions"
+overflow_transcript="$home/.codex/sessions/overflow-worker.jsonl"
+printf '%s\n' '{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Overflow","agent_role":"worker"}}}}}' \
+  >"$overflow_transcript"
+overflow_edit_input="$tmp/overflow-edit.json"
+jq -n --arg cwd "$ROOT" --arg transcript "$overflow_transcript" \
+  '{session_id:"child-session",cwd:$cwd,transcript_path:$transcript,tool_name:"apply_patch",tool_input:{command:"*** Begin Patch\\n*** Add File: worker-file.txt\\n+worker\\n*** End Patch\\n"}}' >"$overflow_edit_input"
+env -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$overflow_edit_root" \
+  bash "$ROOT/hooks/eci-active-gate.sh" <"$overflow_edit_input" >"$tmp/overflow-edit.out"
+[ ! -s "$tmp/overflow-edit.out" ]
 
 # The active path must not create/update recovery state or generic callback
 # counters.  The only proof-root file is the marker itself.

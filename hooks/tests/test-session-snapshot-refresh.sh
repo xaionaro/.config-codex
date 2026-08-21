@@ -22,10 +22,15 @@ run_snapshot() {
       bash "$ROOT/hooks/session-snapshot.sh" >"$out"
 }
 
+write_direct_marker() {
+  local proof_root="$1" scope="${2:-refresh test}"
+  printf 'scope: %s\ncwd: %s\nsession_id: t00-session\ncreated_utc: 2026-08-14T00:00:00Z\n' "$scope" "$ROOT" >"$proof_root/t00-session/eci_active"
+}
+
 test_active_eci_refresh_signal_for_session_start_reminder() {
   local proof_root="$TMP_ROOT/active-proof" out
   mkdir -p "$proof_root/t00-session"
-  printf '%s\n' 'scope: refresh test' >"$proof_root/t00-session/eci_active"
+  write_direct_marker "$proof_root"
   out="$TMP_ROOT/active.out"
 
   run_snapshot "$proof_root" resume "$out"
@@ -39,14 +44,29 @@ test_active_eci_refresh_signal_for_session_start_reminder() {
   ' "$out" >/dev/null
 }
 
+test_session_start_rejects_marker_owner_mismatch() {
+  local proof_root="$TMP_ROOT/mismatched-owner-proof" out
+  mkdir -p "$proof_root/t00-session"
+  write_direct_marker "$proof_root" 'mismatched owner must not refresh'
+  sed -i 's/^session_id: t00-session$/session_id: t00-other/' "$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/mismatched-owner.out"
+  run_snapshot "$proof_root" resume "$out"
+  jq -e '.hookSpecificOutput.additionalContext == "Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable."' "$out" >/dev/null
+}
+
 test_nested_eci_refresh_signal_is_explicit() {
   local proof_root="$TMP_ROOT/nested-proof" out
   mkdir -p "$proof_root/t00-session"
-  printf 'outer_session_id: t00-session\nstep: 4\niteration: 1\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  printf 'scope: nested outer\ncwd: %s\nsession_id: t00-session\ncreated_utc: 2026-08-14T00:00:00Z\n' "$ROOT" >"$proof_root/t00-session/eci_active"
+  printf 'outer_session_id: t00-session\nouter_marker: %s/eci_active\nowner: ate\nwriter_session_id: t00-session\nacceptance_version: 1\nstep: 4\niteration: 1\nstate: active\n' "$proof_root/t00-session" >"$proof_root/t00-session/ate_nested_eci_active"
   out="$TMP_ROOT/nested.out"
   run_snapshot "$proof_root" resume "$out"
   jq -e '.hookSpecificOutput.additionalContext | contains("ECI is active")' "$out" >/dev/null
-  printf 'outer_session_id: wrong\nstep: 4\niteration: 1\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  rm -f -- "$proof_root/t00-session/eci_active"
+  printf 'outer_session_id: wrong\nouter_marker: %s/eci_active\nowner: ate\nwriter_session_id: t00-session\nacceptance_version: 1\nstep: 4\niteration: 1\nstate: active\n' "$proof_root/t00-session" >"$proof_root/t00-session/ate_nested_eci_active"
+  run_snapshot "$proof_root" resume "$out"
+  jq -e '.hookSpecificOutput.additionalContext == "Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable."' "$out" >/dev/null
+  printf 'outer_session_id: t00-session\nstep: 4\niteration: 1\n' >"$proof_root/t00-session/ate_nested_eci_active"
   run_snapshot "$proof_root" resume "$out"
   jq -e '.hookSpecificOutput.additionalContext == "Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable."' "$out" >/dev/null
 }
@@ -101,6 +121,81 @@ test_session_start_rejects_root_and_session_symlinks() {
   jq -cn '{session_id:"t00-session",transcript_path:"/tmp/x",cwd:"/tmp"}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$root_target" bash "$ROOT/hooks/session-snapshot.sh" >"$out"
   [ ! -s "$out" ]
+}
+
+test_baseline_uses_fixed_git_and_resolves_head() {
+  local proof_root="$TMP_ROOT/poisoned-git-proof" fakebin="$TMP_ROOT/poisoned-git-bin" out baseline expected
+  mkdir -p "$proof_root" "$fakebin" "$TMP_ROOT/home/tmp"
+  printf '#!/usr/bin/env bash\nprintf poisoned-baseline\\n' >"$fakebin/git"
+  chmod +x "$fakebin/git"
+  out="$TMP_ROOT/poisoned-git.out"
+  jq -cn '{session_id:"t00-session",transcript_path:"/tmp/x",cwd:"/home/pheona/.codex"}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" GIT_DIR="$TMP_ROOT/poisoned-git-dir" PATH="$fakebin:$PATH" \
+      bash "$ROOT/hooks/session-snapshot.sh" >"$out"
+  baseline="$proof_root/t00-session/baseline_head"
+  expected="$(git -C "$ROOT" rev-parse HEAD)"
+  [ "$(cat "$baseline")" = "$expected" ]
+  binding="$proof_root/t00-session/baseline_head.binding"
+  [ -f "$binding" ] && [ ! -L "$binding" ]
+  grep -Fxq 'schema: eci-baseline-binding/v1' "$binding"
+  grep -Fxq 'session_id: t00-session' "$binding"
+  grep -Fxq "base_oid: $expected" "$binding"
+}
+
+test_baseline_pair_recovers_after_publication_boundary() {
+  local proof_root="$TMP_ROOT/baseline-recovery-proof" out baseline binding
+  mkdir -p "$proof_root" "$TMP_ROOT/home/tmp"
+  baseline="$proof_root/t00-session/baseline_head"
+  binding="$proof_root/t00-session/baseline_head.binding"
+  out="$TMP_ROOT/baseline-recovery.out"
+
+  if jq -cn '{session_id:"t00-session",transcript_path:"/tmp/session.jsonl",cwd:"/home/pheona/.codex"}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_SNAPSHOT_FAIL_AFTER=baseline \
+      bash "$ROOT/hooks/session-snapshot.sh" >"$out"; then
+    return 1
+  fi
+  [ -f "$baseline" ] && [ ! -L "$baseline" ]
+  [ ! -e "$binding" ] && [ ! -L "$binding" ]
+
+  # A retry repairs the missing binding from the validated baseline instead of
+  # leaving the review gate wedged on a half-published pair.
+  run_snapshot "$proof_root" resume "$out"
+  [ -f "$baseline" ] && [ -f "$binding" ]
+  grep -Fxq "base_oid: $(cat "$baseline")" "$binding"
+
+  proof_root="$TMP_ROOT/baseline-binding-recovery-proof"
+  baseline="$proof_root/t00-session/baseline_head"
+  binding="$proof_root/t00-session/baseline_head.binding"
+  mkdir -p "$proof_root"
+  if jq -cn '{session_id:"t00-session",transcript_path:"/tmp/session.jsonl",cwd:"/home/pheona/.codex"}' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_SNAPSHOT_FAIL_AFTER=binding \
+      bash "$ROOT/hooks/session-snapshot.sh" >"$out"; then
+    return 1
+  fi
+  [ -f "$baseline" ] && [ -f "$binding" ]
+  run_snapshot "$proof_root" resume "$out"
+  [ -f "$baseline" ] && [ -f "$binding" ]
+}
+
+test_worker_cli_lifecycle_mutations_are_main_owned() {
+  local proof_root="$TMP_ROOT/worker-lifecycle-proof" session_dir report fingerprint
+  session_dir="$proof_root/t00-worker"
+  report="$session_dir/disengage.md"
+  fingerprint="$(printf '%064d' 1)"
+  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
+  printf '%s\n' '# worker teardown report' >"$report"
+  for command in \
+    "on worker-scope" \
+    "wait $session_dir/eci_user_owned_wait.md" \
+    "resume $fingerprint" \
+    "off $report"; do
+    if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$ROOT/bin/eci-active" $command >"$TMP_ROOT/worker-lifecycle.out" 2>"$TMP_ROOT/worker-lifecycle.err"; then
+      return 1
+    fi
+    grep -Fq 'main/orchestrator' "$TMP_ROOT/worker-lifecycle.err" || return 1
+  done
+  [ ! -e "$session_dir/eci_wait" ]
 }
 
 test_eci_active_mutations_fail_closed_when_lock_is_busy() {
@@ -183,11 +278,15 @@ test_old_marker_dir_with_symlink_eci_marker_is_pruned() {
 }
 
 test_active_eci_refresh_signal_for_session_start_reminder
+test_session_start_rejects_marker_owner_mismatch
 test_nested_eci_refresh_signal_is_explicit
 test_inactive_session_keeps_baseline_context
 test_session_start_matcher_uses_supported_lifecycle_sources
 test_session_start_rejects_malformed_types
 test_session_start_rejects_root_and_session_symlinks
+test_baseline_uses_fixed_git_and_resolves_head
+test_baseline_pair_recovers_after_publication_boundary
+test_worker_cli_lifecycle_mutations_are_main_owned
 test_eci_active_mutations_fail_closed_when_lock_is_busy
 test_session_start_skips_pruning_when_mutation_lock_is_busy
 test_old_uuid_session_with_active_eci_marker_survives_cleanup

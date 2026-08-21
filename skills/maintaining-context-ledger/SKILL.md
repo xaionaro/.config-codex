@@ -48,6 +48,14 @@ Append-only history. Every material change recorded in the ledger gets a corresp
 | Same-turn pairing | Every ledger update has at least one log entry from that turn. A ledger diff with no log append is defective. |
 | No synthesis | The log records what changed; it does not duplicate the ledger's current-state synthesis. Cross-reference by section/heading instead. |
 
+`high_level_log.md` is an append-only file at the byte level. Treat the bytes
+present when the session log is established as the immutable prefix: a later
+update may publish only an EOF append to the same canonical regular file. Do
+not rewrite, truncate, insert in the middle, delete, replace, or follow a
+symlink alias. Edit/Write/apply-patch routes are not append proofs; use the
+bounded direct EOF-append route and fail closed when the canonical target is
+missing, non-regular, or symlinked.
+
 Suggested entry shape:
 
 ```text

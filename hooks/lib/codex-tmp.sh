@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Hook scratch + error helpers.
+. "${BASH_SOURCE[0]%/*}/eci-diagnostic.sh"
 
 codex_init_tmp() {
   local target="${CODEX_TMPDIR:-$HOME/tmp}"
@@ -7,15 +8,13 @@ codex_init_tmp() {
     export TMPDIR="$target"
     return 0
   fi
-  printf 'codex_init_tmp: %s unwritable; TMPDIR left as %s\n' \
-    "$target" "${TMPDIR:-/tmp}" >&2
+  printf '%s\n' "$(eci_diagnostic_reason "ECI_TMPDIR_UNWRITABLE" "PreToolUse" "tmp-init" "hook=codex,target=$target,tmpdir=${TMPDIR:-/tmp}" "temporary directory is unwritable; TMPDIR left unchanged" "make the configured temporary directory writable or set CODEX_TMPDIR to a writable bounded directory")" >&2
   return 1
 }
 
 _codex_fail_open_emit() {
   local hook_name="$1" line="$2" exit_code="$3" cmd="$4"
-  printf '%s: aborted line=%d exit=%d cmd=%q; failing open; check disk space (df -h /tmp $HOME/tmp)\n' \
-    "$hook_name" "$line" "$exit_code" "$cmd" >&2
+  printf '%s\n' "$(eci_diagnostic_reason "ECI_HOOK_FAIL_OPEN" "PreToolUse" "hook-fail-open" "hook=$hook_name,line=$line,exit=$exit_code,command=$cmd" "hook command failed; failing open" "inspect the failing command and available temporary-directory/disk state before retrying")" >&2
 }
 
 codex_install_fail_open_trap() {

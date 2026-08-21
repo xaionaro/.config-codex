@@ -1,7 +1,20 @@
 # Shellcheck-friendly library: parse no-credential reviewer backend specs.
 # shellcheck shell=bash
 
+REVIEWER_BACKEND_LIB_DIR="${BASH_SOURCE[0]%/*}"
+# shellcheck source=eci-diagnostic.sh
+. "$REVIEWER_BACKEND_LIB_DIR/eci-diagnostic.sh"
+
 SYNTHETIC_USER_TAG_RE='^[[:space:]]*<(task-notification|command-name|command-message|command-args|local-command-stdout|local-command-caveat|system-reminder)>'
+
+reviewer_backend_diagnostic() {
+  local code="$1"
+  local operation="$2"
+  local subject="$3"
+  local reason="$4"
+  local remediation="$5"
+  printf '%s\n' "$(eci_diagnostic_reason "$code" "Stop" "$operation" "$subject" "$reason" "$remediation")" >&2
+}
 
 reviewer_reset_backend() {
   REVIEWER_BACKEND=""
@@ -27,7 +40,14 @@ parse_reviewer_env() {
         REVIEWER_OLLAMA_MODEL="${BASH_REMATCH[3]}"
         return 0
       fi
-      printf 'reviewer-backend: malformed %s=%q (expected ollama:scheme://host[:port]:MODEL)\n' "$env_name" "$raw" >&2
+      local safe_raw
+      safe_raw="$(eci_diagnostic_value "$raw")"
+      reviewer_backend_diagnostic \
+        "ECI_REVIEWER_BACKEND_MALFORMED" \
+        "external-review-config" \
+        "env=$env_name,backend=ollama" \
+        "reviewer-backend: malformed $env_name=$safe_raw (expected ollama:scheme://host[:port]:MODEL)" \
+        "set $env_name to ollama:scheme://host[:port]:MODEL or leave it empty, then retry"
       return 1
       ;;
     opencode-zen:*)
@@ -38,11 +58,26 @@ parse_reviewer_env() {
         REVIEWER_OPENCODE_MODEL="${BASH_REMATCH[3]}"
         return 0
       fi
-      printf 'reviewer-backend: malformed %s=%q (expected opencode-zen:scheme://host[:port]:MODEL)\n' "$env_name" "$raw" >&2
+      local safe_raw
+      safe_raw="$(eci_diagnostic_value "$raw")"
+      reviewer_backend_diagnostic \
+        "ECI_REVIEWER_BACKEND_MALFORMED" \
+        "external-review-config" \
+        "env=$env_name,backend=opencode-zen" \
+        "reviewer-backend: malformed $env_name=$safe_raw (expected opencode-zen:scheme://host[:port]:MODEL)" \
+        "set $env_name to opencode-zen:scheme://host[:port]:MODEL or leave it empty, then retry"
       return 1
       ;;
     *)
-      printf 'reviewer-backend: unknown %s=%q (review skipped; allowed: ollama:URL:MODEL, opencode-zen:URL:MODEL)\n' "$env_name" "$raw" >&2
+      local safe_raw safe_backend
+      safe_raw="$(eci_diagnostic_value "$raw")"
+      safe_backend="$(eci_diagnostic_value "${raw%%:*}")"
+      reviewer_backend_diagnostic \
+        "ECI_REVIEWER_BACKEND_UNSUPPORTED" \
+        "external-review-config" \
+        "env=$env_name,backend=$safe_backend" \
+        "reviewer-backend: unknown $env_name=$safe_raw (review skipped; allowed: ollama:URL:MODEL, opencode-zen:URL:MODEL)" \
+        "use ollama:URL:MODEL or opencode-zen:URL:MODEL, or leave reviewer configuration empty"
       return 1
       ;;
   esac

@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 
-# PostCompact hook: refresh ECI instructions without touching session state.
+# PostCompact hook: validate the event without touching session state.
+# Codex 0.149 does not accept event-specific output fields for PostCompact, so
+# every path emits the provider-valid empty object and keeps diagnostics off
+# stdout.
 
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
+
+postcompact_noop() {
+  # PostCompact always requires one valid JSON object on stdout, including
+  # malformed, inactive, or out-of-scope input. Keep diagnostics off stdout.
+  printf '%s\n' '{}'
+  exit 0
+}
 
 input=$(cat)
 if ! printf '%s' "$input" | jq -e '
@@ -16,32 +26,35 @@ if ! printf '%s' "$input" | jq -e '
   .hook_event_name == "PostCompact" and
   ((has("trigger") | not) or ((.trigger | type) == "string" and (.trigger == "manual" or .trigger == "auto")))
 ' >/dev/null 2>&1; then
-  exit 0
+  postcompact_noop
 fi
 
 session_id=$(printf '%s' "$input" | jq -r '.session_id' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r '.cwd' 2>/dev/null || true)
-[ -n "$cwd" ] || exit 0
+[ -n "$cwd" ] || postcompact_noop
 
-codex_valid_session_id "$session_id" || exit 0
+codex_valid_session_id "$session_id" || postcompact_noop
 case "$cwd" in
-  *[![:print:]]*) exit 0 ;;
+  *[![:print:]]*) postcompact_noop ;;
 esac
 
-root="$(codex_proof_root)"
+root="$(codex_proof_root 2>/dev/null || true)"
 proof_dir="$root/$session_id"
 marker="$proof_dir/eci_active"
 nested_marker="$proof_dir/ate_nested_eci_active"
 
-codex_proof_root_is_safe || exit 0
-codex_session_dir_is_safe "$root" "$session_id" || exit 0
-[ -d "$proof_dir" ] && [ ! -L "$proof_dir" ] || exit 0
+codex_proof_root_is_safe || postcompact_noop
+codex_session_dir_is_safe "$root" "$session_id" || postcompact_noop
+[ -d "$proof_dir" ] && [ ! -L "$proof_dir" ] || postcompact_noop
 
 nested_marker_is_active() {
-  local bytes line_count
+  local bytes line_count writer
   local -a lines=()
 
   [ -f "$nested_marker" ] && [ ! -L "$nested_marker" ] || return 1
+  # A nested marker is only meaningful under the validated outer ECI owner;
+  # this prevents a stale/forged ATE file from activating refresh on its own.
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$cwd")" || return 1
   bytes="$(wc -c <"$nested_marker" 2>/dev/null || true)"
   case "$bytes" in
     ''|*[!0-9]*) return 1 ;;
@@ -49,22 +62,31 @@ nested_marker_is_active() {
   [ "$bytes" -le 1024 ] || return 1
   [ "$(tail -c 1 -- "$nested_marker" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
   line_count="$(awk 'END { print NR + 0 }' "$nested_marker" 2>/dev/null || printf '0')"
-  [ "$line_count" -eq 3 ] || return 1
+  # Legacy three-line nested markers lack ownership/authentication and must not
+  # keep a session in an active refresh state.
+  [ "$line_count" -eq 8 ] || return 1
   mapfile -t lines <"$nested_marker" || return 1
-  [ "${#lines[@]}" -eq 3 ] || return 1
+  [ "${#lines[@]}" -eq 8 ] || return 1
   [[ "${lines[0]}" == "outer_session_id: $session_id" ]] || return 1
-  [[ "${lines[1]}" =~ ^step:[[:space:]]*[0-9]+$ ]] || return 1
-  [[ "${lines[2]}" =~ ^iteration:[[:space:]]*[0-9]+$ ]] || return 1
+  [[ "${lines[1]}" == "outer_marker: $proof_dir/eci_active" ]] || return 1
+  [ "${lines[2]}" = 'owner: ate' ] || return 1
+  [[ "${lines[3]}" == writer_session_id:\ * ]] || return 1
+  writer="${lines[3]#writer_session_id: }"
+  codex_valid_session_id "$writer" || return 1
+  [[ "${lines[4]}" =~ ^acceptance_version:[[:space:]]*[1-9][0-9]*$ ]] || return 1
+  [[ "${lines[5]}" =~ ^step:[[:space:]]*[0-9]+$ ]] || return 1
+  [[ "${lines[6]}" =~ ^iteration:[[:space:]]*[0-9]+$ ]] || return 1
+  [ "${lines[7]}" = 'state: active' ] || return 1
   return 0
 }
 
-if ! { [ -f "$marker" ] && [ ! -L "$marker" ]; } && ! nested_marker_is_active; then
-  exit 0
+direct_marker_is_active() {
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$cwd")"
+}
+
+if ! direct_marker_is_active && ! nested_marker_is_active; then
+  postcompact_noop
 fi
 
-jq -n '{
-  hookSpecificOutput: {
-    hookEventName: "PostCompact",
-    additionalContext: "PostCompact ECI refresh signal (authoritative compaction signal): ECI is active. The coordinator/lead must immediately re-read the entire skills/explore-critique-implement/SKILL.md and re-invoke it before the next decision/tool."
-  }
-}'
+postcompact_noop

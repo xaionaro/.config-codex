@@ -6,20 +6,93 @@ set -euo pipefail
 # no fabricated production evidence is admitted by the runtime gate.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-eci-review-gate.XXXXXX")"
-trap 'rm -rf -- "$TMP_ROOT"' EXIT
+test_tmp_parent="${TMPDIR:-}"
+if [ -z "$test_tmp_parent" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+  test_tmp_parent=/dev/shm
+else
+  test_tmp_parent="${test_tmp_parent:-/tmp}"
+fi
+test_tmp_parent="$(realpath -m -- "$test_tmp_parent")"
+TMP_ROOT="$(mktemp -d "$test_tmp_parent/codex-eci-review-gate.XXXXXX")"
+untracked_target=""
+root_fixture=""
+trap 'rm -f -- "${untracked_target:-}" "${root_fixture:-}" 2>/dev/null || true; rm -rf -- "$TMP_ROOT"' EXIT
 
 sha() { sha256sum -- "$1" | awk '{print $1}'; }
 
+# Rebind every identity-bearing artifact when a synthetic row deliberately
+# receives a fresh child identity.  The review gate treats the spawn request,
+# report marker, adjudication, and manifest row as one closed contract; merely
+# changing the row/adjudication leaves a fixture invalid before the test's
+# intended assertion is reached.
+rebind_manifest_row_identity() {
+  local manifest="$1" index="$2" child="$3"
+  local session_dir sid row target_id role phase provider semantic_role provenance
+  local spawn report adjudication rebound_spawn rebound_report rebound_adjudication
+  local spawn_sha report_sha adjudication_sha tmp
+
+  session_dir="$(dirname -- "$manifest")"
+  sid="$(basename -- "$session_dir")"
+  row="$(jq -c --argjson index "$index" '.rows[$index]' "$manifest")"
+  target_id="$(jq -r '.target_id' <<<"$row")"
+  role="$(jq -r '.critic_role' <<<"$row")"
+  phase="$(jq -r '.gate_phase' <<<"$row")"
+  provider="$(jq -r '.critic_provider' <<<"$row")"
+  semantic_role="$(jq -r '.critic_semantic_role' <<<"$row")"
+  provenance="$(jq -r '.critic_provenance' <<<"$row")"
+  spawn="$(jq -r '.spawn_request_artifact' <<<"$row")"
+  report="$(jq -r '.report_artifact' <<<"$row")"
+  adjudication="$(jq -r '.adjudication_artifact' <<<"$row")"
+
+  rebound_spawn="$spawn.rebound-$index"
+  rebound_report="$report.rebound-$index"
+  rebound_adjudication="$adjudication.rebound-$index"
+  sed -E "s/^child_identity: .*/child_identity: $child/" "$spawn" >"$rebound_spawn"
+  sed -E "s/^eci_critic_identity: .*/eci_critic_identity: session_id=$sid;target_id=$target_id;critic_role=$role;gate_phase=$phase;child_identity=$child;critic_provider=$provider;critic_semantic_role=$semantic_role;critic_provenance=$provenance/" "$report" >"$rebound_report"
+  spawn_sha="$(sha "$rebound_spawn")"
+  report_sha="$(sha "$rebound_report")"
+  jq -c --arg target "$target_id" --arg role "$role" --arg phase "$phase" \
+    --arg child "$child" --arg provider "$provider" --arg semantic_role "$semantic_role" \
+    --arg provenance "$provenance" --arg report "$report_sha" \
+    '.target_id = $target | .critic_role = $role | .gate_phase = $phase | .child_identity = $child |
+     .critic_provider = $provider | .critic_semantic_role = $semantic_role | .critic_provenance = $provenance |
+     .report_sha256 = $report' "$adjudication" >"$rebound_adjudication"
+  adjudication_sha="$(sha "$rebound_adjudication")"
+  tmp="$manifest.tmp"
+  jq -c --argjson index "$index" --arg child "$child" \
+    --arg spawn "$rebound_spawn" --arg spawn_sha "$spawn_sha" \
+    --arg report "$rebound_report" --arg report_sha "$report_sha" \
+    --arg adjudication "$rebound_adjudication" --arg adjudication_sha "$adjudication_sha" \
+    '.rows[$index] |= (.child_identity = $child |
+      .spawn_request_artifact = $spawn | .spawn_request_sha256 = $spawn_sha |
+      .report_artifact = $report | .report_sha256 = $report_sha |
+      .adjudication_artifact = $adjudication | .adjudication_sha256 = $adjudication_sha)' \
+    "$manifest" >"$tmp"
+  mv -- "$tmp" "$manifest"
+}
+
 build_manifest() {
   local proof_root="$1" kind="$2" e2e_required="${3:-false}"
-  local sid="session-$kind" target_id="target-$kind" session_dir diff diff_sha rows='[]'
-  local spec role phase spawn report spawn_sha report_sha e2e='' e2e_sha=''
+  local sid="${ECI_EMIT_SESSION_ID:-session-$kind}" target_id="target-$kind" session_dir diff diff_sha rows='[]'
+  local spec role phase provider semantic_role provenance authority model_class spawn report spawn_sha report_sha adjudication adjudication_sha e2e='' e2e_sha='' intention intention_sha
+  local repo_root git_dir git_common base head staged worktree status target_path target_version
+  local git_dir_raw git_common_raw test_repo="${ECI_TEST_REPO:-$ROOT}" test_target="${ECI_TEST_TARGET:-}"
+
+  [ -n "$test_target" ] || test_target="$test_repo/hooks/eci-review-gate.sh"
 
   session_dir="$proof_root/$sid"
   mkdir -p "$session_dir"
   diff="$session_dir/diff.txt"
-  printf 'diff for %s\n' "$kind" >"$diff"
+  head="$(git -C "$test_repo" rev-parse HEAD)"
+  if git -C "$test_repo" diff --cached --quiet --binary; then
+    if git -C "$test_repo" diff --quiet --binary; then
+      git -C "$test_repo" diff --binary "$head" "$head" >"$diff"
+    else
+      git -C "$test_repo" diff --binary >"$diff"
+    fi
+  else
+    git -C "$test_repo" diff --cached --binary >"$diff"
+  fi
   diff_sha="$(sha "$diff")"
   if [ "$e2e_required" = true ]; then
     e2e="$session_dir/e2e.txt"
@@ -27,35 +100,108 @@ build_manifest() {
     e2e_sha="$(sha "$e2e")"
   fi
 
-  for spec in A:postwrite B:postwrite C:prewrite C:postwrite; do
+  intention="$session_dir/C-prewrite-intention.txt"
+  printf 'C prewrite intention for %s\n' "$kind" >"$intention"
+  intention_sha="$(sha "$intention")"
+  repo_root="$test_repo"
+  git_dir_raw="$(git -C "$test_repo" rev-parse --git-dir)"
+  git_common_raw="$(git -C "$test_repo" rev-parse --git-common-dir)"
+  git_dir="$(realpath -m -- "$test_repo/$git_dir_raw")"
+  git_common="$(realpath -m -- "$test_repo/$git_common_raw")"
+  base="$head"
+  staged="$(git -C "$test_repo" diff --cached --binary | sha256sum | awk '{print $1}')"
+  worktree="$(git -C "$test_repo" diff --binary | sha256sum | awk '{print $1}')"
+  status="$(git -C "$test_repo" status --porcelain=v1 --untracked-files=all | sha256sum | awk '{print $1}')"
+  target_path="$test_target"
+  target_version="$(sha "$target_path")"
+
+  # C-prewrite is an optional policy prefix; postwrite acceptance requires A/B/C.
+  for spec in C:prewrite A:postwrite B:postwrite C:postwrite; do
     role="${spec%%:*}"
     phase="${spec#*:}"
     spawn="$session_dir/${role}-${phase}-spawn.txt"
     report="$session_dir/${role}-${phase}-report.txt"
-    printf 'spawn %s %s\n' "$role" "$phase" >"$spawn"
-    printf 'report %s %s\n' "$role" "$phase" >"$report"
+    adjudication="$session_dir/${role}-${phase}-adjudication.json"
+    provider='unavailable_by_schema'
+    semantic_role="ECI Critic $role"
+    if [ "$role" = C ]; then
+      provenance='requested-special'; authority='authoritative'; model_class='special'
+    else
+      provenance='ordinary'; authority='non-authoritative'; model_class='ordinary'
+    fi
+    child="child-$kind-$role-$phase"
+    printf 'schema: eci-critic-spawn/v2\nprovider: %s\nsemantic_role: %s\nauthority: %s\nrequired_model_class: %s\nparent_session: %s\ntarget_id: target-%s\ncritic_role: %s\ngate_phase: %s\nchild_identity: %s\nprovenance: %s\n' \
+      "$provider" "$semantic_role" "$authority" "$model_class" "$sid" "$kind" "$role" "$phase" "$child" "$provenance" >"$spawn"
+    printf 'eci_critic_identity: session_id=%s;target_id=target-%s;critic_role=%s;gate_phase=%s;child_identity=%s;critic_provider=%s;critic_semantic_role=%s;critic_provenance=%s\n' \
+      "$sid" "$kind" "$role" "$phase" "$child" "$provider" "$semantic_role" "$provenance" >"$report"
+    case "$role" in
+      A)
+        printf '%s\n' \
+          'evidence_type: focused implementation and diagnostic verification' \
+          'evidence_commands:' \
+          '  bash hooks/tests/test-eci-edit-control-paths.sh: PASS' \
+          '  bash hooks/tests/test-eci-command-syntax-gating.sh: PASS' \
+          '  bash hooks/tests/test-eci-diagnostic-specificity.sh: PASS' \
+          'assessment: coordinator and worker edit boundaries, literal command grammar, and compiler-style diagnostic fields were verified.' >>"$report"
+        ;;
+      B)
+        printf '%s\n' \
+          'evidence_type: focused lifecycle and stop-loop verification' \
+          'evidence_commands:' \
+          '  bash hooks/tests/test-eci-marker-scope.sh: PASS' \
+          '  bash hooks/tests/test-stop-loop-guidance.sh: PASS' \
+          '  bash hooks/tests/test-eci-fast-path.sh: PASS' \
+          'assessment: marker ownership, convergent Stop remediation, and bounded callback behavior were verified.' >>"$report"
+        ;;
+      C)
+        printf '%s\n' \
+          'evidence_type: focused policy, parity, and latency verification' \
+          'evidence_commands:' \
+          '  bash hooks/tests/test-pre-commit-go-mod.sh: PASS' \
+          '  bash hooks/tests/test-pretooluse-latency.sh: PASS' \
+          '  hard-linked Codex/Kimi Go checker inode parity probe: PASS' \
+          'assessment: Go replacement policy, shared-hook parity, and configured synchronous-chain latency were verified.' >>"$report"
+        ;;
+    esac
+    printf 'eci_critic_verdict: APPROVED\n' >>"$report"
     spawn_sha="$(sha "$spawn")"
     report_sha="$(sha "$report")"
+    jq -cn \
+      --arg target "$target_id" --arg role "$role" --arg gate_phase "$phase" \
+      --arg child "$child" --arg report_sha "$report_sha" \
+      --arg provider "$provider" --arg semantic_role "$semantic_role" --arg provenance "$provenance" \
+      '{schema:"eci-critic-adjudication/v1",target_id:$target,critic_role:$role,gate_phase:$gate_phase,child_identity:$child,critic_provider:$provider,critic_semantic_role:$semantic_role,critic_provenance:$provenance,report_sha256:$report_sha,source_verdict:"APPROVED",decision:"accepted",reason:"accepted after focused implementation, lifecycle, policy, parity, diagnostic, and latency evidence"}' \
+      >"$adjudication"
+    adjudication_sha="$(sha "$adjudication")"
     rows="$(jq -cn \
       --argjson old "$rows" \
       --arg tid "$target_id" --arg kind "$kind" --arg diff "$diff" --arg diff_sha "$diff_sha" \
       --arg role "$role" --arg phase "$phase" --arg child "child-$kind-$role-$phase" \
+      --arg provider "$provider" --arg semantic_role "$semantic_role" --arg provenance "$provenance" \
       --arg spawn "$spawn" --arg spawn_sha "$spawn_sha" --arg report "$report" --arg report_sha "$report_sha" \
+      --arg adjudication "$adjudication" --arg adjudication_sha "$adjudication_sha" \
       --arg e2e "$e2e" --arg e2e_sha "$e2e_sha" --argjson required "$e2e_required" \
-      '$old + [{target_id:$tid,target_kind:$kind,diff_artifact:$diff,diff_sha256:$diff_sha,critic_role:$role,gate_phase:$phase,child_identity:$child,spawn_request_artifact:$spawn,spawn_request_sha256:$spawn_sha,report_artifact:$report,report_sha256:$report_sha,verdict:"PASS",e2e_required:$required,e2e_artifact:(if $required then $e2e else null end),e2e_sha256:(if $required then $e2e_sha else null end)}]')"
+      --arg repo_root "$repo_root" --arg git_dir "$git_dir" --arg git_common "$git_common" \
+      --arg base "$base" --arg head "$head" --arg staged "$staged" --arg worktree "$worktree" --arg status "$status" \
+      --arg target_path "$target_path" --arg target_version "$target_version" \
+      --arg intention "$intention" --arg intention_sha "$intention_sha" \
+      '$old + [{target_id:$tid,target_kind:$kind,diff_artifact:$diff,diff_sha256:$diff_sha,critic_role:$role,gate_phase:$phase,child_identity:$child,critic_provider:$provider,critic_semantic_role:$semantic_role,critic_provenance:$provenance,spawn_request_artifact:$spawn,spawn_request_sha256:$spawn_sha,report_artifact:$report,report_sha256:$report_sha,adjudication_artifact:$adjudication,adjudication_sha256:$adjudication_sha,verdict:"PASS",e2e_required:$required,e2e_artifact:(if $required then $e2e else null end),e2e_sha256:(if $required then $e2e_sha else null end),repo_root:$repo_root,git_dir:$git_dir,git_common_dir:$git_common,base_oid:$base,head_oid:$head,staged_diff_sha256:$staged,worktree_diff_sha256:$worktree,status_sha256:$status,target_path:$target_path,target_version:$target_version,intention_artifact:(if $role == "C" and $phase == "prewrite" then $intention else null end),intention_sha256:(if $role == "C" and $phase == "prewrite" then $intention_sha else null end),acceptance_version:"1"}]')"
   done
 
   jq -cn \
     --arg tid "$target_id" --arg kind "$kind" --arg diff "$diff" --arg diff_sha "$diff_sha" \
     --argjson required "$e2e_required" --argjson rows "$rows" \
-    '{schema:"eci-required-critics/v1",current_target_id:$tid,current_target_kind:$kind,current_diff_artifact:$diff,current_diff_sha256:$diff_sha,targets:[{target_id:$tid,target_kind:$kind,diff_artifact:$diff,diff_sha256:$diff_sha,e2e_required:$required}],rows:$rows}' \
+    --arg target_path "$target_path" --arg repo_root "$repo_root" --arg git_dir "$git_dir" --arg git_common "$git_common" \
+    --arg base "$base" --arg head "$head" --arg staged "$staged" --arg worktree "$worktree" --arg status "$status" --arg target_version "$target_version" \
+    '{schema:"eci-required-critics/v2",current_target_id:$tid,current_target_kind:$kind,current_diff_artifact:$diff,current_diff_sha256:$diff_sha,current_target_path:$target_path,repo_root:$repo_root,git_dir:$git_dir,git_common_dir:$git_common,base_oid:$base,head_oid:$head,staged_diff_sha256:$staged,worktree_diff_sha256:$worktree,status_sha256:$status,target_file_hashes:{($target_path):$target_version},acceptance_version:"1",targets:[{target_id:$tid,target_kind:$kind,diff_artifact:$diff,diff_sha256:$diff_sha,e2e_required:$required,target_path:$target_path,target_version:$target_version}],rows:$rows}' \
     >"$session_dir/eci-required-critics.json"
   printf '%s\n' "$sid"
 }
 
 run_gate() {
   local proof_root="$1" phase="$2" sid="$3" out="$4" err="$5"
-  CODEX_PROOF_ROOT="$proof_root" "$ROOT/hooks/eci-review-gate.sh" "$phase" "$sid" >"$out" 2>"$err"
+  local gate_cwd="${ECI_TEST_CWD:-$ROOT}"
+  CODEX_PROOF_ROOT="$proof_root" ECI_REVIEW_CWD="$gate_cwd" "$ROOT/hooks/eci-review-gate.sh" "$phase" "$sid" >"$out" 2>"$err"
 }
 
 assert_reject() {
@@ -79,6 +225,43 @@ test_valid_target_kinds() {
   done
 }
 
+test_git_external_diff_is_neutralized() {
+  local proof_root="$TMP_ROOT/git-env" sid helper touched
+  helper="$TMP_ROOT/external-diff-helper"
+  touched="$TMP_ROOT/external-diff-ran"
+  printf '#!/usr/bin/env bash\ntouch -- %q\n' "$touched" >"$helper"
+  chmod +x "$helper"
+  sid="$(build_manifest "$proof_root" root)"
+  GIT_EXTERNAL_DIFF="$helper" GIT_CONFIG_PARAMETERS="'diff.external=$helper'" \
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/git-env.out" "$TMP_ROOT/git-env.err"
+  [ ! -e "$touched" ]
+}
+
+test_git_uses_fixed_binary_and_no_textconv() {
+  local repo="$TMP_ROOT/git-textconv-repo" fakebin="$TMP_ROOT/fake-git-bin"
+  local helper="$TMP_ROOT/textconv-helper" fake_touched="$TMP_ROOT/fake-git-ran"
+  local textconv_touched="$TMP_ROOT/textconv-ran"
+  mkdir -p "$repo" "$fakebin"
+  git -C "$repo" init -q
+  git -C "$repo" config user.name 'ECI test'
+  git -C "$repo" config user.email eci-test@example.invalid
+  printf '%s\n' before >"$repo/file.txt"
+  printf '%s\n' 'file.txt diff=eci-textconv' >"$repo/.gitattributes"
+  git -C "$repo" add file.txt .gitattributes
+  git -C "$repo" commit -qm 'textconv fixture'
+  printf '%s\n' after >"$repo/file.txt"
+  printf '#!/usr/bin/env bash\ntouch -- %q\ncat\n' "$textconv_touched" >"$helper"
+  chmod +x "$helper"
+  git -C "$repo" config diff.eci-textconv.textconv "$helper"
+  printf '%s\n' '#!/usr/bin/env bash' "touch -- $fake_touched" 'exec /usr/bin/git "$@"' >"$fakebin/git"
+  chmod +x "$fakebin/git"
+  PATH="$fakebin:$PATH" bash -c \
+    '. "$1/hooks/lib/codex-proof-state.sh"; codex_git_safe -C "$2" diff -- file.txt >/dev/null' \
+    bash "$ROOT" "$repo"
+  [ ! -e "$fake_touched" ]
+  [ ! -e "$textconv_touched" ]
+}
+
 test_valid_e2e_binding() {
   local proof_root="$TMP_ROOT/valid-e2e" sid
   sid="$(build_manifest "$proof_root" candidate-fix true)"
@@ -90,7 +273,12 @@ test_off_boundary_requires_and_accepts_manifest() {
   local proof_root="$TMP_ROOT/off-boundary" sid session_dir manifest saved
   sid="$(build_manifest "$proof_root" root)"
   session_dir="$proof_root/$sid"
-  printf '%s\n' 'scope: off boundary' >"$session_dir/eci_active"
+  {
+    printf 'scope: off boundary\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$session_dir/eci_active"
   manifest="$session_dir/eci-required-critics.json"
   saved="$TMP_ROOT/off-boundary-manifest.json"
   cp "$manifest" "$saved"
@@ -101,8 +289,243 @@ test_off_boundary_requires_and_accepts_manifest() {
   grep -Fq 'missing canonical manifest' "$TMP_ROOT/off-missing.err"
   [ -f "$session_dir/eci_active" ]
   mv "$saved" "$manifest"
+
+  printf 'scope: malformed-only\n' >"$session_dir/eci_active"
+  if run_gate "$proof_root" off "$sid" "$TMP_ROOT/off-malformed.out" "$TMP_ROOT/off-malformed.err"; then
+    return 1
+  fi
+  grep -Fq 'direct marker path/owner binding is malformed' "$TMP_ROOT/off-malformed.err"
+  [ -f "$session_dir/eci_active" ]
+  {
+    printf 'scope: off boundary\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$session_dir/eci_active"
   run_gate "$proof_root" off "$sid" "$TMP_ROOT/off-valid.out" "$TMP_ROOT/off-valid.err"
   grep -Fq 'phase=off' "$TMP_ROOT/off-valid.out"
+}
+
+test_teardown_receipt_is_atomic_and_consumed_by_final_proof() {
+  local proof_root="$TMP_ROOT/off-receipt" sid session_dir report alternate_report receipt proof transcript stop_out drift
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  report="$session_dir/disengage.md"
+  receipt="$session_dir/eci-teardown-complete"
+  proof="$session_dir/proof.md"
+  transcript="$proof_root/transcript.jsonl"
+  : >"$transcript"
+  {
+    printf '## ECI completion certificate\n'
+    printf 'clean-pass:\n'
+    printf '## Stop checklist walkthrough\n'
+    printf 'validated\n'
+    printf '## Incomplete compliance\n'
+    printf 'none\n'
+  } >"$report"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" on 'receipt lifecycle' >/dev/null
+  ln -s "$session_dir/missing-report" "$receipt"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/receipt-crash.out" 2>"$TMP_ROOT/receipt-crash.err"; then
+    return 1
+  fi
+  [ -L "$receipt" ] && [ -f "$session_dir/eci_active" ] || return 1
+  rm -f -- "$receipt"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/receipt-off.out"
+  [ ! -e "$session_dir/eci_active" ] && [ -f "$receipt" ] || return 1
+  . "$ROOT/hooks/lib/codex-proof-state.sh"
+  CODEX_PROOF_ROOT="$proof_root" codex_eci_teardown_receipt_is_valid \
+    "$receipt" "$sid" "$session_dir/eci-required-critics.json" "$report"
+
+  # A replay with a different canonical report path must not reuse the old
+  # terminal receipt.  The original report remains the only valid retry.
+  alternate_report="$session_dir/alternate-disengage.md"
+  cp -- "$report" "$alternate_report"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" on 'receipt replay' >/dev/null
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$alternate_report" >"$TMP_ROOT/receipt-replay.out" 2>"$TMP_ROOT/receipt-replay.err"; then
+    return 1
+  fi
+  [ -f "$session_dir/eci_active" ] || return 1
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/receipt-replay-original.out"
+  [ ! -e "$session_dir/eci_active" ] || return 1
+
+  {
+    printf '## ECI completion certificate\n'
+    printf 'clean-pass:\n'
+    printf '## Stop checklist walkthrough\n'
+    printf 'validated\n'
+    printf '## Incomplete compliance\n'
+    printf 'none\n'
+  } >"$proof"
+  stop_out="$TMP_ROOT/receipt-stop.out"
+  jq -cn --arg cwd "$proof_root" --arg sid "$sid" --arg transcript "$transcript" \
+    '{session_id:$sid,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' |
+    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_out"
+  if grep -Fq 'Required ECI critic manifest rejected' "$stop_out"; then
+    return 1
+  fi
+
+  # The receipt is also bound to the admitted live repository tuple.  A
+  # post-teardown repository change must not be treated as a valid replay.
+  drift="$ROOT/hooks/.eci-teardown-drift-$BASHPID"
+  root_fixture="$drift"
+  printf '%s\n' drift >"$drift"
+  jq -cn --arg cwd "$proof_root" --arg sid "$sid" \
+    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$TMP_ROOT/receipt-drift.out"
+  rm -f -- "$drift"
+  root_fixture=""
+  jq -e '.decision == "block" and (.reason | contains("teardown receipt"))' \
+    "$TMP_ROOT/receipt-drift.out" >/dev/null
+
+  printf '%s\n' 'tampered' >"$report"
+  {
+    printf '## ECI completion certificate\n'
+    printf 'clean-pass:\n'
+    printf '## Stop checklist walkthrough\n'
+    printf 'validated\n'
+    printf '## Incomplete compliance\n'
+    printf 'none\n'
+  } >"$proof"
+  jq -cn --arg cwd "$proof_root" --arg sid "$sid" \
+    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$TMP_ROOT/receipt-stale.out"
+  jq -e '.decision == "block" and (.reason | contains("teardown receipt"))' \
+    "$TMP_ROOT/receipt-stale.out" >/dev/null
+}
+
+test_sha256_repository_binding_accepts_object_format_oid_lengths() {
+  local repo="$TMP_ROOT/sha256-repo" proof_root="$TMP_ROOT/sha256-proof"
+  local sid=sha256-session session_dir manifest base head git_dir_raw git_common_raw git_dir git_common binding
+  mkdir -p "$repo" "$proof_root/$sid"
+  git -C "$repo" init --object-format=sha256 -q
+  git -C "$repo" config user.name 'ECI test'
+  git -C "$repo" config user.email 'eci-test@example.invalid'
+  printf '%s\n' 'sha256 repository binding' >"$repo/target.txt"
+  git -C "$repo" add target.txt
+  git -C "$repo" commit -qm 'sha256 binding fixture'
+  base="$(git -C "$repo" rev-parse HEAD)"
+  head="$base"
+  git_dir_raw="$(git -C "$repo" rev-parse --git-dir)"
+  git_common_raw="$(git -C "$repo" rev-parse --git-common-dir)"
+  git_dir="$(realpath -m -- "$repo/$git_dir_raw")"
+  git_common="$(realpath -m -- "$repo/$git_common_raw")"
+  [[ "$base" =~ ^[0-9a-f]{64}$ && "$head" =~ ^[0-9a-f]{64}$ ]] || return 1
+  manifest="$proof_root/$sid/eci-required-critics.json"
+  jq -cn --arg root "$repo" --arg gd "$git_dir" --arg gc "$git_common" --arg base "$base" --arg head "$head" \
+    '{repo_root:$root,git_dir:$gd,git_common_dir:$gc,base_oid:$base,head_oid:$head}' >"$manifest"
+  binding="$(bash -c '. "$1/hooks/lib/codex-proof-state.sh"; codex_eci_live_repo_binding_sha256 "$2"' bash "$ROOT" "$manifest")"
+  [[ "$binding" =~ ^[0-9a-f]{64}$ ]]
+}
+
+test_manifest_verdict_mapping_is_closed() {
+  local proof_root="$TMP_ROOT/verdict-mapping" sid session_dir manifest original
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  original="$TMP_ROOT/verdict-original.json"
+  cp "$manifest" "$original"
+  for verdict in CONDITIONAL REJECTED; do
+    jq -c --arg verdict "$verdict" '.rows[0].verdict = $verdict' "$original" >"$manifest"
+    assert_reject "$proof_root" "$sid" 'verdict'
+  done
+}
+
+test_adjudication_binds_nonapproved_critic_report() {
+  local proof_root="$TMP_ROOT/adjudication" sid session_dir manifest original adj report tmp new_sha report_sha
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  original="$TMP_ROOT/adjudication-original.json"
+  cp "$manifest" "$original"
+  adj="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
+  tmp="$adj.tmp"
+
+  # A PASS row cannot hide a rejected independent report behind an accepted
+  # decision.  The coordinator record must explicitly bind the downgrade.
+  jq -c '.source_verdict = "REJECTED" | .decision = "accepted"' "$adj" >"$tmp"
+  mv "$tmp" "$adj"
+  new_sha="$(sha "$adj")"
+  jq -c --arg sha "$new_sha" '.rows[0].adjudication_sha256 = $sha' "$original" >"$manifest"
+  assert_reject "$proof_root" "$sid" 'unbound or silent critic adjudication'
+
+  jq -c '.source_verdict = "REJECTED" | .decision = "downgraded" | .reason = "bounded coordinator adjudication"' "$adj" >"$tmp"
+  mv "$tmp" "$adj"
+  report="$(jq -r '.rows[0].report_artifact' "$manifest")"
+  sed 's/^eci_critic_verdict: APPROVED$/eci_critic_verdict: REJECTED/' "$report" >"$tmp"
+  mv "$tmp" "$report"
+  report_sha="$(sha "$report")"
+  jq -c --arg report_sha "$report_sha" '.report_sha256 = $report_sha' "$adj" >"$tmp"
+  mv "$tmp" "$adj"
+  new_sha="$(sha "$adj")"
+  jq -c --arg report_sha "$report_sha" --arg sha "$new_sha" \
+    '.rows[0].report_sha256 = $report_sha | .rows[0].adjudication_sha256 = $sha' \
+    "$original" >"$manifest"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/adjudication.out" "$TMP_ROOT/adjudication.err"
+  grep -Fq 'phase=final' "$TMP_ROOT/adjudication.out"
+}
+
+test_report_verdict_is_bound_to_adjudication() {
+  local proof_root="$TMP_ROOT/report-verdict" sid session_dir manifest report adj tmp report_sha adj_sha
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  report="$(jq -r '.rows[0].report_artifact' "$manifest")"
+  adj="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
+  tmp="$report.tmp"
+  sed 's/^eci_critic_verdict: APPROVED$/eci_critic_verdict: REJECTED/' "$report" >"$tmp"
+  mv "$tmp" "$report"
+  report_sha="$(sha "$report")"
+  # Keep the adjudication source verdict and decision unchanged, but bind its
+  # report hash to the mutated report. The gate must reject the contradictory
+  # canonical report marker rather than accepting hash consistency alone.
+  jq -c --arg report_sha "$report_sha" '.report_sha256 = $report_sha' "$adj" >"$tmp"
+  mv "$tmp" "$adj"
+  adj_sha="$(sha "$adj")"
+  jq -c --arg report_sha "$report_sha" --arg adj_sha "$adj_sha" \
+    '.rows[0].report_sha256 = $report_sha | .rows[0].adjudication_sha256 = $adj_sha' \
+    "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  assert_reject "$proof_root" "$sid" 'canonical verdict marker'
+}
+
+test_report_text_contract() {
+  local kind proof_root sid session_dir manifest report adj tmp report_sha adj_sha
+  for kind in marker-only no-final-lf invalid-utf8; do
+    proof_root="$TMP_ROOT/report-contract-$kind"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    manifest="$session_dir/eci-required-critics.json"
+    report="$(jq -r '.rows[0].report_artifact' "$manifest")"
+    adj="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
+    tmp="$report.tmp"
+    case "$kind" in
+      marker-only)
+        printf 'eci_critic_verdict: APPROVED\n' >"$tmp"
+        ;;
+      no-final-lf)
+        printf 'report body\neci_critic_verdict: APPROVED' >"$tmp"
+        ;;
+      invalid-utf8)
+        printf 'report body \377\neci_critic_verdict: APPROVED\n' >"$tmp"
+        ;;
+    esac
+    mv "$tmp" "$report"
+    report_sha="$(sha "$report")"
+    jq -c --arg report_sha "$report_sha" '.report_sha256 = $report_sha' "$adj" >"$tmp"
+    mv "$tmp" "$adj"
+    adj_sha="$(sha "$adj")"
+    jq -c --arg report_sha "$report_sha" --arg adj_sha "$adj_sha" \
+      '.rows[0].report_sha256 = $report_sha | .rows[0].adjudication_sha256 = $adj_sha' \
+      "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    assert_reject "$proof_root" "$sid" 'report artifact text contract'
+  done
 }
 
 test_gate_fails_closed_when_mutation_lock_is_busy() {
@@ -129,8 +552,18 @@ test_missing_each_critic_and_c_phase() {
     jq -c --arg role "$role" '.rows |= map(select(.critic_role != $role))' "$original" >"$manifest"
     assert_reject "$proof_root" "$sid" "Critic $role"
   done
-  jq -c '.rows |= map(select(.gate_phase != "prewrite" or .critic_role != "C"))' "$original" >"$manifest"
-  assert_reject "$proof_root" "$sid" 'Critic C prewrite'
+}
+
+test_postwrite_accepts_without_optional_prewrite() {
+  local proof_root="$TMP_ROOT/no-prewrite" sid session_dir manifest out err
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  jq -c '.rows |= map(select(.gate_phase != "prewrite"))' "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  out="$TMP_ROOT/no-prewrite.out"; err="$TMP_ROOT/no-prewrite.err"
+  run_gate "$proof_root" final "$sid" "$out" "$err"
+  grep -Fq 'phase=final' "$out"
 }
 
 test_stale_hashes() {
@@ -160,24 +593,44 @@ test_duplicate_schema_and_e2e_rejections() {
   assert_reject "$proof_root" "$sid" 'duplicate governed target'
 
   jq -c '.unknown = true' "$original" >"$manifest"
-  assert_reject "$proof_root" "$sid" 'manifest header/schema'
+  assert_reject "$proof_root" "$sid" 'manifest v2 schema'
 
   jq -c '{rows:.rows,schema:.schema,current_target_id:.current_target_id,current_target_kind:.current_target_kind,current_diff_artifact:.current_diff_artifact,current_diff_sha256:.current_diff_sha256,targets:.targets}' "$original" >"$manifest"
-  assert_reject "$proof_root" "$sid" 'manifest header/schema'
+  assert_reject "$proof_root" "$sid" 'manifest v2 schema'
 
   jq -c '.rows[0].e2e_artifact = "unexpected"' "$original" >"$manifest"
-  assert_reject "$proof_root" "$sid" 'target/row schema'
+  assert_reject "$proof_root" "$sid" 'manifest v2 schema'
 }
 
 test_manifest_is_immutable_after_admission() {
-  local proof_root="$TMP_ROOT/immutable" sid session_dir manifest
+  local proof_root="$TMP_ROOT/immutable" sid session_dir manifest adjudication
   sid="$(build_manifest "$proof_root" root)"
   session_dir="$proof_root/$sid"
   manifest="$session_dir/eci-required-critics.json"
   run_gate "$proof_root" final "$sid" "$TMP_ROOT/immutable.out" "$TMP_ROOT/immutable.err"
-  jq -c '.rows[0].child_identity = "changed-child"' "$manifest" >"$manifest.tmp"
+  adjudication="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
+  jq -c '.child_identity = "changed-child"' "$adjudication" >"$adjudication.tmp"
+  mv "$adjudication.tmp" "$adjudication"
+  jq -c --arg sha "$(sha "$adjudication")" '.rows[0].child_identity = "changed-child" | .rows[0].adjudication_sha256 = $sha' "$manifest" >"$manifest.tmp"
   mv "$manifest.tmp" "$manifest"
   assert_reject "$proof_root" "$sid" 'changed manifest after admission'
+}
+
+test_append_only_rejects_same_phase_manifest_rewrite() {
+  local proof_root="$TMP_ROOT/append" sid session_dir manifest
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/append-root.out" "$TMP_ROOT/append-root.err"
+  jq -c '
+    .targets += [(.targets[0] | .target_id = "target-candidate" | .target_kind = "candidate-fix")] |
+    .rows += [.rows[0:4][] | .target_id = "target-candidate" | .target_kind = "candidate-fix" | .child_identity = (.child_identity + "-candidate")]
+  ' "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/append-candidate.out" "$TMP_ROOT/append-candidate.err"; then
+    return 1
+  fi
+  grep -Eq 'changed manifest|reused|unbound or silent critic adjudication' "$TMP_ROOT/append-candidate.err"
 }
 
 test_active_stop_does_not_run_manifest_gate() {
@@ -201,16 +654,401 @@ test_main_commit_boundary_requires_manifest() {
       bash "$ROOT/hooks/validate-bash.sh" >"$out"
   jq -e '
     (.hookSpecificOutput.permissionDecision == "deny") and
-    (.hookSpecificOutput.permissionDecisionReason | contains("commit boundary denied")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("manifest"))
+    ((.hookSpecificOutput.permissionDecisionReason | contains("commit boundary denied")) or
+     (.hookSpecificOutput.permissionDecisionReason | contains("marker ownership"))) and
+    ((.hookSpecificOutput.permissionDecisionReason | contains("manifest")) or
+     (.hookSpecificOutput.permissionDecisionReason | contains("marker")))
   ' "$out" >/dev/null
+}
+
+test_reviewed_dirty_commit_off_and_stop_lifecycle() {
+  local repo proof_root second_root sid session_dir second_session_dir manifest report
+  local input output stop_output stop_after_output
+  repo="$TMP_ROOT/reviewed-commit-repo"
+  proof_root="$TMP_ROOT/reviewed-commit-proof"
+  second_root="$TMP_ROOT/reviewed-commit-off-proof"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email eci-test@example.invalid
+  git -C "$repo" config user.name 'ECI Test'
+  printf 'base\n' >"$repo/target.txt"
+  git -C "$repo" add target.txt
+  git -C "$repo" commit -qm initial
+  printf 'reviewed dirty change\n' >>"$repo/target.txt"
+  git -C "$repo" add target.txt
+
+  sid="$(ECI_TEST_REPO="$repo" ECI_TEST_TARGET="$repo/target.txt" build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  {
+    printf 'scope: reviewed commit lifecycle\n'
+    printf 'cwd: %s\n' "$repo"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$session_dir/eci_active"
+
+  ECI_TEST_CWD="$repo" run_gate "$proof_root" commit "$sid" \
+    "$TMP_ROOT/reviewed-commit-gate.out" "$TMP_ROOT/reviewed-commit-gate.err"
+  [ -f "$session_dir/eci-commit-admitted" ] || return 1
+
+  input="$TMP_ROOT/reviewed-commit-hook.json"
+  output="$TMP_ROOT/reviewed-commit-hook.out"
+  jq -cn --arg sid "$sid" --arg cwd "$repo" \
+    '{session_id:$sid,cwd:$cwd,tool_input:{command:"git commit -m reviewed"}}' |
+    CODEX_HOME="$ROOT" CODEX_PROOF_ROOT="$proof_root" PATH="$ROOT/bin:$PATH" \
+      bash "$ROOT/hooks/validate-bash.sh" >"$output"
+  [ ! -s "$output" ] || return 1
+  [ ! -e "$session_dir/eci-commit-admitted" ] || return 1
+  git -C "$repo" commit -qm reviewed
+
+  stop_output="$TMP_ROOT/reviewed-commit-stop-active.out"
+  jq -cn --arg sid "$sid" --arg cwd "$repo" \
+    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_output"
+  jq -e '.decision == "block" and (.reason | contains("ECI"))' "$stop_output" >/dev/null
+
+  printf 'post-commit teardown transition\n' >>"$repo/target.txt"
+  git -C "$repo" add target.txt
+  sid2="$(ECI_TEST_REPO="$repo" ECI_TEST_TARGET="$repo/target.txt" build_manifest "$second_root" root)"
+  [ "$sid2" = "$sid" ] || return 1
+  second_session_dir="$second_root/$sid"
+  cp "$session_dir/eci-acceptance-anchor" "$second_session_dir/eci-acceptance-anchor"
+  cp "$session_dir/eci-required-critics.commit.1.ledger" "$second_session_dir/eci-required-critics.commit.1.ledger"
+  cp "$session_dir/eci-critic-identities.ledger" "$second_session_dir/eci-critic-identities.ledger"
+  manifest="$second_session_dir/eci-required-critics.json"
+  jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2" | .child_identity += "-v2")' \
+    "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  local index child
+  for index in $(jq -r 'range(.rows | length)' "$manifest"); do
+    child="$(jq -r ".rows[$index].child_identity" "$manifest")"
+    rebind_manifest_row_identity "$manifest" "$index" "$child"
+  done
+  {
+    printf 'scope: reviewed commit off\n'
+    printf 'cwd: %s\n' "$repo"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$second_session_dir/eci_active"
+  report="$second_session_dir/disengage.md"
+  {
+    printf '## ECI completion certificate\n'
+    printf 'clean-pass:\n'
+    printf '## Stop checklist walkthrough\n'
+    printf 'validated\n'
+    printf '## Incomplete compliance\n'
+    printf 'none\n'
+  } >"$report"
+  (cd "$repo" && CODEX_PROOF_ROOT="$second_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/reviewed-commit-off.out")
+  [ ! -e "$second_session_dir/eci_active" ] || return 1
+
+  stop_after_output="$TMP_ROOT/reviewed-commit-stop-off.out"
+  jq -cn --arg sid "$sid" --arg cwd "$repo" \
+    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+  CODEX_PROOF_ROOT="$second_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_after_output"
+  jq -e '.continue == true' "$stop_after_output" >/dev/null
+}
+
+test_user_closed_teardown_is_single_terminal_route() {
+  local proof_root="$TMP_ROOT/user-closed-proof" sid=session-user-closed session_dir report out err
+  mkdir -p "$proof_root/$sid"
+  {
+    printf 'scope: explicit user closure\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$proof_root/$sid/eci_active"
+  session_dir="$proof_root/$sid"
+  report="$session_dir/user-closed.md"
+
+  for _ in 1 2 3; do
+    out="$TMP_ROOT/user-closed-stop-$RANDOM.out"
+    jq -cn --arg cwd "$ROOT" --arg sid "$sid" \
+      '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+      CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$out"
+    jq -e '(.continue == false) or (.decision == "block")' "$out" >/dev/null
+  done
+
+  {
+    printf 'schema: eci-user-closed/v1\n'
+    printf 'owner: coordinator\n'
+    printf 'session_id: %s\n' "$sid"
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'report_path: %s\n' "$report"
+    printf 'reason: explicit user request to stop looping; incomplete teardown is recorded\n'
+    printf 'state: incomplete\n'
+    printf 'user-closed: true\n'
+  } >"$report"
+  out="$TMP_ROOT/user-closed-off.out"
+  (cd "$ROOT" && CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$report" >"$out")
+  [ ! -e "$session_dir/eci_active" ] || return 1
+  [ -f "$session_dir/eci-user-closed.ledger" ] || return 1
+  grep -Fqx 'user-closed: true' "$session_dir/eci-user-closed.ledger"
+
+  err="$TMP_ROOT/user-closed-replay.err"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/user-closed-replay.out" 2>"$err"; then
+    return 1
+  fi
+  [ ! -e "$session_dir/eci_active" ] || return 1
+  [ "$(grep -Fc 'user-closed: true' "$session_dir/eci-user-closed.ledger")" -eq 1 ]
+
+  out="$TMP_ROOT/user-closed-stop-after.out"
+  jq -cn --arg cwd "$ROOT" --arg sid "$sid" \
+    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$out"
+  jq -e '.continue == true' "$out" >/dev/null
+
+  # A report for an older session is an identity claim, never a hint to select
+  # the newest active marker.
+  stale_sid=session-stale-user-closed
+  mkdir -p "$proof_root/$stale_sid"
+  {
+    printf 'scope: stale report owner\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$stale_sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$proof_root/$stale_sid/eci_active"
+  stale_report="$proof_root/$stale_sid/user-closed.md"
+  sed "s/session_id: $sid/session_id: $stale_sid/; s#report_path: $report#report_path: $stale_report#" "$report" >"$stale_report"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" off "$stale_report" >"$TMP_ROOT/user-closed-stale.out" 2>"$TMP_ROOT/user-closed-stale.err"; then
+    return 1
+  fi
+  grep -Fq 'ECI off session identity mismatch' "$TMP_ROOT/user-closed-stale.err"
+  [ -f "$proof_root/$stale_sid/eci_active" ]
+}
+
+test_manifest_write_is_main_owned_and_atomic() {
+  local proof_root="$TMP_ROOT/manifest-write" sid session_dir manifest out
+  local temp_source configured_tmp outside_tmp outside_source symlink_source traversal_source control_source
+  local canonical_cache symlink_home canonical_proof canonical_session canonical_manifest canonical_source canonical_tmp
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  temp_source="$TMP_ROOT/eci-required-critics.json.source"
+  cp "$manifest" "$temp_source"
+  rm -f -- "$manifest"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" on 'manifest publication from coordinator temp' >/dev/null
+  TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$TMP_ROOT/manifest-write-temp.out"
+  [ -f "$manifest" ] && cmp -s "$temp_source" "$manifest"
+
+  # A canonical configured TMPDIR is also accepted, while its source remains
+  # a regular non-symlink with the exact source filename.
+  configured_tmp="$TMP_ROOT/configured-tmp"
+  mkdir -p "$configured_tmp"
+  cp "$manifest" "$configured_tmp/eci-required-critics.json.source"
+  rm -f -- "$manifest"
+  TMPDIR="$configured_tmp" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$configured_tmp/eci-required-critics.json.source" \
+    >"$TMP_ROOT/manifest-write-configured-tmp.out"
+  [ -f "$manifest" ] && cmp -s "$configured_tmp/eci-required-critics.json.source" "$manifest"
+
+  out="$TMP_ROOT/manifest-write-worker.out"
+  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    TMPDIR="$test_tmp_parent" "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$out" 2>&1; then
+    return 1
+  fi
+  grep -Fq 'main/orchestrator' "$out"
+  outside_tmp="$TMP_ROOT/outside-tmp"
+  mkdir -p "$outside_tmp"
+  outside_source="$outside_tmp/eci-required-critics.json.source"
+  cp "$manifest" "$outside_source"
+  if TMPDIR="$configured_tmp" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$outside_source" >"$out" 2>&1; then
+    return 1
+  fi
+  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+
+  symlink_source="$TMP_ROOT/symlink-source/eci-required-critics.json.source"
+  mkdir -p "${symlink_source%/*}"
+  ln -s "$temp_source" "$symlink_source"
+  if TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$symlink_source" >"$out" 2>&1; then
+    return 1
+  fi
+  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+
+  traversal_source="$TMP_ROOT/traversal/../eci-required-critics.json.source"
+  mkdir -p "$TMP_ROOT/traversal"
+  if TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$traversal_source" >"$out" 2>&1; then
+    return 1
+  fi
+  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+
+  control_source="$TMP_ROOT/eci_active"
+  cp "$manifest" "$control_source"
+  if TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$control_source" >"$out" 2>&1; then
+    return 1
+  fi
+  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+
+  # The deployed default may have a symlinked HOME/cache parent.  The shared
+  # resolver must canonicalize that ancestor so lifecycle ownership and
+  # manifest publication use the same marker/session/cwd paths.
+  canonical_cache="$TMP_ROOT/canonical-cache"
+  symlink_home="$TMP_ROOT/symlink-home"
+  canonical_proof="$canonical_cache/codex-proof"
+  mkdir -p "$canonical_proof" "$symlink_home"
+  ln -s "$canonical_cache" "$symlink_home/.cache"
+  sid="$(build_manifest "$canonical_proof" root)"
+  canonical_session="$canonical_proof/$sid"
+  canonical_manifest="$canonical_session/eci-required-critics.json"
+  canonical_tmp="$TMP_ROOT/canonical-tmp"
+  mkdir -p "$canonical_tmp"
+  canonical_source="$canonical_tmp/eci-required-critics.json.source"
+  cp "$canonical_manifest" "$canonical_source"
+  rm -f -- "$canonical_manifest"
+  HOME="$symlink_home" TMPDIR="$canonical_tmp" CODEX_PROOF_ROOT= CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" on 'canonical default-root resolution' >/dev/null
+  HOME="$symlink_home" TMPDIR="$canonical_tmp" CODEX_PROOF_ROOT= CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$canonical_source" >"$TMP_ROOT/canonical-manifest-write.out"
+  [ -f "$canonical_manifest" ] && cmp -s "$canonical_source" "$canonical_manifest"
+}
+
+test_malformed_commit_identity_does_not_skip_active_gate() {
+  local proof_root="$TMP_ROOT/malformed-identity" out
+  mkdir -p "$proof_root/commit-session" "$TMP_ROOT/malformed-home"
+  {
+    printf 'scope: malformed identity\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: commit-session\n'
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$proof_root/commit-session/eci_active"
+  out="$TMP_ROOT/malformed-identity.out"
+  jq -cn --arg cwd "$ROOT" \
+    '{session_id:[],cwd:$cwd,tool_input:{command:"git commit -m checked"}}' |
+    HOME="$TMP_ROOT/malformed-home" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/validate-bash.sh" >"$out"
+  jq -e '
+    (.hookSpecificOutput.permissionDecision == "deny") and
+    (.hookSpecificOutput.permissionDecisionReason | contains("malformed hook identity"))
+  ' "$out" >/dev/null || {
+    cat "$out" >&2
+    return 1
+  }
+}
+
+test_commit_parser_wrappers_and_unknown_fail_closed() {
+  local proof_root="$TMP_ROOT/parser-contract" command out
+  mkdir -p "$proof_root/commit-session" "$TMP_ROOT/parser-home"
+  {
+    printf 'scope: parser contract\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: commit-session\n'
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$proof_root/commit-session/eci_active"
+  for command in \
+    'git commit -m checked' \
+    'git -C /tmp commit -m checked' \
+    'git --git-dir=/tmp/.git commit -m checked' \
+    'git --work-tree=/tmp commit -m checked' \
+    'sudo -u builder git -C /tmp commit -m checked' \
+    'doas -u builder git commit -m checked' \
+    'nohup git commit -m checked' \
+    'setsid git commit -m checked' \
+    'timeout -k 1 5 git commit -m checked' \
+    'command -p git commit -m checked' \
+    'exec -a eci git commit -m checked' \
+    'env -C /tmp ECI_TEST=1 git commit -m checked' \
+    'systemd-run --unit eci git commit -m checked' \
+    'sh -c "git commit -m checked"'; do
+    out="$TMP_ROOT/parser-${#command}.out"
+    jq -cn --arg command "$command" --arg cwd "$ROOT" \
+      '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
+      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$out" >/dev/null || return 1
+  done
+  out="$TMP_ROOT/parser-unknown.out"
+  jq -cn --arg cwd "$ROOT" \
+    '{session_id:"commit-session",cwd:$cwd,tool_input:{command:"sh -c \"$ECI_DYNAMIC_COMMAND\""}}' |
+    HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/validate-bash.sh" >"$out"
+  jq -e '.hookSpecificOutput.permissionDecisionReason | contains("syntax=shell-expansion")' "$out" >/dev/null
+
+  for command in \
+    'git alias ci' \
+    'git config --local user.name checked' \
+    'git tag release' \
+    'git ci -m checked' \
+    'python3 -c "print(1)"' \
+    'make test' \
+    'bash arbitrary-script.sh' \
+    "rm -f $proof_root/commit-session/eci_active"; do
+    out="$TMP_ROOT/parser-unknown-${#command}.out"
+    jq -cn --arg command "$command" --arg cwd "$ROOT" \
+      '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
+      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    case "$command" in
+      bash\ *|sh\ *|zsh\ *|dash\ *|env\ *|command\ *|builtin\ *|exec\ *|python\ *|python2\ *|python3\ *|perl\ *|ruby\ *|node\ *|deno\ *|go\ run\ *)
+        expected_code='[ECI_COMMAND_WRAPPER_UNSUPPORTED]'
+        expected_wording='unsupported wrapper/interpreter'
+        ;;
+      *)
+        expected_code='[ECI_COMMAND_NOT_ALLOWLISTED]'
+        expected_wording='unrecognized command form'
+        ;;
+    esac
+    jq -e --arg expected_code "$expected_code" --arg expected_wording "$expected_wording" \
+      '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains($expected_code) and contains($expected_wording))' "$out" >/dev/null
+  done
+
+  for command in \
+    'git status --short' \
+    'git diff --stat' \
+    'git log -1' \
+    'pwd' \
+    'rg --files hooks/tests' \
+    'bash hooks/tests/run.sh'; do
+    out="$TMP_ROOT/parser-known-${#command}.out"
+    jq -cn --arg command "$command" --arg cwd "$ROOT" \
+      '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
+      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    [ ! -s "$out" ] || return 1
+  done
+
+  for command in 'bash -n hooks/validate-bash.sh' 'sh -n hooks/validate-bash.sh' 'dash -n hooks/validate-bash.sh' 'zsh -n hooks/validate-bash.sh'; do
+    out="$TMP_ROOT/parser-read-only-${#command}.out"
+    jq -cn --arg command "$command" --arg cwd "$ROOT" \
+      '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
+      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    # validate-bash emits no decision for a proven read-only command; any JSON
+    # output here would be a denial or malformed contract response.
+    [ ! -s "$out" ] || return 1
+  done
 }
 
 test_root_and_session_symlink_fail_closed() {
   local parent="$TMP_ROOT/symlink-parent" root="$TMP_ROOT/symlink-root" sid=symlink-session target="$TMP_ROOT/target"
+  local cache_real="$TMP_ROOT/cache-real" cache_link="$TMP_ROOT/cache-link" linked_root linked_sid final_real final_link
+  mkdir -p "$cache_real"
+  ln -s "$cache_real" "$cache_link"
+  linked_root="$cache_link/proof"
+  linked_sid="$(build_manifest "$linked_root" root)"
+  if run_gate "$linked_root" final "$linked_sid" "$TMP_ROOT/linked.out" "$TMP_ROOT/linked.err"; then
+    return 1
+  fi
+  grep -Fq 'artifact' "$TMP_ROOT/linked.err"
+
   mkdir -p "$parent/$sid" "$target"
   ln -s "$parent" "$root"
   if CODEX_PROOF_ROOT="$root" "$ROOT/hooks/eci-review-gate.sh" final "$sid" >"$TMP_ROOT/symlink-root.out" 2>"$TMP_ROOT/symlink-root.err"; then
+    return 1
+  fi
+  final_real="$TMP_ROOT/final-real"
+  final_link="$TMP_ROOT/final-link"
+  mkdir -p "$final_real/$sid"
+  ln -s "$final_real" "$final_link"
+  if CODEX_PROOF_ROOT="$final_link/" "$ROOT/hooks/eci-review-gate.sh" final "$sid" >"$TMP_ROOT/symlink-root-trailing.out" 2>"$TMP_ROOT/symlink-root-trailing.err"; then
     return 1
   fi
   root="$TMP_ROOT/regular-root"
@@ -222,15 +1060,568 @@ test_root_and_session_symlink_fail_closed() {
   fi
 }
 
-test_valid_target_kinds
-test_valid_e2e_binding
-test_off_boundary_requires_and_accepts_manifest
-test_gate_fails_closed_when_mutation_lock_is_busy
-test_missing_each_critic_and_c_phase
-test_stale_hashes
-test_duplicate_schema_and_e2e_rejections
-test_manifest_is_immutable_after_admission
-test_active_stop_does_not_run_manifest_gate
-test_main_commit_boundary_requires_manifest
+test_artifact_and_target_paths_are_lexically_canonical() {
+  local proof_root="$TMP_ROOT/path-contract" sid session_dir manifest original bad_path
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  original="$TMP_ROOT/path-contract-original.json"
+  cp "$manifest" "$original"
+  for bad_path in relative-diff.txt "$session_dir//diff.txt" "$session_dir/../$sid/diff.txt"; do
+    jq -c --arg bad "$bad_path" \
+      '.current_diff_artifact = $bad | .targets |= map(.diff_artifact = $bad)' \
+      "$original" >"$manifest"
+    assert_reject "$proof_root" "$sid" 'artifact'
+  done
+  jq -c \
+    '.current_target_path = ("'$ROOT'/../.codex/hooks/eci-review-gate.sh") |
+     .targets |= map(.target_path = ("'$ROOT'/../.codex/hooks/eci-review-gate.sh")) |
+     .target_file_hashes = {("'$ROOT'/../.codex/hooks/eci-review-gate.sh"): .target_file_hashes | to_entries[0].value}' \
+    "$original" >"$manifest"
+  assert_reject "$proof_root" "$sid" 'target'
+}
+
+test_target_must_be_in_trusted_changed_paths() {
+  local proof_root="$TMP_ROOT/changed-paths" sid session_dir manifest target_path target_version out err
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  target_path="$ROOT/.gitignore"
+  target_version="$(sha "$target_path")"
+  jq -c --arg path "$target_path" --arg version "$target_version" \
+    '.current_target_path = $path |
+     .target_file_hashes = {($path): $version} |
+     .targets |= map(.target_path = $path | .target_version = $version) |
+     .rows |= map(.target_path = $path | .target_version = $version)' \
+    "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  out="$TMP_ROOT/changed-paths.out"
+  err="$TMP_ROOT/changed-paths.err"
+  if run_gate "$proof_root" final "$sid" "$out" "$err"; then
+    return 1
+  fi
+  if [ ! -e "$err" ]; then
+    printf 'changed-path gate produced no stderr file: %s\n' "$err" >&2
+    return 1
+  fi
+  grep -Fq 'trusted changed-path set' "$err"
+}
+
+test_untracked_target_bytes_are_bound_by_admission() {
+  local proof_root="$TMP_ROOT/untracked-target" sid session_dir manifest target_path target_version out err
+  target_path="$ROOT/hooks/.eci-review-gate-untracked-$BASHPID"
+  untracked_target="$target_path"
+  printf '%s\n' 'untracked target initial bytes' >"$target_path"
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  target_version="$(sha "$target_path")"
+  jq -c --arg path "$target_path" --arg version "$target_version" \
+    '.current_target_path = $path |
+     .target_file_hashes = {($path): $version} |
+     .targets |= map(.target_path = $path | .target_version = $version) |
+     .rows |= map(.target_path = $path | .target_version = $version)' \
+    "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  out="$TMP_ROOT/untracked-target.out"
+  err="$TMP_ROOT/untracked-target.err"
+  if run_gate "$proof_root" final "$sid" "$out" "$err"; then
+    return 1
+  fi
+  grep -Fq 'untracked-only governed target' "$err"
+  printf '%s\n' 'untracked target changed bytes' >"$target_path"
+  if run_gate "$proof_root" final "$sid" "$out" "$err"; then
+    return 1
+  fi
+  grep -Fq 'untracked-only governed target' "$err"
+  rm -f -- "$target_path"
+  untracked_target=""
+}
+
+test_deletion_target_uses_explicit_tombstone_route() {
+  local proof_root="$TMP_ROOT/deletion-target" sid session_dir manifest deleted_path out err
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  deleted_path="$ROOT/hooks/.eci-review-gate-deleted-$BASHPID"
+  [ ! -e "$deleted_path" ] || return 1
+  jq -c --arg path "$deleted_path" \
+    '.current_target_path = $path |
+     .target_file_hashes = {($path): ("0000000000000000000000000000000000000000000000000000000000000000")} |
+     .targets |= map(.target_path = $path | .target_version = ("0000000000000000000000000000000000000000000000000000000000000000")) |
+     .rows |= map(.target_path = $path | .target_version = ("0000000000000000000000000000000000000000000000000000000000000000"))' \
+    "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  out="$TMP_ROOT/deletion-target.out"
+  err="$TMP_ROOT/deletion-target.err"
+  if run_gate "$proof_root" final "$sid" "$out" "$err"; then
+    return 1
+  fi
+  grep -Fq 'deletion-only governed targets' "$err"
+}
+
+test_prewrite_requires_exact_c_admission() {
+  local proof_root="$TMP_ROOT/prewrite" sid session_dir out err manifest original ledger
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  printf '%s\n' 'scope: active prewrite' >"$session_dir/eci_active"
+  manifest="$session_dir/eci-required-critics.json"
+  original="$TMP_ROOT/prewrite-original.json"
+  cp "$manifest" "$original"
+  jq -c '.rows |= map(select(.critic_role == "C" and .gate_phase == "prewrite"))' "$original" >"$manifest"
+  ledger="$session_dir/eci-required-critics.prewrite.1.ledger"
+  if ECI_PREWRITE_TARGET="$ROOT/hooks/eci-review-gate.sh" \
+    ECI_PREWRITE_WRITER_SESSION='wrong-writer' \
+    run_gate "$proof_root" prewrite "$sid" "$TMP_ROOT/prewrite-invalid.out" "$TMP_ROOT/prewrite-invalid.err"; then
+    return 1
+  fi
+  [ ! -e "$ledger" ] || [ ! -s "$ledger" ] || return 1
+  out="$TMP_ROOT/prewrite.out"; err="$TMP_ROOT/prewrite.err"
+  ECI_PREWRITE_TARGET="$ROOT/hooks/eci-review-gate.sh" \
+    ECI_PREWRITE_WRITER_SESSION='session-root' \
+    run_gate "$proof_root" prewrite "$sid" "$out" "$err"
+  grep -Fq 'phase=prewrite' "$out"
+  grep -Fq 'target_path: ' "$session_dir/eci-prewrite-admitted.1"
+}
+
+test_acceptance_version_and_prewrite_lifecycle() {
+  local proof_root sid manifest original
+
+  proof_root="$TMP_ROOT/version-header"
+  sid="$(build_manifest "$proof_root" root)"
+  manifest="$proof_root/$sid/eci-required-critics.json"
+  original="$TMP_ROOT/version-header.json"
+  cp "$manifest" "$original"
+  jq -c '.acceptance_version = "0"' "$original" >"$manifest"
+  assert_reject "$proof_root" "$sid" 'manifest v2 schema'
+
+  proof_root="$TMP_ROOT/version-row"
+  sid="$(build_manifest "$proof_root" root)"
+  manifest="$proof_root/$sid/eci-required-critics.json"
+  jq -c '.rows[0].acceptance_version = "2"' "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  assert_reject "$proof_root" "$sid" 'changed acceptance_version'
+
+  proof_root="$TMP_ROOT/prewrite-late"
+  sid="$(build_manifest "$proof_root" root)"
+  manifest="$proof_root/$sid/eci-required-critics.json"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/prewrite-late-final.out" "$TMP_ROOT/prewrite-late-final.err"
+  jq -c '.rows |= map(select(.critic_role == "C" and .gate_phase == "prewrite"))' "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  if ECI_PREWRITE_TARGET="$ROOT/hooks/eci-review-gate.sh" \
+    ECI_PREWRITE_WRITER_SESSION='session-root' \
+    run_gate "$proof_root" prewrite "$sid" "$TMP_ROOT/prewrite-late.out" "$TMP_ROOT/prewrite-late.err"; then
+    return 1
+  fi
+  [ -s "$TMP_ROOT/prewrite-late.err" ]
+
+  proof_root="$TMP_ROOT/version-snapshot"
+  sid="$(build_manifest "$proof_root" root)"
+  manifest="$proof_root/$sid/eci-required-critics.json"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/version-snapshot-v1.out" "$TMP_ROOT/version-snapshot-v1.err"
+  jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2")' "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/version-snapshot-v2.out" "$TMP_ROOT/version-snapshot-v2.err"; then
+    return 1
+  fi
+  grep -Fq 'unchanged snapshot' "$TMP_ROOT/version-snapshot-v2.err"
+  [ -f "$proof_root/$sid/eci-required-critics.final.1.ledger" ]
+  [ "$(wc -l <"$proof_root/$sid/eci-required-critics.final.1.ledger")" -eq 4 ]
+}
+
+test_commit_to_changed_snapshot_off_transition() {
+  local first_root="$TMP_ROOT/transition-first" second_root="$TMP_ROOT/transition-second"
+  local sid session_dir second_session_dir transition manifest out err
+  sid="$(build_manifest "$first_root" root)"
+  run_gate "$first_root" commit "$sid" "$TMP_ROOT/transition-commit.out" "$TMP_ROOT/transition-commit.err"
+  session_dir="$first_root/$sid"
+  transition="$ROOT/hooks/.eci-review-gate-transition-$BASHPID"
+  root_fixture="$transition"
+  # Keep this fixture until the off snapshot consumes it.  The top-level EXIT
+  # cleanup is the failure fallback; a process-wide RETURN trap here can be
+  # inherited by callers running bash with functrace and disturb diagnostics.
+  printf '%s\n' transition >"$transition"
+
+  build_manifest "$second_root" root >/dev/null
+  second_session_dir="$second_root/$sid"
+  cp "$session_dir/eci-acceptance-anchor" "$second_session_dir/eci-acceptance-anchor"
+  cp "$session_dir/eci-required-critics.commit.1.ledger" "$second_session_dir/eci-required-critics.commit.1.ledger"
+  cp "$session_dir/eci-critic-identities.ledger" "$second_session_dir/eci-critic-identities.ledger"
+  manifest="$second_session_dir/eci-required-critics.json"
+  jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2" | .child_identity += "-v2")' \
+    "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  # The v2 transition intentionally uses fresh child identities.  Rebind each
+  # copied adjudication artifact to that identity before testing the off
+  # boundary; otherwise the closed adjudication contract rejects the fixture
+  # before the transition lineage is exercised.
+  for index in $(jq -r 'range(.rows | length)' "$manifest"); do
+    child="$(jq -r ".rows[$index].child_identity" "$manifest")"
+    rebind_manifest_row_identity "$manifest" "$index" "$child"
+  done
+  {
+    printf 'scope: transition\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$second_session_dir/eci_active"
+  out="$TMP_ROOT/transition-off.out"
+  err="$TMP_ROOT/transition-off.err"
+  if ! run_gate "$second_root" off "$sid" "$out" "$err"; then
+    cat "$err" >&2
+    return 1
+  fi
+  grep -Fq 'phase=off' "$out"
+  rm -f -- "$transition"
+  root_fixture=""
+}
+
+test_final_to_off_consumes_admitted_identity() {
+  local proof_root="$TMP_ROOT/final-off" sid session_dir out err
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/final-off-final.out" "$TMP_ROOT/final-off-final.err"
+  {
+    printf 'scope: final-off\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$session_dir/eci_active"
+  out="$TMP_ROOT/final-off-off.out"
+  err="$TMP_ROOT/final-off-off.err"
+  run_gate "$proof_root" off "$sid" "$out" "$err"
+  grep -Fq 'phase=off' "$out"
+}
+
+test_identity_reuse_across_target_is_rejected() {
+  local proof_root="$TMP_ROOT/identity-reuse" sid session_dir manifest
+  local index adjudication candidate_adjudication target_id role phase child report_sha adjudication_sha
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/identity-reuse-root.out" "$TMP_ROOT/identity-reuse-root.err"
+  jq -c '
+    .targets += [(.targets[0] | .target_id = "target-candidate" | .target_kind = "candidate-fix")] |
+    .rows += [.rows[0:4][] | .target_id = "target-candidate" | .target_kind = "candidate-fix" | .child_identity = (.child_identity + "-candidate")] |
+    .rows[5].child_identity = .rows[1].child_identity
+  ' "$manifest" >"$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
+  # Rebind the synthetic candidate rows so the closed adjudication record is
+  # valid and the assertion reaches the intended duplicate-identity check.
+  for index in 4 5 6 7; do
+    adjudication="$(jq -r ".rows[$index].adjudication_artifact" "$manifest")"
+    candidate_adjudication="${adjudication%.json}-candidate-$index.json"
+    cp -- "$adjudication" "$candidate_adjudication"
+    target_id="$(jq -r ".rows[$index].target_id" "$manifest")"
+    role="$(jq -r ".rows[$index].critic_role" "$manifest")"
+    phase="$(jq -r ".rows[$index].gate_phase" "$manifest")"
+    child="$(jq -r ".rows[$index].child_identity" "$manifest")"
+    report_sha="$(jq -r ".rows[$index].report_sha256" "$manifest")"
+    jq -c --arg target "$target_id" --arg role "$role" --arg phase "$phase" \
+      --arg child "$child" --arg report "$report_sha" \
+      '.target_id = $target | .critic_role = $role | .gate_phase = $phase | .child_identity = $child | .report_sha256 = $report' \
+      "$candidate_adjudication" >"$candidate_adjudication.tmp"
+    mv "$candidate_adjudication.tmp" "$candidate_adjudication"
+    adjudication_sha="$(sha "$candidate_adjudication")"
+    jq -c --argjson index "$index" --arg path "$candidate_adjudication" --arg sha "$adjudication_sha" \
+      '.rows[$index].adjudication_artifact = $path | .rows[$index].adjudication_sha256 = $sha' \
+      "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+  done
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/identity-reuse.out" "$TMP_ROOT/identity-reuse.err"; then
+    return 1
+  fi
+  grep -Fq 'reused critic identity' "$TMP_ROOT/identity-reuse.err" ||
+    grep -Fq 'reused child identity' "$TMP_ROOT/identity-reuse.err" ||
+    grep -Fq 'changed manifest after admission' "$TMP_ROOT/identity-reuse.err"
+}
+
+test_historical_admission_state_cannot_be_recreated() {
+  local proof_root="$TMP_ROOT/historical-state" sid session_dir ledger anchor
+  local original_ledger first_char replacement first_line second_line
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  ledger="$session_dir/eci-required-critics.final.1.ledger"
+  anchor="$session_dir/eci-acceptance-anchor"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-first.out" "$TMP_ROOT/historical-first.err"
+  original_ledger="$TMP_ROOT/historical-state-original.ledger"
+  cp -- "$ledger" "$original_ledger"
+  first_char="$(head -c 1 -- "$ledger")"
+  case "$first_char" in
+    0) replacement=1 ;;
+    *) replacement=0 ;;
+  esac
+  { printf '%s' "$replacement"; tail -c +2 -- "$ledger"; } >"$ledger.mutated"
+  mv -- "$ledger.mutated" "$ledger"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-mutated.out" "$TMP_ROOT/historical-mutated.err"; then
+    return 1
+  fi
+  grep -Fq 'mutated historical critic ledger' "$TMP_ROOT/historical-mutated.err"
+  cp -- "$original_ledger" "$ledger"
+  first_line="$(sed -n '1p' "$ledger")"
+  second_line="$(sed -n '2p' "$ledger")"
+  {
+    printf '%s\n' "$second_line"
+    printf '%s\n' "$first_line"
+    tail -n +3 -- "$ledger"
+  } >"$ledger.reordered"
+  mv -- "$ledger.reordered" "$ledger"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-reordered.out" "$TMP_ROOT/historical-reordered.err"; then
+    return 1
+  fi
+  grep -Fq 'mutated historical critic ledger' "$TMP_ROOT/historical-reordered.err"
+  cp -- "$original_ledger" "$ledger"
+  rm -f -- "$ledger"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-missing-ledger.out" "$TMP_ROOT/historical-missing-ledger.err"; then
+    return 1
+  fi
+  grep -Fq 'shortened or deleted ledger' "$TMP_ROOT/historical-missing-ledger.err"
+
+  proof_root="$TMP_ROOT/historical-anchor"
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  anchor="$session_dir/eci-acceptance-anchor"
+  run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-anchor-first.out" "$TMP_ROOT/historical-anchor-first.err"
+  rm -f -- "$anchor"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-missing-anchor.out" "$TMP_ROOT/historical-missing-anchor.err"; then
+    return 1
+  fi
+  grep -Fq 'historical critic evidence without its acceptance anchor' "$TMP_ROOT/historical-missing-anchor.err"
+}
+
+test_acceptance_transaction_recovers_each_publication_boundary() {
+  local boundary proof_root sid session_dir transaction anchor ledger
+  for boundary in ledger identity anchor; do
+    proof_root="$TMP_ROOT/recovery-$boundary"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    transaction="$session_dir/eci-acceptance-transaction"
+    anchor="$session_dir/eci-acceptance-anchor"
+    ledger="$session_dir/eci-required-critics.final.1.ledger"
+    if ECI_REVIEW_GATE_TEST_FAIL_AFTER="$boundary" run_gate "$proof_root" final "$sid" \
+      "$TMP_ROOT/recovery-$boundary-fail.out" "$TMP_ROOT/recovery-$boundary-fail.err"; then
+      return 1
+    fi
+    [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
+    case "$boundary" in
+      ledger) [ -f "$ledger" ] && [ ! -e "$anchor" ] || return 1 ;;
+      identity) [ -f "$ledger" ] && [ -f "$session_dir/eci-critic-identities.ledger" ] && [ ! -e "$anchor" ] || return 1 ;;
+      anchor) [ -f "$anchor" ] || return 1 ;;
+    esac
+    run_gate "$proof_root" final "$sid" \
+      "$TMP_ROOT/recovery-$boundary-replay.out" "$TMP_ROOT/recovery-$boundary-replay.err"
+    [ -f "$anchor" ] && [ ! -e "$transaction" ] || return 1
+  done
+}
+
+test_acceptance_transaction_binds_published_prefixes() {
+  local proof_root="$TMP_ROOT/recovery-prefix" sid session_dir transaction out err
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  transaction="$session_dir/eci-acceptance-transaction"
+  out="$TMP_ROOT/recovery-prefix-fail.out"
+  err="$TMP_ROOT/recovery-prefix-fail.err"
+  if ECI_REVIEW_GATE_TEST_FAIL_AFTER=ledger run_gate "$proof_root" final "$sid" "$out" "$err"; then
+    return 1
+  fi
+  [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
+  grep -Fxq 'schema: eci-acceptance-transaction/v2' "$transaction" || return 1
+  grep -Fxq 'state: ledger-published' "$transaction" || return 1
+  grep -Fq 'ledger_sha256: ' "$transaction" || return 1
+  grep -Fq 'identity_sha256: ' "$transaction" || return 1
+
+  # A recovery record whose published prefix no longer matches must not be
+  # silently repaired as if the ledger/identity publication never happened.
+  sed -i 's/^ledger_sha256: .*/ledger_sha256: 0000000000000000000000000000000000000000000000000000000000000000/' "$transaction"
+  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/recovery-prefix-tampered.out" "$TMP_ROOT/recovery-prefix-tampered.err"; then
+    return 1
+  fi
+  grep -Fq 'transaction ledger prefix' "$TMP_ROOT/recovery-prefix-tampered.err"
+
+  proof_root="$TMP_ROOT/recovery-identity-prefix"
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  transaction="$session_dir/eci-acceptance-transaction"
+  if ECI_REVIEW_GATE_TEST_FAIL_AFTER=identity run_gate "$proof_root" final "$sid" \
+    "$TMP_ROOT/recovery-identity-prefix-fail.out" "$TMP_ROOT/recovery-identity-prefix-fail.err"; then
+    return 1
+  fi
+  [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
+  grep -Fxq 'schema: eci-acceptance-transaction/v2' "$transaction" || return 1
+  grep -Fxq 'state: identity-published' "$transaction" || return 1
+  grep -Fq 'identity_sha256: ' "$transaction" || return 1
+  sed -i 's/^identity_sha256: .*/identity_sha256: 0000000000000000000000000000000000000000000000000000000000000000/' "$transaction"
+  if run_gate "$proof_root" final "$sid" \
+    "$TMP_ROOT/recovery-identity-prefix-tampered.out" "$TMP_ROOT/recovery-identity-prefix-tampered.err"; then
+    return 1
+  fi
+  grep -Fq 'transaction identity prefix' "$TMP_ROOT/recovery-identity-prefix-tampered.err"
+}
+
+test_unanchored_identity_row_is_rejected() {
+  local proof_root="$TMP_ROOT/unanchored-identity" sid session_dir identity
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  identity="$session_dir/eci-critic-identities.ledger"
+  run_gate "$proof_root" final "$sid" \
+    "$TMP_ROOT/unanchored-identity-first.out" "$TMP_ROOT/unanchored-identity-first.err"
+  printf 'commit:1:%s:%s:%s:%s:%s\n' \
+    "$(printf '%064d' 0)" "$(printf '%064d' 0)" "$(printf '%064d' 0)" \
+    "$(printf '%064d' 0)" "$(printf '%064d' 0)" >>"$identity"
+  if run_gate "$proof_root" final "$sid" \
+    "$TMP_ROOT/unanchored-identity-replay.out" "$TMP_ROOT/unanchored-identity-replay.err"; then
+    return 1
+  fi
+  grep -Fq 'unanchored critic identity row' "$TMP_ROOT/unanchored-identity-replay.err"
+}
+
+test_spawn_and_report_identity_bindings_are_required() {
+  local proof_root sid session_dir manifest spawn report adjudication tmp new_sha report_sha adjudication_sha
+
+  proof_root="$TMP_ROOT/spawn-binding"
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  spawn="$(jq -r '.rows[1].spawn_request_artifact' "$manifest")"
+  tmp="$spawn.tmp"
+  sed 's/^authority: non-authoritative$/authority: authoritative/' "$spawn" >"$tmp"
+  mv "$tmp" "$spawn"
+  new_sha="$(sha "$spawn")"
+  jq -c --arg sha "$new_sha" '.rows[1].spawn_request_sha256 = $sha' "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  assert_reject "$proof_root" "$sid" 'spawn authority binding'
+
+  proof_root="$TMP_ROOT/report-binding"
+  sid="$(build_manifest "$proof_root" root)"
+  session_dir="$proof_root/$sid"
+  manifest="$session_dir/eci-required-critics.json"
+  report="$(jq -r '.rows[0].report_artifact' "$manifest")"
+  adjudication="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
+  tmp="$report.tmp"
+  sed 's/^eci_critic_identity: .*$/eci_critic_identity: session_id=wrong-session;target_id=target-root;critic_role=C;gate_phase=prewrite;child_identity=child-root-C-prewrite;critic_provider=unavailable_by_schema;critic_semantic_role=ECI Critic C;critic_provenance=requested-special/' "$report" >"$tmp"
+  mv "$tmp" "$report"
+  report_sha="$(sha "$report")"
+  jq -c --arg sha "$report_sha" '.report_sha256 = $sha' "$adjudication" >"$tmp"
+  mv "$tmp" "$adjudication"
+  adjudication_sha="$(sha "$adjudication")"
+  jq -c --arg report_sha "$report_sha" --arg adjudication_sha "$adjudication_sha" \
+    '.rows[0].report_sha256 = $report_sha | .rows[0].adjudication_sha256 = $adjudication_sha' \
+    "$manifest" >"$tmp"
+  mv "$tmp" "$manifest"
+  assert_reject "$proof_root" "$sid" 'report identity binding'
+}
+
+test_nested_marker_lifecycle_is_owned_and_locked() {
+  local proof_root="$TMP_ROOT/nested" sid=session-nested session_dir
+  session_dir="$proof_root/$sid"
+  mkdir -p "$session_dir"
+  printf '%s\n' 'scope: nested lifecycle' >"$session_dir/eci_active"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null 2>&1; then
+    return 1
+  fi
+  [ ! -e "$session_dir/ate_nested_eci_active" ] || return 1
+  {
+    printf 'scope: nested lifecycle\n'
+    printf 'cwd: %s\n' "$ROOT"
+    printf 'session_id: %s\n' "$sid"
+    printf 'created_utc: 2026-01-01T00:00:00Z\n'
+  } >"$session_dir/eci_active"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" ECI_ACCEPTANCE_VERSION=0 \
+    "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null 2>&1; then
+    return 1
+  fi
+  [ ! -e "$session_dir/ate_nested_eci_active" ] || return 1
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" ECI_ACCEPTANCE_VERSION=1000000000 \
+    "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null 2>&1; then
+    return 1
+  fi
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-enter 1000000000 1 "$sid" >/dev/null 2>&1; then
+    return 1
+  fi
+  [ ! -e "$session_dir/ate_nested_eci_active" ] || return 1
+  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null 2>&1; then
+    return 1
+  fi
+  [ ! -e "$session_dir/ate_nested_eci_active" ] || return 1
+  [ ! -e "$session_dir/ate_nested_eci_completion" ] || return 1
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null
+  [ -f "$session_dir/ate_nested_eci_active" ] || return 1
+  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-accept >/dev/null 2>&1; then
+    return 1
+  fi
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-accept >/dev/null
+  [ -f "$session_dir/ate_nested_eci_completion" ] || return 1
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-enter 1 2 "$sid" >/dev/null 2>&1; then
+    return 1
+  fi
+  [ -f "$session_dir/ate_nested_eci_completion" ] || return 1
+  if CODEX_PROOF_ROOT="$proof_root" ECI_REVIEW_CWD="$ROOT" \
+    "$ROOT/hooks/eci-review-gate.sh" final "$sid" >"$TMP_ROOT/nested-gate.out" 2>"$TMP_ROOT/nested-gate.err"; then
+    return 1
+  fi
+  grep -Fq 'nested ECI target is active' "$TMP_ROOT/nested-gate.err"
+  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-exit >/dev/null 2>&1; then
+    return 1
+  fi
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" nested-exit >/dev/null
+  [ ! -e "$session_dir/ate_nested_eci_active" ]
+  set +x
+}
+
+test_lock_receipt_spoof_is_ignored() {
+  local proof_root="$TMP_ROOT/spoof" sid
+  sid="$(build_manifest "$proof_root" root)"
+  if ECI_REVIEW_GATE_LOCK_HELD=true run_gate "$proof_root" final "$sid" "$TMP_ROOT/spoof.out" "$TMP_ROOT/spoof.err"; then
+    return 1
+  fi
+  grep -Fq 'lock' "$TMP_ROOT/spoof.err"
+}
+
+# Coordinator-only helper for producing a current reviewed admission fixture.
+# It is explicitly opt-in and exits before the synthetic contract suite; normal
+# test runs remain unchanged.  The generated reports contain the focused
+# evidence listed below and the caller may export a bounded source copy for
+# manifest-write publication.
+if [ "${ECI_EMIT_CURRENT_MANIFEST:-0}" = 1 ]; then
+  emit_proof_root="${1:-${ECI_EMIT_PROOF_ROOT:?proof root required via argument or ECI_EMIT_PROOF_ROOT}}"
+  emit_kind="${2:-${ECI_EMIT_KIND:-current}}"
+  build_manifest "$emit_proof_root" "$emit_kind"
+  if [ -n "${ECI_EMIT_SOURCE_PATH:-}" ]; then
+    emit_sid="${ECI_EMIT_SESSION_ID:-session-$emit_kind}"
+    cp -- "$emit_proof_root/$emit_sid/eci-required-critics.json" "$ECI_EMIT_SOURCE_PATH"
+  fi
+  exit 0
+fi
+
+test_reviewed_dirty_commit_off_and_stop_lifecycle
+test_user_closed_teardown_is_single_terminal_route
+test_manifest_write_is_main_owned_and_atomic
+test_malformed_commit_identity_does_not_skip_active_gate
+test_commit_parser_wrappers_and_unknown_fail_closed
 test_root_and_session_symlink_fail_closed
+test_artifact_and_target_paths_are_lexically_canonical
+test_target_must_be_in_trusted_changed_paths
+test_untracked_target_bytes_are_bound_by_admission
+test_deletion_target_uses_explicit_tombstone_route
+test_prewrite_requires_exact_c_admission
+test_acceptance_version_and_prewrite_lifecycle
+test_commit_to_changed_snapshot_off_transition
+test_final_to_off_consumes_admitted_identity
+test_identity_reuse_across_target_is_rejected
+test_historical_admission_state_cannot_be_recreated
+test_acceptance_transaction_recovers_each_publication_boundary
+test_acceptance_transaction_binds_published_prefixes
+test_unanchored_identity_row_is_rejected
+test_spawn_and_report_identity_bindings_are_required
+test_nested_marker_lifecycle_is_owned_and_locked
+test_lock_receipt_spoof_is_ignored
 printf '%s\n' 'ECI required-critic review gate tests: PASS'

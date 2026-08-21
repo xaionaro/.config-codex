@@ -186,7 +186,7 @@ trusted_hash = "sha256:79102a94e895766e01b2ecf011f2a96a237c0056010357e34340f2558
 trusted_hash = "sha256:121624ab18ae91a6979f69911c1a19c6368f71aec17ad40920b19f707fe7fedd"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:1:0"]
-trusted_hash = "sha256:41c9346a7f9771f8d2b39c69d470282a6a67caa2781b02c9913f0d3159c40ed9"
+trusted_hash = "sha256:7dea53511b173f6f3f5eb267051836ae54d012ae28f5b54ff01b755887ac06fa"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:1:1"]
 trusted_hash = "sha256:0a6dc7c78d6ade6930697265feeaad766808ab76033800fa9e308a52b8597e4c"
@@ -201,7 +201,7 @@ trusted_hash = "sha256:92c608d98deb1cf2f6a1c40a788ea76e2b72ca719bb7799c82b15771b
 trusted_hash = "sha256:336fd4c1cab68f54aadc664457e15cf703f668ac5cfa4de1c965778922429bab"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:2:0"]
-trusted_hash = "sha256:ab1caad99c8956bce051d91c4c00429780c6baabd172b4c97d10b56618b49b76"
+trusted_hash = "sha256:7e147cbb5aab42eeaa10e702d52a3d6cdad7728e3728f12f27962445aa410830"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:2:1"]
 trusted_hash = "sha256:fde3ebd46b39069717ef505bdfc9f2dd18aba0ea7a5fe4cfe6cd479318e229c4"
@@ -225,4 +225,4 @@ trusted_hash = "sha256:1f7f0598df1a296c0942bb8fe6f144a96ea3bb72111b3c06eec1ac739
 trusted_hash = "sha256:010c625cb307ab76373a95325b3396299f28cc0e19709c3955f36448e1414307"
 
 [hooks.state."/home/pheona/.codex/hooks.json:post_compact:0:0"]
-trusted_hash = "sha256:345b8572ed36ac7a7415b2415d34e05c2c4b6d6c158c02876e75308184dfd1a0"
+trusted_hash = "sha256:1a9ead109faf0250cdb2bc861fe69273d1176499a275176af0d9f1d3892806c1"

@@ -191,7 +191,8 @@ Everything as local as possible, as short-lived as possible.
 
 ## Modules
 
-- Use `go.work` for local module resolution with paths relative to the workspace file. Keep `go.mod` free of local filesystem paths; remote fork replacements are fine. Reserve absolute paths for tool-required cases.
+- Local filesystem `replace` directives are forbidden in `go.mod` and must live in `go.work`. Every local `use` or `replace` path in `go.work` must be relative to that `go.work` file; absolute local filesystem paths are forbidden. Remote module-version replacements remain allowed.
+- In Git repos, activate `hooks/install-pre-commit-go-mod.sh` to enforce this invariant against staged `go.mod` files and to keep local overrides in `go.work`.
 
 ## Readability
 

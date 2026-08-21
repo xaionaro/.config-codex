@@ -29,6 +29,12 @@ if ! TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-hooks-tests.XXXXXX")"; then
   printf '%s\n' "FAIL setup could not create temporary test root"
   exit 1
 fi
+export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
+export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
+mkdir -p "$XDG_CONFIG_HOME/eci"
+chmod 700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/eci"
+printf '%s\n' enforcing >"$XDG_CONFIG_HOME/eci/command-gate-mode"
+chmod 600 "$XDG_CONFIG_HOME/eci/command-gate-mode"
 
 FORMAL_PERSISTENT_ROOT=""
 if ! FORMAL_PERSISTENT_ROOT="$(codex_select_formal_persistent_storage)"; then
@@ -889,6 +895,32 @@ test_eci_gate_skips_invalid_session_id() {
   expect_no_output "$out"
 }
 
+test_eci_gate_denies_malformed_identity_with_active_marker() {
+  local proof_root input out
+  proof_root="$(fresh_proof_root eci-malformed-active)"
+  mkdir -p "$proof_root/t00-session"
+  printf 'scope: malformed active identity\n' >"$proof_root/t00-session/eci_active"
+  input="$TMP_ROOT/eci-malformed-active.json"
+  jq '.session_id = []' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  out="$TMP_ROOT/eci-malformed-active.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' 'malformed hook identity' || return 1
+
+  jq '.tool_name = ""' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" || return 1
+
+  jq '.cwd = "bad\ncwd"' "$FIXTURES/eci-apply-patch-code.json" >"$input"
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out"
+}
+
 test_eci_gate_message_routes_edits_without_stop_language() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-message)"
@@ -1364,6 +1396,32 @@ test_reviewer_backend_parser_rejects_credential_backends() {
   )
 }
 
+test_reviewer_backend_parser_reports_structured_diagnostics() {
+  local out status
+  out="$TMP_ROOT/reviewer-backend-diagnostic.err"
+  status=0
+  (
+    . "$ROOT/hooks/lib/reviewer-backend.sh"
+    CODEX_STOP_REVIEWER="claude" parse_reviewer_env CODEX_STOP_REVIEWER
+  ) 2>"$out" || status=$?
+  [ "$status" -eq 1 ] || return 1
+  grep -q '^\[ECI_REVIEWER_BACKEND_UNSUPPORTED\] ECI gate denied' "$out" || return 1
+  grep -q 'phase=Stop' "$out" || return 1
+  grep -q 'operation=external-review-config' "$out" || return 1
+  grep -q 'subject=env=CODEX_STOP_REVIEWER,backend=claude' "$out" || return 1
+  grep -q 'reason: reviewer-backend: unknown CODEX_STOP_REVIEWER=claude' "$out" || return 1
+  grep -q 'remediation:' "$out" || return 1
+
+  status=0
+  (
+    . "$ROOT/hooks/lib/reviewer-backend.sh"
+    CODEX_STOP_REVIEWER="ollama:not-a-backend-spec" parse_reviewer_env CODEX_STOP_REVIEWER
+  ) 2>"$out" || status=$?
+  [ "$status" -eq 1 ] || return 1
+  grep -q '^\[ECI_REVIEWER_BACKEND_MALFORMED\] ECI gate denied' "$out" || return 1
+  grep -q 'reason: reviewer-backend: malformed CODEX_STOP_REVIEWER=' "$out"
+}
+
 test_reviewer_schema_matches_rules() {
   jq -e '
     (.required | index("assistant_tail_quote")) and
@@ -1393,6 +1451,23 @@ test_compose_reviewer_prompt_uses_codex_sources() {
     grep -q '^# Response$' "$out" &&
     grep -q '^## Evidence$' "$out" &&
     ! grep -Eq '[.]claude' "$out"
+}
+
+test_compose_reviewer_prompt_reports_structured_diagnostics() {
+  local out status
+  out="$TMP_ROOT/reviewer-prompt-diagnostic.err"
+  status=0
+  (
+    . "$ROOT/hooks/lib/compose-reviewer-prompt.sh"
+    compose_reviewer_prompt "$TMP_ROOT/missing-reviewer-rules.md" >/dev/null
+  ) 2>"$out" || status=$?
+  [ "$status" -eq 1 ] || return 1
+  grep -q '^\[ECI_REVIEW_PROMPT_WRAPPER_MISSING\] ECI gate denied' "$out" || return 1
+  grep -q 'phase=Stop' "$out" || return 1
+  grep -q 'operation=external-review-config' "$out" || return 1
+  grep -q 'subject=path=' "$out" || return 1
+  grep -q 'reason: compose_reviewer_prompt: wrapper not found:' "$out" || return 1
+  grep -q 'remediation:' "$out"
 }
 
 test_reviewer_filter_keeps_real_rules_and_drops_fabricated_rules() {
@@ -1667,15 +1742,16 @@ test_stop_reviewer_timeout_and_hook_wiring() {
   jq -e '
     ([.hooks.Stop[]?.hooks[]? | select((.command // "") | test("/stop-gate\\.sh")) | .timeout] | all(. >= 240)) and
     ([.hooks.Stop[]?.hooks[]?.command] | all((test("/system-prompt-reviewer\\.sh") | not))) and
-    ([.hooks.PreToolUse[]?.hooks[]? | select((.command // "") | test("/edit-bash-pre-reviewer\\.sh"))]
-      | length == 3 and all(.timeout == 75)) and
+    ([.hooks.PreToolUse[]?.hooks[]?.command]
+      | all((test("/edit-bash-pre-reviewer\\.sh|reviewer-call\\.sh|edit_bash_pre_reviewer_controller\\.py") | not))) and
     ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?
       | select((.command // "") | test("/validate-bash\\.sh"))]
       | length == 1 and all(.timeout == 75)) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh"))) and
-    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | any(test("/edit-bash-pre-reviewer\\.sh")))
+    ([.hooks.PreToolUse[]? | select(.matcher == "^Bash$") | .hooks[]?.command] | all((test("/edit-bash-pre-reviewer\\.sh") | not))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^apply_patch$") | .hooks[]?.command] | all((test("/edit-bash-pre-reviewer\\.sh") | not))) and
+    ([.hooks.PreToolUse[]? | select(.matcher == "^(Edit|Write|MultiEdit|NotebookEdit)$") | .hooks[]?.command] | all((test("/edit-bash-pre-reviewer\\.sh") | not)))
   ' "$ROOT/hooks.json" >/dev/null || return 1
+  [ -x "$ROOT/hooks/edit-bash-pre-reviewer.sh" ] || return 1
   [ "$(bash -c '. "$1"; printf "%s" "$CODEX_EDIT_PRE_REVIEWER_TIMEOUT"' \
       bash "$ROOT/hooks/lib/reviewer-call.sh")" = 58 ]
 }
@@ -4275,6 +4351,26 @@ test_eci_gate_denies_code_write_payload() {
   is_edit_routing_deny "$out"
 }
 
+test_eci_gate_protects_high_level_log_anchor() {
+  local proof_root input out anchor
+  proof_root="$(fresh_proof_root eci-anchor-edit)"
+  mkdir -p "$proof_root/t00-session"
+  anchor="$proof_root/t00-session/high_level_log.anchor"
+  printf '%s\n' 'schema: eci-high-level-log-anchor/v1' >"$anchor"
+  input="$TMP_ROOT/eci-anchor-edit.json"
+  jq -n --arg cwd "$ROOT" --arg path "$anchor" \
+    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"forged"}}' >"$input"
+  out="$TMP_ROOT/eci-anchor-edit.out"
+
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "high_level_log.anchor" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "ledger-append" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Never stop"
+}
+
 test_eci_gate_denies_code_notebookedit_payload() {
   local proof_root input out
   proof_root="$(fresh_proof_root eci-code-notebook)"
@@ -4492,6 +4588,40 @@ test_validate_edit_write_allows_aliased_proof_dir() {
   expect_no_output "$out"
 }
 
+test_validate_edit_write_blocks_symlinked_alias_dir() {
+  local proof_root input out alias_dir alias_target
+  proof_root="$(fresh_proof_root edit-write-symlink-alias)"
+  alias_target="$TMP_ROOT/edit-write-symlink-alias-target"
+  mkdir -p "$alias_target"
+  alias_dir="$proof_root/mission-alias"
+  ln -s "$alias_target" "$alias_dir"
+  input="$TMP_ROOT/edit-write-symlink-alias.json"
+  jq -n --arg fp "$alias_dir/project-understanding.md" \
+    '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"x"}}' >"$input"
+  out="$TMP_ROOT/edit-write-symlink-alias.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "unsafe session-scoped edit path"
+}
+
+test_validate_edit_write_blocks_relative_control_path() {
+  local proof_root input out marker relative_path
+  proof_root="$(fresh_proof_root edit-write-relative-control)"
+  mkdir -p "$proof_root/t00-session"
+  marker="$proof_root/t00-session/eci_active"
+  printf '%s\n' 'scope: relative control path' >"$marker"
+  relative_path="$(realpath --relative-to="$ROOT" "$marker")"
+  input="$TMP_ROOT/edit-write-relative-control.json"
+  jq -n --arg cwd "$ROOT" --arg fp "$relative_path" \
+    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$fp,content:"forged"}}' >"$input"
+  out="$TMP_ROOT/edit-write-relative-control.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "session-scoped"
+}
+
 test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
   local proof_root input out
   proof_root="$(fresh_proof_root edit-write-notebook-other)"
@@ -4513,7 +4643,8 @@ test_validate_apply_patch_allows_aliased_proof_dir() {
   mkdir -p "$alias_dir"
   printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
   patch_path="$alias_dir/project-understanding.md"
-  patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
+  printf '%s\n' 'existing ledger' >"$patch_path"
+  patch_text="$(printf '*** Begin Patch\n*** Update File: %s\n@@\n-existing ledger\n+updated ledger\n*** End Patch\n' "$patch_path")"
   input="$TMP_ROOT/apply-patch-alias.json"
   jq -n --arg patch "$patch_text" \
     '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
@@ -4521,6 +4652,43 @@ test_validate_apply_patch_allows_aliased_proof_dir() {
 
   run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out"
+}
+
+test_validate_apply_patch_blocks_symlinked_alias_dir() {
+  local proof_root input out alias_dir alias_target patch_path patch_text
+  proof_root="$(fresh_proof_root apply-patch-symlink-alias)"
+  alias_target="$TMP_ROOT/apply-patch-symlink-alias-target"
+  mkdir -p "$alias_target"
+  alias_dir="$proof_root/mission-alias"
+  ln -s "$alias_target" "$alias_dir"
+  patch_path="$alias_dir/project-understanding.md"
+  patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
+  input="$TMP_ROOT/apply-patch-symlink-alias.json"
+  jq -n --arg patch "$patch_text" \
+    '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
+  out="$TMP_ROOT/apply-patch-symlink-alias.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "unsafe session-scoped patch path"
+}
+
+test_validate_apply_patch_blocks_relative_control_path() {
+  local proof_root input out marker relative_path patch_text
+  proof_root="$(fresh_proof_root apply-patch-relative-control)"
+  mkdir -p "$proof_root/t00-session"
+  marker="$proof_root/t00-session/eci_active"
+  printf '%s\n' 'scope: relative control path' >"$marker"
+  relative_path="$(realpath --relative-to="$ROOT" "$marker")"
+  patch_text="$(printf '*** Begin Patch\n*** Update File: %s\n-scope: relative control path\n+scope: forged\n*** End Patch\n' "$relative_path")"
+  input="$TMP_ROOT/apply-patch-relative-control.json"
+  jq -n --arg cwd "$ROOT" --arg patch "$patch_text" \
+    '{session_id:"t00-session",cwd:$cwd,tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
+  out="$TMP_ROOT/apply-patch-relative-control.out"
+
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_pretool_deny "$out" &&
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "session-scoped"
 }
 
 test_validate_apply_patch_blocks_other_sid_proof() {
@@ -4561,7 +4729,22 @@ ledger_basenames() {
   printf '%s\n' \
     "project-understanding.md" \
     "high_level_log.md" \
-    "latest-status-report.md"
+    "high_level_log.anchor" \
+    "latest-status-report.md" \
+    "eci_active" \
+    "eci_wait" \
+    "eci_user_owned_wait.md" \
+    "eci-required-critics.json" \
+    "eci-required-critics.commit.1.ledger" \
+    "eci-critic-identities.ledger" \
+    "eci-acceptance-anchor" \
+    "eci-acceptance-transaction" \
+    "eci-teardown-complete" \
+    "eci-prewrite-admitted.commit.1" \
+    "baseline_head" \
+    "baseline_head.binding" \
+    "ate_nested_eci_active" \
+    "ate_nested_eci_completion"
 }
 
 test_validate_bash_allows_subagent_low_level_work() {
@@ -4970,14 +5153,21 @@ test_validate_bash_blocks_subagent_eci_active_off() {
 
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
   is_pretool_deny "$out" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main thread"
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Only the main thread" || return 1
+
+  command="printf '%s\\n' 'eci-active off /tmp/eci-disengage.md'"
+  jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
+    '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
+    "$FIXTURES/pre-reviewer-bash.json" >"$input"
+  run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" HOME="$TMP_ROOT/home" || return 1
+  expect_no_output "$out"
 }
 
 test_validate_bash_allows_main_eci_active_off() {
   local input out transcript command
   transcript="$TMP_ROOT/home/.codex/sessions/codex-hooks-test-main-eci-off.jsonl"
   write_main_transcript "$transcript" || return 1
-  command="~/.codex/bin/eci-active off /tmp/eci-disengage.md"
+  command="$ROOT/bin/eci-active off /tmp/eci-disengage.md"
   input="$TMP_ROOT/bash-main-eci-off.json"
   jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
     '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
@@ -5031,7 +5221,11 @@ test_validate_bash_blocks_subagent_eci_user_wait_wrappers() {
     "command -p ~/.codex/bin/eci-active resume aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
     "exec -a eci ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md" \
     "env -C /tmp ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md" \
-    "systemd-run --unit eci ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md"; do
+    "systemd-run --unit eci ~/.codex/bin/eci-active wait /tmp/eci-user-owned-wait.md" \
+    "~/.codex/bin/eci-active nested-enter 1 1 codex-hooks-test-subagent" \
+    "~/.codex/bin/eci-active nested-accept" \
+    "~/.codex/bin/eci-active nested-exit" \
+    "~/.codex/bin/eci-active manifest-write /tmp/eci-required-critics.json"; do
     input="$TMP_ROOT/bash-subagent-eci-wait-wrapper-$index.json"
     jq --arg cwd "$ROOT" --arg transcript "$transcript" --arg command "$command" \
       '.cwd = $cwd | .transcript_path = $transcript | .tool_input.command = $command' \
@@ -5075,20 +5269,29 @@ test_validate_bash_blocks_git_reset_without_marker() {
 
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
   is_pretool_deny "$out" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "git reset denied"
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "git repository mutation denied" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' ".git-reset-approved-once" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "command:"
 }
 
 test_validate_bash_consumes_git_reset_marker() {
-  local repo marker input out command
+  local repo marker input out command git_dir
   repo="$TMP_ROOT/git-reset-with-marker"
   mkdir -p "$repo" || return 1
   git -C "$repo" init -q || return 1
   command="git -C $repo reset --hard HEAD"
   marker="$repo/.git-reset-approved-once"
+  git_dir="$(git -C "$repo" rev-parse --absolute-git-dir)" || return 1
   {
-    printf 'date: 2026-05-17\n'
-    printf 'reason: hook test\n'
+    printf 'schema: codex-user-git-approval/v1\n'
+    printf 'authorized_by: user\n'
+    printf 'operation: reset\n'
+    printf 'repo_root: %s\n' "$repo"
+    printf 'git_dir: %s\n' "$git_dir"
     printf 'command: %s\n' "$command"
+    printf 'reason: user-approved hook test\n'
+    printf 'approved_at: 2026-08-15T00:00:00Z\n'
+    printf 'one_time: true\n'
   } >"$marker"
   input="$TMP_ROOT/bash-git-reset-with-marker.json"
   jq --arg cwd "$ROOT" --arg command "$command" \
@@ -5102,16 +5305,23 @@ test_validate_bash_consumes_git_reset_marker() {
 }
 
 test_validate_bash_blocks_git_reset_marker_mismatch() {
-  local repo marker input out command
+  local repo marker input out command git_dir
   repo="$TMP_ROOT/git-reset-marker-mismatch"
   mkdir -p "$repo" || return 1
   git -C "$repo" init -q || return 1
   command="git -C $repo reset --hard HEAD"
   marker="$repo/.git-reset-approved-once"
+  git_dir="$(git -C "$repo" rev-parse --absolute-git-dir)" || return 1
   {
-    printf 'date: 2026-05-17\n'
-    printf 'reason: hook test\n'
+    printf 'schema: codex-user-git-approval/v1\n'
+    printf 'authorized_by: user\n'
+    printf 'operation: reset\n'
+    printf 'repo_root: %s\n' "$repo"
+    printf 'git_dir: %s\n' "$git_dir"
     printf 'command: git -C %s reset --soft HEAD~1\n' "$repo"
+    printf 'reason: user-approved hook test\n'
+    printf 'approved_at: 2026-08-15T00:00:00Z\n'
+    printf 'one_time: true\n'
   } >"$marker"
   input="$TMP_ROOT/bash-git-reset-marker-mismatch.json"
   jq --arg cwd "$ROOT" --arg command "$command" \
@@ -5122,7 +5332,9 @@ test_validate_bash_blocks_git_reset_marker_mismatch() {
   run_hook "$out" "$ROOT/hooks/validate-bash.sh" "$input" || return 1
   is_pretool_deny "$out" &&
     [ -e "$marker" ] &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "does not match"
+    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "git repository mutation denied" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' ".git-reset-approved-once" &&
+    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "command:"
 }
 
 test_validate_bash_allows_redirect_to_vendor_path() {
@@ -5974,9 +6186,11 @@ test_stop_gate_adds_loop_reminder_after_five_blocks() {
   is_stop_block "$out" &&
     json_field_contains "$out" '.reason // empty' "LOOP DETECTED" &&
     json_field_contains "$out" '.reason // empty' "read instructions or stop-checklist" &&
-    json_field_contains "$out" '.reason // empty' "stop again" &&
-    json_field_contains "$out" '.reason // empty' "identify failing step" &&
-    json_field_contains "$out" '.reason // empty' "do not retry same approach"
+    json_field_contains "$out" '.reason // empty' "unchanged control metadata" &&
+    json_field_contains "$out" '.reason // empty' "do not emit another final/status/question" &&
+    json_field_contains "$out" '.reason // empty' "one concrete user-owned blocker" &&
+    json_field_contains "$out" '.reason // empty' "wait for new external state" &&
+    ! json_field_contains "$out" '.reason // empty' "stop again"
 }
 
 test_stop_gate_ignores_cwd_eci_state() {
@@ -6889,6 +7103,42 @@ test_eci_active_off_requires_manifest_for_legacy_marker_same_cwd() {
     grep -q "manifest" "$out.err"
 }
 
+test_eci_active_off_retains_malformed_direct_marker() {
+  local proof_root out status
+  proof_root="$(fresh_proof_root eci-off-malformed-direct)"
+  mkdir -p "$proof_root/t00-session" || return 1
+  printf 'scope: malformed direct\n' >"$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/eci-off-malformed-direct.out"
+
+  env CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$FIXTURES/eci-proof-complete.md" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -ne 0 ] &&
+    [ -s "$proof_root/t00-session/eci_active" ] &&
+    grep -q "path/owner binding is malformed" "$out.err"
+}
+
+test_eci_active_off_rejects_wrong_session_identity() {
+  local proof_root report out marker status
+  proof_root="$(fresh_proof_root eci-off-wrong-session)"
+  env CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" on "wrong-session identity probe" >"$TMP_ROOT/eci-off-wrong-session-on.out" 2>&1 || return 1
+  marker="$proof_root/t00-session/eci_active"
+  [ -s "$marker" ] || return 1
+  report="$TMP_ROOT/eci-off-wrong-session.md"
+  write_user_closed_eci_report "$report" || return 1
+
+  out="$TMP_ROOT/eci-off-wrong-session.out"
+  env CODEX_SESSION_ID=t00-other CODEX_PROOF_ROOT="$proof_root" \
+    "$ROOT/bin/eci-active" off "$report" >"$out" 2>"$out.err"
+  status=$?
+
+  [ "$status" -ne 0 ] &&
+    [ -s "$marker" ] &&
+    grep -q 'ECI off session identity mismatch' "$out.err"
+}
+
 test_eci_active_on_uses_newest_session_without_session_id() {
   local proof_root out status count
   proof_root="$(fresh_proof_root eci-on-newest-session)"
@@ -7124,14 +7374,36 @@ run_case "session snapshot refresh and active-marker cleanup safety" \
   "$ROOT/hooks/tests/test-session-snapshot-refresh.sh"
 run_case "PostCompact ECI refresh and policy contracts" \
   "$ROOT/hooks/tests/test-eci-post-compact-refresh.sh"
+run_case "PreToolUse configured-chain latency stays local and sub-second" \
+  bash "$ROOT/hooks/tests/test-pretooluse-latency.sh"
+run_case "staged Go module and workspace policy" \
+  bash "$ROOT/hooks/tests/test-pre-commit-go-mod.sh"
+run_case "Go module hook parity" \
+  bash "$ROOT/hooks/tests/test-go-mod-hook-parity.sh"
+run_case "design versus implementation policy boundary" \
+  bash "$ROOT/hooks/tests/test-policy-design-boundary.sh"
+run_case "ECI edit and legacy control-path ownership" \
+  bash "$ROOT/hooks/tests/test-eci-edit-control-paths.sh"
 run_case "ECI required-critic manifest gate contracts" \
   "$ROOT/hooks/tests/test-eci-review-gate.sh"
+run_case "validate-bash ECI classifier contracts" \
+  bash "$ROOT/hooks/tests/test-validate-bash-classifier.sh"
+run_case "ECI finite command-plan parser contracts" \
+  python3 "$ROOT/hooks/tests/test-eci-command-plan-parser.py"
+run_case "ECI command-gate mode contracts" \
+  python3 "$ROOT/hooks/tests/test-eci-command-gate-mode.py"
+run_case "ECI protected-first finite command-plan contracts" \
+  bash "$ROOT/hooks/tests/test-eci-command-plan.sh"
+run_case "ECI command syntax gating contracts" \
+  bash "$ROOT/hooks/tests/test-eci-command-syntax-gating.sh"
 run_case "side session start is silent and binds stop bypass" \
   test_side_session_start_is_silent_and_binds_stop_bypass
 run_case "ECI gate blocks code apply_patch when marker exists" \
   test_eci_gate_blocks_code_apply_patch
 run_case "ECI gate skips invalid session id" \
   test_eci_gate_skips_invalid_session_id
+run_case "ECI gate denies malformed identity with active marker" \
+  test_eci_gate_denies_malformed_identity_with_active_marker
 run_case "ECI gate routes edits without stop language" \
   test_eci_gate_message_routes_edits_without_stop_language
 run_case "stop gate retains stop language" \
@@ -7166,10 +7438,14 @@ run_case "reviewer backend parser accepts no-credential backends" \
   test_reviewer_backend_parser_accepts_no_credential_backends
 run_case "reviewer backend parser rejects credential backends" \
   test_reviewer_backend_parser_rejects_credential_backends
+run_case "reviewer backend parser reports structured diagnostics" \
+  test_reviewer_backend_parser_reports_structured_diagnostics
 run_case "reviewer schema matches reviewer rules" \
   test_reviewer_schema_matches_rules
 run_case "reviewer prompt composition uses Codex sources" \
   test_compose_reviewer_prompt_uses_codex_sources
+run_case "reviewer prompt composition reports structured diagnostics" \
+  test_compose_reviewer_prompt_reports_structured_diagnostics
 run_case "reviewer filter keeps real rules and drops fabricated rules" \
   test_reviewer_filter_keeps_real_rules_and_drops_fabricated_rules
 run_case "reviewer filter keeps user-history agreement rules" \
@@ -7364,6 +7640,8 @@ run_case "ECI gate allows markdown-only Write payload" \
   test_eci_gate_allows_markdown_only_write_payload
 run_case "ECI gate denies code Write payload" \
   test_eci_gate_denies_code_write_payload
+run_case "ECI gate protects high-level log anchor" \
+  test_eci_gate_protects_high_level_log_anchor
 run_case "ECI gate denies code NotebookEdit payload" \
   test_eci_gate_denies_code_notebookedit_payload
 run_case "ECI gate denies mixed markdown/code apply_patch" \
@@ -7410,10 +7688,18 @@ run_case "validate-edit-write allows NotebookEdit on own proof dir" \
   test_validate_edit_write_allows_notebookedit_same_sid_proof
 run_case "validate-edit-write allows aliased proof dir" \
   test_validate_edit_write_allows_aliased_proof_dir
+run_case "validate-edit-write blocks symlinked alias dir" \
+  test_validate_edit_write_blocks_symlinked_alias_dir
+run_case "validate-edit-write blocks relative control path" \
+  test_validate_edit_write_blocks_relative_control_path
 run_case "validate-edit-write blocks NotebookEdit on another session proof dir" \
   test_validate_edit_write_blocks_notebookedit_other_sid_proof
 run_case "validate-apply-patch allows aliased proof dir" \
   test_validate_apply_patch_allows_aliased_proof_dir
+run_case "validate-apply-patch blocks symlinked alias dir" \
+  test_validate_apply_patch_blocks_symlinked_alias_dir
+run_case "validate-apply-patch blocks relative control path" \
+  test_validate_apply_patch_blocks_relative_control_path
 run_case "validate-apply-patch blocks edits to another session proof dir" \
   test_validate_apply_patch_blocks_other_sid_proof
 run_case "validate-apply-patch blocks UUID proof dir despite alias marker" \
@@ -7698,6 +7984,10 @@ run_case "eci-active status uses legacy reserved marker for same cwd" \
   test_eci_active_status_uses_legacy_reserved_marker_same_cwd
 run_case "eci-active off requires manifest for legacy marker" \
   test_eci_active_off_requires_manifest_for_legacy_marker_same_cwd
+run_case "eci-active off retains malformed direct marker" \
+  test_eci_active_off_retains_malformed_direct_marker
+run_case "eci-active off rejects wrong session identity" \
+  test_eci_active_off_rejects_wrong_session_identity
 run_case "eci-active on uses newest session without CODEX_SESSION_ID" \
   test_eci_active_on_uses_newest_session_without_session_id
 run_case "eci-active on prefers CODEX_THREAD_ID without CODEX_SESSION_ID" \

@@ -64,13 +64,16 @@ fi
 
 proof_dir="$root/$session_id"
 baseline="$proof_dir/baseline_head"
+baseline_binding="$proof_dir/baseline_head.binding"
 nested_marker="$proof_dir/ate_nested_eci_active"
+baseline_max_bytes=4096
 
 nested_marker_is_active() {
-  local bytes line_count
+  local bytes line_count writer
   local -a lines=()
 
   [ -f "$nested_marker" ] && [ ! -L "$nested_marker" ] || return 1
+  codex_eci_marker_is_valid_for_cwd "$eci_marker" "$(codex_canonical_cwd "$cwd")" || return 1
   bytes="$(wc -c <"$nested_marker" 2>/dev/null || true)"
   case "$bytes" in
     ''|*[!0-9]*) return 1 ;;
@@ -78,12 +81,26 @@ nested_marker_is_active() {
   [ "$bytes" -le 1024 ] || return 1
   [ "$(tail -c 1 -- "$nested_marker" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
   line_count="$(awk 'END { print NR + 0 }' "$nested_marker" 2>/dev/null || printf '0')"
-  [ "$line_count" -eq 3 ] || return 1
+  # Legacy three-line nested markers lack ownership/authentication and must not
+  # keep a session in an active refresh state.
+  [ "$line_count" -eq 8 ] || return 1
   mapfile -t lines <"$nested_marker" || return 1
-  [ "${#lines[@]}" -eq 3 ] || return 1
+  [ "${#lines[@]}" -eq 8 ] || return 1
   [[ "${lines[0]}" == "outer_session_id: $session_id" ]] || return 1
-  [[ "${lines[1]}" =~ ^step:[[:space:]]*[0-9]+$ ]] || return 1
-  [[ "${lines[2]}" =~ ^iteration:[[:space:]]*[0-9]+$ ]] || return 1
+  [[ "${lines[1]}" == "outer_marker: $proof_dir/eci_active" ]] || return 1
+  [ "${lines[2]}" = 'owner: ate' ] || return 1
+  [[ "${lines[3]}" == writer_session_id:\ * ]] || return 1
+  writer="${lines[3]#writer_session_id: }"
+  codex_valid_session_id "$writer" || return 1
+  [[ "${lines[4]}" =~ ^acceptance_version:[[:space:]]*[1-9][0-9]{0,8}$ ]] || return 1
+  [[ "${lines[5]}" =~ ^step:[[:space:]]*(0|[1-9][0-9]{0,8})$ ]] || return 1
+  [[ "${lines[6]}" =~ ^iteration:[[:space:]]*(0|[1-9][0-9]{0,8})$ ]] || return 1
+  [ "${lines[7]}" = 'state: active' ] || return 1
+}
+
+direct_marker_is_active() {
+  [ -f "$eci_marker" ] && [ ! -L "$eci_marker" ] || return 1
+  codex_eci_marker_is_valid_for_cwd "$eci_marker" "$(codex_canonical_cwd "$cwd")"
 }
 
 codex_session_dir_is_safe "$root" "$session_id" || exit 0
@@ -92,7 +109,7 @@ if [ "$lock_held" != true ]; then
   ctx='Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.'
   eci_marker="$proof_dir/eci_active"
   if [ -d "$proof_dir" ] && [ ! -L "$proof_dir" ] &&
-      { { [ -f "$eci_marker" ] && [ ! -L "$eci_marker" ]; } || nested_marker_is_active; }; then
+      { direct_marker_is_active || nested_marker_is_active; }; then
     ctx='ECI is active. ECI refresh signal (not proof of compaction): after compaction, the coordinator/lead must immediately re-read the entire skills/explore-critique-implement/SKILL.md and re-invoke it before the next decision/tool.'
   fi
   jq -n --arg ctx "$ctx" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'
@@ -102,8 +119,139 @@ fi
 mkdir -p "$proof_dir"
 codex_session_dir_is_safe "$root" "$session_id" || exit 0
 
-if [ ! -f "$baseline" ]; then
-  git rev-parse HEAD >"$baseline" 2>/dev/null || true
+# The baseline and binding are separate legacy files, so publish them with
+# no-overwrite hard links and repair a half-publication on the next
+# SessionStart.  A crash after either link cannot leave the review gate
+# permanently wedged: the missing mate is reconstructed only from a bounded,
+# validated record bound to the current session/repository/cwd.
+baseline_context_is_valid() {
+  local raw
+  baseline_repo="$(codex_git_repo_root_for_path "$cwd" 2>/dev/null || true)"
+  [ -n "$baseline_repo" ] || return 1
+  baseline_repo="$(realpath -m -- "$baseline_repo" 2>/dev/null || true)"
+  baseline_git_dir_raw="$(codex_git_safe -C "$baseline_repo" rev-parse --git-dir 2>/dev/null || true)"
+  baseline_git_common_raw="$(codex_git_safe -C "$baseline_repo" rev-parse --git-common-dir 2>/dev/null || true)"
+  case "$baseline_git_dir_raw" in
+    /*) baseline_git_dir="$baseline_git_dir_raw" ;;
+    *) baseline_git_dir="$baseline_repo/$baseline_git_dir_raw" ;;
+  esac
+  case "$baseline_git_common_raw" in
+    /*) baseline_git_common="$baseline_git_common_raw" ;;
+    *) baseline_git_common="$baseline_repo/$baseline_git_common_raw" ;;
+  esac
+  baseline_git_dir="$(realpath -m -- "$baseline_git_dir" 2>/dev/null || true)"
+  baseline_git_common="$(realpath -m -- "$baseline_git_common" 2>/dev/null || true)"
+  baseline_cwd="$(codex_canonical_cwd "$cwd")"
+  [ -n "$baseline_git_dir" ] && [ -n "$baseline_git_common" ] && [ -n "$baseline_cwd" ] || return 1
+  [ -d "$baseline_repo" ] && [ ! -L "$baseline_repo" ] || return 1
+  [ -d "$baseline_git_dir" ] && [ ! -L "$baseline_git_dir" ] || return 1
+  [ -d "$baseline_git_common" ] && [ ! -L "$baseline_git_common" ] || return 1
+}
+
+baseline_head_file_is_valid() {
+  local bytes line_count
+  [ -f "$baseline" ] && [ ! -L "$baseline" ] || return 1
+  bytes="$(wc -c <"$baseline" 2>/dev/null || true)"
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$bytes" -le "$baseline_max_bytes" ] || return 1
+  [ "$(tail -c 1 -- "$baseline" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  line_count="$(awk 'END { print NR + 0 }' "$baseline" 2>/dev/null || printf '0')"
+  [ "$line_count" -eq 1 ] || return 1
+  mapfile -t baseline_lines <"$baseline" || return 1
+  [ "${#baseline_lines[@]}" -eq 1 ] || return 1
+  baseline_head="${baseline_lines[0]}"
+  [[ "$baseline_head" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+  codex_git_safe -C "$baseline_repo" cat-file -e "$baseline_head^{commit}" >/dev/null 2>&1
+}
+
+baseline_binding_file_is_valid() {
+  local bytes line_count
+  [ -f "$baseline_binding" ] && [ ! -L "$baseline_binding" ] || return 1
+  bytes="$(wc -c <"$baseline_binding" 2>/dev/null || true)"
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$bytes" -le "$baseline_max_bytes" ] || return 1
+  [ "$(tail -c 1 -- "$baseline_binding" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  line_count="$(awk 'END { print NR + 0 }' "$baseline_binding" 2>/dev/null || printf '0')"
+  [ "$line_count" -eq 7 ] || return 1
+  mapfile -t baseline_binding_lines <"$baseline_binding" || return 1
+  [ "${#baseline_binding_lines[@]}" -eq 7 ] || return 1
+  [ "${baseline_binding_lines[0]}" = 'schema: eci-baseline-binding/v1' ] || return 1
+  [ "${baseline_binding_lines[1]}" = "session_id: $session_id" ] || return 1
+  [ "${baseline_binding_lines[2]}" = "cwd: $baseline_cwd" ] || return 1
+  [ "${baseline_binding_lines[3]}" = "repo_root: $baseline_repo" ] || return 1
+  [ "${baseline_binding_lines[4]}" = "git_dir: $baseline_git_dir" ] || return 1
+  [ "${baseline_binding_lines[5]}" = "git_common_dir: $baseline_git_common" ] || return 1
+  baseline_head="${baseline_binding_lines[6]#base_oid: }"
+  [ "${baseline_binding_lines[6]}" = "base_oid: $baseline_head" ] || return 1
+  [[ "$baseline_head" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+  codex_git_safe -C "$baseline_repo" cat-file -e "$baseline_head^{commit}" >/dev/null 2>&1
+}
+
+publish_baseline_head() {
+  local tmp="$baseline.tmp.$$"
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
+  (set -C; printf '%s\n' "$baseline_head" >"$tmp") || { rm -f -- "$tmp"; return 1; }
+  if (set -C; ln -- "$tmp" "$baseline" 2>/dev/null); then
+    rm -f -- "$tmp"
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+publish_baseline_binding() {
+  local tmp="$baseline_binding.tmp.$$"
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
+  (set -C; printf 'schema: eci-baseline-binding/v1\nsession_id: %s\ncwd: %s\nrepo_root: %s\ngit_dir: %s\ngit_common_dir: %s\nbase_oid: %s\n' \
+    "$session_id" "$baseline_cwd" "$baseline_repo" "$baseline_git_dir" "$baseline_git_common" "$baseline_head" >"$tmp") || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  if (set -C; ln -- "$tmp" "$baseline_binding" 2>/dev/null); then
+    rm -f -- "$tmp"
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+if baseline_context_is_valid; then
+  baseline_present=false
+  binding_present=false
+  [ -e "$baseline" ] || [ -L "$baseline" ] && baseline_present=true
+  [ -e "$baseline_binding" ] || [ -L "$baseline_binding" ] && binding_present=true
+
+  if [ "$baseline_present" = true ]; then
+    baseline_head_file_is_valid || baseline_present=false
+  fi
+  if [ "$binding_present" = true ]; then
+    baseline_binding_file_is_valid || binding_present=false
+  fi
+
+  # A valid lone file is the recoverable half-publication case.  Never replace
+  # an unsafe or malformed file; leave it for the gate to fail closed.
+  if [ "$baseline_present" = true ] && [ "$binding_present" = false ] &&
+    [ ! -e "$baseline_binding" ] && [ ! -L "$baseline_binding" ]; then
+    publish_baseline_binding || true
+  elif [ "$baseline_present" = false ] && [ "$binding_present" = true ] &&
+    [ ! -e "$baseline" ] && [ ! -L "$baseline" ]; then
+    publish_baseline_head || true
+  elif [ "$baseline_present" = false ] && [ "$binding_present" = false ] &&
+    [ ! -e "$baseline" ] && [ ! -L "$baseline" ] &&
+    [ ! -e "$baseline_binding" ] && [ ! -L "$baseline_binding" ]; then
+    baseline_head="$(codex_git_safe -C "$baseline_repo" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$baseline_head" =~ ^[0-9a-f]{40,64}$ ]] &&
+      codex_git_safe -C "$baseline_repo" cat-file -e "$baseline_head^{commit}" >/dev/null 2>&1; then
+      if publish_baseline_head; then
+        [ "${CODEX_SESSION_SNAPSHOT_FAIL_AFTER:-}" = baseline ] && exit 75
+        if publish_baseline_binding; then
+          [ "${CODEX_SESSION_SNAPSHOT_FAIL_AFTER:-}" = binding ] && exit 75
+        else
+          rm -f -- "$baseline"
+        fi
+      fi
+    fi
+  fi
 fi
 
 rm -f "$proof_dir/skip_stop"
@@ -151,7 +299,7 @@ prune_marker_dirs "$root/side-stop/sessions" side_stop
 ctx='Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.'
 eci_marker="$proof_dir/eci_active"
 if [ -d "$proof_dir" ] && [ ! -L "$proof_dir" ] &&
-    { { [ -f "$eci_marker" ] && [ ! -L "$eci_marker" ]; } || nested_marker_is_active; }; then
+    { direct_marker_is_active || nested_marker_is_active; }; then
   ctx='ECI is active. ECI refresh signal (not proof of compaction): after compaction, the coordinator/lead must immediately re-read the entire skills/explore-critique-implement/SKILL.md and re-invoke it before the next decision/tool.'
 fi
 

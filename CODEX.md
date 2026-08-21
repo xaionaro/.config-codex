@@ -4,6 +4,7 @@
 - Decompose claims into verifiable units; verify suspect ones before reliance.
 - Answer direct questions before follow-up; use tools first only for needed accuracy.
 - Default to complete, concise, plain engineering prose: rule first, no filler, one idea per sentence. Use `caveman` for requested terse/token-efficient communication; use `ponytail` only when requested/explicitly triggered for the simplest working solution.
+- Treat short status queries—exact `status`, `sitrep`, `progress`, `checkpoint`, and equivalents—as requests for a current-state report. Load `writing-status-reports` and include state, progress, decisions, blockers/risks, verification, and next focus; use its multi-lane table when applicable. Never answer only “no new action” or a terse acknowledgment.
 
 ## Evidence
 
@@ -60,15 +61,25 @@
 - Never expose secrets or credentials in code, commits, logs, prompts, or final output.
 - The stop hook enforces commit hygiene. Keep the obsolete git dirty cron watchdog disabled; do not rely on `MANDATORY_COMMIT`/`BLOCKED`.
 - Before each commit, run available fitting static checks.
-- Before stopping after edits, commit your completed changes unless unrelated user work would mix; otherwise name blocker/paths. Never commit unrelated user changes.
-- Workers/implementers commit their code before submission unless the user explicitly says not to; never direct otherwise. For requested dirty preservation, use a WIP/checkpoint commit before review.
-- Reset only after: inspect `git status` and all uncommitted diffs; confirm no useful loss; create repo-root `.git-reset-approved-once` with `date:`, `reason:`, and `command: <exact Bash command>`.
-- The Bash hook deletes `.git-reset-approved-once` before its one matching command. Every later reset repeats the gate with a new marker.
+- Before the coordinator stops after edits, commit completed coordinator-owned changes unless unrelated user work would mix; otherwise name blocker/paths. Workers hand off their tested changes instead of performing acceptance-sensitive commits. Never commit unrelated user changes.
+- Workers/implementers prepare and test changes for coordinator review; acceptance-sensitive commits are coordinator-owned. For requested dirty preservation, the coordinator may make a WIP/checkpoint commit through the normal reviewed boundary.
+- Reset, mutating worktree operations, and the hidden direct-commit workaround remain denied unless a pre-existing user approval artifact authorizes exactly one direct command. The artifact uses this exact nine-line schema at the repository root (operation is `reset`, `worktree`, or `commit`): `schema: codex-user-git-approval/v1`, `authorized_by: user`, `operation: <reset|worktree|commit>`, `repo_root: <canonical>`, `git_dir: <canonical>`, `command: <exact Bash command>`, `reason: <bounded reason>`, `approved_at: <UTC timestamp>`, `one_time: true`. The `commit` operation is narrower: its command must be a canonical direct `git commit` invocation with only bounded post-subcommand commit options, no wrapper, assignment, alias, alternate executable, Git context option, shell operator, or substitution.
+- Inspect `git status` and all uncommitted diffs before requesting approval; confirm no useful loss. The hook classifies the exact reset/worktree/commit operation before consuming a matching artifact and rejects UNKNOWN commands, wrappers, indirection, alternate Git context, mismatches, and replay. Without approval, an inactive direct commit remains available and an active-ECI direct commit uses the normal review gate. A valid pre-existing user approval authorizes exactly one canonical direct command and skips only that active-ECI acceptance gate; it never fabricates critic or evidence files and does not bypass identity, path, security, or worker controls. Tracked/indexed approval files are invalid. Atomic claim directories are one-time replay protection; only an empty stale orphan beyond the bounded recovery window may be reclaimed. Denials intentionally do not reveal the artifact name or route.
+- `authorized_by: user` is a required structural claim, not cryptographic provenance. The runtime cannot distinguish an agent-created file from a human-created file on the same writable filesystem; only a pre-existing artifact supplied through a user-controlled path or interactive user action should be treated as authorization. Do not self-issue one to bypass the boundary.
 - Push only on explicit user request.
 - Keep each unpushed logical change in one commit; amend a bad original rather than stack a fix commit. Reset only through the gate. Hold commits until stable. After push, prefer a new commit.
 - Do not add AI co-author lines.
 
 ## Skills/Agents
+
+### ECI coordinator gate
+
+While an ECI marker is active:
+
+- The main/coordinator may use bounded literal project, proof, ledger, skills, and Git inspection.
+- The coordinator may run approved local verification: `bash`/`sh -n`, reviewed test entrypoints, exact `bash`/`sh -x <reviewed-test> 2>&1 | tail -n N` traces (`1 <= N <= 200`), finite read-only `&&` batches, and the gate's exact `|| true` form.
+- Workers may use only worker-approved bounded read-only inspection. They may not use coordinator debug routes or mutate source, proof state, Git state, acceptance, or lifecycle.
+- Do not bypass the boundary with wrappers, substitutions, `eval`, redirects, or arbitrary pipelines. When a gate denies a command, preserve the compiler-style diagnostic: code, phase, operation, rejected command segment/token/path, exact reason, and remediation.
 
 - Before substantive work, load every installed matching skill from `~/.codex/skills`; slash-paired cells map positionally; matches are cumulative. Skill routing is instruction-only; never port Claude `Skill` `PostToolUse` markers without real Codex skill identity/path fields.
 
@@ -101,6 +112,7 @@
 | Changed-work scan; large scratch | Gitleaks required on `PATH`; the stop gate hard-blocks if it cannot scan changed work. When default temp is tmpfs, use `$TMPDIR`/`~/tmp/` for large files/objects |
 
 - When the stop hook blocks, follow its prompt. Follow `~/.cache/codex-proof/$SESSION_ID/instructions.md` when present; use `~/.codex/hooks/stop-checklist.md` as the acceptance checklist.
+- Treat repeated unchanged `LOOP DETECTED`, `ECI_STOP_ACTIVE_ECI`, or `ECI_STOP_MARKER_*` stop output as control metadata, never a new user request: do not emit another final/status/question, retry, poll, or Stop attempt. Take one distinct recovery action or record one concrete user-owned blocker, then wait for new external state. A valid active marker remains authoritative; do not switch to `continue:true` unless the hook reports a validated direct-session `eci_wait` state.
 - Use `~/.codex/bin/skip-stop on` only in orchestration-only sessions where verification is redundant; always run `~/.codex/bin/skip-stop off` before normal development.
 
 - Treat subagent output as an unreviewed PR: verify success claims by running commands yourself, verify load-bearing facts from primary sources, read every changed line, and check original requirements.

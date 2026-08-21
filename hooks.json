@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-post-compact-refresh.sh\"'",
+            "command": "bash -c 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-post-compact-refresh.sh\"'",
             "statusMessage": "Refreshing ECI rules after compaction"
           }
         ]
@@ -43,12 +43,6 @@
             "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-bash.sh\"'",
             "timeout": 75,
             "statusMessage": "Checking shell command"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/edit-bash-pre-reviewer.sh\"'",
-            "timeout": 75,
-            "statusMessage": "Checking first tool call"
           }
         ]
       },
@@ -57,29 +51,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-apply-patch.sh\"'",
-            "statusMessage": "Checking file edit"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/security-reminder.py\"'",
-            "statusMessage": "Checking security-sensitive edit"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-active-gate.sh\"'",
-            "statusMessage": "Checking ECI gate"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/ate-orchestrator-gate.sh\"'",
-            "statusMessage": "Checking role gate"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/edit-bash-pre-reviewer.sh\"'",
-            "timeout": 75,
-            "statusMessage": "Checking first tool call"
+            "command": "bash -lc 'exec bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"'",
+            "statusMessage": "Checking edit gates"
           }
         ]
       },
@@ -88,29 +61,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-edit-write.sh\"'",
-            "statusMessage": "Checking file edit"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/security-reminder.py\"'",
-            "statusMessage": "Checking security-sensitive edit"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-active-gate.sh\"'",
-            "statusMessage": "Checking ECI gate"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/ate-orchestrator-gate.sh\"'",
-            "statusMessage": "Checking role gate"
-          },
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/edit-bash-pre-reviewer.sh\"'",
-            "timeout": 75,
-            "statusMessage": "Checking first tool call"
+            "command": "bash -lc 'exec bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"'",
+            "statusMessage": "Checking edit gates"
           }
         ]
       }

@@ -3,12 +3,18 @@
 
 set -euo pipefail
 
+# This name is an internal per-process optimization only.  Never trust an
+# inherited value: the canonical root is computed below before it is exported
+# for the helper functions used by this callback.
+unset CODEX_STOP_GATE_ROOT
+
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
 . "$HOOK_DIR/lib/codex-tmp.sh"
+. "$HOOK_DIR/lib/eci-diagnostic.sh"
 codex_install_fail_open_trap stop-gate
 
-input=$(cat)
+input="$(< /dev/stdin)"
 json_string_field() {
   local key="$1"
   local pattern="\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
@@ -27,60 +33,558 @@ if [[ "$input" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*(true|false) ]]; 
   stop_active="${BASH_REMATCH[1]}"
 fi
 cwd="$(json_string_field cwd)"
+stop_identity_malformed=false
+if [ -z "$session_id" ] || ! [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]] ||
+  [ -z "$cwd" ] ||
+  [[ "$cwd" == *[![:print:]]* ]] ||
+  [[ ! "$input" =~ \"session_id\"[[:space:]]*:[[:space:]]*\" ]] ||
+  [[ ! "$input" =~ \"cwd\"[[:space:]]*:[[:space:]]*\" ]]; then
+  stop_identity_malformed=true
+fi
 [ -z "$cwd" ] && cwd="$PWD"
-root="${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+if [ "$cwd" = "$PWD" ]; then
+  # Hook payloads normally carry the process cwd.  `pwd -P` is a Bash builtin
+  # and avoids spawning the helper's cd/subshell on every active callback;
+  # differing payload paths still take the full physical canonicalization.
+  canonical_stop_cwd="$(pwd -P)"
+else
+  canonical_stop_cwd="$(codex_canonical_cwd "$cwd")"
+fi
+root="$(codex_proof_root)"
+export CODEX_STOP_GATE_ROOT="$root"
 proof_dir="$root/$session_id"
 
+# Active-stop discovery is intentionally bounded before any state parsing.  A
+# valid typed session gets a direct lookup; ambiguity checks inspect only the
+# root's immediate session directories.  Do not recurse through arbitrary
+# child trees: those trees are unrelated proof state and are not part of the
+# Stop marker namespace.
+eci_stop_max_markers=64
+eci_stop_max_marker_bytes="$codex_eci_marker_max_bytes"
+# The fallback ambiguity scan is deliberately finite.  It only inspects
+# immediate session marker paths; it never expands an unbounded shell glob or
+# walks arbitrary descendants.  A typed direct-session lookup remains the
+# normal O(1) marker probe, while this cap preserves duplicate-owner checks
+# when ambiguity must be examined.
+eci_stop_max_root_entries=64
+
+stop_direct_marker_path() {
+  local candidate
+  codex_valid_session_id "$session_id" || return 1
+  candidate="$root/$session_id/eci_active"
+  [ -e "$candidate" ] || [ -L "$candidate" ] || return 1
+  printf '%s\n' "$candidate"
+}
+
+stop_marker_scan() {
+  local marker marker_count=0 root_entry_count=0
+
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  # Do not use "$root"/* here: pathname expansion happens before the shell
+  # can enforce a cap and can allocate an attacker-sized array.  Count
+  # immediate proof-root entries before checking marker types; an overflow is
+  # unsafe ambiguity state, while a valid typed session with no direct marker
+  # skips this fallback entirely.
+  while IFS= read -r -d '' marker; do
+    root_entry_count=$((root_entry_count + 1))
+    if [ "$root_entry_count" -gt "$eci_stop_max_root_entries" ]; then
+      printf '%s\0' '__ECI_STOP_ROOT_ENTRY_OVERFLOW__'
+      return 0
+    fi
+    [ -d "$marker" ] && [ ! -L "$marker" ] || continue
+    marker="${marker%/}/eci_active"
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
+    marker_count=$((marker_count + 1))
+    if [ "$marker_count" -gt "$eci_stop_max_markers" ]; then
+      # A sentinel avoids an unbounded output/status channel in process
+      # substitutions while making overflow an unsafe state for every caller.
+      printf '%s\0' '__ECI_STOP_MARKER_OVERFLOW__'
+      return 0
+    fi
+    printf '%s\0' "$marker"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
+}
+
+stop_marker_cache=()
+stop_marker_cache_loaded=false
+stop_marker_cache_status=0
+stop_invalid_marker=""
+# Keep the malformed-identity preflight nounset-safe.  The full legacy marker
+# lookup is intentionally deferred until after the authoritative fast path.
+legacy_eci_active=""
+stop_root_ambiguity_scan_cached=""
+
+stop_root_requires_ambiguity_scan() {
+  local link_count reserved_count=0 name marker
+  [ "$stop_root_ambiguity_scan_cached" = true ] && return 0
+  [ "$stop_root_ambiguity_scan_cached" = false ] && return 1
+  if ! [ -d "$root" ] || [ -L "$root" ]; then
+    stop_root_ambiguity_scan_cached=false
+    return 1
+  fi
+  # On the Linux proof-root filesystem, a directory's link count is 2 plus
+  # its immediate subdirectory count.  This cheap probe avoids spawning a
+  # full bounded find for the normal one-session direct-marker case; any
+  # additional session directory still routes through the existing strict
+  # duplicate/overflow scan.
+  link_count="$(stat -c '%h' -- "$root" 2>/dev/null || true)"
+  case "$link_count" in
+    ''|*[!0-9]*) stop_root_ambiguity_scan_cached=true; return 0 ;;
+  esac
+  if [ "$link_count" -le 3 ]; then
+    stop_root_ambiguity_scan_cached=false
+    return 1
+  fi
+  # Reserved proof namespaces are not sibling session owners.  Count those
+  # fixed directories with shell builtins before deciding whether a bounded
+  # scan is needed; the common direct-marker + activity layout therefore
+  # avoids spawning find while duplicate normal-session detection remains
+  # enabled whenever an unreserved sibling may exist.
+  for name in activity audit eci history pre-reviewer reviewer reviewer-dumps \
+    side-stop skip-stop skills; do
+    if [ -e "$root/$name" ] || [ -L "$root/$name" ]; then
+      if [ -d "$root/$name" ] && [ ! -L "$root/$name" ]; then
+        reserved_count=$((reserved_count + 1))
+        # A reserved namespace may itself carry an authoritative legacy
+        # marker.  Probe those fixed paths directly; only such a marker (or
+        # an unreserved sibling below) needs the bounded duplicate scan.
+        marker="$root/$name/eci_active"
+        if [ -e "$marker" ] || [ -L "$marker" ]; then
+          stop_root_ambiguity_scan_cached=true
+          return 0
+        fi
+      else
+        stop_root_ambiguity_scan_cached=true
+        return 0
+      fi
+    fi
+  done
+  # link_count is 2 + immediate subdirectory count on the supported proof
+  # filesystems.  With only the direct session and known reserved dirs there
+  # is no possible second session marker to discover.
+  if [ "$link_count" -le $((3 + reserved_count)) ]; then
+    stop_root_ambiguity_scan_cached=false
+    return 1
+  fi
+  if [ "$link_count" -gt 3 ]; then
+    stop_root_ambiguity_scan_cached=true
+    return 0
+  fi
+  stop_root_ambiguity_scan_cached=false
+  return 1
+}
+
+stop_marker_scan_required() {
+  if stop_direct_marker_path >/dev/null 2>&1; then
+    stop_root_requires_ambiguity_scan && return 0
+    return 1
+  fi
+  [ "$stop_identity_malformed" = true ] && return 0
+  codex_valid_session_id "$session_id" || return 0
+  return 1
+}
+
+stop_marker_cache_load() {
+  local marker
+
+  [ "$stop_marker_cache_loaded" = true ] && return "$stop_marker_cache_status"
+  stop_marker_cache_loaded=true
+  stop_marker_cache=()
+  stop_marker_scan_required || return 0
+  if [ -L "$root" ] || { [ -e "$root" ] && [ ! -d "$root" ]; }; then
+    stop_marker_cache_status=2
+    return 2
+  fi
+  [ -d "$root" ] || return 0
+  while IFS= read -r -d '' marker; do
+    case "$marker" in
+      __ECI_STOP_MARKER_OVERFLOW__|__ECI_STOP_ROOT_ENTRY_OVERFLOW__)
+        stop_marker_cache_status=2
+        return 2
+        ;;
+      *) stop_marker_cache+=("$marker") ;;
+    esac
+  done < <(stop_marker_scan || true)
+  return 0
+}
+
+stop_marker_has_any() {
+  if stop_direct_marker_path >/dev/null 2>&1; then
+    return 0
+  fi
+  stop_marker_cache_load || [ "$stop_marker_cache_status" -eq 2 ] || return 1
+  [ "${#stop_marker_cache[@]}" -gt 0 ]
+}
+
+# Duplicate-key and scalar-type validation is deliberately deferred until an
+# active marker is present.  The ordinary inactive Stop path stays a bounded
+# in-process parse; an active ECI callback gets one strict JSON check so a
+# duplicate identity cannot make the regex parser select a different owner.
+stop_identity_has_marker() {
+  stop_marker_has_any
+}
+
+stop_identity_json_is_strict() {
+  python3 - "$input" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+try:
+    value = json.loads(raw, object_pairs_hook=reject_duplicates)
+except (TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+if type(value) is not dict:
+    raise SystemExit(1)
+for key in ("session_id", "cwd", "transcript_path"):
+    if key in value and type(value[key]) is not str:
+        raise SystemExit(1)
+if "stop_hook_active" in value and type(value["stop_hook_active"]) is not bool:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+stop_identity_has_duplicate_keys() {
+  # Scan JSON strings with Bash builtins only.  A simple key is checked for a
+  # duplicate at any nesting depth; unusual escapes/characters return 2 so the
+  # strict Python validator handles those rare inputs.  This keeps ordinary
+  # active Stop callbacks free of a Python process while retaining a bounded
+  # fail-closed fallback for malformed JSON.
+  local raw="$input" length="${#input}" i=0 c key next
+  local in_string=false escaped=false closed=false token=""
+  local -A seen=()
+  while [ "$i" -lt "$length" ]; do
+    c="${raw:i:1}"
+    if [ "$in_string" = true ]; then
+      if [ "$escaped" = true ]; then
+        case "$c" in
+          $'\n'|$'\r') return 2 ;;
+        esac
+        token+="\\$c"
+        escaped=false
+      elif [ "$c" = '\\' ]; then
+        escaped=true
+      elif [ "$c" = '"' ]; then
+        in_string=false
+        closed=true
+      else
+        token+="$c"
+      fi
+    elif [ "$c" = '"' ]; then
+      in_string=true
+      escaped=false
+      closed=false
+      token=""
+    elif [ "$closed" = true ] && [[ "$c" != [[:space:]] ]]; then
+      if [ "$c" = ':' ]; then
+        [[ "$token" =~ ^[A-Za-z0-9_./-]+$ ]] || return 2
+        if [[ -v "seen[$token]" ]]; then
+          return 1
+        fi
+        seen["$token"]=1
+      fi
+      closed=false
+    fi
+    i=$((i + 1))
+  done
+  [ "$in_string" = false ] && [ "$escaped" = false ] || return 2
+  return 0
+}
+
+if stop_identity_has_marker; then
+  # Reject non-object payloads before invoking the strict fallback.  The
+  # replacement is intentionally local and bounded; it is not a JSON parser.
+  identity_compact="${input//[$' \t\r\n']/}"
+  case "$identity_compact" in
+    \{*\}) ;;
+    *) stop_identity_malformed=true ;;
+  esac
+  duplicate_status=0
+  stop_identity_has_duplicate_keys || duplicate_status=$?
+  case "$duplicate_status" in
+    1) stop_identity_malformed=true ;;
+    2) if ! stop_identity_json_is_strict; then stop_identity_malformed=true; fi ;;
+  esac
+  # These fields are part of the hook identity.  If present, they must be
+  # scalar strings/bool; the fast regex parser otherwise intentionally ignores
+  # their value shape.
+  if [[ "$input" =~ \"transcript_path\"[[:space:]]*:[[:space:]]* ]] &&
+    [[ ! "$input" =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\" ]]; then
+    stop_identity_malformed=true
+  fi
+  if [[ "$input" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]* ]] &&
+    [[ ! "$input" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*(true|false)([[:space:]]*[,}]) ]]; then
+    stop_identity_malformed=true
+  fi
+fi
+
 json_continue() {
-  jq -n '{continue: true}'
+  # Fixed output keeps the inactive/no-marker callback free of a jq process.
+  printf '%s\n' '{"continue":true}'
+}
+
+stop_diagnostic() {
+  local reason="${1:-unspecified stop-gate denial}"
+  local marker_context="${2:-${marker:-<none>}}"
+  local instruction_context="${3:-${instructions:-<none>}}"
+  local code remediation
+  local subject="session=$(eci_diagnostic_value "${session_id:-<missing>}"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}"),marker=$(eci_diagnostic_value "$marker_context"),instructions=$(eci_diagnostic_value "$instruction_context")"
+  case "$reason" in
+    \[ECI_*\]*)
+      code="${reason%%\]*}"
+      code="${code#\[}"
+      ;;
+    *) code="$(eci_diagnostic_code_for_reason "$reason")" ;;
+  esac
+  remediation="continue the task and follow the identified marker or instructions; retry Stop only after the reported condition is resolved"
+  case "$code" in
+    ECI_STOP_ACTIVE_ECI)
+      remediation="do not retry or poll Stop while the marker and normalized control state are unchanged; take one distinct recovery action or complete coordinator teardown, then wait for new external state"
+      ;;
+    ECI_STOP_MARKER_SCAN_UNSAFE)
+      remediation="resolve the proof-root or marker-scan integrity condition through the coordinator route; do not retry Stop until the marker set is bounded and validated"
+      ;;
+    ECI_STOP_MARKER_UNSAFE)
+      remediation="repair the marker ownership and cwd/session binding at the reported path through the coordinator route; retry Stop only after the marker is a regular validated file"
+      ;;
+    ECI_MARKER_MISSING_CURRENT)
+      remediation="recreate the expected marker through the coordinator lifecycle route or complete teardown; retry Stop only after marker validation passes"
+      ;;
+    ECI_MARKER_UNSAFE_PATH)
+      remediation="repair or remove the unsafe marker path through the coordinator route; retry Stop only after the path is a regular in-scope marker"
+      ;;
+    ECI_MARKER_MALFORMED)
+      remediation="rewrite the marker through the coordinator lifecycle route with the required bounded schema; retry Stop only after marker validation passes"
+      ;;
+    ECI_MARKER_OWNERSHIP_INVALID)
+      remediation="repair the marker owner/session binding through the coordinator lifecycle route; retry Stop only after ownership validation passes"
+      ;;
+    ECI_MARKER_SCOPE_MISMATCH)
+      remediation="use the session/cwd bound to the marker or complete coordinator teardown; retry Stop only after scope validation passes"
+      ;;
+    ECI_STOP_SESSION_DIR_UNSAFE)
+      remediation="repair the coordinator-owned session directory binding at the reported proof-root/session path; retry Stop only after the session directory is regular and in scope"
+      ;;
+    ECI_STOP_LOOP_STATE_UNSAFE)
+      remediation="repair or remove the coordinator-owned stop-loop state through the coordinator route; retry Stop only after the state is a regular, bounded record"
+      ;;
+  esac
+  eci_diagnostic_reason "$code" "Stop" "stop-admission" "$subject" "$reason" "$remediation"
 }
 
 # Active ECI is a main/orchestrator concern. Keep the ordinary authoritative
 # fast path to marker probes; only a direct-session validated wait state reads
 # bounded state/report data, and that exceptional path never mutates it.
 json_block_fast() {
-  local marker="$1"
+  local marker="$1" reason marker_code
+  [ -n "$marker" ] || marker="$stop_invalid_marker"
+  if [ -z "$marker" ] && [ "${#stop_marker_cache[@]}" -gt 0 ]; then
+    local candidate candidate_code
+    for candidate in "${stop_marker_cache[@]}"; do
+      candidate_code="$(codex_eci_marker_failure_code "$candidate" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
+      if [ -n "$candidate_code" ] && [ "$candidate_code" != ECI_MARKER_VALID ]; then
+        marker="$candidate"
+        break
+      fi
+    done
+  fi
   if [ -z "$marker" ]; then
-    printf '%s\n' '{"decision":"block","reason":"ECI stop state is unsafe or unavailable. Do not stop; continue the ECI task and resolve the marker or proof-root integrity issue first."}'
+    reason="[ECI_STOP_MARKER_SCAN_UNSAFE] ECI stop state is unsafe or unavailable: marker scan overflowed or found an invalid marker without a concrete path for session=${session_id:-<missing>} cwd=${canonical_stop_cwd:-<missing>}. Do not stop; continue the ECI task and resolve the marker or proof-root integrity issue first."
+    jq -n --arg reason "$(stop_diagnostic "$reason" "<none>" "${instructions:-<none>}")" '{decision:"block",reason:$reason}'
     return 0
   fi
-  # Session IDs are restricted and normal proof roots are path-safe.  If a
-  # caller supplies unusual JSON characters, omit the path rather than
-  # invoking a serializer on the hot path.
-  case "$marker" in
-    *[!A-Za-z0-9_./:-]*)
-      printf '%s\n' '{"decision":"block","reason":"ECI is active for this stop attempt. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."}'
+  marker_code="$(codex_eci_marker_failure_code "$marker" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
+  [ -n "$marker_code" ] || marker_code="ECI_MARKER_VALIDATION_FAILED"
+  case "$marker_code" in
+    ECI_MARKER_VALID)
+      marker_code="ECI_STOP_ACTIVE_ECI"
+      reason="[$marker_code] Stop is denied because the resolved ECI marker is valid and bound to this session/cwd: $marker; no marker repair is indicated. This denial is control metadata, not a new user request: do not emit another final/status/question, do not retry or poll Stop, and do not repeat this report. Continue the current ECI task with one distinct recovery action; retry Stop only after coordinator teardown is complete."
+      ;;
+    ECI_MARKER_MISSING_CURRENT)
+      reason="[$marker_code] Stop is denied because the expected ECI marker is missing at $marker for session=${session_id:-<missing>}. Recreate it through the coordinator lifecycle route or complete teardown before retrying."
+      ;;
+    ECI_MARKER_UNSAFE_PATH)
+      reason="[$marker_code] Stop is denied because the ECI marker path is unsafe (symlink, non-regular path, or outside the proof-root/session layout): $marker. Remove the unsafe path through the coordinator route before retrying."
+      ;;
+    ECI_MARKER_MALFORMED)
+      reason="[$marker_code] Stop is denied because the ECI marker has malformed bounded schema, size, newline, or control-byte content: $marker. Rewrite it through the coordinator lifecycle route before retrying."
+      ;;
+    ECI_MARKER_OWNERSHIP_INVALID)
+      reason="[$marker_code] Stop is denied because the ECI marker path owner does not match its embedded session identity: $marker. Repair ownership through the coordinator lifecycle route before retrying."
+      ;;
+    ECI_MARKER_SCOPE_MISMATCH)
+      reason="[$marker_code] Stop is denied because the ECI marker session/cwd binding does not match session=${session_id:-<missing>} cwd=${canonical_stop_cwd:-<missing>}: $marker. Use the bound session or complete coordinator teardown before retrying."
       ;;
     *)
-      printf '{"decision":"block","reason":"ECI is active for this stop attempt via marker %s. Never stop until the ECI task is complete. Continue the ECI task, update the session project-understanding ledger, or use blocker-resolution-protocol before reporting a blocker requiring user input while ECI remains active. Disengage only with clean-pass or user-closed via ~/.codex/bin/eci-active off <disengage-report.md>."}\n' "$marker"
+      reason="[$marker_code] Stop is denied because ECI marker validation failed for session=${session_id:-<missing>} cwd=${canonical_stop_cwd:-<missing>}: $marker. Inspect the reported marker condition through the coordinator route before retrying."
       ;;
   esac
+  jq -n --arg reason "$(stop_diagnostic "$reason" "$marker" "${instructions:-<none>}")" '{decision:"block",reason:$reason}'
 }
+
+# Keep active-marker discovery bounded before any ownership/cwd validation.
+# These are fixed resource limits, not waits or retries; an overflow is unsafe
+# control state and blocks read-only without creating recovery artifacts.
+eci_stop_marker_set_is_bounded() {
+  local marker count=0 bytes
+  [ -d "$root" ] || {
+    [ -e "$root" ] || [ -L "$root" ] || return 0
+    return 2
+  }
+  [ ! -L "$root" ] || return 2
+  if marker="$(stop_direct_marker_path 2>/dev/null || true)" &&
+    [ -n "$marker" ] && ! stop_root_requires_ambiguity_scan; then
+    codex_eci_marker_file_is_bounded "$marker" || return 2
+    return 0
+  fi
+  stop_marker_cache_load || return "$stop_marker_cache_status"
+  for marker in "${stop_marker_cache[@]}"; do
+    count=$((count + 1))
+    [ "$count" -le "$eci_stop_max_markers" ] || return 2
+    [ -f "$marker" ] && [ ! -L "$marker" ] || return 2
+    bytes="$(stat -c '%s' -- "$marker" 2>/dev/null || true)"
+    case "$bytes" in
+      ''|*[!0-9]*) return 2 ;;
+    esac
+    [ "$bytes" -le "$eci_stop_max_marker_bytes" ] || return 2
+  done
+  return 0
+}
+
+marker_bound_status=0
+eci_stop_marker_set_is_bounded || marker_bound_status=$?
+if [ "$marker_bound_status" -eq 2 ]; then
+  json_block_fast ""
+  exit 0
+fi
 
 json_block() {
   local reason="$1"
-  local timestamps now cutoff tmp recent_count
+  local loop_state loop_tmp loop_code loop_cwd loop_count loop_emitted
+  local loop_line loop_key loop_version loop_state_code loop_state_session loop_state_cwd
+  local loop_state_count loop_state_emitted loop_line_count loop_state_valid
+  local loop_already_emitted
+
+  # Keep the normalized loop-state fields initialized even when this is the
+  # first denial for a session.  `set -u` must not turn an absent state file
+  # into an opaque hook failure.
+  loop_state_code=""
+  loop_state_session=""
+  loop_state_cwd=""
+  loop_state_count=0
+  loop_state_emitted=false
+  loop_line_count=0
+  loop_state_valid=true
+  loop_already_emitted=false
 
   if [ -n "${proof_dir:-}" ]; then
-    mkdir -p "$proof_dir"
-    timestamps="$proof_dir/stop_timestamps"
-    now="$(date +%s)"
-    cutoff=$((now - 300))
-    tmp="$timestamps.tmp.$$"
-    if [ -f "$timestamps" ]; then
-      awk -v cutoff="$cutoff" '$1 >= cutoff' "$timestamps" >"$tmp"
-    else
-      : >"$tmp"
+    if ! codex_session_dir_is_safe "${root:-}" "${session_id:-}"; then
+      local unsafe_reason
+      unsafe_reason="[ECI_STOP_SESSION_DIR_UNSAFE] Stop gate refused to write stop-loop bookkeeping because proof-root/session is unsafe or out of scope: root=${root:-<missing>}, session=${session_id:-<missing>}, path=${proof_dir}. No stop_timestamps file was written."
+      unsafe_reason="$(stop_diagnostic "$unsafe_reason" "${marker:-<none>}" "${instructions:-<none>}")"
+      jq -n --arg reason "$unsafe_reason" '{decision: "block", reason: $reason}'
+      return 0
     fi
-    printf '%s\n' "$now" >>"$tmp"
-    recent_count="$(awk 'END { print NR + 0 }' "$tmp")"
-    mv "$tmp" "$timestamps"
+    mkdir -p "$proof_dir"
+    loop_state="$proof_dir/stop_loop_state"
+    loop_code="$(eci_diagnostic_code_for_reason "$reason")"
+    loop_cwd="${canonical_stop_cwd:-$(codex_canonical_cwd "${cwd:-$PWD}")}"
+    loop_count=0
+    loop_emitted=false
+    loop_state_valid=true
+    if [ -e "$loop_state" ] || [ -L "$loop_state" ]; then
+      if ! codex_state_file_owner_is_valid "$loop_state"; then
+        loop_state_valid=false
+      else
+        loop_state_code=""
+        loop_state_session=""
+        loop_state_cwd=""
+        loop_state_count=""
+        loop_state_emitted=""
+        loop_version=""
+        loop_line_count=0
+        while IFS= read -r loop_line || [ -n "$loop_line" ]; do
+          loop_line_count=$((loop_line_count + 1))
+          case "$loop_line" in
+            'version: 1') [ -z "$loop_version" ] || loop_state_valid=false; loop_version=1 ;;
+            'code: '*) [ -z "$loop_state_code" ] || loop_state_valid=false; loop_state_code="${loop_line#code: }" ;;
+            'session_id: '*) [ -z "$loop_state_session" ] || loop_state_valid=false; loop_state_session="${loop_line#session_id: }" ;;
+            'cwd: '*) [ -z "$loop_state_cwd" ] || loop_state_valid=false; loop_state_cwd="${loop_line#cwd: }" ;;
+            'count: '*) [ -z "$loop_state_count" ] || loop_state_valid=false; loop_state_count="${loop_line#count: }" ;;
+            'loop_emitted: true') [ -z "$loop_state_emitted" ] || loop_state_valid=false; loop_state_emitted=true ;;
+            'loop_emitted: false') [ -z "$loop_state_emitted" ] || loop_state_valid=false; loop_state_emitted=false ;;
+            *) loop_state_valid=false ;;
+          esac
+          [ "$loop_line_count" -le 6 ] || loop_state_valid=false
+        done <"$loop_state"
+        [[ "$loop_version" = 1 && "$loop_line_count" -eq 6 ]] || loop_state_valid=false
+        [[ "$loop_state_code" =~ ^[A-Z0-9_]{1,128}$ ]] || loop_state_valid=false
+        codex_valid_session_id "$loop_state_session" || loop_state_valid=false
+        [[ "$loop_state_count" =~ ^[1-9][0-9]{0,5}$ ]] || loop_state_valid=false
+        [ -n "$loop_state_cwd" ] || loop_state_valid=false
+      fi
+      if [ "$loop_state_valid" != true ]; then
+        local loop_state_reason
+        loop_state_reason="[ECI_STOP_LOOP_STATE_UNSAFE] Stop gate refused to consume malformed or unsafe normalized loop state at $loop_state; expected exactly version/code/session_id/cwd/count/loop_emitted fields with bounded values."
+        loop_state_reason="$(stop_diagnostic "$loop_state_reason" "${marker:-<none>}" "${instructions:-<none>}")"
+        jq -n --arg reason "$loop_state_reason" '{decision: "block", reason: $reason}'
+        return 0
+      fi
+    fi
+    if [ "$loop_state_code" = "$loop_code" ] &&
+      [ "$loop_state_session" = "${session_id:-}" ] &&
+      [ "$loop_state_cwd" = "$loop_cwd" ]; then
+      loop_count=$((loop_state_count + 1))
+      loop_emitted="${loop_state_emitted:-false}"
+    else
+      loop_count=1
+      loop_emitted=false
+    fi
+    loop_already_emitted="$loop_emitted"
+    if [ "$loop_count" -ge 5 ] && [ "$loop_emitted" != true ]; then
+      loop_emitted=true
+    fi
+    loop_tmp="$loop_state.tmp.$$"
+    [ ! -e "$loop_tmp" ] && [ ! -L "$loop_tmp" ] || {
+      local loop_tmp_reason
+      loop_tmp_reason="[ECI_STOP_LOOP_STATE_UNSAFE] Stop gate cannot publish normalized loop state because its temporary path already exists: $loop_tmp."
+      loop_tmp_reason="$(stop_diagnostic "$loop_tmp_reason" "${marker:-<none>}" "${instructions:-<none>}")"
+      jq -n --arg reason "$loop_tmp_reason" '{decision: "block", reason: $reason}'
+      return 0
+    }
+    {
+      printf 'version: 1\ncode: %s\nsession_id: %s\ncwd: %s\ncount: %s\nloop_emitted: %s\n' \
+        "$loop_code" "${session_id:-}" "$loop_cwd" "$loop_count" "$loop_emitted"
+    } >"$loop_tmp" && mv -- "$loop_tmp" "$loop_state"
 
-    if [ "$recent_count" -ge 5 ]; then
-      reason="$reason LOOP DETECTED ($recent_count blocks in 5min). Recovery flow: read instructions or stop-checklist, identify failing step, stop again, do not retry same approach."
+    if [ "$loop_count" -ge 5 ] && [ "$loop_already_emitted" = true ]; then
+      jq -n '{continue: true}'
+      return 0
+    fi
+    if [ "$loop_count" -ge 5 ]; then
+      # A prior stop denial may have told the caller to "stop again".  Once
+      # the loop diagnostic is emitted, retain the concrete denial detail but
+      # remove that stale instruction so this message cannot restart the loop.
+      case "$reason" in
+        *', then stop again.') reason="${reason%, then stop again.}" ;;
+        *'then stop again.') reason="${reason%then stop again.}" ;;
+      esac
+      reason="$reason LOOP DETECTED (same diagnostic code/session/cwd repeated $loop_count times). Treat this as unchanged control metadata: do not emit another final/status/question, retry, poll, or stop attempt. Execute at most one distinct recovery action or record one concrete user-owned blocker, then wait for new external state."
     fi
   fi
 
+  reason="$(stop_diagnostic "$reason" "${marker:-<none>}" "${instructions:-<none>}")"
   jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
 }
 
@@ -109,12 +613,21 @@ eci_marker_is_safe_regular() {
   [ ! -L "$marker" ] || return 2
   [ -e "$marker" ] || return 1
   [ -f "$marker" ] || return 2
-  [ "$(stat -c '%F' -- "$marker" 2>/dev/null || true)" = "regular file" ] || return 2
+  # Do not let a path-shaped marker become authoritative when its embedded
+  # session/cwd record is malformed or belongs to another working directory.
+  # This is still a bounded marker read; it does not enter transcript or
+  # recovery-state handling.
+  codex_eci_marker_is_valid_for_cwd "$marker" "$canonical_stop_cwd" || return 2
 }
 
 eci_root_is_safe_for_stop() {
   local parent
 
+  codex_proof_root_is_safe || return 2
+  case "$root" in
+    /*) ;;
+    *) return 2 ;;
+  esac
   parent="${root%/*}"
   [ -n "$parent" ] || parent="/"
 
@@ -226,9 +739,108 @@ eci_wait_state_allows() {
   printf '%s\n' '{"continue":true}'
 }
 
+stop_direct_marker_is_valid_fast() {
+  local marker="$1" expected_cwd="$2"
+  local marker_dir marker_name marker_cwd
+  local -a lines=()
+
+  case "$marker" in
+    "$root/$session_id/eci_active") ;;
+    *) return 1 ;;
+  esac
+  # eci_stop_marker_set_is_bounded already performed the shared finite-size
+  # probe before this validator runs.  Avoid reading the same marker twice on
+  # every active callback; the remaining mapfile is the schema/ownership read.
+  mapfile -t lines <"$marker" || return 1
+  case "${#lines[@]}" in 3|4) ;; *) return 1 ;; esac
+  for line in "${lines[@]}"; do
+    [[ "$line" != *[[:cntrl:]]* ]] || return 1
+  done
+  case "${lines[0]}" in "scope: "*) ;; *) return 1 ;; esac
+  case "${lines[1]}" in "cwd: "*) ;; *) return 1 ;; esac
+  case "${lines[2]}" in "session_id: $session_id") ;; *) return 1 ;; esac
+  if [ "${#lines[@]}" -eq 4 ]; then
+    case "${lines[3]}" in "created_utc: "*) ;; *) return 1 ;; esac
+  fi
+  marker_cwd="${lines[1]#cwd: }"
+  [ -n "$marker_cwd" ] && [ "$(codex_canonical_cwd "$marker_cwd")" = "$expected_cwd" ] || return 1
+  marker_dir="${marker%/*}"
+  marker_name="${marker_dir##*/}"
+  [ "$marker_name" = "$session_id" ]
+}
+
 active_eci_marker_for_stop() {
   local marker side_stop parent_session_id is_subagent_context=false marker_status
-  local transcript_owner="" subagent_metadata=""
+  local transcript_owner="" subagent_metadata="" malformed_marker direct_marker=""
+  local -a cwd_markers=()
+
+  # A malformed typed hook identity cannot silently enter generic stop logic
+  # while any regular ECI marker exists.  This scan is only a bounded proof-root
+  # glob; it does not parse transcripts, ledgers, or recovery state.
+  if [ "$stop_identity_malformed" = true ]; then
+    stop_marker_has_any && return 2
+    return 1
+  fi
+
+  # A typed empty-transcript callback with no direct marker is the common
+  # inactive case.  Avoid canonical-cwd/hash work and any root enumeration;
+  # only inspect the fixed side-stop namespace when it exists so parent/side
+  # ownership remains authoritative.  This is a bounded O(1) fast path.
+  if codex_valid_session_id "$session_id" && [ -z "$transcript_path" ] &&
+    ! stop_direct_marker_path >/dev/null 2>&1; then
+    if [ -e "$root/side-stop" ] || [ -L "$root/side-stop" ]; then
+      [ -d "$root/side-stop" ] && [ ! -L "$root/side-stop" ] || return 2
+      side_stop="$(codex_existing_state_file side-stop side_stop "$session_id" "$cwd" 2>/dev/null || true)"
+      parent_session_id="$(codex_state_value "$side_stop" parent_session_id || true)"
+      if codex_valid_session_id "$parent_session_id"; then
+        marker="$root/$parent_session_id/eci_active"
+        marker_status=0
+        if eci_marker_is_safe_regular "$marker"; then
+          printf '%s\n' "$marker"
+          return 0
+        else
+          marker_status=$?
+          [ "$marker_status" -eq 2 ] && return 2
+        fi
+      fi
+    fi
+    return 1
+  fi
+
+  # Resolve the complete validated marker set before selecting an owner.  A
+  # duplicate active owner is unsafe control state; do not let a direct
+  # marker return before that ambiguity is observed.  The scan is restricted
+  # to immediate session marker paths and is already count/size bounded above.
+  # Use the same finite root scan as the marker-only preflight.  The shared
+  # discovery helper historically used an unbounded glob; Stop must not call
+  # it on an active callback because arbitrary proof-root entries are user
+  # controlled.  Preserve its strict malformed-marker behavior locally.
+  # Bind every active callback to the physical cwd once.  Conditional
+  # canonicalization let an ancestor symlink create a logical/physical
+  # mismatch and made duplicate-owner checks depend on the caller's PWD.
+  direct_marker="$(stop_direct_marker_path 2>/dev/null || true)"
+  stop_marker_cache_load || return 2
+  for marker in "${stop_marker_cache[@]}"; do
+    if [ -n "$direct_marker" ] && [ "$marker" = "$direct_marker" ]; then
+      # Validate the direct marker once with its cwd binding and reuse it.
+      codex_eci_marker_is_valid_for_cwd "$marker" "$canonical_stop_cwd" || return 2
+      cwd_markers+=("$marker")
+    elif codex_eci_marker_path_owner_is_valid "$marker"; then
+      if codex_eci_marker_is_valid_for_cwd "$marker" "$canonical_stop_cwd"; then
+        cwd_markers+=("$marker")
+      fi
+    else
+      marker_dir="${marker%/*}"
+      marker_name="${marker_dir##*/}"
+      marker_owner="$(codex_state_value "$marker" session_id || true)"
+      if [ -L "$marker" ] || [ ! -f "$marker" ] ||
+        [ ! -d "$marker_dir" ] || [ -L "$marker_dir" ] ||
+        { [ -n "$marker_owner" ] && [ "$marker_owner" != "$marker_name" ]; }; then
+        return 2
+      fi
+    fi
+  done
+  [ "${#cwd_markers[@]}" -le 1 ] || return 2
 
   # A normal transcript path carries its session UUID.  This lets the direct
   # marker decision avoid opening/parsing transcript data on the hot path.
@@ -242,6 +854,11 @@ active_eci_marker_for_stop() {
     # A missing transcript or a path owned by this session is authoritative:
     # do not run the Python transcript scanner or enumerate legacy state.
     if [ -z "$transcript_path" ] || [ "$transcript_owner" = "$session_id" ]; then
+      if [ -n "$direct_marker" ] && [ "$marker" = "$direct_marker" ]; then
+        stop_direct_marker_is_valid_fast "$marker" "$canonical_stop_cwd" || return 2
+        printf '%s\n' "$marker"
+        return 0
+      fi
       marker_status=0
       if eci_marker_is_safe_regular "$marker"; then
         printf '%s\n' "$marker"
@@ -310,6 +927,13 @@ active_eci_marker_for_stop() {
         [ "$marker_status" -eq 2 ] && return 2
       fi
     fi
+
+    # A valid typed session with no own marker has no active ECI ownership.
+    # Return before legacy/root discovery; side-stop and parent ownership were
+    # checked above using only their bounded direct paths.
+    if ! stop_direct_marker_path; then
+      return 1
+    fi
   fi
 
   [ "$is_subagent_context" = true ] && return 1
@@ -342,11 +966,32 @@ block_if_eci_active_for_stop() {
     # An existing symlink/non-regular ECI marker is unsafe control state.
     # Block without exposing or repairing it, and before generic bookkeeping.
     if [ "$marker_status" -eq 2 ]; then
+      stop_invalid_marker=""
+      for candidate in "${stop_marker_cache[@]}"; do
+        candidate_code="$(codex_eci_marker_failure_code "$candidate" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
+        if [ -n "$candidate_code" ] && [ "$candidate_code" != ECI_MARKER_VALID ]; then
+          stop_invalid_marker="$candidate"
+          break
+        fi
+      done
       json_block_fast ""
       return 0
     fi
     return 1
   fi
+}
+
+proof="$proof_dir/proof.md"
+instructions="$proof_dir/instructions.md"
+
+proof_recovery_text() {
+  printf ' Legacy proof files are optional. Update or remove %s using %s; if that file is missing, read %s.' \
+    "$proof" "$instructions" "$HOME/.codex/hooks/stop-checklist.md"
+}
+
+block_proof_validation() {
+  json_block "$1$(proof_recovery_text)"
+  exit 0
 }
 
 root_status=0
@@ -357,11 +1002,29 @@ if [ "$root_status" -eq 2 ]; then
 fi
 
 case "$session_id" in
-  ""|*[!A-Za-z0-9_-]*) json_continue; exit 0 ;;
+  ""|*[!A-Za-z0-9_-]*)
+    # An invalid typed identity cannot silently bypass an active ECI marker.
+    # Keep the inactive/missing-marker case lightweight and unchanged.  Scan
+    # only the proof-root marker entries; no transcript or ledger work occurs.
+    if stop_marker_has_any; then
+      json_block_fast "$legacy_eci_active"
+    else
+      json_continue
+    fi
+    exit 0
+    ;;
 esac
 
 if block_if_eci_active_for_stop; then
   exit 0
+fi
+
+teardown_complete=false
+teardown_receipt="$proof_dir/eci-teardown-complete"
+if [ -e "$teardown_receipt" ] || [ -L "$teardown_receipt" ]; then
+  codex_eci_teardown_receipt_is_valid "$teardown_receipt" "$session_id" "$proof_dir/eci-required-critics.json" ||
+    block_proof_validation "ECI teardown receipt is malformed, stale, or unbound; retain the terminal evidence and repair it before stopping."
+  teardown_complete=true
 fi
 
 if [ -z "$transcript_path" ]; then
@@ -719,12 +1382,12 @@ transcript_has_activity_since_last_user() {
 }
 
 if codex_hook_is_subagent_context "$input"; then
-  case "${CODEX_ROLE:-}" in
-    lead|coordinator)
-      json_continue
-      exit 0
-      ;;
-  esac
+  # A worker-supplied role label is not coordinator evidence.  In particular,
+  # CODEX_ROLE=lead/coordinator can be forged by a child process and must not
+  # bypass the worker dirty-worktree handoff.  The top-level coordinator does
+  # not enter this transcript-backed subagent branch; any future exception
+  # must carry an independently verified coordinator receipt, not a string
+  # from the worker environment.
 
   reminder="$proof_dir/subagent-commit-reminder.md"
   skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
@@ -752,7 +1415,7 @@ Changed repos:
 EOF
       printf '%s\n' "$subagent_change_summary" | indent_text
     } >"$reminder"
-    json_block "This subagent has dirty files it modified. Read $reminder; commit only owned completed dirty paths, report the blocker after blocker-resolution-protocol, or bypass intentional dirty handoff with CODEX_SESSION_ID=$session_id ~/.codex/bin/skip-stop on; then stop again."
+    json_block "This subagent has dirty files it modified. Read $reminder; commit only owned completed dirty paths, report the blocker after blocker-resolution-protocol, or bypass intentional dirty handoff with CODEX_SESSION_ID=$session_id ~/.codex/bin/skip-stop on; return control to the coordinator for one reviewed retry."
     exit 0
   fi
   rm -f "$reminder" 2>/dev/null || true
@@ -768,8 +1431,6 @@ if codex_side_stop_is_active_for_session "$side_stop" "$session_id"; then
   exit 0
 fi
 
-proof="$proof_dir/proof.md"
-instructions="$proof_dir/instructions.md"
 baseline="$proof_dir/baseline_head"
 skip=$(codex_existing_state_file skip-stop skip_stop "$session_id" "$cwd" 2>/dev/null || true)
 eci_active="$root/$session_id/eci_active"
@@ -790,16 +1451,6 @@ if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 mkdir -p "$proof_dir"
-
-proof_recovery_text() {
-  printf ' Legacy proof files are optional. Update or remove %s using %s; if that file is missing, read %s.' \
-    "$proof" "$instructions" "$HOME/.codex/hooks/stop-checklist.md"
-}
-
-block_proof_validation() {
-  json_block "$1$(proof_recovery_text)"
-  exit 0
-}
 
 if [ -n "$eci_active" ]; then
   marker_status=0
@@ -1092,9 +1743,9 @@ if [ -f "$proof" ]; then
     rm -f "$audit_hashes"
   fi
 
-  if { [ -f "$proof_dir/eci_active" ] && [ ! -L "$proof_dir/eci_active" ]; } ||
+  if [ "$teardown_complete" != true ] && { { [ -f "$proof_dir/eci_active" ] && [ ! -L "$proof_dir/eci_active" ]; } ||
     [ -e "$proof_dir/eci-required-critics.json" ] ||
-    codex_markdown_section_has_body "$proof" "ECI completion certificate"; then
+    codex_markdown_section_has_body "$proof" "ECI completion certificate"; }; then
     review_gate_error=""
     if ! review_gate_error="$("$HOOK_DIR/eci-review-gate.sh" final "$session_id" 2>&1)"; then
       block_proof_validation "Required ECI critic manifest rejected at final-proof acceptance: $review_gate_error"
@@ -1148,7 +1799,7 @@ Manual checks remaining:
 3. If any item failed, fix it before stopping.
 EOF
 
-  json_block "Automated stop checks passed. Follow $instructions for remaining manual checks, then stop again."
+  json_block "Automated stop checks passed. Follow $instructions for remaining manual checks; invoke Stop only after those checks pass."
   exit 0
 fi
 
@@ -1161,11 +1812,11 @@ run_secret_scan "$repo" "$baseline" "$proof_dir" || secret_scan_rc=$?
 case "$secret_scan_rc" in
   0) secret_scan_status="passed (gitleaks)" ;;
   1)
-    json_block "Automated secret scan found possible secrets. Read $proof_dir/gitleaks-findings.txt, remove or explicitly remediate them, then stop again."
+    json_block "Automated secret scan found possible secrets. Read $proof_dir/gitleaks-findings.txt, remove or explicitly remediate them before invoking Stop."
     exit 0
     ;;
   *)
-    json_block "Automated secret scan could not complete. Read $proof_dir/gitleaks-findings.txt, fix the scanner failure, then stop again."
+    json_block "Automated secret scan could not complete. Read $proof_dir/gitleaks-findings.txt and fix the scanner failure before invoking Stop."
     exit 0
     ;;
 esac
@@ -1189,4 +1840,4 @@ EOF
   cat "$HOME/.codex/hooks/stop-verification.md"
 } >"$instructions"
 
-json_block "Automated stop checks found changed git state. Follow $instructions for remaining verification, then stop again."
+json_block "Automated stop checks found changed git state. Follow $instructions for remaining verification; invoke Stop only after the verification passes."

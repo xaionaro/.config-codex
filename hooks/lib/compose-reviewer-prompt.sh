@@ -1,6 +1,18 @@
 # Shellcheck-friendly library: compose the reviewer system prompt.
 # shellcheck shell=bash
 
+COMPOSE_REVIEWER_LIB_DIR="${BASH_SOURCE[0]%/*}"
+# shellcheck source=eci-diagnostic.sh
+. "$COMPOSE_REVIEWER_LIB_DIR/eci-diagnostic.sh"
+
+compose_reviewer_diagnostic() {
+  local code="$1"
+  local subject="$2"
+  local reason="$3"
+  local remediation="$4"
+  printf '%s\n' "$(eci_diagnostic_reason "$code" "Stop" "external-review-config" "$subject" "$reason" "$remediation")" >&2
+}
+
 compose_reviewer_prompt() {
   local wrapper="$1"
   local instructions="$HOME/.codex/CODEX.md"
@@ -8,8 +20,26 @@ compose_reviewer_prompt() {
   local import_summary="$HOME/.codex/memories/migration-import/ACTIVE-SUMMARY.md"
   local legacy_import_summary="$HOME/.codex/memories/claude"'-import/ACTIVE-SUMMARY.md'
 
-  [ -f "$wrapper" ] || { printf 'compose_reviewer_prompt: wrapper not found: %s\n' "$wrapper" >&2; return 1; }
-  [ -f "$instructions" ] || { printf 'compose_reviewer_prompt: CODEX.md not found: %s\n' "$instructions" >&2; return 1; }
+  if [ ! -f "$wrapper" ]; then
+    local safe_wrapper
+    safe_wrapper="$(eci_diagnostic_value "$wrapper")"
+    compose_reviewer_diagnostic \
+      "ECI_REVIEW_PROMPT_WRAPPER_MISSING" \
+      "path=$safe_wrapper,source=reviewer-rules" \
+      "compose_reviewer_prompt: wrapper not found: $safe_wrapper" \
+      "restore the reviewer-rules wrapper at the reported path, then retry"
+    return 1
+  fi
+  if [ ! -f "$instructions" ]; then
+    local safe_instructions
+    safe_instructions="$(eci_diagnostic_value "$instructions")"
+    compose_reviewer_diagnostic \
+      "ECI_REVIEW_INSTRUCTIONS_MISSING" \
+      "path=$safe_instructions,source=global-instructions" \
+      "compose_reviewer_prompt: CODEX.md not found: $safe_instructions" \
+      "restore the global CODEX.md instructions file at the reported path, then retry"
+    return 1
+  fi
 
   cat "$wrapper"
   printf '\n\n============================================================\n'

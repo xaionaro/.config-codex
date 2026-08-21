@@ -17,21 +17,27 @@ run_post_compact() {
       bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
 }
 
-test_post_compact_active_eci_refresh_signal() {
+write_direct_marker() {
+  local proof_root="$1" scope="${2:-post compact test}"
+  printf 'scope: %s\ncwd: %s\nsession_id: t00-session\ncreated_utc: 2026-08-14T00:00:00Z\n' "$scope" "$ROOT" >"$proof_root/t00-session/eci_active"
+}
+
+test_post_compact_active_eci_uses_provider_valid_empty_output() {
   local proof_root="$TMP_ROOT/active-proof" out
   mkdir -p "$proof_root/t00-session"
-  printf '%s\n' 'scope: post compact test' >"$proof_root/t00-session/eci_active"
+  write_direct_marker "$proof_root"
   out="$TMP_ROOT/active.out"
 
   run_post_compact "$proof_root" "$out"
 
   jq -e '
-    (.hookSpecificOutput.hookEventName == "PostCompact") and
-    (.hookSpecificOutput.additionalContext | contains("PostCompact ECI refresh signal")) and
-    (.hookSpecificOutput.additionalContext | contains("ECI is active")) and
-    (.hookSpecificOutput.additionalContext | contains("re-read the entire skills/explore-critique-implement/SKILL.md")) and
-    (.hookSpecificOutput.additionalContext | contains("re-invoke it before the next decision/tool"))
+    type == "object" and
+    (keys | length == 0) and
+    (has("hookSpecificOutput") | not)
   ' "$out" >/dev/null
+  if grep -Fq 'hookSpecificOutput' "$ROOT/hooks/eci-post-compact-refresh.sh"; then
+    return 1
+  fi
 }
 
 test_post_compact_inactive_eci_is_silent() {
@@ -40,7 +46,7 @@ test_post_compact_inactive_eci_is_silent() {
 
   run_post_compact "$proof_root" "$out"
 
-  [ ! -s "$out" ]
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
 }
 
 test_post_compact_symlink_marker_is_silent() {
@@ -53,13 +59,13 @@ test_post_compact_symlink_marker_is_silent() {
 
   run_post_compact "$proof_root" "$out"
 
-  [ ! -s "$out" ]
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
 }
 
 test_post_compact_does_not_scan_or_mutate_state() {
   local proof_root="$TMP_ROOT/no-write-proof" out before after
   mkdir -p "$proof_root/t00-session"
-  printf '%s\n' 'scope: no-write test' >"$proof_root/t00-session/eci_active"
+  write_direct_marker "$proof_root" 'no-write test'
   before="$(find "$proof_root" -mindepth 1 -maxdepth 2 -printf '%P:%y:%s\n' | sort)"
   out="$TMP_ROOT/no-write.out"
 
@@ -67,6 +73,8 @@ test_post_compact_does_not_scan_or_mutate_state() {
 
   after="$(find "$proof_root" -mindepth 1 -maxdepth 2 -printf '%P:%y:%s\n' | sort)"
   [ "$before" = "$after" ] || return 1
+  [ ! -e "$proof_root/t00-session/eci_refresh_pending" ] &&
+    [ ! -L "$proof_root/t00-session/eci_refresh_pending" ] || return 1
   if grep -Eq '(^|[[:space:]])(find|mkdir|rm|sleep|timeout|date)([[:space:]]|$)' \
       "$ROOT/hooks/eci-post-compact-refresh.sh"; then
     return 1
@@ -79,53 +87,107 @@ test_post_compact_does_not_scan_or_mutate_state() {
 test_post_compact_rejects_malformed_session_or_cwd() {
   local proof_root="$TMP_ROOT/malformed-proof" out
   mkdir -p "$proof_root/t00-session"
-  printf '%s\n' 'scope: malformed input must not refresh' >"$proof_root/t00-session/eci_active"
+  write_direct_marker "$proof_root" 'malformed input must not refresh'
   out="$TMP_ROOT/malformed.out"
   printf '%s\n' '{"session_id":"t00-session","cwd":[],"source":"compaction"}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
-  [ ! -s "$out" ]
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
+}
+
+test_post_compact_rejects_invalid_json_and_never_leaks_noise() {
+  local proof_root="$TMP_ROOT/invalid-json-proof" out command
+  mkdir -p "$proof_root/t00-session" "$TMP_ROOT/home"
+  write_direct_marker "$proof_root" 'invalid JSON must stay silent'
+  out="$TMP_ROOT/invalid-json.out"
+  printf '%s' '{"hook_event_name":"PostCompact"' |
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null || return 1
+
+  # The configured command uses non-login bash, so an accidental .bashrc
+  # print cannot prefix the one JSON object emitted by an active refresh.
+  printf '%s\n' 'printf startup-noise >&2' 'printf stdout-noise' >"$TMP_ROOT/home/.bashrc"
+  command="$(jq -r '.hooks.PostCompact[0].hooks[0].command' "$ROOT/hooks.json")"
+  out="$TMP_ROOT/configured.out"
+  jq -cn --arg cwd "$ROOT" \
+    '{hook_event_name:"PostCompact",session_id:"t00-session",cwd:$cwd,trigger:"manual"}' |
+    CODEX_HOME="$ROOT" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      bash -c "$command" >"$out"
+  [ "$(wc -l <"$out")" -eq 1 ] || return 1
+  jq -e 'type == "object" and (keys | length == 0) and (has("hookSpecificOutput") | not)' "$out" >/dev/null
 }
 
 test_post_compact_requires_event_and_trigger_contract() {
   local proof_root="$TMP_ROOT/event-contract-proof" out
   mkdir -p "$proof_root/t00-session"
-  printf '%s\n' 'scope: event contract' >"$proof_root/t00-session/eci_active"
+  write_direct_marker "$proof_root" 'event contract'
   out="$TMP_ROOT/event-contract.out"
   jq -cn --arg cwd "$ROOT" '{hook_event_name:"SessionStart",session_id:"t00-session",cwd:$cwd}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
-  [ ! -s "$out" ]
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
   jq -cn --arg cwd "$ROOT" '{hook_event_name:"PostCompact",trigger:"timer",session_id:"t00-session",cwd:$cwd}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
-  [ ! -s "$out" ]
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
   jq -cn --arg cwd "$ROOT" '{hook_event_name:"PostCompact",trigger:"manual",session_id:"t00-session",cwd:$cwd}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/eci-post-compact-refresh.sh" >"$out"
-  jq -e '.hookSpecificOutput.hookEventName == "PostCompact"' "$out" >/dev/null
+  jq -e 'type == "object" and (keys | length == 0) and (has("hookSpecificOutput") | not)' "$out" >/dev/null
+}
+
+test_post_compact_rejects_marker_owner_mismatch() {
+  local proof_root="$TMP_ROOT/mismatched-owner-proof" out
+  mkdir -p "$proof_root/t00-session"
+  write_direct_marker "$proof_root" 'mismatched owner must not refresh'
+  sed -i 's/^session_id: t00-session$/session_id: t00-other/' "$proof_root/t00-session/eci_active"
+  out="$TMP_ROOT/mismatched-owner.out"
+  run_post_compact "$proof_root" "$out"
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
 }
 
 test_post_compact_nested_marker_is_explicit_and_bounded() {
   local proof_root="$TMP_ROOT/nested-proof" out
   mkdir -p "$proof_root/t00-session"
-  printf 'outer_session_id: t00-session\nstep: 2\niteration: 3\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  printf 'scope: nested outer\ncwd: %s\nsession_id: t00-session\ncreated_utc: 2026-08-14T00:00:00Z\n' "$ROOT" >"$proof_root/t00-session/eci_active"
+  printf 'outer_session_id: t00-session\nouter_marker: %s/eci_active\nowner: ate\nwriter_session_id: t00-session\nacceptance_version: 1\nstep: 2\niteration: 3\nstate: active\n' "$proof_root/t00-session" >"$proof_root/t00-session/ate_nested_eci_active"
   out="$TMP_ROOT/nested.out"
   run_post_compact "$proof_root" "$out"
-  jq -e '.hookSpecificOutput.additionalContext | contains("PostCompact ECI refresh signal")' "$out" >/dev/null
-  printf 'outer_session_id: wrong-session\nstep: 2\niteration: 3\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  jq -e 'type == "object" and (keys | length == 0) and (has("hookSpecificOutput") | not)' "$out" >/dev/null
+  rm -f -- "$proof_root/t00-session/eci_active"
+  printf 'outer_session_id: wrong-session\nouter_marker: %s/eci_active\nowner: ate\nwriter_session_id: t00-session\nacceptance_version: 1\nstep: 2\niteration: 3\nstate: active\n' "$proof_root/t00-session" >"$proof_root/t00-session/ate_nested_eci_active"
   run_post_compact "$proof_root" "$out"
-  [ ! -s "$out" ]
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
+  printf 'outer_session_id: t00-session\nstep: 2\niteration: 3\n' >"$proof_root/t00-session/ate_nested_eci_active"
+  run_post_compact "$proof_root" "$out"
+  jq -e 'type == "object" and (keys | length == 0)' "$out" >/dev/null
 }
 
 test_post_compact_hook_is_registered_and_session_start_is_restricted() {
+  local postcompact_trusted_hash
   jq -e '
     (.hooks.SessionStart | all(.matcher == "startup|resume|clear")) and
     ([.hooks.PostCompact[]?.hooks[]?.command]
       | any(contains("/hooks/eci-post-compact-refresh.sh")))
   ' "$ROOT/hooks.json" >/dev/null
   grep -Fq '[hooks.state."/home/pheona/.codex/hooks.json:post_compact:0:0"]' "$ROOT/config.toml"
-  grep -Fq 'trusted_hash = "sha256:345b8572ed36ac7a7415b2415d34e05c2c4b6d6c158c02876e75308184dfd1a0"' "$ROOT/config.toml"
+  postcompact_trusted_hash="$(awk '
+    $0 == "[hooks.state.\"/home/pheona/.codex/hooks.json:post_compact:0:0\"]" {
+      in_postcompact = 1
+      next
+    }
+    in_postcompact && /^\[/ { exit }
+    in_postcompact && /^trusted_hash = "/ {
+      value = $0
+      sub(/^trusted_hash = "/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$ROOT/config.toml")"
+  [ "$postcompact_trusted_hash" = \
+    'sha256:1a9ead109faf0250cdb2bc861fe69273d1176499a275176af0d9f1d3892806c1' ]
 }
 
 test_policy_names_post_compact_authority_and_exact_manifest_schema() {
@@ -136,16 +198,31 @@ test_policy_names_post_compact_authority_and_exact_manifest_schema() {
     grep -Fq 'PostCompact` is the authoritative compaction refresh signal' "$skill"
     grep -Fq 'SessionStart` `startup|resume|clear`' "$skill"
     grep -Fq 'best-effort resume/clear reminder' "$skill"
-    grep -Fq '"schema":"eci-required-critics/v1"' "$skill"
-    grep -Fq 'each target record is ordered `{target_id,target_kind,diff_artifact,diff_sha256,e2e_required}`' "$skill"
-    grep -Fq '"target_id":string,"target_kind":"root|subtask|candidate-fix"' "$skill"
-    grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex,"critic_role":"A|B|C","gate_phase":"prewrite|postwrite","child_identity":string' "$skill"
-    grep -Fq '"spawn_request_artifact":string,"spawn_request_sha256":lowercase64hex,"report_artifact":string,"report_sha256":lowercase64hex' "$skill"
-    grep -Fq '"verdict":string,"e2e_required":boolean,"e2e_artifact":string|null,"e2e_sha256":lowercase64hex|null' "$skill"
+    grep -Fq 'schema `eci-required-critics/v2`' "$skill"
+    grep -Fq 'Each target has `{target_id,target_kind,diff_artifact,diff_sha256,e2e_required,target_path,target_version}`' "$skill"
+    grep -Fq 'current_target_id,current_target_kind,current_diff_artifact' "$skill"
+    grep -Fq 'The canonical row fields are `{target_id,target_kind,diff_artifact,diff_sha256,critic_role,gate_phase,child_identity,spawn_request_artifact,spawn_request_sha256,report_artifact,report_sha256,adjudication_artifact,adjudication_sha256,verdict,e2e_required,e2e_artifact,e2e_sha256,repo_root,git_dir,git_common_dir,base_oid,head_oid,staged_diff_sha256,worktree_diff_sha256,status_sha256,target_path,target_version,intention_artifact,intention_sha256,acceptance_version}`' "$skill"
+    grep -Fq '**Adjudication record details:**' "$skill"
+    grep -Fq 'Every report artifact must be bounded text ending with exactly one canonical `eci_critic_verdict: APPROVED|CONDITIONAL|REJECTED` line' "$skill"
+    grep -Fq 'Report text is UTF-8, bounded, LF-terminated' "$skill"
+    grep -Fq 'eci-critic-adjudication/v1' "$skill"
+    grep -Fq 'eci-required-critics.<phase>.<acceptance_version>.ledger' "$skill"
+    grep -Fq 'eci-acceptance-anchor' "$skill"
+    grep -Fq 'Historical phase/version ledgers are evidence for their snapshot' "$skill"
+    if grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex' "$skill"; then
+      return 1
+    fi
     grep -Fq 'Critic C pre-write skip-design admission report' "$skill"
+    grep -Fq 'only on an explicitly selected skip-design route' "$skill"
     grep -Fq 'Critic C post-write reconciliation report' "$skill"
+    grep -Fq 'nested-accept' "$skill"
+    grep -Fq 'primary-owner: none' "$skill"
     grep -Fq '`target-scoped-critic-ledger-row`' "$skill"
     grep -Fq '`critic-c-prewrite-postwrite`' "$skill"
+    grep -Fq 'The `PostCompact` hook is read-only' "$skill"
+    if grep -Fq 'eci_refresh_pending' "$skill" || grep -Fq 'refresh-ack' "$skill"; then
+      return 1
+    fi
     grep -Fq '`postcompact-refresh-signal`' "$skill"
     if grep -Fq 'There is no dedicated compaction hook' "$skill"; then
       return 1
@@ -156,12 +233,14 @@ test_policy_names_post_compact_authority_and_exact_manifest_schema() {
   fi
 }
 
-test_post_compact_active_eci_refresh_signal
+test_post_compact_active_eci_uses_provider_valid_empty_output
 test_post_compact_inactive_eci_is_silent
 test_post_compact_symlink_marker_is_silent
 test_post_compact_does_not_scan_or_mutate_state
 test_post_compact_rejects_malformed_session_or_cwd
+test_post_compact_rejects_invalid_json_and_never_leaks_noise
 test_post_compact_requires_event_and_trigger_contract
+test_post_compact_rejects_marker_owner_mismatch
 test_post_compact_nested_marker_is_explicit_and_bounded
 test_post_compact_hook_is_registered_and_session_start_is_restricted
 test_policy_names_post_compact_authority_and_exact_manifest_schema

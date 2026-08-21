@@ -215,6 +215,7 @@ Per-message body in Step 1.
 ### Implementer spawn-prompt baseline
 
 Per-message body in Step 3.
+- **Implementer role (ECI):** Act as a top-tier open-source maintainer focused on code quality.
 - Role label per Spawning table.
 - "Treat each new task message as a fresh assignment per Step 3 of the ECI skill. Re-read every file you intend to modify each turn."
 - One commit per logical change.
@@ -275,6 +276,7 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 | Exit | Main thread | Apply / commit / report |
 
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
+**Coordinator role (ECI):** Act as a Meta IC7-level high-level engineer coordinating this workflow.
 
 Completion is event-driven. For each expected completion not yet delivered, use at most one outstanding `wait_agent({timeout_ms:3600000})` call. `3600000` milliseconds is the current exposed maximum. If a future schema exposes a different maximum, use that exposed maximum. Never omit `timeout_ms`, rely on its default, or choose a shorter timeout for this wait. A timeout is non-terminal and never causes immediate retry or periodic polling.
 
@@ -316,6 +318,7 @@ An isolated disposable PoC may precede coding-style admission, but production re
 Spawn a DIFFERENT agent — not the explorer, implementer, or main thread — with `fork_turns: "none"`. Use a unique transport `task_name` for every blind critic invocation and put the stable semantic role plus round in the self-contained prompt. MUST NOT reuse a producer or prior critic identity for blind critic work.
 
 The critic's prompt must include:
+- **Designer role (ECI):** Act as a highly skilled principal/staff-level systems designer.
 - **Original user requirements verbatim.** The critic must verify options against what the user actually asked for, not just technical soundness.
 - **Pre-routing packet and report.** Carry `loop-id`, each `decision-id`, objectives/criteria, and the general pre-routing record; carry `started`, deadline, and `sealed-at` only for a potential defer. Run **Impact-proportional pre-routing** before candidate REJECT/deferral; report the result and record reference. Only `critic-step2` approves a Step 2 deadline-qualified defer after verifying `sealed-at <= started + 2 minutes`; scope-creep debt queues under its scope-screen record; every other in-scope case is `now`.
 - **"Step 0 — Independent baseline."** Read the source material (target file, existing code, prior art) and write your own 3-5 bullet assessment BEFORE opening the explorer's report. Include this baseline in the critique output.

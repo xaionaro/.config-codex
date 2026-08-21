@@ -10,10 +10,12 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HOOK_DIR/lib/reviewer-backend.sh"
 . "$HOOK_DIR/lib/reviewer-call.sh"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
+. "$HOOK_DIR/lib/eci-diagnostic.sh"
 codex_init_tmp || true
 
 input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin)" || exit 0
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 turn_id_json="$(codex_hook_turn_id_json "$input")"
 codex_valid_session_id "$session_id" || exit 0
@@ -178,7 +180,14 @@ verdict=$(printf '%s' "$result" | jq -r '.verdict // empty' 2>/dev/null || true)
 reason=$(printf '%s' "$result" | jq -r '.reason // empty' 2>/dev/null || true)
 
 if [ "$verdict" = "deny" ]; then
-  message=$(printf 'Pre-tool admission reviewer denied the first tool call of this turn.\n\nReason: %s\n\nLoad the matching skill or delegate before invoking %s directly.\n\nOverride: touch %s/bypass' "$reason" "$tool_name" "$state_dir")
+  if [ "$tool_name" = Bash ]; then
+    subject="tool=Bash,command=$(eci_command_identity_subject "${command_text:-}"),session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}")"
+  else
+    edit_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // .tool_input.path // empty' 2>/dev/null || true)
+    subject="tool=$(eci_diagnostic_value "$tool_name"),path=$(eci_diagnostic_value "${edit_path:-<missing>}"),session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}")"
+  fi
+  detail=$(printf 'Pre-tool admission reviewer denied the first tool call of this turn.\n\nReason: %s\n\nLoad the matching skill or delegate before invoking %s directly.\n\nOverride: touch %s/bypass' "$reason" "$tool_name" "$state_dir")
+  message="$(eci_diagnostic_reason "$(eci_diagnostic_code_for_reason "$detail")" "PreToolUse" "pre-reviewer-admission" "$subject" "$detail" "load the matching skill or delegate before invoking the tool; use the scoped bypass only when the coordinator has authorized it")"
   jq -n --arg reason "$message" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
