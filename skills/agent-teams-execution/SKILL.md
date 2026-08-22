@@ -192,35 +192,27 @@ Coordinator updates after: findings, design approval, task code/test approval, b
 
 ### Requirement register and lane-lineage contract
 
-At an active ATE root, the coordinator owns one immutable, normalized requirement register in the project-understanding ledger. `register_root_id` is the canonical register root, distinct from `task_root_id`, task-tree display names, lane names, marker roots, and nested-ECI identifiers. Nested ECI inherits the outer ATE register root; an ECI→ATE replacement for the same logical scope carries it, while an unrelated or replaced root gets a new register only after the prior outer scope closes.
+Read the shared normative reference at
+`$CODEX_HOME/skills/references/requirement-lineage.md` (normally
+`skills/references/requirement-lineage.md`) before ATE performs coordinator
+admission for `spawn_agent`, `followup_task`, a lane-changing `send_message`,
+or otherwise-unbound durable execution. It is non-triggering and not loaded
+automatically. If it cannot be read, apply its stated minimum fallback and
+fail closed before the provider/tool call.
 
-Requirement declarations are append-only and immutable:
-`{register_root_id, requirement_id, origin:"user", redacted_verbatim_user_text, source_location, redaction_ids}`.
-Use root-qualified IDs such as `<session-id>::<register_root_id>::R<n>`; each component is a non-empty lexical token (`[A-Za-z0-9][A-Za-z0-9._-]*`), no component contains `::`, and the numeric suffix is canonical (no leading zero). Reject duplicate IDs or malformed IDs. The declaration preserves all non-secret characters, clause order, scope, qualifiers, and modality. Redact only secrets before persistence/reporting with stable root-scoped placeholders such as `<REDACTED_SECRET_001>`; record source location and never raw secret bytes. When redaction occurs, call the value **redacted verbatim user wording**, not exact wording.
-
-The mutable requirement-state projection is `{requirement_id,state:active|superseded|retired,supersedes,superseded_by,state_event_ref}`. Only active, root-qualified IDs admit new work. Additions create a new active ID; a correction or replacement creates a new active ID and atomically supersedes named old IDs; explicit user withdrawal retires without a successor. Only direct user evidence authorizes these transitions. `project-understanding.md` is the current projection; append capture, old redacted wording, supersession/removal relations, lane creation, owner assignment, and material reroute events to `high_level_log.md`. Affected lanes stop new admission and retire or reroute before any provider call; completed historical lanes retain provenance but cannot authorize new work.
-
-Store the normalized graph once and keep current projections separate:
-
-```text
-Lane       = {lane_id,register_root_id,task_root_id,human_name,derivation_kind,
-              predecessor_lane_ids:[...],requirement_refs:[...],derivation_reason,
-              path_ids:[...]}
-Assignment = {assignment_id,lane_id,owner,canonical_status_ref,evidence,admission_binding}
-Path       = {path_id,requirement_ref,lane_id,edge_ids:[...]}
-Edge       = {edge_id,path_id,seq,register_root_id,from:{kind,id},relation,
-              to:{kind,id},reason,evidence:{source_kind,locator,canonical_bytes_sha256}}
-```
-
-`Lane` identity and lineage are immutable after admission. `derivation_kind` is `root|child|derived|protocol|reroute`; roots have zero predecessors, ordinary non-roots have one or more ordered predecessors, and a reroute has exactly the superseded lane as its direct predecessor. Aggregate/review/integration lanes may have two or more. Owner-only reassignment with unchanged purpose updates only a new `Assignment` projection and appends a log event; material work-definition change creates a new reroute lane.
-
-Node `kind` is one of `requirement|decision|lane|assignment`; `relation` is one of `authorizes|justifies|derives|precedes|executes|reroutes|evidences`. Validate unique IDs, same-register endpoints, no self/cross-root/duplicate/cyclic edges, no undeclared predecessors, contiguous `seq`, and path endpoints. Every predecessor appears in a path; every requirement ref has one complete path beginning at its user requirement and ending at the current lane/assignment. Edge evidence binds `source_kind`, `locator`, canonical source bytes, and a lowercase SHA-256. Expand complete paths in the current ledger and ordinary assignment packets so the full `requirement → decision/reasoning step → parent/derived lane → executed assignment` chain is visible without duplicating graph objects.
-
-Before `spawn_agent`, `followup_task`, or a `send_message` that starts, changes, or reroutes lane work, and before otherwise-unbound durable execution, perform coordinator admission: update the current ledger projection; verify the existing `high_level_log` prefix; append an EOF PREPARE/admission event; publish and re-read the ledger and latest-status; materialize and hash the prompt artifact; record `admission_binding` as `{register_root_id,lane_id,assignment_id,active_requirement_state_version,expanded_path_sha256,prompt_sha256,ledger_sha256,log_post_append_sha256,log_post_append_size,latest_status_sha256,admission_record_sha256}`; then append and verify COMMIT. This is recoverable coordinator evidence, not an atomic provider transaction. Fail closed before the provider/tool call if any pair/hash is missing or stale.
-
-Validate that every declared object ID resolves uniquely in this register, refs are non-empty active IDs authorized by the same root, predecessors are admitted, ordered, and declared in a complete path, and the chain reaches a user requirement. A child’s refs are a subset of its root-authorized set. A running agent may submit only a non-executable proposal `{proposal_id,source_lane_id,register_root_id,kind,requirement_refs,predecessor_lane_ids,derivation_reason,evidence}`. If the proposal is necessary for the existing objective/acceptance, the coordinator independently admits a derived lane through the same graph/pair binding; missing refs alone do not prove new scope. A genuinely new outcome/scope or proposal without a user ancestor remains scope-creep debt: no lane, provider call, or status change. Direct user authorization first creates a new declaration.
-
-Lineage admission failure leaves existing task/lane status unchanged and is a routing risk/next action, never `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase. ATE owns canonical status for nested ECI. Do not add lineage fields to closed pause snapshots, required-critic manifests, marker schemas, or task-state schemas. Assignment packets, routing messages, task transitions, spawn checklists, reviewer prompts, review/E2E packets, reusable-producer reassignments, and discovered-work proposals carry the structured lane, paths/edge evidence, register root, active-state version, assignment/admission binding, and expanded full chain before execution. Critic C Packet 1 still requires lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks before spawning; these remain coordinator evidence, not Packet 1 body fields. Only lineage serialization and normal review context are omitted from its body. Packet 2 carries the full register, graph/paths/edge evidence, admission binding, and context.
+ATE-specific packet rules stay inline: task transitions, spawn checklists,
+assignment packets, routing messages, reviewer prompts, review/E2E packets,
+reusable-producer reassignments, and discovered-work proposals carry the shared
+`Lane`, canonical executable `requirement_refs`; display-only `R<n>` requires the
+bound alias map and is never a bare durable ref. They carry paths/edges,
+register/state version,
+`Assignment`/`admission_binding`, and expanded full chain. Critic C Packet 1
+requires coordinator-side lineage admission, ledger/log pair verification,
+exact prompt-artifact creation, and required provider/profile/identity checks
+before spawning; these remain coordinator evidence, not Packet 1 body fields.
+Only lineage serialization and normal review context are omitted from its body.
+Packet 2 carries the full register and graph evidence. ATE owns canonical
+status and projections for nested ECI.
 
 <CRITICAL>
 When this pipeline is active, spawn bounded standard Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
@@ -452,7 +444,7 @@ Cosmetic style remains Minor/Nit. Missing or unverified admission, omitted mater
 
 **Scope-creep-debt capacity invariant.** Before every assignment, return, or other state transition of a scope-creep-debt task, recheck and record that it still consumes no primary time, owner, proof, or critical-path capacity. Recheck and record continuously while exploring, executing, reviewing, or proving. On failure, return it to `queued_async_followup` or keep it there.
 
-**Lineage admission invariant.** Before any transition that starts, changes, or reroutes lane work, validate the structured `Lane`/`Assignment` graph, complete `Path`/`Edge` chains, active requirement state, and coordinator admission binding under the Requirement register and lane-lineage contract. Root-qualified refs must resolve uniquely to active requirements in this register; predecessors must be same-register, admitted, ordered, and acyclic; root/reroute/aggregate predecessor rules must hold; the derivation reason must show necessity; edge evidence must bind canonical source bytes; and every path must reach a user requirement. Failure leaves the existing task/lane state unchanged and is a routing defect, not `blocked`, `blocked_by_task`, `PAUSED`, BRP, or a lifecycle phase. Do not add these fields to the closed task-state schema.
+**Lineage admission invariant.** Before any transition that starts, changes, or reroutes lane work, validate the structured `Lane`/`Assignment` graph, complete `Path`/`Edge` chains, active requirement state, and coordinator admission binding under the Requirement register and lane-lineage contract. Active-admission refs must resolve uniquely to active requirements; historical/provenance refs may resolve superseded/retired requirements only with immutable `state_event_ref` and never authorize work. Predecessors must be same-register, admitted, ordered, and acyclic, with every predecessor represented in a complete path and `seq` contiguous per path; root/reroute/aggregate predecessor rules must hold; the derivation reason must show necessity; edge evidence must bind canonical source bytes; and every path must reach a user requirement. Failure leaves the existing task/lane state unchanged and is a routing defect, not `blocked`, `blocked_by_task`, `PAUSED`, BRP, or a lifecycle phase. Do not add these fields to the closed task-state schema.
 
 **Transition requirements:**
 
@@ -491,7 +483,7 @@ Cosmetic style remains Minor/Nit. Missing or unverified admission, omitted mater
 
 Reports to user use human-readable task names, not task/phase/lane numbers.
 Use a tree when work decomposes into sub-tasks, blockers, followups, or nested pipelines.
-In an active ECI/ATE lineage, every reported lane has non-empty root-qualified `Lane requirement refs`; include a nearby redacted-verbatim Requirements registry with each referenced ID's wording and source. Preserve human-readable lane names and parent/child hierarchy. The project-understanding ledger, not the status table, carries each lane's full edge chain. In a direct workflow with inactive ECI/ATE lineage, preserve direct-workflow behavior and do not fabricate refs or a registry.
+In an active ECI/ATE lineage, every reported lane has non-empty canonical `Lane requirement refs`; include a nearby redacted-verbatim Requirements registry with each referenced ID's wording and source. Preserve human-readable lane names and parent/child hierarchy. The project-understanding ledger, not the status table, carries each lane's full edge chain. In a direct workflow with inactive ECI/ATE lineage, preserve direct-workflow behavior and do not fabricate refs or a registry.
 Lineage-admission failures leave task and lane status unchanged and appear as routing risks/next actions, never as `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase.
 
 ### Git & Security
@@ -525,7 +517,7 @@ Phase 2 design **must include**:
 3. **Binary/service purpose map** -- for each binary or deployable, one-sentence statement of purpose, scope, and dependencies. File ownership map must be consistent with this.
 4. **Interface contracts** -- public APIs/signatures per task, including: error/failure modes, preconditions/postconditions, data invariants, thread safety. Test designer uses these before executors finish.
 5. **Module dependency graph** -- coordinator uses for executor sequencing.
-6. **Requirement traceability** -- map every component and executable lane to active root-qualified requirement IDs, immutable lane/predecessor records, complete paths/edges, and the full requirement → decision/reasoning → parent/derived lane → executed assignment chain. Cover every user requirement and justify every component/lane.
+6. **Requirement traceability** -- map every component and executable lane to active canonical requirement refs, immutable lane/predecessor records, complete paths/edges, and the full requirement → decision/reasoning → parent/derived lane → executed assignment chain. Cover every user requirement and justify every component/lane.
 7. **Security design** (when applicable) -- trust boundaries, attack surfaces, security controls, auth strategy. OWASP at design time, not just code review.
 8. **Shared concerns register** -- logic/types/patterns needed by 2+ tasks. Each entry: {what, which tasks, designated shared location}. Executors consume this to avoid reimplementation.
 9. **Coding-style admission proposal** -- for each governed artifact scope, the applicable Style Brief, Tool route, and/or No-source verdict from Explorer source facts. Designer owns choices; Design Reviewer independently admits before durable execution. Fundamentals Design Reviewer receives the record and checks hidden premises/fundamental consequences without becoming a second admission owner.
@@ -845,7 +837,7 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 
 1. **Track EVERYTHING as tasks and lanes.** Every deliverable, sub-task, blocker = task and every executable unit = an admitted immutable lane plus mutable assignment projection. Keep the project-understanding ledger current with the high-level context, register/state projection, normalized graph, and full requirement chain behind each lane.
 2. **Request spawns from lead.** Coordinator determines who is needed and when; lead creates the agent team and spawns teammates.
-3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description and lane assignment includes claim tagging, the structured lane/assignment fields, root-qualified `requirement_refs`, `derivation_reason`, complete paths/edges, the expanded requirement chain, its governed coding-style scope, admission role, and admitted record or read-only proposal duty when applicable.
+3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description and lane assignment includes claim tagging, the structured lane/assignment fields, canonical `requirement_refs`, `derivation_reason`, complete paths/edges, the expanded requirement chain, its governed coding-style scope, admission role, and admitted record or read-only proposal duty when applicable.
 4. **Assign file ownership** per design doc. Durable writes start only after both route admission and lineage admission approve. **Create git worktrees** for 2+ parallel executors.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise or accept at face value. Record the verification question, source finding, and target artifact; route to a second agent for independent verification before acting.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, check Crash Recovery signals. If confirmed unresponsive, follow the respawn sequence.
@@ -908,7 +900,7 @@ Before every spawn, branch on the category-role boundary artifact. For an ordina
 - [ ] Special selector gate: send every exposed `sol-high` selector (currently `model="gpt-5.6-sol"` and `reasoning_effort="high"`); record unexposed dimensions, including provider binding when not exposed, as `unavailable_by_schema`; reject omitted or rejected selectors only for that child
 - [ ] Special invocation gate: record requested-special plus child identity after a non-rejecting spawn and, when effective telemetry is unavailable, also record effective-unavailable; no provider receipt, sidecar, self-attestation, or invented artifact is required; reject conflicting returned effective telemetry only for that child and never use ordinary fallback, reuse, or downgrade
 - [ ] Stable semantic role and transport `task_name` recorded; task-specific details are in the self-contained assignment, and no unavailable spawn field is claimed
-- [ ] Lineage admission passed before the provider call: root-qualified refs resolve uniquely to active requirements in this register; root/child/reroute/aggregate predecessor rules, same-root ancestry, acyclicity, ordered complete paths, derivation necessity, and evidence hashes hold; the chain reaches a user requirement
+- [ ] Lineage admission passed before the provider call: active-admission refs resolve uniquely to active requirements; historical/provenance refs carry immutable `state_event_ref` and never authorize work; root/child/reroute/aggregate predecessor rules, same-root ancestry, acyclicity, ordered complete paths, derivation necessity, and evidence hashes hold; the chain reaches a user requirement
 - [ ] Prompt/roster/ledger carries the immutable `Lane`, complete `Path`/`Edge` evidence, `register_root_id`/active-state version, mutable `Assignment`, and `admission_binding`; owner-only reassignment creates a new assignment, while a material reroute has a new `reroute` lane
 - [ ] Governed artifact scopes and every matching installed coding-style skill listed by exact name; a real no-match and remaining repository/config/reference sources are recorded under **Coding-style admission**
 - [ ] Claim tagging instructions included verbatim

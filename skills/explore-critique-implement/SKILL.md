@@ -22,35 +22,27 @@ Maintain a project-understanding ledger for every ECI run. Use the `maintaining-
 
 ### Requirement register and lane-lineage contract
 
-At an active ECI root, the coordinator owns one immutable, normalized requirement register in the project-understanding ledger. `register_root_id` is the canonical register root, distinct from `task_root_id`, task-tree display names, lane names, marker roots, and nested-ECI identifiers. Nested ECI inherits the outer ATE register root; an ECI→ATE replacement for the same logical scope carries it, while an unrelated or replaced root gets a new register only after the prior outer scope closes.
+Read the shared normative reference at
+`$CODEX_HOME/skills/references/requirement-lineage.md` (normally
+`skills/references/requirement-lineage.md`) before ECI performs coordinator
+admission for `spawn_agent`, `followup_task`, a lane-changing `send_message`,
+or otherwise-unbound durable execution. It is non-triggering and not loaded
+automatically. If it cannot be read, apply its stated minimum fallback and
+fail closed before the provider/tool call.
 
-Requirement declarations are append-only and immutable:
-`{register_root_id, requirement_id, origin:"user", redacted_verbatim_user_text, source_location, redaction_ids}`.
-Use root-qualified IDs such as `<session-id>::<register_root_id>::R<n>`; each component is a non-empty lexical token (`[A-Za-z0-9][A-Za-z0-9._-]*`), no component contains `::`, and the numeric suffix is canonical (no leading zero). Reject duplicate IDs or malformed IDs. The declaration preserves all non-secret characters, clause order, scope, qualifiers, and modality. Redact only secrets before persistence/reporting with stable root-scoped placeholders such as `<REDACTED_SECRET_001>`; record source location and never raw secret bytes. When redaction occurs, call the value **redacted verbatim user wording**, not exact wording.
-
-The mutable requirement-state projection is `{requirement_id,state:active|superseded|retired,supersedes,superseded_by,state_event_ref}`. Only active, root-qualified IDs admit new work. Additions create a new active ID; a correction or replacement creates a new active ID and atomically supersedes named old IDs; explicit user withdrawal retires without a successor. Only direct user evidence authorizes these transitions. `project-understanding.md` is the current projection; append capture, old redacted wording, supersession/removal relations, lane creation, owner assignment, and material reroute events to `high_level_log.md`. Affected lanes stop new admission and retire or reroute before any provider call; completed historical lanes retain provenance but cannot authorize new work.
-
-Store the normalized graph once and keep current projections separate:
-
-```text
-Lane       = {lane_id,register_root_id,task_root_id,human_name,derivation_kind,
-              predecessor_lane_ids:[...],requirement_refs:[...],derivation_reason,
-              path_ids:[...]}
-Assignment = {assignment_id,lane_id,owner,canonical_status_ref,evidence,admission_binding}
-Path       = {path_id,requirement_ref,lane_id,edge_ids:[...]}
-Edge       = {edge_id,path_id,seq,register_root_id,from:{kind,id},relation,
-              to:{kind,id},reason,evidence:{source_kind,locator,canonical_bytes_sha256}}
-```
-
-`Lane` identity and lineage are immutable after admission. `derivation_kind` is `root|child|derived|protocol|reroute`; roots have zero predecessors, ordinary non-roots have one or more ordered predecessors, and a reroute has exactly the superseded lane as its direct predecessor. Aggregate/review/integration lanes may have two or more. Owner-only reassignment with unchanged purpose updates only a new `Assignment` projection and appends a log event; material work-definition change creates a new reroute lane.
-
-Node `kind` is one of `requirement|decision|lane|assignment`; `relation` is one of `authorizes|justifies|derives|precedes|executes|reroutes|evidences`. Validate unique IDs, same-register endpoints, no self/cross-root/duplicate/cyclic edges, no undeclared predecessors, contiguous `seq`, and path endpoints. Every predecessor appears in a path; every requirement ref has one complete path beginning at its user requirement and ending at the current lane/assignment. Edge evidence binds `source_kind`, `locator`, canonical source bytes, and a lowercase SHA-256. Expand complete paths in the current ledger and ordinary assignment packets so the full `requirement → decision/reasoning step → parent/derived lane → executed assignment` chain is visible without duplicating graph objects.
-
-Before `spawn_agent`, `followup_task`, or a `send_message` that starts, changes, or reroutes lane work, and before otherwise-unbound durable execution, perform coordinator admission: update the current ledger projection; verify the existing `high_level_log` prefix; append an EOF PREPARE/admission event; publish and re-read the ledger and latest-status; materialize and hash the prompt artifact; record `admission_binding` as `{register_root_id,lane_id,assignment_id,active_requirement_state_version,expanded_path_sha256,prompt_sha256,ledger_sha256,log_post_append_sha256,log_post_append_size,latest_status_sha256,admission_record_sha256}`; then append and verify COMMIT. This is recoverable coordinator evidence, not an atomic provider transaction. Fail closed before the provider/tool call if any pair/hash is missing or stale.
-
-Validate that every declared object ID resolves uniquely in this register, refs are non-empty active IDs authorized by the same root, predecessors are admitted, ordered, and declared in a complete path, and the chain reaches a user requirement. A child’s refs are a subset of its root-authorized set. A running agent may submit only a non-executable proposal `{proposal_id,source_lane_id,register_root_id,kind,requirement_refs,predecessor_lane_ids,derivation_reason,evidence}`. If the proposal is necessary for the existing objective/acceptance, the coordinator independently admits a derived lane through the same graph/pair binding; missing refs alone do not prove new scope. A genuinely new outcome/scope or proposal without a user ancestor remains scope-creep debt: no lane, provider call, or status change. Direct user authorization first creates a new declaration.
-
-Lineage admission failure leaves existing task/lane status unchanged and is a routing risk/next action, never `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase. ATE owns canonical status for nested ECI. Do not add lineage fields to closed pause snapshots, required-critic manifests, marker schemas, or task-state schemas. Assignment packets, routing messages, Step 1–4 packets, spawn checklists, reviewer prompts, reusable-producer reassignments, and discovered-work proposals carry the structured lane, paths/edge evidence, register root, active-state version, assignment/admission binding, and expanded full chain before execution. Critic C Packet 1 still requires lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks before spawning; these remain coordinator evidence, not Packet 1 body fields. Only lineage serialization and normal review context are omitted from its body. Packet 2 carries the full register, graph/paths/edge evidence, admission binding, and context.
+ECI-specific packet rules stay here: assignment packets, routing messages,
+Step 1–4 packets, spawn checklists, reviewer prompts, reusable-producer
+reassignments, and discovered-work proposals carry the shared `Lane`, canonical
+executable `requirement_refs`; display-only `R<n>` requires the bound alias map
+and is never a bare durable ref. They carry paths/edges, register/state version,
+`Assignment`/`admission_binding`, and expanded
+full chain. Critic C Packet 1 requires coordinator-side lineage admission,
+ledger/log pair verification, exact prompt-artifact creation, and required
+provider/profile/identity checks before spawning; these remain coordinator
+evidence, not Packet 1 body fields. Only lineage serialization and normal review
+context are omitted from its body. Packet 2 carries the full register and graph
+evidence. ATE owns canonical status for nested ECI. Protocol constraints such as
+D1 are non-authorizing; never serialize them as active lane refs.
 
 ## Codex adapter
 
@@ -332,7 +324,7 @@ Before sending the RCA/regression assignment, write or update a human-readable r
 ## Step 1: Explore
 
 Use `followup_task` to start the idle reusable `explorer` role's turn. Use `send_message` only to deliver bounded information while that turn is running. Each fresh assignment body must include:
-- The validated `Lane`/`Assignment` record, non-empty root-qualified requirement refs, register root and active-state version, complete paths/edges with evidence, derivation reason, admission binding, and expanded full chain; reject a proposal that does not reach an active user requirement.
+- The validated `Lane`/`Assignment` record, non-empty canonical requirement refs, register root and active-state version, complete paths/edges with evidence, derivation reason, admission binding, and expanded full chain; reject a proposal that does not reach an active user requirement.
 - The problem/change for THIS iteration, in full context.
 - What's already been tried or ruled out (iterations 2+: include results from prior iterations, current codebase state, and last blocking gate issues verbatim if a prior cycle's gate failed).
 - Exact file paths of existing related code — explorer must re-read them this turn to avoid suggesting duplicates. "Re-read referenced files; do not trust prior turn reads."
@@ -433,7 +425,7 @@ Scope-creep debt is queued and consumes no primary time, owner, proof, or critic
 
 Use `followup_task` to start the idle reusable `implementer` role's next turn; use `send_message` only for bounded information while that turn is running. One change, one diff per assignment. Code tasks: implementer invokes `test-driven-development` and `debugging-discipline`, loads every matching installed coding-style skill, applies the admitted coding-style record, and re-reads every file it intends to modify on each new task message.
 
-Revalidate the immutable lane graph and mutable assignment binding before each reassignment or durable write. Include root-qualified refs, register/state version, derivation reason, complete paths/edges, admission binding, and expanded chain in the implementer packet; discovered work without authorized ancestry is queued as scope-creep debt, not executed.
+Revalidate the immutable lane graph and mutable assignment binding before each reassignment or durable write. Include canonical requirement refs, register/state version, derivation reason, complete paths/edges, admission binding, and expanded chain in the implementer packet; discovered work without authorized ancestry is queued as scope-creep debt, not executed.
 
 Each new task message to `implementer` includes:
 - The current iteration's concrete-text from the Step 2 critic (verbatim).
@@ -703,19 +695,22 @@ Reports to user use:
 | Tree structure when work decomposes into sub-issues or nested ECI pipelines | Indent children under parent; never flatten |
 
 - Use `<role label> (<runtime name>)` in every status, wait, or close update; do not use bare runtime nicknames once labeled.
-- Use human-readable lane names and preserve parent/child trees. In an active ECI/ATE lineage, every reported lane has non-empty root-qualified `Lane requirement refs`; include a nearby redacted-verbatim Requirements registry with each referenced ID's wording and source. The project-understanding ledger remains the source for the full edge chain; status columns carry refs, not the graph.
+- Use human-readable lane names and preserve parent/child trees. In an active ECI/ATE lineage, every reported lane has non-empty canonical `Lane requirement refs`; include a nearby redacted-verbatim Requirements registry with each referenced ID's wording and source. The project-understanding ledger remains the source for the full edge chain; status columns carry refs, not the graph.
 - In a direct workflow with inactive ECI/ATE lineage, preserve direct-workflow reporting and do not fabricate refs or a registry.
 - A lineage-admission failure leaves status unchanged and is reported as a routing risk/next action, never as `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase.
 
 Issue uncovered mid-iteration that spawns its own ECI pipeline → nest under the iteration that found it.
 
+The compact refs below assume the nearby immutable alias map
+`{register_root_id:<root>,aliases:[{alias:R1,requirement_ref:{register_root_id:<root>,requirement_id:R1}},{alias:R3,requirement_ref:{register_root_id:<root>,requirement_id:R3}}]}`.
+
 ```
-auth middleware swap [Lane requirement refs: root-requirement-lineage-20260822::R1]
-├─ severity-codes change [Lane requirement refs: root-requirement-lineage-20260822::R1]: gate passed, committed
-├─ E2E uncovered stale-session bug [Lane requirement refs: root-requirement-lineage-20260822::R3] → nested ECI:
-│   ├─ session-cache invalidation [Lane requirement refs: root-requirement-lineage-20260822::R3]: 3 options ranked
-│   └─ blocked on prod log access [Lane requirement refs: root-requirement-lineage-20260822::R3]
-└─ docstring update [Lane requirement refs: root-requirement-lineage-20260822::R1]: pending
+auth middleware swap [Lane requirement refs: R1]
+├─ severity-codes change [Lane requirement refs: R1]: gate passed, committed
+├─ E2E uncovered stale-session bug [Lane requirement refs: R3] → nested ECI:
+│   ├─ session-cache invalidation [Lane requirement refs: R3]: 3 options ranked
+│   └─ blocked on prod log access [Lane requirement refs: R3]
+└─ docstring update [Lane requirement refs: R1]: pending
 ```
 
 ## Pressure-test checklist
