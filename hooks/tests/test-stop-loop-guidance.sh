@@ -75,7 +75,7 @@ jq -e '
   .decision == "block" and
   (.reason | contains("[ECI_MARKER_SCOPE_MISMATCH]")) and
   (.reason | contains("LOOP DETECTED")) and
-  (.reason | contains("do not retry or poll Stop")) and
+  (.reason | contains("retry, poll, or stop attempt")) and
   (.reason | contains("wait for new external state"))
 ' "$scope_output" >/dev/null || { cat "$scope_output" >&2; exit 1; }
 CODEX_PROOF_ROOT="$scope_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$scope_input" >"$scope_output"
