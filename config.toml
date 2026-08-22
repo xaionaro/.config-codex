@@ -1,10 +1,10 @@
 #model = "qwen3.8:27b-mlx"
 #model_provider = "ollama"
 #model_reasoning_effort = "xhigh"
-#oss_provider = "ollama"a
+#oss_provider = "ollama"
+#model_catalog_json = "/home/pheona/.codex/model_catalog.json"
 model = "gpt-5.6-luna"
 model_reasoning_effort = "max"
-model_catalog_json = "/home/pheona/.codex/model_catalog.json"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 developer_instructions = """
@@ -179,6 +179,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/wingout"]
+trust_level = "trusted"
+
+[projects."/home/pheona/.crush"]
 trust_level = "trusted"
 
 [hooks.state]

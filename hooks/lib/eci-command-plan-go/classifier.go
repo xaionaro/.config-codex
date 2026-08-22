@@ -21,6 +21,7 @@ const (
 	maxArgumentBytes = 4 * 1024
 	maxWrapperDepth  = 8
 	maxProofAnchors  = 128
+	maxActiveControlEntries = 128
 )
 
 type Provider string
@@ -1840,8 +1841,15 @@ type activeControlFile struct {
 	info os.FileInfo
 }
 
-func activeControlFileIndex(markers []string) []activeControlFile {
-	index := make([]activeControlFile, 0, len(markers)*len(eciControlBasenames))
+type activeControlIndex struct {
+	files    []activeControlFile
+	overflow bool
+}
+
+func activeControlFileIndex(markers []string) activeControlIndex {
+	index := activeControlIndex{
+		files: make([]activeControlFile, 0, len(markers)*len(eciControlBasenames)),
+	}
 	seenSessionDirs := make(map[string]struct{}, len(markers))
 	for _, marker := range markers {
 		sessionDir := filepath.Clean(filepath.Dir(marker))
@@ -1849,19 +1857,32 @@ func activeControlFileIndex(markers []string) []activeControlFile {
 			continue
 		}
 		seenSessionDirs[sessionDir] = struct{}{}
-		entries, err := os.ReadDir(sessionDir)
+		directory, err := os.Open(sessionDir)
 		if err != nil {
 			continue
 		}
+		entries, err := directory.Readdir(maxActiveControlEntries + 1)
+		closeErr := directory.Close()
+		if err != nil && !errors.Is(err, io.EOF) {
+			continue
+		}
+		if closeErr != nil {
+			continue
+		}
+		if len(entries) > maxActiveControlEntries {
+			index.overflow = true
+			continue
+		}
 		for _, entry := range entries {
-			if entry.Type()&os.ModeSymlink != 0 || !isECIControlBasename(entry.Name()) {
+			name := entry.Name()
+			if entry.Mode()&os.ModeSymlink != 0 || !isECIControlBasename(name) {
 				continue
 			}
 			info, err := entry.Info()
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
-			index = append(index, activeControlFile{
+			index.files = append(index.files, activeControlFile{
 				path: filepath.Join(sessionDir, entry.Name()),
 				info: info,
 			})
@@ -1892,8 +1913,36 @@ func activeControlHardlinkPath(path string, index []activeControlFile) string {
 	return ""
 }
 
+// activeControlResolvedPath follows one candidate alias and compares its
+// target inode with the bounded active-control index.  This catches both
+// arbitrary hardlink names and symlink aliases before a worker fast path can
+// treat the candidate as an ordinary executable/path operand.
+func activeControlResolvedPath(path string, index []activeControlFile) string {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	for _, control := range index {
+		if os.SameFile(info, control.info) {
+			return control.path
+		}
+	}
+	return ""
+}
+
 func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagnostic {
 	controlIndex := activeControlFileIndex(request.ActiveMarkers)
+	if controlIndex.overflow {
+		return diagnosticForToken(
+			CodePlanLiveControlDenied,
+			"bounded active-control index overflowed before worker ownership could be established",
+			segmentIndex,
+			0,
+			argv[0],
+			"reduce the active session control-record count below the bounded index limit, then retry",
+			"bounded-control-index",
+		)
+	}
 	for argumentIndex, argument := range argv[1:] {
 		pathArgument, pathLike := commandPathOperand(argv[0].value, argument)
 		if !pathLike {
@@ -1920,7 +1969,7 @@ func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagno
 				return diagnostic
 			}
 		}
-		if controlPath := activeControlHardlinkPath(candidate, controlIndex); controlPath != "" {
+		if controlPath := activeControlResolvedPath(candidate, controlIndex.files); controlPath != "" {
 			diagnostic := diagnosticForToken(
 				CodePlanLiveControlDenied,
 				"worker argv inode matches an active-session live-control artifact",

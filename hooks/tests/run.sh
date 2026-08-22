@@ -306,6 +306,15 @@ make_git_repo() {
   printf '%s\n' "$repo"
 }
 
+make_unborn_git_repo() {
+  local name="$1"
+  local repo="$TMP_ROOT/git-$name"
+  mkdir -p "$repo" || return 1
+  git -C "$repo" init -q || return 1
+  printf 'base\n' >"$repo/file.txt"
+  printf '%s\n' "$repo"
+}
+
 make_fake_gitleaks() {
   local name="$1"
   local bin_dir="$TMP_ROOT/bin-$name"
@@ -5791,6 +5800,24 @@ test_stop_gate_reports_automated_secret_scan_pass() {
     [ ! -e "$proof_root/t00-session/gitleaks-findings.txt" ]
 }
 
+test_stop_gate_reports_automated_secret_scan_pass_for_unborn_repo() {
+  local proof_root input out repo bin_dir
+  proof_root="$(fresh_proof_root stop-secret-scan-unborn)"
+  repo="$(make_unborn_git_repo stop-secret-scan-unborn)" || return 1
+  bin_dir="$(make_fake_gitleaks stop-secret-scan-unborn)" || return 1
+  input="$TMP_ROOT/stop-secret-scan-unborn.json"
+  with_cwd_path "$FIXTURES/stop-basic.json" "$input" "$repo"
+  out="$TMP_ROOT/stop-secret-scan-unborn.out"
+
+  PATH="$bin_dir:$PATH" run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$out" &&
+    json_field_contains "$out" '.reason // empty' "Automated stop checks found changed git state" &&
+    [ -s "$proof_root/t00-session/instructions.md" ] &&
+    grep -q "Secret scan: passed (gitleaks)" "$proof_root/t00-session/instructions.md" &&
+    [ ! -e "$proof_root/t00-session/gitleaks-findings.txt" ]
+}
+
 test_stop_gate_blocks_gitleaks_findings_from_dirty_state() {
   local proof_root input out repo bin_dir
   proof_root="$(fresh_proof_root stop-secret-scan-dirty)"
@@ -7858,6 +7885,8 @@ run_case "stop gate reports automated git checks for committed state" \
   test_stop_gate_reports_automated_git_checks_for_committed_state
 run_case "stop gate reports automated secret scan pass" \
   test_stop_gate_reports_automated_secret_scan_pass
+run_case "stop gate reports automated secret scan pass for unborn repo" \
+  test_stop_gate_reports_automated_secret_scan_pass_for_unborn_repo
 run_case "stop gate blocks gitleaks findings from dirty state" \
   test_stop_gate_blocks_gitleaks_findings_from_dirty_state
 run_case "stop gate blocks gitleaks findings from untracked state" \

@@ -978,6 +978,7 @@ func TestWorkerCompoundPlansRouteByOperator(t *testing.T) {
 		{name: "or", command: "printf left || printf right", decision: DecisionDefer},
 		{name: "semicolon", command: "printf left ; printf right", decision: DecisionAllow},
 		{name: "pipeline", command: "printf left | printf right", decision: DecisionDefer},
+		{name: "bounded read-only pipeline", command: "git diff --binary -- hooks/validate-bash.sh | sha256sum", decision: DecisionDefer},
 		{name: "newline", command: "printf left\nprintf right", decision: DecisionDefer},
 	}
 	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {

@@ -3,6 +3,8 @@
 
 set -euo pipefail
 
+unset ECI_READ_ONLY_PIPELINE
+
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
 . "$HOOK_DIR/lib/codex-tmp.sh"
@@ -447,6 +449,90 @@ validate_active_marker_binding() {
       "resolve marker ownership so exactly one validated marker remains, then retry"
 }
 
+worker_nonliteral_operator_detail() {
+  python3 - "$1" <<'PY'
+import shlex
+import sys
+try:
+    lexer = shlex.shlex(sys.argv[1], posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+segment = 1
+for token in tokens:
+    if token == ";":
+        segment += 1
+        continue
+    # A finite semicolon batch is an explicitly supported worker shape.  All
+    # other shell punctuation is an operator boundary that requires literal
+    # argv calls to be split before submission.
+    if token != ";" and token and all(char in "|&;()<>" for char in token):
+        print("operator/token=%s; segment=%d; path=n/a" % (token, segment))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+# A pure pipe is a bounded read-only candidate only when the active worker
+# envelope contains no other shell operator.  Keep this lexical gate generic;
+# the provider classifier below establishes the capabilities of each segment.
+worker_pure_pipeline_shape() {
+  [ "${plan_role:-coordinator}" = worker ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  case "$1" in
+    *'|'*) ;;
+    *) return 1 ;;
+  esac
+  python3 - "$1" <<'PY'
+import re
+import shlex
+import sys
+
+text = sys.argv[1]
+if not text or len(text) > 16384 or any(mark in text for mark in ("\n", "\r", "\x00")):
+    raise SystemExit(1)
+try:
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+operators = {";", "&", "&&", "||", "(", ")", ">", ">>", ">|", "<", "<<", "<<<", "<&", ">&"}
+if (not tokens or tokens.count("|") not in range(1, 8)
+        or any(token in operators for token in tokens)
+        or len(tokens) > 128 or any(len(token) > 4096 for token in tokens)):
+    raise SystemExit(1)
+parts, current = [], []
+for token in tokens:
+    if token == "|":
+        if not current:
+            raise SystemExit(1)
+        parts.append(current)
+        current = []
+    else:
+        current.append(token)
+if not current:
+    raise SystemExit(1)
+parts.append(current)
+assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+if any(assignment.match(part[0]) or len(part) > 128 for part in parts):
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+deny_worker_nonliteral() {
+  [ "${plan_role:-coordinator}" = worker ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  local detail
+  detail="$(worker_nonliteral_operator_detail "$command" 2>/dev/null || true)"
+  [ -n "$detail" ] || return 1
+  deny_eci "ECI_COMMAND_NONLITERAL_DENIED" "direct-argv" \
+    "ECI worker command envelope denied ${detail}; reason=the callback contains an unsupported shell operator/token and more than one direct argv vector" \
+    "split at the reported operator/token and submit each finite direct argv vector as a separate tool call"
+}
+
 # A coordinator batch made entirely of visible shell-script operands belongs
 # to the manifest-backed script route. Keep this shape check independent of
 # filenames so the generic planner cannot fast-path an unreviewed segment,
@@ -588,7 +674,8 @@ deferred_worker_control_shape() {
     *eci_active*|*goal_state*|*eci_wait*|*eci-required-critics*|*eci-critic-identities*|\
     *eci-acceptance-*|*baseline_head*|*proof.md*|*instructions.md*|*stop_timestamps*|\
     *stop_loop_state*|*disengage.md*|*user-closed.md*|*project-understanding.md*|\
-    *high_level_log*|*eci-teardown-complete*|*eci-baseline-binding*|*eci-commit-admitted*) return 0 ;;
+    *high_level_log*|*latest-status-report*|*eci_user_owned_wait*|\
+    *eci-teardown-complete*|*eci-baseline-binding*|*eci-commit-admitted*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -617,24 +704,33 @@ worker_plain_plan_shape() {
   return 0
 }
 
+worker_fast_path_candidate=false
+worker_read_only_pipeline_candidate=false
+case "$command" in
+  *'|'*)
+    if worker_pure_pipeline_shape "$command"; then
+      worker_read_only_pipeline_candidate=true
+    fi
+    ;;
+esac
 case "$plan_status" in
   0)
-    # Active Go allows still pass the ownership predicates below.  A plain
-    # worker argv has no unrelated legacy route to inspect, so bind its
-    # marker and exit before launching those deferred helpers.
+    # Active worker allows must pass the worker instruction/control ownership
+    # predicate before the fast exit.  Keep the candidate bit so the existing
+    # bounded worker-control route can run without duplicating its classifier.
     if worker_plain_plan_shape "$command"; then
-      validate_active_marker_binding
-      exit 0
+      worker_fast_path_candidate=true
     fi
     # Non-worker allows still pass the ownership predicates below.  The
     # fast-path exit is deliberately after worker instruction/control checks.
     # Cleanup-shaped mutations must also reach the coordinator cleanup route:
     # an allowed planner result cannot bypass destination/path ownership
     # checks (for example, an existing quarantine destination).
-    if [ "$plan_marker_state" != active ] ||
+    if [ "$worker_fast_path_candidate" != true ] &&
+      { [ "$plan_marker_state" != active ] ||
       { [ "$plan_role" != worker ] &&
         ! eci_cleanup_command_shape "$command" &&
-        ! coordinator_script_batch_shape "$command"; }; then
+        ! coordinator_script_batch_shape "$command"; }; }; then
       validate_active_marker_binding
       exit 0
     fi
@@ -646,6 +742,13 @@ case "$plan_status" in
     # finite allows retain the fast exit above.
     ;;
   2)
+    if [ "$worker_read_only_pipeline_candidate" != true ] &&
+      [[ "$plan_output" == *ECI_COMMAND_NOT_ALLOWLISTED* ||
+      "$plan_output" == *ECI_WORKER_COMMAND_NOT_ALLOWLISTED* ]]; then
+      if deny_worker_nonliteral; then
+        :
+      fi
+    fi
     [ -n "$plan_output" ] || deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
       "command-plan classifier returned an empty denial" \
       "retry one finite literal argv and report the missing classifier diagnostic"
@@ -4100,6 +4203,7 @@ def bounded_read_only_args(command, args):
     if any(token in redirections or token in {"(", ")"} for token in args):
         return False
     roots = approved_read_roots()
+    pipeline_stdin = os.environ.get("ECI_READ_ONLY_PIPELINE") == "true"
     if command in {"true", "false", "pwd"}:
         return not args
     if command == "env":
@@ -4113,7 +4217,7 @@ def bounded_read_only_args(command, args):
     if command == "which":
         return bool(args) and all(re.fullmatch(r"[A-Za-z0-9_.+-]+", token) for token in args)
     if command == "ps":
-        if os.environ.get("CODEX_HOOK_IS_SUBAGENT") == "true":
+        if os.environ.get("CODEX_HOOK_IS_SUBAGENT") == "true" and not pipeline_stdin:
             return False
         # Keep process inspection bounded to stable identity/state views.  The
         # compact `pid,cmd` form is sufficient for coordinator helper
@@ -4165,6 +4269,8 @@ def bounded_read_only_args(command, args):
         for token in args
     ):
         return False
+    if pipeline_stdin and command in {"cat", "sha256sum", "uniq"} and not args:
+        return True
     if command in {"echo", "cat", "cmp", "diff", "file", "du", "sha256sum", "tr", "uniq", "basename", "dirname"}:
         return bool(args) and all(approved_read_path(token, roots) for token in args if not token.startswith("-"))
     if command == "ls":
@@ -6663,6 +6769,78 @@ print("token=%s argv_index=%d%s" % (token, index, suffix))
 PY
 }
 
+# Admit only a finite pure read-only pipeline for an active worker.  Ownership
+# and launcher checks remain ahead of this route; each segment is still passed
+# through the existing capability classifier under a pipeline-only stdin
+# context.  This is a capability route, not an executable-name exception.
+worker_read_only_pipeline_route() {
+  [ "${worker_read_only_pipeline_candidate:-false}" = true ] || return 1
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  local pipeline_command="$1" segments segment classification detail
+  local command="$pipeline_command"
+  segments="$(eci_static_pipeline_segments "$pipeline_command" 2>/dev/null)" || return 1
+  [ -n "$segments" ] || return 1
+  while IFS= read -r segment; do
+    [ -n "$segment" ] || return 1
+    eci_finite_literal_argv "$segment" || return 1
+    deferred_worker_wrapper_shape "$segment" && return 1
+    detail="$(dynamic_indirection_detail "$segment" 2>/dev/null || true)"
+    if [ -n "$detail" ]; then
+      deny_eci "ECI_COMMAND_DYNAMIC_INDIRECTION_DENIED" "direct-argv" \
+        "ECI worker pipeline denied dynamic indirection in segment=$(eci_command_identity_subject "$segment"): ${detail}; reason=the reported token hides or changes executable payload identity" \
+        "remove the reported token and submit each finite direct argv segment separately"
+    fi
+    classification="$(ECI_READ_ONLY_PIPELINE=true classify_eci_command "$segment" 2>/dev/null || true)"
+    if command_invokes_subagent_unsafe_launcher "$segment"; then
+      if [ "$classification" != read-only ]; then
+        detail="$(rejected_command_detail "$segment" 2>/dev/null || printf 'segment=<unclassified>')"
+        deny_eci "ECI_WORKER_LAUNCHER_DENIED" "worker-launcher" \
+          "ECI worker boundary denied unsupported launcher in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}; reason=worker pipeline segments must remain direct literal argv" \
+          "remove the wrapper/interpreter and submit the bounded direct argv through the approved worker route"
+      fi
+    fi
+    detail="$(protected_literal_operation_detail "$segment" true 2>/dev/null || true)"
+    case "$detail" in
+      class=broad\ *)
+        deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "broad-destructive" \
+          "ECI worker pipeline denied broad destructive segment=$(eci_command_identity_subject "$segment"): ${detail}" \
+          "narrow the reported target and submit the operation as a separately reviewed direct argv"
+        ;;
+      class=worker-git\ *)
+        deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+          "ECI worker ownership gate denied acceptance-sensitive Git segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership" \
+          "route the reported Git verb through the main/orchestrator coordinator"
+        ;;
+    esac
+    detail="$(command_invokes_git_branch_remote_mutation "$segment" 2>/dev/null || true)"
+    if [ -n "$detail" ]; then
+      deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+        "ECI worker ownership gate denied branch/remote mutation in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership" \
+        "route the reported Git ref or remote mutation through the main/orchestrator coordinator"
+    fi
+    if command_invokes_eci_binary "$segment"; then
+      detail="$(rejected_command_detail "$segment" 2>/dev/null || printf 'segment=<unclassified>')"
+      deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
+        "ECI worker boundary denied coordinator-owned control segment=$(eci_command_identity_subject "$segment"): ${detail}; reason=the canonical eci-active target owns lifecycle/control state" \
+        "route the reported lifecycle/control invocation through the main/orchestrator coordinator"
+    fi
+    command="$segment"
+    detail="$(worker_control_path_detail 2>/dev/null || true)"
+    if [ -n "$detail" ]; then
+      deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
+        "ECI worker boundary denied coordinator-owned control path in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}" \
+        "route the reported ECI control or proof path through the main/orchestrator coordinator"
+    fi
+    if declare -F worker_peer_path_detail >/dev/null 2>&1; then
+      detail="$(worker_peer_path_detail "$segment" 2>/dev/null || true)"
+      [ -z "$detail" ] || return 1
+    fi
+    [ "$classification" = read-only ] || return 1
+  done <<< "$segments"
+  return 0
+}
+
 read_only_fast_safe() {
   # Keep this shell filter intentionally conservative.  The full classifier
   # below remains authoritative; this predicate only decides whether the
@@ -6712,7 +6890,44 @@ if codex_hook_is_subagent_context "$input"; then
 fi
 export CODEX_HOOK_IS_SUBAGENT="$hook_is_subagent"
 
-if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+worker_fast_path_control_guard() {
+  local detail
+  detail="$(worker_control_path_detail 2>/dev/null || true)"
+  [ -n "$detail" ] || return 0
+  if [[ "$detail" == instruction-denied\ * ]]; then
+    detail="${detail#instruction-denied }"
+    deny_eci "ECI_WORKER_INSTRUCTION_READ_DENIED" "worker-instruction-read" \
+      "ECI worker boundary denied a claimed instruction-source read: $detail; reason=the reported instruction operand is not an existing canonical regular file or read-only traversable directory contained by a configured provider instruction root" \
+      "use the reported instruction_root and read an existing regular CODEX.md, AGENTS.md, installed skill resource, or contained skill directory with a read-only traversal command; do not use missing targets, special files, mutations, or symlink escapes"
+  elif [[ "$detail" == read\ * ]]; then
+    detail="${detail#read }"
+    deny_eci "ECI_WORKER_CONTROL_READ_DENIED" "worker-control-read" \
+      "ECI worker boundary denied a coordinator-owned control read: $detail" \
+      "route the reported token through the bounded coordinator inspection route; workers may read only the explicitly allowlisted proof documents"
+  else
+    detail="${detail#write }"
+    deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
+      "ECI worker boundary denied a command path owned by the coordinator: $detail" \
+      "route ECI marker, proof, ledger, or teardown state through the main/orchestrator coordinator; workers may not mutate ECI control files or other coordinator-owned control paths"
+  fi
+}
+
+if [ "$worker_fast_path_candidate" = true ]; then
+  # The planner's plain-worker shape excludes lifecycle, control-path,
+  # wrapper, Git, proof, environment, and operator forms.  Bind the active
+  # marker and rerun the compiled/adapter ownership checks before leaving the
+  # callback.  A status-0 planner result must never hide a mismatched marker.
+  validate_active_marker_binding
+  worker_fast_path_control_guard
+  [ "${#syntax_eci_markers[@]}" -le 1 ] ||
+    deny_eci "ECI_MARKER_OWNERSHIP_AMBIGUOUS" "marker-discovery" \
+      "ECI worker fast path denied multiple active marker owners: path=$CODEX_PROOF_ROOT_CONFIGURED; predicate=duplicate-active-owner; reason=the callback cannot safely select one ECI session marker" \
+      "resolve marker ownership so exactly one validated marker remains, then retry"
+  exit 0
+fi
+
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  [ "$worker_fast_path_candidate" != true ]; then
   worker_project_inspection_route "$command" || true
 fi
 
@@ -6769,9 +6984,7 @@ try:
     tokens = shlex.split(command, posix=True)
 except ValueError:
     raise SystemExit(1)
-if len(tokens) < 2 or any(token in {";", "&", "&&", "|", "||", "(", ")"} for token in tokens):
-    raise SystemExit(1)
-if tokens[1] not in {"on", "off", "status", "wait", "resume", "ledger-append", "manifest-write", "nested-enter", "nested-accept", "nested-exit"}:
+if not tokens or any(token in {";", "&", "&&", "|", "||", "(", ")"} for token in tokens):
     raise SystemExit(1)
 
 provider_bin_aliases = {"eci-review-gate", "eci-stage"}
@@ -8050,7 +8263,12 @@ while tokens and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]):
     name, value = tokens.pop(0).split("=", 1)
     if name in assignments or name not in {"CODEX_SESSION_ID", "KIMI_SESSION_ID", "TMPDIR"}:
         raise SystemExit(1)
-    if name != "TMPDIR" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+    # Preserve an empty provider-session assignment long enough to report the
+    # lifecycle identity mismatch with the expected and observed values.  An
+    # empty identity remains invalid below; rejecting it here loses the
+    # lifecycle-specific diagnostic and falls through to a generic argument
+    # denial.
+    if name != "TMPDIR" and value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
         raise SystemExit(1)
     assignments[name] = value
 if len(tokens) < 2:
@@ -8645,6 +8863,7 @@ esac
 
 read_only=false
 coordinator_inspection_allowed=false
+worker_read_only_pipeline_admitted=false
 if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   if coordinator_readlink_route "$command" || coordinator_compound_inspection_route "$command" || coordinator_inspection_route "$command"; then
     read_only=true
@@ -8715,12 +8934,9 @@ fi
 # operators are not a second command envelope and must identify the exact
 # token instead of falling into an executable-name diagnostic.  Coordinators
 # retain their separately bounded inspection/verification batches.
-if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-  worker_operator_detail="$(command_operator_detail "$command" 2>/dev/null || true)"
-  if [ "$plan_status" -ne 0 ] && [ -n "$worker_operator_detail" ]; then
-    deny_eci "ECI_COMMAND_NONLITERAL_DENIED" "direct-argv" \
-      "ECI worker command envelope denied ${worker_operator_detail}; reason=the callback contains more than one direct argv vector" \
-      "split at the reported operator/token and submit each finite direct argv vector as a separate tool call"
+if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  if [ "$worker_read_only_pipeline_candidate" != true ] && deny_worker_nonliteral; then
+    :
   fi
 fi
 
@@ -9032,7 +9248,10 @@ if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "
   deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the main/orchestrator through the bounded literal route." "route mktemp -d setup through the main/orchestrator using a literal /tmp or canonical TMPDIR template"
 fi
 
-if [ "$hook_is_subagent" = true ] && [ "$ECI_LITERAL_ADMITTED" != true ] && command_invokes_subagent_unsafe_launcher "$command"; then
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  [ "$ECI_LITERAL_ADMITTED" != true ] &&
+  [ "$worker_read_only_pipeline_candidate" != true ] &&
+  command_invokes_subagent_unsafe_launcher "$command"; then
   if command_invokes_subagent_explicit_launcher "$command"; then
     launcher_identity="$(eci_command_identity_subject "$command")"
     launcher_detail="$(rejected_command_detail "$command" 2>/dev/null || printf 'segment=<unclassified>')"
@@ -9099,6 +9318,15 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   deny_eci "ECI_WORKER_COMMAND_NOT_ALLOWLISTED" "worker-command" \
     "ECI worker boundary denied peer coordinator inspection: ${worker_peer_detail}; detail=${worker_detail}; literal command=${worker_subject} is not in the bounded worker grammar while marker=${syntax_eci_markers[0]} is active" \
     "for finite project/state inspection route the exact bounded payload through the main/orchestrator; for implementation, exploration, or test work delegate it to an ECI worker/subagent; otherwise invoke an allowlisted worker literal"
+  fi
+fi
+
+if [ "$worker_read_only_pipeline_candidate" = true ]; then
+  if worker_read_only_pipeline_route "$command"; then
+    worker_read_only_pipeline_admitted=true
+    read_only=true
+  else
+    deny_worker_nonliteral || true
   fi
 fi
 

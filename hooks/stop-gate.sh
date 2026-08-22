@@ -1212,7 +1212,12 @@ run_secret_scan() {
   if [ "$worktree_dirty" = "true" ]; then
     tmp_index=$(mktemp "$proof_dir/gitleaks-index.XXXXXX")
     rm -f "$tmp_index"
-    if GIT_INDEX_FILE="$tmp_index" git -C "$repo" read-tree HEAD >/dev/null 2>&1; then
+    if git -C "$repo" rev-parse --verify HEAD >/dev/null 2>&1; then
+      GIT_INDEX_FILE="$tmp_index" git -C "$repo" read-tree HEAD >/dev/null 2>&1
+    else
+      GIT_INDEX_FILE="$tmp_index" git -C "$repo" read-tree --empty >/dev/null 2>&1
+    fi
+    if [ "$?" -eq 0 ]; then
       GIT_INDEX_FILE="$tmp_index" git -C "$repo" add -N -- . >/dev/null 2>&1 || true
       scan_rc=0
       GIT_INDEX_FILE="$tmp_index" run_gitleaks_command "$worktree_report" \

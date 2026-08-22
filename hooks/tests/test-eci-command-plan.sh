@@ -6,7 +6,16 @@ CODEX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KIMI_ROOT="${KIMI_CODE_HOME:-${HOME:?}/.kimi-code}"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-command-plan.XXXXXX")"
 HELPER_HARDLINK="$CODEX_ROOT/hooks/lib/.eci-command-plan-test-helper-$BASHPID"
-trap 'rm -f -- "$HELPER_HARDLINK"; rm -rf -- "$TMP_ROOT"' EXIT
+CODEX_WORKER_SESSION_ID="11111111-1111-4111-8111-111111111111"
+CODEX_WORKER_TRANSCRIPT=""
+cleanup_command_plan_test() {
+  rm -f -- "$HELPER_HARDLINK"
+  if [ -n "$CODEX_WORKER_TRANSCRIPT" ]; then
+    rm -f -- "$CODEX_WORKER_TRANSCRIPT"
+  fi
+  rm -rf -- "$TMP_ROOT"
+}
+trap cleanup_command_plan_test EXIT
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
 mkdir -p "$XDG_CONFIG_HOME/eci"
@@ -27,12 +36,23 @@ make_marker() {
 
 run_hook() {
   local provider="$1" role="$2" active="$3" command="$4" output="$5"
-  local root hook proof_root session_id cwd kimi_home now_ms wire
+  local root hook proof_root session_id cwd kimi_home now_ms wire transcript
   kimi_home="$KIMI_ROOT"
+  transcript=""
   case "$provider" in
     codex)
       root="$CODEX_ROOT"
       session_id="codex-$role-$active"
+      if [ "$role" = worker ]; then
+        session_id="$CODEX_WORKER_SESSION_ID"
+        if [ -z "$CODEX_WORKER_TRANSCRIPT" ]; then
+          CODEX_WORKER_TRANSCRIPT="$(mktemp "$CODEX_ROOT/sessions/eci-command-plan-test-worker-$BASHPID.XXXXXX.jsonl")"
+          printf '%s\n' \
+            '{"timestamp":"2026-08-21T00:00:00.000Z","type":"session_meta","payload":{"id":"11111111-1111-4111-8111-111111111111","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' \
+            >"$CODEX_WORKER_TRANSCRIPT"
+        fi
+        transcript="$CODEX_WORKER_TRANSCRIPT"
+      fi
       ;;
     kimi)
       root="$KIMI_ROOT"
@@ -57,8 +77,14 @@ run_hook() {
   if [ "$active" = active ]; then
     make_marker "$proof_root" "$session_id" "$cwd"
   fi
-  jq -cn --arg session_id "$session_id" --arg cwd "$cwd" --arg command "$command" \
-    '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}' |
+  if [ -n "$transcript" ]; then
+    jq -cn --arg session_id "$session_id" --arg cwd "$cwd" \
+      --arg transcript "$transcript" --arg command "$command" \
+      '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}'
+  else
+    jq -cn --arg session_id "$session_id" --arg cwd "$cwd" --arg command "$command" \
+      '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}'
+  fi |
     HOME="$HOME" CODEX_HOME="$CODEX_ROOT" KIMI_CODE_HOME="$kimi_home" \
       CODEX_PROOF_ROOT="$proof_root" KIMI_PROOF_ROOT="$proof_root" \
       CODEX_HOOK_IS_SUBAGENT="$([ "$role" = worker ] && printf true || printf false)" \
@@ -93,6 +119,25 @@ assert_denied() {
   ' "$output" >/dev/null || {
     printf 'expected %s denial: provider=%s role=%s active=%s command=%q\n' \
       "$code" "$provider" "$role" "$active" "$command" >&2
+    cat "$output" >&2
+    return 1
+  }
+}
+
+assert_worker_compound_denied() {
+  local provider="$1" role="$2" active="$3" command="$4" output
+  output="$TMP_ROOT/output.json"
+  run_hook "$provider" "$role" "$active" "$command" "$output"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COMMAND_NONLITERAL_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=direct-argv")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operator/token=&&")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("rejected command=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: split at the reported operator/token"))
+  ' "$output" >/dev/null || {
+    printf 'expected worker compound nonliteral denial: provider=%s role=%s active=%s command=%q\n' \
+      "$provider" "$role" "$active" "$command" >&2
     cat "$output" >&2
     return 1
   }
@@ -140,18 +185,39 @@ assert_lifecycle_identity_denied() {
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_LIFECYCLE_IDENTITY_DENIED]")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("segment=1")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains(("argv_index=" + $argv_index))) and
-    (.hookSpecificOutput.permissionDecisionReason | contains(("byte_offset=" + $byte_offset))) and
-    (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $token))) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("path=n/a")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains(("predicate=" + $predicate))) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("provider=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("role=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("marker=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("rejected command=")) and
     (.hookSpecificOutput.permissionDecisionReason | contains($expected_fragment)) and
     (.hookSpecificOutput.permissionDecisionReason | contains($observed_fragment)) and
     (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: env "))
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null || {
     printf 'expected lifecycle identity denial: provider=%s command=%q\n' \
+      "$provider" "$command" >&2
+    cat "$output" >&2
+    return 1
+  }
+}
+
+assert_lifecycle_route_identity_denied() {
+  local provider="$1" command="$2" expected_fragment="$3" observed_fragment="$4" output
+  output="$TMP_ROOT/output.json"
+  run_hook "$provider" coordinator active "$command" "$output"
+  jq -e \
+    --arg expected_fragment "$expected_fragment" \
+    --arg observed_fragment "$observed_fragment" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_LIFECYCLE_IDENTITY_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=eci-lifecycle")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains($expected_fragment)) and
+    (.hookSpecificOutput.permissionDecisionReason | contains($observed_fragment)) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("ECI_PLAN_LIFECYCLE_IDENTITY_DENIED") | not)
+  ' "$output" >/dev/null || {
+    printf 'expected lifecycle-route identity denial: provider=%s command=%q\n' \
       "$provider" "$command" >&2
     cat "$output" >&2
     return 1
@@ -231,34 +297,50 @@ run_lifecycle_identity_matrix() {
       assert_allowed "$provider" coordinator active \
         "env -- $identity_name=$session_id $target status"
 
-      assert_lifecycle_identity_denied "$provider" \
-        "env $wrong_name=$session_id $target status" "$wrong_name=$session_id" 1 4 \
-        lifecycle-provider-identity "expected_name=$identity_name" "observed_name=$wrong_name"
-      assert_lifecycle_identity_denied "$provider" \
-        "env -- $wrong_name=$session_id $target status" "$wrong_name=$session_id" 2 7 \
-        lifecycle-provider-identity "expected_name=$identity_name" "observed_name=$wrong_name"
+      if [ "$provider" = codex ]; then
+        assert_lifecycle_route_identity_denied "$provider" \
+          "env $wrong_name=$session_id $target status" \
+          "expected_name=$identity_name" "observed_name=$wrong_name"
+        assert_lifecycle_route_identity_denied "$provider" \
+          "env -- $wrong_name=$session_id $target status" \
+          "expected_name=$identity_name" "observed_name=$wrong_name"
+      else
+        assert_lifecycle_identity_denied "$provider" \
+          "env $wrong_name=$session_id $target status" "$wrong_name=$session_id" 1 4 \
+          lifecycle-provider-identity "expected_name=$identity_name" "observed_name=$wrong_name"
+        assert_lifecycle_identity_denied "$provider" \
+          "env -- $wrong_name=$session_id $target status" "$wrong_name=$session_id" 2 7 \
+          lifecycle-provider-identity "expected_name=$identity_name" "observed_name=$wrong_name"
+      fi
       assert_allowed "$provider" coordinator active "$fixed"
 
-      assert_lifecycle_identity_denied "$provider" \
-        "env $identity_name=wrong-session $target status" "$identity_name=wrong-session" 1 4 \
-        lifecycle-session-identity "expected_value=$session_id" "observed_value=wrong-session"
-      assert_lifecycle_identity_denied "$provider" \
-        "env -- $identity_name=wrong-session $target status" "$identity_name=wrong-session" 2 7 \
-        lifecycle-session-identity "expected_value=$session_id" "observed_value=wrong-session"
-      assert_lifecycle_identity_denied "$provider" \
-        "env $identity_name= $target status" "$identity_name=" 1 4 \
-        lifecycle-session-identity "expected_value=$session_id" "observed_value=<empty>"
-      assert_lifecycle_identity_denied "$provider" \
-        "env -- $identity_name= $target status" "$identity_name=" 2 7 \
-        lifecycle-session-identity "expected_value=$session_id" "observed_value=<empty>"
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env $identity_name=wrong-session $target status" \
+        "expected=$identity_name=$session_id" "observed=$identity_name=wrong-session"
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env -- $identity_name=wrong-session $target status" \
+        "expected=$identity_name=$session_id" "observed=$identity_name=wrong-session"
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env $identity_name= $target status" \
+        "expected=$identity_name=$session_id" "observed=$identity_name="
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env -- $identity_name= $target status" \
+        "expected=$identity_name=$session_id" "observed=$identity_name="
       assert_allowed "$provider" coordinator active "$fixed"
 
-      assert_lifecycle_identity_denied "$provider" \
-        "env $target status" "$target" 1 4 \
-        lifecycle-identity-missing "expected_name=$identity_name" 'observed_name=<none>'
-      assert_lifecycle_identity_denied "$provider" \
-        "env -- $target status" "$target" 2 7 \
-        lifecycle-identity-missing "expected_name=$identity_name" 'observed_name=<none>'
+      if [ "$provider" = codex ]; then
+        assert_lifecycle_route_identity_denied "$provider" \
+          "env $target status" "expected_name=$identity_name" 'observed_name=<none>'
+        assert_lifecycle_route_identity_denied "$provider" \
+          "env -- $target status" "expected_name=$identity_name" 'observed_name=<none>'
+      else
+        assert_lifecycle_identity_denied "$provider" \
+          "env $target status" "$target" 1 4 \
+          lifecycle-identity-missing "expected_name=$identity_name" 'observed_name=<none>'
+        assert_lifecycle_identity_denied "$provider" \
+          "env -- $target status" "$target" 2 7 \
+          lifecycle-identity-missing "expected_name=$identity_name" 'observed_name=<none>'
+      fi
       assert_allowed "$provider" coordinator active "$fixed"
 
       assert_lifecycle_arguments_denied "$provider" "$target unknown-verb"
@@ -310,8 +392,13 @@ for provider in codex kimi; do
       assert_allowed "$provider" "$role" "$active" 'adb devices -l'
       assert_allowed "$provider" "$role" "$active" 'printf "quoted && | ;"'
       assert_allowed "$provider" "$role" "$active" 'printf ""'
-      assert_allowed "$provider" "$role" "$active" \
-        'printf one && printf two || printf three; printf four | sha256sum'
+      if [ "$role" = worker ] && [ "$active" = active ]; then
+        assert_worker_compound_denied "$provider" "$role" "$active" \
+          'printf one && printf two || printf three; printf four | sha256sum'
+      else
+        assert_allowed "$provider" "$role" "$active" \
+          'printf one && printf two || printf three; printf four | sha256sum'
+      fi
       assert_allowed "$provider" "$role" "$active" \
         'printf 1; printf 2; printf 3; printf 4; printf 5; printf 6; printf 7; printf 8'
       assert_denied "$provider" "$role" "$active" 'env | sort' \
@@ -319,7 +406,12 @@ for provider in codex kimi; do
       assert_denied "$provider" "$role" "$active" 'env -S "novel-finite-tool"' \
         ECI_ENVIRONMENT_OPTION_DENIED
       assert_allowed "$provider" "$role" "$active" 'printf escaped\;operator'
-      assert_allowed "$provider" "$role" "$active" $'printf first\nprintf second'
+      if [ "$role" = worker ] && [ "$active" = active ]; then
+        assert_denied "$provider" "$role" "$active" \
+          $'printf first\nprintf second' ECI_COMMAND_SYNTAX_DENIED
+      else
+        assert_allowed "$provider" "$role" "$active" $'printf first\nprintf second'
+      fi
       if [ "$active" = active ]; then
         assert_plan_denied "$provider" "$role" "$active" 'printf "$(date)"' \
           ECI_PLAN_SYNTAX_DENIED
@@ -342,7 +434,7 @@ for provider in codex kimi; do
           'node -e "console.log(1)"' ECI_PLAN_DYNAMIC_LAUNCH_DENIED
         assert_plan_denied "$provider" "$role" "$active" \
           'command command command command command command command command command novel-finite-tool' \
-          ECI_PLAN_WRAPPER_DEPTH_DENIED
+          ECI_PLAN_WRAPPER_DENIED
         assert_plan_denied "$provider" "$role" "$active" \
           'command' ECI_PLAN_WRAPPER_DENIED
       else
@@ -388,7 +480,7 @@ for provider in codex kimi; do
     "cat $CODEX_ROOT/hooks/lib/eci-environment-command.sh"
   assert_allowed "$provider" worker active \
     "git diff --binary -- hooks/validate-bash.sh | sha256sum"
-  assert_allowed "$provider" worker active \
+  assert_worker_compound_denied "$provider" worker active \
     "git rev-parse HEAD && git -C $CODEX_ROOT rev-parse HEAD && git status --short --untracked-files=all"
   assert_allowed "$provider" worker active \
     "ps -eo pid,ppid,etimes,stat,args | rg validate-bash"
@@ -407,7 +499,7 @@ for provider in codex kimi; do
   if [ "$provider" = kimi ]; then
     session_id="session_11111111-1111-4111-8111-111111111111"
   else
-    session_id="codex-worker-active"
+    session_id="$CODEX_WORKER_SESSION_ID"
   fi
   session_root="$proof_root/$session_id"
   printf '%s\n' pending >"$session_root/goal_state"
@@ -417,8 +509,8 @@ for provider in codex kimi; do
   ln -- "$CODEX_ROOT/hooks/lib/eci-environment-command.sh" "$HELPER_HARDLINK"
   assert_plan_denied "$provider" worker active \
     "cat $session_root/goal_state" ECI_PLAN_LIVE_CONTROL_DENIED
-  assert_plan_denied "$provider" worker active \
-    "cat $TMP_ROOT/$provider-live-symlink" ECI_PLAN_LIVE_CONTROL_DENIED
+  assert_denied "$provider" worker active \
+    "cat $TMP_ROOT/$provider-live-symlink" ECI_WORKER_CONTROL_READ_DENIED
   assert_plan_denied "$provider" worker active \
     "cat $TMP_ROOT/$provider-live-hardlink" ECI_PLAN_LIVE_CONTROL_DENIED
   assert_allowed "$provider" worker active \
