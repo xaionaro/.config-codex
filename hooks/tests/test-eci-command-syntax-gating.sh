@@ -207,7 +207,7 @@ assert_active_allows_bounded_read_only() {
 }
 
 assert_active_cleanup_route() {
-  local hook="$1" output="$TMP_ROOT/cleanup-route.out"
+  local hook="$1" output="$TMP_ROOT/cleanup-route.out" multiline_cleanup_command
   cleanup_home="$TMP_ROOT/cleanup-home"
   cleanup_codex="$cleanup_home/.codex"
   cleanup_kimi="$cleanup_home/.kimi-code"
@@ -245,14 +245,15 @@ assert_active_cleanup_route() {
     }
   }
   cleanup_deny() {
-    local command="$1"
+    local command="$1" expected_detail="${2:-}"
     run_cleanup_hook "$hook" "$command" "$output"
-    jq -e '
+    jq -e --arg expected_detail "$expected_detail" '
       .hookSpecificOutput.permissionDecision == "deny" and
       (.hookSpecificOutput.permissionDecisionReason | contains("ECI_COMMAND_NOT_ALLOWLISTED")) and
       (.hookSpecificOutput.permissionDecisionReason | contains("coordinator-cleanup-route")) and
       (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
-      (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+      (.hookSpecificOutput.permissionDecisionReason | contains("remediation:")) and
+      ($expected_detail == "" or (.hookSpecificOutput.permissionDecisionReason | contains($expected_detail)))
     ' "$output" >/dev/null || {
       printf 'unsafe cleanup command was not specifically denied: %s\n' "$command" >&2
       cat -- "$output" >&2
@@ -268,7 +269,7 @@ assert_active_cleanup_route() {
   rm -rf -- "$cleanup_quarantine"
   cleanup_allow "mv -- $cleanup_codex/migrations-effort.json $cleanup_quarantine"
   printf '%s\n' existing >"$cleanup_quarantine"
-  cleanup_deny "mv -- $cleanup_codex/migrations-effort.json $cleanup_quarantine"
+  cleanup_deny "mv -- $cleanup_codex/migrations-effort.json $cleanup_quarantine" "destination must not already exist"
   rm -f -- "$cleanup_quarantine"
   cleanup_deny "mv -- $cleanup_codex/migrations-effort.json $cleanup_real_tmpdir/not-eci-cleanup"
   cleanup_deny "mv -- $cleanup_codex/other-generated-file $cleanup_real_tmpdir/eci-generated-cleanup-unknown"
@@ -285,8 +286,24 @@ assert_active_cleanup_route() {
   cleanup_deny "rm -f -- $cleanup_home/outside-generated-file"
   cleanup_deny "rm -f -- $cleanup_codex/../outside-generated-file"
   cleanup_deny "rm -f -- \"$cleanup_codex/config-new.toml\""
-  run_cleanup_hook "$hook" $'rm -f -- '\"$cleanup_codex/config-new.toml\"$'\ntrue' "$output"
-  jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("ECI_COMMAND_SYNTAX_DENIED"))' "$output" >/dev/null
+  printf -v multiline_cleanup_command 'rm -f -- "%s"\ntrue' "$cleanup_codex/config-new.toml"
+  run_cleanup_hook "$hook" "$multiline_cleanup_command" "$output"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("ECI_COMMAND_SYNTAX_DENIED")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=acceptance-boundary")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null
+  # Pair the active syntax denial with inactive passthrough so the cleanup
+  # exception cannot become a global multiline-syntax ban.
+  mv -- "$cleanup_proof/cleanup-syntax/eci_active" "$cleanup_proof/cleanup-syntax/eci_active.inactive"
+  run_cleanup_hook "$hook" "$multiline_cleanup_command" "$output"
+  [ ! -s "$output" ] || {
+    printf 'inactive multiline cleanup was ECI-blocked by %s:\n' "$hook" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+  mv -- "$cleanup_proof/cleanup-syntax/eci_active.inactive" "$cleanup_proof/cleanup-syntax/eci_active"
   printf '%s\n' outside >"$cleanup_home/outside-generated-file"
   cleanup_deny "rm -f -- $cleanup_codex/workspace-trust"
   rm -rf -- "$cleanup_codex/workspace-trust"

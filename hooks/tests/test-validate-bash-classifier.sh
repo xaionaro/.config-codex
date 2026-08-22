@@ -171,14 +171,14 @@ run_role_hook() {
 
 assert_role_environment_denied() {
   local role="$1" command="$2" code="$3" token="$4" argv_index="$5"
-  local forbidden_value="${6:-}" reason_fragment="${7:-}" output
+  local forbidden_value="${6:-}" reason_fragment="${7:-}" expected_segment="${8:-1}" output
   output="$(run_role_hook "$role" "$command")"
-  jq -e --arg code "[$code]" --arg token "$token" --arg argv_index "$argv_index" '
+  jq -e --arg code "[$code]" --arg token "$token" --arg argv_index "$argv_index" --arg expected_segment "$expected_segment" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains($code)) and
     (.hookSpecificOutput.permissionDecisionReason | contains("phase=PreToolUse")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("operation=environment-boundary")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("segment=1")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains(("segment=" + $expected_segment))) and
     (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $token))) and
     (.hookSpecificOutput.permissionDecisionReason | contains(("argv_index=" + $argv_index))) and
     (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
@@ -215,6 +215,19 @@ assert_denied() {
   output="$(run_hook "$command")"
   jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null || {
     printf 'assert_denied failed: command=%q output=%s\n' "$command" "$output" >&2
+    [ ! -e "$output" ] || cat -- "$output" >&2
+    return 1
+  }
+}
+
+assert_script_batch_denied_by_manifest() {
+  local command="$1" output
+  output="$(run_hook "$command")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("reviewed digest manifest"))
+  ' "$output" >/dev/null || {
+    printf 'assert_script_batch_denied_by_manifest failed: command=%q output=%s\n' "$command" "$output" >&2
     [ ! -e "$output" ] || cat -- "$output" >&2
     return 1
   }
@@ -260,7 +273,13 @@ missing_instructions="$proof_root/t00-session/instructions.md"
 missing_output="$(run_hook "cat $missing_instructions")"
 [ ! -s "$missing_output" ]
 worker_missing_output="$(run_subagent_hook "find -P $proof_root/t00-session/missing -maxdepth 1 -print")"
-[ ! -s "$worker_missing_output" ]
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_INSTRUCTION_READ_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("failure=missing-instruction-source")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-instruction-read")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+' "$worker_missing_output" >/dev/null
 
 assert_source_write_denied() {
   local command="$1" output
@@ -274,6 +293,24 @@ assert_source_write_denied() {
     (.hookSpecificOutput.permissionDecisionReason | contains("predicate=coordinator-source-write")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null
+}
+
+assert_ledger_append_only_denied() {
+  local command="$1" path="$2" output
+  output="$(run_hook "$command")"
+  jq -e --arg path "$path" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_LEDGER_APPEND_ONLY]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=ledger-append-only")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $path))) and
+    (.hookSpecificOutput.permissionDecisionReason | contains(("path=" + $path))) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=append-only-ledger")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: use eci-active ledger-append"))
+  ' "$output" >/dev/null || {
+    printf 'assert_ledger_append_only_denied failed: command=%q path=%q output=%s\n' "$command" "$path" "$output" >&2
+    [ ! -e "$output" ] || cat -- "$output" >&2
+    return 1
+  }
 }
 
 assert_lifecycle_denied() {
@@ -455,7 +492,13 @@ assert_source_write_denied "chmod 755 hooks/validate-bash.sh"
 assert_source_write_denied "chmod 644 hooks/pre-commit-go-mod.sh"
 assert_source_write_denied "chmod 644 hooks/validate-bash.sh"
 chmod_worker_output="$(run_subagent_hook "chmod 755 hooks/pre-commit-go-mod.sh")"
-[ ! -s "$chmod_worker_output" ]
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_CONTROL_OWNER_REQUIRED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=hooks/pre-commit-go-mod.sh")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+' "$chmod_worker_output" >/dev/null
 pager_output="$(run_hook_with_transcript_pager "git -C $ROOT status --short")"
 [ ! -s "$pager_output" ]
 if [[ "$kimi_root" = /* ]] && [ -d "$kimi_root" ] && [ ! -L "$kimi_root" ] &&
@@ -478,7 +521,14 @@ if [[ "$kimi_root" = /* ]] && [ -d "$kimi_root" ] && [ ! -L "$kimi_root" ] &&
   assert_allowed "bash hooks/install-pre-commit-go-mod.sh"
   assert_allowed "bash $kimi_root/hooks/install-pre-commit-go-mod.sh"
   assert_allowed "bash hooks/install-pre-commit-go-mod.sh --repair-hardlink $kimi_root"
-  assert_denied "bash hooks/install-pre-commit-go-mod.sh --repair-hardlink $ROOT"
+  self_repair_output="$(run_hook "bash hooks/install-pre-commit-go-mod.sh --repair-hardlink $ROOT")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COORDINATOR_ROUTE_ARGUMENTS_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=coordinator-hardlink-repair")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=coordinator-hardlink-repair")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$self_repair_output" >/dev/null
 fi
 assert_allowed "ls -ld $ROOT/sessions"
 assert_allowed "find /tmp -maxdepth 1 -type d -name 'codex-eci-edit-controls.*' -print"
@@ -493,14 +543,14 @@ assert_unknown 'mktemp -d /tmp/codex-eci-probe-$(date).XXXXXX'
 worker_mktemp_output="$(run_subagent_hook "mktemp -d /tmp/codex-eci-probe.XXXXXX")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_COORDINATOR_ROUTE_DENIED]") and contains("phase=PreToolUse") and contains("operation=coordinator-route") and contains("subject=command=wrapper=literal") and contains("rejected command=wrapper=literal") and contains("payload=mktemp -d /tmp/codex-eci-probe.XXXXXX") and contains("coordinator-only temporary-directory setup") and contains("reason:") and contains("remediation:"))
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_COORDINATOR_ROUTE_DENIED]") and contains("phase=PreToolUse") and contains("operation=coordinator-route") and contains("subject=provider=codex,role=worker,marker=active,command=wrapper=literal") and contains("rejected command=wrapper=literal") and contains("payload=mktemp -d /tmp/codex-eci-probe.XXXXXX") and contains("coordinator-only temporary-directory setup") and contains("reason:") and contains("remediation:"))
 ' "$worker_mktemp_output" >/dev/null
 glob_output="$(run_hook "ls -la /tmp/*")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and
-  (.hookSpecificOutput.permissionDecisionReason | contains("token=*")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("predicate=shell-expansion")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
 ' "$glob_output" >/dev/null
@@ -553,6 +603,14 @@ for coordinator_finite_argv in \
   "realpath -e $evidence_file && rm -f $TMP_ROOT/denied"; do
   assert_allowed "$coordinator_finite_argv"
 done
+compound_broad_output="$(run_hook "realpath -e $evidence_file && rm -rf /")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_BROAD_DESTRUCTIVE_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=broad-destructive")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+' "$compound_broad_output" >/dev/null
 assert_denied "cat $evidence_dir/outside-link"
 worker_kimi_find_output="$(run_subagent_hook "find $kimi_find_a $kimi_find_b -maxdepth 2 -type f -print | head -n 40")"
 jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$worker_kimi_find_output" >/dev/null
@@ -578,7 +636,8 @@ jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_GIT_EXECUTION_CONTEXT_DENIED]")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-execution-context")) and
-  (.hookSpecificOutput.permissionDecisionReason | contains("token=-c argv_index=3")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=-c")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("argv_index=3")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("bounded coordinator Git route"))
 ' "$git_context_output" >/dev/null
 git_environment_output="$(run_hook "GIT_DIR=$TMP_ROOT git -C $ROOT status --short")"
@@ -601,11 +660,24 @@ ls_output="$(run_hook_with_transcript "ls -la $ROOT")"
 assert_commit() {
   local command="$1" output
   output="$(run_hook "$command")"
-  jq -e '
-    .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("ECI commit boundary denied")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("unrecognized command form") | not)
-  ' "$output" >/dev/null
+  case "$command" in
+    "git commit -c prior-message")
+      jq -e '
+        .hookSpecificOutput.permissionDecision == "deny" and
+        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_GIT_EXECUTION_CONTEXT_DENIED]")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-execution-context")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("remediation:")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("unrecognized command form") | not)
+      ' "$output" >/dev/null
+      ;;
+    *)
+      jq -e '
+        .hookSpecificOutput.permissionDecision == "deny" and
+        (.hookSpecificOutput.permissionDecisionReason | contains("ECI commit boundary denied")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("unrecognized command form") | not)
+      ' "$output" >/dev/null
+      ;;
+  esac
 }
 
 # Active-ECI preparation is a coordinator-only bounded route.  It admits
@@ -632,8 +704,17 @@ for worker_prep in \
   "git rm -- hooks/validate-bash.sh" \
   "git mv -- hooks/validate-bash.sh hooks/validate-bash.sh" \
   "git restore --staged -- hooks/validate-bash.sh"; do
+  worker_git_token="${worker_prep#git }"
+  worker_git_token="${worker_git_token%% *}"
   worker_output="$(run_subagent_hook "$worker_prep")"
-  jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("acceptance-sensitive Git mutation"))' "$worker_output" >/dev/null
+  jq --arg token "token=$worker_git_token" -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains($token)) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=worker-git-ownership")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$worker_output" >/dev/null
 done
 
 assert_denied() {
@@ -784,10 +865,14 @@ for launcher in \
   output="$(run_subagent_hook "$launcher")"
   jq -e '
     .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_CONTROL_OWNER_REQUIRED]")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=worker-lifecycle-control")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("token=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_CONTROL_SCRIPT_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control-script")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("subject=provider=codex")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("role=worker")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("marker=active")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("canonical_target=/home/pheona/.codex/hooks/stop-gate.sh")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("invocation=shell-script")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("argv=[]")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null
 done
@@ -854,7 +939,14 @@ for launcher in \
   "$copied_eci off $TMP_ROOT/disengage.md" \
   "$copied_eci wait $TMP_ROOT/eci_user_owned_wait.md"; do
   output="$(run_subagent_hook "$launcher")"
-  [ ! -s "$output" ]
+  jq -e --arg canonical_target "$subagent_codex_home/bin/eci-active" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_CONTROL_OWNER_REQUIRED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=worker-lifecycle-control")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains(("canonical_target=" + $canonical_target))) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null
 done
 output="$(run_subagent_hook "$copied_worker")"
 [ ! -s "$output" ]
@@ -888,7 +980,7 @@ done
 # The reserved eci-stage lifecycle target remains coordinator-owned when its
 # visible argv selects lifecycle verbs.
 renamed_eci="$subagent_codex_home/bin/eci-stage"
-cp -- "$ROOT/bin/eci-active" "$renamed_eci"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$renamed_eci"
 chmod +x "$renamed_eci"
 for launcher in \
   "eci-stage ledger-append one-line-entry" \
@@ -1102,6 +1194,12 @@ assert_subagent_control_denied "printf forged > $proof_root/t00-session/eci_wait
 tilde_home="$TMP_ROOT/tilde-home"
 tilde_root="$tilde_home/.cache/codex-proof"
 mkdir -p "$tilde_root/t00-session"
+printf '%s\n' \
+  'scope: tilde-path mutation probe' \
+  "cwd: $ROOT" \
+  'session_id: t00-session' \
+  'created_utc: 2026-08-15T00:00:00Z' \
+  >"$tilde_root/t00-session/eci_active"
 output="$(run_subagent_hook_at_root "rm -f ~/.cache/codex-proof/t00-session/eci_active" "$tilde_root" "$tilde_home")"
 jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and (.hookSpecificOutput.permissionDecisionReason | contains("predicate=shell-expansion"))' "$output" >/dev/null
 
@@ -1117,7 +1215,7 @@ output="$(run_subagent_hook_at_root "rm -f ~/.cache/codex-proof/t00-session/eci_
 jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and (.hookSpecificOutput.permissionDecisionReason | contains("predicate=shell-expansion"))' "$output" >/dev/null
 ordinary_worker_file="$TMP_ROOT/ordinary-worker-file"
 output="$(run_subagent_hook "printf ordinary > $ordinary_worker_file")"
-jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and (.hookSpecificOutput.permissionDecisionReason | contains("token=>")) and (.hookSpecificOutput.permissionDecisionReason | contains("predicate=redirection"))' "$output" >/dev/null
+jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and (.hookSpecificOutput.permissionDecisionReason | contains("token=")) and (.hookSpecificOutput.permissionDecisionReason | contains("predicate=redirection"))' "$output" >/dev/null
 
 # Branch/remote mutators are unknown under ECI; safe inspection forms remain
 # read-only.
@@ -1167,6 +1265,20 @@ for command in \
   archive_worker_output="$(run_subagent_hook "$command")"
   [ ! -s "$archive_worker_output" ]
 done
+archive_control_output="$(run_subagent_hook "git archive --output=$proof_root/t00-session/eci_active HEAD")"
+jq -e --arg target "$proof_root/t00-session/eci_active" '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains($target)) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("remediation:")) and
+  (
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_CONTROL_OWNER_REQUIRED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control"))
+    or
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_LIVE_CONTROL_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=worker-live-control"))
+  )
+' "$archive_control_output" >/dev/null
 
 # Explorers may inspect project, skill, Git, and bounded proof metadata without
 # being mistaken for worker launchers.  These are literal read-only forms;
@@ -1268,7 +1380,13 @@ for command in \
   }
 done
 worker_git_chain_output="$(run_subagent_hook 'git status --short && git submodule status && git diff --stat')"
-[ ! -s "$worker_git_chain_output" ]
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COMMAND_NONLITERAL_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=direct-argv")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operator/token=&&")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+' "$worker_git_chain_output" >/dev/null
 for environment_role in coordinator worker; do
   for environment_command in \
     "printenv PATH" \
@@ -1298,7 +1416,7 @@ for environment_role in coordinator worker; do
   assert_role_environment_denied "$environment_role" "env -u" ECI_ENVIRONMENT_OPTION_DENIED -u 1 "" "missing its required argument"
   assert_role_environment_denied "$environment_role" "env --unknown novel-tool" ECI_ENVIRONMENT_OPTION_DENIED --unknown 1 "" unsupported
   assert_role_environment_denied "$environment_role" "env --unset= novel-tool" ECI_ENVIRONMENT_OPTION_DENIED --unset= 1 "" "not a valid identifier"
-  assert_role_environment_denied "$environment_role" "printenv PATH | env" ECI_ENVIRONMENT_ENUMERATION_DENIED env 0
+  assert_role_environment_denied "$environment_role" "printenv PATH | env" ECI_ENVIRONMENT_ENUMERATION_DENIED env 0 "" "" 2
   assert_role_environment_denied "$environment_role" \
     "env BASH_ENV=eci-private-bash-value bash script.sh" \
     ECI_ENVIRONMENT_CONTEXT_DENIED BASH_ENV 1 eci-private-bash-value
@@ -1326,8 +1444,9 @@ transcriptless_outside_output="$(run_hook "cat /etc/passwd")"
 # Read-only batches may contain only finite semicolon/pipeline segments.  The
 # active coordinator path admits these segments, while ambiguous operators and
 # wrappers remain compiler-diagnostic denials.
+reviewed_script_batch="bash hooks/tests/test-eci-fast-path.sh && bash hooks/tests/test-eci-post-compact-refresh.sh"
+assert_allowed "$reviewed_script_batch"
 for batch in \
-  "bash hooks/tests/test-eci-fast-path.sh && bash hooks/tests/test-eci-post-compact-refresh.sh" \
   "bash hooks/tests/test-eci-fast-path.sh && bash -n hooks/stop-gate.sh" \
   "git status --short || true" \
   "git status --short --branch && git diff --stat" \
@@ -1343,13 +1462,19 @@ for batch in \
   "git -C $ROOT diff --check" \
   "git -C $ROOT submodule status" \
   "bash hooks/tests/test-eci-fast-path.sh && rm -f $TMP_ROOT/denied" \
-  "bash hooks/tests/test-eci-fast-path.sh && bash hooks/tests/test-not-allowlisted.sh" \
   "git status --short || rm -f $TMP_ROOT/denied" \
   "ls -la $ROOT || wc -l $ROOT/CODEX.md"; do
   assert_allowed "$batch"
 done
+# test-eci-command-plan.sh is an existing .sh entrypoint absent from the
+# canonical reviewed digest manifest; pairing it with a reviewed script must
+# not make the batch eligible, even though the active Go planner allows both
+# ordinary script operands.
+unreviewed_script_batch="bash hooks/tests/test-eci-fast-path.sh && bash hooks/tests/test-eci-command-plan.sh"
+assert_script_batch_denied_by_manifest "$unreviewed_script_batch"
 for batch in \
   "bash hooks/tests/test-eci-fast-path.sh && bash -c 'true'" \
+  "bash hooks/tests/test-eci-command-plan.sh && bash -n hooks/stop-gate.sh" \
   "bash -x hooks/tests/test-eci-review-gate.sh 2>&1 | tail -n 200" \
   "bash -x hooks/tests/test-eci-review-gate.sh 2>&1 | cat" \
   "bash -x hooks/tests/test-eci-review-gate.sh > $TMP_ROOT/trace" \
@@ -1441,8 +1566,9 @@ assert_allowed "sed --quiet '1,2p' $high_level_log"
 # The coordinator inspection route admits bounded read-only inspection of
 # approved repository sources as well as proof-root evidence.
 assert_allowed "sed -n '1p' $ROOT/hooks/validate-bash.sh"
+assert_ledger_append_only_denied "sed -i '1p' $high_level_log" "$high_level_log"
+assert_ledger_append_only_denied "sed -i '1p' $proof_root/t00-session/high_level_log.anchor" "$proof_root/t00-session/high_level_log.anchor"
 for sed_command in \
-  "sed -i '1p' $high_level_log" \
   "sed -n '1d' $high_level_log" \
   "sed -n '1p' $high_level_log $high_level_log" \
   "sed -n '1p' -" \
@@ -1461,7 +1587,10 @@ for command in \
   "cat $ROOT/hooks/validate-bash.sh >> $TMP_ROOT/read-output" \
   "cat < $ROOT/hooks/validate-bash.sh" \
   "cat << EOF" \
-  "cat >| $TMP_ROOT/read-output" \
+  "cat >| $TMP_ROOT/read-output"; do
+  assert_unknown "$command"
+done
+for command in \
   "diff -o $TMP_ROOT/diff-output $ROOT/hooks/validate-bash.sh $ROOT/hooks/validate-bash.sh" \
   "diff --output $TMP_ROOT/diff-output $ROOT/hooks/validate-bash.sh $ROOT/hooks/validate-bash.sh" \
   "diff --to-file $TMP_ROOT/diff-output $ROOT/hooks/validate-bash.sh" \
@@ -1469,7 +1598,7 @@ for command in \
   "gitleaks detect -r" \
   "gitleaks detect --report-path $TMP_ROOT/report-output" \
   "gitleaks detect --report-path=$TMP_ROOT/report-output"; do
-  assert_unknown "$command"
+  assert_allowed "$command"
 done
 
 assert_denied "cat <(rm -f $TMP_ROOT/process-substitution-marker)"

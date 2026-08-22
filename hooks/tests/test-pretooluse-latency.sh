@@ -93,8 +93,15 @@ patch_input() {
 
 run_sample() {
   local callback="$1" matcher="$2" role="$3" scenario="$4" expected="$5" phase="$6" input="$7"
-  local output="$TMP_ROOT/output" error_output="$TMP_ROOT/error"
+  local output="$TMP_ROOT/output" error_output="$TMP_ROOT/error" route=legacy
   local started ended elapsed status=0 outcome=allow effective_expected="$expected"
+
+  # Keep the worker fast-path sample identifiable in the per-sample trace;
+  # its command is deliberately a plain plan_status=0 argv, while all other
+  # scenarios exercise the existing deferred capability routes.
+  if [ "$role" = worker ] && [ "$scenario" = direct ]; then
+    route=worker-plain-plan-status0
+  fi
 
   [ -n "$input" ] || fail "missing fixture input for matcher=$matcher role=$role scenario=$scenario"
   started="$(date +%s%N)"
@@ -110,8 +117,8 @@ run_sample() {
   if [ "$command_gate_mode" = permissive ] && [ "$matcher" = '^Bash$' ] && [ "$expected" = deny ]; then
     effective_expected=allow
   fi
-  printf 'callback=PreToolUse mode=%s matcher=%q role=%s scenario=%s phase=%s outcome=%s elapsed_ms=%d status=%d\n' \
-    "$command_gate_mode" "$matcher" "$role" "$scenario" "$phase" "$outcome" "$elapsed" "$status"
+  printf 'callback=PreToolUse mode=%s matcher=%q role=%s scenario=%s route=%s phase=%s outcome=%s elapsed_ms=%d status=%d\n' \
+    "$command_gate_mode" "$matcher" "$role" "$scenario" "$route" "$phase" "$outcome" "$elapsed" "$status"
   [ "$status" -eq 0 ] || {
     cat "$output" "$error_output" >&2
     fail "callback failed: matcher=$matcher role=$role scenario=$scenario phase=$phase status=$status"

@@ -42,6 +42,8 @@ Before spawning, reassigning, or routing any teammate whose output may become ev
 2. Record artifact path + `sha256sum` in roster/ledger state.
 3. Include or forward artifact path + SHA wherever that evidence is consumed.
 
+For any lane start, change, or reroute, first pass the coordinator admission transaction in the Requirement register and lane-lineage contract. Include the structured lane/assignment record, register/state version, complete paths/edges, admission binding, and expanded `requirement_chain` in the prompt/handoff artifact. A failed admission prevents the provider call; it does not change task status. Critic C Packet 1 is a closed diff-only body-serialization exception only: lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks remain mandatory before spawn; only serialized lineage and normal review context are omitted from its body, and its Packet 2 artifact carries full lineage/context.
+
 If `reasoning_effort` or another requested spawn field is unavailable, record the limitation in the prompt artifact and roster/ledger state. Never pass or claim an unavailable field. Trivial status pings need no prompt artifact when no review, proof, or stale-packet guard depends on them.
 
 ### Lead-Mediated Nested Delegation Adapter
@@ -188,6 +190,38 @@ The coordinator owns the ledger. Teammates report ledger-worthy facts; if a team
 
 Coordinator updates after: findings, design approval, task code/test approval, blocker resolution, user correction; before QA spawn, user-waiting stop, shutdown. Lead reminds on forgotten updates. Snitch may remind asynchronously after phase transitions, manual audit reminders, and activity bursts. Invalid ledger blocks QA spawn.
 
+### Requirement register and lane-lineage contract
+
+At an active ATE root, the coordinator owns one immutable, normalized requirement register in the project-understanding ledger. `register_root_id` is the canonical register root, distinct from `task_root_id`, task-tree display names, lane names, marker roots, and nested-ECI identifiers. Nested ECI inherits the outer ATE register root; an ECI→ATE replacement for the same logical scope carries it, while an unrelated or replaced root gets a new register only after the prior outer scope closes.
+
+Requirement declarations are append-only and immutable:
+`{register_root_id, requirement_id, origin:"user", redacted_verbatim_user_text, source_location, redaction_ids}`.
+Use root-qualified IDs such as `<session-id>::<register_root_id>::R<n>`; each component is a non-empty lexical token (`[A-Za-z0-9][A-Za-z0-9._-]*`), no component contains `::`, and the numeric suffix is canonical (no leading zero). Reject duplicate IDs or malformed IDs. The declaration preserves all non-secret characters, clause order, scope, qualifiers, and modality. Redact only secrets before persistence/reporting with stable root-scoped placeholders such as `<REDACTED_SECRET_001>`; record source location and never raw secret bytes. When redaction occurs, call the value **redacted verbatim user wording**, not exact wording.
+
+The mutable requirement-state projection is `{requirement_id,state:active|superseded|retired,supersedes,superseded_by,state_event_ref}`. Only active, root-qualified IDs admit new work. Additions create a new active ID; a correction or replacement creates a new active ID and atomically supersedes named old IDs; explicit user withdrawal retires without a successor. Only direct user evidence authorizes these transitions. `project-understanding.md` is the current projection; append capture, old redacted wording, supersession/removal relations, lane creation, owner assignment, and material reroute events to `high_level_log.md`. Affected lanes stop new admission and retire or reroute before any provider call; completed historical lanes retain provenance but cannot authorize new work.
+
+Store the normalized graph once and keep current projections separate:
+
+```text
+Lane       = {lane_id,register_root_id,task_root_id,human_name,derivation_kind,
+              predecessor_lane_ids:[...],requirement_refs:[...],derivation_reason,
+              path_ids:[...]}
+Assignment = {assignment_id,lane_id,owner,canonical_status_ref,evidence,admission_binding}
+Path       = {path_id,requirement_ref,lane_id,edge_ids:[...]}
+Edge       = {edge_id,path_id,seq,register_root_id,from:{kind,id},relation,
+              to:{kind,id},reason,evidence:{source_kind,locator,canonical_bytes_sha256}}
+```
+
+`Lane` identity and lineage are immutable after admission. `derivation_kind` is `root|child|derived|protocol|reroute`; roots have zero predecessors, ordinary non-roots have one or more ordered predecessors, and a reroute has exactly the superseded lane as its direct predecessor. Aggregate/review/integration lanes may have two or more. Owner-only reassignment with unchanged purpose updates only a new `Assignment` projection and appends a log event; material work-definition change creates a new reroute lane.
+
+Node `kind` is one of `requirement|decision|lane|assignment`; `relation` is one of `authorizes|justifies|derives|precedes|executes|reroutes|evidences`. Validate unique IDs, same-register endpoints, no self/cross-root/duplicate/cyclic edges, no undeclared predecessors, contiguous `seq`, and path endpoints. Every predecessor appears in a path; every requirement ref has one complete path beginning at its user requirement and ending at the current lane/assignment. Edge evidence binds `source_kind`, `locator`, canonical source bytes, and a lowercase SHA-256. Expand complete paths in the current ledger and ordinary assignment packets so the full `requirement → decision/reasoning step → parent/derived lane → executed assignment` chain is visible without duplicating graph objects.
+
+Before `spawn_agent`, `followup_task`, or a `send_message` that starts, changes, or reroutes lane work, and before otherwise-unbound durable execution, perform coordinator admission: update the current ledger projection; verify the existing `high_level_log` prefix; append an EOF PREPARE/admission event; publish and re-read the ledger and latest-status; materialize and hash the prompt artifact; record `admission_binding` as `{register_root_id,lane_id,assignment_id,active_requirement_state_version,expanded_path_sha256,prompt_sha256,ledger_sha256,log_post_append_sha256,log_post_append_size,latest_status_sha256,admission_record_sha256}`; then append and verify COMMIT. This is recoverable coordinator evidence, not an atomic provider transaction. Fail closed before the provider/tool call if any pair/hash is missing or stale.
+
+Validate that every declared object ID resolves uniquely in this register, refs are non-empty active IDs authorized by the same root, predecessors are admitted, ordered, and declared in a complete path, and the chain reaches a user requirement. A child’s refs are a subset of its root-authorized set. A running agent may submit only a non-executable proposal `{proposal_id,source_lane_id,register_root_id,kind,requirement_refs,predecessor_lane_ids,derivation_reason,evidence}`. If the proposal is necessary for the existing objective/acceptance, the coordinator independently admits a derived lane through the same graph/pair binding; missing refs alone do not prove new scope. A genuinely new outcome/scope or proposal without a user ancestor remains scope-creep debt: no lane, provider call, or status change. Direct user authorization first creates a new declaration.
+
+Lineage admission failure leaves existing task/lane status unchanged and is a routing risk/next action, never `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase. ATE owns canonical status for nested ECI. Do not add lineage fields to closed pause snapshots, required-critic manifests, marker schemas, or task-state schemas. Assignment packets, routing messages, task transitions, spawn checklists, reviewer prompts, review/E2E packets, reusable-producer reassignments, and discovered-work proposals carry the structured lane, paths/edge evidence, register root, active-state version, assignment/admission binding, and expanded full chain before execution. Critic C Packet 1 still requires lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks before spawning; these remain coordinator evidence, not Packet 1 body fields. Only lineage serialization and normal review context are omitted from its body. Packet 2 carries the full register, graph/paths/edge evidence, admission binding, and context.
+
 <CRITICAL>
 When this pipeline is active, spawn bounded standard Codex agents with explicit roles, disjoint write ownership, and concrete expected outputs.
 
@@ -199,6 +233,8 @@ Example mapping: one `explorer` for each independent research slice, one `worker
 ## Pipeline Model
 
 **Root task:** the highest active task in the current task tree: no parent task can absorb its changes, proof, review, or commit. Sub-tasks, E2E findings, review fixes, and per-repo commits aggregate under that root until post-review E2E/proof passes.
+
+The task tree does not replace lineage. Every root, child, derived-fix, protocol/review/proof, and material reroute lane has the contract record and full chain in the current ledger. The root register authorizes descendants; a child lane's refs are a subset of that set. Do not execute a task or lane until lineage admission succeeds.
 
 **Aggregate implementation.** Research and design are global. After design, executors finish root slices and discovered sub-tasks while sub-task/candidate-fix execution reviews run async. Each code target uses a parallel three-critic gate: Critic A coding style (ordinary, non-authoritative), Critic B correctness/fidelity (ordinary, non-authoritative), and Critic C long-term health (fresh special `sol-high`); add E2E where code applies. Verdicts use APPROVED/CONDITIONAL/REJECTED and require all three critic reports plus E2E when applicable. Root aggregate review blocks final proof/QA: REJECTED reruns the three critics after fixes, proof, and amend/squash; CONDITIONAL creates required pre-QA fix tasks that must be fixed and verified before final proof/QA. Pre-route async findings: `now` enters normal work; only deadline-qualified defer or scope-creep debt enters `queued_async_followup`; `ignored-contradictory` directives record without reopening. Async output never delays or reopens root aggregate review except for a verified invalidation under **Coding-style admission**; that exception pauses only affected writes and cannot queue past root review or QA.
 
@@ -217,7 +253,7 @@ Example mapping: one `explorer` for each independent research slice, one `worker
 
 ### Parallel coding review gate
 
-For every governed code diff, spawn three fresh blind critics in parallel and await all reports: Critic A coding style (ordinary, non-authoritative), Critic B correctness/fidelity (ordinary, non-authoritative), and Critic C long-term health (special `sol-high`). Add the E2E agent when code applies and withhold the aggregate verdict until E2E returns. The producer never reviews its own output; all critics report findings only and the implementer fixes them. Critic C uses the long-term-health diff-only intention packet when applicable; Critic A and Critic B remain distinct ordinary lenses.
+For every governed code diff, spawn three fresh blind critics in parallel and await all reports: Critic A coding style (ordinary, non-authoritative), Critic B correctness/fidelity (ordinary, non-authoritative), and Critic C long-term health (special `sol-high`). Add the E2E agent when code applies and withhold the aggregate verdict until E2E returns. The producer never reviews its own output; all critics report findings only and the implementer fixes them. Critic C uses the long-term-health diff-only intention packet when applicable; its closed Packet 1 body exception does not skip admission, ledger/high_level_log verification, prompt-artifact creation, or required provider/profile/identity checks. Critic A and Critic B remain distinct ordinary lenses.
 
 **Required-critic admission:** For every governed target—root, subtask, and candidate-fix—the coordinator records one immutable row per required critic using the single canonical v2 manifest and phase/version ledger schema in **Runtime required-critic boundary** below. Do not define an abbreviated parallel row schema. Every spawn request, report, and required E2E artifact binds to the same target, diff, role, child, and gate-phase tuple; missing, stale, contradictory, or unverified rows block implementation acceptance, commit, final gate, and clean teardown and route back to the exact missing fresh critic. This is coordinator/session-ledger evidence, not provider telemetry or a hook runtime artifact.
 
@@ -416,6 +452,8 @@ Cosmetic style remains Minor/Nit. Missing or unverified admission, omitted mater
 
 **Scope-creep-debt capacity invariant.** Before every assignment, return, or other state transition of a scope-creep-debt task, recheck and record that it still consumes no primary time, owner, proof, or critical-path capacity. Recheck and record continuously while exploring, executing, reviewing, or proving. On failure, return it to `queued_async_followup` or keep it there.
 
+**Lineage admission invariant.** Before any transition that starts, changes, or reroutes lane work, validate the structured `Lane`/`Assignment` graph, complete `Path`/`Edge` chains, active requirement state, and coordinator admission binding under the Requirement register and lane-lineage contract. Root-qualified refs must resolve uniquely to active requirements in this register; predecessors must be same-register, admitted, ordered, and acyclic; root/reroute/aggregate predecessor rules must hold; the derivation reason must show necessity; edge evidence must bind canonical source bytes; and every path must reach a user requirement. Failure leaves the existing task/lane state unchanged and is a routing defect, not `blocked`, `blocked_by_task`, `PAUSED`, BRP, or a lifecycle phase. Do not add these fields to the closed task-state schema.
+
 **Transition requirements:**
 
 | Transition | Requirements |
@@ -453,6 +491,8 @@ Cosmetic style remains Minor/Nit. Missing or unverified admission, omitted mater
 
 Reports to user use human-readable task names, not task/phase/lane numbers.
 Use a tree when work decomposes into sub-tasks, blockers, followups, or nested pipelines.
+In an active ECI/ATE lineage, every reported lane has non-empty root-qualified `Lane requirement refs`; include a nearby redacted-verbatim Requirements registry with each referenced ID's wording and source. Preserve human-readable lane names and parent/child hierarchy. The project-understanding ledger, not the status table, carries each lane's full edge chain. In a direct workflow with inactive ECI/ATE lineage, preserve direct-workflow behavior and do not fabricate refs or a registry.
+Lineage-admission failures leave task and lane status unchanged and appear as routing risks/next actions, never as `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase.
 
 ### Git & Security
 
@@ -485,7 +525,7 @@ Phase 2 design **must include**:
 3. **Binary/service purpose map** -- for each binary or deployable, one-sentence statement of purpose, scope, and dependencies. File ownership map must be consistent with this.
 4. **Interface contracts** -- public APIs/signatures per task, including: error/failure modes, preconditions/postconditions, data invariants, thread safety. Test designer uses these before executors finish.
 5. **Module dependency graph** -- coordinator uses for executor sequencing.
-6. **Requirement traceability** -- component → user requirement mapping. Every requirement covered, every component justified.
+6. **Requirement traceability** -- map every component and executable lane to active root-qualified requirement IDs, immutable lane/predecessor records, complete paths/edges, and the full requirement → decision/reasoning → parent/derived lane → executed assignment chain. Cover every user requirement and justify every component/lane.
 7. **Security design** (when applicable) -- trust boundaries, attack surfaces, security controls, auth strategy. OWASP at design time, not just code review.
 8. **Shared concerns register** -- logic/types/patterns needed by 2+ tasks. Each entry: {what, which tasks, designated shared location}. Executors consume this to avoid reimplementation.
 9. **Coding-style admission proposal** -- for each governed artifact scope, the applicable Style Brief, Tool route, and/or No-source verdict from Explorer source facts. Designer owns choices; Design Reviewer independently admits before durable execution. Fundamentals Design Reviewer receives the record and checks hidden premises/fundamental consequences without becoming a second admission owner.
@@ -510,6 +550,8 @@ Before durable test or test-spec writes, the Test Designer or Test Executor perf
 ## Feedback Loops
 
 Paired roles communicate **directly**. All other feedback routes through coordinator. All submitted, blocked, and completed claims, plus coordinator -> lead spawn/re-spawn/phase-transition requests, CC lead and Snitch asynchronously. CC delivery is an audit signal only; it is not a transition condition, prerequisite, or independent-verification gate.
+
+Every route that starts, changes, or reroutes work applies the coordinator admission transaction and forwards the structured lane/assignment graph, register/state version, complete paths/edges, binding hashes, and expanded full chain. A discovered-work proposal without authorized ancestry is scope-creep debt and cannot become an execution lane.
 
 | From | To | Trigger | Route |
 |------|----|---------|-------|
@@ -731,11 +773,11 @@ Extends the general Reviewer Protocol above (which already covers OWASP, edge ca
 
 **Critic C long-term-health diff-only intention check:**
 - Code targets only. Skip when there is no code diff.
+- Before Packet 1 spawn, lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks remain mandatory; these coordinator checks are outside body serialization.
 - Before Packet 1, spawn a fresh special `spawn_agent({fork_turns: "none"})` under the same semantic lens label with a unique transport identity; retire the prior roster slot without shutdown or terminal cleanup.
-- Packet 1 contains only role label, required skill/stop-hook/claim-tag boilerplate, code diff, and reconstruction instruction.
-- Exclude objective, design, ledger, task list, prompt artifact, commit message, executor rationale, teammate summary, shared concerns register, and prior review output.
+- Packet 1 body contains only role label, required skill/stop-hook/claim-tag boilerplate, code diff, and reconstruction instruction; under the closed diff-only protocol it omits only serialized lineage and normal execution-review context.
 - Reviewer returns `reconstructed intention:` with 2-4 bullets covering apparent root reason and intended behavior change, then stops.
-- Send Packet 2 with normal execution-review context only after Packet 1 returns.
+- Send Packet 2 with the full register/lane graph/paths/edges, admission binding, and normal execution-review context only after Packet 1 returns.
 - Coordinator/lead compares reconstruction with actual root reason and desired effects.
 - If it misses root reason, relies on hidden context, or claims an undesired effect, pre-route the `CONDITIONAL` remedy with the normal three-critic review metadata to make code, tests, names, comments, or commit message self-explanatory.
 
@@ -801,20 +843,20 @@ QA independently reconciles actual governed scope, admissions, approved deltas/d
 
 **Proof waits:** Coordinator may wait on any proof only when the task records {question, cheapest faithful environment, rejected cheaper-environment reasons, active owner} and that owner is running the proof now. Missing record -> record before waiting; missing active owner -> assign one. Coordinator records and routes; teammates investigate. Each status cycle classifies every waiting lane as running proof, reassigned, closed, or blocked with failed unblock attempts.
 
-1. **Track EVERYTHING as tasks.** Every deliverable, sub-task, blocker = task. Task list is single source of truth. Keep the project-understanding ledger current with the high-level context behind those tasks.
+1. **Track EVERYTHING as tasks and lanes.** Every deliverable, sub-task, blocker = task and every executable unit = an admitted immutable lane plus mutable assignment projection. Keep the project-understanding ledger current with the high-level context, register/state projection, normalized graph, and full requirement chain behind each lane.
 2. **Request spawns from lead.** Coordinator determines who is needed and when; lead creates the agent team and spawns teammates.
-3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description includes claim tagging plus its governed coding-style scope, admission role, and admitted record or read-only proposal duty when applicable.
-4. **Assign file ownership** per design doc. Durable writes start only after the route's admission owner approves. **Create git worktrees** for 2+ parallel executors.
+3. **Tasks with dependencies first**, then request lead to spawn teammates to claim them. Every task description and lane assignment includes claim tagging, the structured lane/assignment fields, root-qualified `requirement_refs`, `derivation_reason`, complete paths/edges, the expanded requirement chain, its governed coding-style scope, admission role, and admitted record or read-only proposal duty when applicable.
+4. **Assign file ownership** per design doc. Durable writes start only after both route admission and lineage admission approve. **Create git worktrees** for 2+ parallel executors.
 5. **Route feedback** between unpaired roles. When receiving findings from any agent: do NOT acknowledge with praise or accept at face value. Record the verification question, source finding, and target artifact; route to a second agent for independent verification before acting.
 6. **Monitor progress passively.** Stale task = 30+ minutes without assignment/output/process/file/git activity. Before then, do not message or interrupt for status. At 30+ minutes, check Crash Recovery signals. If confirmed unresponsive, follow the respawn sequence.
-7. **Handle root "submitted" tasks.** Verify grouped commit(s), claim tags, critique log, RCA/regression status when applicable, and root-task E2E/proof. Bounce if incomplete. If complete, route code diffs to fresh blind Critic A coding-style, Critic B correctness/fidelity, and Critic C long-term-health lenses in parallel; route non-code targets to a verifier unless a role-specific paired reviewer applies.
-8. **Drive aggregate pipelines.** Keep creating/fixing discovered tasks until root E2E passes. Then aggregate review loops until no REJECTED/CONDITIONAL remains, amend/squash commits, rerun full E2E, then spawn QA. Record checkpoint per root task: output, reviewers, evidence, git SHA.
+7. **Handle root "submitted" tasks.** Verify grouped commit(s), claim tags, critique log, RCA/regression status when applicable, root-task E2E/proof, the immutable lane graph, mutable assignment, admission binding, and full current chain. Bounce if incomplete. If complete, route code diffs to fresh blind Critic A coding-style, Critic B correctness/fidelity, and Critic C long-term-health lenses in parallel; route non-code targets to a verifier unless a role-specific paired reviewer applies.
+8. **Drive aggregate pipelines.** Keep creating/fixing only discovered tasks with an admitted requirement ancestry until root E2E passes. Then aggregate review loops until no REJECTED/CONDITIONAL remains, amend/squash commits, rerun full E2E, then spawn QA. Record checkpoint per root task: output, reviewers, evidence, git SHA, and current lane chains.
 9. **Budget context** -- summaries, not raw output (see below).
 10. **Enforce loop limits.** Run `blocker-resolution-protocol` on the 11th REJECTED pass and the designer-to-explorer cap. Escalate directly on 3rd QA re-entry.
 11. **Crash recovery** -- detect unresponsive teammates, checkpoint executor diff/status, request lead to re-spawn. Max 2 re-spawns.
 12. **Manage lifetimes** per Teammate Lifecycle (below).
 13. **Enforce aggregate invariant.** No aggregate review before root E2E/proof. No QA before root review has no REJECTED/CONDITIONAL and post-review E2E passes.
-14. **Address all reported issues.** Pre-route every executor-reported issue before task creation. Assign an executor to critically analyze `now` work (code cleanness, semantic integrity, correctness). Deadline-qualified defer or scope-creep debt enters `queued_async_followup`; `ignored-contradictory` directives record only. If dismissed: document rationale. If validated and minor: the analyzing executor fixes it after any required local admission. If validated and design-level: full pipeline. No report may be silently ignored.
+14. **Address all reported issues.** Pre-route every executor-reported issue before task/lane creation. Assign an executor to critically analyze `now` work (code cleanness, semantic integrity, correctness) only after its structured lane graph, active requirement state, predecessor paths, derivation reason, edge evidence, and admission binding pass validation. Deadline-qualified defer or scope-creep debt enters `queued_async_followup`; `ignored-contradictory` directives record only. If dismissed: document rationale. If validated and minor: the analyzing executor fixes it after any required local admission. If validated and design-level: full pipeline. No report may be silently ignored, and no unrooted discovered work may execute.
 15. **Audit on delivered events and phase transitions.** Check recent teammate output for rule violations: untagged claims, missing skill invocations, unreviewed code, shortcuts. Create a task for each violation found.
 16. **Route violations by state and severity.** Send a running role its correction with `send_message`; use `followup_task` for an idle role. Only a strictly-higher-severity finding may cancel exact active work with `interrupt_agent`.
 17. **Notify Snitch on idle/resume.** Notify Snitch asynchronously on idle/resume. Do not wait for Snitch audit before routing followups, QA verdicts, or shutdown.
@@ -866,12 +908,14 @@ Before every spawn, branch on the category-role boundary artifact. For an ordina
 - [ ] Special selector gate: send every exposed `sol-high` selector (currently `model="gpt-5.6-sol"` and `reasoning_effort="high"`); record unexposed dimensions, including provider binding when not exposed, as `unavailable_by_schema`; reject omitted or rejected selectors only for that child
 - [ ] Special invocation gate: record requested-special plus child identity after a non-rejecting spawn and, when effective telemetry is unavailable, also record effective-unavailable; no provider receipt, sidecar, self-attestation, or invented artifact is required; reject conflicting returned effective telemetry only for that child and never use ordinary fallback, reuse, or downgrade
 - [ ] Stable semantic role and transport `task_name` recorded; task-specific details are in the self-contained assignment, and no unavailable spawn field is claimed
+- [ ] Lineage admission passed before the provider call: root-qualified refs resolve uniquely to active requirements in this register; root/child/reroute/aggregate predecessor rules, same-root ancestry, acyclicity, ordered complete paths, derivation necessity, and evidence hashes hold; the chain reaches a user requirement
+- [ ] Prompt/roster/ledger carries the immutable `Lane`, complete `Path`/`Edge` evidence, `register_root_id`/active-state version, mutable `Assignment`, and `admission_binding`; owner-only reassignment creates a new assignment, while a material reroute has a new `reroute` lane
 - [ ] Governed artifact scopes and every matching installed coding-style skill listed by exact name; a real no-match and remaining repository/config/reference sources are recorded under **Coding-style admission**
 - [ ] Claim tagging instructions included verbatim
 - [ ] File ownership explicit (executor/test roles)
 - [ ] For executor spawns: sub-task/candidate-fix review trigger names Critic A coding style + Critic B correctness/fidelity + Critic C long-term health, plus E2E where code applies, and the async route.
 - [ ] For execution review spawns: fresh blind ordinary Critic A and Critic B identities plus a fresh special Critic C spawn with unique transport/boundary/profile evidence. Record requested-special plus child identity and, when effective telemetry is unavailable, also record effective-unavailable. Retire the prior special slot without shutdown or terminal cleanup.
-- [ ] For Critic C long-term-health execution reviews on code targets: fresh special `spawn_agent({fork_turns: "none"})` under the same semantic lens label with a unique transport identity before Packet 1; prior roster slot retired without shutdown/terminal cleanup; Packet 1 excludes all normal context; Packet 2 normal review context is sent only after `reconstructed intention:` returns.
+- [ ] For Critic C long-term-health execution reviews on code targets: lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and required provider/profile/identity checks pass before the fresh special `spawn_agent({fork_turns: "none"})`; prior roster slot retired without shutdown/terminal cleanup; Packet 1 body omits only serialized lineage and normal context; Packet 2 carries full context only after `reconstructed intention:` returns.
 - [ ] For debugging/RCA spawns: regression report artifact path plus previous/current test-run evidence packet included.
 - [ ] Admission-owner packets include the producer's read-only source facts/proposal; Executor packets include the admitted record verbatim; Fundamentals Design Reviewer receives the record without admission ownership
 - [ ] Reviewer/verifier normal review packets include: executor's original objective with full context, `loop-id`, applicable `decision-id`, objective/criteria, and the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer; include admitted coding-style record/deltas/Tool evidence and all scrutiny rules (claim tagging, OWASP, semantic integrity, etc.)
@@ -880,6 +924,7 @@ Before every spawn, branch on the category-role boundary artifact. For an ordina
 - [ ] Skip-design code, lightweight/non-code, and test-artifact prompts name the existing admission owner and block durable writes until its verdict; isolated disposable repros remain permitted
 - [ ] Preemptive warnings included: coordinator anticipates the most likely mistakes this agent could make given the specific task and explicitly warns against them in the spawn prompt
 - [ ] Evidence-bearing spawn/routing prompt artifact exists in the proof directory; artifact path + SHA256 recorded and forwarded where relevant
+- [ ] Discovered-work proposals and reusable-producer reassignments carry the structured lineage and binding before execution; unauthorized ancestry is queued as scope-creep debt and does not alter status
 - [ ] Standard path: new role uses `spawn_agent`; idle reuse uses `followup_task`; mid-turn delivery uses `send_message`; requested unavailable fields are in prompt text and recorded.
 
 Lead rejects spawn if any item unchecked.
@@ -937,6 +982,7 @@ Do NOT stop on: [COMMON FALSE-STOPS — e.g. "first draft ready", "happy path wo
 Context:
 - Explorer findings: [summary or "see task list"]
 - Pre-routing: [loop-id; decision-id; objective/criteria; general record; potential defer only: started; deadline; sealed-at]
+- Requirement lineage (validated before routing): `register_root_id=[...]`; `task_root_id=[...]`; immutable `Lane={lane_id,human_name,derivation_kind,predecessor_lane_ids,requirement_refs,derivation_reason,path_ids}`; `Assignment={assignment_id,lane_id,owner,canonical_status_ref,evidence,admission_binding}`; complete `Path`/`Edge` evidence; active requirement-state version; expanded `requirement_chain=[requirement → decision/reasoning → parent/derived lane → executed assignment]`; `admission_binding=[...]`
 - Design doc: [location or "not yet created"]
 - File ownership: [YOUR FILES ONLY. Do not edit other files.]
 - Coding-style admission: state your assigned role/action, governed scope, and admitted record or read-only proposal.
@@ -950,6 +996,7 @@ Format: [T<tier>: <source>, <confidence: high/medium/low>]
 
 Compliance:
 - Critically analyze ALL inputs. You own bugs from unverified inputs.
+- Execute only the admitted lane. If refs are empty/unresolved, the register/state or predecessor/path graph is invalid, lineage cycles, evidence/hash binding is missing/stale, the derivation reason is not necessary, or the chain does not reach an active user requirement, fail closed before provider/tool execution and leave task/lane status unchanged; report a routing risk, not `PAUSED`/`BLOCKED`/BRP.
 - Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval.
 - BEFORE durable writes, perform the assigned **Coding-style admission** action for the governed scope. Load every exact matching installed style skill named in the assignment; a reviewed no-match leaves repository/config/reference sources applicable. Invocation alone is not compliance.
 - Invoke applicable non-style skills named in the assignment: `testing-discipline` (tests), `test-driven-development` (code implementation), `proof-driven-development` (logic), and `systematic-debugging` + `debugging-discipline` (debugging). Follow their requirements.
@@ -957,7 +1004,7 @@ Compliance:
 - Produce critique log (3+ issues found/fixed) before marking done
 - No secrets or credentials exposed; static checks before commits; never push
 
-[For execution reviewers:] Paired with the other independent critics. Scope: [root aggregate | sub-task/candidate-fix]. Lens: [coding style | correctness/fidelity | long-term health]. Critic A coding style is ordinary and reports only; Critic B guards hard consequence contracts; Critic C long-term health owns skip-design admission and final reconciliation, judges final state only, and uses the fresh special route. For Critic C code targets, do not use this full template for Packet 1. Spawn a fresh special `spawn_agent({fork_turns: "none"})` under the same semantic lens label with a unique transport identity and retire the prior roster slot without shutdown/terminal cleanup. Packet 1 contains only role label, required skill/stop-hook/claim-tag boilerplate, code diff, and reconstruction instruction. Send normal review context, including pre-routing/admission/delta/Tool evidence, only as Packet 2 after `reconstructed intention:` returns. Pre-route findings: root aggregate REJECTED/CONDITIONAL and pre-QA work are `now`; only deadline-qualified defer or scope-creep debt enters `queued_async_followup`; contradictory directives record only. Check the shared concerns register provided in the assignment.
+[For execution reviewers:] Paired with the other independent critics. Scope: [root aggregate | sub-task/candidate-fix]. Lens: [coding style | correctness/fidelity | long-term health]. Critic A coding style is ordinary and reports only; Critic B guards hard consequence contracts; Critic C long-term health owns skip-design admission and final reconciliation, judges final state only, and uses the fresh special route. For Critic C code targets, do not use this full template for Packet 1. Before Packet 1 spawn, lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks remain mandatory. Spawn a fresh special `spawn_agent({fork_turns: "none"})` under the same semantic lens label with a unique transport identity and retire the prior roster slot without shutdown/terminal cleanup. Packet 1 body contains only role label, required skill/stop-hook/claim-tag boilerplate, code diff, and reconstruction instruction; it omits only serialized lineage and normal review context. Send full review context, including pre-routing/admission/delta/Tool evidence, only as Packet 2 after `reconstructed intention:` returns. Pre-route findings: root aggregate REJECTED/CONDITIONAL and pre-QA work are `now`; only deadline-qualified defer or scope-creep debt enters `queued_async_followup`; contradictory directives record only. Check the shared concerns register provided in the assignment.
 
 - [ROLE-SPECIFIC RULES]
 - [FOR EXECUTORS:] While implementing, actively look for code smell and design issues in all code you study or touch. Report ALL findings to coordinator — do not silently work around them.
@@ -1017,6 +1064,10 @@ Apply these scenarios within the nine counters above:
 | Spawning without a skill-defined role, ownership, or stop condition | STOP. Use bounded Codex agents with explicit role, ownership, and expected output |
 | Spawning with task-specific semantic roles or unavailable schema fields | STOP. Use a stable roster role and transport `task_name`; put task details in assignment text |
 | Work without corresponding task | Create task immediately |
+| Lane assignment has empty/unresolved refs, a missing full chain, cross-root parent, cycle, or no user requirement | STOP the provider/tool call; repair lineage admission before routing. |
+| Discovered work is executed without an authorized requirement ancestor | Queue it as scope-creep debt; do not create a lane or change status until the user authorizes it through the lifecycle. |
+| Lineage-admission failure is labeled `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase | Keep the existing status unchanged; report a routing risk and next action. |
+| Spawn/reassignment/review packet omits lane fields or full chain from its body (except Critic C Packet 1's closed body-serialization exception; admission checks remain mandatory) | STOP and rebuild the packet before provider execution. |
 | Status report uses task/phase/lane numbers, or flat-lists nested work | Use **Status Reports**. |
 | Aggregate review starts before all known sub-tasks land and root-task E2E/proof passes | STOP. Finish/fix tasks first; review only the proven aggregate |
 | Shell-launched Codex process used as a teammate | STOP. Use `spawn_agent`, `followup_task`, `send_message`, `wait_agent({timeout_ms:3600000})`, and cancellation-only `interrupt_agent`; hard-escalate only if main/orchestrator standard tools are unavailable. |

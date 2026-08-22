@@ -1655,7 +1655,7 @@ case "$cmd" in
         conflicting_owner="${conflicting_owner##*/}"
         if [ "$conflicting_owner" != "$requested_session" ]; then
           conflicting_dir="${conflicting_marker%/*}"
-          echo "ECI off session identity mismatch: requested session $requested_session has no session directory under $report_root, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
+          echo "ECI off session identity mismatch: supplied report $report_path; requested session $requested_session has no session directory under $report_root, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
           exit 1
         fi
       fi
@@ -1687,9 +1687,9 @@ case "$cmd" in
         conflicting_owner="${conflicting_marker%/*}"
         conflicting_owner="${conflicting_owner##*/}"
         conflicting_dir="${conflicting_marker%/*}"
-        echo "ECI off session identity mismatch: supplied report $report targets requested session ${session_dir##*/}, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
+        echo "ECI off session identity mismatch: supplied report $report_path targets requested session ${session_dir##*/}, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
       else
-        echo "ECI marker is not active for requested session ${session_dir##*/}; refusing teardown: $marker" >&2
+        echo "ECI marker is not active for requested session ${session_dir##*/}; supplied report $report_path; refusing teardown: $marker" >&2
       fi
       exit 1
     fi

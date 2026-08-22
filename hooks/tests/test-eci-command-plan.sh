@@ -354,6 +354,23 @@ for provider in codex kimi; do
 done
 
 for provider in codex kimi; do
+  # Worker plan_status=0 must take the plain finite fast path, while the
+  # ownership-shaped control, environment, Git, and wrapper forms remain on
+  # their protected routes for both provider validators.
+  worker_control_target="$CODEX_ROOT/bin/eci-active"
+  provider_root="$CODEX_ROOT"
+  [ "$provider" = kimi ] && worker_control_target="$KIMI_ROOT/bin/eci-active" && provider_root="$KIMI_ROOT"
+  assert_allowed "$provider" worker active 'novel-worker-fast-path --flag value'
+  provider_helper_alias="$TMP_ROOT/$provider-worker-absolute-helper-hardlink"
+  ln -- "$provider_root/hooks/lib/eci-environment-command.sh" "$provider_helper_alias"
+  assert_allowed "$provider" worker active "cat $provider_helper_alias"
+  assert_denied "$provider" worker active \
+    "$worker_control_target status" ECI_CONTROL_OWNER_REQUIRED
+  assert_denied "$provider" worker active 'env' ECI_ENVIRONMENT_ENUMERATION_DENIED
+  assert_denied "$provider" worker active 'git commit -m worker-fast-path' \
+    ECI_WORKER_GIT_OWNERSHIP_DENIED
+  assert_denied "$provider" worker active \
+    "bash -c 'printf protected-wrapper'" ECI_PLAN_DYNAMIC_LAUNCH_DENIED
   assert_allowed "$provider" worker active './tools/eci-review-gate.sh verify'
   assert_denied "$provider" worker active \
     "$CODEX_ROOT/hooks/eci-review-gate.sh commit command-plan-session" \

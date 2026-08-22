@@ -401,7 +401,7 @@ json_block_fast() {
   fi
   if [ -z "$marker" ]; then
     reason="[ECI_STOP_MARKER_SCAN_UNSAFE] ECI stop state is unsafe or unavailable: marker scan overflowed or found an invalid marker without a concrete path for session=${session_id:-<missing>} cwd=${canonical_stop_cwd:-<missing>}. Do not stop; continue the ECI task and resolve the marker or proof-root integrity issue first."
-    jq -n --arg reason "$(stop_diagnostic "$reason" "<none>" "${instructions:-<none>}")" '{decision:"block",reason:$reason}'
+    json_block_with_loop_state "$reason"
     return 0
   fi
   marker_code="$(codex_eci_marker_failure_code "$marker" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
@@ -430,7 +430,7 @@ json_block_fast() {
       reason="[$marker_code] Stop is denied because ECI marker validation failed for session=${session_id:-<missing>} cwd=${canonical_stop_cwd:-<missing>}: $marker. Inspect the reported marker condition through the coordinator route before retrying."
       ;;
   esac
-  jq -n --arg reason "$(stop_diagnostic "$reason" "$marker" "${instructions:-<none>}")" '{decision:"block",reason:$reason}'
+  json_block_with_loop_state "$reason"
 }
 
 # Keep active-marker discovery bounded before any ownership/cwd validation.
@@ -469,7 +469,7 @@ if [ "$marker_bound_status" -eq 2 ]; then
   exit 0
 fi
 
-json_block() {
+json_block_with_loop_state() {
   local reason="$1"
   local loop_state loop_tmp loop_code loop_cwd loop_count loop_emitted
   local loop_line loop_key loop_version loop_state_code loop_state_session loop_state_cwd
@@ -586,6 +586,12 @@ json_block() {
 
   reason="$(stop_diagnostic "$reason" "${marker:-<none>}" "${instructions:-<none>}")"
   jq -n --arg reason "$reason" '{decision: "block", reason: $reason}'
+}
+
+# Keep the public denial helper stable while sharing its bounded convergence
+# state with the active-marker fast path.
+json_block() {
+  json_block_with_loop_state "$1"
 }
 
 # Validate an ECI marker without following the final session/marker symlinks.

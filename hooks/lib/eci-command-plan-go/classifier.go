@@ -1,9 +1,16 @@
 package main
 
 import (
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -13,6 +20,7 @@ const (
 	maxArguments     = 128
 	maxArgumentBytes = 4 * 1024
 	maxWrapperDepth  = 8
+	maxProofAnchors  = 128
 )
 
 type Provider string
@@ -45,6 +53,12 @@ const (
 	DecisionError DecisionKind = "error"
 )
 
+type Capability string
+
+const (
+	CapabilityGateMode Capability = "gate-mode"
+)
+
 type DiagnosticCode string
 
 const (
@@ -57,9 +71,12 @@ const (
 	CodeEnvironmentOptionDenied      DiagnosticCode = "ECI_ENVIRONMENT_OPTION_DENIED"
 	CodeEnvironmentContextDenied     DiagnosticCode = "ECI_ENVIRONMENT_CONTEXT_DENIED"
 	CodeWorkerGitOwnershipDenied     DiagnosticCode = "ECI_WORKER_GIT_OWNERSHIP_DENIED"
-	CodeGitDynamicExecutionDenied    DiagnosticCode = "ECI_GIT_DYNAMIC_EXECUTION_DENIED"
+	CodeGitExecutionContextDenied    DiagnosticCode = "ECI_GIT_EXECUTION_CONTEXT_DENIED"
 	CodeControlOwnerRequired         DiagnosticCode = "ECI_CONTROL_OWNER_REQUIRED"
+	CodeControlIdentityDenied        DiagnosticCode = "ECI_CONTROL_IDENTITY_DENIED"
 	CodeBroadDestructiveDenied       DiagnosticCode = "ECI_BROAD_DESTRUCTIVE_DENIED"
+	CodeLedgerAppendOnly             DiagnosticCode = "ECI_LEDGER_APPEND_ONLY"
+	CodeProofPathEscapeDenied        DiagnosticCode = "ECI_PROOF_PATH_ESCAPE_DENIED"
 	CodePlanLiveControlDenied        DiagnosticCode = "ECI_PLAN_LIVE_CONTROL_DENIED"
 	CodePlanInternalDenied           DiagnosticCode = "ECI_PLAN_INTERNAL_DENIED"
 )
@@ -96,6 +113,7 @@ type HookSpecificOutput struct {
 
 type Result struct {
 	Decision           DecisionKind        `json:"decision"`
+	Capabilities       []Capability        `json:"capabilities,omitempty"`
 	Diagnostic         *Diagnostic         `json:"diagnostic,omitempty"`
 	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
@@ -116,6 +134,30 @@ type plan struct {
 	operators []string
 }
 
+type proofSession struct {
+	lexical  string
+	resolved string
+}
+
+type gateModeIdentity struct {
+	canonicalPaths []string
+	canonicalInfo  os.FileInfo
+	size           int64
+	digest         [sha256.Size]byte
+	failure        string
+}
+
+var eciControlBasenames = [...]string{
+	"eci_active", "goal_state", "eci_wait", "eci_user_owned_wait.md",
+	"eci-required-critics.json", "eci-critic-identities.ledger",
+	"eci-acceptance-anchor", "eci-acceptance-transaction",
+	"eci-teardown-complete", "eci-baseline-binding", "baseline_head",
+	"eci-commit-admitted", "eci-user-closed.ledger", "proof.md",
+	"instructions.md", "stop_timestamps", "stop_loop_state",
+	"disengage.md", "user-closed.md", "project-understanding.md",
+	"high_level_log.md", "latest-status-report.md", "high_level_log.anchor",
+}
+
 type planError struct {
 	diagnostic Diagnostic
 }
@@ -128,18 +170,31 @@ func Classify(request Request) Result {
 	parsed, err := parsePlan(request.Command)
 	if err != nil {
 		if request.Marker == MarkerInactive && strings.HasPrefix(string(err.diagnostic.Code), "ECI_PLAN_") {
+			// Inactive callbacks remain transparent to shell syntax, while
+			// deferring dynamic expansion lets the provider adapter retain
+			// ownership of protected children such as Git mutations.
+			if err.diagnostic.Predicate == "dynamic-expansion" {
+				return Result{Decision: DecisionDefer}
+			}
 			return Result{Decision: DecisionAllow}
 		}
 		err.diagnostic.RejectedSegment = shellEscape(request.Command)
 		return deniedResult(request, err.diagnostic)
 	}
 
+	capabilities := capabilitiesForPlan(parsed)
 	decision := DecisionAllow
 	for index, current := range parsed.segments {
 		segmentDecision, diagnostic := inspectSegment(request, current, index+1)
 		if diagnostic != nil {
 			diagnostic.RejectedSegment = rejectedSegment(current, diagnostic.Code)
 			if suppressInactiveDiagnostic(request, diagnostic) {
+				// Inactive syntax diagnostics can hide a protected child
+				// capability behind shell context (assignments, wrappers,
+				// or interpreter payloads). Defer the complete literal to
+				// the provider adapter; ordinary inactive commands remain
+				// admitted when that adapter finds no protected operation.
+				decision = DecisionDefer
 				continue
 			}
 			return deniedResult(request, *diagnostic)
@@ -148,8 +203,35 @@ func Classify(request Request) Result {
 			decision = DecisionDefer
 		}
 	}
+	if request.Marker == MarkerActive && request.Role == RoleWorker && len(parsed.operators) > 0 {
+		// A finite semicolon batch whose every segment passed the capability
+		// inspection above is still an ordinary worker plan. Keep control-flow
+		// operators on the provider adapter route, and let any protected segment
+		// retain the defer/deny decision it already selected.
+		for _, operator := range parsed.operators {
+			if operator != ";" {
+				decision = DecisionDefer
+				break
+			}
+		}
+	}
 
-	return Result{Decision: decision}
+	return Result{Decision: decision, Capabilities: capabilities}
+}
+
+func capabilitiesForPlan(parsed plan) []Capability {
+	for segmentIndex, current := range parsed.segments {
+		argv, diagnostic := unwrap(current.argv, segmentIndex+1)
+		if diagnostic == nil && isGateModeCapability(argv) {
+			return []Capability{CapabilityGateMode}
+		}
+	}
+	return nil
+}
+
+func isGateModeCapability(argv []token) bool {
+	_, _, ok := gateModeIndexes(argv)
+	return ok
 }
 
 func rejectedSegment(current segment, code DiagnosticCode) string {
@@ -530,12 +612,24 @@ func inspectSegment(
 			"reserved-shell-control",
 		)
 	}
-
+	if request.Marker == MarkerActive {
+		decision, diagnostic := inspectProofPathOwnership(request, current.argv, segmentIndex)
+		if diagnostic != nil || decision == DecisionDefer {
+			return decision, diagnostic
+		}
+	}
 	argv, diagnostic := unwrap(current.argv, segmentIndex)
 	if diagnostic != nil {
 		return DecisionDeny, diagnostic
 	}
 	name := filepath.Base(argv[0].value)
+	if request.Marker == MarkerActive && name == "mktemp" {
+		// Temporary-directory setup is coordinator-owned capability. Defer
+		// every active invocation to the provider route, which validates the
+		// exact template and rejects workers, rather than encoding a template
+		// allowlist in the planner.
+		return DecisionDefer, nil
+	}
 
 	switch name {
 	case "printenv":
@@ -559,6 +653,25 @@ func inspectSegment(
 			return DecisionDeny, diagnostic
 		}
 	}
+	if isGateModeCapability(argv) {
+		if diagnostic := inspectGateMode(request, current.argv, argv, segmentIndex); diagnostic != nil {
+			return DecisionDeny, diagnostic
+		}
+		return DecisionAllow, nil
+	}
+	if request.Marker == MarkerActive && isLifecycleScriptCapability(request.CWD, argv) {
+		// The provider adapter owns canonical lifecycle-script identity,
+		// arguments, and role authorization. Recognize only a visible script
+		// position here so active fast admission cannot bypass that route.
+		return DecisionDefer, nil
+	}
+	if request.Marker == MarkerActive && isCoordinatorHookRepair(argv) {
+		// The legacy coordinator route performs the canonical script digest,
+		// repository-root, and peer-identity checks. Defer this capability by
+		// shape so those checks remain authoritative without embedding provider
+		// paths or peer allowlists in the compiled planner.
+		return DecisionDefer, nil
+	}
 	if name == "find" {
 		for index, argument := range argv[1:] {
 			switch argument.value {
@@ -577,22 +690,14 @@ func inspectSegment(
 	}
 	if name == "git" {
 		decision, diagnostic := inspectGit(request, argv, segmentIndex)
-		if diagnostic != nil || decision == DecisionDefer {
-			return decision, diagnostic
+		if diagnostic != nil {
+			return DecisionDeny, diagnostic
+		}
+		if decision == DecisionDefer {
+			return DecisionDefer, nil
 		}
 	}
-	if isLifecycleName(name) {
-		if request.Marker == MarkerActive && request.Role == RoleWorker {
-			return DecisionDeny, diagnosticForToken(
-				CodeControlOwnerRequired,
-				fmt.Sprintf("worker argv invokes coordinator-owned lifecycle target %s", name),
-				segmentIndex,
-				0,
-				argv[0],
-				"route this exact lifecycle operation through the coordinator",
-				"worker-lifecycle-control",
-			)
-		}
+	if isLifecycleScriptPath(request.CWD, argv[0].value) {
 		return DecisionDefer, nil
 	}
 	if name == "eci-command-gate-mode" {
@@ -606,11 +711,561 @@ func inspectSegment(
 			return DecisionDeny, diagnostic
 		}
 	}
-	if request.Marker == MarkerActive && request.Role == RoleCoordinator && isSourceWriter(name, argv) {
+	if request.Marker == MarkerActive && request.Role == RoleCoordinator && isSourceWriter(name, argv) && sourceWriterTargetsCWD(request.CWD, name, argv) {
 		return DecisionDefer, nil
 	}
 
 	return DecisionAllow, nil
+}
+
+func inspectGateMode(request Request, original, argv []token, segmentIndex int) *Diagnostic {
+	targetIndex, actionIndex, ok := gateModeIndexes(argv)
+	if !ok {
+		return nil
+	}
+	target := argv[targetIndex]
+	interpreterScript := filepath.Base(argv[0].value) == "python" || filepath.Base(argv[0].value) == "python3"
+	identity := gateModeIdentityForEnvironment()
+	matched, identityFailure, candidate := candidateMatchesGateMode(target, request.CWD, identity, interpreterScript)
+	if identityFailure != "" {
+		diagnostic := diagnosticForToken(
+			CodeControlIdentityDenied,
+			"command-gate control executable identity validation failed: failure="+identityFailure,
+			segmentIndex,
+			originalTokenIndex(original, target),
+			target,
+			"restore the canonical owner-executable Codex/Kimi hardlink pair before retrying",
+			"gate-mode-identity",
+		)
+		diagnostic.Path = candidate
+		return diagnostic
+	}
+	if request.Marker != MarkerActive || request.Role != RoleWorker || !matched || argv[actionIndex].value != "set" {
+		return nil
+	}
+	return diagnosticForToken(
+		CodeControlOwnerRequired,
+		"worker argv selects coordinator-owned command-gate mode mutation",
+		segmentIndex,
+		originalTokenIndex(original, argv[actionIndex]),
+		argv[actionIndex],
+		"route the exact command-gate mode change through the coordinator",
+		"gate-mode-mutation",
+	)
+}
+
+func gateModeIndexes(argv []token) (int, int, bool) {
+	if len(argv) < 2 {
+		return 0, 0, false
+	}
+	targetIndex := 0
+	if filepath.Base(argv[0].value) == "python" || filepath.Base(argv[0].value) == "python3" {
+		targetIndex = 1
+	}
+	actionIndex := targetIndex + 1
+	if actionIndex >= len(argv) || filepath.Base(argv[targetIndex].value) != "eci-command-gate-mode" {
+		return 0, 0, false
+	}
+	if argv[actionIndex].value != "set" && argv[actionIndex].value != "get" {
+		return 0, 0, false
+	}
+	return targetIndex, actionIndex, true
+}
+
+func originalTokenIndex(original []token, target token) int {
+	for index, argument := range original {
+		if argument.offset == target.offset && argument.value == target.value {
+			return index
+		}
+	}
+	return 0
+}
+
+func gateModeIdentityForEnvironment() gateModeIdentity {
+	home := os.Getenv("HOME")
+	roots := []string{
+		firstNonEmpty(os.Getenv("CODEX_HOME"), filepath.Join(home, ".codex")),
+		firstNonEmpty(os.Getenv("KIMI_CODE_HOME"), filepath.Join(home, ".kimi-code")),
+	}
+	paths := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+			return gateModeIdentity{canonicalPaths: paths, failure: "canonical-path-invalid"}
+		}
+		paths = append(paths, filepath.Join(root, "bin", "eci-command-gate-mode"))
+	}
+	if len(paths) != 2 {
+		return gateModeIdentity{canonicalPaths: paths, failure: "canonical-path-invalid"}
+	}
+	infos := make([]os.FileInfo, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return gateModeIdentity{canonicalPaths: paths, failure: "canonical-path-missing"}
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
+			!fileOwnedByCurrentUser(info) || info.Mode().Perm()&0111 == 0 {
+			return gateModeIdentity{canonicalPaths: paths, failure: "canonical-metadata-invalid"}
+		}
+		infos = append(infos, info)
+	}
+	if !os.SameFile(infos[0], infos[1]) {
+		return gateModeIdentity{canonicalPaths: paths, failure: "canonical-hardlink-split"}
+	}
+	digest, err := digestRegularFile(paths[0], infos[0])
+	if err != nil {
+		return gateModeIdentity{canonicalPaths: paths, failure: "canonical-read-race"}
+	}
+	return gateModeIdentity{
+		canonicalPaths: paths,
+		canonicalInfo:  infos[0],
+		size:           infos[0].Size(),
+		digest:         digest,
+	}
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func fileOwnedByCurrentUser(info os.FileInfo) bool {
+	state, ok := info.Sys().(*syscall.Stat_t)
+	return ok && state.Uid == uint32(os.Getuid())
+}
+
+func digestRegularFile(path string, expected os.FileInfo) ([sha256.Size]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	defer file.Close()
+	observed, err := file.Stat()
+	if err != nil || !os.SameFile(observed, expected) || observed.Size() != expected.Size() {
+		if err == nil {
+			err = errors.New("file changed while reading")
+		}
+		return [sha256.Size]byte{}, err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
+}
+
+func candidateMatchesGateMode(target token, cwd string, identity gateModeIdentity, interpreterScript bool) (bool, string, string) {
+	candidate := resolveExecutable(target.value, cwd)
+	reservedName := filepath.Base(target.value) == "eci-command-gate-mode"
+	namesCanonical := false
+	for _, path := range identity.canonicalPaths {
+		if candidate == path {
+			namesCanonical = true
+			break
+		}
+	}
+	if identity.failure != "" {
+		if reservedName || namesCanonical {
+			return false, identity.failure, candidate
+		}
+		return false, "", candidate
+	}
+	if candidate == "" {
+		if reservedName {
+			return false, "candidate-not-resolved", candidate
+		}
+		return false, "", candidate
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		if reservedName {
+			return false, "candidate-not-readable", candidate
+		}
+		return false, "", candidate
+	}
+	if !info.Mode().IsRegular() || !fileOwnedByCurrentUser(info) {
+		if reservedName {
+			return false, "candidate-metadata-invalid", candidate
+		}
+		return false, "", candidate
+	}
+	if !interpreterScript && info.Mode().Perm()&0111 == 0 {
+		if reservedName {
+			return false, "candidate-not-executable", candidate
+		}
+		return false, "", candidate
+	}
+	if os.SameFile(info, identity.canonicalInfo) {
+		return true, "", candidate
+	}
+	if info.Size() != identity.size {
+		if reservedName {
+			return false, "reserved-copy-size-mismatch", candidate
+		}
+		return false, "", candidate
+	}
+	digest, err := digestRegularFile(candidate, info)
+	if err != nil {
+		if reservedName {
+			return false, "candidate-read-race", candidate
+		}
+		return false, "", candidate
+	}
+	if digest == identity.digest {
+		return true, "", candidate
+	}
+	if reservedName {
+		return false, "reserved-copy-digest-mismatch", candidate
+	}
+	return false, "", candidate
+}
+
+func resolveExecutable(value, cwd string) string {
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	if strings.ContainsRune(value, filepath.Separator) {
+		return filepath.Clean(filepath.Join(cwd, value))
+	}
+	resolved, err := exec.LookPath(value)
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(resolved)
+}
+
+func inspectProofPathOwnership(
+	request Request,
+	argv []token,
+	segmentIndex int,
+) (DecisionKind, *Diagnostic) {
+	proofSessions := make([]proofSession, 0, len(request.ActiveMarkers))
+	for _, marker := range request.ActiveMarkers {
+		if !filepath.IsAbs(marker) {
+			return DecisionDefer, nil
+		}
+		lexical := filepath.Clean(filepath.Dir(marker))
+		resolved, err := resolvePathWithMissingSuffix(lexical)
+		if err != nil {
+			return DecisionDefer, nil
+		}
+		proofSessions = append(proofSessions, proofSession{lexical: lexical, resolved: resolved})
+	}
+	if len(proofSessions) == 0 {
+		return DecisionAllow, nil
+	}
+
+	for argumentIndex, argument := range argv {
+		pathArgument, pathLike := outputDestinationOperand(argv, argumentIndex)
+		outputWriter := pathLike
+		if !pathLike {
+			pathArgument, pathLike = commandPathOperand(argv[0].value, argument)
+		}
+		if !pathLike {
+			continue
+		}
+		lexical := pathArgument.value
+		if !filepath.IsAbs(lexical) {
+			lexical = filepath.Join(request.CWD, lexical)
+		}
+		lexical = filepath.Clean(lexical)
+
+		resolved, resolveErr := resolvePathWithMissingSuffix(lexical)
+		containingSession := ""
+		contained := false
+		anchorSearchComplete := true
+		for _, proofSession := range proofSessions {
+			if resolveErr == nil && pathWithin(resolved, proofSession.resolved) {
+				contained = true
+				break
+			}
+			if pathWithin(lexical, proofSession.lexical) {
+				containingSession = proofSession.lexical
+				continue
+			}
+			anchored, complete := pathHasResolvedProofAnchor(filepath.Dir(lexical), proofSession.resolved)
+			if !complete {
+				anchorSearchComplete = false
+			}
+			if anchored {
+				containingSession = proofSession.lexical
+			}
+		}
+		if contained {
+			writer := outputWriter || isSourceWriter(filepath.Base(argv[0].value), argv)
+			if request.Role == RoleCoordinator && writer &&
+				isAppendOnlyLedgerPath(lexical, resolved, proofSessions) {
+				diagnostic := diagnosticForToken(
+					CodeLedgerAppendOnly,
+					"active-session high-level ledger files are append-only coordinator artifacts",
+					segmentIndex,
+					argumentIndex,
+					pathArgument,
+					"use eci-active ledger-append",
+					"append-only-ledger",
+				)
+				diagnostic.Path = lexical
+				return DecisionDeny, diagnostic
+			}
+			if request.Role == RoleWorker && writer &&
+				isReservedProofControlPath(lexical, resolved, proofSessions) {
+				diagnostic := diagnosticForToken(
+					CodePlanLiveControlDenied,
+					"worker argv targets a reserved ECI control artifact inside the active proof session",
+					segmentIndex,
+					argumentIndex,
+					pathArgument,
+					"route the reserved ECI control operation through the coordinator",
+					"worker-proof-control",
+				)
+				diagnostic.Path = lexical
+				return DecisionDeny, diagnostic
+			}
+			if writer {
+				return DecisionDefer, nil
+			}
+			if request.Role == RoleWorker && pathHasMissingComponent(lexical) &&
+				isReservedProofControlPath(lexical, resolved, proofSessions) {
+				return DecisionDefer, nil
+			}
+			continue
+		}
+		if request.Role == RoleWorker && pathHasMissingComponent(lexical) {
+			for _, proofSession := range proofSessions {
+				if pathWithin(lexical, proofSession.lexical) &&
+					isReservedProofControlPath(lexical, resolved, proofSessions) {
+					return DecisionDefer, nil
+				}
+			}
+		}
+		if containingSession == "" {
+			if !anchorSearchComplete {
+				return DecisionDefer, nil
+			}
+			continue
+		}
+		if resolveErr != nil {
+			return DecisionDefer, nil
+		}
+
+		diagnostic := diagnosticForToken(
+			CodeProofPathEscapeDenied,
+			fmt.Sprintf("proof path resolves outside its active session aliases: resolved=%s proof_root=%s", resolved, containingSession),
+			segmentIndex,
+			argumentIndex,
+			pathArgument,
+			"replace the escaping symlink with a canonical path contained by the active proof session",
+			"proof-symlink-escape",
+		)
+		diagnostic.Path = lexical
+		return DecisionDeny, diagnostic
+	}
+
+	return DecisionAllow, nil
+}
+
+func pathHasMissingComponent(path string) bool {
+	current := filepath.Clean(path)
+	missing := false
+	for {
+		_, err := os.Lstat(current)
+		switch {
+		case err == nil:
+			return missing
+		case !errors.Is(err, fs.ErrNotExist):
+			return true
+		}
+		missing = true
+		parent := filepath.Dir(current)
+		if parent == current {
+			return true
+		}
+		current = parent
+	}
+}
+
+func pathHasResolvedProofAnchor(path, resolvedProofRoot string) (bool, bool) {
+	current := filepath.Clean(path)
+	for range maxProofAnchors {
+		resolved, err := resolvePathWithMissingSuffix(current)
+		if err == nil && pathWithin(resolved, resolvedProofRoot) {
+			return true, true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, true
+		}
+		current = parent
+	}
+	return false, false
+}
+
+func pathOperand(argument token) (token, bool) {
+	value := argument.value
+	switch {
+	case value == "":
+		return token{}, false
+	case value == "--":
+		return token{}, false
+	case strings.HasPrefix(value, "-"):
+		separator := strings.IndexByte(value, '=')
+		if separator < 0 || separator == len(value)-1 {
+			return token{}, false
+		}
+		return token{
+			value:  value[separator+1:],
+			offset: argument.offset + separator + 1,
+			quoted: argument.quoted,
+		}, true
+	default:
+		return argument, true
+	}
+}
+
+// commandPathOperand exposes command-specific key/value path operands to the
+// shared ownership checks.  dd expresses its output destination as of=PATH,
+// which is still a path operand even though it is not a positional argv path.
+// Keep this normalization tied to the command shape rather than treating every
+// arbitrary key/value argument as a filesystem path.
+func commandPathOperand(command string, argument token) (token, bool) {
+	if filepath.Base(command) == "dd" && strings.HasPrefix(argument.value, "of=") {
+		value := strings.TrimPrefix(argument.value, "of=")
+		if value == "" {
+			return token{}, false
+		}
+		return token{
+			value:  value,
+			offset: argument.offset + len("of="),
+			quoted: argument.quoted,
+		}, true
+	}
+	return pathOperand(argument)
+}
+
+func outputDestinationOperand(argv []token, argumentIndex int) (token, bool) {
+	if argumentIndex <= 0 || argumentIndex >= len(argv) || isGitArchiveCommand(argv) {
+		return token{}, false
+	}
+
+	argument := argv[argumentIndex]
+	value := argument.value
+	for _, option := range [...]string{"--report-path", "--output", "--to-file"} {
+		if strings.HasPrefix(value, option+"=") {
+			path := strings.TrimPrefix(value, option+"=")
+			if path == "" || strings.HasPrefix(path, "-") {
+				return token{}, false
+			}
+			return token{value: path, offset: argument.offset + len(option) + 1, quoted: argument.quoted}, true
+		}
+		if value == option && argumentIndex+1 < len(argv) {
+			path := argv[argumentIndex+1]
+			if path.value == "" || strings.HasPrefix(path.value, "-") {
+				return token{}, false
+			}
+			return path, true
+		}
+	}
+	if value == "-o" && argumentIndex+1 < len(argv) {
+		path := argv[argumentIndex+1]
+		if path.value == "" || strings.HasPrefix(path.value, "-") {
+			return token{}, false
+		}
+		return path, true
+	}
+	if strings.HasPrefix(value, "-o=") {
+		path := strings.TrimPrefix(value, "-o=")
+		if path == "" || strings.HasPrefix(path, "-") {
+			return token{}, false
+		}
+		return token{value: path, offset: argument.offset + len("-o="), quoted: argument.quoted}, true
+	}
+	if strings.HasPrefix(value, "-o") && len(value) > len("-o") && !strings.HasPrefix(value, "--") {
+		path := strings.TrimPrefix(value, "-o")
+		if path == "" || strings.HasPrefix(path, "-") {
+			return token{}, false
+		}
+		return token{value: path, offset: argument.offset + len("-o"), quoted: argument.quoted}, true
+	}
+	return token{}, false
+}
+
+func isGitArchiveCommand(argv []token) bool {
+	if len(argv) == 0 || filepath.Base(argv[0].value) != "git" {
+		return false
+	}
+	index := gitSubcommandIndex(argv)
+	return index < len(argv) && argv[index].value == "archive"
+}
+
+func isReservedProofControlPath(lexical, resolved string, sessions []proofSession) bool {
+	base := filepath.Base(lexical)
+	reserved := false
+	for _, name := range eciControlBasenames {
+		if base == name || strings.HasPrefix(base, name+".") {
+			reserved = true
+			break
+		}
+	}
+	if !reserved {
+		return false
+	}
+	for _, session := range sessions {
+		if pathWithin(lexical, session.lexical) ||
+			(resolved != "" && pathWithin(resolved, session.resolved)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAppendOnlyLedgerPath(lexical, resolved string, sessions []proofSession) bool {
+	base := filepath.Base(lexical)
+	if base != "high_level_log.md" && base != "high_level_log.anchor" {
+		return false
+	}
+	for _, session := range sessions {
+		if pathWithin(lexical, session.lexical) ||
+			(resolved != "" && pathWithin(resolved, session.resolved)) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolvePathWithMissingSuffix(path string) (string, error) {
+	current := filepath.Clean(path)
+	missing := make([]string, 0)
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		switch {
+		case err == nil:
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		case !errors.Is(err, fs.ErrNotExist):
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathWithin(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
@@ -648,6 +1303,58 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 				return nil, diagnostic
 			}
 			current = child
+		case "time":
+			child, diagnostic := unwrapTime(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "prlimit":
+			child, diagnostic := unwrapPrlimit(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "chronic":
+			child, diagnostic := unwrapSimpleOptions(current, segmentIndex, map[string]int{
+				"-e": 0, "-f": 0, "-v": 0, "-d": 0, "-s": 0, "--": 0,
+			})
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "nohup":
+			child, diagnostic := unwrapSimpleOptions(current, segmentIndex, map[string]int{"--": 0})
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "setsid":
+			child, diagnostic := unwrapSimpleOptions(current, segmentIndex, map[string]int{
+				"-c": 0, "-f": 0, "-w": 0, "--wait": 0, "--fork": 0, "--ctty": 0, "--": 0,
+			})
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "sudo":
+			child, diagnostic := unwrapSudo(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "doas":
+			child, diagnostic := unwrapDoas(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "systemd-run":
+			child, diagnostic := unwrapSystemdRun(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
 		default:
 			return current, nil
 		}
@@ -662,6 +1369,93 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 		"remove redundant wrappers and invoke one finite child argv",
 		"wrapper-depth-limit",
 	)
+}
+
+func unwrapSudo(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	return unwrapKnownOptions(argv, segmentIndex, map[string]int{
+		"-u": 1, "--user": 1, "-g": 1, "--group": 1, "-h": 1, "--host": 1,
+		"-p": 1, "--prompt": 1, "-r": 1, "--role": 1, "-t": 1, "--type": 1,
+		"-T": 1, "--command-timeout": 1, "-C": 1, "--chdir": 1, "-D": 1,
+		"--": 0,
+	}, map[string]struct{}{
+		"-A": {}, "--askpass": {}, "-b": {}, "--background": {}, "-E": {}, "--preserve-env": {},
+		"-H": {}, "--set-home": {}, "-i": {}, "--login": {}, "-K": {}, "--remove-timestamp": {},
+		"-k": {}, "--reset-timestamp": {}, "-n": {}, "--non-interactive": {}, "-P": {},
+		"--preserve-groups": {}, "-S": {}, "--stdin": {}, "-V": {}, "--version": {},
+	}, "sudo")
+}
+
+func unwrapDoas(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	return unwrapKnownOptions(argv, segmentIndex, map[string]int{
+		"-a": 1, "--auth-type": 1, "-C": 1, "--config": 1, "-u": 1, "--user": 1, "--": 0,
+	}, map[string]struct{}{
+		"-n": {}, "--non-interactive": {},
+	}, "doas")
+}
+
+func unwrapSystemdRun(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	return unwrapKnownOptions(argv, segmentIndex, map[string]int{
+		"--unit": 1, "-p": 1, "--property": 1, "--working-directory": 1, "--service-type": 1,
+		"--uid": 1, "--gid": 1, "--slice": 1, "--machine": 1, "--pipe": 0, "--pty": 0,
+		"--quiet": 0, "--wait": 0, "--collect": 0, "--user": 0, "--system": 0, "--scope": 0,
+		"--service": 0, "--remain-after-exit": 0, "--send-sighup": 0, "--same-dir": 0,
+		"--working-directory=": 0, "--unit=": 0, "--property=": 0, "--": 0,
+	}, nil, "systemd-run")
+}
+
+func unwrapKnownOptions(
+	argv []token,
+	segmentIndex int,
+	arguments map[string]int,
+	flags map[string]struct{},
+	name string,
+) ([]token, *Diagnostic) {
+	index := 1
+	for index < len(argv) {
+		value := argv[index].value
+		if value == "--" {
+			index++
+			break
+		}
+		if count, ok := arguments[value]; ok {
+			if index+count >= len(argv) {
+				return nil, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+			}
+			index += count + 1
+			continue
+		}
+		if _, ok := flags[value]; ok {
+			index++
+			continue
+		}
+		matchedAttached := false
+		for option := range arguments {
+			if strings.HasSuffix(option, "=") && strings.HasPrefix(value, option) && len(value) > len(option) {
+				matchedAttached = true
+				break
+			}
+		}
+		if matchedAttached {
+			index++
+			continue
+		}
+		if strings.HasPrefix(value, "-") {
+			return nil, diagnosticForToken(
+				CodePlanWrapperDenied,
+				fmt.Sprintf("%s has unsupported option %s before its child argv", name, value),
+				segmentIndex,
+				index,
+				argv[index],
+				fmt.Sprintf("remove unsupported %s option and provide one literal child argv", name),
+				"unsupported-transparent-wrapper-option",
+			)
+		}
+		break
+	}
+	if index >= len(argv) {
+		return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
+	}
+	return argv[index:], nil
 }
 
 func unwrapEnv(argv []token, segmentIndex int) ([]token, *Diagnostic) {
@@ -698,7 +1492,20 @@ func unwrapEnv(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 				)
 			}
 			index += 2
-		case strings.HasPrefix(value, "--unset="), strings.HasPrefix(value, "--chdir="):
+		case strings.HasPrefix(value, "--unset="):
+			if !isIdentifier(strings.TrimPrefix(value, "--unset=")) {
+				return nil, diagnosticForToken(
+					CodeEnvironmentOptionDenied,
+					fmt.Sprintf("env option %s argument is not a valid identifier", value),
+					segmentIndex,
+					index,
+					argv[index],
+					"supply --unset=NAME with one literal environment identifier",
+					"environment-invalid-option-argument",
+				)
+			}
+			index++
+		case strings.HasPrefix(value, "--chdir="):
 			index++
 		case strings.HasPrefix(value, "-"):
 			return nil, diagnosticForToken(
@@ -722,9 +1529,13 @@ func unwrapEnv(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 		}
 		if isEnvironmentContextName(name) {
 			redacted := token{value: name, offset: argv[index].offset}
+			contextKind := "registered interpreter"
+			if strings.HasPrefix(name, "GIT_") {
+				contextKind = "registered repository"
+			}
 			return nil, diagnosticForToken(
 				CodeEnvironmentContextDenied,
-				fmt.Sprintf("environment assignment name %s changes registered execution context", name),
+				fmt.Sprintf("environment assignment name %s changes %s context", name, contextKind),
 				segmentIndex,
 				index,
 				redacted,
@@ -819,6 +1630,26 @@ func unwrapTimeout(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 	return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
 }
 
+func unwrapTime(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	return unwrapKnownOptions(argv, segmentIndex, map[string]int{
+		"-f": 1, "--format": 1, "-o": 1, "--output": 1, "--": 0,
+	}, map[string]struct{}{
+		"--append": {}, "--verbose": {},
+	}, "time")
+}
+
+func unwrapPrlimit(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	return unwrapKnownOptions(argv, segmentIndex, map[string]int{
+		"--pid": 1, "--output": 1, "--": 0,
+		"--as=": 0, "--core=": 0, "--cpu=": 0, "--data=": 0,
+		"--fsize=": 0, "--locks=": 0, "--memlock=": 0, "--msgqueue=": 0,
+		"--nice=": 0, "--nofile=": 0, "--nproc=": 0, "--rss=": 0,
+		"--rtprio=": 0, "--rttime=": 0, "--sigpending=": 0, "--stack=": 0,
+	}, map[string]struct{}{
+		"--verbose": {}, "--noheadings": {}, "--raw": {},
+	}, "prlimit")
+}
+
 func inspectPrintenv(argv []token, segmentIndex int) *Diagnostic {
 	if len(argv) == 1 {
 		return diagnosticForToken(
@@ -845,6 +1676,17 @@ func inspectPrintenv(argv []token, segmentIndex int) *Diagnostic {
 	seen := make(map[string]struct{}, len(argv)-1)
 	for index, argument := range argv[1:] {
 		name := argument.value
+		if strings.HasPrefix(name, "-") {
+			return diagnosticForToken(
+				CodeEnvironmentOptionDenied,
+				fmt.Sprintf("printenv option %s is unsupported", name),
+				segmentIndex,
+				index+1,
+				argument,
+				"remove the reported option and query one to sixteen registered environment names explicitly",
+				"environment-option-unsupported",
+			)
+		}
 		if !isIdentifier(name) {
 			return diagnosticForToken(
 				CodeEnvironmentEnumerationDenied,
@@ -913,12 +1755,12 @@ func inspectGit(
 	for index, argument := range argv[1:] {
 		if isGitContextOption(argument.value) {
 			return DecisionDeny, diagnosticForToken(
-				CodeGitDynamicExecutionDenied,
+				CodeGitExecutionContextDenied,
 				"Git execution or repository context is overridden by a visible option",
 				segmentIndex,
 				index+1,
 				argument,
-				"remove the reported Git context option and use repository-default inspection",
+				"remove the reported Git context option and use the bounded coordinator Git route for repository-default inspection",
 				"git-execution-context",
 			)
 		}
@@ -938,7 +1780,7 @@ func inspectGit(
 			segmentIndex,
 			mutationIndex,
 			argv[mutationIndex],
-			"route this exact Git mutation through the coordinator acceptance path",
+			"route this exact Git mutation through the main/orchestrator coordinator acceptance path",
 			"worker-git-ownership",
 		)
 	}
@@ -978,7 +1820,7 @@ func inspectBroadDestruction(argv []token, segmentIndex int) *Diagnostic {
 		}
 	}
 	if recursive && force && rootIndex >= 0 {
-		return diagnosticForToken(
+		diagnostic := diagnosticForToken(
 			CodeBroadDestructiveDenied,
 			"recursive forced deletion selects a broad root",
 			segmentIndex,
@@ -987,26 +1829,109 @@ func inspectBroadDestruction(argv []token, segmentIndex int) *Diagnostic {
 			"replace the broad root with one explicit narrow recoverable target",
 			"broad-destructive-root",
 		)
+		diagnostic.Path = argv[rootIndex].value
+		return diagnostic
 	}
 	return nil
 }
 
+type activeControlFile struct {
+	path string
+	info os.FileInfo
+}
+
+func activeControlFileIndex(markers []string) []activeControlFile {
+	index := make([]activeControlFile, 0, len(markers)*len(eciControlBasenames))
+	seenSessionDirs := make(map[string]struct{}, len(markers))
+	for _, marker := range markers {
+		sessionDir := filepath.Clean(filepath.Dir(marker))
+		if _, seen := seenSessionDirs[sessionDir]; seen {
+			continue
+		}
+		seenSessionDirs[sessionDir] = struct{}{}
+		entries, err := os.ReadDir(sessionDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.Type()&os.ModeSymlink != 0 || !isECIControlBasename(entry.Name()) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			index = append(index, activeControlFile{
+				path: filepath.Join(sessionDir, entry.Name()),
+				info: info,
+			})
+		}
+	}
+	return index
+}
+
+func isECIControlBasename(value string) bool {
+	for _, name := range eciControlBasenames {
+		if value == name || strings.HasPrefix(value, name+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func activeControlHardlinkPath(path string, index []activeControlFile) string {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	for _, control := range index {
+		if os.SameFile(info, control.info) {
+			return control.path
+		}
+	}
+	return ""
+}
+
 func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagnostic {
+	controlIndex := activeControlFileIndex(request.ActiveMarkers)
 	for argumentIndex, argument := range argv[1:] {
-		candidate := filepath.Clean(argument.value)
+		pathArgument, pathLike := commandPathOperand(argv[0].value, argument)
+		if !pathLike {
+			continue
+		}
+		candidate := pathArgument.value
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(request.CWD, candidate)
+		}
+		candidate = filepath.Clean(candidate)
 		for _, markerPath := range request.ActiveMarkers {
 			cleanMarker := filepath.Clean(markerPath)
 			if candidate == cleanMarker {
-				return diagnosticForToken(
+				diagnostic := diagnosticForToken(
 					CodePlanLiveControlDenied,
 					"worker argv resolves to an exact active-session live-control artifact",
 					segmentIndex,
 					argumentIndex+1,
-					argument,
+					pathArgument,
 					"route this exact live-control operation through the coordinator",
 					"worker-live-control",
 				)
+				diagnostic.Path = candidate
+				return diagnostic
 			}
+		}
+		if controlPath := activeControlHardlinkPath(candidate, controlIndex); controlPath != "" {
+			diagnostic := diagnosticForToken(
+				CodePlanLiveControlDenied,
+				"worker argv inode matches an active-session live-control artifact",
+				segmentIndex,
+				argumentIndex+1,
+				pathArgument,
+				"route this exact live-control operation through the coordinator",
+				"worker-live-control",
+			)
+			diagnostic.Path = controlPath
+			return diagnostic
 		}
 	}
 	return nil
@@ -1107,12 +2032,16 @@ func operationForCode(code DiagnosticCode) string {
 		return "environment-boundary"
 	case code == CodeWorkerGitOwnershipDenied:
 		return "worker-git-ownership"
-	case code == CodeGitDynamicExecutionDenied:
+	case code == CodeGitExecutionContextDenied:
 		return "git-execution-context"
-	case code == CodeControlOwnerRequired, code == CodePlanLiveControlDenied:
+	case code == CodeControlOwnerRequired, code == CodeControlIdentityDenied, code == CodePlanLiveControlDenied:
 		return "worker-control"
 	case code == CodeBroadDestructiveDenied:
 		return "broad-destructive"
+	case code == CodeLedgerAppendOnly:
+		return "ledger-append-only"
+	case code == CodeProofPathEscapeDenied:
+		return "proof-path-ownership"
 	default:
 		return "plan-segment"
 	}
@@ -1203,6 +2132,84 @@ func isInterpreter(name string) bool {
 	}
 }
 
+func isLifecycleScriptCapability(cwd string, argv []token) bool {
+	if isLifecycleScriptPath(cwd, argv[0].value) {
+		return true
+	}
+	if !isShellInterpreter(filepath.Base(argv[0].value)) {
+		return false
+	}
+
+	index := 1
+	for index < len(argv) {
+		value := argv[index].value
+		switch value {
+		case "--":
+			index++
+			if index >= len(argv) {
+				return false
+			}
+			return isLifecycleScriptPath(cwd, argv[index].value)
+		case "-e", "-n", "--noexec", "-x", "--trace", "--noprofile", "--norc", "--posix", "--restricted", "--verbose":
+			index++
+		case "-O":
+			if index+1 >= len(argv) {
+				return false
+			}
+			index += 2
+		default:
+			if strings.HasPrefix(value, "-") {
+				return false
+			}
+			return isLifecycleScriptPath(cwd, value)
+		}
+	}
+
+	return false
+}
+
+func isLifecycleScriptPath(cwd, value string) bool {
+	if filepath.Base(value) == value {
+		return isLifecycleName(value)
+	}
+
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) {
+		cleaned = filepath.Join(cwd, cleaned)
+	}
+	resolved := resolvePathIdentity(cleaned)
+	switch {
+	case filepath.Base(filepath.Dir(resolved)) == "hooks":
+		switch filepath.Base(resolved) {
+		case "eci-review-gate.sh", "eci-active-gate.sh", "stop-gate.sh":
+			return true
+		default:
+			return false
+		}
+	case filepath.Base(filepath.Dir(resolved)) == "bin":
+		return filepath.Base(resolved) == "eci-active"
+	default:
+		return false
+	}
+}
+
+func resolvePathIdentity(path string) string {
+	resolved, err := resolvePathWithMissingSuffix(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return resolved
+}
+
+func isShellInterpreter(name string) bool {
+	switch name {
+	case "bash", "dash", "sh", "zsh":
+		return true
+	default:
+		return false
+	}
+}
+
 func isLifecycleName(name string) bool {
 	switch name {
 	case "eci-active", "eci-active-gate.sh", "eci-review-gate", "eci-review-gate.sh", "eci-stage", "stop-gate.sh":
@@ -1210,6 +2217,19 @@ func isLifecycleName(name string) bool {
 	default:
 		return false
 	}
+}
+
+func isCoordinatorHookRepair(argv []token) bool {
+	if len(argv) < 4 || !isInterpreter(filepath.Base(argv[0].value)) {
+		return false
+	}
+	for index := 1; index+1 < len(argv); index++ {
+		if filepath.Base(argv[index].value) == "install-pre-commit-go-mod.sh" &&
+			argv[index+1].value == "--repair-hardlink" {
+			return true
+		}
+	}
+	return false
 }
 
 func isGitContextOption(value string) bool {
@@ -1260,14 +2280,45 @@ func gitMutation(argv []token, subcommandIndex int) (int, string) {
 			}
 		}
 	case "branch":
+		expectsValue := false
 		for index, argument := range argv[subcommandIndex+1:] {
 			value := argument.value
-			if isBranchMutationOption(value) || !strings.HasPrefix(value, "-") {
+			if expectsValue {
+				expectsValue = false
+				continue
+			}
+			if isBranchMutationOption(value) {
 				return subcommandIndex + index + 1, "branch " + value
 			}
+			if isBranchInspectionValueOption(value) {
+				expectsValue = true
+				continue
+			}
+			if isBranchInspectionAssignment(value) || strings.HasPrefix(value, "-") {
+				continue
+			}
+			return subcommandIndex + index + 1, "branch update"
 		}
 	}
 	return 0, ""
+}
+
+func isBranchInspectionValueOption(value string) bool {
+	switch value {
+	case "--contains", "--format", "--merged", "--no-contains", "--no-merged", "--points-at", "--sort":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBranchInspectionAssignment(value string) bool {
+	for _, option := range []string{"--contains=", "--format=", "--merged=", "--no-contains=", "--no-merged=", "--points-at=", "--sort="} {
+		if strings.HasPrefix(value, option) {
+			return true
+		}
+	}
+	return false
 }
 
 func isBranchMutationOption(value string) bool {
@@ -1288,6 +2339,33 @@ func isSourceWriter(name string, argv []token) bool {
 			if argument.value == "-i" || argument.value == "--in-place" || strings.HasPrefix(argument.value, "-i") || strings.HasPrefix(argument.value, "--in-place=") {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func sourceWriterTargetsCWD(cwd, name string, argv []token) bool {
+	root := filepath.Clean(cwd)
+	for _, argument := range argv[1:] {
+		value := argument.value
+		if name == "dd" && strings.HasPrefix(value, "of=") {
+			value = strings.TrimPrefix(value, "of=")
+		} else {
+			pathArgument, pathLike := pathOperand(argument)
+			if !pathLike {
+				continue
+			}
+			value = pathArgument.value
+		}
+		if value == "" {
+			continue
+		}
+		candidate := value
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, candidate)
+		}
+		if pathWithin(filepath.Clean(candidate), root) {
+			return true
 		}
 	}
 	return false

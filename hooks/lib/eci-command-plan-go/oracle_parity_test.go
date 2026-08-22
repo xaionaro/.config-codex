@@ -15,26 +15,28 @@ func TestPythonOracleParityForBoundedCore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve oracle: %v", err)
 	}
-	testCases := []string{
-		"novel-tool --flag value",
-		"adb devices -l",
-		"printf 'left && right'",
-		"env FOO=bar novel-tool --flag value",
-		"FOO=bar novel-tool",
-		"novel-tool > output.txt",
-		"printf before | env | printf after",
-		"timeout 5 git commit -m nope",
-		"git archive HEAD",
-		"printenv OPENAI_API_KEY",
-		"rm -rf /",
+	testCases := []struct {
+		command string
+	}{
+		{command: "novel-tool --flag value"},
+		{command: "adb devices -l"},
+		{command: "printf 'left && right'"},
+		{command: "env FOO=bar novel-tool --flag value"},
+		{command: "FOO=bar novel-tool"},
+		{command: "novel-tool > output.txt"},
+		{command: "printf before | env | printf after"},
+		{command: "timeout 5 git commit -m nope"},
+		{command: "git archive HEAD"},
+		{command: "printenv OPENAI_API_KEY"},
+		{command: "rm -rf /"},
 	}
 
-	for _, command := range testCases {
-		command := command
-		t.Run(command, func(t *testing.T) {
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.command, func(t *testing.T) {
 			t.Parallel()
 
-			request := activeWorker(command)
+			request := activeWorker(testCase.command)
 			goResult := Classify(request)
 			goStatus := statusForDecision(goResult.Decision)
 			pythonStatus, pythonOutput := runPythonOracle(t, oracle, request)

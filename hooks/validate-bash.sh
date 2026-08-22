@@ -133,10 +133,16 @@ deny_marker_boundary() {
 
 deny_eci() {
   local code="$1" operation="$2" detail="$3" remediation="$4"
-  local subject identity
+  local subject identity role="${plan_role:-coordinator}" marker="${plan_marker_state:-inactive}"
+  case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}:${hook_is_subagent:-false}" in
+    true:*:*|*:subagent:*|*:worker:*|*:*:true) role=worker ;;
+  esac
+  if declare -p syntax_eci_markers >/dev/null 2>&1 && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+    marker=active
+  fi
   identity="$(eci_command_identity_subject "${command:-}")"
   [[ "$detail" == *"rejected command="* ]] || detail="$detail; rejected command=$identity"
-  subject="command=$identity,session=$(eci_diagnostic_value "${session_id:-<missing>}"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}"),repo=$(eci_diagnostic_value "${cwd:-$PWD}")"
+  subject="provider=codex,role=$role,marker=$marker,command=$identity,session=$(eci_diagnostic_value "${session_id:-<missing>}"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}"),repo=$(eci_diagnostic_value "${cwd:-$PWD}")"
   deny "$(eci_diagnostic_reason "$code" "PreToolUse" "$operation" "$subject" "$detail" "$remediation")"
 }
 
@@ -363,6 +369,25 @@ ECI_ENVIRONMENT_COMMAND_SEGMENT=""
 ECI_ENVIRONMENT_COMMAND_ARGV_INDEX=""
 ECI_ENVIRONMENT_COMMAND_REASON=""
 
+# Strict marker discovery returns explicit sentinels when the proof root is
+# unsafe or its bounded scan cannot establish ownership.  These are active
+# control-state failures, not an inactive callback; surface the exact state
+# before the planner or hot-path allow can accidentally hide it.
+for marker_scan_result in "${syntax_eci_markers[@]}"; do
+  case "$marker_scan_result" in
+    "$codex_eci_marker_scan_unsafe_token")
+      deny_eci "ECI_MARKER_UNSAFE_PATH" "marker-discovery" \
+        "ECI marker discovery denied an unsafe proof-root path: path=$CODEX_PROOF_ROOT_CONFIGURED; predicate=proof-root-safety; reason=the configured proof root is not a canonical non-symlink directory" \
+        "use a canonical non-symlink proof root and retry the coordinator callback"
+      ;;
+    "$codex_eci_marker_scan_overflow_token")
+      deny_eci "ECI_MARKER_OWNERSHIP_AMBIGUOUS" "marker-discovery" \
+        "ECI marker discovery denied an overfull proof-root scan: path=$CODEX_PROOF_ROOT_CONFIGURED; predicate=bounded-marker-scan; reason=marker ownership could not be established within the bounded scan" \
+        "reduce the proof-root entries to the bounded marker budget, then retry"
+      ;;
+  esac
+done
+
 # Parse and classify every finite literal command plan once before the legacy
 # single-command recognizers.  The classifier admits ordinary argv without an
 # executable allowlist and defers only visibly protected capabilities to the
@@ -400,8 +425,226 @@ if plan_output="$(
 else
   plan_status=$?
 fi
+
+eci_cleanup_command_shape() {
+  case "${1:-}" in
+    mv|mv\ *|rm|rm\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_active_marker_binding() {
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 0
+  local marker
+  for marker in "${syntax_eci_markers[@]}"; do
+    if ! codex_eci_marker_path_owner_is_valid "$marker"; then
+      deny_marker_boundary "$marker" "$(codex_canonical_cwd "$cwd")" "$session_id"
+    fi
+  done
+  [ "${#syntax_eci_markers[@]}" -le 1 ] ||
+    deny_eci "ECI_MARKER_OWNERSHIP_AMBIGUOUS" "marker-discovery" \
+      "ECI marker ownership denied an active callback with multiple validated owners: path=$CODEX_PROOF_ROOT_CONFIGURED; predicate=duplicate-active-owner; reason=the callback cannot safely select one ECI session marker" \
+      "resolve marker ownership so exactly one validated marker remains, then retry"
+}
+
+# A coordinator batch made entirely of visible shell-script operands belongs
+# to the manifest-backed script route. Keep this shape check independent of
+# filenames so the generic planner cannot fast-path an unreviewed segment,
+# while ordinary coordinator compounds and worker operator boundaries retain
+# their existing handling.
+coordinator_script_batch_shape() {
+  [ "${plan_role:-coordinator}" != worker ] || return 1
+  case "${1:-}" in
+    *'&&'*) ;;
+    *) return 1 ;;
+  esac
+  python3 - "$1" <<'PY'
+import shlex
+import sys
+
+command = sys.argv[1]
+if any(mark in command for mark in ("\n", "\r", "$", "`")):
+    raise SystemExit(1)
+try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+if "&&" not in tokens:
+    raise SystemExit(1)
+unsafe = {";", "&", "||", "|", "(", ")", ">", ">>", "<", "<<", "<<<", ">|", ">&", "<&"}
+if any(token in unsafe for token in tokens):
+    raise SystemExit(1)
+chunks, current = [], []
+for token in tokens:
+    if token == "&&":
+        if not current:
+            raise SystemExit(1)
+        chunks.append(current)
+        current = []
+    else:
+        current.append(token)
+if not current:
+    raise SystemExit(1)
+chunks.append(current)
+if len(chunks) < 2 or len(chunks) > 16:
+    raise SystemExit(1)
+for segment in chunks:
+    if (len(segment) not in {2, 3} or segment[0] not in {"bash", "sh"} or
+            (len(segment) == 3 and segment[1] != "-n")):
+        raise SystemExit(1)
+    script = segment[-1]
+    if not script or script.startswith("-") or any(mark in script for mark in ("$", "`", "..")):
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+# These are conservative lexical prefilters for deferred legacy routes.  The
+# route parser remains authoritative; a false positive only spends the route's
+# existing validation cost, while a false negative must never skip a protected
+# capability.  The Go planner's capability field is the parsed gate-mode bit.
+deferred_route_gate_mode_shape() {
+  [ "${plan_status:-}" -eq 3 ] || return 1
+  [[ "${plan_output:-}" == *'"gate-mode"'* ]]
+}
+
+deferred_route_lifecycle_shape() {
+  case "${1:-}" in
+    *eci-active*|*eci-review-gate*|*eci-stage*|*stop-gate.sh*|*ate-orchestrator-gate.sh*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+deferred_route_script_shape() {
+  case "${1:-}" in
+    bash|bash\ *|sh|sh\ *|./hooks/*.sh|./hooks/tests/*.sh|/*/*.sh|*/install-pre-commit-go-mod.sh|*/eci-review-gate.sh) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+deferred_route_environment_shape() {
+  case "${1:-}" in
+    env|env\ *|printenv|printenv\ *|*\ env\ *|*\ printenv\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+deferred_route_git_shape() {
+  case "${1:-}" in
+    git|git\ *|*/git|*/git\ *|*\ git\ *|*\/git\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+deferred_route_proof_path_shape() {
+  local value="${1:-}" root
+  for root in \
+    "${CODEX_PROOF_ROOT_CANONICAL:-}" "${CODEX_PROOF_ROOT_CONFIGURED:-}" \
+    "${CODEX_PROOF_ROOT_STABLE_ALIAS:-}" "${KIMI_PROOF_ROOT_CANONICAL:-}" \
+    "${KIMI_PROOF_ROOT_CONFIGURED:-}" "${KIMI_PROOF_ROOT_STABLE_ALIAS:-}"; do
+    [ -n "$root" ] || continue
+    case "$value" in
+      "$root"|"$root"/*|*" $root"|*" $root"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+deferred_route_hook_repair_shape() {
+  case "${1:-}" in
+    chmod\ 755\ *|*install-pre-commit-go-mod.sh*|*pre-commit-go-mod.sh*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A worker plan with status=0 is authoritative only for a plain, finite
+# argv.  Keep every capability that has an ownership or syntax boundary on
+# the deferred route; this lexical gate is deliberately conservative and
+# does not identify commands by an allowlist.
+deferred_worker_operator_shape() {
+  case "${1:-}" in
+    *'&&'*|*'||'*|*'|'*|*'>'*|*'<'*|*'`'*|*'$('*|*'${'*|*$'\n'*|*$'\r'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+deferred_worker_wrapper_shape() {
+  case "${1:-}" in
+    env|env\ *|printenv|printenv\ *|command|command\ *|builtin|builtin\ *|exec|exec\ *|\
+    bash|bash\ *|sh|sh\ *|dash|dash\ *|zsh|zsh\ *|ksh|ksh\ *|ash|ash\ *|fish|fish\ *|\
+    */bash|*/bash\ *|*/sh|*/sh\ *|*/dash|*/dash\ *|*/zsh|*/zsh\ *|\
+    python|python\ *|python2|python2\ *|python3|python3\ *|perl|perl\ *|ruby|ruby\ *|\
+    node|node\ *|php|php\ *|timeout|timeout\ *|time|time\ *|nice|nice\ *|nohup|nohup\ *|\
+    setsid|setsid\ *|sudo|sudo\ *|doas|doas\ *|systemd-run|systemd-run\ *|\
+    xargs|xargs\ *|find|find\ *|*' -c '*|*' --command '*|*' --eval '*|*' --execute '*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+deferred_worker_control_shape() {
+  case "${1:-}" in
+    *eci_active*|*goal_state*|*eci_wait*|*eci-required-critics*|*eci-critic-identities*|\
+    *eci-acceptance-*|*baseline_head*|*proof.md*|*instructions.md*|*stop_timestamps*|\
+    *stop_loop_state*|*disengage.md*|*user-closed.md*|*project-understanding.md*|\
+    *high_level_log*|*eci-teardown-complete*|*eci-baseline-binding*|*eci-commit-admitted*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+worker_plain_plan_shape() {
+  [ "${plan_role:-coordinator}" = worker ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  [ "${plan_status:-1}" -eq 0 ] || return 1
+  eci_cleanup_command_shape "$1" && return 1
+  coordinator_script_batch_shape "$1" && return 1
+  deferred_worker_operator_shape "$1" && return 1
+  deferred_worker_wrapper_shape "$1" && return 1
+  deferred_worker_control_shape "$1" && return 1
+  deferred_route_lifecycle_shape "$1" && return 1
+  deferred_route_script_shape "$1" && return 1
+  deferred_route_environment_shape "$1" && return 1
+  deferred_route_git_shape "$1" && return 1
+  deferred_route_proof_path_shape "$1" && return 1
+  deferred_route_hook_repair_shape "$1" && return 1
+  [[ "$1" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*= ]] && return 1
+  # The compiled planner has already performed the exact path-ownership,
+  # live-control, lifecycle, proof, Git, environment, wrapper, and operator
+  # checks for this finite single-segment argv.  Ordinary path operands,
+  # including arbitrary-basename helper hardlinks, may therefore use the
+  # worker fast path; the shape guards above retain protected deferrals.
+  return 0
+}
+
 case "$plan_status" in
-  0) exit 0 ;;
+  0)
+    # Active Go allows still pass the ownership predicates below.  A plain
+    # worker argv has no unrelated legacy route to inspect, so bind its
+    # marker and exit before launching those deferred helpers.
+    if worker_plain_plan_shape "$command"; then
+      validate_active_marker_binding
+      exit 0
+    fi
+    # Non-worker allows still pass the ownership predicates below.  The
+    # fast-path exit is deliberately after worker instruction/control checks.
+    # Cleanup-shaped mutations must also reach the coordinator cleanup route:
+    # an allowed planner result cannot bypass destination/path ownership
+    # checks (for example, an existing quarantine destination).
+    if [ "$plan_marker_state" != active ] ||
+      { [ "$plan_role" != worker ] &&
+        ! eci_cleanup_command_shape "$command" &&
+        ! coordinator_script_batch_shape "$command"; }; then
+      validate_active_marker_binding
+      exit 0
+    fi
+    ;;
+  3)
+    # Protected deferrals must continue into the legacy operation gates even
+    # when this callback has no active ECI marker.  Inactive Git approval
+    # callbacks still require the user-owned one-time artifact; ordinary
+    # finite allows retain the fast exit above.
+    ;;
   2)
     [ -n "$plan_output" ] || deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
       "command-plan classifier returned an empty denial" \
@@ -409,7 +652,6 @@ case "$plan_status" in
     finalize_command_gate_denial parser "$plan_output"
     exit 0
     ;;
-  3) ;;
   *)
     deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
       "command-plan classifier failed with status=$plan_status" \
@@ -421,7 +663,8 @@ esac
 # quoted shell payload.  Reject it before either the legacy read-only scanner
 # or the Python classifier can accidentally treat only the first line as the
 # command identity.  The same guard covers nested sh -c/eval payloads below.
-if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  { [ "$plan_status" -ne 0 ] || eci_cleanup_command_shape "$command"; }; then
   case "$command" in
     *$'\n'*|*$'\r'*)
       deny_eci "ECI_COMMAND_SYNTAX_DENIED" "acceptance-boundary" "ECI command syntax denied literal newlines in a shell command; multiline or eval payloads must be split into separately reviewed calls." "split multiline or eval payloads into separately reviewed literal calls"
@@ -775,13 +1018,7 @@ def is_control_hardlink_alias(value):
         target = os.stat(candidate, follow_symlinks=False)
     except OSError:
         return False
-    if not os.path.isfile(candidate) or os.path.islink(candidate) or target.st_nlink < 2:
-        return False
-    try:
-        root_stat = os.stat(root, follow_symlinks=False)
-    except OSError:
-        return False
-    if not os.path.isdir(root) or os.path.islink(root) or root_stat.st_dev != target.st_dev:
+    if not os.path.isfile(candidate) or os.path.islink(candidate):
         return False
     control_names = {
         "eci_active", "goal_state", "eci_wait", "eci_user_owned_wait.md",
@@ -793,39 +1030,34 @@ def is_control_hardlink_alias(value):
         "disengage.md", "user-closed.md", "project-understanding.md",
         "high_level_log.md", "latest-status-report.md", "high_level_log.anchor",
     }
-    # Never walk an unbounded proof root from the synchronous PreToolUse
-    # hook.  A stale/global proof root can contain many sessions; os.walk()
-    # would enumerate all of them before the callback can deny one command.
-    # Use a small explicit budget and fail closed when the alias cannot be
-    # established within it.  The caller is deciding whether a worker write
-    # is safe, so an indeterminate scan must remain a denial.
-    scan_budget = 4096
-    pending = [root]
-    while pending:
-        directory = pending.pop()
-        try:
-            entries = os.scandir(directory)
-        except OSError:
-            return True
-        try:
-            for entry in entries:
-                scan_budget -= 1
-                if scan_budget < 0:
-                    return True
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        if entry.name != ".git":
-                            pending.append(entry.path)
-                        continue
-                    if entry.name not in control_names or entry.is_symlink():
-                        continue
-                    state = entry.stat(follow_symlinks=False)
-                except OSError:
-                    return True
-                if state.st_dev == target.st_dev and state.st_ino == target.st_ino:
-                    return True
-        finally:
-            entries.close()
+    session_id = os.environ.get("CODEX_VALIDATE_SESSION_ID", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", session_id):
+        return False
+    control_roots = []
+    for raw in (
+        root,
+        os.environ.get("CODEX_PROOF_ROOT_CANONICAL", ""),
+        os.environ.get("CODEX_PROOF_ROOT_CONFIGURED", ""),
+        os.environ.get("CODEX_PROOF_ROOT_STABLE_ALIAS", ""),
+    ):
+        if not raw or not os.path.isabs(raw) or os.path.normpath(raw) != raw:
+            continue
+        resolved_root = os.path.realpath(raw)
+        if (not os.path.isdir(resolved_root) or os.path.islink(resolved_root)
+                or resolved_root in control_roots):
+            continue
+        control_roots.append(resolved_root)
+    for control_root in control_roots:
+        session_dir = os.path.join(control_root, session_id)
+        for name in control_names:
+            control_path = os.path.join(session_dir, name)
+            try:
+                state = os.stat(control_path, follow_symlinks=False)
+            except OSError:
+                continue
+            if (os.path.isfile(control_path) and not os.path.islink(control_path)
+                    and state.st_dev == target.st_dev and state.st_ino == target.st_ino):
+                return True
     return False
 
 def segment_tokens(tokens):
@@ -1225,15 +1457,15 @@ def known_test_script(path):
         "test-eci-post-compact-refresh.sh": "b787702e6c0704729ff02b8256f1a74e94241cac7c4725dc893fa889668cc01b",
         "test-eci-review-gate.sh": "6fdb8d8a0e8a4aab410f96d5030225a7d873605956d93ae3f0d26dad93be8a88",
         "test-session-snapshot-refresh.sh": "10362e69f552c312d7cf6da3b3a9bd1a5cc3cac45d7c425b90f3f3977d4c56a4",
-        "test-validate-bash-classifier.sh": "e3ef25caefebc0b0a43e5f468ac3ed6bf0544757cbff8aa850b8e0d49e35f826",
-        "test-validate-bash-git-approvals.sh": "936f621fb1f2e127ae23aed5cacd87eeb33e41611bc4dd02d9f4fb8b33b7ba38",
+        "test-validate-bash-classifier.sh": "658e2f4a51d683be27a387333f6a3aad66436d5933683086ab6c76061bc6fb13",
+        "test-validate-bash-git-approvals.sh": "fc2ba6cce54965fea27101755cff49d96d122264f037c6cb8f7cf8c2d318c9e1",
         "test-policy-design-boundary.sh": "9aeb644e7a6578584d7fd7495bfc72c260536458a6ee212562b2921872dc3b55",
         "test-eci-edit-control-paths.sh": "6ba172e653f79cb04e20f674a67324ffa3c36305ad6782059c91f9c6c3413404",
         "test-eci-diagnostic-specificity.sh": "fbb40f2b717834f3eaad96535a3c3ed52e576f25c2ce8b678d84b6add2ab4dc0",
         "test-eci-marker-scope.sh": "b151488dbad9a6c8fb1e18b7437cdfb2dfe687d035474f42eaa82b269147e8af",
         "test-pretooluse-latency.sh": "b1f3eb4c305e784efb45c0b1c0627733318f6752d048ce1803c94981f0d45b84",
         "test-pre-commit-go-mod.sh": "daa6dee604ca9f63b85f842a468965b843bfa77095c39d0476ff43ea0def5b24",
-        "test-eci-command-syntax-gating.sh": "c31cf692100282f20991f4d9d53c10e8a18dde944e789c9e772e4865c7ea89b0",
+        "test-eci-command-syntax-gating.sh": "e98fc27f4ee290632a444216ae65db1d6108dc0e33a76ab785671e70a5e71181",
         "test-go-mod-hook-parity.sh": "63ba8579491e894bfb2adfe6d84e1bd056c1d814c4c5c0e97c25e417c3cbb5cf",
         "test-stop-loop-guidance.sh": "2c71d05da4a1bd6e1d99ab9eade3144a17d5428cb836bd795d189f2462bac128",
         "test-stop-marker-validation.sh": "3483c29a26283369929f782c18e0c91bc332748730dbc6539a1a22033e39bd57",
@@ -2090,6 +2322,12 @@ for name in (
 def in_root(path):
     return any(path == root or path.startswith(root + os.sep) for root in roots)
 
+def containing_root(path):
+    for root in roots:
+        if path == root or path.startswith(root + os.sep):
+            return root
+    return ""
+
 provider_session_roots = {
     os.path.realpath(os.path.join(os.path.dirname(hook_dir), "sessions")),
 }
@@ -2360,13 +2598,15 @@ def instruction_source_detail(token, operand_cwd):
     return ("allow", "token=%s candidate=%s resolved=%s instruction_root=%s source_type=regular-file" %
             (token, candidate, resolved, instruction_root))
 
-def current_control_hardlink(path):
-    try:
-        target = os.stat(path, follow_symlinks=False)
-    except OSError:
-        return None
+def active_control_inode_index():
+    """Index only control records in the currently active session directories."""
+    index = {}
+    seen_session_dirs = set()
     for marker in active_markers:
         session_dir = os.path.dirname(marker)
+        if session_dir in seen_session_dirs:
+            continue
+        seen_session_dirs.add(session_dir)
         try:
             entries = os.scandir(session_dir)
         except OSError:
@@ -2379,11 +2619,29 @@ def current_control_hardlink(path):
                     state = entry.stat(follow_symlinks=False)
                 except OSError:
                     continue
-                if state.st_dev == target.st_dev and state.st_ino == target.st_ino:
-                    return entry.path
+                index[(state.st_dev, state.st_ino)] = entry.path
         finally:
             entries.close()
-    return None
+    return index
+
+active_control_inodes = active_control_inode_index()
+
+def current_control_hardlink(path):
+    try:
+        target = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    return active_control_inodes.get((target.st_dev, target.st_ino))
+
+def protected_control_path(path):
+    """Return whether path names live or reserved ECI control state."""
+    if not path:
+        return False
+    resolved = os.path.realpath(path)
+    if (in_root(path) and is_control_name(os.path.basename(path))) or (
+            in_root(resolved) and is_control_name(os.path.basename(resolved))):
+        return True
+    return current_control_hardlink(path) is not None
 
 instruction_operands = (
     set(git_instruction_operands) if git_instruction_operands else
@@ -2398,6 +2656,7 @@ def emit(kind, token, resolved):
     raise SystemExit(0)
 
 output_path_options = {"--report-path", "--to-file", "--output", "-o"}
+output_operands = set()
 for index, raw_token in enumerate(tokens[1:], 1):
     path_token = ""
     if raw_token in output_path_options and index + 1 < len(tokens):
@@ -2410,12 +2669,13 @@ for index, raw_token in enumerate(tokens[1:], 1):
                 break
     if not path_token:
         continue
+    output_operands.add(path_token)
     candidate = path_token if os.path.isabs(path_token) else os.path.abspath(
         os.path.join(hook_cwd, path_token)
     )
     candidate = os.path.normpath(candidate)
     resolved = os.path.realpath(candidate)
-    if in_root(candidate) or in_root(resolved):
+    if (in_root(candidate) or in_root(resolved)) and protected_control_path(candidate):
         emit("write", raw_token if "=" in raw_token else path_token, resolved)
 
 for token in tokens[1:]:
@@ -2436,10 +2696,17 @@ for token in tokens[1:]:
             if control_alias:
                 emit("read", token, control_alias)
             continue
+    resolved = os.path.realpath(candidate)
     if in_root(candidate):
+        if not os.path.lexists(candidate) and token not in output_operands:
+            print("instruction-denied token=%s candidate=%s resolved=%s instruction_root=%s failure=missing-instruction-source" %
+                  (token, candidate, resolved, containing_root(candidate)))
+            raise SystemExit(0)
         if bounded_control_read(tokens) and canonical_document(token):
             continue
-        emit("read" if read_command else "write", token, candidate)
+        if protected_control_path(candidate):
+            emit("read" if read_command else "write", token, candidate)
+        continue
     if in_provider_sessions(candidate):
         emit("read" if read_command else "write", token, candidate)
     if is_control_name(os.path.basename(candidate)) and in_root(candidate):
@@ -2450,47 +2717,18 @@ for token in tokens[1:]:
     if in_root(resolved):
         if bounded_control_read(tokens) and canonical_document(token):
             continue
-        emit("read" if read_command else "write", token, resolved)
+        if protected_control_path(candidate) or protected_control_path(resolved):
+            emit("read" if read_command else "write", token, resolved)
+        continue
     if in_provider_sessions(resolved):
         emit("read" if read_command else "write", token, resolved)
     if resolved != candidate and is_control_name(os.path.basename(resolved)) and in_root(resolved):
         if bounded_control_read(tokens) and canonical_document(token):
             continue
         emit("read" if read_command else "write", token, resolved)
-    try:
-        target = os.stat(candidate, follow_symlinks=False)
-    except OSError:
-        continue
-    if not os.path.isfile(candidate) or os.path.islink(candidate) or target.st_nlink < 2:
-        continue
-    budget = 4096
-    for root in roots:
-        pending = [root]
-        while pending:
-            directory = pending.pop()
-            try:
-                entries = os.scandir(directory)
-            except OSError:
-                emit("read" if read_command else "write", token, candidate)
-            try:
-                for entry in entries:
-                    budget -= 1
-                    if budget < 0:
-                        emit("read" if read_command else "write", token, candidate)
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            if entry.name != ".git":
-                                pending.append(entry.path)
-                            continue
-                        if not is_control_name(entry.name) or entry.is_symlink():
-                            continue
-                        state = entry.stat(follow_symlinks=False)
-                    except OSError:
-                        emit("read" if read_command else "write", token, candidate)
-                    if state.st_dev == target.st_dev and state.st_ino == target.st_ino:
-                        emit("read" if read_command else "write", token, entry.path)
-            finally:
-                entries.close()
+    control_alias = current_control_hardlink(candidate)
+    if control_alias:
+        emit("read" if read_command else "write", token, control_alias)
 raise SystemExit(1)
 PY
   )" || true
@@ -3726,13 +3964,40 @@ def approved_read_roots():
             if os.path.isdir(alias) and not os.path.islink(alias):
                 roots.add(alias)
     # The coordinator may inspect bounded temporary probe output. Keep this
-    # root out of worker admission and accept only canonical non-symlink dirs.
+    # root out of worker admission, but accept configured deployment aliases
+    # only after resolving them into the approved local home/temp topology.
     if os.environ.get("CODEX_HOOK_IS_SUBAGENT") != "true":
-        for value in {"/tmp", "/bin", "/usr/bin", "/usr/local/bin", "/usr/lib/cargo/bin/coreutils", os.environ.get("TMPDIR", "")}:
-            if (value and os.path.isabs(value) and os.path.normpath(value) == value
-                    and os.path.isdir(value) and not os.path.islink(value)
-                    and os.path.realpath(value) == value):
+        def canonical_directory(raw):
+            if (not raw or not os.path.isabs(raw) or
+                    os.path.normpath(raw) != raw):
+                return ""
+            canonical = os.path.realpath(raw)
+            if (not os.path.isabs(canonical) or
+                    os.path.normpath(canonical) != canonical or
+                    not os.path.isdir(canonical) or os.path.islink(canonical) or
+                    os.path.realpath(canonical) != canonical):
+                return ""
+            return canonical
+
+        canonical_tmp = canonical_directory("/tmp")
+        if canonical_tmp != "/tmp":
+            canonical_tmp = ""
+        home = os.environ.get("HOME", "")
+        canonical_home_tmp = canonical_directory(os.path.join(home, "tmp") if home else "")
+        topology = {root for root in (canonical_tmp, canonical_home_tmp) if root}
+        for value in {"/bin", "/usr/bin", "/usr/local/bin", "/usr/lib/cargo/bin/coreutils"}:
+            if canonical_directory(value) == value:
                 roots.add(value)
+        for raw in (
+                os.environ.get("CODEX_TMPDIR", ""),
+                os.environ.get("TMPDIR", ""),
+                os.path.join(home, "tmp") if home else "",
+                "/tmp",
+        ):
+            canonical = canonical_directory(raw)
+            if canonical and any(canonical == root or canonical.startswith(root + os.sep)
+                                 for root in topology):
+                roots.add(canonical)
     return roots
 
 
@@ -6085,14 +6350,14 @@ elif name == "find" and "-delete" in args:
 elif name == "dd":
     targets = [token[3:] for token in args if token.startswith("of=")]
 elif name == "apply_patch":
-    print("class=source executable=%s token=<patch-payload> resolved=<payload> kind=coordinator-source-write" % argv[0])
+    print("class=source executable=%s token=<patch-payload> path=<payload> resolved=<payload> kind=coordinator-source-write" % argv[0])
     raise SystemExit(0)
 
 for token in targets:
     target = resolved(token)
     if under_source(target):
-        print("class=source executable=%s token=%s resolved=%s kind=coordinator-source-write" %
-              (argv[0], token, target))
+        print("class=source executable=%s token=%s path=%s resolved=%s kind=coordinator-source-write" %
+              (argv[0], token, target, target))
         raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -6461,7 +6726,14 @@ coordinator_go_vet_capture_route() {
   [ "$(classify_eci_command "$1" 2>/dev/null || true)" = "verification" ]
 }
 
+worker_protected_control_identity=""
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  worker_protected_control_identity="$(protected_control_script_identity "$command" 2>/dev/null || true)"
+fi
+
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  ! command_invokes_eci_binary "$command" &&
+  [ -z "$worker_protected_control_identity" ] &&
   worker_control_detail="$(worker_control_path_detail 2>/dev/null || true)" &&
   [ -n "$worker_control_detail" ]; then
   if [[ "$worker_control_detail" == instruction-denied\ * ]]; then
@@ -6480,6 +6752,91 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
       "ECI worker boundary denied a command path owned by the coordinator: $worker_control_detail" \
       "route ECI marker, proof, ledger, or teardown state through the main/orchestrator coordinator; workers may not mutate ECI control files or other coordinator-owned control paths"
   fi
+fi
+
+worker_reserved_lifecycle_alias_detail() {
+  [ "$hook_is_subagent" = true ] || return 1
+  python3 - "$1" "$HOOK_DIR" <<'PY'
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import sys
+
+command, hook_dir = sys.argv[1:]
+try:
+    tokens = shlex.split(command, posix=True)
+except ValueError:
+    raise SystemExit(1)
+if len(tokens) < 2 or any(token in {";", "&", "&&", "|", "||", "(", ")"} for token in tokens):
+    raise SystemExit(1)
+if tokens[1] not in {"on", "off", "status", "wait", "resume", "ledger-append", "manifest-write", "nested-enter", "nested-accept", "nested-exit"}:
+    raise SystemExit(1)
+
+provider_bin_aliases = {"eci-review-gate", "eci-stage"}
+
+roots = []
+seen_roots = set()
+for value in (
+    os.environ.get("CODEX_HOME", ""), os.environ.get("KIMI_CODE_HOME", ""),
+    os.path.dirname(hook_dir),
+):
+    if value and os.path.isabs(value) and os.path.isdir(value) and not os.path.islink(value):
+        root = os.path.realpath(value)
+        if root not in seen_roots:
+            seen_roots.add(root)
+            roots.append(root)
+
+def digest(path):
+    try:
+        with open(path, "rb") as stream:
+            value = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(65536), b""):
+                value.update(chunk)
+            return value.hexdigest()
+    except OSError:
+        return None
+
+candidate = tokens[0]
+resolved = shutil.which(candidate) if not os.path.isabs(candidate) else candidate
+if not resolved or not os.path.isfile(resolved) or os.path.islink(resolved):
+    raise SystemExit(1)
+resolved = os.path.realpath(resolved)
+if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+    raise SystemExit(1)
+candidate_digest = digest(resolved)
+for root in roots:
+    alias = os.path.basename(candidate)
+    provider_alias = os.path.join(root, "bin", alias)
+    if alias in provider_bin_aliases and resolved == provider_alias:
+        print("canonical_target=%s invocation=reserved-alias argv=%s" %
+              (provider_alias, json.dumps(tokens[1:], separators=(",", ":"))))
+        raise SystemExit(0)
+    canonical = os.path.join(root, "bin", "eci-active")
+    if os.path.isfile(canonical) and candidate_digest and candidate_digest == digest(canonical):
+        print("canonical_target=%s invocation=direct argv=%s" %
+              (canonical, json.dumps(tokens[1:], separators=(",", ":"))))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+worker_reserved_lifecycle_alias=""
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  worker_reserved_lifecycle_alias="$(worker_reserved_lifecycle_alias_detail "$command" 2>/dev/null || true)"
+fi
+if [ -n "$worker_reserved_lifecycle_alias" ]; then
+  deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
+    "ECI worker boundary denied coordinator-owned lifecycle/control invocation: ${worker_reserved_lifecycle_alias}; predicate=worker-lifecycle-control; reason=the reserved lifecycle executable alias owns ECI control state" \
+    "route this exact lifecycle/control invocation through the main/orchestrator coordinator"
+fi
+
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
+  ! eci_cleanup_command_shape "$command" &&
+  ! coordinator_script_batch_shape "$command"; then
+  validate_active_marker_binding
+  exit 0
 fi
 
 COORDINATOR_SCRIPT_ROUTE_DETAIL=""
@@ -6636,15 +6993,15 @@ reviewed_digests = {
         "hooks/tests/test-eci-post-compact-refresh.sh": "b787702e6c0704729ff02b8256f1a74e94241cac7c4725dc893fa889668cc01b",
         "hooks/tests/test-eci-review-gate.sh": "6fdb8d8a0e8a4aab410f96d5030225a7d873605956d93ae3f0d26dad93be8a88",
         "hooks/tests/test-session-snapshot-refresh.sh": "10362e69f552c312d7cf6da3b3a9bd1a5cc3cac45d7c425b90f3f3977d4c56a4",
-        "hooks/tests/test-validate-bash-classifier.sh": "e3ef25caefebc0b0a43e5f468ac3ed6bf0544757cbff8aa850b8e0d49e35f826",
-        "hooks/tests/test-validate-bash-git-approvals.sh": "936f621fb1f2e127ae23aed5cacd87eeb33e41611bc4dd02d9f4fb8b33b7ba38",
+        "hooks/tests/test-validate-bash-classifier.sh": "658e2f4a51d683be27a387333f6a3aad66436d5933683086ab6c76061bc6fb13",
+        "hooks/tests/test-validate-bash-git-approvals.sh": "fc2ba6cce54965fea27101755cff49d96d122264f037c6cb8f7cf8c2d318c9e1",
         "hooks/tests/test-policy-design-boundary.sh": "9aeb644e7a6578584d7fd7495bfc72c260536458a6ee212562b2921872dc3b55",
         "hooks/tests/test-eci-edit-control-paths.sh": "6ba172e653f79cb04e20f674a67324ffa3c36305ad6782059c91f9c6c3413404",
         "hooks/tests/test-eci-diagnostic-specificity.sh": "fbb40f2b717834f3eaad96535a3c3ed52e576f25c2ce8b678d84b6add2ab4dc0",
         "hooks/tests/test-eci-marker-scope.sh": "b151488dbad9a6c8fb1e18b7437cdfb2dfe687d035474f42eaa82b269147e8af",
         "hooks/tests/test-pretooluse-latency.sh": "b1f3eb4c305e784efb45c0b1c0627733318f6752d048ce1803c94981f0d45b84",
         "hooks/tests/test-pre-commit-go-mod.sh": "daa6dee604ca9f63b85f842a468965b843bfa77095c39d0476ff43ea0def5b24",
-        "hooks/tests/test-eci-command-syntax-gating.sh": "c31cf692100282f20991f4d9d53c10e8a18dde944e789c9e772e4865c7ea89b0",
+        "hooks/tests/test-eci-command-syntax-gating.sh": "e98fc27f4ee290632a444216ae65db1d6108dc0e33a76ab785671e70a5e71181",
         "hooks/tests/test-go-mod-hook-parity.sh": "63ba8579491e894bfb2adfe6d84e1bd056c1d814c4c5c0e97c25e417c3cbb5cf",
         "hooks/tests/test-stop-loop-guidance.sh": "2c71d05da4a1bd6e1d99ab9eade3144a17d5428cb836bd795d189f2462bac128",
     },
@@ -6704,25 +7061,6 @@ if "&&" in tokens:
     if len(chunks) < 2 or len(chunks) > 16:
         print("coordinator-script-route batch=count=" + str(len(chunks)) + " reason=expected 2..16 reviewed segments")
         raise SystemExit(1)
-    approved_tests = {
-        "hooks/tests/run.sh",
-        "hooks/tests/test-eci-post-compact-refresh.sh",
-        "hooks/tests/test-eci-review-gate.sh",
-        "hooks/tests/test-session-snapshot-refresh.sh",
-        "hooks/tests/test-validate-bash-classifier.sh",
-        "hooks/tests/test-validate-bash-git-approvals.sh",
-        "hooks/tests/test-policy-design-boundary.sh",
-        "hooks/tests/test-eci-edit-control-paths.sh",
-        "hooks/tests/test-eci-diagnostic-specificity.sh",
-        "hooks/tests/test-eci-marker-scope.sh",
-        "hooks/tests/test-pretooluse-latency.sh",
-        "hooks/tests/test-pre-commit-go-mod.sh",
-        "hooks/tests/test-eci-command-syntax-gating.sh",
-        "hooks/tests/test-go-mod-hook-parity.sh",
-        "hooks/tests/test-block-no-progress.sh",
-        "hooks/tests/test-stop-loop-guidance.sh",
-        "hooks/tests/test-stop-marker-validation.sh",
-    }
     for segment_index, segment in enumerate(chunks, 1):
         if not segment or segment[0] not in {"bash", "sh"} or len(segment) not in {2, 3} or (len(segment) == 3 and segment[1] != "-n"):
             print("coordinator-script-route batch=segment-" + str(segment_index) + " reason=expected bash/sh SCRIPT or bash/sh -n SCRIPT")
@@ -6748,16 +7086,7 @@ if "&&" in tokens:
                 key=len, reverse=True,
             )
             relative = os.path.relpath(resolved, matching_roots[0]) if matching_roots else ""
-            if matching_roots and os.path.basename(matching_roots[0]) == ".kimi-code":
-                approved_tests -= {
-                    "hooks/tests/test-eci-post-compact-refresh.sh",
-                    "hooks/tests/test-eci-review-gate.sh",
-                    "hooks/tests/test-session-snapshot-refresh.sh",
-                    "hooks/tests/test-validate-bash-classifier.sh",
-                    "hooks/tests/test-validate-bash-git-approvals.sh",
-                    "hooks/tests/test-policy-design-boundary.sh",
-                }
-            if relative not in approved_tests or not reviewed_script(relative, resolved):
+            if not reviewed_script(relative, resolved):
                 print("coordinator-script-route batch=segment-" + str(segment_index) + " script=" + script + " reason=script is absent from or differs from the reviewed digest manifest")
                 raise SystemExit(1)
     print("ok")
@@ -6833,34 +7162,6 @@ if not syntax_only:
         key=len, reverse=True,
     )
     relative = os.path.relpath(resolved, matching_roots[0]) if matching_roots else ""
-    approved_tests = {
-        "hooks/tests/run.sh",
-        "hooks/tests/test-eci-post-compact-refresh.sh",
-        "hooks/tests/test-eci-review-gate.sh",
-        "hooks/tests/test-session-snapshot-refresh.sh",
-        "hooks/tests/test-validate-bash-classifier.sh",
-        "hooks/tests/test-validate-bash-git-approvals.sh",
-        "hooks/tests/test-policy-design-boundary.sh",
-        "hooks/tests/test-eci-edit-control-paths.sh",
-        "hooks/tests/test-eci-diagnostic-specificity.sh",
-        "hooks/tests/test-eci-marker-scope.sh",
-        "hooks/tests/test-pretooluse-latency.sh",
-        "hooks/tests/test-pre-commit-go-mod.sh",
-        "hooks/tests/test-eci-command-syntax-gating.sh",
-        "hooks/tests/test-go-mod-hook-parity.sh",
-        "hooks/tests/test-block-no-progress.sh",
-        "hooks/tests/test-stop-loop-guidance.sh",
-        "hooks/tests/test-stop-marker-validation.sh",
-    }
-    if matching_roots and os.path.basename(matching_roots[0]) == ".kimi-code":
-        approved_tests -= {
-            "hooks/tests/test-eci-post-compact-refresh.sh",
-            "hooks/tests/test-eci-review-gate.sh",
-            "hooks/tests/test-session-snapshot-refresh.sh",
-            "hooks/tests/test-validate-bash-classifier.sh",
-            "hooks/tests/test-validate-bash-git-approvals.sh",
-            "hooks/tests/test-policy-design-boundary.sh",
-        }
     installer_route = (
         not direct_script and shell_name == "bash" and repair_peer is None and
         relative == "hooks/install-pre-commit-go-mod.sh"
@@ -6883,7 +7184,7 @@ if not syntax_only:
                 os.path.realpath(repair_peer) not in project_roots or os.path.realpath(repair_peer) == os.path.realpath(hook_cwd)):
             print("coordinator-script-route hard-link-repair reason=installer and peer must be the other canonical Codex/Kimi repository root")
             raise SystemExit(1)
-    elif relative not in approved_tests or not reviewed_script(relative, resolved):
+    elif not reviewed_script(relative, resolved):
         print("coordinator-script-route script=" + script + " reason=script is absent from or differs from the reviewed digest manifest")
         raise SystemExit(1)
 print("ok")
@@ -6895,6 +7196,33 @@ PY
   COORDINATOR_SCRIPT_ROUTE_DETAIL="${detail:-coordinator-script-route reason=command is outside approved verification grammar}"
   return 1
 }
+
+coordinator_hardlink_repair_shape() {
+  python3 - "$1" <<'PY'
+import os
+import shlex
+import sys
+
+try:
+    tokens = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    raise SystemExit(1)
+if len(tokens) < 4 or tokens[0] not in {"bash", "sh", "dash", "zsh"}:
+    raise SystemExit(1)
+for index in range(1, len(tokens) - 1):
+    if (os.path.basename(tokens[index]) == "install-pre-commit-go-mod.sh" and
+            tokens[index + 1] == "--repair-hardlink"):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" != true ] &&
+  coordinator_hardlink_repair_shape "$command" && ! coordinator_script_route "$command"; then
+  deny_eci "ECI_COORDINATOR_ROUTE_ARGUMENTS_DENIED" "coordinator-hardlink-repair" \
+    "ECI coordinator hard-link repair route denied malformed or unsafe arguments: ${COORDINATOR_SCRIPT_ROUTE_DETAIL:-command=$(eci_command_identity_subject "$command")}; predicate=coordinator-hardlink-repair; reason=the canonical installer requires a distinct canonical Codex/Kimi peer repository root" \
+    "invoke the canonical install-pre-commit-go-mod.sh --repair-hardlink with the other provider’s canonical repository root; do not use the current repository as its own peer"
+fi
 
 coordinator_go_hook_installer_identity() {
   python3 - "$1" "$cwd" "$HOOK_DIR" "${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}" <<'PY'
@@ -7557,14 +7885,15 @@ try:
     tokens = list(lexer)
 except ValueError:
     raise SystemExit(1)
-if tokens.count("&&") < 1 or tokens.count("&&") > 7:
+operators = [token for token in tokens if token in {"&&", "||"}]
+if len(operators) < 1 or len(operators) > 7:
     raise SystemExit(1)
-unsafe = {";", "&", "|", "||", "(", ")", ">", ">>", "<", "<<", "<<<", ">|", ">&", "<&"}
+unsafe = {";", "&", "|", "(", ")", ">", ">>", "<", "<<", "<<<", ">|", ">&", "<&"}
 if any(token in unsafe for token in tokens):
     raise SystemExit(1)
 parts, current = [], []
 for token in tokens:
-    if token == "&&":
+    if token in {"&&", "||"}:
         if not current:
             raise SystemExit(1)
         parts.append(current)
@@ -7583,7 +7912,7 @@ PY
   [ -n "$detail" ] || return 1
   while IFS= read -r segment; do
     [ -n "$segment" ] || return 1
-    coordinator_inspection_route "$segment" || return 1
+    coordinator_inspection_route "$segment" || coordinator_cleanup_route "$segment" || return 1
   done <<< "$detail"
   return 0
 }
@@ -7740,7 +8069,7 @@ if not command or not os.path.isabs(command) or os.path.normpath(command) != com
 home = os.environ.get("HOME", "")
 roots = (
     (os.path.join(home, ".codex"),
-     "227473b5f12bd31f1938061fbee3a1099c68b8619e2429a4cf2ebadd6df771b4"),
+     "4e50570b9fbf1813aa204d74dcdad206aaf6d2636ecf2581ee695d434f41a1f8"),
     (os.path.join(home, ".kimi-code"),
      "a4b7f21d740bfed797864bf0375f38030a890af89f738f45be9a935bf9223a4a"),
 )
@@ -7907,7 +8236,7 @@ if len(tokens) != 4 or tokens[0] != "TMPDIR=/tmp":
 command = tokens[1]
 home = os.environ.get("HOME", "")
 approved = {
-    os.path.join(home, ".codex", "bin", "eci-active"): "227473b5f12bd31f1938061fbee3a1099c68b8619e2429a4cf2ebadd6df771b4",
+    os.path.join(home, ".codex", "bin", "eci-active"): "4e50570b9fbf1813aa204d74dcdad206aaf6d2636ecf2581ee695d434f41a1f8",
     os.path.join(home, ".kimi-code", "bin", "eci-active"): "a4b7f21d740bfed797864bf0375f38030a890af89f738f45be9a935bf9223a4a",
 }
 expected = approved.get(command)
@@ -7997,6 +8326,19 @@ PY
   return 1
 }
 
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" != true ] &&
+  [[ "$command" == mktemp || "$command" == mktemp\ * ]] && ! coordinator_mktemp_route "$command"; then
+  deny_eci "ECI_COORDINATOR_ROUTE_ARGUMENTS_DENIED" "coordinator-mktemp" \
+    "ECI coordinator temporary-directory route denied malformed arguments: ${COORDINATOR_MKTEMP_ROUTE_DETAIL:-command=$(eci_command_identity_subject "$command")}; predicate=coordinator-mktemp; reason=active mktemp capability must use one canonical literal template" \
+    "use exactly mktemp -d with one literal template under /tmp or the canonical temporary root"
+fi
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" = true ] &&
+  [[ "$command" == mktemp || "$command" == mktemp\ * ]]; then
+  deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" \
+    "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the main/orchestrator through the bounded literal route; rejected command=$(eci_command_identity_subject "$command"); reason=temporary-directory creation is coordinator-owned" \
+    "route mktemp -d setup through the main/orchestrator using a literal /tmp or canonical TMPDIR template"
+fi
+
 COORDINATOR_CLEANUP_ROUTE_DETAIL=""
 coordinator_cleanup_route() {
   [ "$hook_is_subagent" != true ] || return 1
@@ -8018,11 +8360,23 @@ try:
     tokens = shlex.split(command, posix=True)
 except ValueError:
     reject("shell quoting is unbalanced")
+temporary_unqualified_file_remove = False
 if tokens and tokens[0] == "mv":
     if len(tokens) != 4 or tokens[1] != "--":
         reject("expected exactly mv -- <approved-artifact> <quarantine-destination>")
     mode = "mv"
     paths = tokens[2:]
+elif len(tokens) >= 3 and tokens[0] == "rm" and tokens[1] == "-f":
+    mode = "-f"
+    if tokens[2] == "--":
+        paths = tokens[3:]
+    else:
+        paths = tokens[2:]
+        temporary_unqualified_file_remove = True
+    if len(paths) > 64:
+        reject("cleanup target list exceeds the 64-path bound")
+    if len(paths) != len(set(paths)):
+        reject("cleanup target list contains duplicate paths")
 elif len(tokens) >= 4 and tokens[0] == "rm" and tokens[2] == "--":
     mode = tokens[1]
     if mode not in {"-f", "-rf"}:
@@ -8036,6 +8390,53 @@ else:
     reject("expected rm -f -- <files>, rm -rf -- <directories>, or mv -- <artifact> <quarantine-destination>")
 if not paths:
     reject("cleanup target list is empty")
+
+if temporary_unqualified_file_remove:
+    temporary_roots = set()
+    home = os.environ.get("HOME", "")
+    def canonical_directory(raw):
+        if (not raw or not os.path.isabs(raw) or
+                os.path.normpath(raw) != raw):
+            return ""
+        canonical = os.path.realpath(raw)
+        if (not os.path.isabs(canonical) or
+                os.path.normpath(canonical) != canonical or
+                not os.path.isdir(canonical) or os.path.islink(canonical) or
+                os.path.realpath(canonical) != canonical):
+            return ""
+        return canonical
+
+    for raw in (
+            os.environ.get("CODEX_TMPDIR", ""),
+            os.environ.get("TMPDIR", ""),
+            os.path.join(home, "tmp") if home else "",
+            "/tmp",
+    ):
+        canonical = canonical_directory(raw)
+        if canonical:
+            temporary_roots.add(canonical)
+    if not temporary_roots:
+        reject("no canonical temporary directory is available")
+    for path in paths:
+        if not os.path.isabs(path) or os.path.normpath(path) != path:
+            reject("path=" + path + " reason=temporary cleanup requires canonical absolute paths")
+        parent = os.path.dirname(path)
+        canonical_parent = os.path.realpath(parent)
+        if canonical_parent not in temporary_roots:
+            reject("path=" + path + " reason=unqualified rm -f is limited to canonical temporary roots")
+        if os.path.islink(path):
+            reject("path=" + path + " reason=symlink targets are not cleanup-eligible")
+        if os.path.lexists(path) and (not os.path.isfile(path) or os.path.realpath(path) != path):
+            reject("path=" + path + " reason=temporary cleanup requires a canonical regular file")
+        ancestor = parent
+        while not os.path.lexists(ancestor) and ancestor != os.path.dirname(ancestor):
+            ancestor = os.path.dirname(ancestor)
+        canonical_ancestor = os.path.realpath(ancestor)
+        if not any(canonical_ancestor == root or canonical_ancestor.startswith(root + os.sep)
+                   for root in temporary_roots):
+            reject("path=" + path + " reason=temporary cleanup parent escapes canonical temporary roots")
+    print("ok")
+    raise SystemExit(0)
 
 home = os.environ.get("HOME", "")
 homes = []
@@ -8285,22 +8686,19 @@ fi
 if [ -n "$review_gate_identity" ]; then
   if [ "$hook_is_subagent" = true ]; then
     deny_eci "ECI_WORKER_REVIEW_GATE_DENIED" "worker-review-gate" \
-      "ECI worker boundary denied coordinator-owned review-gate invocation: ${review_gate_identity}; reason=the canonical review gate owns acceptance evidence and cannot be invoked by a worker" \
+      "ECI worker boundary denied coordinator-owned review-gate invocation: ${review_gate_identity}; segment=1; argv_index=0; byte_offset=0; token=eci-review-gate.sh; path=n/a; predicate=worker-lifecycle-control; reason=the canonical review gate owns acceptance evidence and cannot be invoked by a worker" \
       "route this exact review-gate phase/session invocation through the main/orchestrator coordinator"
   elif [[ "$review_gate_identity" != *" valid_shape=true "* ]]; then
     deny_eci "ECI_REVIEW_GATE_ARGUMENTS_DENIED" "review-gate" \
-      "ECI coordinator review-gate route denied malformed arguments: ${review_gate_identity}; reason=the recognized canonical review gate requires exactly one supported phase and one bounded session id" \
+      "ECI coordinator review-gate route denied malformed arguments: ${review_gate_identity}; segment=1; argv_index=0; byte_offset=0; token=eci-review-gate.sh; path=n/a; predicate=review-gate-arguments; reason=the recognized canonical review gate requires exactly one supported phase and one bounded session id" \
       "correct the reported malformed_token and invoke the canonical review gate with <commit|final|off|prewrite> <session-id>"
   fi
 fi
 
-if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-  control_script_identity="$(protected_control_script_identity "$command" 2>/dev/null || true)"
-  if [ -n "$control_script_identity" ]; then
-    deny_eci "ECI_WORKER_CONTROL_SCRIPT_DENIED" "worker-control-script" \
-      "ECI worker boundary denied coordinator-owned lifecycle/control script: ${control_script_identity}; reason=the canonical control script owns ECI admission or stop state" \
-      "route this exact canonical control-script invocation through the main/orchestrator coordinator"
-  fi
+if [ "$hook_is_subagent" = true ] && [ -n "$worker_protected_control_identity" ]; then
+  deny_eci "ECI_WORKER_CONTROL_SCRIPT_DENIED" "worker-control-script" \
+    "ECI worker boundary denied coordinator-owned lifecycle/control script: ${worker_protected_control_identity}; reason=the canonical control script owns ECI admission or stop state" \
+    "route this exact canonical control-script invocation through the main/orchestrator coordinator"
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_control_mutation "$command"; then
@@ -8319,7 +8717,7 @@ fi
 # retain their separately bounded inspection/verification batches.
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   worker_operator_detail="$(command_operator_detail "$command" 2>/dev/null || true)"
-  if [ -n "$worker_operator_detail" ]; then
+  if [ "$plan_status" -ne 0 ] && [ -n "$worker_operator_detail" ]; then
     deny_eci "ECI_COMMAND_NONLITERAL_DENIED" "direct-argv" \
       "ECI worker command envelope denied ${worker_operator_detail}; reason=the callback contains more than one direct argv vector" \
       "split at the reported operator/token and submit each finite direct argv vector as a separate tool call"
@@ -8343,7 +8741,7 @@ fi
 if [ -n "$git_branch_remote_detail" ]; then
   if [ "$hook_is_subagent" = true ]; then
     deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-      "ECI worker boundary denied recognizable Git branch/remote mutation: ${git_branch_remote_detail}; rejected command=$(eci_command_identity_subject "$command")" \
+      "ECI worker boundary denied recognizable Git branch/remote mutation: ${git_branch_remote_detail}; predicate=worker-git-ownership; rejected command=$(eci_command_identity_subject "$command")" \
       "route this exact Git ref or remote mutation through the main/orchestrator coordinator acceptance route"
   fi
   deny_eci "ECI_GIT_BRANCH_REMOTE_DENIED" "git-branch-remote" \
@@ -8365,7 +8763,7 @@ fi
 # still fail closed, enforce the worker Git boundary, then return before Git
 # mutation parsing, activity bookkeeping, or other non-hot-path work. This
 # keeps every ordinary inspection callback local and sub-second by design.
-if [ "$read_only" = true ] && {
+if ! eci_cleanup_command_shape "$command" && [ "$read_only" = true ] && {
   if [ "$hook_is_subagent" = true ]; then
     [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
   else
@@ -8485,7 +8883,7 @@ coordinator_static_pipeline_route() {
         ;;
       class=source\ *)
         deny_eci "ECI_COORDINATOR_SOURCE_WRITE_DENIED" "coordinator-static-pipeline" \
-          "ECI coordinator static pipeline denied source-tree write segment=$(eci_command_identity_subject "$segment"): ${protected_detail}" \
+          "ECI coordinator static pipeline denied source-tree write segment=$(eci_command_identity_subject "$segment"): ${protected_detail}; predicate=coordinator-source-write" \
           "delegate the source write to the implementer and keep coordinator inspection pipelines non-mutating"
         ;;
     esac
@@ -8531,7 +8929,7 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       ;;
     class=worker-git\ *)
       deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied an acceptance-sensitive Git operation: ${protected_literal_detail}; reason=the reported Git verb changes or controls repository acceptance/history and is coordinator-owned while ECI is active" \
+        "ECI worker ownership gate denied an acceptance-sensitive Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls repository acceptance/history and is coordinator-owned while ECI is active" \
         "route the reported Git verb through the main/orchestrator coordinator; workers may use finite read-only Git inspection and history commands"
       ;;
     class=source\ *)
@@ -8546,11 +8944,11 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
               "correct the reported cleanup token/path/shape and use only the bounded generated-artifact cleanup route"
           fi
           ;;
-        chmod|chmod\ *) coordinator_hook_mode_repair_route "$command" && source_write_exempt=true ;;
+        chmod|chmod\ *) ;;
       esac
       if [ "$source_write_exempt" != true ]; then
         deny_eci "ECI_COORDINATOR_SOURCE_WRITE_DENIED" "coordinator-source-write" \
-          "ECI ownership gate denied a coordinator source-tree write: ${protected_literal_detail}; reason=the resolved target is inside the project/provider source boundary and production writes belong to the implementer worker" \
+          "ECI ownership gate denied a coordinator source-tree write: ${protected_literal_detail}; predicate=coordinator-source-write; reason=the resolved target is inside the project/provider source boundary and production writes belong to the implementer worker" \
           "delegate the reported source write to the ECI implementer; use a bounded coordinator lifecycle/proof route only for coordinator-owned artifacts"
       fi
       ;;
@@ -8568,8 +8966,35 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   fi
 fi
 
+PLAN_PEER_ECI_ROUTE=false
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 3 ] &&
+  [ "$hook_is_subagent" != true ]; then
+  if coordinator_peer_eci_route "$command"; then
+    PLAN_PEER_ECI_ROUTE=true
+  else
+    lifecycle_identity_detail="$(coordinator_peer_eci_identity_detail 2>/dev/null || true)"
+    case "$lifecycle_identity_detail" in
+      "active session identity mismatch: expected="*)
+        deny_eci "ECI_LIFECYCLE_IDENTITY_DENIED" "eci-lifecycle" \
+          "ECI coordinator lifecycle identity denied: $lifecycle_identity_detail" \
+          "use env with the provider-matched active session identity and canonical eci-active target"
+        ;;
+      "provider session identity mismatch: expected_name="*|\
+        "provider session identity missing: expected_name="*)
+        deny_eci "ECI_PLAN_LIFECYCLE_IDENTITY_DENIED" "plan-segment" \
+          "ECI lifecycle identity plan denied: $lifecycle_identity_detail" \
+          "use env with the provider-matched active session identity and canonical eci-active target"
+        ;;
+    esac
+  fi
+fi
+
 ECI_LITERAL_ADMITTED=false
-if [ "${#syntax_eci_markers[@]}" -gt 0 ] && eci_finite_literal_argv "$command"; then
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
+  ! coordinator_script_batch_shape "$command"; then
+  # The Go planner has already validated this complete finite plan. Keep the
+  # active ownership predicates above, then use its generic admission instead
+  # of re-applying the legacy executable grammar.
   ECI_LITERAL_ADMITTED=true
 elif [ "${#syntax_eci_markers[@]}" -gt 0 ] && coordinator_static_pipeline_route "$command"; then
   ECI_LITERAL_ADMITTED=true

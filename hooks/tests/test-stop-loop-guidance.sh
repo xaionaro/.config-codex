@@ -54,3 +54,31 @@ jq -e '
 }
 
 printf '%s\n' 'stop loop repeat convergence assertions: PASS'
+
+# Scope-mismatch denials use the active-marker fast path. They must share the
+# same bounded loop state as ordinary Stop denials instead of repeating the
+# identical marker diagnostic forever.
+scope_proof_root="$TMP_ROOT/scope-mismatch-proof"
+scope_session=t00-scope-mismatch
+scope_input="$TMP_ROOT/scope-mismatch-input.json"
+scope_output="$TMP_ROOT/scope-mismatch-output.json"
+mkdir -p "$scope_proof_root/$scope_session" "$scope_proof_root/unrelated" "$TMP_ROOT/other-cwd"
+printf 'scope: scope mismatch\ncwd: %s\nsession_id: %s\n' \
+  "$TMP_ROOT/other-cwd" "$scope_session" >"$scope_proof_root/$scope_session/eci_active"
+jq -cn --arg cwd "$repo" --arg session_id "$scope_session" \
+  '{session_id:$session_id,cwd:$cwd,transcript_path:"/tmp/nonexistent-scope-mismatch-transcript.jsonl",stop_hook_active:false}' \
+  >"$scope_input"
+for _ in 1 2 3 4 5; do
+  CODEX_PROOF_ROOT="$scope_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$scope_input" >"$scope_output"
+done
+jq -e '
+  .decision == "block" and
+  (.reason | contains("[ECI_MARKER_SCOPE_MISMATCH]")) and
+  (.reason | contains("LOOP DETECTED")) and
+  (.reason | contains("do not retry or poll Stop")) and
+  (.reason | contains("wait for new external state"))
+' "$scope_output" >/dev/null || { cat "$scope_output" >&2; exit 1; }
+CODEX_PROOF_ROOT="$scope_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$scope_input" >"$scope_output"
+jq -e '.continue == true and ((.reason // "") | contains("LOOP DETECTED") | not)' "$scope_output" >/dev/null || { cat "$scope_output" >&2; exit 1; }
+
+printf '%s\n' 'scope mismatch loop convergence assertions: PASS'

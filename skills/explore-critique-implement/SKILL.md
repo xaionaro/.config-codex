@@ -20,6 +20,38 @@ Separate the hand that builds from the hand that tears down. The builder cannot 
 
 Maintain a project-understanding ledger for every ECI run. Use the `maintaining-context-ledger` skill for storage path, content schema, update timing, and validity rules.
 
+### Requirement register and lane-lineage contract
+
+At an active ECI root, the coordinator owns one immutable, normalized requirement register in the project-understanding ledger. `register_root_id` is the canonical register root, distinct from `task_root_id`, task-tree display names, lane names, marker roots, and nested-ECI identifiers. Nested ECI inherits the outer ATE register root; an ECI→ATE replacement for the same logical scope carries it, while an unrelated or replaced root gets a new register only after the prior outer scope closes.
+
+Requirement declarations are append-only and immutable:
+`{register_root_id, requirement_id, origin:"user", redacted_verbatim_user_text, source_location, redaction_ids}`.
+Use root-qualified IDs such as `<session-id>::<register_root_id>::R<n>`; each component is a non-empty lexical token (`[A-Za-z0-9][A-Za-z0-9._-]*`), no component contains `::`, and the numeric suffix is canonical (no leading zero). Reject duplicate IDs or malformed IDs. The declaration preserves all non-secret characters, clause order, scope, qualifiers, and modality. Redact only secrets before persistence/reporting with stable root-scoped placeholders such as `<REDACTED_SECRET_001>`; record source location and never raw secret bytes. When redaction occurs, call the value **redacted verbatim user wording**, not exact wording.
+
+The mutable requirement-state projection is `{requirement_id,state:active|superseded|retired,supersedes,superseded_by,state_event_ref}`. Only active, root-qualified IDs admit new work. Additions create a new active ID; a correction or replacement creates a new active ID and atomically supersedes named old IDs; explicit user withdrawal retires without a successor. Only direct user evidence authorizes these transitions. `project-understanding.md` is the current projection; append capture, old redacted wording, supersession/removal relations, lane creation, owner assignment, and material reroute events to `high_level_log.md`. Affected lanes stop new admission and retire or reroute before any provider call; completed historical lanes retain provenance but cannot authorize new work.
+
+Store the normalized graph once and keep current projections separate:
+
+```text
+Lane       = {lane_id,register_root_id,task_root_id,human_name,derivation_kind,
+              predecessor_lane_ids:[...],requirement_refs:[...],derivation_reason,
+              path_ids:[...]}
+Assignment = {assignment_id,lane_id,owner,canonical_status_ref,evidence,admission_binding}
+Path       = {path_id,requirement_ref,lane_id,edge_ids:[...]}
+Edge       = {edge_id,path_id,seq,register_root_id,from:{kind,id},relation,
+              to:{kind,id},reason,evidence:{source_kind,locator,canonical_bytes_sha256}}
+```
+
+`Lane` identity and lineage are immutable after admission. `derivation_kind` is `root|child|derived|protocol|reroute`; roots have zero predecessors, ordinary non-roots have one or more ordered predecessors, and a reroute has exactly the superseded lane as its direct predecessor. Aggregate/review/integration lanes may have two or more. Owner-only reassignment with unchanged purpose updates only a new `Assignment` projection and appends a log event; material work-definition change creates a new reroute lane.
+
+Node `kind` is one of `requirement|decision|lane|assignment`; `relation` is one of `authorizes|justifies|derives|precedes|executes|reroutes|evidences`. Validate unique IDs, same-register endpoints, no self/cross-root/duplicate/cyclic edges, no undeclared predecessors, contiguous `seq`, and path endpoints. Every predecessor appears in a path; every requirement ref has one complete path beginning at its user requirement and ending at the current lane/assignment. Edge evidence binds `source_kind`, `locator`, canonical source bytes, and a lowercase SHA-256. Expand complete paths in the current ledger and ordinary assignment packets so the full `requirement → decision/reasoning step → parent/derived lane → executed assignment` chain is visible without duplicating graph objects.
+
+Before `spawn_agent`, `followup_task`, or a `send_message` that starts, changes, or reroutes lane work, and before otherwise-unbound durable execution, perform coordinator admission: update the current ledger projection; verify the existing `high_level_log` prefix; append an EOF PREPARE/admission event; publish and re-read the ledger and latest-status; materialize and hash the prompt artifact; record `admission_binding` as `{register_root_id,lane_id,assignment_id,active_requirement_state_version,expanded_path_sha256,prompt_sha256,ledger_sha256,log_post_append_sha256,log_post_append_size,latest_status_sha256,admission_record_sha256}`; then append and verify COMMIT. This is recoverable coordinator evidence, not an atomic provider transaction. Fail closed before the provider/tool call if any pair/hash is missing or stale.
+
+Validate that every declared object ID resolves uniquely in this register, refs are non-empty active IDs authorized by the same root, predecessors are admitted, ordered, and declared in a complete path, and the chain reaches a user requirement. A child’s refs are a subset of its root-authorized set. A running agent may submit only a non-executable proposal `{proposal_id,source_lane_id,register_root_id,kind,requirement_refs,predecessor_lane_ids,derivation_reason,evidence}`. If the proposal is necessary for the existing objective/acceptance, the coordinator independently admits a derived lane through the same graph/pair binding; missing refs alone do not prove new scope. A genuinely new outcome/scope or proposal without a user ancestor remains scope-creep debt: no lane, provider call, or status change. Direct user authorization first creates a new declaration.
+
+Lineage admission failure leaves existing task/lane status unchanged and is a routing risk/next action, never `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase. ATE owns canonical status for nested ECI. Do not add lineage fields to closed pause snapshots, required-critic manifests, marker schemas, or task-state schemas. Assignment packets, routing messages, Step 1–4 packets, spawn checklists, reviewer prompts, reusable-producer reassignments, and discovered-work proposals carry the structured lane, paths/edge evidence, register root, active-state version, assignment/admission binding, and expanded full chain before execution. Critic C Packet 1 still requires lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks before spawning; these remain coordinator evidence, not Packet 1 body fields. Only lineage serialization and normal review context are omitted from its body. Packet 2 carries the full register, graph/paths/edge evidence, admission binding, and context.
+
 ## Codex adapter
 
 - Start ECI only when CODEX selects it as the outer workflow or active ATE routes bounded work through it. Loading this skill alone does not start ECI.
@@ -97,6 +129,8 @@ This `BLOCKED` line is report-level only. An ECI task marked `blocked` remains a
 The report-level example uses `reason: user explicitly requested an all-work pause`; its quotation and source remain the evidence for whether the exact trigger was `pause all work`, `stop all work`, or `pause everything`.
 
 ## Prerequisites
+
+Apply the Requirement register and lane-lineage contract before every lane assignment, routing change, and durable execution. Validate the normalized register/graph/assignment projections and complete paths; a non-empty ref never substitutes for the chain, edge evidence, or admission binding.
 
 For coding tasks, every affected agent prompt names the governed scope and every matching installed coding-style skill. A matching skill is required when present and must be loaded before handling that scope; loading it is not evidence of compliance.
 
@@ -179,8 +213,10 @@ Codex does not use `CLAUDE_ROLE`, `TeamCreate`, `team_name`, context-clear comma
 | Deliver to running producer | `send_message({target: <agent id>, message: <bounded in-turn information>})` |
 | Spawn any critic / E2E / brainstormer / validator / loop-breaker | New `spawn_agent({task_name: <unique transport name>, fork_turns: "none", message: <self-contained blind prompt>})`; parallel calls where required |
 
-Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel. Exception: Critic C Packet 1 for code diffs contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction; omit original requirements, exact scope, ledger/task/design context, rationale, commit message, and prior review output until Packet 2.
+Every spawned agent prompt states the role name, original user requirements, exact scope, expected output, and that other agents may be editing in parallel. For Critic C Packet 1 for code diffs, lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks remain mandatory before spawn. The Packet 1 body contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction; it omits only serialized lineage and normal review context until Packet 2, which carries the full context.
 Every spawned ECI agent prompt must also state: "Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval."
+
+Before each spawn, followup, or lane-changing message, validate the structured `Lane`, `Path`, and `Edge` records under the Requirement register and lane-lineage contract, then carry `register_root_id`, `task_root_id`, `lane_id`, `assignment_id`, `derivation_kind`, `predecessor_lane_ids`, `requirement_refs`, `derivation_reason`, paths/edge evidence, the active-state version, expanded `requirement_chain`, and `admission_binding` in the assignment packet. A failed admission stops the provider call and leaves status unchanged.
 
 ### Special model profile and role boundary
 
@@ -218,6 +254,7 @@ Per-message body in Step 3.
 - **Implementer role (ECI):** Act as a top-tier open-source maintainer focused on code quality.
 - Role label per Spawning table.
 - "Treat each new task message as a fresh assignment per Step 3 of the ECI skill. Re-read every file you intend to modify each turn."
+- Validated structured `Lane`/`Assignment` records, complete `Path`/`Edge` evidence, the register root and active-state version, expanded requirement chain, and admission binding.
 - One commit per logical change.
 - Code/debugging submissions include root-cause rationale plus regression status/explanation when applicable: cause chain, evidence, and why the diff repairs the cause. Unknown "why" = unsubmittable.
 - Every factual claim in submission carries a T1-T5 tag per CODEX.md Claim Verification protocol. E2E evidence ("tests pass", "build succeeded", screenshots, observed state) cited as T1 with tool output, log path, or screenshot file. Concrete example: "[T1: `go test ./...` exit 0, all 47 pass]" not bare "tests pass". Untagged "all green" = unsubmittable.
@@ -278,6 +315,8 @@ Each iteration tackles one change. All four steps run per iteration. Do not adva
 Agent separation: see Red Flags. Main thread orchestrates; agents produce.
 **Coordinator role (ECI):** Act as a Meta IC7-level high-level engineer coordinating this workflow.
 
+Every Step 1–4 packet and result carries the validated structured lane graph, assignment projection, complete paths/edges, register root, active-state version, admission binding, and expanded full requirement chain. A child lane, derived fix, protocol/review/proof lane, or material reroute must pass lineage admission before routing; a producer reassignment with unchanged purpose creates only a new assignment projection.
+
 Completion is event-driven. For each expected completion not yet delivered, use at most one outstanding `wait_agent({timeout_ms:3600000})` call. `3600000` milliseconds is the current exposed maximum. If a future schema exposes a different maximum, use that exposed maximum. Never omit `timeout_ms`, rely on its default, or choose a shorter timeout for this wait. A timeout is non-terminal and never causes immediate retry or periodic polling.
 
 ### Bug-discovery routing
@@ -293,6 +332,7 @@ Before sending the RCA/regression assignment, write or update a human-readable r
 ## Step 1: Explore
 
 Use `followup_task` to start the idle reusable `explorer` role's turn. Use `send_message` only to deliver bounded information while that turn is running. Each fresh assignment body must include:
+- The validated `Lane`/`Assignment` record, non-empty root-qualified requirement refs, register root and active-state version, complete paths/edges with evidence, derivation reason, admission binding, and expanded full chain; reject a proposal that does not reach an active user requirement.
 - The problem/change for THIS iteration, in full context.
 - What's already been tried or ruled out (iterations 2+: include results from prior iterations, current codebase state, and last blocking gate issues verbatim if a prior cycle's gate failed).
 - Exact file paths of existing related code — explorer must re-read them this turn to avoid suggesting duplicates. "Re-read referenced files; do not trust prior turn reads."
@@ -316,6 +356,8 @@ An isolated disposable PoC may precede coding-style admission, but production re
 ## Step 2: Critique explorations
 
 Spawn a DIFFERENT agent — not the explorer, implementer, or main thread — with `fork_turns: "none"`. Use a unique transport `task_name` for every blind critic invocation and put the stable semantic role plus round in the self-contained prompt. MUST NOT reuse a producer or prior critic identity for blind critic work.
+
+Carry the target structured lane graph, assignment binding, paths/edge evidence, register/state version, and expanded full requirement chain into the critic packet. Critic C Packet 1 remains diff-only at the body-serialization layer only; the shared admission checks remain mandatory before spawn, and send these fields in Packet 2.
 
 The critic's prompt must include:
 - **Designer role (ECI):** Act as a highly skilled principal/staff-level systems designer.
@@ -391,6 +433,8 @@ Scope-creep debt is queued and consumes no primary time, owner, proof, or critic
 
 Use `followup_task` to start the idle reusable `implementer` role's next turn; use `send_message` only for bounded information while that turn is running. One change, one diff per assignment. Code tasks: implementer invokes `test-driven-development` and `debugging-discipline`, loads every matching installed coding-style skill, applies the admitted coding-style record, and re-reads every file it intends to modify on each new task message.
 
+Revalidate the immutable lane graph and mutable assignment binding before each reassignment or durable write. Include root-qualified refs, register/state version, derivation reason, complete paths/edges, admission binding, and expanded chain in the implementer packet; discovered work without authorized ancestry is queued as scope-creep debt, not executed.
+
 Each new task message to `implementer` includes:
 - The current iteration's concrete-text from the Step 2 critic (verbatim).
 - The current governed scope's admitted coding-style record and reviewer verdict (verbatim), including any approved deltas and applicable Tool route.
@@ -409,6 +453,8 @@ If applicable E2E evidence is missing, reassign the idle implementer with `follo
 ## Step 4: Review gate (parallel)
 
 Spawn Critic A, Critic B, and Critic C as new blind critic agents in one parallel message, plus E2E when code applies: each critic uses `fork_turns: "none"`, a unique transport `task_name`, and a self-contained role prompt for `critic-A`, `critic-B`, or `critic-C`; E2E uses `e2e-gate`. Each MUST NOT message the reusable explorer or implementer. Completion is an automatically delivered event; if an expected event has not arrived, keep at most one outstanding `wait_agent({timeout_ms:3600000})` call for it. Timeout never authorizes an immediate retry or polling. All three critic reports are required; the aggregate verdict is withheld until they arrive, and until E2E arrives when code applies. Every normal reviewer prompt includes the **original user requirements verbatim**, `loop-id`, applicable `decision-id`, objectives/criteria, and the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer.
+
+Bind each review/E2E packet to the validated lane graph, assignment/admission binding, and expanded full requirement chain. Critic C Packet 1 remains a closed diff-only body-serialization exception only; admission and prompt-artifact checks still run before spawn, and Packet 2 carries full lineage/context. A lineage-admission failure is a routing defect and leaves implementation/test/prod status semantics unchanged.
 
 **Required-critic admission:** For every governed target—root, subtask, and candidate-fix—the coordinator records one immutable row per required critic using the single canonical v2 manifest and phase/version ledger schema in **Runtime required-critic boundary** below. Do not define an abbreviated parallel row schema. Every spawn request, report, and required E2E artifact binds to the same target, diff, role, child, and gate-phase tuple; missing, stale, contradictory, or unverified rows block implementation acceptance, commit, final gate, and clean teardown and route back to the exact missing fresh critic. This is coordinator/session-ledger evidence, not provider telemetry or a hook runtime artifact.
 
@@ -441,9 +487,10 @@ The `prewrite` row is optional policy evidence only: normal `commit`, `final`, a
 Critic C code-diff exception:
 - Code diffs use two packets. Skip Packet 1 when there is no code diff.
 - Packet 1 is diff-only isolation and goes to a newly spawned blind Critic C (`fork_turns: "none"`).
-- Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction. It is exempt from original requirements, exact scope, and normal review context.
-- After `reconstructed intention:` returns, send Packet 2 with original requirements and full Critic C context.
-- Gate incomplete until Packet 2 returns.
+- Before Packet 1 spawn, perform lineage admission; verify the current project-understanding ledger/high_level_log pair; create and hash the exact prompt artifact; and complete any required provider/profile/identity checks. These checks remain mandatory coordinator evidence and are not serialized in the Packet 1 body.
+- Packet 1 body contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction. Under the closed diff-only protocol it omits only serialized lineage and normal review context.
+- After `reconstructed intention:` returns, send Packet 2 with original requirements, exact scope, the full register/lane graph/paths/edges, admission binding, and full Critic C context.
+- Gate remains incomplete until Packet 2/report returns.
 
 ### Issue severity codes
 
@@ -510,13 +557,14 @@ Critic C is a fresh special `sol-high` reviewer, distinct from Critic A and Crit
 
 Diff-only intention check:
 - Code diffs only. Skip when there is no code diff.
-- Before Packet 1, spawn a new blind Critic C with `fork_turns: "none"` and a self-contained Packet 1 prompt.
+- Before spawning Packet 1, perform the shared Critic C checks: lineage admission, current project-understanding ledger/high_level_log pair verification, exact prompt-artifact creation, and any required provider/profile/identity checks.
+- Spawn a new blind Critic C with `fork_turns: "none"` and a self-contained Packet 1 prompt.
 - Packet 1 contains only role label, stop-hook/reporting boilerplate, code diff, and reconstruction instruction.
-- Exclude original requirements, exact scope, ledger/task/design context, rationale, commit message, implementer or teammate summaries, and prior review output.
+- Packet 1 body omits only serialized lineage and normal review context under the closed diff-only protocol; do not skip the mandatory checks above.
 - Output `reconstructed intention:` with 2-4 bullets covering apparent root reason and intended behavior change, then stop.
 - Main thread compares the reconstruction with the actual root reason and desired effects.
 - If it misses the root reason, relies on hidden context, or claims an undesired effect, pre-route the `CONDITIONAL` remedy with the normal `impact:` tag to make code, tests, names, comments, or commit message explain the change.
-- Packet 2: continue normal long-term-health review with full context.
+- Packet 2: continue normal long-term-health review with the full register/lane graph/paths/edges, admission binding, and context.
 
 Focus — adversarial, long-term lens:
 - **Tech debt**: Coupling, hidden dependencies, or shortcuts costing more to fix later than now?
@@ -655,16 +703,19 @@ Reports to user use:
 | Tree structure when work decomposes into sub-issues or nested ECI pipelines | Indent children under parent; never flatten |
 
 - Use `<role label> (<runtime name>)` in every status, wait, or close update; do not use bare runtime nicknames once labeled.
+- Use human-readable lane names and preserve parent/child trees. In an active ECI/ATE lineage, every reported lane has non-empty root-qualified `Lane requirement refs`; include a nearby redacted-verbatim Requirements registry with each referenced ID's wording and source. The project-understanding ledger remains the source for the full edge chain; status columns carry refs, not the graph.
+- In a direct workflow with inactive ECI/ATE lineage, preserve direct-workflow reporting and do not fabricate refs or a registry.
+- A lineage-admission failure leaves status unchanged and is reported as a routing risk/next action, never as `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase.
 
 Issue uncovered mid-iteration that spawns its own ECI pipeline → nest under the iteration that found it.
 
 ```
-auth middleware swap
-├─ severity-codes change: gate passed, committed
-├─ E2E uncovered stale-session bug → nested ECI:
-│   ├─ session-cache invalidation: 3 options ranked
-│   └─ blocked on prod log access
-└─ docstring update: pending
+auth middleware swap [Lane requirement refs: root-requirement-lineage-20260822::R1]
+├─ severity-codes change [Lane requirement refs: root-requirement-lineage-20260822::R1]: gate passed, committed
+├─ E2E uncovered stale-session bug [Lane requirement refs: root-requirement-lineage-20260822::R3] → nested ECI:
+│   ├─ session-cache invalidation [Lane requirement refs: root-requirement-lineage-20260822::R3]: 3 options ranked
+│   └─ blocked on prod log access [Lane requirement refs: root-requirement-lineage-20260822::R3]
+└─ docstring update [Lane requirement refs: root-requirement-lineage-20260822::R1]: pending
 ```
 
 ## Pressure-test checklist
@@ -728,6 +779,10 @@ Apply these scenarios within the nine counters above:
 | Disengage without teardown sequence | STOP. Observe terminal states or cancel exact active work, then run eci-active off last. Never close a terminal agent. |
 | Shell-launched Codex process used as an agent | STOP. Use standard collaboration tools (`spawn_agent`, `followup_task`, `send_message`, `wait_agent({timeout_ms:3600000})`, `interrupt_agent`), or hard-escalate if unavailable. |
 | Status report uses task/iteration numbers, or flat-lists nested work | See **Status reports** section. |
+| Lane assignment has empty/unresolved refs, a missing full chain, cross-root parent, cycle, or no user requirement | STOP the provider/tool call; repair lineage admission before routing. |
+| Discovered work is executed without an authorized requirement ancestor | Queue it as scope-creep debt; do not create a lane or change status until the user authorizes it through the lifecycle. |
+| Lineage-admission failure is labeled `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase | Keep the existing status unchanged; report a routing risk and next action. |
+| Spawn/reassignment/review packet omits lane fields or full chain from its body (except Critic C Packet 1's closed body-serialization exception; admission checks remain mandatory) | STOP and rebuild the packet before provider execution. |
 | New producer spawned although its prior role is idle/addressable | Use `followup_task` with a self-contained assignment. `send_message` is only for a currently running turn. |
 | Critic absorbed pre-routed work by rewriting option | STOP. Critic tags only — orchestrator folds only `treatment: now` text into Step 3. |
 | Orchestrator forgot pre-routing or the `now` fix-list | STOP. Include the general pre-routing record; include `started`, deadline, and `sealed-at` only for a potential defer; include only `treatment: now` fixes in Step 3. |

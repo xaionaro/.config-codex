@@ -6,8 +6,27 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="$(mktemp -d "/tmp/codex-git-approvals.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
+# Keep this standalone approval suite deterministic even when invoked outside
+# the aggregate enforcing harness; production remains configured-permissive.
+export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
+export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
+mkdir -p "$XDG_CONFIG_HOME/eci"
+printf '%s\n' enforcing >"$XDG_CONFIG_HOME/eci/command-gate-mode"
+
 proof_root="$TMP_ROOT/proof"
 mkdir -p "$proof_root"
+# The generic Git-mutation assertions exercise the active ECI ownership
+# boundary for the coordinator session used by run_hook_at.  Keep this
+# marker separate from the repository-bound commit-session fixture below so
+# the direct-commit cases can continue to prove that an inactive/mismatched
+# repository session has no hook output.
+mkdir -p "$proof_root/git-approval-test"
+printf '%s\n' \
+  'scope: git approval coordinator test' \
+  "cwd: $ROOT" \
+  'session_id: git-approval-test' \
+  'created_utc: 2026-08-15T00:00:00Z' \
+  >"$proof_root/git-approval-test/eci_active"
 repo="$TMP_ROOT/repo"
 mkdir -p "$repo"
 git -C "$repo" init -q
@@ -36,6 +55,18 @@ printf '%s\n' \
   'session_id: commit-session' \
   'created_utc: 2026-08-15T00:00:00Z' \
   >"$active_repo_proof_root/commit-session/eci_active"
+
+# Worker ownership is evaluated against the worker callback's repository cwd,
+# not the coordinator cwd used by run_hook_at.  Keep a separate marker root so
+# the worker assertion exercises an active, correctly bound ECI session.
+worker_proof_root="$TMP_ROOT/worker-proof"
+mkdir -p "$worker_proof_root/git-approval-test"
+printf '%s\n' \
+  'scope: git approval worker test' \
+  "cwd: $repo" \
+  'session_id: git-approval-test' \
+  'created_utc: 2026-08-15T00:00:00Z' \
+  >"$worker_proof_root/git-approval-test/eci_active"
 
 subagent_codex_home="$TMP_ROOT/subagent-codex-home"
 subagent_transcript="$subagent_codex_home/sessions/codex-git-approval-subagent-$BASHPID.jsonl"
@@ -96,7 +127,7 @@ run_worker_hook() {
   printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"git-approval-test","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1,"agent_nickname":"ApprovalTest","agent_role":"default"}}}}}' >"$subagent_transcript"
   jq -cn --arg cwd "$hook_cwd" --arg command "$command" --arg transcript "$subagent_transcript" \
     '{session_id:"git-approval-test",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$subagent_codex_home" PATH="$subagent_codex_home/bin:$PATH" \
+    CODEX_PROOF_ROOT="$worker_proof_root" CODEX_HOME="$subagent_codex_home" PATH="$subagent_codex_home/bin:$PATH" \
       bash "$ROOT/hooks/validate-bash.sh" >"$output"
   printf '%s\n' "$output"
 }
@@ -127,7 +158,7 @@ assert_any_deny() {
       contains("[ECI_") and
       contains("phase=") and
       contains("operation=") and
-      contains("subject=") and
+      (contains("subject=") or contains("segment=")) and
       contains("reason:") and
       contains("remediation:") and
       (contains("command=") or contains("segment=") or
@@ -221,7 +252,7 @@ active_output="$(run_active_hook "$active_worktree_command")"
 [ ! -e "$worktree_marker" ]
 
 write_approval "$worktree_marker" worktree "git -C $repo worktree add $TMP_ROOT/wrapped HEAD"
-assert_generic_deny "bash -c 'git -C $repo worktree add $TMP_ROOT/wrapped HEAD'"
+assert_any_deny "bash -c 'git -C $repo worktree add $TMP_ROOT/wrapped HEAD'"
 [ -e "$worktree_marker" ]
 
 rm -f -- "$worktree_marker"
@@ -393,7 +424,9 @@ write_approval "$commit_marker" commit "$commit_message_command"
 worker_output="$(run_worker_hook "$commit_message_command" "$repo")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("acceptance-sensitive Git mutation")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=commit")) and
   (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_") and contains("phase=") and contains("operation=") and contains("reason:") and contains("remediation:"))
 ' "$worker_output" >/dev/null
 [ -e "$commit_marker" ]
@@ -413,6 +446,25 @@ jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_") and contains("phase=") and contains("operation=") and contains("reason:") and contains("remediation:"))
 ' "$malformed_output" >/dev/null
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_MARKER_OWNERSHIP_INVALID]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("subject=")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("repair marker ownership"))
+' "$malformed_output" >/dev/null
+
+# A malformed marker for a different session is not active for this callback;
+# it must remain transparent rather than poisoning unrelated inactive work.
+unbound_malformed_root="$TMP_ROOT/unbound-malformed-proof"
+mkdir -p "$unbound_malformed_root/other-session"
+printf '%s\n' \
+  'scope: malformed-unbound' \
+  "cwd: $repo" \
+  'session_id: bad!' \
+  'created_utc: 2026-08-15T00:00:00Z' \
+  >"$unbound_malformed_root/other-session/eci_active"
+unbound_malformed_output="$(run_hook_with_root "$unbound_malformed_root" "$repo" git-approval-test 'git status')"
+[ ! -s "$unbound_malformed_output" ]
 
 unsafe_root="$TMP_ROOT/unsafe-proof-root"
 printf '%s\n' unsafe >"$unsafe_root"
@@ -443,6 +495,6 @@ if (cd "$repo" &&
 fi
 [ -e "$active_repo_proof_root/commit-session/eci_active" ]
 grep -Fq 'ECI off session identity mismatch' "$TMP_ROOT/stale-off.err"
-grep -Fq "$stale_report" "$TMP_ROOT/stale-off.err"
+grep -Fq "supplied report $stale_report" "$TMP_ROOT/stale-off.err"
 
 printf '%s\n' 'validate-bash git approval tests: PASS'

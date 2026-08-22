@@ -6,12 +6,13 @@ TMP_ROOT="$(mktemp -d "/tmp/codex-eci-edit-controls.XXXXXX")"
 proof_root="$ROOT/.eci-edit-control-proof-$BASHPID"
 repo_hardlink_alias="$(pwd)/.eci-active-hardlink-alias-$BASHPID"
 ledger_hardlink_alias="$ROOT/.latest-status-report-hardlink-alias-$BASHPID"
-trap 'rm -rf -- "$TMP_ROOT" "$proof_root" "$repo_hardlink_alias" "$ledger_hardlink_alias"' EXIT
+helper_hardlink_alias="$ROOT/.eci-environment-command-hardlink-alias-$BASHPID"
+trap 'rm -rf -- "$TMP_ROOT" "$proof_root" "$repo_hardlink_alias" "$ledger_hardlink_alias" "$helper_hardlink_alias"' EXIT
 
 home="$TMP_ROOT/home"
 codex_home="$TMP_ROOT/codex-home"
 sid=t00-session
-mkdir -p "$proof_root/$sid" "$proof_root/pre-reviewer" "$proof_root/reviewer" "$home" "$codex_home/sessions"
+mkdir -p "$proof_root/$sid" "$proof_root/pre-reviewer" "$proof_root/reviewer" "$home" "$codex_home/sessions" "$home/.kimi-code/sessions"
 printf '%s\n' \
   'scope: edit control test' \
   "cwd: $ROOT" \
@@ -22,22 +23,38 @@ transcript="$codex_home/sessions/codex-edit-control-test.jsonl"
 printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' >"$transcript"
 
 run_bash_worker() {
-  local command="$1" expected_code="${2:-ECI_WORKER_CONTROL_READ_DENIED}" out="$TMP_ROOT/bash-worker.out"
+  local command="$1" expected_code="${2:-ECI_WORKER_CONTROL_READ_DENIED}" expected_path="${3:-}" out="$TMP_ROOT/bash-worker.out"
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
       bash "$ROOT/hooks/validate-bash.sh" >"$out"
-  jq -e --arg expected "$expected_code" --arg command "$command" '
+  jq -e --arg expected "$expected_code" --arg expected_path "$expected_path" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains($expected)) and
     (if $expected == "ECI_WORKER_CONTROL_READ_DENIED" then
       (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control-read")) and
       (.hookSpecificOutput.permissionDecisionReason | contains("token=")) and
       (.hookSpecificOutput.permissionDecisionReason | contains("resolved=")) and
-      (.hookSpecificOutput.permissionDecisionReason | contains("route=coordinator-inspection-route"))
+      (.hookSpecificOutput.permissionDecisionReason | contains("route=coordinator-inspection-route")) and
+      (if $expected_path == "" then true else
+        (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $expected_path)) and contains(("resolved=" + $expected_path)))
+      end)
     else true end)
   ' "$out" >/dev/null
 }
+
+run_bash_worker_allowed() {
+  local command="$1" out="$TMP_ROOT/bash-worker-allowed.out"
+  jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
+    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
+      bash "$ROOT/hooks/validate-bash.sh" >"$out"
+  [ ! -s "$out" ]
+}
+
+for provider_sessions in "$ROOT/sessions" "$home/.kimi-code/sessions"; do
+  run_bash_worker "readlink -f $provider_sessions" ECI_WORKER_CONTROL_READ_DENIED "$provider_sessions"
+done
 
 run_bash_coordinator() {
   local command="$1" out="$TMP_ROOT/bash-coordinator.out"
@@ -117,6 +134,11 @@ for command in \
   "sed -n '1p' $repo_hardlink_alias"; do
   run_bash_worker "$command"
 done
+
+# A hardlink to an ordinary provider helper must remain an ordinary read even
+# though the alias has an arbitrary basename and lives outside the proof root.
+ln "$ROOT/hooks/lib/eci-environment-command.sh" "$helper_hardlink_alias"
+run_bash_worker_allowed "cat $helper_hardlink_alias"
 
 printf '%s\n' 'coordinator ledger' >"$proof_root/$sid/latest-status-report.md"
 ln "$proof_root/$sid/latest-status-report.md" "$ledger_hardlink_alias"
