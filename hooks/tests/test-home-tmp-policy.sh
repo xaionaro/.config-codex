@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+HOME_ROOT="${HOME:?HOME must be set}"
+TEST_ROOT="$(mktemp -d "$HOME_ROOT/tmp/codex-home-tmp-policy.XXXXXX")"
+trap 'rm -rf -- "$TEST_ROOT"' EXIT HUP INT TERM
+
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+assert_absent() {
+  local needle="$1" path="$2"
+  if rg -n --fixed-strings -- "$needle" "$path" >/dev/null 2>&1; then
+    rg -n --fixed-strings -- "$needle" "$path" >&2 || true
+    fail "unsafe temporary default remains in $path: $needle"
+  fi
+}
+
+# These are active runtime writers.  Security-policy fixtures and diagnostics
+# may still mention the system temporary root as an adversarial input; they are
+# intentionally outside this default-path assertion.
+assert_absent '${TMPDIR:-/tmp}' "$ROOT/hooks/pre-commit-go-mod.sh"
+assert_absent '${TMPDIR:-/tmp}' "$ROOT/hooks/pretooluse-edit-dispatch.sh"
+assert_absent '${TMPDIR:-/tmp}' "$ROOT/hooks/stop-gate.sh"
+assert_absent "'/tmp/brainstorm" "$ROOT/skills/brainstorming/scripts/server.cjs"
+assert_absent 'SESSION_DIR="/tmp/brainstorm-' "$ROOT/skills/brainstorming/scripts/start-server.sh"
+assert_absent '[[ "$SESSION_DIR" == /tmp/* ]]' "$ROOT/skills/brainstorming/scripts/stop-server.sh"
+
+for path in \
+  "$ROOT/hooks/system-prompt-reviewer.sh" \
+  "$ROOT/hooks/lib/edit-bash-pre-reviewer-worker.sh"; do
+  if rg -n '(^|[=( ])mktemp[[:space:]]*($|[;&])' "$path" >/dev/null 2>&1; then
+    rg -n '(^|[=( ])mktemp[[:space:]]*($|[;&])' "$path" >&2 || true
+    fail "bare mktemp can inherit the system temporary root: $path"
+  fi
+done
+
+run_helper_probe() {
+  local provider="$1" helper="$2" variable="$3" function="$4" root="$5"
+  local system_tmp="$(printf '/%s' tmp)" output status
+  set +e
+  output="$(HOME="$root" TMPDIR="$system_tmp" env -u "$variable" bash -c \
+    '. "$1"; set +e; "$2" >/dev/null 2>"$HOME/diagnostic"; status=$?; set -e; probe=$(mktemp -d "$TMPDIR/probe.XXXXXX"); printf "status=%s\\ntmpdir=%s\\nprobe=%s\\n" "$status" "$TMPDIR" "$probe"' \
+    bash "$helper" "$function" 2>&1)"
+  status=$?
+  set -e
+  [ "$status" -eq 0 ] || fail "$provider helper probe failed: $output"
+  printf '%s\n' "$output" | grep -Fq "tmpdir=$root/tmp" || fail "$provider helper did not select home/tmp: $output"
+  printf '%s\n' "$output" | grep -Fq "probe=$root/tmp/probe." || fail "$provider helper wrote outside home/tmp: $output"
+  [ -f "$root/diagnostic" ] || fail "$provider helper did not record unsafe TMPDIR diagnostic"
+  grep -Fq '[ECI_TMPDIR_SYSTEM_ROOT]' "$root/diagnostic" || fail "$provider helper diagnostic omitted ECI_TMPDIR_SYSTEM_ROOT"
+  rm -rf -- "$root/tmp/probe."*
+}
+
+codex_home="$TEST_ROOT/codex-home"
+mkdir -p "$codex_home/tmp"
+run_helper_probe codex "$ROOT/hooks/lib/codex-tmp.sh" CODEX_TMPDIR codex_init_tmp "$codex_home"
+
+if [ -f "$HOME_ROOT/.kimi-code/hooks/lib/kimi-tmp.sh" ]; then
+  kimi_home="$TEST_ROOT/kimi-home"
+  mkdir -p "$kimi_home/tmp"
+  run_helper_probe kimi "$HOME_ROOT/.kimi-code/hooks/lib/kimi-tmp.sh" KIMI_TMPDIR kimi_init_tmp "$kimi_home"
+fi
+
+printf '%s\n' 'home-scoped temporary-directory policy: PASS'

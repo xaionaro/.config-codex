@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 checker_source=$script_dir/../pre-commit-go-mod.sh
 installer_source=$script_dir/../install-pre-commit-go-mod.sh
-work_root=$(mktemp -d "${TMPDIR:-/tmp}/go-mod-hook-test.XXXXXX")
+work_root=$(mktemp -d "${CODEX_TMPDIR:-${KIMI_TMPDIR:-${HOME:?}/tmp}}/go-mod-hook-test.XXXXXX")
 trap 'rm -rf -- "$work_root"' EXIT HUP INT TERM
 
 fail() {

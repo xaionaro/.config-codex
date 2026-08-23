@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-bash.sh\"'",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-bash.sh\"",
             "timeout": 75,
             "statusMessage": "Checking shell command"
           }
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"'",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"",
             "statusMessage": "Checking edit gates"
           }
         ]
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"'",
+            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"",
             "statusMessage": "Checking edit gates"
           }
         ]

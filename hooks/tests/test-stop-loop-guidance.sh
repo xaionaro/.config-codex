@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "/tmp/codex-stop-loop.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-stop-loop.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
 proof_root="$TMP_ROOT/proof"
@@ -19,7 +19,8 @@ git -C "$repo" add README
 git -C "$repo" commit -qm 'create clean stop-loop fixture'
 input="$TMP_ROOT/input.json"
 jq -cn --arg cwd "$repo" \
-  '{session_id:"t00-session",cwd:$cwd,transcript_path:"/tmp/nonexistent-stop-loop-transcript.jsonl",stop_hook_active:false}' >"$input"
+  --arg transcript "$TMP_ROOT/nonexistent-stop-loop-transcript.jsonl" \
+  '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' >"$input"
 output="$TMP_ROOT/output.json"
 for _ in 1 2 3 4 5; do
   CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
@@ -27,10 +28,15 @@ done
 
 jq -e '
   .decision == "block" and
+  (.reason | startswith("[ECI_STOP_LOOP_DEDUP]")) and
   (.reason | contains("LOOP DETECTED")) and
   (.reason | contains("unchanged control metadata")) and
   (.reason | contains("Automated stop checks")) and
   (.reason | contains("do not emit another final/status/question")) and
+  (.reason | contains("Delegate the next bounded work item through the approved coordinator route")) and
+  (.reason | contains("wait for and collect its result")) and
+  (.reason | contains("do not finish this turn without taking that action")) and
+  (.reason | contains("remediation: delegate the next bounded work item to a subagent through the approved coordinator route")) and
   (.reason | contains("one concrete user-owned blocker")) and
   (.reason | contains("wait for new external state")) and
   (.reason | contains("stop again") | not)
@@ -47,7 +53,9 @@ printf '%s\n' 'stop loop guidance assertions: PASS'
 CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
 jq -e '
   .decision == "block" and
-  ((.reason // "") | contains("ECI_STOP_LOOP_DEDUP")) and
+  ((.reason // "") | startswith("[ECI_STOP_LOOP_DEDUP]")) and
+  ((.reason // "") | contains("wait for and collect its result")) and
+  ((.reason // "") | contains("do not finish this turn without taking that action")) and
   ((.reason // "") | contains("LOOP DETECTED") | not) and
   ((.reason // "") | test("retry|poll|final|status|question"; "i") | not)
 ' "$output" >/dev/null || {
@@ -68,7 +76,8 @@ mkdir -p "$scope_proof_root/$scope_session" "$scope_proof_root/unrelated" "$TMP_
 printf 'scope: scope mismatch\ncwd: %s\nsession_id: %s\n' \
   "$TMP_ROOT/other-cwd" "$scope_session" >"$scope_proof_root/$scope_session/eci_active"
 jq -cn --arg cwd "$repo" --arg session_id "$scope_session" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:"/tmp/nonexistent-scope-mismatch-transcript.jsonl",stop_hook_active:false}' \
+  --arg transcript "$TMP_ROOT/nonexistent-scope-mismatch-transcript.jsonl" \
+  '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' \
   >"$scope_input"
 for _ in 1 2 3 4 5; do
   CODEX_PROOF_ROOT="$scope_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$scope_input" >"$scope_output"
@@ -90,10 +99,28 @@ jq -e '
 
 printf '%s\n' 'scope mismatch loop convergence assertions: PASS'
 
+# An active ATE session with no courier must not end a turn without an
+# explicit delegated action. The Stop denial names delegation, waiting, and
+# result collection so the coordinator cannot mistake it for a passive hint.
+ate_proof_root="$TMP_ROOT/ate-proof"
+ate_output="$TMP_ROOT/ate-output.json"
+mkdir -p "$ate_proof_root/ate/sessions/t00-session"
+printf '%s\n' 'phase: execution' >"$ate_proof_root/ate/sessions/t00-session/ate_active"
+CODEX_PROOF_ROOT="$ate_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$ate_output"
+jq -e '
+  .decision == "block" and
+  (.reason | contains("Delegate the next bounded work item")) and
+  (.reason | contains("wait for and collect its result")) and
+  (.reason | contains("do not finish this turn without taking that action"))
+' "$ate_output" >/dev/null || { cat "$ate_output" >&2; exit 1; }
+
+printf '%s\n' 'active ATE delegation guidance assertions: PASS'
+
 # A terminal v2 counter from a prior resolved marker generation must not make
 # the next same-session/same-diagnostic Stop callback silently continue. Keep
 # the old fingerprint and identity fields intentionally unchanged, then
-# republish the marker so only the current marker generation differs.
+# republish the marker with identical bytes so only the current publication
+# generation differs; this catches second-resolution fingerprint reuse.
 generation_proof_root="$TMP_ROOT/stale-generation-proof"
 generation_session=t00-session
 generation_session_dir="$generation_proof_root/$generation_session"
@@ -110,8 +137,8 @@ old_cwd="$(awk -F': ' '$1 == "cwd" {print $2; exit}' "$generation_state")"
 [ -n "$old_fingerprint" ] && [ -n "$old_code" ] && [ -n "$old_cwd" ] || { cat "$generation_state" >&2; exit 1; }
 printf 'version: 2\nfingerprint: %s\ncode: %s\nsession_id: %s\ncwd: %s\ncount: 11\nloop_emitted: true\n' \
   "$old_fingerprint" "$old_code" "$generation_session" "$old_cwd" >"$generation_state"
-printf 'scope: current generation\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-08-23T00:00:00Z\n' \
-  "$repo" "$generation_session" >"$generation_session_dir/eci_active"
+cp -- "$generation_session_dir/eci_active" "$generation_session_dir/eci_active.republish"
+mv -- "$generation_session_dir/eci_active.republish" "$generation_session_dir/eci_active"
 CODEX_PROOF_ROOT="$generation_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
 jq -e '
   .decision == "block" and

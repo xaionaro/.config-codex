@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/eci-malformed-parity.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-malformed-parity.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"

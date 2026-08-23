@@ -9,6 +9,7 @@
 ## Evidence
 
 - Fix repeated mistakes at the strongest useful level: eliminate by redesign, facilitate an obvious/easy correct path, detect early, then document only if stronger fixes do not fit.
+- Use Go, not Python, for new code, scripts, helpers, and tooling. Do not port existing Python solely to apply this preference.
 - Before adding memory, check for and update a match. Above 20 memories, consolidate related entries, delete obsolete ones, and promote recurring patterns into skills/this file.
 - Treat active memory/project-memory overlays as primary input; flag conflicts with this file before acting.
 - Tag important factual claims when precision matters.

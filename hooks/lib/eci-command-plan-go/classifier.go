@@ -125,6 +125,7 @@ type Request struct {
 	ActiveSession string   `json:"active_session"`
 	Command       string   `json:"command"`
 	ActiveMarkers []string `json:"active_markers"`
+	ApprovedRoots []string `json:"approved_roots"`
 }
 
 // Diagnostic describes one denied command-plan coordinate and remediation.
@@ -223,9 +224,10 @@ func Classify(request Request) Result {
 	}
 
 	capabilities := capabilitiesForPlan(parsed)
+	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
 	decision := DecisionAllow
 	for index, current := range parsed.segments {
-		segmentDecision, diagnostic := inspectSegment(request, current, index+1)
+		segmentDecision, diagnostic := inspectSegment(request, current, index+1, wholeSingleSegmentPlan)
 		if diagnostic != nil {
 			diagnostic.RejectedSegment = rejectedSegment(current, diagnostic.Code)
 			if suppressInactiveDiagnostic(request, diagnostic) {
@@ -283,6 +285,17 @@ func rejectedSegment(current segment, code DiagnosticCode) string {
 		arguments = append(arguments, shellEscape(argument.value))
 	}
 	return strings.Join(arguments, " ")
+}
+
+func canonicalLifecycleTildePrefix(command string, offset int) bool {
+	for _, alias := range []string{"~/.codex/bin/eci-active", "~/.kimi-code/bin/eci-active"} {
+		if !strings.HasPrefix(command[offset:], alias) {
+			continue
+		}
+		end := offset + len(alias)
+		return end == len(command) || strings.ContainsRune(" \t;|&<>", rune(command[end]))
+	}
+	return false
 }
 
 func parsePlan(command string) (plan, *planError) {
@@ -520,7 +533,8 @@ func parsePlan(command string) (plan, *planError) {
 					"comment",
 				)
 			}
-			if strings.ContainsRune("*?[{}", rune(character)) || (character == '~' && !tokenStarted) {
+			if strings.ContainsRune("*?[{}", rune(character)) ||
+				(character == '~' && !tokenStarted && !canonicalLifecycleTildePrefix(command, index)) {
 				return plan{}, newPlanError(
 					CodePlanSyntaxDenied,
 					"unquoted expansion syntax makes argv filesystem- or shell-dependent",
@@ -618,6 +632,7 @@ func inspectSegment(
 	request Request,
 	current segment,
 	segmentIndex int,
+	wholeSingleSegmentPlan bool,
 ) (DecisionKind, *Diagnostic) {
 	if len(current.argv) == 0 {
 		return DecisionDeny, diagnosticForToken(
@@ -712,9 +727,12 @@ func inspectSegment(
 		// paths or peer allowlists in the compiled planner.
 		return DecisionDefer, nil
 	}
-	if request.Marker == MarkerActive {
+	if request.Marker == MarkerActive && wholeSingleSegmentPlan {
 		if target, ok := isPreCommitHookModeRepair(current.argv); ok {
-			if request.Role == RoleWorker {
+			// Hook-mode repair is an Emergency Unblock exception for one complete
+			// direct plan. A compound plan retains its ordinary segment policy.
+			switch request.Role {
+			case RoleWorker:
 				return DecisionDeny, diagnosticForToken(
 					CodeControlOwnerRequired,
 					"worker argv selects coordinator-owned pre-commit hook mode repair",
@@ -724,9 +742,28 @@ func inspectSegment(
 					"route the exact pre-commit hook mode repair through the coordinator",
 					"hook-mode-repair",
 				)
-			}
-			if request.Role == RoleCoordinator {
+			case RoleCoordinator:
 				return DecisionDefer, nil
+			}
+		}
+	}
+	if request.Marker == MarkerActive {
+		if target, resolved, ok := protectedHookModeMutation(request.CWD, argv); ok {
+			switch request.Role {
+			case RoleCoordinator:
+				return DecisionDefer, nil
+			case RoleWorker:
+				diagnostic := diagnosticForToken(
+					CodeControlOwnerRequired,
+					"worker argv selects coordinator-owned protected hook mode mutation",
+					segmentIndex,
+					originalTokenIndex(current.argv, target),
+					target,
+					"route the protected hook-mode mutation through the coordinator",
+					"worker-hook-mode-ownership",
+				)
+				diagnostic.Path = resolved
+				return DecisionDeny, diagnostic
 			}
 		}
 	}
@@ -1413,6 +1450,18 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 				return nil, diagnostic
 			}
 			current = child
+		case "stdbuf":
+			child, diagnostic := unwrapStdbuf(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
+		case "busybox":
+			child, diagnostic := unwrapBusybox(current, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			current = child
 		default:
 			return current, nil
 		}
@@ -1459,6 +1508,60 @@ func unwrapSystemdRun(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 		"--service": 0, "--remain-after-exit": 0, "--send-sighup": 0, "--same-dir": 0,
 		"--working-directory=": 0, "--unit=": 0, "--property=": 0, "--": 0,
 	}, nil, "systemd-run")
+}
+
+// unwrapStdbuf returns the finite child argv selected by the stdbuf launcher.
+//
+// Example: stdbuf -oL chmod 644 hooks/validate-bash.sh selects chmod as the child.
+func unwrapStdbuf(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	index := 1
+	for index < len(argv) {
+		value := argv[index].value
+		switch {
+		case value == "--":
+			index++
+			if index >= len(argv) {
+				return nil, malformedWrapperDiagnostic(argv[index-1], segmentIndex, index-1)
+			}
+			return argv[index:], nil
+		case value == "-i", value == "-o", value == "-e", value == "--input", value == "--output", value == "--error":
+			if index+1 >= len(argv) {
+				return nil, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+			}
+			index += 2
+		case (strings.HasPrefix(value, "-i") || strings.HasPrefix(value, "-o") || strings.HasPrefix(value, "-e")) && len(value) > 2:
+			index++
+		case strings.HasPrefix(value, "--input="), strings.HasPrefix(value, "--output="), strings.HasPrefix(value, "--error="):
+			index++
+		case strings.HasPrefix(value, "-"):
+			return nil, diagnosticForToken(
+				CodePlanWrapperDenied,
+				fmt.Sprintf("stdbuf has unsupported option %s before its child argv", value),
+				segmentIndex,
+				index,
+				argv[index],
+				"remove unsupported stdbuf option and provide one literal child argv",
+				"unsupported-transparent-wrapper-option",
+			)
+		default:
+			return argv[index:], nil
+		}
+	}
+	return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
+}
+
+// unwrapBusybox returns the BusyBox applet argv after its optional separator.
+//
+// Example: busybox -- chmod 644 hooks/validate-bash.sh selects chmod as the applet.
+func unwrapBusybox(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	index := 1
+	if index < len(argv) && argv[index].value == "--" {
+		index++
+	}
+	if index >= len(argv) {
+		return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
+	}
+	return argv[index:], nil
 }
 
 func unwrapKnownOptions(
@@ -1811,9 +1914,22 @@ func inspectGit(
 	segmentIndex int,
 ) (DecisionKind, *Diagnostic) {
 	repositoryContext := false
+	approvedRepositoryContext := true
+	repositoryContextCount := 0
 	for index, argument := range argv[1:] {
-		if argument.value == "-C" || strings.HasPrefix(argument.value, "-C") && len(argument.value) > 2 {
+		if argument.value == "-C" {
 			repositoryContext = true
+			repositoryContextCount++
+			if index+2 >= len(argv) || !approvedGitRepositoryContext(request, argv[index+2].value) {
+				approvedRepositoryContext = false
+			}
+		}
+		if strings.HasPrefix(argument.value, "-C") && len(argument.value) > 2 {
+			repositoryContext = true
+			repositoryContextCount++
+			if !approvedGitRepositoryContext(request, argument.value[2:]) {
+				approvedRepositoryContext = false
+			}
 		}
 		if isGitContextOption(argument.value) {
 			return DecisionDeny, diagnosticForToken(
@@ -1826,6 +1942,9 @@ func inspectGit(
 				"git-execution-context",
 			)
 		}
+	}
+	if repositoryContextCount > 1 {
+		approvedRepositoryContext = false
 	}
 	subcommandIndex := gitSubcommandIndex(argv)
 	if subcommandIndex >= len(argv) {
@@ -1848,6 +1967,9 @@ func inspectGit(
 				"worker-git-ownership",
 			)
 		}
+		if request.Role == RoleCoordinator && approvedRepositoryContext && action == "" {
+			return DecisionAllow, nil
+		}
 		// In particular this prevents an active worker fast path from
 		// admitting git -C /tmp/foreign status without approved-root proof.
 		return DecisionDefer, nil
@@ -1867,6 +1989,21 @@ func inspectGit(
 		)
 	}
 	return DecisionDefer, nil
+}
+
+// approvedGitRepositoryContext reports whether value exactly matches a canonical approved repository root.
+//
+// Example: /home/user/project matches the same entry in Request.ApprovedRoots.
+func approvedGitRepositoryContext(request Request, value string) bool {
+	if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value {
+		return false
+	}
+	for _, root := range request.ApprovedRoots {
+		if root != "" && filepath.IsAbs(root) && filepath.Clean(root) == root && root == value {
+			return true
+		}
+	}
+	return false
 }
 
 func inspectBroadDestruction(argv []token, segmentIndex int) *Diagnostic {
@@ -2385,10 +2522,201 @@ func isCoordinatorHookRepair(argv []token) bool {
 //
 // Example: chmod 755 hooks/pre-commit-go-mod.sh.
 func isPreCommitHookModeRepair(argv []token) (token, bool) {
-	if len(argv) != 3 || argv[0].value != "chmod" || argv[1].value != "755" || argv[2].value != "hooks/pre-commit-go-mod.sh" {
+	if len(argv) != 3 || argv[0].quoted || argv[1].quoted || argv[2].quoted ||
+		argv[0].value != "chmod" || argv[1].value != "755" || argv[2].value != "hooks/pre-commit-go-mod.sh" {
 		return token{}, false
 	}
 	return argv[2], true
+}
+
+// protectedHookModeRelativePaths lists the hook files whose modes are owned by the active ECI coordinator.
+//
+// Example: hooks/validate-bash.sh cannot be mode-mutated by an active worker.
+var protectedHookModeRelativePaths = [...]string{
+	"hooks/validate-bash.sh",
+	"hooks/pre-commit-go-mod.sh",
+	"hooks/install-pre-commit-go-mod.sh",
+	"hooks/tests/test-pre-commit-go-mod.sh",
+}
+
+// protectedHookModeMutation identifies a chmod target owned by the active ECI coordinator.
+//
+// Example: chmod 644 hooks/validate-bash.sh.
+func protectedHookModeMutation(cwd string, argv []token) (token, string, bool) {
+	if len(argv) < 3 || filepath.Base(argv[0].value) != "chmod" {
+		return token{}, "", false
+	}
+	targets, recursive := chmodMutationTargets(argv)
+	for _, target := range targets {
+		if resolved, ok := protectedHookModeTargetPath(cwd, target.value); ok {
+			return target, resolved, true
+		}
+		if recursive {
+			if resolved, ok := protectedHookModeRecursiveTargetPath(cwd, target.value); ok {
+				return target, resolved, true
+			}
+		}
+	}
+	return token{}, "", false
+}
+
+// chmodMutationTargets returns chmod mutation targets and whether parsed options enable recursion.
+//
+// Example: chmod hooks --ref=ordinary.txt returns hooks as a target with reference mode enabled.
+func chmodMutationTargets(argv []token) ([]token, bool) {
+	operands := make([]token, 0, len(argv)-2)
+	index := 1
+	recursive := false
+	referenceMode := false
+	options := true
+	for index < len(argv) {
+		value := argv[index].value
+		switch {
+		case options && value == "--":
+			options = false
+			index++
+		case options && chmodOptionHasEmptyReferenceValue(value):
+			return nil, recursive
+		case options && chmodOptionIsReference(value):
+			referenceMode = true
+			if strings.Contains(value, "=") {
+				index++
+				continue
+			}
+			if index+1 >= len(argv) {
+				return nil, recursive
+			}
+			index += 2
+		case options && chmodOptionIsRecursive(value):
+			recursive = true
+			index++
+		case options && strings.HasPrefix(value, "-"):
+			index++
+		default:
+			operands = append(operands, argv[index])
+			index++
+		}
+	}
+	if referenceMode {
+		return operands, recursive
+	}
+	if len(operands) < 2 {
+		return nil, recursive
+	}
+	return operands[1:], recursive
+}
+
+// chmodOptionIsRecursive reports whether a chmod option enables recursive mutation.
+//
+// Example: -vR, --rec, and --recursive enable recursion.
+func chmodOptionIsRecursive(value string) bool {
+	if strings.HasPrefix(value, "--") {
+		return len(value) >= len("--rec") && strings.HasPrefix("--recursive", value)
+	}
+	return strings.HasPrefix(value, "-") && !strings.HasPrefix(value, "--") && strings.Contains(value[1:], "R")
+}
+
+// chmodOptionIsReference reports whether a chmod option selects a nonempty reference source.
+//
+// Example: --ref=source and --reference source select a source operand.
+func chmodOptionIsReference(value string) bool {
+	option, reference, hasReference := strings.Cut(value, "=")
+	return (!hasReference || reference != "") &&
+		len(option) >= len("--ref") && strings.HasPrefix("--reference", option)
+}
+
+// chmodOptionHasEmptyReferenceValue reports an otherwise valid reference option with no source.
+//
+// Example: --ref= is invalid and cannot identify a mutation target.
+func chmodOptionHasEmptyReferenceValue(value string) bool {
+	option, reference, hasReference := strings.Cut(value, "=")
+	return hasReference && reference == "" &&
+		len(option) >= len("--ref") && strings.HasPrefix("--reference", option)
+}
+
+// protectedHookModeTargetPath resolves a protected tracked hook target below a trusted root.
+//
+// Example: ./hooks/validate-bash.sh resolves to the active provider's validate-bash.sh.
+func protectedHookModeTargetPath(cwd, value string) (string, bool) {
+	resolved, ok := resolveChmodTargetPath(cwd, value)
+	if !ok {
+		return "", false
+	}
+	for _, root := range protectedHookModeRoots() {
+		relative, err := filepath.Rel(root, resolved)
+		if err != nil {
+			continue
+		}
+		for _, protectedPath := range protectedHookModeRelativePaths {
+			if filepath.ToSlash(relative) != protectedPath {
+				continue
+			}
+			return resolved, true
+		}
+	}
+	return "", false
+}
+
+// protectedHookModeRecursiveTargetPath resolves a recursive chmod target that contains a protected hook.
+//
+// Example: chmod -R 644 hooks contains hooks/validate-bash.sh.
+func protectedHookModeRecursiveTargetPath(cwd, value string) (string, bool) {
+	resolved, ok := resolveChmodTargetPath(cwd, value)
+	if !ok {
+		return "", false
+	}
+	for _, root := range protectedHookModeRoots() {
+		for _, protectedPath := range protectedHookModeRelativePaths {
+			if pathWithin(filepath.Join(root, protectedPath), resolved) {
+				return resolved, true
+			}
+		}
+	}
+	return "", false
+}
+
+// resolveChmodTargetPath canonicalizes a nonempty chmod target against the request working directory.
+//
+// Example: ./hooks resolves relative to the request working directory.
+func resolveChmodTargetPath(cwd, value string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	candidate := value
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(cwd, candidate)
+	}
+	return resolvePathIdentity(filepath.Clean(candidate)), true
+}
+
+// protectedHookModeRoots returns canonical provider roots whose tracked hook modes are protected.
+//
+// Example: a Codex callback protects CODEX_HOME, KIMI_CODE_HOME, and the planner root.
+func protectedHookModeRoots() []string {
+	home := os.Getenv("HOME")
+	candidates := []string{
+		os.Getenv("CODEX_HOME"),
+		os.Getenv("KIMI_CODE_HOME"),
+		filepath.Join(home, ".codex"),
+		filepath.Join(home, ".kimi-code"),
+	}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "..", "..", ".."))
+	}
+	roots := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" || !filepath.IsAbs(candidate) {
+			continue
+		}
+		resolved := resolvePathIdentity(filepath.Clean(candidate))
+		if _, ok := seen[resolved]; ok {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		roots = append(roots, resolved)
+	}
+	return roots
 }
 
 func isGitContextOption(value string) bool {

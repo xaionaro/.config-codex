@@ -2,21 +2,18 @@
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+POLICY="$ROOT/skills/references/workflow-runtime/review-policy.md"
 
-for skill in \
-  "$ROOT/skills/explore-critique-implement/SKILL.md" \
-  "$ROOT/skills/agent-teams-execution/SKILL.md"; do
-  grep -Fq '### Design-versus-implementation boundary' "$skill"
-  grep -Fq 'blast radius and repair nature' "$skill"
-  grep -Fq 'substantial scale-up would amplify' "$skill"
-  grep -Fq 'semantic/model/contract errors' "$skill"
-  grep -Fq 'contained blast radius' "$skill"
-  grep -Fq 'may label it REJECT when its evidence supports that label' "$skill"
-  grep -Fq 'coordinator alone adjudicates final impact' "$skill"
-  grep -Fq 'never a design REJECT after that adjudication' "$skill"
-  grep -Fq 'resolves or records every such finding' "$skill"
-  grep -Fq 'security boundary is design-level' "$skill"
-  grep -Fq 'mechanical call-site correction' "$skill"
-done
+grep -Fq '## Design-versus-implementation boundary' "$POLICY"
+grep -Fq 'blast radius and repair nature' "$POLICY"
+grep -Fq 'substantial scale-up would amplify' "$POLICY"
+grep -Fq 'semantic/model/contract errors' "$POLICY"
+grep -Fq 'contained blast radius' "$POLICY"
+grep -Fq 'may label it REJECT when its evidence supports that label' "$POLICY"
+grep -Fq 'coordinator alone adjudicates final impact' "$POLICY"
+grep -Fq 'never a design REJECT after that adjudication' "$POLICY"
+grep -Fq 'resolves or records every such finding' "$POLICY"
+grep -Fq 'security boundary is design-level' "$POLICY"
+grep -Fq 'mechanical call-site correction' "$POLICY"
 
 printf '%s\n' 'design-boundary policy assertions: PASS'

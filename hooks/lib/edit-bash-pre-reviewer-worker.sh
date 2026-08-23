@@ -129,9 +129,9 @@ if ! tool_input="$(
   exit 0
 fi
 
-sys_file=$(mktemp)
-usr_file=$(mktemp)
-schema_file=$(mktemp)
+sys_file=$(mktemp "$TMPDIR/codex-pre-reviewer-system.XXXXXX")
+usr_file=$(mktemp "$TMPDIR/codex-pre-reviewer-user.XXXXXX")
+schema_file=$(mktemp "$TMPDIR/codex-pre-reviewer-schema.XXXXXX")
 trap 'rm -f "$sys_file" "$usr_file" "$schema_file"' EXIT
 
 cat >"$sys_file" <<'EOF'

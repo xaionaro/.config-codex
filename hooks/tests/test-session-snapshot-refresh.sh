@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-session-refresh.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-session-refresh.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
 run_snapshot() {

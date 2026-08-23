@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "/tmp/codex-eci-edit-controls.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-eci-edit-controls.XXXXXX")"
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
 mkdir -p "$XDG_CONFIG_HOME/eci" "$XDG_STATE_HOME"
@@ -14,6 +14,26 @@ repo_hardlink_alias="$(pwd)/.eci-active-hardlink-alias-$BASHPID"
 ledger_hardlink_alias="$ROOT/.latest-status-report-hardlink-alias-$BASHPID"
 helper_hardlink_alias="$ROOT/.eci-environment-command-hardlink-alias-$BASHPID"
 trap 'rm -rf -- "$TMP_ROOT" "$proof_root" "$repo_hardlink_alias" "$ledger_hardlink_alias" "$helper_hardlink_alias"' EXIT
+
+. "$ROOT/hooks/lib/eci-environment-command.sh"
+
+assert_environment_detail() {
+  local command="$1" expected="$2" actual
+  actual="$(environment_command_detail "$command")"
+  [ "$actual" = "$expected" ] || {
+    printf 'environment detail mismatch: command=%q expected=%q actual=%q\n' \
+      "$command" "$expected" "$actual" >&2
+    return 1
+  }
+}
+
+# Direct registered queries use the Bash fast path; quoted, duplicated, and
+# unregistered forms must retain the Python recognizer's exact diagnostics.
+assert_environment_detail 'printenv PATH PWD' $'ALLOW\tprintenv\t1\t0\tprintenv\tdirect-registered-query'
+assert_environment_detail "printenv 'PATH'" $'ALLOW\tprintenv\t1\t0\tprintenv\tdirect-registered-query'
+assert_environment_detail 'printenv PATH PATH' $'DENY\tECI_ENVIRONMENT_ENUMERATION_DENIED\t1\t2\tPATH\tduplicate-name'
+assert_environment_detail 'printenv OPENAI_API_KEY' $'DENY\tECI_ENVIRONMENT_NAME_DENIED\t1\t1\tOPENAI_API_KEY\tunregistered-name'
+assert_environment_detail 'printenv PATH | env' $'DENY\tECI_ENVIRONMENT_ENUMERATION_DENIED\t2\t0\tenv\tno-child'
 
 home="$TMP_ROOT/home"
 codex_home="$TMP_ROOT/codex-home"

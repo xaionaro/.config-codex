@@ -4,7 +4,7 @@
 # intentionally independent of the full formal hooks harness.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/codex-eci-fast.XXXXXX")"
+tmp="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-eci-fast.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
 
 proof_root="$tmp/proof"
@@ -53,7 +53,9 @@ jq -e '.reason |
   contains("control metadata, not a new user request") and
   contains("do not emit another final/status/question") and
   contains("do not retry or poll Stop") and
-  contains("one distinct recovery action") and
+  contains("delegate the next bounded work item to a subagent") and
+  contains("wait for and collect its result") and
+  contains("do not finish this turn without taking that action") and
   contains("remediation: do not retry or poll Stop while the marker and normalized control state are unchanged")' "$out" >/dev/null
 
 run_once() {
@@ -70,7 +72,8 @@ recursive_out="$tmp/recursive-out.json"
 mkdir -p "$proof_root/activity/sessions/recursive-session"
 printf '%s\n' 'created_utc: probe' >"$proof_root/activity/sessions/recursive-session/shell"
 jq -n --arg cwd "$ROOT" \
-  '{session_id:"recursive-session", transcript_path:"/tmp/nonexistent-codex-transcript.jsonl", stop_hook_active:true, cwd:$cwd}' \
+  --arg transcript "$home/tmp/nonexistent-codex-transcript.jsonl" \
+  '{session_id:"recursive-session", transcript_path:$transcript, stop_hook_active:true, cwd:$cwd}' \
   >"$recursive_input"
 env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_TMPDIR="$tmp/recursive-tmp" CODEX_PROOF_ROOT="$proof_root" \
   bash "$ROOT/hooks/stop-gate.sh" <"$recursive_input" >"$recursive_out"
@@ -485,11 +488,44 @@ env -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$overflow_edit_root" \
   bash "$ROOT/hooks/eci-active-gate.sh" <"$overflow_edit_input" >"$tmp/overflow-edit.out"
 [ ! -s "$tmp/overflow-edit.out" ]
 
-# The active path must not create/update recovery state or generic callback
-# counters.  The only proof-root file is the marker itself.
+# An inactive coordinator callback must ignore an overflow made entirely of
+# unrelated proof-root entries.  The direct current-session lookup is the
+# authority; an empty direct marker must not become MISSING_CURRENT merely
+# because the bounded unrelated scan emitted its overflow sentinel.
+inactive_overflow_edit_root="$tmp/inactive-overflow-edit-root"
+mkdir -p "$inactive_overflow_edit_root"
+for i in $(seq 1 65); do
+  mkdir -p "$inactive_overflow_edit_root/t00-inactive-unrelated-$i"
+  printf 'scope: unrelated overflow\ncwd: /other/cwd\nsession_id: t00-inactive-unrelated-%s\n' "$i" \
+    >"$inactive_overflow_edit_root/t00-inactive-unrelated-$i/eci_active"
+done
+inactive_overflow_edit_input="$tmp/inactive-overflow-edit.json"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-inactive-overflow",cwd:$cwd,tool_name:"apply_patch",tool_input:{command:"*** Begin Patch\n*** Add File: inactive-overflow-file.txt\n+inactive\n*** End Patch\n"}}' >"$inactive_overflow_edit_input"
+env -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$inactive_overflow_edit_root" \
+  bash "$ROOT/hooks/eci-active-gate.sh" <"$inactive_overflow_edit_input" >"$tmp/inactive-overflow-edit.out"
+[ ! -s "$tmp/inactive-overflow-edit.out" ]
+
+# A malformed callback must likewise remain inactive when the bounded scan
+# sees only unrelated entries.  The overflow sentinel is a scan limitation,
+# not an active owner and must not fabricate an identity denial.
+malformed_overflow_edit_input="$tmp/malformed-overflow-edit.json"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:123,cwd:$cwd,tool_name:"Edit",tool_input:{file_path:"inactive-overflow-file.txt"}}' \
+  >"$malformed_overflow_edit_input"
+env -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$inactive_overflow_edit_root" \
+  bash "$ROOT/hooks/eci-active-gate.sh" <"$malformed_overflow_edit_input" >"$tmp/malformed-overflow-edit.out"
+[ ! -s "$tmp/malformed-overflow-edit.out" ]
+
+# The active path may publish only its bounded deduplication record. It must
+# not create stop_timestamps or any unrelated proof-root/recovery state.
 [ ! -e "$proof_root/t00-session/stop_timestamps" ]
-found_state="$(find "$proof_root" -type f ! -name eci_active -print -quit)"
-[ -z "$found_state" ]
+while IFS= read -r found_state; do
+  case "$found_state" in
+    "$proof_root/t00-session/stop_loop_state") ;;
+    *) printf 'unexpected active-path state file: %s\n' "$found_state" >&2; exit 1 ;;
+  esac
+done < <(find "$proof_root" -type f ! -name eci_active -print)
 [ ! -e "$home/tmp" ]
 
 if command -v strace >/dev/null 2>&1; then
@@ -500,6 +536,10 @@ if command -v strace >/dev/null 2>&1; then
   state_writes="$(awk -v proof_root="$proof_root" -v home="$home" '
     /O_(WRONLY|RDWR|CREAT|TRUNC)|mkdir\(|rename\(|unlink\(/ &&
       (index($0, proof_root) || index($0, home)) {
+      # stop_loop_state and its same-directory temporary publication are the
+      # only intentional active-path writes; all other proof/recovery writes
+      # remain a failure.
+      if (index($0, proof_root "/t00-session/stop_loop_state")) next
       print
     }
   ' "$trace" || true)"
@@ -514,4 +554,4 @@ fi
 # Each fresh callback stays below one second on the supported fast path;
 # this is a measurement, not a timeout or a runtime guard.
 [ "$max_ms" -lt 1000 ]
-printf 'PASS active ECI fast path: 5 callbacks, max %sms; no recovery-state writes\n' "$max_ms"
+printf 'PASS active ECI fast path: 5 callbacks, max %sms; only bounded stop-loop state writes\n' "$max_ms"

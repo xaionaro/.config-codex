@@ -3,7 +3,7 @@
 # Usage: stop-server.sh <session_dir>
 #
 # Kills the server process. Only deletes session directory if it's
-# under /tmp (ephemeral). Persistent directories (.codex/brainstorm/) are
+# under the home-scoped temporary root (ephemeral). Persistent directories (.codex/brainstorm/) are
 # kept so mockups can be reviewed later.
 
 SESSION_DIR="$1"
@@ -45,8 +45,9 @@ if [[ -f "$PID_FILE" ]]; then
 
   rm -f "$PID_FILE" "${STATE_DIR}/server.log"
 
-  # Only delete ephemeral /tmp directories
-  if [[ "$SESSION_DIR" == /tmp/* ]]; then
+  # Only delete ephemeral home-scoped temporary directories.
+  tmp_root="${CODEX_TMPDIR:-${HOME:?HOME must be set}/tmp}"
+  if [[ "$SESSION_DIR" == "$tmp_root"/brainstorm-* ]]; then
     rm -rf "$SESSION_DIR"
   fi
 

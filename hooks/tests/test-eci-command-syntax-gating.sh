@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "/tmp/codex-eci-command-syntax.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-eci-command-syntax.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
@@ -98,6 +98,23 @@ assert_unbound_marker_allows_multiline() {
   run_hook "$hook" "$proof_root" active-syntax "$command" "$output"
   [ ! -s "$output" ] || {
     printf 'unbound multiline command was ECI-blocked by %s:\n' "$hook" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+}
+
+assert_active_overflow_without_owner_allows() {
+  local hook="$1" proof_root output session_id=active-overflow
+  proof_root="$TMP_ROOT/$(basename "$(dirname "$hook")")-active-overflow"
+  output="$TMP_ROOT/$(basename "$(dirname "$hook")")-active-overflow.out"
+  for i in $(seq 1 65); do
+    mkdir -p "$proof_root/unrelated-$i"
+    printf 'scope: unrelated overflow\ncwd: /other/cwd\nsession_id: unrelated-%s\n' "$i" \
+      >"$proof_root/unrelated-$i/eci_active"
+  done
+  run_hook "$hook" "$proof_root" "$session_id" "git status --short" "$output"
+  [ ! -s "$output" ] || {
+    printf 'inactive callback was denied solely by an unrelated marker-scan overflow by %s:\n' "$hook" >&2
     cat -- "$output" >&2
     return 1
   }
@@ -322,6 +339,7 @@ assert_inactive_allows_bounded_read_only "$ROOT/hooks/validate-bash.sh"
 assert_unbound_marker_allows_multiline "$ROOT/hooks/validate-bash.sh"
 assert_active_allows_multiline_plan "$ROOT/hooks/validate-bash.sh"
 assert_active_allows_bounded_read_only "$ROOT/hooks/validate-bash.sh"
+assert_active_overflow_without_owner_allows "$ROOT/hooks/validate-bash.sh"
 assert_active_cleanup_route "$ROOT/hooks/validate-bash.sh"
 
 KIMI_ROOT="/home/pheona/.kimi-code"

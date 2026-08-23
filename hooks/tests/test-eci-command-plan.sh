@@ -306,21 +306,12 @@ run_lifecycle_identity_matrix() {
       assert_allowed "$provider" coordinator active \
         "env -- $identity_name=$session_id $target status"
 
-      if [ "$provider" = codex ]; then
-        assert_lifecycle_route_identity_denied "$provider" \
-          "env $wrong_name=$session_id $target status" \
-          "expected_name=$identity_name" "observed_name=$wrong_name"
-        assert_lifecycle_route_identity_denied "$provider" \
-          "env -- $wrong_name=$session_id $target status" \
-          "expected_name=$identity_name" "observed_name=$wrong_name"
-      else
-        assert_lifecycle_identity_denied "$provider" \
-          "env $wrong_name=$session_id $target status" "$wrong_name=$session_id" 1 4 \
-          lifecycle-provider-identity "expected_name=$identity_name" "observed_name=$wrong_name"
-        assert_lifecycle_identity_denied "$provider" \
-          "env -- $wrong_name=$session_id $target status" "$wrong_name=$session_id" 2 7 \
-          lifecycle-provider-identity "expected_name=$identity_name" "observed_name=$wrong_name"
-      fi
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env $wrong_name=$session_id $target status" \
+        "expected_name=$identity_name" "observed_name=$wrong_name"
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env -- $wrong_name=$session_id $target status" \
+        "expected_name=$identity_name" "observed_name=$wrong_name"
       assert_allowed "$provider" coordinator active "$fixed"
 
       assert_lifecycle_route_identity_denied "$provider" \
@@ -337,19 +328,10 @@ run_lifecycle_identity_matrix() {
         "expected=$identity_name=$session_id" "observed=$identity_name="
       assert_allowed "$provider" coordinator active "$fixed"
 
-      if [ "$provider" = codex ]; then
-        assert_lifecycle_route_identity_denied "$provider" \
-          "env $target status" "expected_name=$identity_name" 'observed_name=<none>'
-        assert_lifecycle_route_identity_denied "$provider" \
-          "env -- $target status" "expected_name=$identity_name" 'observed_name=<none>'
-      else
-        assert_lifecycle_identity_denied "$provider" \
-          "env $target status" "$target" 1 4 \
-          lifecycle-identity-missing "expected_name=$identity_name" 'observed_name=<none>'
-        assert_lifecycle_identity_denied "$provider" \
-          "env -- $target status" "$target" 2 7 \
-          lifecycle-identity-missing "expected_name=$identity_name" 'observed_name=<none>'
-      fi
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env $target status" "expected_name=$identity_name" 'observed_name=<none>'
+      assert_lifecycle_route_identity_denied "$provider" \
+        "env -- $target status" "expected_name=$identity_name" 'observed_name=<none>'
       assert_allowed "$provider" coordinator active "$fixed"
 
       assert_lifecycle_arguments_denied "$provider" "$target unknown-verb"

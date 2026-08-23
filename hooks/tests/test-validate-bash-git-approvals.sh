@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "/tmp/codex-git-approvals.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-git-approvals.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
 # Keep this standalone approval suite deterministic even when invoked outside

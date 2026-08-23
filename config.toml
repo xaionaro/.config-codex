@@ -184,16 +184,22 @@ trust_level = "trusted"
 [projects."/home/pheona/.crush"]
 trust_level = "trusted"
 
+[projects."/home/pheona/.config/nvim"]
+trust_level = "trusted"
+
+[projects."/home/pheona/docs/pass"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:79102a94e895766e01b2ecf011f2a96a237c0056010357e34340f25589150778"
+trusted_hash = "sha256:5017793e85716f945398d7b46b246a98d5183ec4c7dfe9de873a2b2081df7d39"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:0:1"]
 trusted_hash = "sha256:121624ab18ae91a6979f69911c1a19c6368f71aec17ad40920b19f707fe7fedd"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:1:0"]
-trusted_hash = "sha256:7dea53511b173f6f3f5eb267051836ae54d012ae28f5b54ff01b755887ac06fa"
+trusted_hash = "sha256:351a0d8bc6d59f2c0c0eafcc1dcd450e795dd69614d0b94e7ab05ba12ff9e47c"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:1:1"]
 trusted_hash = "sha256:0a6dc7c78d6ade6930697265feeaad766808ab76033800fa9e308a52b8597e4c"
@@ -208,7 +214,7 @@ trusted_hash = "sha256:92c608d98deb1cf2f6a1c40a788ea76e2b72ca719bb7799c82b15771b
 trusted_hash = "sha256:336fd4c1cab68f54aadc664457e15cf703f668ac5cfa4de1c965778922429bab"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:2:0"]
-trusted_hash = "sha256:7e147cbb5aab42eeaa10e702d52a3d6cdad7728e3728f12f27962445aa410830"
+trusted_hash = "sha256:fb967bb208c225462106703c0d80bf0587f62299a8f669de27266288229294ea"
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:2:1"]
 trusted_hash = "sha256:fde3ebd46b39069717ef505bdfc9f2dd18aba0ea7a5fe4cfe6cd479318e229c4"

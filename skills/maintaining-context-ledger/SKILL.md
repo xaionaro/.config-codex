@@ -21,6 +21,8 @@ A fresh agent reading only the ledger, without transcript or memory, must reach 
 
 Err on exhaustive useful detail for current state. Do not omit a detail because it seems obvious from transcript, local state, prior agent memory, or project familiarity. Equally, do not retain a detail because it was true earlier. Exhaustive on current state; zero on superseded state.
 
+For ECI lane tracking, every lane, assignment, and current ledger state records exactly one `Stage: normal` or `Stage: emergency`. An emergency state names the [Emergency Unblock](../explore-critique-implement/references/emergency-unblock.md) protocol and records `provisional Emergency Unblock — unchecked`; before resuming normal work, record the `emergency→normal ECI Step 1` transition in the ledger and its same-turn high-level log entry.
+
 ## Storage
 
 For ECI/ATE, all three files live at:

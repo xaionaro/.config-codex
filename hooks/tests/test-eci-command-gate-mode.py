@@ -28,6 +28,9 @@ from unittest import mock
 CODEX_ROOT = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 KIMI_ROOT = Path(os.environ.get("KIMI_CODE_HOME", Path.home() / ".kimi-code"))
 MODE_BIN = CODEX_ROOT / "bin" / "eci-command-gate-mode"
+# The Python implementation remains a differential-test oracle only; runtime
+# hooks execute the compiled MODE_BIN above.
+MODE_ORACLE = CODEX_ROOT / "bin" / "eci-command-gate-mode.py"
 
 
 class CommandGateModeTest(unittest.TestCase):
@@ -178,7 +181,7 @@ class CommandGateModeTest(unittest.TestCase):
 
     def _load_mode_module(self) -> object:
         module_name = f"eci_command_gate_mode_{time.time_ns()}"
-        loader = importlib.machinery.SourceFileLoader(module_name, str(MODE_BIN))
+        loader = importlib.machinery.SourceFileLoader(module_name, str(MODE_ORACLE))
         specification = importlib.util.spec_from_loader(module_name, loader)
         self.assertIsNotNone(specification)
         module = importlib.util.module_from_spec(specification)

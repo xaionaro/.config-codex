@@ -208,8 +208,8 @@ append_repo_context() {
     redact_sensitive_text
 }
 
-rules_file=$(mktemp)
-body_file=$(mktemp)
+rules_file=$(mktemp "$TMPDIR/codex-system-rules.XXXXXX")
+body_file=$(mktemp "$TMPDIR/codex-system-body.XXXXXX")
 trap 'rm -f "$rules_file" "$body_file"' EXIT
 
 compose_reviewer_prompt "$HOOK_DIR/reviewer-rules.md" >"$rules_file" || exit 0
@@ -224,7 +224,7 @@ transcript=$(find_transcript || true)
   append_repo_context "$cwd"
 } >"$body_file"
 
-redacted_body=$(mktemp)
+redacted_body=$(mktemp "$TMPDIR/codex-system-redacted.XXXXXX")
 if redact_sensitive_text <"$body_file" >"$redacted_body" 2>/dev/null; then
   mv "$redacted_body" "$body_file"
 else

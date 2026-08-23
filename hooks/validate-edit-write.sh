@@ -62,11 +62,17 @@ fi
 fi
 if [ -n "$resolved_file_path" ] &&
    [ "$hook_is_subagent" = true ] &&
-   { codex_path_is_session_ledger_file "$resolved_file_path" ||
+   { control_alias=false
+     if [ -n "$lexical_file_path" ] && codex_path_is_eci_control_alias "$lexical_file_path"; then
+       control_alias=true
+     elif [ "$resolved_file_path" != "$lexical_file_path" ] &&
+          codex_path_is_eci_control_alias "$resolved_file_path"; then
+       control_alias=true
+     fi
+     codex_path_is_session_ledger_file "$resolved_file_path" ||
      codex_path_is_eci_control_file "$lexical_file_path" ||
      codex_path_is_eci_control_file "$resolved_file_path" ||
-     codex_path_is_eci_control_alias "$lexical_file_path" ||
-     codex_path_is_eci_control_alias "$resolved_file_path" ||
+     [ "$control_alias" = true ] ||
      codex_path_is_git_approval_file "$lexical_file_path" ||
      codex_path_is_git_approval_file "$resolved_file_path"; }; then
   deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "edit-validation" "$file_path" "Only the main thread may modify coordinator-owned ECI or authorization state." "route coordinator-owned ECI or authorization changes through the main/orchestrator")"

@@ -59,11 +59,17 @@ if [ "$hook_is_subagent" = true ]; then
     [ -n "$path" ] || continue
     resolved_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
     lexical_path="$(codex_lexical_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
+    control_alias=false
+    if [ -n "$lexical_path" ] && codex_path_is_eci_control_alias "$lexical_path"; then
+      control_alias=true
+    elif [ -n "$resolved_path" ] && [ "$resolved_path" != "$lexical_path" ] &&
+          codex_path_is_eci_control_alias "$resolved_path"; then
+      control_alias=true
+    fi
     if { codex_path_is_session_ledger_file "$resolved_path" ||
          codex_path_is_eci_control_file "$lexical_path" ||
          codex_path_is_eci_control_file "$resolved_path" ||
-         codex_path_is_eci_control_alias "$lexical_path" ||
-         codex_path_is_eci_control_alias "$resolved_path" ||
+         [ "$control_alias" = true ] ||
          codex_path_is_git_approval_file "$lexical_path" ||
          codex_path_is_git_approval_file "$resolved_path"; }; then
       deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "patch-validation" "$path" "Only the main thread may modify coordinator-owned ECI or authorization state." "route coordinator-owned ECI or authorization changes through the main/orchestrator")"

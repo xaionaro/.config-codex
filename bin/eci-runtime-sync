@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Coordinator-owned provider runtime synchronizer.
+#
+# This route copies only the provider's hook/runtime surface from the
+# canonical provider home (the directory containing this script) to an
+# explicitly named, owner-checked provider home. It never removes files and
+# never follows a target symlink.
+
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'usage: eci-runtime-sync {check|apply} --target PROVIDER_HOME' \
+    '' \
+    'Synchronize CODEX.md, config.toml, hooks.json, hooks/, and bin/ from' \
+    'the canonical provider home to an explicit runtime provider home.' >&2
+}
+
+fail() {
+  local code="$1"
+  shift
+  printf '[%s] runtime synchronization denied: %s\n' "$code" "$*" >&2
+  exit 2
+}
+
+mode=""
+target_arg=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    check|apply)
+      [ -z "$mode" ] || fail ECI_RUNTIME_SYNC_ARGUMENTS 'mode was supplied more than once'
+      mode="$1"
+      ;;
+    --target)
+      shift
+      [ "$#" -gt 0 ] || fail ECI_RUNTIME_SYNC_ARGUMENTS '--target requires one provider-home path'
+      [ -z "$target_arg" ] || fail ECI_RUNTIME_SYNC_ARGUMENTS '--target was supplied more than once'
+      target_arg="$1"
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      fail ECI_RUNTIME_SYNC_ARGUMENTS "unrecognized argument: $1"
+      ;;
+  esac
+  shift
+done
+[ -n "$mode" ] || { usage; exit 2; }
+[ -n "$target_arg" ] || fail ECI_RUNTIME_SYNC_ARGUMENTS 'an explicit --target is required'
+
+source_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)" ||
+  fail ECI_RUNTIME_SYNC_SOURCE_UNRESOLVED 'unable to resolve the canonical provider home'
+provider="${source_root##*/}"
+case "$provider" in
+  .codex|.kimi-code) ;;
+  *) fail ECI_RUNTIME_SYNC_PROVIDER "canonical home basename is not .codex or .kimi-code: $source_root" ;;
+esac
+
+case "$target_arg" in
+  /*) ;;
+  *) fail ECI_RUNTIME_SYNC_TARGET 'target must be an absolute provider-home path' ;;
+esac
+# Validate the caller-supplied final component before canonicalization.
+# Parent symlinks are allowed when their resolved target passes the ownership
+# and containment checks below; this supports the user's home-scoped mounted
+# tmp directory without permitting a symlinked provider-home itself.
+[ ! -L "$target_arg" ] || fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target provider home is a symlink: $target_arg"
+target_root="$(realpath -m -- "$target_arg" 2>/dev/null || true)"
+[ -n "$target_root" ] || fail ECI_RUNTIME_SYNC_TARGET 'unable to canonicalize the target path'
+[ "$target_root" != "$source_root" ] || fail ECI_RUNTIME_SYNC_TARGET 'target resolves to the canonical provider home'
+[ "${target_root##*/}" = "$provider" ] ||
+  fail ECI_RUNTIME_SYNC_PROVIDER "target basename must be $provider: $target_root"
+
+owner_uid="${EUID:-$(id -u 2>/dev/null || printf '%s' -1)}"
+owner_of() { stat -Lc '%u' -- "$1" 2>/dev/null || true; }
+mode_of() { stat -Lc '%a' -- "$1" 2>/dev/null || true; }
+
+[ -d "$source_root" ] && [ ! -L "$source_root" ] ||
+  fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical provider home is not a regular directory: $source_root"
+[ "$(owner_of "$source_root")" = "$owner_uid" ] ||
+  fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical provider home is not owned by uid $owner_uid: $source_root"
+[ -d "$target_root" ] && [ ! -L "$target_root" ] ||
+  fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target provider home is not a regular directory: $target_root"
+[ "$(owner_of "$target_root")" = "$owner_uid" ] ||
+  fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target provider home is not owned by uid $owner_uid: $target_root"
+
+manifest=()
+fixed_files=()
+case "$provider" in
+  .codex) fixed_files=(CODEX.md config.toml hooks.json) ;;
+  # Kimi has no Codex hooks.json/CODEX.md; its runtime configuration is the
+  # provider-owned config.toml plus the shared hook/bin surface.
+  .kimi-code) fixed_files=(config.toml) ;;
+esac
+for fixed in "${fixed_files[@]}"; do
+  [ -f "$source_root/$fixed" ] && [ ! -L "$source_root/$fixed" ] ||
+    fail ECI_RUNTIME_SYNC_SOURCE_MISSING "canonical managed file is missing or unsafe: $source_root/$fixed"
+  manifest+=("$fixed")
+done
+# Tests, compiler-only source, bytecode caches, and editor backups are not
+# runtime inputs. Excluding them keeps deployment scoped to hook scripts,
+# runtime libraries, provider config, and installed helper binaries.
+while IFS= read -r -d '' source_path; do
+  [ -f "$source_path" ] && [ ! -L "$source_path" ] ||
+    fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical managed path is not a regular file: $source_path"
+  manifest+=("${source_path#"$source_root/"}")
+done < <(find "$source_root/hooks" "$source_root/bin" \
+  \( -path "$source_root/hooks/tests" -o -path "$source_root/hooks/tests/*" \
+     -o -name '__pycache__' -o -name '*.pyc' -o -name '*.go' -o -name '*.bak*' \) -prune \
+  -o -type f -print0 2>/dev/null | sort -z)
+[ "${#manifest[@]}" -gt 3 ] || fail ECI_RUNTIME_SYNC_SOURCE_MISSING 'canonical hooks/bin surface is empty'
+
+path_parent_is_safe() {
+  local path="$1" parent
+  parent="${path%/*}"
+  while [ "$parent" != "$target_root" ] && [ "$parent" != "/" ]; do
+    [ ! -L "$parent" ] || return 1
+    parent="${parent%/*}"
+  done
+  [ "$parent" = "$target_root" ]
+}
+
+hash_file() {
+  local digest
+  digest="$(sha256sum -- "$1" 2>/dev/null || true)"
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
+drift=0
+declare -A needs_sync=()
+for relative in "${manifest[@]}"; do
+  source_path="$source_root/$relative"
+  target_path="$target_root/$relative"
+  path_parent_is_safe "$target_path" ||
+    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target parent contains a symlink: $target_path"
+  if [ -e "$target_path" ] || [ -L "$target_path" ]; then
+    [ -f "$target_path" ] && [ ! -L "$target_path" ] ||
+      fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target is not a regular file: $target_path"
+    source_hash="$(hash_file "$source_path")" || fail ECI_RUNTIME_SYNC_HASH "cannot hash source: $source_path"
+    target_hash="$(hash_file "$target_path")" || fail ECI_RUNTIME_SYNC_HASH "cannot hash target: $target_path"
+    source_mode="$(mode_of "$source_path")"
+    target_mode="$(mode_of "$target_path")"
+    if [ "$source_hash" = "$target_hash" ] && [ "$source_mode" = "$target_mode" ]; then
+      printf 'OK\t%s\t%s\n' "$relative" "$source_hash"
+      continue
+    fi
+    drift=1
+    needs_sync["$relative"]=1
+    printf 'DRIFT\t%s\tsource=%s\ttarget=%s\tmode=%s/%s\n' \
+      "$relative" "$source_hash" "$target_hash" "$source_mode" "$target_mode"
+  else
+    drift=1
+    needs_sync["$relative"]=1
+    printf 'MISSING\t%s\n' "$relative"
+  fi
+done
+
+[ "$mode" = check ] && exit "$drift"
+
+lock_dir="${HOME:?HOME must be set}/tmp/eci-runtime-sync-$provider.lock"
+if ! mkdir -- "$lock_dir" 2>/dev/null; then
+  fail ECI_RUNTIME_SYNC_BUSY "another $provider synchronization route owns $lock_dir"
+fi
+trap 'rmdir -- "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
+
+for relative in "${manifest[@]}"; do
+  [ "${needs_sync[$relative]:-0}" = 1 ] || continue
+  source_path="$source_root/$relative"
+  target_path="$target_root/$relative"
+  path_parent_is_safe "$target_path" ||
+    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target parent changed to a symlink: $target_path"
+  target_parent="${target_path%/*}"
+  mkdir -p -- "$target_parent"
+  [ ! -L "$target_parent" ] || fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target parent is a symlink: $target_parent"
+  target_tmp="$target_path.eci-runtime-sync.$$"
+  [ ! -e "$target_tmp" ] && [ ! -L "$target_tmp" ] ||
+    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "temporary target path already exists: $target_tmp"
+  cp -- "$source_path" "$target_tmp" || fail ECI_RUNTIME_SYNC_WRITE "unable to stage $relative"
+  chmod -- "$(mode_of "$source_path")" "$target_tmp" || fail ECI_RUNTIME_SYNC_WRITE "unable to preserve mode for $relative"
+  mv -- "$target_tmp" "$target_path" || fail ECI_RUNTIME_SYNC_WRITE "unable to publish $relative"
+  source_hash="$(hash_file "$source_path")" || fail ECI_RUNTIME_SYNC_HASH "cannot hash published source: $source_path"
+  target_hash="$(hash_file "$target_path")" || fail ECI_RUNTIME_SYNC_HASH "cannot hash published target: $target_path"
+  [ "$source_hash" = "$target_hash" ] || fail ECI_RUNTIME_SYNC_VERIFY "published digest differs for $relative"
+  printf 'SYNCED\t%s\t%s\n' "$relative" "$target_hash"
+done
+
+exit 0

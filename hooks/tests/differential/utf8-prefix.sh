@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/utf8-prefix-diff.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/utf8-prefix-diff.XXXXXX")"
 UTF8_PREFIX_HELPER="${CODEX_TEST_UTF8_PREFIX_HELPER:-$ROOT/hooks/lib/utf8_prefix_cap.py}"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -27,7 +27,7 @@ done
 if [ "${CODEX_TEST_SKIP_LEAN_BUILD:-}" = 1 ]; then
   [ -x "$ROOT/proofs/.lake/build/bin/utf8PrefixDiff" ]
 else
-  build_log="$(mktemp "${TMPDIR:-/tmp}/utf8-prefix-lean-build.XXXXXX")"
+  build_log="$(mktemp "${CODEX_TMPDIR:-${HOME:?}/tmp}/utf8-prefix-lean-build.XXXXXX")"
   trap 'rm -f "$build_log"' EXIT HUP INT TERM
   python3 "$ROOT/hooks/tests/process-watchdog.py" --timeout 300 --log "$build_log" \
     --cwd "$ROOT/proofs" -- lake build utf8PrefixDiff || { cat "$build_log" >&2; exit 1; }

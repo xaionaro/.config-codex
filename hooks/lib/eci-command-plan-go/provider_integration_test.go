@@ -113,11 +113,12 @@ func TestInstalledBinaryRoutesActivePreCommitHookModeRepairByRole(t *testing.T) 
 		provider := provider
 		t.Run(string(provider), func(t *testing.T) {
 			t.Parallel()
+			providerRoot := providerHome(provider)
 
 			workerRequest := Request{
 				Provider:      provider,
 				Role:          RoleWorker,
-				CWD:           "/workspace",
+				CWD:           providerRoot,
 				Marker:        MarkerActive,
 				ActiveSession: "test-session",
 				Command:       command,
@@ -182,7 +183,15 @@ func TestInstalledBinaryRoutesActivePreCommitHookModeRepairByRole(t *testing.T) 
 				{name: "wrapper", command: "env chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
 				{name: "executable alias", command: "/bin/chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
 				{name: "alternate target spelling", command: "chmod 755 ./hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+				{name: "quoted executable", command: `ch"mod" 755 hooks/pre-commit-go-mod.sh`, marker: MarkerActive},
+				{name: "quoted mode", command: `chmod "755" hooks/pre-commit-go-mod.sh`, marker: MarkerActive},
+				{name: "quoted target", command: `chmod 755 "hooks/pre-commit-go-mod.sh"`, marker: MarkerActive},
 				{name: "another target", command: "chmod 755 hooks/install-pre-commit-go-mod.sh", marker: MarkerActive},
+				{name: "and compound", command: command + " && printf after", marker: MarkerActive},
+				{name: "semicolon compound", command: "printf before; " + command, marker: MarkerActive},
+				{name: "pipeline compound", command: command + " | printf after", marker: MarkerActive},
+				{name: "pipeline preceding compound", command: "printf before | " + command, marker: MarkerActive},
+				{name: "interpreter wrapper", command: "bash -c '" + command + "'", marker: MarkerActive},
 				{name: "inactive exact", command: command, marker: MarkerInactive},
 			} {
 				testCase := testCase
@@ -210,6 +219,284 @@ func TestInstalledBinaryRoutesActivePreCommitHookModeRepairByRole(t *testing.T) 
 						t.Fatalf("inactive exact command: status=%d result=%#v, want allow without diagnostic", status, result)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestInstalledBinaryDeniesActiveWorkerProtectedHookModeMutations(t *testing.T) {
+	t.Parallel()
+
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			providerRoot := providerHome(provider)
+
+			for _, command := range []string{
+				"env chmod 755 hooks/pre-commit-go-mod.sh",
+				"command chmod 755 hooks/pre-commit-go-mod.sh",
+				`ch"mod" 755 hooks/pre-commit-go-mod.sh`,
+				`ch"mod" 644 hooks/pre-commit-go-mod.sh`,
+				`chmod "755" hooks/pre-commit-go-mod.sh`,
+				`chmod 755 "hooks/pre-commit-go-mod.sh"`,
+				"/bin/chmod 755 hooks/pre-commit-go-mod.sh",
+				"chmod 755 ./hooks/pre-commit-go-mod.sh",
+				"chmod 644 hooks/pre-commit-go-mod.sh",
+				"chmod 755 hooks/install-pre-commit-go-mod.sh",
+				"chmod 644 hooks/validate-bash.sh",
+				"chmod 755 hooks/tests/test-pre-commit-go-mod.sh",
+				"chmod 644 " + filepath.Join(providerRoot, "hooks", "validate-bash.sh"),
+				"stdbuf -oL chmod 644 hooks/validate-bash.sh",
+				"busybox chmod 644 hooks/validate-bash.sh",
+				"busybox -- chmod 644 hooks/validate-bash.sh",
+				"chmod -R 644 hooks",
+				"chmod --recursive 644 hooks",
+				"chmod -R 644 .",
+				"chmod -R 644 ..",
+				"chmod -vR 644 hooks",
+				"chmod --rec 755 hooks",
+				"chmod 755 -R hooks",
+				"chmod 755 --rec hooks",
+				"chmod 755 --recursive hooks",
+				"chmod 755 -vR hooks",
+				"chmod 755 hooks --rec",
+				"chmod 755 hooks -R",
+				"chmod --ref ordinary.txt hooks/validate-bash.sh",
+				"chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"chmod hooks/validate-bash.sh --ref=ordinary.txt",
+				"chmod --ref ordinary.txt -R hooks",
+				"chmod -R --ref=ordinary.txt hooks",
+				"env chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"busybox -- chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --rec 755 hooks",
+				"busybox -- chmod 755 hooks --rec",
+				"stdbuf -oL chmod -R 644 hooks",
+				"busybox -- chmod --recursive 644 hooks",
+			} {
+				command := command
+				t.Run(command, func(t *testing.T) {
+					t.Parallel()
+
+					input, err := json.Marshal(Request{
+						Provider:      provider,
+						Role:          RoleWorker,
+						CWD:           providerRoot,
+						Marker:        MarkerActive,
+						ActiveSession: "test-session",
+						Command:       command,
+					})
+					if err != nil {
+						t.Fatalf("marshal request: %v", err)
+					}
+					var output bytes.Buffer
+					status := runBinary(t, binary, input, &output)
+					if status != StatusDeny {
+						t.Fatalf("status: got %d, want %d; output=%s", status, StatusDeny, output.String())
+					}
+					var result Result
+					if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+						t.Fatalf("decode result: %v", err)
+					}
+					if result.Diagnostic == nil {
+						t.Fatal("diagnostic: got nil, want generic control denial")
+					}
+					if result.Diagnostic.Code != CodeControlOwnerRequired {
+						t.Errorf("code: got %q, want %q", result.Diagnostic.Code, CodeControlOwnerRequired)
+					}
+					if result.Diagnostic.Operation != "worker-control" {
+						t.Errorf("operation: got %q, want worker-control", result.Diagnostic.Operation)
+					}
+					if result.Diagnostic.Predicate != "worker-hook-mode-ownership" {
+						t.Errorf("predicate: got %q, want worker-hook-mode-ownership", result.Diagnostic.Predicate)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestInstalledBinaryDefersActiveCoordinatorProtectedHookModeMutations(t *testing.T) {
+	t.Parallel()
+
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			providerRoot := providerHome(provider)
+
+			for _, command := range []string{
+				"chmod 644 hooks/validate-bash.sh",
+				`chmod "644" hooks/pre-commit-go-mod.sh`,
+				"chmod 755 hooks/pre-commit-go-mod.sh && printf after",
+				"env chmod 644 hooks/validate-bash.sh",
+				"stdbuf -oL chmod 644 hooks/validate-bash.sh",
+				"busybox -- chmod 644 hooks/validate-bash.sh",
+				"chmod -R 644 hooks",
+				"chmod --recursive 644 hooks",
+				"chmod -R 644 .",
+				"chmod -R 644 ..",
+				"chmod -vR 644 hooks",
+				"chmod --rec 755 hooks",
+				"chmod 755 -R hooks",
+				"chmod 755 --rec hooks",
+				"chmod 755 --recursive hooks",
+				"chmod 755 -vR hooks",
+				"chmod 755 hooks --rec",
+				"chmod 755 hooks -R",
+				"chmod --ref ordinary.txt hooks/validate-bash.sh",
+				"chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"chmod hooks/validate-bash.sh --ref=ordinary.txt",
+				"chmod --ref ordinary.txt -R hooks",
+				"chmod -R --ref=ordinary.txt hooks",
+				"env chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"busybox -- chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --rec 755 hooks",
+				"busybox -- chmod 755 hooks --rec",
+				"stdbuf -oL chmod -R 644 hooks",
+				"busybox -- chmod --recursive 644 hooks",
+			} {
+				command := command
+				t.Run(command, func(t *testing.T) {
+					t.Parallel()
+
+					input, err := json.Marshal(Request{
+						Provider:      provider,
+						Role:          RoleCoordinator,
+						CWD:           providerRoot,
+						Marker:        MarkerActive,
+						ActiveSession: "test-session",
+						Command:       command,
+					})
+					if err != nil {
+						t.Fatalf("marshal request: %v", err)
+					}
+					var output bytes.Buffer
+					status := runBinary(t, binary, input, &output)
+					if status != StatusDefer {
+						t.Fatalf("status: got %d, want %d; output=%s", status, StatusDefer, output.String())
+					}
+					var result Result
+					if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+						t.Fatalf("decode result: %v", err)
+					}
+					if result.Decision != DecisionDefer || result.Diagnostic != nil {
+						t.Fatalf("result: decision=%q diagnostic=%#v, want defer without diagnostic", result.Decision, result.Diagnostic)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestInstalledBinaryAllowsSameNamedHookPathOutsideProviderRoot(t *testing.T) {
+	t.Parallel()
+
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+
+			for _, command := range []string{
+				"chmod 644 hooks/validate-bash.sh",
+				"chmod -R 644 .",
+			} {
+				input, err := json.Marshal(Request{
+					Provider:      provider,
+					Role:          RoleWorker,
+					CWD:           "/tmp",
+					Marker:        MarkerActive,
+					ActiveSession: "test-session",
+					Command:       command,
+				})
+				if err != nil {
+					t.Fatalf("marshal request: %v", err)
+				}
+				var output bytes.Buffer
+				status := runBinary(t, binary, input, &output)
+				if status != StatusAllow {
+					t.Fatalf("%q: status: got %d, want %d; output=%s", command, status, StatusAllow, output.String())
+				}
+				var result Result
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+					t.Fatalf("decode result: %v", err)
+				}
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Fatalf("%q: result: decision=%q diagnostic=%#v, want allow without diagnostic", command, result.Decision, result.Diagnostic)
+				}
+			}
+		})
+	}
+}
+
+func TestInstalledBinaryAllowsActiveWorkerOrdinaryChmod(t *testing.T) {
+	t.Parallel()
+
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			providerRoot := providerHome(provider)
+
+			for _, command := range []string{
+				"chmod 644 ordinary.txt",
+				"chmod -R 644 ordinary-dir",
+				"chmod 644 -R ordinary-dir",
+				"chmod 644 ordinary-dir -R",
+				"chmod --rec 644 ordinary-dir",
+				"chmod 755 -- -R hooks",
+				"chmod 755 hooks -- -R",
+				"chmod 755 hooks -- --rec",
+				"chmod --ref=hooks/validate-bash.sh ordinary.txt",
+				"chmod --ref hooks/validate-bash.sh ordinary.txt",
+				"chmod ordinary.txt --ref=hooks/validate-bash.sh",
+				"chmod -R --ref=hooks/validate-bash.sh ordinary-dir",
+				"chmod --reference=hooks/validate-bash.sh ordinary.txt",
+				"chmod -R --reference=hooks/validate-bash.sh ordinary-dir",
+				"chmod --reference hooks/validate-bash.sh ordinary.txt",
+				"chmod -R --reference hooks/validate-bash.sh ordinary-dir",
+			} {
+				input, err := json.Marshal(Request{
+					Provider:      provider,
+					Role:          RoleWorker,
+					CWD:           providerRoot,
+					Marker:        MarkerActive,
+					ActiveSession: "test-session",
+					Command:       command,
+				})
+				if err != nil {
+					t.Fatalf("marshal request: %v", err)
+				}
+				var output bytes.Buffer
+				status := runBinary(t, binary, input, &output)
+				if status != StatusAllow {
+					t.Fatalf("%q: status: got %d, want %d; output=%s", command, status, StatusAllow, output.String())
+				}
+				var result Result
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+					t.Fatalf("decode result: %v", err)
+				}
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Fatalf("%q: result: decision=%q diagnostic=%#v, want allow without diagnostic", command, result.Decision, result.Diagnostic)
+				}
 			}
 		})
 	}

@@ -295,6 +295,15 @@ def parse(command: str) -> Plan:
     escaped = False
     index = 0
 
+    def canonical_lifecycle_tilde_prefix(offset: int) -> bool:
+        """Allow only provider-owned tilde aliases at token boundaries."""
+        for alias in ("~/.codex/bin/eci-active", "~/.kimi-code/bin/eci-active"):
+            if not command.startswith(alias, offset):
+                continue
+            end = offset + len(alias)
+            return end == len(command) or command[end].isspace() or command[end] in ";|&<>"
+        return False
+
     def flush_token() -> None:
         nonlocal chars, provenance, token_started
         if not token_started:
@@ -442,7 +451,9 @@ def parse(command: str) -> Plan:
                     "remove the comment or quote the literal hash character",
                     predicate="comment",
                 )
-            if char in "*?[{}" or (char == "~" and not token_started):
+            if char in "*?[{}" or (
+                char == "~" and not token_started and not canonical_lifecycle_tilde_prefix(index)
+            ):
                 raise PlanError(
                     "ECI_PLAN_SYNTAX_DENIED",
                     "unquoted expansion syntax makes argv filesystem- or shell-dependent",

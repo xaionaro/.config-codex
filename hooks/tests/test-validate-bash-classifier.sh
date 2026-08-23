@@ -135,11 +135,25 @@ run_hook_with_transcript_pager() {
 }
 
 run_subagent_hook() {
-  local command="$1" output transcript
+  local command="$1" transcript_order="${2:-type-first}" output transcript
   output="$TMP_ROOT/subagent-output"
   transcript="$subagent_codex_home/sessions/codex-validate-bash-subagent-$BASHPID.jsonl"
   subagent_transcript="$transcript"
-  printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' >"$transcript"
+  case "$transcript_order" in
+    type-first)
+      printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' >"$transcript"
+      ;;
+    payload-first)
+      printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}},"type":"session_meta"}' >"$transcript"
+      ;;
+    payload-before-and-after-type)
+      printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","payload":{"id":"benign"},"type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' >"$transcript"
+      ;;
+    *)
+      printf 'unknown subagent transcript order: %s\n' "$transcript_order" >&2
+      return 1
+      ;;
+  esac
   jq -cn --arg cwd "$ROOT" --arg command "$command" --arg transcript "$transcript" \
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$subagent_codex_home" PATH="$subagent_codex_home/bin:$PATH" \
@@ -295,6 +309,42 @@ assert_source_write_denied() {
   ' "$output" >/dev/null
 }
 
+assert_worker_no_hook_mode_repair() {
+  local command="$1" output
+  output="$(run_subagent_hook "$command")"
+  if grep -Fq -- 'predicate=hook-mode-repair' "$output"; then
+    printf 'worker command unexpectedly selected hook-mode-repair: %q\n' "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  fi
+}
+
+assert_worker_protected_hook_mode_denied() {
+  local command="$1" output
+  output="$(run_subagent_hook "$command")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_CONTROL_OWNER_REQUIRED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=worker-hook-mode-ownership")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null || {
+    printf 'worker protected hook-mode mutation was not denied: %q\n' "$command" >&2
+    [ ! -e "$output" ] || cat -- "$output" >&2
+    return 1
+  }
+}
+
+assert_inactive_no_hook_mode_repair() {
+  local command="$1" output
+  output="$(run_hook_without_marker "$command")"
+  if grep -Fq -- 'predicate=hook-mode-repair' "$output"; then
+    printf 'inactive command unexpectedly selected hook-mode-repair: %q\n' "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  fi
+}
+
 assert_ledger_append_only_denied() {
   local command="$1" path="$2" output
   output="$(run_hook "$command")"
@@ -341,6 +391,29 @@ assert_lifecycle_identity_denied() {
   ' "$output" >/dev/null
 }
 
+# A typed coordinator callback without a transcript must stay on the compiled
+# planner path without starting the bounded Python transcript parser.
+if command -v strace >/dev/null 2>&1; then
+  no_transcript_trace="$TMP_ROOT/no-transcript-fast-path.trace"
+  no_transcript_output="$TMP_ROOT/no-transcript-fast-path.output"
+  jq -cn --arg cwd "$ROOT" --arg command 'go test ./...' \
+    '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
+    env -u CODEX_HOOK_IS_SUBAGENT -u CODEX_ROLE \
+      CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$kimi_root" PATH="$ROOT/bin:$PATH" \
+      strace -f -qq -e trace=process -o "$no_transcript_trace" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$no_transcript_output"
+  [ ! -s "$no_transcript_output" ] || {
+    printf 'transcriptless fast path unexpectedly denied:\n' >&2
+    cat -- "$no_transcript_output" >&2
+    exit 1
+  }
+  ! grep -Eq 'execve\(".*/python3"' "$no_transcript_trace" || {
+    printf 'transcriptless planner path unexpectedly executed python3:\n' >&2
+    grep -E 'execve\(".*/python3"' "$no_transcript_trace" >&2
+    exit 1
+  }
+fi
+
 # A novel finite executable is ordinary project work, not an allowlist miss.
 assert_allowed "unrecognized-command"
 assert_allowed "git -C $ROOT status --short"
@@ -365,13 +438,20 @@ assert_allowed "date -u +%s"
 assert_allowed "git -C $ROOT show --stat -1 hooks/validate-bash.sh"
 assert_allowed "git -C $ROOT show -- AGENTS.md"
 assert_allowed "eci-active --help"
-assert_unknown "~/.codex/bin/eci-active status"
-assert_unknown "~/.codex/bin/eci-active --help"
+assert_allowed "~/.codex/bin/eci-active status"
+assert_allowed "~/.codex/bin/eci-active --help"
 raw_lifecycle_assignment_output="$(run_hook "CODEX_SESSION_ID=t00-session $ROOT/bin/eci-active status")"
 jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and (.hookSpecificOutput.permissionDecisionReason | contains("predicate=leading-assignment"))' "$raw_lifecycle_assignment_output" >/dev/null
 assert_allowed "env CODEX_SESSION_ID=t00-session $ROOT/bin/eci-active status"
 assert_allowed "env CODEX_SESSION_ID=t00-session $ROOT/bin/eci-active ledger-append 'bounded coordinator entry'"
-assert_allowed "env TMPDIR=/tmp CODEX_SESSION_ID=t00-session $ROOT/bin/eci-active --help"
+system_tmp="$(printf '/%s' tmp)"
+system_tmp_lifecycle_output="$(run_hook "env TMPDIR=$system_tmp CODEX_SESSION_ID=t00-session $ROOT/bin/eci-active --help")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_LIFECYCLE_ARGUMENTS_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("TMPDIR must be a canonical non-system temporary directory")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+' "$system_tmp_lifecycle_output" >/dev/null
 assert_lifecycle_identity_denied "env KIMI_SESSION_ID=t00-session $ROOT/bin/eci-active status" CODEX_SESSION_ID KIMI_SESSION_ID
 assert_lifecycle_identity_denied "env CODEX_SESSION_ID=wrong-session $ROOT/bin/eci-active ledger-append 'mismatch probe'" CODEX_SESSION_ID wrong-session
 
@@ -491,14 +571,100 @@ assert_source_write_denied "chmod 755 hooks/pre-commit-go-mod.sh hooks/install-p
 assert_source_write_denied "chmod 755 hooks/validate-bash.sh"
 assert_source_write_denied "chmod 644 hooks/pre-commit-go-mod.sh"
 assert_source_write_denied "chmod 644 hooks/validate-bash.sh"
+assert_source_write_denied "chmod 755 hooks/pre-commit-go-mod.sh"
 chmod_worker_output="$(run_subagent_hook "chmod 755 hooks/pre-commit-go-mod.sh")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_CONTROL_OWNER_REQUIRED]")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("segment=1")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("argv_index=2")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("token=hooks/pre-commit-go-mod.sh")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("predicate=hook-mode-repair")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
 ' "$chmod_worker_output" >/dev/null
+for command in \
+  "env chmod 755 hooks/pre-commit-go-mod.sh" \
+  "command chmod 755 hooks/pre-commit-go-mod.sh" \
+  'ch"mod" 755 hooks/pre-commit-go-mod.sh' \
+  'ch"mod" 644 hooks/pre-commit-go-mod.sh' \
+  'chmod "755" hooks/pre-commit-go-mod.sh' \
+  'chmod 755 "hooks/pre-commit-go-mod.sh"' \
+  "/bin/chmod 755 hooks/pre-commit-go-mod.sh" \
+  "chmod 755 ./hooks/pre-commit-go-mod.sh" \
+  "chmod 644 hooks/pre-commit-go-mod.sh" \
+  "chmod 644 hooks/validate-bash.sh" \
+  "chmod 600 hooks/install-pre-commit-go-mod.sh" \
+  "chmod 700 hooks/tests/test-pre-commit-go-mod.sh" \
+  "chmod 644 $ROOT/hooks/validate-bash.sh" \
+  "chmod -R 644 hooks" \
+  "chmod 755 hooks/install-pre-commit-go-mod.sh" \
+  "chmod 755 hooks/validate-bash.sh" \
+  "chmod 755 hooks/tests/test-pre-commit-go-mod.sh" \
+  "chmod 755 hooks/pre-commit-go-mod.sh && printf after" \
+  "printf before; chmod 755 hooks/pre-commit-go-mod.sh" \
+  "chmod 755 hooks/pre-commit-go-mod.sh | printf after" \
+  "printf before | chmod 755 hooks/pre-commit-go-mod.sh" \
+  "bash -c 'chmod 755 hooks/pre-commit-go-mod.sh'"; do
+  assert_worker_no_hook_mode_repair "$command"
+done
+for command in \
+  "env chmod 755 hooks/pre-commit-go-mod.sh" \
+  "command chmod 755 hooks/pre-commit-go-mod.sh" \
+  'ch"mod" 755 hooks/pre-commit-go-mod.sh' \
+  'ch"mod" 644 hooks/pre-commit-go-mod.sh' \
+  'chmod "755" hooks/pre-commit-go-mod.sh' \
+  'chmod 755 "hooks/pre-commit-go-mod.sh"' \
+  "/bin/chmod 755 hooks/pre-commit-go-mod.sh" \
+  "chmod 755 ./hooks/pre-commit-go-mod.sh" \
+  "chmod 644 hooks/pre-commit-go-mod.sh" \
+  "chmod -R 644 hooks" \
+  "chmod --recursive 644 hooks" \
+  "chmod -R 644 ." \
+  "chmod -R 644 .." \
+  "chmod -vR 644 hooks" \
+  "chmod --rec 755 hooks" \
+  "chmod 755 -R hooks" \
+  "chmod 755 --rec hooks" \
+  "chmod 755 --recursive hooks" \
+  "chmod 755 -vR hooks" \
+  "chmod 755 hooks --rec" \
+  "chmod 755 hooks -R" \
+  "chmod --ref ordinary.txt hooks/validate-bash.sh" \
+  "chmod --ref=ordinary.txt hooks/validate-bash.sh" \
+  "chmod hooks/validate-bash.sh --ref=ordinary.txt" \
+  "chmod --ref ordinary.txt -R hooks" \
+  "chmod -R --ref=ordinary.txt hooks" \
+  "env chmod --ref=ordinary.txt hooks/validate-bash.sh" \
+  "stdbuf -oL chmod --ref=ordinary.txt hooks/validate-bash.sh" \
+  "busybox -- chmod --ref=ordinary.txt hooks/validate-bash.sh" \
+  "stdbuf -oL chmod --rec 755 hooks" \
+  "busybox -- chmod 755 hooks --rec" \
+  "stdbuf -oL chmod -R 644 hooks" \
+  "busybox -- chmod --recursive 644 hooks" \
+  "chmod 755 hooks/install-pre-commit-go-mod.sh" \
+  "chmod 755 hooks/validate-bash.sh" \
+  "chmod 755 hooks/tests/test-pre-commit-go-mod.sh"; do
+  assert_worker_protected_hook_mode_denied "$command"
+done
+for ordinary_recursive_worker_command in \
+  "chmod -R 644 $TMP_ROOT/ordinary-recursive" \
+  "chmod 644 -R $TMP_ROOT/ordinary-recursive" \
+  "chmod 644 $TMP_ROOT/ordinary-recursive -R" \
+  "chmod --rec 644 $TMP_ROOT/ordinary-recursive" \
+  "chmod 755 hooks -- --rec" \
+  "chmod --ref=hooks/validate-bash.sh $TMP_ROOT/ordinary-reference" \
+  "chmod --ref hooks/validate-bash.sh $TMP_ROOT/ordinary-reference" \
+  "chmod $TMP_ROOT/ordinary-reference --ref=hooks/validate-bash.sh" \
+  "chmod -R --ref=hooks/validate-bash.sh $TMP_ROOT/ordinary-reference"; do
+  ordinary_recursive_worker_output="$(run_subagent_hook "$ordinary_recursive_worker_command")"
+  [ ! -s "$ordinary_recursive_worker_output" ] || {
+    printf 'ordinary recursive worker chmod was denied: %s\n' "$ordinary_recursive_worker_command" >&2
+    cat -- "$ordinary_recursive_worker_output" >&2
+    exit 1
+  }
+done
+assert_inactive_no_hook_mode_repair "chmod 755 hooks/pre-commit-go-mod.sh"
 pager_output="$(run_hook_with_transcript_pager "git -C $ROOT status --short")"
 [ ! -s "$pager_output" ]
 if [[ "$kimi_root" = /* ]] && [ -d "$kimi_root" ] && [ ! -L "$kimi_root" ] &&
@@ -536,15 +702,18 @@ assert_allowed "readlink -f $ROOT/sessions"
 assert_allowed "find /tmp -maxdepth 1 -type d -print"
 # This exercises the validator's real `shutil.which("mktemp")` resolution;
 # on the deployment host it resolves through the trusted cargo coreutils path.
-assert_allowed "mktemp -d /tmp/codex-eci-coreutils.XXXXXX"
-assert_allowed "mktemp -d /tmp/codex-eci-probe.XXXXXX"
-assert_unknown "mktemp -d /tmp/codex-eci-probe.XXXXXX extra"
-assert_unknown 'mktemp -d /tmp/codex-eci-probe-$(date).XXXXXX'
-worker_mktemp_output="$(run_subagent_hook "mktemp -d /tmp/codex-eci-probe.XXXXXX")"
-jq -e '
-  .hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_COORDINATOR_ROUTE_DENIED]") and contains("phase=PreToolUse") and contains("operation=coordinator-route") and contains("subject=provider=codex,role=worker,marker=active,command=wrapper=literal") and contains("rejected command=wrapper=literal") and contains("payload=mktemp -d /tmp/codex-eci-probe.XXXXXX") and contains("coordinator-only temporary-directory setup") and contains("reason:") and contains("remediation:"))
-' "$worker_mktemp_output" >/dev/null
+mktemp_template="$classifier_tmp_parent/codex-eci-probe.XXXXXX"
+assert_allowed "mktemp -d $mktemp_template"
+assert_allowed "mktemp -d $mktemp_template"
+assert_unknown "mktemp -d $mktemp_template extra"
+assert_unknown "mktemp -d $classifier_tmp_parent/codex-eci-probe-\$(date).XXXXXX"
+for transcript_order in type-first payload-first payload-before-and-after-type; do
+  worker_mktemp_output="$(run_subagent_hook "mktemp -d $mktemp_template" "$transcript_order")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_COORDINATOR_ROUTE_DENIED]") and contains("phase=PreToolUse") and contains("operation=coordinator-route") and contains("subject=provider=codex,role=worker,marker=active,command=wrapper=literal") and contains("rejected command=wrapper=literal") and contains("coordinator-only temporary-directory setup") and contains("reason:") and contains("remediation:"))
+  ' "$worker_mktemp_output" >/dev/null
+done
 glob_output="$(run_hook "ls -la /tmp/*")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
@@ -620,7 +789,7 @@ worker_readlink_output="$(run_subagent_hook "readlink -f $ROOT/sessions")"
 jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$worker_readlink_output" >/dev/null
 for git_read_argv in \
   "git -C $ROOT -C $ROOT status --short" \
-  "git -C $TMP_ROOT status --short" \
+  "git -C $ROOT -C $ROOT diff -- hooks/validate-bash.sh" \
   "git -C $ROOT status --short ../outside" \
   "git -C $ROOT diff --stat /etc/passwd" \
   "git -C $ROOT diff -- /etc/passwd" \
@@ -630,6 +799,8 @@ for git_read_argv in \
   "git -C $ROOT show --stat -1 hooks//validate-bash.sh"; do
   assert_allowed "$git_read_argv"
 done
+assert_denied "git -C $TMP_ROOT status --short"
+assert_denied "git -C $ROOT -C $TMP_ROOT status --short"
 assert_denied "git -C $ROOT diff -- :(exclude)AGENTS.md"
 git_context_output="$(run_hook "git -C $ROOT -c user.name=test status --short")"
 jq -e '

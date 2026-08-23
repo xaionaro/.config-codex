@@ -27,7 +27,7 @@ fail_gate() {
 # Review evidence is bounded before hashing or line-oriented parsing.  The
 # gate is an acceptance boundary, so a large artifact is a denial rather than
 # an invitation to spend unbounded time or memory.
-eci_review_artifact_max_bytes=1048576
+eci_review_artifact_max_bytes=10485760
 eci_review_anchor_max_bytes=16384
 eci_review_ledger_max_bytes=1048576
 

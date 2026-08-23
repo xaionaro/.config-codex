@@ -14,11 +14,12 @@ Usage:
   eci-active wait <user-owned-wait-report.md>
   eci-active resume <new-state-fingerprint>
   eci-active ledger-append <one-line-log-entry>
-  eci-active manifest-write ${TMPDIR:-/tmp}/<...>/eci-required-critics.json.source
+  eci-active manifest-write ${TMPDIR:-$HOME/tmp}/<...>/eci-required-critics.json.source
   eci-active approve-commit <canonical-repo-root> "git commit ..."
   eci-active nested-enter <step> <iteration> [writer-session]
   eci-active nested-accept
   eci-active nested-exit
+  eci-active sync-runtime
   eci-active status
 
 Set CODEX_SESSION_ID, or CODEX_THREAD_ID when CODEX_SESSION_ID is
@@ -33,8 +34,11 @@ validate_proof_root() {
   local parent
 
   case "$root" in
-    /*) ;;
-    *) echo "ECI proof root must be an absolute path: $root" >&2; return 1 ;;
+  /*) ;;
+  *)
+    echo "ECI proof root must be an absolute path: $root" >&2
+    return 1
+    ;;
   esac
   [ "$root" = "$(codex_proof_root)" ] || {
     echo "ECI proof root does not match the configured root: $root" >&2
@@ -42,7 +46,7 @@ validate_proof_root() {
   }
   parent="$(dirname -- "$root")"
   if [ -L "$root" ] || {
-    { [ -e "$parent" ] || [ -L "$parent" ]; } && [ ! -d "$parent" ];
+    { [ -e "$parent" ] || [ -L "$parent" ]; } && [ ! -d "$parent" ]
   }; then
     echo "ECI proof root or its parent is unsafe: $root" >&2
     return 1
@@ -245,11 +249,11 @@ validate_user_closed_report() {
   report_path="$(realpath -m -- "$report" 2>/dev/null || true)"
   codex_eci_teardown_report_path_is_safe "$report_path" || return 1
   case "$report_path" in
-    "$session_dir"/*) ;;
-    *) return 1 ;;
+  "$session_dir"/*) ;;
+  *) return 1 ;;
   esac
   report_bytes="$(wc -c <"$report_path" 2>/dev/null || true)"
-  case "$report_bytes" in ''|*[!0-9]*) return 1 ;; esac
+  case "$report_bytes" in '' | *[!0-9]*) return 1 ;; esac
   [ "$report_bytes" -le 8192 ] || return 1
   [ "$(tail -c 1 -- "$report_path" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
   LC_ALL=C grep -q $'\r' "$report_path" 2>/dev/null && return 1 || true
@@ -259,15 +263,36 @@ validate_user_closed_report() {
   for line in "${lines[@]}"; do
     [[ "$line" != *[[:cntrl:]]* ]] || return 1
     case "$line" in
-      'schema: '*) [ -z "$schema" ] || return 1; schema="${line#schema: }" ;;
-      'owner: '*) [ -z "$owner" ] || return 1; owner="${line#owner: }" ;;
-      'session_id: '*) [ -z "$report_session" ] || return 1; report_session="${line#session_id: }" ;;
-      'cwd: '*) [ -z "$report_cwd" ] || return 1; report_cwd="${line#cwd: }" ;;
-      'report_path: '*) [ -z "$bound_path" ] || return 1; bound_path="${line#report_path: }" ;;
-      'reason: '*) [ -z "$reason" ] || return 1; reason="${line#reason: }" ;;
-      'state: '*) [ -z "$state" ] || return 1; state="${line#state: }" ;;
-      'user-closed: true') user_closed_count=$((user_closed_count + 1)) ;;
-      *) return 1 ;;
+    'schema: '*)
+      [ -z "$schema" ] || return 1
+      schema="${line#schema: }"
+      ;;
+    'owner: '*)
+      [ -z "$owner" ] || return 1
+      owner="${line#owner: }"
+      ;;
+    'session_id: '*)
+      [ -z "$report_session" ] || return 1
+      report_session="${line#session_id: }"
+      ;;
+    'cwd: '*)
+      [ -z "$report_cwd" ] || return 1
+      report_cwd="${line#cwd: }"
+      ;;
+    'report_path: '*)
+      [ -z "$bound_path" ] || return 1
+      bound_path="${line#report_path: }"
+      ;;
+    'reason: '*)
+      [ -z "$reason" ] || return 1
+      reason="${line#reason: }"
+      ;;
+    'state: '*)
+      [ -z "$state" ] || return 1
+      state="${line#state: }"
+      ;;
+    'user-closed: true') user_closed_count=$((user_closed_count + 1)) ;;
+    *) return 1 ;;
     esac
   done
   [ "$schema" = 'eci-user-closed/v1' ] || return 1
@@ -279,7 +304,7 @@ validate_user_closed_report() {
   [ "$user_closed_count" -eq 1 ] || return 1
   [ "$state" = incomplete ] || [ "$state" = unclean ] || return 1
   [ -n "$reason" ] && [ "${#reason}" -le 1024 ] || return 1
-  case "${reason,,}" in *incomplete*|*unclean*) ;; *) return 1 ;; esac
+  case "${reason,,}" in *incomplete* | *unclean*) ;; *) return 1 ;; esac
   return 0
 }
 
@@ -305,20 +330,26 @@ write_user_closed_ledger() {
   fi
   ledger_tmp="$ledger.tmp.$$"
   [ ! -e "$ledger_tmp" ] && [ ! -L "$ledger_tmp" ] || return 1
-  if ! (set -C; {
-    printf 'schema: eci-user-closed-ledger/v1\n'
-    printf 'session_id: %s\n' "${session_dir##*/}"
-    printf 'owner: coordinator\n'
-    printf 'cwd: %s\n' "$expected_cwd"
-    printf 'report_path: %s\n' "$report_path"
-    printf 'report_sha256: %s\n' "$report_sha"
-    printf 'user-closed: true\n'
-    printf 'state: incomplete\n'
-  } >"$ledger_tmp"); then
+  if ! (
+    set -C
+    {
+      printf 'schema: eci-user-closed-ledger/v1\n'
+      printf 'session_id: %s\n' "${session_dir##*/}"
+      printf 'owner: coordinator\n'
+      printf 'cwd: %s\n' "$expected_cwd"
+      printf 'report_path: %s\n' "$report_path"
+      printf 'report_sha256: %s\n' "$report_sha"
+      printf 'user-closed: true\n'
+      printf 'state: incomplete\n'
+    } >"$ledger_tmp"
+  ); then
     rm -f -- "$ledger_tmp"
     return 1
   fi
-  if ! (set -C; ln -- "$ledger_tmp" "$ledger") 2>/dev/null; then
+  if ! (
+    set -C
+    ln -- "$ledger_tmp" "$ledger"
+  ) 2>/dev/null; then
     rm -f -- "$ledger_tmp"
     return 1
   fi
@@ -352,19 +383,25 @@ write_teardown_receipt() {
 
   receipt_tmp="$receipt.tmp.$$"
   [ ! -e "$receipt_tmp" ] && [ ! -L "$receipt_tmp" ] || return 1
-  if ! (set -C; {
-    printf 'schema: eci-teardown-complete/v1\n'
-    printf 'session_id: %s\n' "${session_dir##*/}"
-    printf 'manifest_sha256: %s\n' "$manifest_sha"
-    printf 'disengage_report_path: %s\n' "$report_path"
-    printf 'disengage_report_sha256: %s\n' "$report_sha"
-    printf 'repo_binding_sha256: %s\n' "$repo_binding"
-    printf 'state: complete\n'
-  } >"$receipt_tmp"); then
+  if ! (
+    set -C
+    {
+      printf 'schema: eci-teardown-complete/v1\n'
+      printf 'session_id: %s\n' "${session_dir##*/}"
+      printf 'manifest_sha256: %s\n' "$manifest_sha"
+      printf 'disengage_report_path: %s\n' "$report_path"
+      printf 'disengage_report_sha256: %s\n' "$report_sha"
+      printf 'repo_binding_sha256: %s\n' "$repo_binding"
+      printf 'state: complete\n'
+    } >"$receipt_tmp"
+  ); then
     rm -f -- "$receipt_tmp"
     return 1
   fi
-  if ! (set -C; ln -- "$receipt_tmp" "$receipt") 2>/dev/null; then
+  if ! (
+    set -C
+    ln -- "$receipt_tmp" "$receipt"
+  ) 2>/dev/null; then
     rm -f -- "$receipt_tmp"
     return 1
   fi
@@ -391,7 +428,7 @@ scope_has_control_bytes() {
   # command substitution here because it strips trailing newlines.  The
   # byte-class check covers the remaining C0 controls and DEL.
   case "$scope" in
-    *$'\n'*) return 0 ;;
+  *$'\n'*) return 0 ;;
   esac
   LC_ALL=C printf '%s' "$scope" | LC_ALL=C grep -q '[[:cntrl:]]'
 }
@@ -446,17 +483,23 @@ ledger_write_anchor() {
   hash="$(ledger_sha256 "$log")"
   [[ "$bytes" =~ ^[0-9]+$ ]] && [ "$bytes" -le "$ledger_max_bytes" ] || return 1
   [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || return 1
-  if ! (set -C; {
-    printf 'schema: eci-high-level-log-anchor/v1\n'
-    printf 'session_id: %s\n' "${session_dir##*/}"
-    printf 'log_path: %s\n' "$log"
-    printf 'bytes: %s\n' "$bytes"
-    printf 'sha256: %s\n' "$hash"
-  } >"$tmp"); then
+  if ! (
+    set -C
+    {
+      printf 'schema: eci-high-level-log-anchor/v1\n'
+      printf 'session_id: %s\n' "${session_dir##*/}"
+      printf 'log_path: %s\n' "$log"
+      printf 'bytes: %s\n' "$bytes"
+      printf 'sha256: %s\n' "$hash"
+    } >"$tmp"
+  ); then
     rm -f -- "$tmp"
     return 1
   fi
-  mv -- "$tmp" "$anchor" || { rm -f -- "$tmp"; return 1; }
+  mv -- "$tmp" "$anchor" || {
+    rm -f -- "$tmp"
+    return 1
+  }
   [ -f "$anchor" ] && [ ! -L "$anchor" ]
 }
 
@@ -502,7 +545,7 @@ ledger_validate_anchor() {
 validate_ledger_entry() {
   local entry="$1" bytes
   [ -n "$entry" ] || return 1
-  case "$entry" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  case "$entry" in *$'\n'* | *$'\r'*) return 1 ;; esac
   if LC_ALL=C printf '%s' "$entry" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     return 1
   fi
@@ -519,7 +562,7 @@ wait_file_is_bounded() {
 
   bytes="$(wc -c <"$path" 2>/dev/null || true)"
   case "$bytes" in
-    ''|*[!0-9]*) return 1 ;;
+  '' | *[!0-9]*) return 1 ;;
   esac
   [ "$bytes" -le "$eci_wait_max_bytes" ]
 }
@@ -586,8 +629,8 @@ validate_eci_wait_report() {
   [ "$wait_brp_result" = exhausted-no-feasible-internal-path ] || return 1
   [ "$wait_user_owned_input" = unobtainable ] || return 1
   case "$wait_unblock_kind" in
-    input|resource|decision) ;;
-    *) return 1 ;;
+  input | resource | decision) ;;
+  *) return 1 ;;
   esac
   wait_text_is_safe "$wait_unblock" || return 1
   command -v sha256sum >/dev/null 2>&1 || {
@@ -634,8 +677,8 @@ validate_eci_wait_state() {
   [ "$wait_brp_result" = exhausted-no-feasible-internal-path ] || return 1
   [ "$wait_user_owned_input" = unobtainable ] || return 1
   case "$wait_unblock_kind" in
-    input|resource|decision) ;;
-    *) return 1 ;;
+  input | resource | decision) ;;
+  *) return 1 ;;
   esac
   wait_text_is_safe "$wait_unblock" || return 1
   [ -n "$wait_unblock" ] || return 1
@@ -716,8 +759,17 @@ write_nested_marker() {
     printf 'iteration: %s\n' "$iteration"
     printf 'state: active\n'
   } >"$tmp" || return 1
-  codex_eci_marker_file_is_bounded "$tmp" || { rm -f -- "$tmp"; return 1; }
-  (set -C; ln -- "$tmp" "$marker") 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  codex_eci_marker_file_is_bounded "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  (
+    set -C
+    ln -- "$tmp" "$marker"
+  ) 2>/dev/null || {
+    rm -f -- "$tmp"
+    return 1
+  }
   rm -f -- "$tmp"
   [ -f "$marker" ] && [ ! -L "$marker" ]
 }
@@ -813,19 +865,28 @@ write_nested_completion() {
   version="${lines[4]#acceptance_version: }"
   step="${lines[5]#step: }"
   iteration="${lines[6]#iteration: }"
-  if ! (set -C; {
-    printf 'outer_session_id: %s\n' "$outer_sid"
-    printf 'nested_marker: %s\n' "$marker"
-    printf 'acceptance_version: %s\n' "$version"
-    printf 'step: %s\n' "$step"
-    printf 'iteration: %s\n' "$iteration"
-    printf 'state: accepted\n'
-  } >"$tmp"); then
+  if ! (
+    set -C
+    {
+      printf 'outer_session_id: %s\n' "$outer_sid"
+      printf 'nested_marker: %s\n' "$marker"
+      printf 'acceptance_version: %s\n' "$version"
+      printf 'step: %s\n' "$step"
+      printf 'iteration: %s\n' "$iteration"
+      printf 'state: accepted\n'
+    } >"$tmp"
+  ); then
     rm -f -- "$tmp"
     return 1
   fi
-  codex_eci_marker_file_is_bounded "$tmp" || { rm -f -- "$tmp"; return 1; }
-  if ! (set -C; ln -- "$tmp" "$receipt") 2>/dev/null; then
+  codex_eci_marker_file_is_bounded "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  if ! (
+    set -C
+    ln -- "$tmp" "$receipt"
+  ) 2>/dev/null; then
     rm -f -- "$tmp"
     return 1
   fi
@@ -837,8 +898,11 @@ require_main_lifecycle_owner() {
   # An unset role is the ordinary main CLI.  Explicit worker roles cannot
   # publish or clear the outer coordinator's nested acceptance state.
   case "${CODEX_ROLE:-}" in
-    ""|main|orchestrator|lead|coordinator) ;;
-    *) echo 'Only the main/orchestrator may publish or clear ECI lifecycle state.' >&2; exit 1 ;;
+  "" | main | orchestrator | lead | coordinator) ;;
+  *)
+    echo 'Only the main/orchestrator may publish or clear ECI lifecycle state.' >&2
+    exit 1
+    ;;
   esac
 }
 
@@ -848,17 +912,17 @@ require_main_nested_owner() {
 
 require_main_approval_owner() {
   case "${CODEX_ROLE:-}" in
-    ""|main|orchestrator|lead|coordinator) ;;
-    *)
-      echo 'ECI_APPROVE_COMMIT_OWNER_DENIED: worker/subagent context cannot create a Git approval artifact; route approval through the main/orchestrator.' >&2
-      exit 1
-      ;;
+  "" | main | orchestrator | lead | coordinator) ;;
+  *)
+    echo 'ECI_APPROVE_COMMIT_OWNER_DENIED: worker/subagent context cannot create a Git approval artifact; route approval through the main/orchestrator.' >&2
+    exit 1
+    ;;
   esac
   case "${CODEX_HOOK_IS_SUBAGENT:-false}" in
-    true)
-      echo 'ECI_APPROVE_COMMIT_OWNER_DENIED: worker/subagent context cannot create a Git approval artifact; route approval through the main/orchestrator.' >&2
-      exit 1
-      ;;
+  true)
+    echo 'ECI_APPROVE_COMMIT_OWNER_DENIED: worker/subagent context cannot create a Git approval artifact; route approval through the main/orchestrator.' >&2
+    exit 1
+    ;;
   esac
 }
 
@@ -869,8 +933,11 @@ approval_git_safe() {
 approval_git_repo_context() {
   local requested="$1" actual git_dir_raw git_dir
   case "$requested" in
-    /*) ;;
-    *) echo "repo_root must be an absolute canonical path: $requested" >&2; return 1 ;;
+  /*) ;;
+  *)
+    echo "repo_root must be an absolute canonical path: $requested" >&2
+    return 1
+    ;;
   esac
   [ "$requested" = "$(realpath -m -- "$requested" 2>/dev/null || true)" ] || {
     echo "repo_root is not canonically spelled: $requested" >&2
@@ -891,10 +958,13 @@ approval_git_repo_context() {
     return 1
   }
   git_dir_raw="$(approval_git_safe -C "$requested" rev-parse --git-dir 2>/dev/null || true)"
-  [ -n "$git_dir_raw" ] || { echo "Git did not return a worktree git directory: $requested" >&2; return 1; }
+  [ -n "$git_dir_raw" ] || {
+    echo "Git did not return a worktree git directory: $requested" >&2
+    return 1
+  }
   case "$git_dir_raw" in
-    /*) git_dir="$git_dir_raw" ;;
-    *) git_dir="$requested/$git_dir_raw" ;;
+  /*) git_dir="$git_dir_raw" ;;
+  *) git_dir="$requested/$git_dir_raw" ;;
   esac
   git_dir="$(realpath -e -- "$git_dir" 2>/dev/null || true)"
   [ -n "$git_dir" ] && [ "$git_dir" != / ] && [ ! -L "$git_dir" ] || {
@@ -1012,11 +1082,11 @@ validate_approval_artifact() {
   [ "${lines[4]}" = "git_dir: $git_dir" ] || return 1
   [ "${lines[5]}" = "command: $expected_command" ] || return 1
   case "${lines[6]}" in
-    reason:\ *)
-      reason="${lines[6]#reason: }"
-      [ -n "$reason" ] && [ "${#reason}" -le 512 ] || return 1
-      ;;
-    *) return 1 ;;
+  reason:\ *)
+    reason="${lines[6]#reason: }"
+    [ -n "$reason" ] && [ "${#reason}" -le 512 ] || return 1
+    ;;
+  *) return 1 ;;
   esac
   [[ "${lines[7]}" =~ ^approved_at:\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
   [ "${lines[8]}" = 'one_time: true' ] || return 1
@@ -1035,17 +1105,21 @@ write_approval_artifact() {
   fi
   reason='coordinator requested one-time direct git commit admission'
   approved_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  if ! (umask 077; set -C; {
-    printf 'schema: codex-user-git-approval/v1\n'
-    printf 'authorized_by: user\n'
-    printf 'operation: commit\n'
-    printf 'repo_root: %s\n' "$repo_root"
-    printf 'git_dir: %s\n' "$git_dir"
-    printf 'command: %s\n' "$command"
-    printf 'reason: %s\n' "$reason"
-    printf 'approved_at: %s\n' "$approved_at"
-    printf 'one_time: true\n'
-  } >"$path"); then
+  if ! (
+    umask 077
+    set -C
+    {
+      printf 'schema: codex-user-git-approval/v1\n'
+      printf 'authorized_by: user\n'
+      printf 'operation: commit\n'
+      printf 'repo_root: %s\n' "$repo_root"
+      printf 'git_dir: %s\n' "$git_dir"
+      printf 'command: %s\n' "$command"
+      printf 'reason: %s\n' "$reason"
+      printf 'approved_at: %s\n' "$approved_at"
+      printf 'one_time: true\n'
+    } >"$path"
+  ); then
     rm -f -- "$path"
     echo "could not atomically create approval artifact: $path" >&2
     return 1
@@ -1068,16 +1142,17 @@ nested_number_is_bounded() {
 }
 
 manifest_temp_root() {
-  local configured="${TMPDIR:-/tmp}" canonical
+  local configured="${TMPDIR:-$HOME/tmp}" canonical
   case "$configured" in
-    /*) ;;
-    *) return 1 ;;
+  /*) ;;
+  *) return 1 ;;
   esac
   case "$configured" in
-    *[![:print:]]*|*//*|*/./*|*/../*|*/..|*/.) return 1 ;;
+  *[![:print:]]* | *//* | */./* | */../* | */.. | */.) return 1 ;;
   esac
   canonical="$(realpath -m -- "$configured" 2>/dev/null || true)"
   [ -n "$canonical" ] && [ "$canonical" = "$configured" ] || return 1
+  [ "$canonical" != /tmp ] && [[ "$canonical" != /tmp/* ]] || return 1
   [ "$canonical" != / ] || return 1
   [ -d "$canonical" ] && [ ! -L "$canonical" ] || return 1
   printf '%s\n' "$canonical"
@@ -1086,19 +1161,19 @@ manifest_temp_root() {
 manifest_temp_source_is_safe() {
   local path="$1" temp_root canonical parent name
   case "$path" in
-    /*) ;;
-    *) return 1 ;;
+  /*) ;;
+  *) return 1 ;;
   esac
   case "$path" in
-    *[![:print:]]*|*//*|*/./*|*/../*|*/..|*/.) return 1 ;;
+  *[![:print:]]* | *//* | */./* | */../* | */.. | */.) return 1 ;;
   esac
   canonical="$(realpath -m -- "$path" 2>/dev/null || true)"
   [ -n "$canonical" ] && [ "$canonical" = "$path" ] || return 1
   temp_root="$(manifest_temp_root 2>/dev/null || true)"
   [ -n "$temp_root" ] || return 1
   case "$path" in
-    "$temp_root"/*) ;;
-    *) return 1 ;;
+  "$temp_root"/*) ;;
+  *) return 1 ;;
   esac
   name="${path##*/}"
   [ "$name" = 'eci-required-critics.json.source' ] || return 1
@@ -1110,7 +1185,7 @@ manifest_temp_source_is_safe() {
 validate_manifest_for_write() {
   local path="$1" bytes last top_keys row_keys target_keys
   bytes="$(wc -c <"$path" 2>/dev/null || true)"
-  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  case "$bytes" in '' | *[!0-9]*) return 1 ;; esac
   [ "$bytes" -le 65536 ] || return 1
   last="$(tail -c 1 -- "$path" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"
   [ "$last" = 0a ] || return 1
@@ -1162,635 +1237,725 @@ validate_manifest_for_write() {
 
 cmd="${1:-}"
 case "$cmd" in
-  on)
-    require_main_lifecycle_owner
-    shift
-    scope="${*:-}"
-    scope_bytes="$(LC_ALL=C printf '%s' "$scope" | wc -c)"
-    [ -n "$scope" ] || { usage; exit 2; }
-    case "$scope_bytes" in
-      ''|*[!0-9]*) echo 'ECI scope length could not be measured safely.' >&2; exit 1 ;;
-    esac
-    [ "$scope_bytes" -le "$codex_eci_marker_max_bytes" ] || {
-      echo "ECI scope exceeds the ${codex_eci_marker_max_bytes}-byte marker limit." >&2
-      exit 1
-    }
-    if scope_has_control_bytes "$scope"; then
-      echo "ECI scope contains control characters; refusing to create a malformed marker." >&2
-      exit 1
-    fi
-    session_dir="$(resolve_session_dir true)" || {
-      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
-      exit 1
-    }
-    acquire_eci_mutation_lock || exit 1
-    validate_session_dir "$(codex_proof_root)" "${session_dir##*/}" || exit 1
-    marker="$session_dir/eci_active"
-    if [ -L "$session_dir" ] || { [ -e "$session_dir" ] && [ ! -d "$session_dir" ]; }; then
-      echo "ECI session directory is not a directory: $session_dir" >&2
-      exit 1
-    fi
-    mkdir -p "$session_dir"
-    [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || {
-      echo "ECI session directory is not a canonical directory: $session_dir" >&2
-      exit 1
-    }
-    # Freeze the current high-level log bytes when a new ECI marker is
-    # activated.  Later coordinator writes must prove this prefix and append
-    # only at EOF; an unsafe pre-existing anchor fails closed.
-    if [ -e "$session_dir/$ledger_anchor_name" ] || [ -L "$session_dir/$ledger_anchor_name" ]; then
-      ledger_validate_anchor "$session_dir" || {
-        echo "ECI high-level log anchor is unsafe or drifted: $session_dir/$ledger_anchor_name" >&2
-        exit 1
-      }
-    elif [ -f "$session_dir/$ledger_log_name" ] && [ ! -L "$session_dir/$ledger_log_name" ]; then
-      ledger_write_anchor "$session_dir" || {
-        echo "ECI high-level log anchor could not be published: $session_dir/$ledger_anchor_name" >&2
-        exit 1
-      }
-    fi
-    if [ -e "$marker" ] || [ -L "$marker" ]; then
-      echo "ECI marker already exists or is unsafe: $marker" >&2
-      exit 1
-    fi
-    if [ -e "$session_dir/eci_wait" ] || [ -L "$session_dir/eci_wait" ]; then
-      echo "ECI user-owned wait state already exists or is unsafe: $session_dir/eci_wait" >&2
-      exit 1
-    fi
-    marker_tmp="$marker.tmp.$$"
-    if [ -e "$marker_tmp" ] || [ -L "$marker_tmp" ]; then
-      echo "ECI marker temporary path is already present or unsafe: $marker_tmp" >&2
-      exit 1
-    fi
-    if ! (
-      set -C
-      {
-        printf 'scope: %s\n' "$scope"
-        printf 'cwd: %s\n' "$(codex_canonical_cwd "$PWD")"
-        printf 'session_id: %s\n' "${session_dir##*/}"
-        date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
-      } >"$marker_tmp"
-    ); then
-      rm -f -- "$marker_tmp"
-      echo "ECI marker could not be prepared atomically: $marker" >&2
-      exit 1
-    fi
-    if ! codex_eci_marker_file_is_bounded "$marker_tmp"; then
-      rm -f -- "$marker_tmp"
-      echo "ECI marker exceeds the ${codex_eci_marker_max_bytes}-byte limit: $marker" >&2
-      exit 1
-    fi
-    if ! (set -C; ln -- "$marker_tmp" "$marker") 2>/dev/null; then
-      rm -f -- "$marker_tmp"
-      echo "ECI marker already exists or is unsafe: $marker" >&2
-      exit 1
-    fi
-    rm -f -- "$marker_tmp"
-    remove_legacy_eci_markers_for_cwd "$marker"
-    printf 'ECI active: %s\n' "$marker"
-    ;;
-  wait)
-    require_main_lifecycle_owner
-    shift
-    report="${1:-}"
-    [ "$#" -eq 1 ] || { usage; exit 2; }
-    session_dir="$(resolve_session_dir)" || {
-      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
-      exit 1
-    }
-    acquire_eci_mutation_lock || exit 1
-    marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
-      echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
-      exit 1
-    }
-    codex_eci_marker_path_owner_is_valid "$marker" || {
-      echo "ECI wait rejected malformed marker ownership: $marker" >&2
-      exit 1
-    }
-    codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
-      echo "ECI wait rejected a marker bound to another cwd: $marker" >&2
-      exit 1
-    }
-    expected_report="$session_dir/$eci_wait_report_name"
-    [ "$report" = "$expected_report" ] || {
-      echo "ECI user-owned wait report must use the current session path: $expected_report" >&2
-      exit 1
-    }
-    validate_eci_wait_report "$report" || {
-      echo "ECI user-owned wait report validation failed: $report" >&2
-      exit 1
-    }
-    write_eci_wait_state "$session_dir/eci_wait" || exit 1
-    printf 'ECI user-owned wait state armed: %s\n' "$session_dir/eci_wait"
-    ;;
-  resume)
-    require_main_lifecycle_owner
-    shift
-    new_fingerprint="${1:-}"
-    [ "$#" -eq 1 ] || { usage; exit 2; }
-    [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]] || {
-      echo "ECI resume fingerprint must be 64 lowercase hexadecimal characters." >&2
-      exit 1
-    }
-    session_dir="$(resolve_session_dir)" || {
-      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
-      exit 1
-    }
-    acquire_eci_mutation_lock || exit 1
-    marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
-      echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
-      exit 1
-    }
-    codex_eci_marker_path_owner_is_valid "$marker" || {
-      echo "ECI resume rejected malformed marker ownership: $marker" >&2
-      exit 1
-    }
-    codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
-      echo "ECI resume rejected a marker bound to another cwd: $marker" >&2
-      exit 1
-    }
-    wait_state="$session_dir/eci_wait"
-    [ ! -L "$wait_state" ] || {
-      echo "ECI user-owned wait state is a symlink; refusing to use it: $wait_state" >&2
-      exit 1
-    }
-    expected_report="$session_dir/$eci_wait_report_name"
-    validate_eci_wait_state_report_binding "$wait_state" "$expected_report" || {
-      if ! [ -f "$expected_report" ] || [ -L "$expected_report" ]; then
-        echo "ECI user-owned wait report is missing or invalid: $expected_report" >&2
-      else
-        echo "ECI user-owned wait report does not match its state: $wait_state" >&2
-      fi
-      exit 1
-    }
-    [ "$new_fingerprint" != "$validated_wait_state_fingerprint" ] || {
-      echo "ECI resume fingerprint is unchanged; provide materially changed normalized content." >&2
-      exit 1
-    }
-    rm -f "$wait_state"
-    [ ! -e "$wait_state" ] && [ ! -L "$wait_state" ] || {
-      echo "ECI user-owned wait state could not be cleared: $wait_state" >&2
-      exit 1
-    }
-    printf 'ECI user-owned wait state cleared for supplied changed fingerprint: %s\n' "$marker"
-    ;;
-  ledger-append)
-    require_main_lifecycle_owner
-    [ "$#" -eq 2 ] || { usage; exit 2; }
-    entry="$2"
-    validate_ledger_entry "$entry" || {
-      echo 'ECI high-level log entry must be one bounded, printable line.' >&2
-      exit 1
-    }
-    session_dir="$(resolve_session_dir)" || {
-      echo 'eci-active: no current session directory found under the proof root.' >&2
-      exit 1
-    }
-    acquire_eci_mutation_lock || exit 1
-    marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
-      echo 'ECI high-level log append requires an active canonical marker.' >&2
-      exit 1
-    }
-    codex_eci_marker_path_owner_is_valid "$marker" || {
-      echo 'ECI high-level log append rejected malformed marker ownership.' >&2
-      exit 1
-    }
-    codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
-      echo 'ECI high-level log append rejected a marker bound to another cwd.' >&2
-      exit 1
-    }
-    if [ -e "$session_dir/$ledger_anchor_name" ] || [ -L "$session_dir/$ledger_anchor_name" ]; then
-      ledger_validate_anchor "$session_dir" || {
-        echo 'ECI high-level log append found a missing, replaced, or drifted immutable prefix.' >&2
-        exit 1
-      }
-    else
-      # Sessions activated before the anchor route existed are bootstrapped
-      # once, under the same mutation lock, from their current bytes.  The
-      # bytes become the immutable prefix before the requested append.
-      ledger_write_anchor "$session_dir" || {
-        echo 'ECI high-level log append could not establish its immutable prefix.' >&2
-        exit 1
-      }
-    fi
-    log_path="$session_dir/$ledger_log_name"
-    ledger_timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    ledger_timestamp_epoch="$(date -u '+%s')"
-    last_log_line="$(tail -n 1 -- "$log_path" 2>/dev/null || true)"
-    if [[ "$last_log_line" =~ ^##[[:space:]]([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)[[:space:]]-[[:space:]] ]]; then
-      last_timestamp="${BASH_REMATCH[1]}"
-      if [[ "$ledger_timestamp" < "$last_timestamp" || "$ledger_timestamp" = "$last_timestamp" ]]; then
-        last_timestamp_epoch="$(date -u -d "$last_timestamp" '+%s' 2>/dev/null || true)"
-        [[ "$last_timestamp_epoch" =~ ^[0-9]+$ ]] || {
-          echo "ECI high-level log append could not parse its prior UTC timestamp: $last_timestamp" >&2
-          exit 1
-        }
-        ledger_timestamp_epoch=$((last_timestamp_epoch + 1))
-        ledger_timestamp="$(date -u -d "@$ledger_timestamp_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
-      fi
-    fi
-    [[ "$ledger_timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
-      echo "ECI high-level log append produced an invalid UTC timestamp: $ledger_timestamp" >&2
-      exit 1
-    }
-    formatted_entry="## $ledger_timestamp - $entry"
-    log_bytes_before="$(ledger_bytes "$log_path")"
-    append_bytes="$(LC_ALL=C printf '%s\n' "$formatted_entry" | wc -c)"
-    case "$log_bytes_before:$append_bytes" in
-      ''|*[!0-9:]*)
-        echo 'ECI high-level log append could not measure the existing prefix and entry safely.' >&2
-        exit 1
-        ;;
-    esac
-    [ "$log_bytes_before" -le "$ledger_max_bytes" ] || {
-      echo 'ECI high-level log is already above its bounded size limit; refusing append.' >&2
-      exit 1
-    }
-    [ "$append_bytes" -le "$ledger_entry_max_bytes" ] || {
-      echo 'ECI high-level log formatted entry exceeds its bounded size limit.' >&2
-      exit 1
-    }
-    [ $((log_bytes_before + append_bytes)) -le "$ledger_max_bytes" ] || {
-      echo 'ECI high-level log append would exceed its bounded size limit; refusing before write.' >&2
-      exit 1
-    }
-    if [ "$(ledger_bytes "$log_path")" -gt 0 ] &&
-      [ "$(tail -c 1 -- "$log_path" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" != 0a ]; then
-      echo 'ECI high-level log append requires the existing prefix to end at EOF/LF.' >&2
-      exit 1
-    fi
-    printf '%s\n' "$formatted_entry" >>"$log_path"
-    [ -f "$log_path" ] && [ ! -L "$log_path" ] || {
-      echo 'ECI high-level log changed to an unsafe file during append.' >&2
-      exit 1
-    }
-    ledger_write_anchor "$session_dir" true || {
-      echo 'ECI high-level log anchor could not be advanced after append; retry is recoverable.' >&2
-      exit 1
-    }
-    printf 'ECI high-level log appended at EOF: %s\n' "$log_path"
-    ;;
-  manifest-write)
-    [ "$#" -eq 2 ] || { usage; exit 2; }
-    require_main_nested_owner
-    current_session="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
-    codex_valid_session_id "$current_session" || {
-      echo 'manifest-write requires an explicit current CODEX_SESSION_ID or CODEX_THREAD_ID.' >&2
-      exit 1
-    }
-    session_dir="$(resolve_session_dir)" || {
-      echo 'eci-active: no current session directory found under the proof root.' >&2
-      exit 1
-    }
-    [ "${session_dir##*/}" = "$current_session" ] || {
-      echo 'manifest-write resolved a different session than the current identity.' >&2
-      exit 1
-    }
-    acquire_eci_mutation_lock || exit 1
-    marker="$(validate_active_marker "$(codex_proof_root)" "$current_session")" || {
-      echo 'manifest-write requires an active canonical ECI marker.' >&2
-      exit 1
-    }
-    codex_eci_marker_path_owner_is_valid "$marker" || {
-      echo 'manifest-write rejected malformed marker ownership.' >&2
-      exit 1
-    }
-    codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
-      echo 'manifest-write rejected a marker bound to another cwd.' >&2
-      exit 1
-    }
-    manifest_source="$2"
-    manifest_destination="$session_dir/eci-required-critics.json"
-    if ! manifest_temp_source_is_safe "$manifest_source"; then
-      echo "manifest-write rejected source path '$manifest_source': expected a canonical regular eci-required-critics.json.source under \${TMPDIR:-/tmp}; proof-root and control-file sources are not accepted." >&2
-      exit 1
-    fi
-    if [ -L "$manifest_destination" ] || { [ -e "$manifest_destination" ] && [ ! -f "$manifest_destination" ]; }; then
-      echo 'manifest-write destination is unsafe.' >&2
-      exit 1
-    fi
-    validate_manifest_for_write "$manifest_source" || {
-      echo 'manifest-write rejected malformed, noncanonical, or non-v2 manifest bytes.' >&2
-      exit 1
-    }
-    manifest_tmp="$manifest_destination.tmp.$$"
-    [ ! -e "$manifest_tmp" ] && [ ! -L "$manifest_tmp" ] || {
-      echo 'manifest-write transaction path is unsafe.' >&2
-      exit 1
-    }
-    if ! (set -C; cat -- "$manifest_source" >"$manifest_tmp"); then
-      rm -f -- "$manifest_tmp"
-      echo 'manifest-write could not stage the canonical manifest.' >&2
-      exit 1
-    fi
-    [ -L "$manifest_destination" ] || { [ ! -e "$manifest_destination" ] || [ -f "$manifest_destination" ]; } || {
-      rm -f -- "$manifest_tmp"
-      echo 'manifest-write destination changed to an unsafe type.' >&2
-      exit 1
-    }
-    mv -- "$manifest_tmp" "$manifest_destination" || {
-      rm -f -- "$manifest_tmp"
-      echo 'manifest-write could not atomically publish the canonical manifest.' >&2
-      exit 1
-    }
-    printf 'ECI required-critic manifest published: %s\n' "$manifest_destination"
-    ;;
-  approve-commit)
-    [ "$#" -eq 3 ] || {
-      echo 'ECI_APPROVE_COMMIT_USAGE: expected approve-commit <canonical-repo-root> "git commit ...".' >&2
-      exit 2
-    }
-    require_main_approval_owner
-    approval_repo_arg="$2"
-    approval_command_arg="$3"
-    if ! approval_git_repo_context "$approval_repo_arg"; then
-      echo "ECI_APPROVE_COMMIT_REPO_DENIED: repo_root=$approval_repo_arg" >&2
-      exit 1
-    fi
-    if ! approval_command_error="$(validate_approval_commit_command "$approval_command_arg" 2>&1)"; then
-      echo "ECI_APPROVE_COMMIT_COMMAND_DENIED: $approval_command_error" >&2
-      exit 1
-    fi
-    if ! write_approval_artifact "$approval_command_arg" "$APPROVAL_REPO_ROOT" "$APPROVAL_GIT_DIR"; then
-      echo "ECI_APPROVE_COMMIT_WRITE_DENIED: could not publish a validated one-time approval for repo_root=$APPROVAL_REPO_ROOT command=$approval_command_arg" >&2
-      exit 1
-    fi
-    ;;
-  nested-enter)
-    require_main_nested_owner
-    shift
-    step="${1:-}"; iteration="${2:-}"; writer="${3:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}"
-    version="${ECI_ACCEPTANCE_VERSION:-1}"
-    [[ "$#" -ge 2 && "$#" -le 3 ]] || { usage; exit 2; }
-    nested_number_is_bounded "$step" true && nested_number_is_bounded "$iteration" true || {
-      echo 'nested-enter requires bounded numeric step and iteration.' >&2; exit 1;
-    }
-    nested_number_is_bounded "$version" false || {
-      echo 'nested-enter requires a bounded positive canonical ECI_ACCEPTANCE_VERSION.' >&2; exit 1;
-    }
-    codex_valid_session_id "$writer" || { echo 'nested-enter requires a valid writer session.' >&2; exit 1; }
-    session_dir="$(resolve_session_dir)" || { echo 'eci-active: no outer session directory found' >&2; exit 1; }
-    acquire_eci_mutation_lock || exit 1
-    marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || { echo 'nested-enter requires an active outer marker.' >&2; exit 1; }
-    codex_eci_marker_path_owner_is_valid "$marker" || {
-      echo 'nested-enter requires a canonical active marker owner.' >&2
-      exit 1
-    }
-    codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
-      echo 'nested-enter requires an active marker bound to the current cwd.' >&2
-      exit 1
-    }
-    validate_session_dir "$(codex_proof_root)" "$writer" || { echo 'nested-enter writer session is not a safe canonical session.' >&2; exit 1; }
-    [ -d "$(codex_proof_root)/$writer" ] && [ ! -L "$(codex_proof_root)/$writer" ] || { echo 'nested-enter writer session directory is unavailable.' >&2; exit 1; }
-    nested_marker="$session_dir/ate_nested_eci_active"
-    nested_completion="$session_dir/ate_nested_eci_completion"
-    if [ -L "$nested_marker" ] || [ -e "$nested_marker" ]; then
-      echo 'nested-enter found an already active nested ECI marker; refusing to replace its receipt or ownership.' >&2
-      exit 1
-    fi
-    if [ -L "$nested_completion" ] || { [ -e "$nested_completion" ] && [ ! -f "$nested_completion" ]; }; then
-      echo 'nested-enter found an unsafe completion receipt.' >&2; exit 1
-    fi
-    acceptance_anchor="$session_dir/eci-acceptance-anchor"
-    acceptance_manifest="$session_dir/eci-required-critics.json"
-    if [ -L "$acceptance_anchor" ] || { [ -e "$acceptance_anchor" ] && [ ! -f "$acceptance_anchor" ]; }; then
-      echo 'nested-enter found an unsafe acceptance anchor.' >&2
-      exit 1
-    fi
-    if [ -f "$acceptance_anchor" ]; then
-      grep -Eq "^admission:[^:]+:$version:" "$acceptance_anchor" || {
-        echo 'nested-enter acceptance version is not present in the authoritative session anchor.' >&2
-        exit 1
-      }
-    fi
-    if [ -L "$acceptance_manifest" ] || { [ -e "$acceptance_manifest" ] && [ ! -f "$acceptance_manifest" ]; }; then
-      echo 'nested-enter found an unsafe acceptance manifest.' >&2
-      exit 1
-    fi
-    if [ -f "$acceptance_manifest" ]; then
-      manifest_version="$(jq -r 'if (.acceptance_version | type) == "string" then .acceptance_version else empty end' "$acceptance_manifest" 2>/dev/null || true)"
-      [ "$manifest_version" = "$version" ] || {
-        echo 'nested-enter acceptance version does not match the authoritative manifest.' >&2
-        exit 1
-      }
-    fi
-    [ ! -e "$nested_completion" ] || rm -f -- "$nested_completion" || { echo 'nested-enter could not clear the prior completion receipt.' >&2; exit 1; }
-    write_nested_marker "$nested_marker" "${session_dir##*/}" "$step" "$iteration" "$writer" "$version" || {
-      echo 'nested-enter could not atomically create the nested ECI marker.' >&2; exit 1;
-    }
-    printf 'Nested ECI active under outer marker: %s\n' "$marker"
-    ;;
-  nested-accept)
-    [ "$#" -eq 1 ] || { usage; exit 2; }
-    require_main_nested_owner
-    session_dir="$(resolve_session_dir)" || { echo 'eci-active: no outer session directory found' >&2; exit 1; }
-    acquire_eci_mutation_lock || exit 1
-    nested_marker="$session_dir/ate_nested_eci_active"
-    nested_completion="$session_dir/ate_nested_eci_completion"
-    write_nested_completion "$nested_marker" "$nested_completion" || {
-      echo 'nested ECI acceptance receipt could not be published for the owned active marker.' >&2
-      exit 1
-    }
-    printf 'Nested ECI acceptance receipt published: %s\n' "$nested_completion"
-    ;;
-  nested-exit)
-    [ "$#" -eq 1 ] || { usage; exit 2; }
-    require_main_nested_owner
-    session_dir="$(resolve_session_dir)" || { echo 'eci-active: no outer session directory found' >&2; exit 1; }
-    acquire_eci_mutation_lock || exit 1
-    nested_marker="$session_dir/ate_nested_eci_active"
-    nested_completion="$session_dir/ate_nested_eci_completion"
-    validate_nested_marker "$nested_marker" || { echo 'nested ECI marker is invalid, stale, or not owned by the active outer session.' >&2; exit 1; }
-    validate_nested_completion "$nested_completion" "$nested_marker" || { echo 'nested ECI completion receipt is missing, stale, or not bound to the owned marker.' >&2; exit 1; }
-    rm -f -- "$nested_marker"
-    [ ! -e "$nested_marker" ] && [ ! -L "$nested_marker" ] || { echo 'nested ECI marker could not be cleared.' >&2; exit 1; }
-    printf 'Nested ECI inactive; outer marker retained.\n'
-    ;;
-  off)
-    require_main_lifecycle_owner
-    report="${2:-}"
-    markers=()
-    [ -n "$report" ] || { usage; exit 2; }
-    [ -f "$report" ] || { echo "Disengage report not found: $report" >&2; exit 1; }
-    # When the caller supplies a report inside a proof session, that path is
-    # an identity claim, not a hint.  Bind it before resolving the active
-    # marker so a stale report cannot fall through to the newest session and
-    # produce a misleading generic "inactive" error.  Reports outside the
-    # proof root remain supported for the existing user-owned flow.
-    report_path="$(realpath -m -- "$report" 2>/dev/null || true)"
-    report_root="$(codex_proof_root)"
-    report_session=""
-    case "$report_path" in
-      "$report_root"/*/*)
-        report_rest="${report_path#"$report_root"/}"
-        report_session="${report_rest%%/*}"
-        report_tail="${report_rest#*/}"
-        if codex_valid_session_id "$report_session" && [ "$report_tail" != "$report_rest" ]; then
-          requested_session="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
-          if [ -n "$requested_session" ] && [ "$requested_session" != "$report_session" ]; then
-            echo "ECI off session identity mismatch: supplied report $report_path belongs to session $report_session, but the requested active session is $requested_session; refusing teardown." >&2
-            exit 1
-          fi
-          [ -n "$requested_session" ] || export CODEX_SESSION_ID="$report_session"
-        fi
-        ;;
-    esac
-    requested_session="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
-    if [ -n "$requested_session" ] && [ ! -e "$report_root/$requested_session" ]; then
-      conflicting_marker=""
-      conflicting_count=0
-      while IFS= read -r candidate_marker; do
-        case "$candidate_marker" in
-          "$codex_eci_marker_scan_overflow_token"|"$codex_eci_marker_scan_unsafe_token"|'')
-            continue
-            ;;
-        esac
-        if [ -f "$candidate_marker" ] && [ ! -L "$candidate_marker" ]; then
-          conflicting_marker="$candidate_marker"
-          conflicting_count=$((conflicting_count + 1))
-        fi
-      done < <(codex_eci_markers_for_cwd "$PWD" strict "" 2>/dev/null || true)
-      if [ "$conflicting_count" -eq 1 ]; then
-        conflicting_owner="${conflicting_marker%/*}"
-        conflicting_owner="${conflicting_owner##*/}"
-        if [ "$conflicting_owner" != "$requested_session" ]; then
-          conflicting_dir="${conflicting_marker%/*}"
-          echo "ECI off session identity mismatch: supplied report $report_path; requested session $requested_session has no session directory under $report_root, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
-          exit 1
-        fi
-      fi
-    fi
-    session_dir="$(resolve_session_dir)" || {
-      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
-      exit 1
-    }
-    acquire_eci_mutation_lock || exit 1
-    marker="$session_dir/eci_active"
-    if [ -L "$marker" ]; then
-      echo "ECI marker is a symlink; refusing to use it: $marker" >&2
-      exit 1
-    fi
-    if [ ! -f "$marker" ]; then
-      conflicting_marker=""
-      while IFS= read -r candidate_marker; do
-        case "$candidate_marker" in
-          "$codex_eci_marker_scan_overflow_token"|"$codex_eci_marker_scan_unsafe_token"|'')
-            continue
-            ;;
-        esac
-        if [ -f "$candidate_marker" ] && [ ! -L "$candidate_marker" ]; then
-          conflicting_marker="$candidate_marker"
-          break
-        fi
-      done < <(codex_eci_markers_for_cwd "$PWD" strict "${session_dir##*/}" 2>/dev/null || true)
-      if [ -n "$conflicting_marker" ]; then
-        conflicting_owner="${conflicting_marker%/*}"
-        conflicting_owner="${conflicting_owner##*/}"
-        conflicting_dir="${conflicting_marker%/*}"
-        echo "ECI off session identity mismatch: supplied report $report_path targets requested session ${session_dir##*/}, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
-      else
-        echo "ECI marker is not active for requested session ${session_dir##*/}; supplied report $report_path; refusing teardown: $marker" >&2
-      fi
-      exit 1
-    fi
-    if [ -f "$marker" ]; then
-      codex_eci_marker_path_owner_is_valid "$marker" || {
-        echo "ECI marker path/owner binding is malformed; refusing teardown: $marker" >&2
-        exit 1
-      }
-      codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
-        echo "ECI marker cwd binding is malformed or belongs to another cwd; refusing teardown: $marker" >&2
-        exit 1
-      }
-    fi
-    [ -f "$marker" ] && markers+=("$marker")
-    while IFS= read -r legacy_marker; do
-      [ -n "$legacy_marker" ] || continue
-      [ "$legacy_marker" = "$marker" ] && continue
-      markers+=("$legacy_marker")
-    done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
-    [ "${#markers[@]}" -gt 0 ] || { echo "ECI marker is not active: $marker" >&2; exit 1; }
-    user_closed_report=false
-    if grep -Fqx 'schema: eci-user-closed/v1' "$report_path" 2>/dev/null; then
-      validate_user_closed_report "$report_path" "${session_dir##*/}" "$(codex_canonical_cwd "$PWD")" || {
-        echo "ECI user-closed report is malformed, unclean/incomplete state is missing, or is not bound to the active owner/session/cwd/path; marker retained: $report_path" >&2
-        exit 1
-      }
-      user_closed_report=true
-    fi
-    wait_state="$session_dir/eci_wait"
-    [ ! -L "$wait_state" ] || {
-      echo "ECI user-owned wait state is a symlink; refusing to remove it: $wait_state" >&2
-      exit 1
-    }
-    if [ -e "$wait_state" ] && [ ! -f "$wait_state" ]; then
-      echo "ECI user-owned wait state is not a regular file: $wait_state" >&2
-      exit 1
-    fi
-    if [ "$user_closed_report" != true ] && [ -f "$wait_state" ]; then
-      expected_wait_report="$session_dir/$eci_wait_report_name"
-      validate_eci_wait_state_report_binding "$wait_state" "$expected_wait_report" || {
-        echo "ECI user-owned wait state/report is invalid or unbound: $wait_state" >&2
-        exit 1
-      }
-    fi
-    if [ "$user_closed_report" = true ]; then
-      write_user_closed_ledger "$session_dir" "$report_path" "$(codex_canonical_cwd "$PWD")" || {
-        echo "ECI user-closed audit ledger could not be published or validated; marker retained." >&2
-        exit 1
-      }
-    else
-      validate_disengage_report "$report"
-      run_eci_review_gate off "${session_dir##*/}" || {
-        echo "ECI required-critic review gate rejected teardown; marker retained." >&2
-        exit 1
-      }
-      write_teardown_receipt "$session_dir" "$report" || {
-        echo "ECI teardown receipt could not be published or validated; marker retained." >&2
-        exit 1
-      }
-    fi
-    for prewrite_sentinel in "$session_dir"/eci-prewrite-admitted.*; do
-      [ -e "$prewrite_sentinel" ] || [ -L "$prewrite_sentinel" ] || continue
-      [ -f "$prewrite_sentinel" ] && [ ! -L "$prewrite_sentinel" ] || {
-        echo "ECI prewrite admission sentinel is unsafe: $prewrite_sentinel" >&2
-        exit 1
-      }
-      rm -f -- "$prewrite_sentinel"
-    done
-    [ -f "$wait_state" ] && rm -f "$wait_state"
-    rm -f "${markers[@]}"
-    if [ "$user_closed_report" = true ]; then
-      printf 'ECI inactive. User-closed incomplete teardown recorded: %s\n' "$report_path"
-    else
-      printf 'ECI inactive. Disengage report validated: %s\n' "$report"
-    fi
-    ;;
-  status)
-    session_dir="$(resolve_session_dir)" || {
-      echo "eci-active: no session directory found under $(codex_proof_root)" >&2
-      exit 1
-    }
-    marker="$session_dir/eci_active"
-    if [ -L "$marker" ]; then
-      echo "ECI marker is a symlink; refusing to read it: $marker" >&2
-      exit 1
-    fi
-    if [ -n "${marker:-}" ] && [ -f "$marker" ] && [ ! -L "$marker" ]; then
-      codex_eci_marker_file_is_bounded "$marker" || {
-        echo "ECI marker is oversized or unsafe; refusing to read it: $marker" >&2
-        exit 1
-      }
-      cat "$marker"
-    elif legacy_marker="$(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null | head -n1)" &&
-      [ -n "$legacy_marker" ] && codex_eci_marker_file_is_bounded "$legacy_marker"; then
-      cat "$legacy_marker"
-    else
-      echo "ECI inactive"
-    fi
-    ;;
-  *)
+on)
+  require_main_lifecycle_owner
+  shift
+  scope="${*:-}"
+  scope_bytes="$(LC_ALL=C printf '%s' "$scope" | wc -c)"
+  [ -n "$scope" ] || {
     usage
     exit 2
+  }
+  case "$scope_bytes" in
+  '' | *[!0-9]*)
+    echo 'ECI scope length could not be measured safely.' >&2
+    exit 1
     ;;
+  esac
+  [ "$scope_bytes" -le "$codex_eci_marker_max_bytes" ] || {
+    echo "ECI scope exceeds the ${codex_eci_marker_max_bytes}-byte marker limit." >&2
+    exit 1
+  }
+  if scope_has_control_bytes "$scope"; then
+    echo "ECI scope contains control characters; refusing to create a malformed marker." >&2
+    exit 1
+  fi
+  session_dir="$(resolve_session_dir true)" || {
+    echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  validate_session_dir "$(codex_proof_root)" "${session_dir##*/}" || exit 1
+  marker="$session_dir/eci_active"
+  if [ -L "$session_dir" ] || { [ -e "$session_dir" ] && [ ! -d "$session_dir" ]; }; then
+    echo "ECI session directory is not a directory: $session_dir" >&2
+    exit 1
+  fi
+  mkdir -p "$session_dir"
+  [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || {
+    echo "ECI session directory is not a canonical directory: $session_dir" >&2
+    exit 1
+  }
+  # Freeze the current high-level log bytes when a new ECI marker is
+  # activated.  Later coordinator writes must prove this prefix and append
+  # only at EOF; an unsafe pre-existing anchor fails closed.
+  if [ -e "$session_dir/$ledger_anchor_name" ] || [ -L "$session_dir/$ledger_anchor_name" ]; then
+    ledger_validate_anchor "$session_dir" || {
+      echo "ECI high-level log anchor is unsafe or drifted: $session_dir/$ledger_anchor_name" >&2
+      exit 1
+    }
+  elif [ -f "$session_dir/$ledger_log_name" ] && [ ! -L "$session_dir/$ledger_log_name" ]; then
+    ledger_write_anchor "$session_dir" || {
+      echo "ECI high-level log anchor could not be published: $session_dir/$ledger_anchor_name" >&2
+      exit 1
+    }
+  fi
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    echo "ECI marker already exists or is unsafe: $marker" >&2
+    exit 1
+  fi
+  if [ -e "$session_dir/eci_wait" ] || [ -L "$session_dir/eci_wait" ]; then
+    echo "ECI user-owned wait state already exists or is unsafe: $session_dir/eci_wait" >&2
+    exit 1
+  fi
+  marker_tmp="$marker.tmp.$$"
+  if [ -e "$marker_tmp" ] || [ -L "$marker_tmp" ]; then
+    echo "ECI marker temporary path is already present or unsafe: $marker_tmp" >&2
+    exit 1
+  fi
+  if ! (
+    set -C
+    {
+      printf 'scope: %s\n' "$scope"
+      printf 'cwd: %s\n' "$(codex_canonical_cwd "$PWD")"
+      printf 'session_id: %s\n' "${session_dir##*/}"
+      date -u '+created_utc: %Y-%m-%dT%H:%M:%SZ'
+    } >"$marker_tmp"
+  ); then
+    rm -f -- "$marker_tmp"
+    echo "ECI marker could not be prepared atomically: $marker" >&2
+    exit 1
+  fi
+  if ! codex_eci_marker_file_is_bounded "$marker_tmp"; then
+    rm -f -- "$marker_tmp"
+    echo "ECI marker exceeds the ${codex_eci_marker_max_bytes}-byte limit: $marker" >&2
+    exit 1
+  fi
+  if ! (
+    set -C
+    ln -- "$marker_tmp" "$marker"
+  ) 2>/dev/null; then
+    rm -f -- "$marker_tmp"
+    echo "ECI marker already exists or is unsafe: $marker" >&2
+    exit 1
+  fi
+  rm -f -- "$marker_tmp"
+  remove_legacy_eci_markers_for_cwd "$marker"
+  printf 'ECI active: %s\n' "$marker"
+  ;;
+wait)
+  require_main_lifecycle_owner
+  shift
+  report="${1:-}"
+  [ "$#" -eq 1 ] || {
+    usage
+    exit 2
+  }
+  session_dir="$(resolve_session_dir)" || {
+    echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
+    echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
+    exit 1
+  }
+  codex_eci_marker_path_owner_is_valid "$marker" || {
+    echo "ECI wait rejected malformed marker ownership: $marker" >&2
+    exit 1
+  }
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
+    echo "ECI wait rejected a marker bound to another cwd: $marker" >&2
+    exit 1
+  }
+  expected_report="$session_dir/$eci_wait_report_name"
+  [ "$report" = "$expected_report" ] || {
+    echo "ECI user-owned wait report must use the current session path: $expected_report" >&2
+    exit 1
+  }
+  validate_eci_wait_report "$report" || {
+    echo "ECI user-owned wait report validation failed: $report" >&2
+    exit 1
+  }
+  write_eci_wait_state "$session_dir/eci_wait" || exit 1
+  printf 'ECI user-owned wait state armed: %s\n' "$session_dir/eci_wait"
+  ;;
+resume)
+  require_main_lifecycle_owner
+  shift
+  new_fingerprint="${1:-}"
+  [ "$#" -eq 1 ] || {
+    usage
+    exit 2
+  }
+  [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "ECI resume fingerprint must be 64 lowercase hexadecimal characters." >&2
+    exit 1
+  }
+  session_dir="$(resolve_session_dir)" || {
+    echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
+    echo "ECI marker is not active or is unsafe: $session_dir/eci_active" >&2
+    exit 1
+  }
+  codex_eci_marker_path_owner_is_valid "$marker" || {
+    echo "ECI resume rejected malformed marker ownership: $marker" >&2
+    exit 1
+  }
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
+    echo "ECI resume rejected a marker bound to another cwd: $marker" >&2
+    exit 1
+  }
+  wait_state="$session_dir/eci_wait"
+  [ ! -L "$wait_state" ] || {
+    echo "ECI user-owned wait state is a symlink; refusing to use it: $wait_state" >&2
+    exit 1
+  }
+  expected_report="$session_dir/$eci_wait_report_name"
+  validate_eci_wait_state_report_binding "$wait_state" "$expected_report" || {
+    if ! [ -f "$expected_report" ] || [ -L "$expected_report" ]; then
+      echo "ECI user-owned wait report is missing or invalid: $expected_report" >&2
+    else
+      echo "ECI user-owned wait report does not match its state: $wait_state" >&2
+    fi
+    exit 1
+  }
+  [ "$new_fingerprint" != "$validated_wait_state_fingerprint" ] || {
+    echo "ECI resume fingerprint is unchanged; provide materially changed normalized content." >&2
+    exit 1
+  }
+  rm -f "$wait_state"
+  [ ! -e "$wait_state" ] && [ ! -L "$wait_state" ] || {
+    echo "ECI user-owned wait state could not be cleared: $wait_state" >&2
+    exit 1
+  }
+  printf 'ECI user-owned wait state cleared for supplied changed fingerprint: %s\n' "$marker"
+  ;;
+ledger-append)
+  require_main_lifecycle_owner
+  [ "$#" -eq 2 ] || {
+    usage
+    exit 2
+  }
+  entry="$2"
+  validate_ledger_entry "$entry" || {
+    echo 'ECI high-level log entry must be one bounded, printable line.' >&2
+    exit 1
+  }
+  session_dir="$(resolve_session_dir)" || {
+    echo 'eci-active: no current session directory found under the proof root.' >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
+    echo 'ECI high-level log append requires an active canonical marker.' >&2
+    exit 1
+  }
+  codex_eci_marker_path_owner_is_valid "$marker" || {
+    echo 'ECI high-level log append rejected malformed marker ownership.' >&2
+    exit 1
+  }
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
+    echo 'ECI high-level log append rejected a marker bound to another cwd.' >&2
+    exit 1
+  }
+  if [ -e "$session_dir/$ledger_anchor_name" ] || [ -L "$session_dir/$ledger_anchor_name" ]; then
+    ledger_validate_anchor "$session_dir" || {
+      echo 'ECI high-level log append found a missing, replaced, or drifted immutable prefix.' >&2
+      exit 1
+    }
+  else
+    # Sessions activated before the anchor route existed are bootstrapped
+    # once, under the same mutation lock, from their current bytes.  The
+    # bytes become the immutable prefix before the requested append.
+    ledger_write_anchor "$session_dir" || {
+      echo 'ECI high-level log append could not establish its immutable prefix.' >&2
+      exit 1
+    }
+  fi
+  log_path="$session_dir/$ledger_log_name"
+  ledger_timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  ledger_timestamp_epoch="$(date -u '+%s')"
+  last_log_line="$(tail -n 1 -- "$log_path" 2>/dev/null || true)"
+  if [[ "$last_log_line" =~ ^##[[:space:]]([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)[[:space:]]-[[:space:]] ]]; then
+    last_timestamp="${BASH_REMATCH[1]}"
+    if [[ "$ledger_timestamp" < "$last_timestamp" || "$ledger_timestamp" = "$last_timestamp" ]]; then
+      last_timestamp_epoch="$(date -u -d "$last_timestamp" '+%s' 2>/dev/null || true)"
+      [[ "$last_timestamp_epoch" =~ ^[0-9]+$ ]] || {
+        echo "ECI high-level log append could not parse its prior UTC timestamp: $last_timestamp" >&2
+        exit 1
+      }
+      ledger_timestamp_epoch=$((last_timestamp_epoch + 1))
+      ledger_timestamp="$(date -u -d "@$ledger_timestamp_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
+    fi
+  fi
+  [[ "$ledger_timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+    echo "ECI high-level log append produced an invalid UTC timestamp: $ledger_timestamp" >&2
+    exit 1
+  }
+  formatted_entry="## $ledger_timestamp - $entry"
+  log_bytes_before="$(ledger_bytes "$log_path")"
+  append_bytes="$(LC_ALL=C printf '%s\n' "$formatted_entry" | wc -c)"
+  case "$log_bytes_before:$append_bytes" in
+  '' | *[!0-9:]*)
+    echo 'ECI high-level log append could not measure the existing prefix and entry safely.' >&2
+    exit 1
+    ;;
+  esac
+  [ "$log_bytes_before" -le "$ledger_max_bytes" ] || {
+    echo 'ECI high-level log is already above its bounded size limit; refusing append.' >&2
+    exit 1
+  }
+  [ "$append_bytes" -le "$ledger_entry_max_bytes" ] || {
+    echo 'ECI high-level log formatted entry exceeds its bounded size limit.' >&2
+    exit 1
+  }
+  [ $((log_bytes_before + append_bytes)) -le "$ledger_max_bytes" ] || {
+    echo 'ECI high-level log append would exceed its bounded size limit; refusing before write.' >&2
+    exit 1
+  }
+  if [ "$(ledger_bytes "$log_path")" -gt 0 ] &&
+    [ "$(tail -c 1 -- "$log_path" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" != 0a ]; then
+    echo 'ECI high-level log append requires the existing prefix to end at EOF/LF.' >&2
+    exit 1
+  fi
+  printf '%s\n' "$formatted_entry" >>"$log_path"
+  [ -f "$log_path" ] && [ ! -L "$log_path" ] || {
+    echo 'ECI high-level log changed to an unsafe file during append.' >&2
+    exit 1
+  }
+  ledger_write_anchor "$session_dir" true || {
+    echo 'ECI high-level log anchor could not be advanced after append; retry is recoverable.' >&2
+    exit 1
+  }
+  printf 'ECI high-level log appended at EOF: %s\n' "$log_path"
+  ;;
+manifest-write)
+  [ "$#" -eq 2 ] || {
+    usage
+    exit 2
+  }
+  require_main_nested_owner
+  current_session="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
+  codex_valid_session_id "$current_session" || {
+    echo 'manifest-write requires an explicit current CODEX_SESSION_ID or CODEX_THREAD_ID.' >&2
+    exit 1
+  }
+  session_dir="$(resolve_session_dir)" || {
+    echo 'eci-active: no current session directory found under the proof root.' >&2
+    exit 1
+  }
+  [ "${session_dir##*/}" = "$current_session" ] || {
+    echo 'manifest-write resolved a different session than the current identity.' >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  marker="$(validate_active_marker "$(codex_proof_root)" "$current_session")" || {
+    echo 'manifest-write requires an active canonical ECI marker.' >&2
+    exit 1
+  }
+  codex_eci_marker_path_owner_is_valid "$marker" || {
+    echo 'manifest-write rejected malformed marker ownership.' >&2
+    exit 1
+  }
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
+    echo 'manifest-write rejected a marker bound to another cwd.' >&2
+    exit 1
+  }
+  manifest_source="$2"
+  manifest_destination="$session_dir/eci-required-critics.json"
+  if ! manifest_temp_source_is_safe "$manifest_source"; then
+    echo "manifest-write rejected source path '$manifest_source': expected a canonical regular eci-required-critics.json.source under \${TMPDIR:-$HOME/tmp}; proof-root and control-file sources are not accepted." >&2
+    exit 1
+  fi
+  if [ -L "$manifest_destination" ] || { [ -e "$manifest_destination" ] && [ ! -f "$manifest_destination" ]; }; then
+    echo 'manifest-write destination is unsafe.' >&2
+    exit 1
+  fi
+  validate_manifest_for_write "$manifest_source" || {
+    echo 'manifest-write rejected malformed, noncanonical, or non-v2 manifest bytes.' >&2
+    exit 1
+  }
+  manifest_tmp="$manifest_destination.tmp.$$"
+  [ ! -e "$manifest_tmp" ] && [ ! -L "$manifest_tmp" ] || {
+    echo 'manifest-write transaction path is unsafe.' >&2
+    exit 1
+  }
+  if ! (
+    set -C
+    cat -- "$manifest_source" >"$manifest_tmp"
+  ); then
+    rm -f -- "$manifest_tmp"
+    echo 'manifest-write could not stage the canonical manifest.' >&2
+    exit 1
+  fi
+  [ -L "$manifest_destination" ] || { [ ! -e "$manifest_destination" ] || [ -f "$manifest_destination" ]; } || {
+    rm -f -- "$manifest_tmp"
+    echo 'manifest-write destination changed to an unsafe type.' >&2
+    exit 1
+  }
+  mv -- "$manifest_tmp" "$manifest_destination" || {
+    rm -f -- "$manifest_tmp"
+    echo 'manifest-write could not atomically publish the canonical manifest.' >&2
+    exit 1
+  }
+  printf 'ECI required-critic manifest published: %s\n' "$manifest_destination"
+  ;;
+approve-commit)
+  [ "$#" -eq 3 ] || {
+    echo 'ECI_APPROVE_COMMIT_USAGE: expected approve-commit <canonical-repo-root> "git commit ...".' >&2
+    exit 2
+  }
+  require_main_approval_owner
+  approval_repo_arg="$2"
+  approval_command_arg="$3"
+  if ! approval_git_repo_context "$approval_repo_arg"; then
+    echo "ECI_APPROVE_COMMIT_REPO_DENIED: repo_root=$approval_repo_arg" >&2
+    exit 1
+  fi
+  if ! approval_command_error="$(validate_approval_commit_command "$approval_command_arg" 2>&1)"; then
+    echo "ECI_APPROVE_COMMIT_COMMAND_DENIED: $approval_command_error" >&2
+    exit 1
+  fi
+  if ! write_approval_artifact "$approval_command_arg" "$APPROVAL_REPO_ROOT" "$APPROVAL_GIT_DIR"; then
+    echo "ECI_APPROVE_COMMIT_WRITE_DENIED: could not publish a validated one-time approval for repo_root=$APPROVAL_REPO_ROOT command=$approval_command_arg" >&2
+    exit 1
+  fi
+  ;;
+nested-enter)
+  require_main_nested_owner
+  shift
+  step="${1:-}"
+  iteration="${2:-}"
+  writer="${3:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}"
+  version="${ECI_ACCEPTANCE_VERSION:-1}"
+  [[ "$#" -ge 2 && "$#" -le 3 ]] || {
+    usage
+    exit 2
+  }
+  nested_number_is_bounded "$step" true && nested_number_is_bounded "$iteration" true || {
+    echo 'nested-enter requires bounded numeric step and iteration.' >&2
+    exit 1
+  }
+  nested_number_is_bounded "$version" false || {
+    echo 'nested-enter requires a bounded positive canonical ECI_ACCEPTANCE_VERSION.' >&2
+    exit 1
+  }
+  codex_valid_session_id "$writer" || {
+    echo 'nested-enter requires a valid writer session.' >&2
+    exit 1
+  }
+  session_dir="$(resolve_session_dir)" || {
+    echo 'eci-active: no outer session directory found' >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  marker="$(validate_active_marker "$(codex_proof_root)" "${session_dir##*/}")" || {
+    echo 'nested-enter requires an active outer marker.' >&2
+    exit 1
+  }
+  codex_eci_marker_path_owner_is_valid "$marker" || {
+    echo 'nested-enter requires a canonical active marker owner.' >&2
+    exit 1
+  }
+  codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
+    echo 'nested-enter requires an active marker bound to the current cwd.' >&2
+    exit 1
+  }
+  validate_session_dir "$(codex_proof_root)" "$writer" || {
+    echo 'nested-enter writer session is not a safe canonical session.' >&2
+    exit 1
+  }
+  [ -d "$(codex_proof_root)/$writer" ] && [ ! -L "$(codex_proof_root)/$writer" ] || {
+    echo 'nested-enter writer session directory is unavailable.' >&2
+    exit 1
+  }
+  nested_marker="$session_dir/ate_nested_eci_active"
+  nested_completion="$session_dir/ate_nested_eci_completion"
+  if [ -L "$nested_marker" ] || [ -e "$nested_marker" ]; then
+    echo 'nested-enter found an already active nested ECI marker; refusing to replace its receipt or ownership.' >&2
+    exit 1
+  fi
+  if [ -L "$nested_completion" ] || { [ -e "$nested_completion" ] && [ ! -f "$nested_completion" ]; }; then
+    echo 'nested-enter found an unsafe completion receipt.' >&2
+    exit 1
+  fi
+  acceptance_anchor="$session_dir/eci-acceptance-anchor"
+  acceptance_manifest="$session_dir/eci-required-critics.json"
+  if [ -L "$acceptance_anchor" ] || { [ -e "$acceptance_anchor" ] && [ ! -f "$acceptance_anchor" ]; }; then
+    echo 'nested-enter found an unsafe acceptance anchor.' >&2
+    exit 1
+  fi
+  if [ -f "$acceptance_anchor" ]; then
+    grep -Eq "^admission:[^:]+:$version:" "$acceptance_anchor" || {
+      echo 'nested-enter acceptance version is not present in the authoritative session anchor.' >&2
+      exit 1
+    }
+  fi
+  if [ -L "$acceptance_manifest" ] || { [ -e "$acceptance_manifest" ] && [ ! -f "$acceptance_manifest" ]; }; then
+    echo 'nested-enter found an unsafe acceptance manifest.' >&2
+    exit 1
+  fi
+  if [ -f "$acceptance_manifest" ]; then
+    manifest_version="$(jq -r 'if (.acceptance_version | type) == "string" then .acceptance_version else empty end' "$acceptance_manifest" 2>/dev/null || true)"
+    [ "$manifest_version" = "$version" ] || {
+      echo 'nested-enter acceptance version does not match the authoritative manifest.' >&2
+      exit 1
+    }
+  fi
+  [ ! -e "$nested_completion" ] || rm -f -- "$nested_completion" || {
+    echo 'nested-enter could not clear the prior completion receipt.' >&2
+    exit 1
+  }
+  write_nested_marker "$nested_marker" "${session_dir##*/}" "$step" "$iteration" "$writer" "$version" || {
+    echo 'nested-enter could not atomically create the nested ECI marker.' >&2
+    exit 1
+  }
+  printf 'Nested ECI active under outer marker: %s\n' "$marker"
+  ;;
+nested-accept)
+  [ "$#" -eq 1 ] || {
+    usage
+    exit 2
+  }
+  require_main_nested_owner
+  session_dir="$(resolve_session_dir)" || {
+    echo 'eci-active: no outer session directory found' >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  nested_marker="$session_dir/ate_nested_eci_active"
+  nested_completion="$session_dir/ate_nested_eci_completion"
+  write_nested_completion "$nested_marker" "$nested_completion" || {
+    echo 'nested ECI acceptance receipt could not be published for the owned active marker.' >&2
+    exit 1
+  }
+  printf 'Nested ECI acceptance receipt published: %s\n' "$nested_completion"
+  ;;
+nested-exit)
+  [ "$#" -eq 1 ] || {
+    usage
+    exit 2
+  }
+  require_main_nested_owner
+  session_dir="$(resolve_session_dir)" || {
+    echo 'eci-active: no outer session directory found' >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  nested_marker="$session_dir/ate_nested_eci_active"
+  nested_completion="$session_dir/ate_nested_eci_completion"
+  validate_nested_marker "$nested_marker" || {
+    echo 'nested ECI marker is invalid, stale, or not owned by the active outer session.' >&2
+    exit 1
+  }
+  validate_nested_completion "$nested_completion" "$nested_marker" || {
+    echo 'nested ECI completion receipt is missing, stale, or not bound to the owned marker.' >&2
+    exit 1
+  }
+  rm -f -- "$nested_marker"
+  [ ! -e "$nested_marker" ] && [ ! -L "$nested_marker" ] || {
+    echo 'nested ECI marker could not be cleared.' >&2
+    exit 1
+  }
+  printf 'Nested ECI inactive; outer marker retained.\n'
+  ;;
+sync-runtime)
+  [ "$#" -eq 1 ] || {
+    usage
+    exit 2
+  }
+  require_main_lifecycle_owner
+  . "$base_dir/hooks/lib/eci-runtime-sync.sh"
+  eci_runtime_sync_run codex "$base_dir"
+  ;;
+off)
+  require_main_lifecycle_owner
+  report="${2:-}"
+  markers=()
+  [ -n "$report" ] || {
+    usage
+    exit 2
+  }
+  [ -f "$report" ] || {
+    echo "Disengage report not found: $report" >&2
+    exit 1
+  }
+  # When the caller supplies a report inside a proof session, that path is
+  # an identity claim, not a hint.  Bind it before resolving the active
+  # marker so a stale report cannot fall through to the newest session and
+  # produce a misleading generic "inactive" error.  Reports outside the
+  # proof root remain supported for the existing user-owned flow.
+  report_path="$(realpath -m -- "$report" 2>/dev/null || true)"
+  report_root="$(codex_proof_root)"
+  report_session=""
+  case "$report_path" in
+  "$report_root"/*/*)
+    report_rest="${report_path#"$report_root"/}"
+    report_session="${report_rest%%/*}"
+    report_tail="${report_rest#*/}"
+    if codex_valid_session_id "$report_session" && [ "$report_tail" != "$report_rest" ]; then
+      requested_session="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
+      if [ -n "$requested_session" ] && [ "$requested_session" != "$report_session" ]; then
+        echo "ECI off session identity mismatch: supplied report $report_path belongs to session $report_session, but the requested active session is $requested_session; refusing teardown." >&2
+        exit 1
+      fi
+      [ -n "$requested_session" ] || export CODEX_SESSION_ID="$report_session"
+    fi
+    ;;
+  esac
+  requested_session="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
+  if [ -n "$requested_session" ] && [ ! -e "$report_root/$requested_session" ]; then
+    conflicting_marker=""
+    conflicting_count=0
+    while IFS= read -r candidate_marker; do
+      case "$candidate_marker" in
+      "$codex_eci_marker_scan_overflow_token" | "$codex_eci_marker_scan_unsafe_token" | '')
+        continue
+        ;;
+      esac
+      if [ -f "$candidate_marker" ] && [ ! -L "$candidate_marker" ]; then
+        conflicting_marker="$candidate_marker"
+        conflicting_count=$((conflicting_count + 1))
+      fi
+    done < <(codex_eci_markers_for_cwd "$PWD" strict "" 2>/dev/null || true)
+    if [ "$conflicting_count" -eq 1 ]; then
+      conflicting_owner="${conflicting_marker%/*}"
+      conflicting_owner="${conflicting_owner##*/}"
+      if [ "$conflicting_owner" != "$requested_session" ]; then
+        conflicting_dir="${conflicting_marker%/*}"
+        echo "ECI off session identity mismatch: supplied report $report_path; requested session $requested_session has no session directory under $report_root, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
+        exit 1
+      fi
+    fi
+  fi
+  session_dir="$(resolve_session_dir)" || {
+    echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  marker="$session_dir/eci_active"
+  if [ -L "$marker" ]; then
+    echo "ECI marker is a symlink; refusing to use it: $marker" >&2
+    exit 1
+  fi
+  if [ ! -f "$marker" ]; then
+    conflicting_marker=""
+    while IFS= read -r candidate_marker; do
+      case "$candidate_marker" in
+      "$codex_eci_marker_scan_overflow_token" | "$codex_eci_marker_scan_unsafe_token" | '')
+        continue
+        ;;
+      esac
+      if [ -f "$candidate_marker" ] && [ ! -L "$candidate_marker" ]; then
+        conflicting_marker="$candidate_marker"
+        break
+      fi
+    done < <(codex_eci_markers_for_cwd "$PWD" strict "${session_dir##*/}" 2>/dev/null || true)
+    if [ -n "$conflicting_marker" ]; then
+      conflicting_owner="${conflicting_marker%/*}"
+      conflicting_owner="${conflicting_owner##*/}"
+      conflicting_dir="${conflicting_marker%/*}"
+      echo "ECI off session identity mismatch: supplied report $report_path targets requested session ${session_dir##*/}, but the active marker belongs to $conflicting_owner; refusing teardown. Expected an active-session report under $conflicting_dir (for example $conflicting_dir/disengage.md); marker retained: $conflicting_marker" >&2
+    else
+      echo "ECI marker is not active for requested session ${session_dir##*/}; supplied report $report_path; refusing teardown: $marker" >&2
+    fi
+    exit 1
+  fi
+  if [ -f "$marker" ]; then
+    codex_eci_marker_path_owner_is_valid "$marker" || {
+      echo "ECI marker path/owner binding is malformed; refusing teardown: $marker" >&2
+      exit 1
+    }
+    codex_eci_marker_is_valid_for_cwd "$marker" "$(codex_canonical_cwd "$PWD")" || {
+      echo "ECI marker cwd binding is malformed or belongs to another cwd; refusing teardown: $marker" >&2
+      exit 1
+    }
+  fi
+  [ -f "$marker" ] && markers+=("$marker")
+  while IFS= read -r legacy_marker; do
+    [ -n "$legacy_marker" ] || continue
+    [ "$legacy_marker" = "$marker" ] && continue
+    markers+=("$legacy_marker")
+  done < <(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null || true)
+  [ "${#markers[@]}" -gt 0 ] || {
+    echo "ECI marker is not active: $marker" >&2
+    exit 1
+  }
+  user_closed_report=false
+  if grep -Fqx 'schema: eci-user-closed/v1' "$report_path" 2>/dev/null; then
+    validate_user_closed_report "$report_path" "${session_dir##*/}" "$(codex_canonical_cwd "$PWD")" || {
+      echo "ECI user-closed report is malformed, unclean/incomplete state is missing, or is not bound to the active owner/session/cwd/path; marker retained: $report_path" >&2
+      exit 1
+    }
+    user_closed_report=true
+  fi
+  wait_state="$session_dir/eci_wait"
+  [ ! -L "$wait_state" ] || {
+    echo "ECI user-owned wait state is a symlink; refusing to remove it: $wait_state" >&2
+    exit 1
+  }
+  if [ -e "$wait_state" ] && [ ! -f "$wait_state" ]; then
+    echo "ECI user-owned wait state is not a regular file: $wait_state" >&2
+    exit 1
+  fi
+  if [ "$user_closed_report" != true ] && [ -f "$wait_state" ]; then
+    expected_wait_report="$session_dir/$eci_wait_report_name"
+    validate_eci_wait_state_report_binding "$wait_state" "$expected_wait_report" || {
+      echo "ECI user-owned wait state/report is invalid or unbound: $wait_state" >&2
+      exit 1
+    }
+  fi
+  if [ "$user_closed_report" = true ]; then
+    write_user_closed_ledger "$session_dir" "$report_path" "$(codex_canonical_cwd "$PWD")" || {
+      echo "ECI user-closed audit ledger could not be published or validated; marker retained." >&2
+      exit 1
+    }
+  else
+    validate_disengage_report "$report"
+    run_eci_review_gate off "${session_dir##*/}" || {
+      echo "ECI required-critic review gate rejected teardown; marker retained." >&2
+      exit 1
+    }
+    write_teardown_receipt "$session_dir" "$report" || {
+      echo "ECI teardown receipt could not be published or validated; marker retained." >&2
+      exit 1
+    }
+  fi
+  for prewrite_sentinel in "$session_dir"/eci-prewrite-admitted.*; do
+    [ -e "$prewrite_sentinel" ] || [ -L "$prewrite_sentinel" ] || continue
+    [ -f "$prewrite_sentinel" ] && [ ! -L "$prewrite_sentinel" ] || {
+      echo "ECI prewrite admission sentinel is unsafe: $prewrite_sentinel" >&2
+      exit 1
+    }
+    rm -f -- "$prewrite_sentinel"
+  done
+  [ -f "$wait_state" ] && rm -f "$wait_state"
+  rm -f "${markers[@]}"
+  if [ "$user_closed_report" = true ]; then
+    printf 'ECI inactive. User-closed incomplete teardown recorded: %s\n' "$report_path"
+  else
+    printf 'ECI inactive. Disengage report validated: %s\n' "$report"
+  fi
+  ;;
+status)
+  session_dir="$(resolve_session_dir)" || {
+    echo "eci-active: no session directory found under $(codex_proof_root)" >&2
+    exit 1
+  }
+  marker="$session_dir/eci_active"
+  if [ -L "$marker" ]; then
+    echo "ECI marker is a symlink; refusing to read it: $marker" >&2
+    exit 1
+  fi
+  if [ -n "${marker:-}" ] && [ -f "$marker" ] && [ ! -L "$marker" ]; then
+    codex_eci_marker_file_is_bounded "$marker" || {
+      echo "ECI marker is oversized or unsafe; refusing to read it: $marker" >&2
+      exit 1
+    }
+    cat "$marker"
+  elif legacy_marker="$(codex_legacy_eci_markers_for_cwd "$PWD" 2>/dev/null | head -n1)" &&
+    [ -n "$legacy_marker" ] && codex_eci_marker_file_is_bounded "$legacy_marker"; then
+    cat "$legacy_marker"
+  else
+    echo "ECI inactive"
+  fi
+  ;;
+*)
+  usage
+  exit 2
+  ;;
 esac

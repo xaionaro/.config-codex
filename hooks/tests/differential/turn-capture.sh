@@ -25,7 +25,7 @@ turn_expected=(0 1 1 0 1 0 1 0 1)
 if [ "${CODEX_TEST_SKIP_LEAN_BUILD:-}" = 1 ]; then
   [ -x "$ROOT/proofs/.lake/build/bin/turnCaptureDiff" ]
 else
-  build_log="$(mktemp "${TMPDIR:-/tmp}/turn-capture-lean-build.XXXXXX")"
+  build_log="$(mktemp "${CODEX_TMPDIR:-${HOME:?}/tmp}/turn-capture-lean-build.XXXXXX")"
   trap 'rm -f "$build_log"' EXIT HUP INT TERM
   python3 "$ROOT/hooks/tests/process-watchdog.py" --timeout 300 --log "$build_log" \
     --cwd "$ROOT/proofs" -- lake build turnCaptureDiff || { cat "$build_log" >&2; exit 1; }

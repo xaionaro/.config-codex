@@ -4,6 +4,45 @@
 # reports only argv shape and registry membership; caller-owned gates decide
 # whether the command otherwise belongs to an ordinary or protected route.
 environment_command_detail() {
+  local direct_command="${1:-}" direct_name direct_fast=true
+  local -a direct_words=()
+
+  # The overwhelmingly common environment query is a direct, literal
+  # `printenv NAME...` with a small bounded set of registered names.  Keep
+  # this path entirely in Bash: it avoids starting Python/shlex for a query
+  # whose grammar is already expressible as one argv check.  Anything that
+  # is not provably this exact shape falls through to the complete recognizer
+  # below, preserving its diagnostics and wrapper handling.
+  read -r -a direct_words <<<"$direct_command"
+  if [ "${direct_words[0]:-}" = printenv ] &&
+     [ "${#direct_words[@]}" -ge 2 ] && [ "${#direct_words[@]}" -le 17 ]; then
+    local -A direct_seen=()
+    for direct_name in "${direct_words[@]:1}"; do
+      if [[ ! "$direct_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        direct_fast=false
+        break
+      fi
+      case "$direct_name" in
+        HOME|PWD|PATH|CODEX_HOME|KIMI_CODE_HOME|SESSION_ID|CODEX_ROLE|CODEX_SESSION_ID|KIMI_SESSION_ID|CODEX_VALIDATE_CWD|KIMI_VALIDATE_CWD|CODEX_VALIDATE_SESSION_ID|KIMI_VALIDATE_SESSION_ID|CODEX_CONFIGURED_HOME|KIMI_CONFIGURED_HOME|CODEX_COMMAND_PATH|KIMI_COMMAND_PATH|CODEX_STOP_GATE_ROOT|KIMI_STOP_GATE_ROOT|TMPDIR|CODEX_PROOF_ROOT|KIMI_PROOF_ROOT|CODEX_PROOF_ROOT_CANONICAL|CODEX_PROOF_ROOT_CONFIGURED|CODEX_PROOF_ROOT_STABLE_ALIAS|KIMI_PROOF_ROOT_CANONICAL|KIMI_PROOF_ROOT_CONFIGURED|KIMI_PROOF_ROOT_STABLE_ALIAS|CODEX_APPROVED_REPO_ROOT_1|CODEX_APPROVED_REPO_ROOT_2|CODEX_APPROVED_REPO_ROOT_3|KIMI_APPROVED_REPO_ROOT_1|KIMI_APPROVED_REPO_ROOT_2|KIMI_APPROVED_REPO_ROOT_3|CODEX_HIGH_LEVEL_LOG_PATH|CODEX_HIGH_LEVEL_LOG_PATH_ALIAS|KIMI_HIGH_LEVEL_LOG_PATH|KIMI_HIGH_LEVEL_LOG_PATH_ALIAS)
+          ;;
+        *)
+          direct_fast=false
+          break
+          ;;
+      esac
+      if [[ -n "${direct_seen[$direct_name]+set}" ]]; then
+        direct_fast=false
+        break
+      fi
+      direct_seen["$direct_name"]=1
+    done
+    if [ "$direct_fast" = true ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        ALLOW printenv 1 0 printenv direct-registered-query
+      return 0
+    fi
+  fi
+
   python3 - "$1" <<'PY'
 import os
 import re

@@ -24,7 +24,7 @@ if ! FORMAL_TMP_ROOT="$(codex_select_formal_tmpfs_scratch)"; then
   exit 1
 fi
 TMP_ROOT=""
-if ! TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-hooks-tests.XXXXXX")"; then
+if ! TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-hooks-tests.XXXXXX")"; then
   rm -rf -- "$FORMAL_TMP_ROOT"
   printf '%s\n' "FAIL setup could not create temporary test root"
   exit 1
@@ -7409,6 +7409,8 @@ run_case "Go module hook parity" \
   bash "$ROOT/hooks/tests/test-go-mod-hook-parity.sh"
 run_case "design versus implementation policy boundary" \
   bash "$ROOT/hooks/tests/test-policy-design-boundary.sh"
+run_case "workflow skill routing and modular policy graph" \
+  bash "$ROOT/hooks/tests/test-workflow-skill-routing.sh"
 run_case "ECI edit and legacy control-path ownership" \
   bash "$ROOT/hooks/tests/test-eci-edit-control-paths.sh"
 run_case "ECI required-critic manifest gate contracts" \

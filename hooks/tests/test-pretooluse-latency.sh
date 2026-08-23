@@ -3,7 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-TMP_ROOT="$(mktemp -d "/tmp/codex-pretooluse-latency.XXXXXX")"
+TMP_BASE="$(realpath -m -- "${CODEX_TMPDIR:-${HOME:?}/tmp}")"
+TMP_ROOT="$(mktemp -d "$TMP_BASE/codex-pretooluse-latency.XXXXXX")"
 proof_root="$TMP_ROOT/proof"
 session_id="t00-session"
 session_dir="$proof_root/$session_id"

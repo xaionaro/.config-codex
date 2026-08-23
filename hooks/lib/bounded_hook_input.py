@@ -123,6 +123,7 @@ class SessionMetadataPrefixReader:
     def read_thread_spawn_metadata(self) -> ThreadSpawnMetadata | None:
         self._expect("{")
         record_type: str | None = None
+        payload_position: int | None = None
 
         while True:
             key = self._read_string()
@@ -132,9 +133,15 @@ class SessionMetadataPrefixReader:
             elif key == "payload" and record_type == "session_meta":
                 return self._read_payload_thread_spawn_metadata()
             else:
+                if key == "payload":
+                    # Retain only the bounded offset as a fallback when no payload follows session_meta.
+                    payload_position = self._position
                 self._skip_value()
 
             if self._consume("}"):
+                if record_type == "session_meta" and payload_position is not None:
+                    self._position = payload_position
+                    return self._read_payload_thread_spawn_metadata()
                 return None
             self._expect(",")
 

@@ -53,9 +53,17 @@ Use three separate status columns so source readiness cannot be mistaken for E2E
 
 When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. In active ECI/ATE, keep `Lane` followed immediately by `Lane requirement refs` (compact aliases resolve through the nearby registry); in direct workflows, omit that lineage column and registry.
 
-| Task ID | Parent ID | Lane | Lane requirement refs | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next proof/action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `R1, R3` (registry-bound) | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `<next evidence/action>` |
+| Task ID | Parent ID | Lane | Lane requirement refs | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next proof/action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `R1, R3` (registry-bound) | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `<next evidence/action>` |
+
+Every lane records `Stage: normal` or `Stage: emergency`. `Stage: emergency` is
+the Emergency Unblock protocol: load and follow
+`skills/explore-critique-implement/references/emergency-unblock.md`, make only
+its single bounded provisional repair, report exactly
+`provisional Emergency Unblock — unchecked`, and immediately return to normal
+ECI Step 1. Emergency stage does not authorize a second unchecked repair or
+change the implementation/test/production status meanings below.
 
 Place the redacted-verbatim `Requirements` registry and its immutable,
 register-scoped alias map near the active ECI/ATE table. Each alias resolves to
@@ -91,6 +99,7 @@ are never active register requirements or lane refs.
 | Rule | Behavior |
 | --- | --- |
 | Status vocabulary | In each status column, use only `NEW`, `IN PROGRESS`, `PAUSED`, `BLOCKED`, `CLOSED`. |
+| Stage vocabulary | Every lane must record `normal` or `emergency`; `emergency` requires the Emergency Unblock protocol and its immediate return to normal ECI Step 1 described above. |
 | Implementation Status | Covers exploration, RCA, design, code changes, code review, build checks, unit/component/integration auto-tests, and source-level readiness. `CLOSED` means source-level work is accepted with relevant automated checks. |
 | Test Status | Covers E2E validation in the non-production test environment, including real devices, test services, UI manipulation, and mission/test-plan helpers. `CLOSED` means test-environment E2E passed or was explicitly waived. |
 | Prod Status | Covers E2E validation in production, including deploy provenance, real production services/devices, UI manipulation where relevant, and user-visible behavior. `CLOSED` means production E2E passed or was explicitly waived. |

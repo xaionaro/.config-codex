@@ -9,7 +9,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import zipfile
@@ -47,7 +46,21 @@ def _codex_home() -> str:
 
 
 def _tmp_root() -> str:
-    base = os.path.join(tempfile.gettempdir(), "codex")
+    configured = os.environ.get("CODEX_TMPDIR")
+    requested = configured or os.path.join(os.path.expanduser("~"), "tmp")
+    canonical = os.path.realpath(requested)
+    system_tmp = os.path.realpath(os.path.join(os.path.sep, "tmp"))
+    if canonical == system_tmp or canonical.startswith(system_tmp + os.path.sep):
+        if configured:
+            raise InstallError(
+                "CODEX_TMPDIR must not resolve under the system temporary root; "
+                "set it to a writable home-scoped directory such as $HOME/tmp."
+            )
+        raise InstallError(
+            "the Codex home-scoped temporary directory resolves under the system "
+            "temporary root; set HOME or CODEX_TMPDIR to a writable home-scoped directory."
+        )
+    base = os.path.join(canonical, "codex")
     os.makedirs(base, exist_ok=True)
     return base
 

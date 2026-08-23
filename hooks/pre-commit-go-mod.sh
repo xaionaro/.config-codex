@@ -19,7 +19,18 @@ if [[ ! ${max_blob_bytes} =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/go-mod-hook.XXXXXX")
+tmp_root="${CODEX_TMPDIR:-${KIMI_TMPDIR:-$HOME/tmp}}"
+tmp_root_canonical="$(realpath -m -- "$tmp_root" 2>/dev/null || true)"
+[ -n "$tmp_root_canonical" ] || tmp_root_canonical="$tmp_root"
+if [ "$tmp_root_canonical" = /tmp ] || [[ "$tmp_root_canonical" == /tmp/* ]]; then
+  go_hook_deny "GO_HOOK_TMPDIR_UNSAFE" "temporary-directory" \
+    "requested=$(eci_diagnostic_value "$tmp_root"),canonical=$(eci_diagnostic_value "$tmp_root_canonical")" \
+    'go.mod hook: system temporary root /tmp is not a Codex/Kimi scratch location' \
+    'unset CODEX_TMPDIR/KIMI_TMPDIR or set one to a writable home-scoped directory such as $HOME/tmp'
+  exit 2
+fi
+mkdir -p -- "$tmp_root"
+tmp_dir=$(mktemp -d "$tmp_root/go-mod-hook.XXXXXX")
 trap 'rm -rf -- "$tmp_dir"' EXIT HUP INT TERM
 
 index_listing=$tmp_dir/index-listing

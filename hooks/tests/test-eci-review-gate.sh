@@ -213,6 +213,80 @@ assert_reject() {
   grep -Fq "$needle" "$err"
 }
 
+# These path-contract tests must reach artifact/target validation, rather than
+# being short-circuited by unrelated staged/worktree changes in this checkout.
+prepare_clean_review_gate_fixture() {
+  local fixture_repo="$1" fixture_target="$fixture_repo/hooks/eci-review-gate.sh"
+
+  mkdir -p "${fixture_target%/*}"
+  cp -- "$ROOT/hooks/eci-review-gate.sh" "$fixture_target"
+  printf '%s\n' '# fixture intentionally ignores nothing' >"$fixture_repo/.gitignore"
+  git -C "$fixture_repo" init -q
+  git -C "$fixture_repo" config user.name 'ECI test'
+  git -C "$fixture_repo" config user.email 'eci-test@example.invalid'
+  git -C "$fixture_repo" add -- .gitignore hooks/eci-review-gate.sh
+  git -C "$fixture_repo" commit -qm 'clean review-gate fixture'
+  git -C "$fixture_repo" cat-file -e HEAD:.gitignore
+  git -C "$fixture_repo" cat-file -e HEAD:hooks/eci-review-gate.sh
+
+  printf '%s\n' '# controlled review-gate fixture change' >>"$fixture_target"
+  git -C "$fixture_repo" diff --cached --quiet --binary
+  if git -C "$fixture_repo" diff --quiet --binary; then
+    printf 'fixture is missing its controlled worktree change: %s\n' "$fixture_repo" >&2
+    return 1
+  fi
+  [ "$(git -C "$fixture_repo" diff --name-only --no-renames)" = 'hooks/eci-review-gate.sh' ]
+  [ "$(git -C "$fixture_repo" diff --numstat --no-renames)" = $'1\t0\thooks/eci-review-gate.sh' ]
+  [ "$(git -C "$fixture_repo" status --porcelain=v1 --untracked-files=all)" = ' M hooks/eci-review-gate.sh' ]
+}
+
+test_e2e_artifact_10mib_boundary_accepts_exact_and_rejects_next_byte() {
+  local proof_root="$TMP_ROOT/e2e-artifact-boundary" fixture_repo="$TMP_ROOT/e2e-artifact-boundary-repo"
+  local fixture_target sid manifest e2e e2e_sha tmp
+  fixture_target="$fixture_repo/hooks/eci-review-gate.sh"
+
+  mkdir -p "${fixture_target%/*}"
+  cp -- "$ROOT/hooks/eci-review-gate.sh" "$fixture_target"
+  git -C "$fixture_repo" init -q
+  git -C "$fixture_repo" config user.name 'ECI test'
+  git -C "$fixture_repo" config user.email 'eci-test@example.invalid'
+  git -C "$fixture_repo" add hooks/eci-review-gate.sh
+  git -C "$fixture_repo" commit -qm 'clean E2E artifact boundary fixture'
+  printf '%s\n' '# controlled E2E artifact boundary fixture change' >>"$fixture_target"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root true)"
+    manifest="$proof_root/$sid/eci-required-critics.json"
+    e2e="$(jq -r '.rows[0].e2e_artifact' "$manifest")"
+
+    truncate -s 10485760 "$e2e"
+    e2e_sha="$(sha "$e2e")"
+    tmp="$manifest.tmp"
+    jq -c --arg sha "$e2e_sha" \
+      '(.rows[] | select(.e2e_required == true) | .e2e_sha256) = $sha' \
+      "$manifest" >"$tmp"
+    mv -- "$tmp" "$manifest"
+    if ! run_gate "$proof_root" final "$sid" "$TMP_ROOT/e2e-artifact-exact.out" "$TMP_ROOT/e2e-artifact-exact.err"; then
+      exit 1
+    fi
+
+    truncate -s 10485761 "$e2e"
+    e2e_sha="$(sha "$e2e")"
+    jq -c --arg sha "$e2e_sha" \
+      '(.rows[] | select(.e2e_required == true) | .e2e_sha256) = $sha' \
+      "$manifest" >"$tmp"
+    mv -- "$tmp" "$manifest"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/e2e-artifact-oversized.out" "$TMP_ROOT/e2e-artifact-oversized.err"; then
+      exit 1
+    fi
+    grep -Fq 'oversized E2E artifact' "$TMP_ROOT/e2e-artifact-oversized.err"
+    grep -Fq 'limit 10485760 bytes' "$TMP_ROOT/e2e-artifact-oversized.err"
+  )
+}
+
 test_valid_target_kinds() {
   local kind proof_root sid
   for kind in root subtask candidate-fix; do
@@ -913,7 +987,11 @@ test_manifest_write_is_main_owned_and_atomic() {
 
 test_malformed_commit_identity_does_not_skip_active_gate() {
   local proof_root="$TMP_ROOT/malformed-identity" out
-  mkdir -p "$proof_root/commit-session" "$TMP_ROOT/malformed-home"
+  local malformed_home="$TMP_ROOT/malformed-home"
+  mkdir -p "$proof_root/commit-session" "$malformed_home/.config/eci"
+  chmod 700 "$malformed_home" "$malformed_home/.config" "$malformed_home/.config/eci"
+  printf '%s\n' enforcing >"$malformed_home/.config/eci/command-gate-mode"
+  chmod 600 "$malformed_home/.config/eci/command-gate-mode"
   {
     printf 'scope: malformed identity\n'
     printf 'cwd: %s\n' "$ROOT"
@@ -923,7 +1001,7 @@ test_malformed_commit_identity_does_not_skip_active_gate() {
   out="$TMP_ROOT/malformed-identity.out"
   jq -cn --arg cwd "$ROOT" \
     '{session_id:[],cwd:$cwd,tool_input:{command:"git commit -m checked"}}' |
-    HOME="$TMP_ROOT/malformed-home" CODEX_PROOF_ROOT="$proof_root" \
+    HOME="$malformed_home" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/validate-bash.sh" >"$out"
   jq -e '
     (.hookSpecificOutput.permissionDecision == "deny") and
@@ -936,7 +1014,11 @@ test_malformed_commit_identity_does_not_skip_active_gate() {
 
 test_commit_parser_wrappers_and_unknown_fail_closed() {
   local proof_root="$TMP_ROOT/parser-contract" command out
-  mkdir -p "$proof_root/commit-session" "$TMP_ROOT/parser-home"
+  local parser_home="$TMP_ROOT/parser-home" parser_config="$TMP_ROOT/parser-config"
+  mkdir -p "$proof_root/commit-session" "$parser_home" "$parser_config/eci"
+  chmod 700 "$parser_home" "$parser_config" "$parser_config/eci"
+  printf '%s\n' enforcing >"$parser_config/eci/command-gate-mode"
+  chmod 600 "$parser_config/eci/command-gate-mode"
   {
     printf 'scope: parser contract\n'
     printf 'cwd: %s\n' "$ROOT"
@@ -961,32 +1043,51 @@ test_commit_parser_wrappers_and_unknown_fail_closed() {
     out="$TMP_ROOT/parser-${#command}.out"
     jq -cn --arg command "$command" --arg cwd "$ROOT" \
       '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
-      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+      HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" \
         bash "$ROOT/hooks/validate-bash.sh" >"$out"
     jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$out" >/dev/null || return 1
   done
   out="$TMP_ROOT/parser-unknown.out"
   jq -cn --arg cwd "$ROOT" \
     '{session_id:"commit-session",cwd:$cwd,tool_input:{command:"sh -c \"$ECI_DYNAMIC_COMMAND\""}}' |
-    HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+    HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" \
       bash "$ROOT/hooks/validate-bash.sh" >"$out"
-  jq -e '.hookSpecificOutput.permissionDecisionReason | contains("syntax=shell-expansion")' "$out" >/dev/null
+  jq -e '.hookSpecificOutput.permissionDecisionReason | contains("ECI_PLAN_SYNTAX_DENIED") and contains("predicate=dynamic-expansion")' "$out" >/dev/null
+
+  for command in 'make test'; do
+    out="$TMP_ROOT/parser-benign-${#command}.out"
+    jq -cn --arg command "$command" --arg cwd "$ROOT" '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
+      HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    [ ! -s "$out" ] || return 1
+  done
+
+  for command in 'git alias ci' 'git ci -m checked'; do
+    out="$TMP_ROOT/parser-git-context-${#command}.out"
+    jq -cn --arg command "$command" --arg cwd "$ROOT" '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
+      HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    jq -e '.hookSpecificOutput.permissionDecisionReason | contains("ECI_GIT_EXECUTION_CONTEXT_DENIED") and contains("git-execution-context")' "$out" >/dev/null || return 1
+  done
 
   for command in \
-    'git alias ci' \
     'git config --local user.name checked' \
     'git tag release' \
-    'git ci -m checked' \
     'python3 -c "print(1)"' \
-    'make test' \
     'bash arbitrary-script.sh' \
     "rm -f $proof_root/commit-session/eci_active"; do
     out="$TMP_ROOT/parser-unknown-${#command}.out"
     jq -cn --arg command "$command" --arg cwd "$ROOT" \
       '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
-      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+      HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" \
         bash "$ROOT/hooks/validate-bash.sh" >"$out"
     case "$command" in
+      rm\ *)
+        expected_code='[ECI_COMMAND_NOT_ALLOWLISTED]'
+        expected_wording='coordinator-cleanup-route'
+        ;;
+      python3\ -c\ *|python\ -c\ *|python2\ -c\ *)
+        expected_code='[ECI_PLAN_DYNAMIC_LAUNCH_DENIED]'
+        expected_wording='predicate=dynamic-interpreter-launch'
+        ;;
       bash\ *|sh\ *|zsh\ *|dash\ *|env\ *|command\ *|builtin\ *|exec\ *|python\ *|python2\ *|python3\ *|perl\ *|ruby\ *|node\ *|deno\ *|go\ run\ *)
         expected_code='[ECI_COMMAND_WRAPPER_UNSUPPORTED]'
         expected_wording='unsupported wrapper/interpreter'
@@ -1010,7 +1111,7 @@ test_commit_parser_wrappers_and_unknown_fail_closed() {
     out="$TMP_ROOT/parser-known-${#command}.out"
     jq -cn --arg command "$command" --arg cwd "$ROOT" \
       '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
-      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+      HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" \
         bash "$ROOT/hooks/validate-bash.sh" >"$out"
     [ ! -s "$out" ] || return 1
   done
@@ -1019,7 +1120,7 @@ test_commit_parser_wrappers_and_unknown_fail_closed() {
     out="$TMP_ROOT/parser-read-only-${#command}.out"
     jq -cn --arg command "$command" --arg cwd "$ROOT" \
       '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
-      HOME="$TMP_ROOT/parser-home" CODEX_PROOF_ROOT="$proof_root" \
+      HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" \
         bash "$ROOT/hooks/validate-bash.sh" >"$out"
     # validate-bash emits no decision for a proven read-only command; any JSON
     # output here would be a denial or malformed contract response.
@@ -1030,14 +1131,34 @@ test_commit_parser_wrappers_and_unknown_fail_closed() {
 test_root_and_session_symlink_fail_closed() {
   local parent="$TMP_ROOT/symlink-parent" root="$TMP_ROOT/symlink-root" sid=symlink-session target="$TMP_ROOT/target"
   local cache_real="$TMP_ROOT/cache-real" cache_link="$TMP_ROOT/cache-link" linked_root linked_sid final_real final_link
-  mkdir -p "$cache_real"
+  local fixture_repo="$TMP_ROOT/symlink-repo" fixture_target="$TMP_ROOT/symlink-repo/hooks/eci-review-gate.sh"
+  mkdir -p "$cache_real/proof-target"
   ln -s "$cache_real" "$cache_link"
   linked_root="$cache_link/proof"
-  linked_sid="$(build_manifest "$linked_root" root)"
-  if run_gate "$linked_root" final "$linked_sid" "$TMP_ROOT/linked.out" "$TMP_ROOT/linked.err"; then
+  ln -s "$cache_real/proof-target" "$cache_real/proof"
+  # This branch tests proof-root path handling.  Use an isolated repository
+  # with only a controlled target diff so unrelated coordinator worktree
+  # changes cannot win the gate race and hide the intended diagnostic.
+  mkdir -p "${fixture_target%/*}"
+  cp -- "$ROOT/hooks/eci-review-gate.sh" "$fixture_target"
+  git -C "$fixture_repo" init -q
+  git -C "$fixture_repo" config user.name 'ECI test'
+  git -C "$fixture_repo" config user.email 'eci-test@example.invalid'
+  git -C "$fixture_repo" add hooks/eci-review-gate.sh
+  git -C "$fixture_repo" commit -qm 'clean symlink fixture'
+  printf '%s\n' '# controlled symlink-fixture change' >>"$fixture_target"
+  if ! (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    linked_sid="$(build_manifest "$linked_root" root)"
+    if run_gate "$linked_root" final "$linked_sid" "$TMP_ROOT/linked.out" "$TMP_ROOT/linked.err"; then
+      exit 1
+    fi
+    grep -Fq 'unsafe proof root' "$TMP_ROOT/linked.err"
+  ); then
     return 1
   fi
-  grep -Fq 'artifact' "$TMP_ROOT/linked.err"
 
   mkdir -p "$parent/$sid" "$target"
   ln -s "$parent" "$root"
@@ -1061,50 +1182,65 @@ test_root_and_session_symlink_fail_closed() {
 }
 
 test_artifact_and_target_paths_are_lexically_canonical() {
-  local proof_root="$TMP_ROOT/path-contract" sid session_dir manifest original bad_path
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  manifest="$session_dir/eci-required-critics.json"
-  original="$TMP_ROOT/path-contract-original.json"
-  cp "$manifest" "$original"
-  for bad_path in relative-diff.txt "$session_dir//diff.txt" "$session_dir/../$sid/diff.txt"; do
-    jq -c --arg bad "$bad_path" \
-      '.current_diff_artifact = $bad | .targets |= map(.diff_artifact = $bad)' \
+  local proof_root="$TMP_ROOT/path-contract" fixture_repo="$TMP_ROOT/path-contract-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir manifest original bad_path
+  local noncanonical_target target_version
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    manifest="$session_dir/eci-required-critics.json"
+    original="$TMP_ROOT/path-contract-original.json"
+    cp "$manifest" "$original"
+    for bad_path in relative-diff.txt "$session_dir//diff.txt" "$session_dir/../$sid/diff.txt"; do
+      jq -c --arg bad "$bad_path" \
+        '.current_diff_artifact = $bad | .targets |= map(.diff_artifact = $bad)' \
+        "$original" >"$manifest"
+      assert_reject "$proof_root" "$sid" '[ECI_REVIEW_ARTIFACT_DENIED]'
+      grep -Fq "reason: ECI required-critic review gate denied diff artifact for target target-root: $bad_path" "$TMP_ROOT/gate.err"
+    done
+
+    noncanonical_target="$fixture_repo/../$(basename -- "$fixture_repo")/hooks/eci-review-gate.sh"
+    target_version="$(sha "$fixture_target")"
+    jq -c --arg path "$noncanonical_target" --arg version "$target_version" \
+      '.current_target_path = $path |
+       .target_file_hashes = {($path): $version} |
+       .targets |= map(.target_path = $path | .target_version = $version) |
+       .rows |= map(.target_path = $path | .target_version = $version)' \
       "$original" >"$manifest"
-    assert_reject "$proof_root" "$sid" 'artifact'
-  done
-  jq -c \
-    '.current_target_path = ("'$ROOT'/../.codex/hooks/eci-review-gate.sh") |
-     .targets |= map(.target_path = ("'$ROOT'/../.codex/hooks/eci-review-gate.sh")) |
-     .target_file_hashes = {("'$ROOT'/../.codex/hooks/eci-review-gate.sh"): .target_file_hashes | to_entries[0].value}' \
-    "$original" >"$manifest"
-  assert_reject "$proof_root" "$sid" 'target'
+    assert_reject "$proof_root" "$sid" '[ECI_REVIEW_TARGET_DENIED]'
+    grep -Fq "reason: ECI required-critic review gate denied target outside the canonical repository: $noncanonical_target" "$TMP_ROOT/gate.err"
+  )
 }
 
 test_target_must_be_in_trusted_changed_paths() {
-  local proof_root="$TMP_ROOT/changed-paths" sid session_dir manifest target_path target_version out err
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  manifest="$session_dir/eci-required-critics.json"
-  target_path="$ROOT/.gitignore"
-  target_version="$(sha "$target_path")"
-  jq -c --arg path "$target_path" --arg version "$target_version" \
-    '.current_target_path = $path |
-     .target_file_hashes = {($path): $version} |
-     .targets |= map(.target_path = $path | .target_version = $version) |
-     .rows |= map(.target_path = $path | .target_version = $version)' \
-    "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  out="$TMP_ROOT/changed-paths.out"
-  err="$TMP_ROOT/changed-paths.err"
-  if run_gate "$proof_root" final "$sid" "$out" "$err"; then
-    return 1
-  fi
-  if [ ! -e "$err" ]; then
-    printf 'changed-path gate produced no stderr file: %s\n' "$err" >&2
-    return 1
-  fi
-  grep -Fq 'trusted changed-path set' "$err"
+  local proof_root="$TMP_ROOT/changed-paths" fixture_repo="$TMP_ROOT/changed-paths-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir manifest target_path target_version
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    manifest="$session_dir/eci-required-critics.json"
+    target_path="$fixture_repo/.gitignore"
+    target_version="$(sha "$target_path")"
+    jq -c --arg path "$target_path" --arg version "$target_version" \
+      '.current_target_path = $path |
+       .target_file_hashes = {($path): $version} |
+       .targets |= map(.target_path = $path | .target_version = $version) |
+       .rows |= map(.target_path = $path | .target_version = $version)' \
+      "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    assert_reject "$proof_root" "$sid" '[ECI_REVIEW_TARGET_DENIED]'
+    grep -Fq "reason: ECI required-critic review gate denied target not present in the trusted changed-path set: $target_path" "$TMP_ROOT/gate.err"
+  )
 }
 
 test_untracked_target_bytes_are_bound_by_admission() {
@@ -1608,6 +1744,7 @@ test_manifest_write_is_main_owned_and_atomic
 test_malformed_commit_identity_does_not_skip_active_gate
 test_commit_parser_wrappers_and_unknown_fail_closed
 test_root_and_session_symlink_fail_closed
+test_e2e_artifact_10mib_boundary_accepts_exact_and_rejects_next_byte
 test_artifact_and_target_paths_are_lexically_canonical
 test_target_must_be_in_trusted_changed_paths
 test_untracked_target_bytes_are_bound_by_admission

@@ -33,6 +33,16 @@ reviewer_run_with_timeout() {
   fi
 }
 
+reviewer_tmp_root() {
+  local root="${TMPDIR:-${HOME:?HOME must be set}/tmp}" canonical
+  canonical="$(realpath -m -- "$root" 2>/dev/null || true)"
+  if [ "$canonical" = /tmp ] || [[ "$canonical" == /tmp/* ]]; then
+    root="${HOME:?HOME must be set}/tmp"
+  fi
+  mkdir -p -- "$root" 2>/dev/null || return 1
+  printf '%s\n' "$root"
+}
+
 _reviewer_call_chat_impl() {
   local kind="$1"
   local sys_file="$2"
@@ -47,7 +57,7 @@ _reviewer_call_chat_impl() {
 
   case "$REVIEWER_BACKEND" in
     ollama)
-      send_path=$(mktemp)
+      send_path=$(mktemp "$(reviewer_tmp_root)/codex-reviewer-call.XXXXXX") || return 1
       jq -n \
         --arg model "$REVIEWER_OLLAMA_MODEL" \
         --rawfile sys "$sys_file" \
@@ -72,7 +82,7 @@ _reviewer_call_chat_impl() {
       raw=$(printf '%s' "$body" | jq -r '.message.content // empty' 2>/dev/null)
       ;;
     opencode-zen)
-      send_path=$(mktemp)
+      send_path=$(mktemp "$(reviewer_tmp_root)/codex-reviewer-call.XXXXXX") || return 1
       jq -n \
         --arg model "$REVIEWER_OPENCODE_MODEL" \
         --rawfile sys "$sys_file" \

@@ -23,6 +23,7 @@ Every token costs context window in every session. Waste is cumulative.
 | 8 | Imperatives | "Tag all claims" not "All teammates should tag their claims" |
 | 9 | Specific over abstract | "Reject bare `uint64`" not "Ensure strong typing" |
 | 10 | Examples compress | One precise example replaces a paragraph. |
+| 11 | Assume non-malicious bots | Guard accidental mistakes and ownership safety; add adversarial-evasion rules only when explicitly required. |
 
 ## Anti-Patterns
 

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-post-compact-refresh.XXXXXX")"
+TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-post-compact-refresh.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
 run_post_compact() {
@@ -118,6 +118,28 @@ test_post_compact_rejects_invalid_json_and_never_leaks_noise() {
   jq -e 'type == "object" and (keys | length == 0) and (has("hookSpecificOutput") | not)' "$out" >/dev/null
 }
 
+test_post_compact_full_lifecycle_payload_has_exact_provider_output() {
+  local proof_root="$TMP_ROOT/full-lifecycle-proof" out err expected command transcript
+  mkdir -p "$proof_root/t00-session" "$TMP_ROOT/home"
+  write_direct_marker "$proof_root" 'full lifecycle payload must stay provider-valid'
+  transcript="$TMP_ROOT/transcript.jsonl"
+  printf '%s\n' '{"type":"message","role":"assistant"}' >"$transcript"
+  expected="$TMP_ROOT/full-lifecycle.expected"
+  printf '{}\n' >"$expected"
+  out="$TMP_ROOT/full-lifecycle.out"
+  err="$TMP_ROOT/full-lifecycle.err"
+  command="$(jq -r '.hooks.PostCompact[0].hooks[0].command' "$ROOT/hooks.json")"
+
+  jq -cn --arg cwd "$ROOT" --arg transcript "$transcript" \
+    '{session_id:"t00-session",transcript_path:$transcript,cwd:$cwd,hook_event_name:"PostCompact",trigger:"auto",source:"compaction"}' |
+    CODEX_HOME="$ROOT" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" \
+      bash -c "$command" >"$out" 2>"$err"
+
+  cmp -- "$expected" "$out"
+  [ ! -s "$err" ]
+  jq -e 'type == "object" and (keys | length == 0) and (has("hookSpecificOutput") | not)' "$out" >/dev/null
+}
+
 test_post_compact_requires_event_and_trigger_contract() {
   local proof_root="$TMP_ROOT/event-contract-proof" out
   mkdir -p "$proof_root/t00-session"
@@ -191,44 +213,48 @@ test_post_compact_hook_is_registered_and_session_start_is_restricted() {
 }
 
 test_policy_names_post_compact_authority_and_exact_manifest_schema() {
-  local skill
-  for skill in \
-    "$ROOT/skills/explore-critique-implement/SKILL.md" \
-    "$ROOT/skills/agent-teams-execution/SKILL.md"; do
-    grep -Fq 'PostCompact` is the authoritative compaction refresh signal' "$skill"
-    grep -Fq 'SessionStart` `startup|resume|clear`' "$skill"
-    grep -Fq 'best-effort resume/clear reminder' "$skill"
-    grep -Fq 'schema `eci-required-critics/v2`' "$skill"
-    grep -Fq 'Each target has `{target_id,target_kind,diff_artifact,diff_sha256,e2e_required,target_path,target_version}`' "$skill"
-    grep -Fq 'current_target_id,current_target_kind,current_diff_artifact' "$skill"
-    grep -Fq 'The canonical row fields are `{target_id,target_kind,diff_artifact,diff_sha256,critic_role,gate_phase,child_identity,spawn_request_artifact,spawn_request_sha256,report_artifact,report_sha256,adjudication_artifact,adjudication_sha256,verdict,e2e_required,e2e_artifact,e2e_sha256,repo_root,git_dir,git_common_dir,base_oid,head_oid,staged_diff_sha256,worktree_diff_sha256,status_sha256,target_path,target_version,intention_artifact,intention_sha256,acceptance_version}`' "$skill"
-    grep -Fq '**Adjudication record details:**' "$skill"
-    grep -Fq 'Every report artifact must be bounded text ending with exactly one canonical `eci_critic_verdict: APPROVED|CONDITIONAL|REJECTED` line' "$skill"
-    grep -Fq 'Report text is UTF-8, bounded, LF-terminated' "$skill"
-    grep -Fq 'eci-critic-adjudication/v1' "$skill"
-    grep -Fq 'eci-required-critics.<phase>.<acceptance_version>.ledger' "$skill"
-    grep -Fq 'eci-acceptance-anchor' "$skill"
-    grep -Fq 'Historical phase/version ledgers are evidence for their snapshot' "$skill"
-    if grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex' "$skill"; then
-      return 1
-    fi
-    grep -Fq 'Critic C pre-write skip-design admission report' "$skill"
-    grep -Fq 'only on an explicitly selected skip-design route' "$skill"
-    grep -Fq 'Critic C post-write reconciliation report' "$skill"
-    grep -Fq 'nested-accept' "$skill"
-    grep -Fq 'primary-owner: none' "$skill"
-    grep -Fq '`target-scoped-critic-ledger-row`' "$skill"
-    grep -Fq '`critic-c-prewrite-postwrite`' "$skill"
-    grep -Fq 'The `PostCompact` hook is read-only' "$skill"
-    if grep -Fq 'eci_refresh_pending' "$skill" || grep -Fq 'refresh-ack' "$skill"; then
-      return 1
-    fi
-    grep -Fq '`postcompact-refresh-signal`' "$skill"
-    if grep -Fq 'There is no dedicated compaction hook' "$skill"; then
-      return 1
-    fi
+  local runtime="$ROOT/skills/references/workflow-runtime/coordinator-runtime.md"
+  local pressure="$ROOT/skills/references/workflow-runtime/policy-pressure-tests.md"
+  local eci="$ROOT/skills/explore-critique-implement/SKILL.md"
+  local ate="$ROOT/skills/agent-teams-execution/SKILL.md"
+
+  for skill in "$eci" "$ate"; do
+    grep -Fq '[coordinator runtime](../references/workflow-runtime/coordinator-runtime.md)' "$skill"
+    grep -Fq '[policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md)' "$skill"
   done
-  if grep -Fq 'both execution-review lenses' "$ROOT/skills/agent-teams-execution/SKILL.md"; then
+  grep -Fq 'PostCompact` is the authoritative compaction refresh signal' "$runtime"
+  grep -Fq 'SessionStart` `startup|resume|clear`' "$runtime"
+  grep -Fq 'best-effort resume/clear reminder' "$runtime"
+  grep -Fq 'schema `eci-required-critics/v2`' "$runtime"
+  grep -Fq 'Each target has `{target_id,target_kind,diff_artifact,diff_sha256,e2e_required,target_path,target_version}`' "$runtime"
+  grep -Fq 'current_target_id,current_target_kind,current_diff_artifact' "$runtime"
+  grep -Fq 'The canonical row fields are `{target_id,target_kind,diff_artifact,diff_sha256,critic_role,gate_phase,child_identity,spawn_request_artifact,spawn_request_sha256,report_artifact,report_sha256,adjudication_artifact,adjudication_sha256,verdict,e2e_required,e2e_artifact,e2e_sha256,repo_root,git_dir,git_common_dir,base_oid,head_oid,staged_diff_sha256,worktree_diff_sha256,status_sha256,target_path,target_version,intention_artifact,intention_sha256,acceptance_version}`' "$runtime"
+  grep -Fq '**Adjudication record details:**' "$runtime"
+  grep -Fq 'Every report artifact must be bounded text ending with exactly one canonical `eci_critic_verdict: APPROVED|CONDITIONAL|REJECTED` line' "$runtime"
+  grep -Fq 'Report text is UTF-8, bounded, LF-terminated' "$runtime"
+  grep -Fq 'eci-critic-adjudication/v1' "$runtime"
+  grep -Fq 'eci-required-critics.<phase>.<acceptance_version>.ledger' "$runtime"
+  grep -Fq 'eci-acceptance-anchor' "$runtime"
+  grep -Fq 'Historical phase/version ledgers are evidence for their snapshot' "$runtime"
+  if grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex' "$runtime"; then
+    return 1
+  fi
+  grep -Fq 'Critic C pre-write skip-design admission report' "$runtime"
+  grep -Fq 'only on an explicitly selected skip-design route' "$runtime"
+  grep -Fq 'Critic C post-write reconciliation report' "$runtime"
+  grep -Fq 'nested-accept' "$runtime"
+  grep -Fq 'primary-owner: none' "$runtime"
+  grep -Fq '`target-scoped-critic-ledger-row`' "$pressure"
+  grep -Fq '`critic-c-prewrite-postwrite`' "$pressure"
+  grep -Fq 'The `PostCompact` hook is read-only' "$runtime"
+  if grep -Fq 'eci_refresh_pending' "$runtime" || grep -Fq 'refresh-ack' "$runtime"; then
+    return 1
+  fi
+  grep -Fq '`postcompact-refresh-signal`' "$pressure"
+  if grep -Fq 'There is no dedicated compaction hook' "$runtime"; then
+    return 1
+  fi
+  if grep -Fq 'both execution-review lenses' "$ate"; then
     return 1
   fi
 }
@@ -239,6 +265,7 @@ test_post_compact_symlink_marker_is_silent
 test_post_compact_does_not_scan_or_mutate_state
 test_post_compact_rejects_malformed_session_or_cwd
 test_post_compact_rejects_invalid_json_and_never_leaks_noise
+test_post_compact_full_lifecycle_payload_has_exact_provider_output
 test_post_compact_requires_event_and_trigger_contract
 test_post_compact_rejects_marker_owner_mismatch
 test_post_compact_nested_marker_is_explicit_and_bounded

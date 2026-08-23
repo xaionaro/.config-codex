@@ -330,7 +330,15 @@ codex_lexical_hook_path() {
     "~") path="$HOME" ;;
     "~/"*) path="$HOME/${path#~/}" ;;
   esac
-  if command -v python3 >/dev/null 2>&1; then
+  # GNU realpath's -s/-m pair performs the same lexical abspath/normpath
+  # operation without following symlink ancestors, but avoids starting a
+  # Python interpreter on every synchronous edit callback.  Retain the
+  # bounded Python fallback for platforms without that realpath capability.
+  local lexical_path
+  if command -v realpath >/dev/null 2>&1 &&
+     lexical_path="$(realpath -ms -- "$path" 2>/dev/null)"; then
+    printf '%s\n' "$lexical_path"
+  elif command -v python3 >/dev/null 2>&1; then
     python3 - "$cwd" "$path" <<'PY'
 import os
 import sys
@@ -491,7 +499,9 @@ codex_path_is_high_level_log_file() {
 
 codex_hash_string() {
   if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "${1:-}" | sha256sum | awk '{print $1}'
+    local digest
+    digest="$(printf '%s' "${1:-}" | sha256sum)" || return 1
+    printf '%s\n' "${digest%% *}"
   elif command -v python3 >/dev/null 2>&1; then
     printf '%s' "${1:-}" | python3 -c \
       'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
@@ -1032,7 +1042,13 @@ codex_legacy_eci_markers_for_cwd() {
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     name="${dir##*/}"
     codex_reserved_proof_dir "$name" || continue
-    codex_eci_marker_path_session_matches "$marker" "$expected_session" || continue
+    if [ -n "$expected_session" ]; then
+      # Legacy markers live in reserved directories rather than under a
+      # session-named path. Bind a typed query to the marker's embedded owner
+      # so an unrelated same-cwd session cannot become its active owner.
+      marker_owner="$(codex_state_value "$marker" session_id || true)"
+      [ "$marker_owner" = "$expected_session" ] || continue
+    fi
     # Newline is the record separator; every other C0/DEL byte makes the
     # legacy marker malformed and therefore ineligible for control flow.
     LC_ALL=C grep -q '[[:cntrl:]]' "$marker" 2>/dev/null && continue

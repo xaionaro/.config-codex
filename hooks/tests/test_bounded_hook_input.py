@@ -327,6 +327,102 @@ class BoundedHookInputTests(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stdout), (0, b""))
                 self.assertFalse(proof.exists())
 
+    def test_thread_spawn_metadata_accepts_either_top_level_key_order(self) -> None:
+        payload = {
+            "id": "t00-session",
+            "source": {
+                "subagent": {
+                    "thread_spawn": {"parent_thread_id": "parent-session"}
+                }
+            },
+        }
+        records = {
+            "type-first": {"type": "session_meta", "payload": payload},
+            "payload-first": {"payload": payload, "type": "session_meta"},
+        }
+        with tempfile.TemporaryDirectory(prefix="bounded-thread-spawn-order-") as temporary:
+            sessions = Path(temporary) / "home/.codex/sessions"
+            sessions.mkdir(parents=True)
+            for name, record in records.items():
+                with self.subTest(order=name):
+                    transcript = sessions / f"{name}.jsonl"
+                    transcript.write_text(json.dumps(record) + "\n", encoding="utf-8")
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(HELPER),
+                            "hook-transcript-thread-spawn-metadata",
+                            str(sessions),
+                        ],
+                        input=json.dumps(
+                            {"transcript_path": str(transcript)}, separators=(",", ":")
+                        ).encode(),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=1.0,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        (result.returncode, result.stdout, result.stderr),
+                        (0, b'{"parent_thread_id":"parent-session"}', b""),
+                    )
+
+    def test_thread_spawn_metadata_prefers_payload_after_session_meta_type(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bounded-thread-spawn-duplicate-") as temporary:
+            sessions = Path(temporary) / "home/.codex/sessions"
+            sessions.mkdir(parents=True)
+            transcript = sessions / "duplicate-payload.jsonl"
+            transcript.write_text(
+                '{"payload":{"id":"benign"},"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session"}}}}}\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "hook-transcript-thread-spawn-metadata",
+                    str(sessions),
+                ],
+                input=json.dumps(
+                    {"transcript_path": str(transcript)}, separators=(",", ":")
+                ).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1.0,
+                check=False,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout, result.stderr),
+            (0, b'{"parent_thread_id":"parent-session"}', b""),
+        )
+
+    def test_thread_spawn_metadata_rejects_malformed_payload_first_record(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bounded-thread-spawn-malformed-") as temporary:
+            sessions = Path(temporary) / "home/.codex/sessions"
+            sessions.mkdir(parents=True)
+            transcript = sessions / "malformed.jsonl"
+            transcript.write_text(
+                '{"payload":{"source":{"subagent":{}},"type":"session_meta"\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "hook-transcript-thread-spawn-metadata",
+                    str(sessions),
+                ],
+                input=json.dumps(
+                    {"transcript_path": str(transcript)}, separators=(",", ":")
+                ).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1.0,
+                check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((result.stdout, result.stderr), (b"", b""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,13 +8,75 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HOOK_DIR/lib/eci-diagnostic.sh"
 
 input=$(cat)
+
+# Resolve the worker transcript once.  The edit dispatcher runs this gate
+# beside the authoritative edit validator; reparsing the same bounded
+# transcript for the early overflow probe and the parent-marker route adds a
+# full Python startup to every worker callback.
+hook_is_subagent=false
+parent_session_id=""
+hook_context_metadata=""
+hook_transcript_path="$(printf '%s' "$input" | jq -r 'if (.transcript_path? | type) == "string" then .transcript_path else "" end' 2>/dev/null || true)"
+if [ -n "$hook_transcript_path" ] &&
+   hook_context_metadata="$(codex_hook_thread_spawn_metadata "$input" 2>/dev/null)"; then
+  if [[ "$hook_context_metadata" =~ ^\{\"parent_thread_id\":\"([A-Za-z0-9_-]+)\"\}$ ]]; then
+    # The Python helper emits this canonical bounded form.  Parse it with a
+    # shell regex so ordinary worker callbacks do not start two jq processes.
+    hook_is_subagent=true
+    parent_session_id="${BASH_REMATCH[1]}"
+  elif [ "$hook_context_metadata" = '{"parent_thread_id":null}' ]; then
+    # Preserve the prior worker classification for a valid thread-spawn record
+    # whose parent is absent; downstream ownership checks still reject an
+    # unusable parent id rather than treating it as a proof owner.
+    hook_is_subagent=true
+  elif printf '%s' "$hook_context_metadata" | jq -e 'type == "object" and has("parent_thread_id")' >/dev/null 2>&1; then
+    # Keep the old fail-closed behavior for an unexpected but valid helper
+    # representation; this branch is not used for the canonical output.
+    hook_is_subagent=true
+    parent_session_id="$(printf '%s' "$hook_context_metadata" | jq -r '.parent_thread_id // empty' 2>/dev/null || true)"
+  fi
+fi
+
 has_any_active_eci_marker() {
-  local probe_cwd probe_session
+  local probe_cwd probe_session direct_marker parent_marker parent_session_id marker
+  local scan_unsafe=false
   probe_cwd="$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else "" end' 2>/dev/null || true)"
   probe_session="$(printf '%s' "$input" | jq -r 'if (.session_id? | type) == "string" then .session_id else "" end' 2>/dev/null || true)"
   [ -n "$probe_cwd" ] || probe_cwd="$PWD"
-  mapfile -t active_markers < <(codex_eci_markers_for_cwd "$probe_cwd" strict "$probe_session" 2>/dev/null || true)
-  [ "${#active_markers[@]}" -gt 0 ]
+
+  # The typed current-session marker is authoritative.  Probe it before the
+  # bounded unrelated-root scan so an overflow cannot fabricate activity or
+  # hide a malformed current marker behind a generic scan result.
+  if codex_valid_session_id "$probe_session"; then
+    direct_marker="$(codex_proof_root)/$probe_session/eci_active"
+    if [ -e "$direct_marker" ] || [ -L "$direct_marker" ]; then
+      return 0
+    fi
+  fi
+
+  # A worker callback may carry a different session id from its coordinator.
+  # A valid parent marker is likewise an authoritative active owner.
+  if [ "$hook_is_subagent" = true ]; then
+    if codex_valid_session_id "$parent_session_id" &&
+      [ "$parent_session_id" != "$probe_session" ]; then
+      parent_marker="$(codex_proof_root)/$parent_session_id/eci_active"
+      if [ -e "$parent_marker" ] || [ -L "$parent_marker" ]; then
+        return 0
+      fi
+    fi
+  fi
+
+  # Overflow is only a bounded discovery limitation.  It is not proof of an
+  # active owner for an otherwise unbound callback.  Unsafe proof-root state
+  # remains fail-closed and is deliberately not filtered out.
+  while IFS= read -r marker; do
+    case "$marker" in
+      "$codex_eci_marker_scan_overflow_token") continue ;;
+      "$codex_eci_marker_scan_unsafe_token") scan_unsafe=true ;;
+      *) [ -n "$marker" ] && return 0 ;;
+    esac
+  done < <(codex_eci_markers_for_cwd "$probe_cwd" strict "$probe_session" 2>/dev/null || true)
+  [ "$scan_unsafe" = true ]
 }
 
 deny_malformed_identity() {
@@ -74,6 +136,18 @@ deny_unsafe_marker() {
   }'
 }
 
+deny_ambiguous_markers() {
+  local owner_count="${1:-0}" expected_cwd="${2:-}" expected_session="${3:-}" reason
+  reason="$(eci_diagnostic_reason "ECI_MARKER_OWNERSHIP_AMBIGUOUS" "PreToolUse" "edit-routing" "owner_count=$owner_count,session=$expected_session,cwd=$expected_cwd,proof_root=$(codex_proof_root)" "bounded marker discovery found $owner_count validated active owners for this cwd while the scan also overflowed; ownership cannot be selected safely" "resolve marker ownership so exactly one validated owner remains, or complete stale ECI teardowns through the coordinator lifecycle route, then retry")"
+  jq -n --arg reason "$reason" ' {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+}
+
 if ! printf '%s' "$input" | jq -e '
   type == "object" and (.tool_name | type) == "string" and
   (.tool_name | length > 0) and
@@ -117,14 +191,7 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-is_subagent=false
-# The bounded transcript parser is only meaningful when the hook transport
-# supplies a transcript path.  Avoid starting Python for ordinary callbacks;
-# a patch body that happens to mention the field merely takes the conservative
-# slower path.
-if [[ "$input" == *'"transcript_path"'* ]] && codex_hook_is_subagent_context "$input"; then
-  is_subagent=true
-fi
+is_subagent="$hook_is_subagent"
 
 tool_paths() {
   case "$tool_name" in
@@ -227,7 +294,6 @@ fi
 # root scan. This keeps a valid orchestrator owner discoverable even when
 # unrelated entries fill the finite scan budget.
 if [ "$is_subagent" = true ]; then
-  parent_session_id="$(codex_hook_parent_session_id "$input" 2>/dev/null || true)"
   if codex_valid_session_id "$parent_session_id" && codex_session_dir_is_safe "$(codex_proof_root)" "$parent_session_id"; then
     parent_marker="$(codex_proof_root)/$parent_session_id/eci_active"
     if [ -f "$parent_marker" ] && [ ! -L "$parent_marker" ] &&
@@ -266,13 +332,15 @@ if [ "$overflow_seen" = true ]; then
   # A worker may legitimately have a different hook session id from the
   # single orchestrator marker selected by cwd ownership.  With one validated
   # owner, that bounded worker route is still unambiguous; multiple owners or
-  # no owner remain unsafe and fail closed.
+  # no owner are handled independently.  In particular, an ordinary callback
+  # with no own marker must not be converted into ECI_MARKER_MISSING_CURRENT
+  # merely because unrelated proof-root entries exhausted the scan budget.
+  # The direct marker probes above already fail closed for a malformed current
+  # marker, so an empty filtered set here means no current-session owner.
   if [ "$parent_marker_direct" = true ]; then
     active_markers=("$parent_marker")
-  elif [ "${#active_markers[@]}" -gt 1 ] ||
-    { [ "$direct_valid" != true ] &&
-      { [ "$is_subagent" != true ] || [ "${#active_markers[@]}" -ne 1 ]; }; }; then
-    deny_unsafe_marker "${active_markers[0]:-}" "$canonical_edit_cwd" "$session_id"
+  elif [ "${#active_markers[@]}" -gt 1 ]; then
+    deny_ambiguous_markers "${#active_markers[@]}" "$canonical_edit_cwd" "$session_id"
     exit 0
   fi
 fi

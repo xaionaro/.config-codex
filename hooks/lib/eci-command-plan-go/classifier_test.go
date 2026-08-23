@@ -192,6 +192,67 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 	}
 }
 
+func TestCoordinatorApprovedGitReadContextsAdmitLiteralPathspecs(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home directory: %v", err)
+	}
+	approvedRoot := filepath.Join(home, "tmp", "eci-approved-repository")
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			for _, command := range []string{
+				"git -C " + approvedRoot + " status --short ../outside",
+				"git -C " + approvedRoot + " diff --stat /etc/passwd",
+				"git -C " + approvedRoot + " diff -- ../outside",
+			} {
+				request := Request{
+					Provider:      provider,
+					Role:          RoleCoordinator,
+					CWD:           approvedRoot,
+					Marker:        MarkerActive,
+					ActiveSession: "test-session",
+					Command:       command,
+					ApprovedRoots: []string{approvedRoot},
+				}
+				result := Classify(request)
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Errorf("%q: decision=%q diagnostic=%#v, want allow", command, result.Decision, result.Diagnostic)
+				}
+			}
+
+			foreign := Request{
+				Provider:      provider,
+				Role:          RoleCoordinator,
+				CWD:           approvedRoot,
+				Marker:        MarkerActive,
+				ActiveSession: "test-session",
+				Command:       "git -C " + filepath.Join(home, "tmp", "foreign-repository") + " status --short ../outside",
+				ApprovedRoots: []string{approvedRoot},
+			}
+			if result := Classify(foreign); result.Decision != DecisionDefer || result.Diagnostic != nil {
+				t.Errorf("foreign repository context: decision=%q diagnostic=%#v, want defer", result.Decision, result.Diagnostic)
+			}
+
+			worker := Request{
+				Provider:      provider,
+				Role:          RoleWorker,
+				CWD:           approvedRoot,
+				Marker:        MarkerActive,
+				ActiveSession: "test-session",
+				Command:       "git -C " + approvedRoot + " status --short ../outside",
+				ApprovedRoots: []string{approvedRoot},
+			}
+			if result := Classify(worker); result.Decision != DecisionDefer || result.Diagnostic != nil {
+				t.Errorf("worker read context: decision=%q diagnostic=%#v, want defer", result.Decision, result.Diagnostic)
+			}
+		})
+	}
+}
+
 func TestActiveControlFileIndexBoundsSessionDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -1191,18 +1252,27 @@ func TestActivePreCommitHookModeRepairRoutesByRole(t *testing.T) {
 		{name: "wrapper", command: "env chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
 		{name: "executable alias", command: "/bin/chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
 		{name: "alternate target spelling", command: "chmod 755 ./hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+		{name: "quoted executable", command: `ch"mod" 755 hooks/pre-commit-go-mod.sh`, marker: MarkerActive},
+		{name: "quoted mode", command: `chmod "755" hooks/pre-commit-go-mod.sh`, marker: MarkerActive},
+		{name: "quoted target", command: `chmod 755 "hooks/pre-commit-go-mod.sh"`, marker: MarkerActive},
 		{name: "another target", command: "chmod 755 hooks/install-pre-commit-go-mod.sh", marker: MarkerActive},
+		{name: "and compound", command: command + " && printf after", marker: MarkerActive},
+		{name: "semicolon compound", command: "printf before; " + command, marker: MarkerActive},
+		{name: "pipeline compound", command: command + " | printf after", marker: MarkerActive},
+		{name: "pipeline preceding compound", command: "printf before | " + command, marker: MarkerActive},
+		{name: "interpreter wrapper", command: "bash -c '" + command + "'", marker: MarkerActive},
 		{name: "inactive exact", command: command, marker: MarkerInactive},
 	}
 	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
 		provider := provider
 		t.Run(string(provider), func(t *testing.T) {
 			t.Parallel()
+			providerRoot := providerHome(provider)
 
 			worker := Classify(Request{
 				Provider:      provider,
 				Role:          RoleWorker,
-				CWD:           "/workspace",
+				CWD:           providerRoot,
 				Marker:        MarkerActive,
 				ActiveSession: "test-session",
 				Command:       command,
@@ -1230,7 +1300,7 @@ func TestActivePreCommitHookModeRepairRoutesByRole(t *testing.T) {
 			coordinatorRequest := Request{
 				Provider:      provider,
 				Role:          RoleCoordinator,
-				CWD:           "/workspace",
+				CWD:           providerRoot,
 				Marker:        MarkerActive,
 				ActiveSession: "test-session",
 				Command:       command,
@@ -1246,7 +1316,7 @@ func TestActivePreCommitHookModeRepairRoutesByRole(t *testing.T) {
 					result := Classify(Request{
 						Provider:      provider,
 						Role:          RoleWorker,
-						CWD:           "/workspace",
+						CWD:           providerRoot,
 						Marker:        testCase.marker,
 						ActiveSession: "test-session",
 						Command:       testCase.command,
@@ -1258,6 +1328,376 @@ func TestActivePreCommitHookModeRepairRoutesByRole(t *testing.T) {
 						t.Fatalf("inactive exact command: decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestActiveWorkerProtectedHookModeMutationsUseGenericControlDenial(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			providerRoot := providerHome(provider)
+
+			for _, command := range []string{
+				"env chmod 755 hooks/pre-commit-go-mod.sh",
+				"command chmod 755 hooks/pre-commit-go-mod.sh",
+				`ch"mod" 755 hooks/pre-commit-go-mod.sh`,
+				`ch"mod" 644 hooks/pre-commit-go-mod.sh`,
+				`chmod "755" hooks/pre-commit-go-mod.sh`,
+				`chmod 755 "hooks/pre-commit-go-mod.sh"`,
+				"/bin/chmod 755 hooks/pre-commit-go-mod.sh",
+				"chmod 755 ./hooks/pre-commit-go-mod.sh",
+				"chmod 644 hooks/pre-commit-go-mod.sh",
+				"chmod 755 hooks/install-pre-commit-go-mod.sh",
+				"chmod 644 hooks/validate-bash.sh",
+				"chmod 755 hooks/tests/test-pre-commit-go-mod.sh",
+				"chmod 644 " + filepath.Join(providerRoot, "hooks", "validate-bash.sh"),
+				"stdbuf -oL chmod 644 hooks/validate-bash.sh",
+				"busybox chmod 644 hooks/validate-bash.sh",
+				"busybox -- chmod 644 hooks/validate-bash.sh",
+				"chmod -R 644 hooks",
+				"chmod --recursive 644 hooks",
+				"chmod -R 644 .",
+				"chmod -R 644 ..",
+				"chmod -vR 644 hooks",
+				"chmod --rec 755 hooks",
+				"chmod 755 -R hooks",
+				"chmod 755 --rec hooks",
+				"chmod 755 --recursive hooks",
+				"chmod 755 -vR hooks",
+				"chmod 755 hooks --rec",
+				"chmod 755 hooks -R",
+				"chmod --ref ordinary.txt hooks/validate-bash.sh",
+				"chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"chmod hooks/validate-bash.sh --ref=ordinary.txt",
+				"chmod --ref ordinary.txt -R hooks",
+				"chmod -R --ref=ordinary.txt hooks",
+				"env chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"busybox -- chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --rec 755 hooks",
+				"busybox -- chmod 755 hooks --rec",
+				"stdbuf -oL chmod -R 644 hooks",
+				"busybox -- chmod --recursive 644 hooks",
+			} {
+				command := command
+				t.Run(command, func(t *testing.T) {
+					t.Parallel()
+
+					result := Classify(Request{
+						Provider:      provider,
+						Role:          RoleWorker,
+						CWD:           providerRoot,
+						Marker:        MarkerActive,
+						ActiveSession: "test-session",
+						Command:       command,
+					})
+					if result.Decision != DecisionDeny || result.Diagnostic == nil {
+						t.Fatalf("decision: got %q diagnostic=%#v, want generic denial", result.Decision, result.Diagnostic)
+					}
+					if result.Diagnostic.Code != CodeControlOwnerRequired {
+						t.Errorf("code: got %q, want %q", result.Diagnostic.Code, CodeControlOwnerRequired)
+					}
+					if result.Diagnostic.Operation != "worker-control" {
+						t.Errorf("operation: got %q, want worker-control", result.Diagnostic.Operation)
+					}
+					if result.Diagnostic.Predicate != "worker-hook-mode-ownership" {
+						t.Errorf("predicate: got %q, want worker-hook-mode-ownership", result.Diagnostic.Predicate)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestChmodOptionIsRecursiveRecognizesOnlyGNUUnambiguousLongAbbreviations verifies that only
+// the unique GNU prefixes of --recursive enable recursive protected-target detection.
+//
+// Example: --rec enables recursion while ambiguous --re does not.
+func TestChmodOptionIsRecursiveRecognizesOnlyGNUUnambiguousLongAbbreviations(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{
+		"--rec",
+		"--recu",
+		"--recur",
+		"--recurs",
+		"--recursi",
+		"--recursiv",
+		"--recursive",
+	} {
+		if !chmodOptionIsRecursive(value) {
+			t.Errorf("%q: got false, want true", value)
+		}
+	}
+	for _, value := range []string{
+		"--",
+		"--r",
+		"--re",
+		"--reference",
+		"--rec=ursive",
+		"--recursion",
+		"--recursive=value",
+	} {
+		if chmodOptionIsRecursive(value) {
+			t.Errorf("%q: got true, want false", value)
+		}
+	}
+}
+
+// TestChmodOptionIsReferenceRecognizesOnlyGNUUnambiguousLongAbbreviations verifies that only
+// the unique GNU prefixes of --reference select a reference source operand.
+//
+// Example: --ref=source selects a reference source while ambiguous --re=source does not.
+func TestChmodOptionIsReferenceRecognizesOnlyGNUUnambiguousLongAbbreviations(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{
+		"--ref",
+		"--refe",
+		"--refer",
+		"--refere",
+		"--referen",
+		"--referenc",
+		"--reference",
+		"--ref=source",
+		"--reference=source",
+	} {
+		if !chmodOptionIsReference(value) {
+			t.Errorf("%q: got false, want true", value)
+		}
+	}
+	for _, value := range []string{
+		"--",
+		"--r",
+		"--re",
+		"--re=source",
+		"--rec",
+		"--referencee",
+		"--referee=source",
+		"--ref=",
+		"--reference=",
+	} {
+		if chmodOptionIsReference(value) {
+			t.Errorf("%q: got true, want false", value)
+		}
+	}
+}
+
+// TestChmodMutationTargetsSeparatesGNUReferenceSources verifies that GNU reference operands
+// never appear in the mutation-target set, including when the option follows a target.
+//
+// Example: chmod hooks/validate-bash.sh --ref=ordinary.txt mutates the hook path.
+func TestChmodMutationTargetsSeparatesGNUReferenceSources(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		argv      []token
+		targets   []string
+		recursive bool
+	}{
+		{
+			name: "inline abbreviated reference",
+			argv: []token{
+				{value: "chmod"},
+				{value: "--ref=hooks/validate-bash.sh"},
+				{value: "ordinary.txt"},
+			},
+			targets: []string{"ordinary.txt"},
+		},
+		{
+			name: "separate abbreviated reference",
+			argv: []token{
+				{value: "chmod"},
+				{value: "--ref"},
+				{value: "hooks/validate-bash.sh"},
+				{value: "ordinary.txt"},
+			},
+			targets: []string{"ordinary.txt"},
+		},
+		{
+			name: "reference after target",
+			argv: []token{
+				{value: "chmod"},
+				{value: "hooks/validate-bash.sh"},
+				{value: "--ref=ordinary.txt"},
+			},
+			targets: []string{"hooks/validate-bash.sh"},
+		},
+		{
+			name: "recursive reference source",
+			argv: []token{
+				{value: "chmod"},
+				{value: "-R"},
+				{value: "--ref=hooks/validate-bash.sh"},
+				{value: "ordinary-dir"},
+			},
+			targets:   []string{"ordinary-dir"},
+			recursive: true,
+		},
+		{
+			name: "end of options keeps abbreviation literal",
+			argv: []token{
+				{value: "chmod"},
+				{value: "755"},
+				{value: "--"},
+				{value: "--ref"},
+				{value: "hooks"},
+			},
+			targets: []string{"--ref", "hooks"},
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			targets, recursive := chmodMutationTargets(testCase.argv)
+			if recursive != testCase.recursive {
+				t.Fatalf("recursive: got %t, want %t", recursive, testCase.recursive)
+			}
+			if len(targets) != len(testCase.targets) {
+				t.Fatalf("target count: got %d (%#v), want %d (%#v)", len(targets), targets, len(testCase.targets), testCase.targets)
+			}
+			for index, target := range targets {
+				if target.value != testCase.targets[index] {
+					t.Errorf("target %d: got %q, want %q", index, target.value, testCase.targets[index])
+				}
+			}
+		})
+	}
+}
+
+func TestActiveCoordinatorProtectedHookModeMutationsDefer(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			providerRoot := providerHome(provider)
+
+			for _, command := range []string{
+				"chmod 644 hooks/validate-bash.sh",
+				`chmod "644" hooks/pre-commit-go-mod.sh`,
+				"chmod 755 hooks/pre-commit-go-mod.sh && printf after",
+				"env chmod 644 hooks/validate-bash.sh",
+				"stdbuf -oL chmod 644 hooks/validate-bash.sh",
+				"busybox -- chmod 644 hooks/validate-bash.sh",
+				"chmod -R 644 hooks",
+				"chmod --recursive 644 hooks",
+				"chmod -R 644 .",
+				"chmod -R 644 ..",
+				"chmod -vR 644 hooks",
+				"chmod --rec 755 hooks",
+				"chmod 755 -R hooks",
+				"chmod 755 --rec hooks",
+				"chmod 755 --recursive hooks",
+				"chmod 755 -vR hooks",
+				"chmod 755 hooks --rec",
+				"chmod 755 hooks -R",
+				"chmod --ref ordinary.txt hooks/validate-bash.sh",
+				"chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"chmod hooks/validate-bash.sh --ref=ordinary.txt",
+				"chmod --ref ordinary.txt -R hooks",
+				"chmod -R --ref=ordinary.txt hooks",
+				"env chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"busybox -- chmod --ref=ordinary.txt hooks/validate-bash.sh",
+				"stdbuf -oL chmod --rec 755 hooks",
+				"busybox -- chmod 755 hooks --rec",
+				"stdbuf -oL chmod -R 644 hooks",
+				"busybox -- chmod --recursive 644 hooks",
+			} {
+				command := command
+				t.Run(command, func(t *testing.T) {
+					t.Parallel()
+
+					result := Classify(Request{
+						Provider:      provider,
+						Role:          RoleCoordinator,
+						CWD:           providerRoot,
+						Marker:        MarkerActive,
+						ActiveSession: "test-session",
+						Command:       command,
+					})
+					if result.Decision != DecisionDefer || result.Diagnostic != nil {
+						t.Fatalf("decision: got %q diagnostic=%#v, want defer without diagnostic", result.Decision, result.Diagnostic)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestActiveWorkerAllowsSameNamedHookPathOutsideProviderRoot(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+
+			for _, command := range []string{
+				"chmod 644 hooks/validate-bash.sh",
+				"chmod -R 644 .",
+			} {
+				result := Classify(Request{
+					Provider:      provider,
+					Role:          RoleWorker,
+					CWD:           "/tmp",
+					Marker:        MarkerActive,
+					ActiveSession: "test-session",
+					Command:       command,
+				})
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Fatalf("%q: decision: got %q diagnostic=%#v, want allow without diagnostic", command, result.Decision, result.Diagnostic)
+				}
+			}
+		})
+	}
+}
+
+func TestActiveWorkerOrdinaryChmodRemainsAllowed(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			providerRoot := providerHome(provider)
+
+			for _, command := range []string{
+				"chmod 644 ordinary.txt",
+				"chmod -R 644 ordinary-dir",
+				"chmod 644 -R ordinary-dir",
+				"chmod 644 ordinary-dir -R",
+				"chmod --rec 644 ordinary-dir",
+				"chmod 755 -- -R hooks",
+				"chmod 755 hooks -- -R",
+				"chmod 755 hooks -- --rec",
+				"chmod --ref=hooks/validate-bash.sh ordinary.txt",
+				"chmod --ref hooks/validate-bash.sh ordinary.txt",
+				"chmod ordinary.txt --ref=hooks/validate-bash.sh",
+				"chmod -R --ref=hooks/validate-bash.sh ordinary-dir",
+				"chmod --reference=hooks/validate-bash.sh ordinary.txt",
+				"chmod -R --reference=hooks/validate-bash.sh ordinary-dir",
+				"chmod --reference hooks/validate-bash.sh ordinary.txt",
+				"chmod -R --reference hooks/validate-bash.sh ordinary-dir",
+			} {
+				result := Classify(Request{
+					Provider:      provider,
+					Role:          RoleWorker,
+					CWD:           providerRoot,
+					Marker:        MarkerActive,
+					ActiveSession: "test-session",
+					Command:       command,
+				})
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Fatalf("%q: decision: got %q diagnostic=%#v, want allow without diagnostic", command, result.Decision, result.Diagnostic)
+				}
 			}
 		})
 	}
