@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -61,6 +62,27 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 			name:     "literal environment wrapper",
 			request:  activeWorker("env FOO=bar novel-tool --flag value"),
 			decision: DecisionAllow,
+		},
+		{
+			name:     "literal environment wrapper with module tool",
+			request:  activeWorker("env FOO=bar python3 -m pytest tests"),
+			decision: DecisionAllow,
+		},
+		{
+			name:      "environment wrapper with interpreter eval",
+			request:   activeWorker("env FOO=bar python3 -c 'print(1)'"),
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			segment:   1,
+			predicate: "dynamic-interpreter-launch",
+		},
+		{
+			name:      "environment wrapper with malformed option assignment",
+			request:   activeWorker("env --unset=9FOO novel-tool"),
+			decision:  DecisionDeny,
+			code:      CodeEnvironmentOptionDenied,
+			segment:   1,
+			predicate: "environment-invalid-option-argument",
 		},
 		{
 			name:      "leading assignment",
@@ -137,9 +159,12 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 			predicate: "environment-option-unsupported",
 		},
 		{
-			name:     "worker lifecycle control",
-			request:  activeWorker("eci-active status"),
-			decision: DecisionDefer,
+			name:      "worker lifecycle control",
+			request:   activeWorker("eci-active status"),
+			decision:  DecisionDeny,
+			code:      CodeControlOwnerRequired,
+			segment:   1,
+			predicate: "worker-lifecycle-control",
 		},
 		{
 			name:      "broad destruction",
@@ -189,6 +214,162 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 				t.Fatalf("incomplete diagnostic: %#v", result.Diagnostic)
 			}
 		})
+	}
+}
+
+// TestFiniteReadOnlyGitCapabilityParity keeps the worker adapter aligned with
+// the planner's capability boundary: ordinary current-repository inspection
+// is admitted by verb, while repository-context selection and mutations stay
+// on their ownership routes.
+func TestFiniteReadOnlyGitCapabilityParity(t *testing.T) {
+	t.Parallel()
+
+	readOnly := []string{
+		"git log --format=%H -- skills/go-coding-style/SKILL.md AGENTS.md",
+		"git status",
+		"git diff --check",
+		"git show",
+		"git ls-files",
+	}
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+
+			for _, command := range readOnly {
+				request := activeWorker(command)
+				request.Provider = provider
+				result := Classify(request)
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Errorf("%q: decision=%q diagnostic=%#v, want allow without diagnostic", command, result.Decision, result.Diagnostic)
+				}
+			}
+
+			foreignContext := activeWorker("git -C /tmp/foreign status --short")
+			foreignContext.Provider = provider
+			if result := Classify(foreignContext); result.Decision != DecisionDefer || result.Diagnostic != nil {
+				t.Errorf("foreign context: decision=%q diagnostic=%#v, want defer without diagnostic", result.Decision, result.Diagnostic)
+			}
+
+			for _, testCase := range []struct {
+				command string
+				code    DiagnosticCode
+			}{
+				{command: "git --git-dir=.git status --short", code: CodeGitExecutionContextDenied},
+				{command: "git commit -m forbidden", code: CodeWorkerGitOwnershipDenied},
+				{command: "git reset --hard HEAD", code: CodeWorkerGitOwnershipDenied},
+				{command: "git checkout -- hooks/validate-bash.sh", code: CodeWorkerGitOwnershipDenied},
+				{command: "git branch feature", code: CodeWorkerGitOwnershipDenied},
+			} {
+				request := activeWorker(testCase.command)
+				request.Provider = provider
+				result := Classify(request)
+				if result.Decision != DecisionDeny || result.Diagnostic == nil || result.Diagnostic.Code != testCase.code {
+					t.Errorf("%q: decision=%q diagnostic=%#v, want deny/%q", testCase.command, result.Decision, result.Diagnostic, testCase.code)
+				}
+			}
+		})
+	}
+}
+
+// TestNamedRuntimesRequireLiteralTargets keeps direct runtime invocations
+// finite without turning arbitrary executable names into an allowlist.
+//
+// Example: node scripts/check.mjs is admitted, while node --eval=code is not.
+func TestNamedRuntimesRequireLiteralTargets(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		command string
+		deny    bool
+	}{
+		{name: "bare python", command: "python3", deny: true},
+		{name: "python stdin dash", command: "python3 -", deny: true},
+		{name: "python stdin switch", command: "python3 --stdin", deny: true},
+		{name: "python inline code", command: "python3 -c print", deny: true},
+		{name: "python inline code attached", command: "python3 -cprint", deny: true},
+		{name: "versioned python bare", command: "python3.11", deny: true},
+		{name: "versioned python inline code", command: "python3.11 -cprint", deny: true},
+		{name: "python module", command: "python3 -m pytest"},
+		{name: "python script", command: "python3 tools/check.py"},
+		{name: "python script trailing argv", command: "python3 tools/check.py -c"},
+		{name: "python warning option", command: "python3 -W ignore", deny: true},
+		{name: "python implementation option", command: "python3 -X dev", deny: true},
+		{name: "python interactive option", command: "python3 -i tools/check.py", deny: true},
+		{name: "bare node", command: "node", deny: true},
+		{name: "bare nodejs", command: "nodejs", deny: true},
+		{name: "node eval", command: "node -e code", deny: true},
+		{name: "node short eval attached", command: "node -e=code", deny: true},
+		{name: "node long eval attached", command: "node --eval=code", deny: true},
+		{name: "node print", command: "node -p code", deny: true},
+		{name: "node short print attached", command: "node -p=code", deny: true},
+		{name: "node long print attached", command: "node --print=code", deny: true},
+		{name: "node script", command: "node scripts/check.mjs"},
+		{name: "nodejs script", command: "nodejs scripts/check.mjs"},
+		{name: "nodejs eval", command: "nodejs --eval=code", deny: true},
+		{name: "node loader option", command: "node --loader loader.mjs", deny: true},
+		{name: "bare perl", command: "perl", deny: true},
+		{name: "perl eval", command: "perl -e code", deny: true},
+		{name: "perl eval attached", command: "perl -ecode", deny: true},
+		{name: "perl extended eval", command: "perl -E code", deny: true},
+		{name: "perl extended eval attached", command: "perl -Ecode", deny: true},
+		{name: "perl script", command: "perl tools/check.pl"},
+		{name: "versioned perl eval", command: "perl5 -ecode", deny: true},
+		{name: "perl include option", command: "perl -I /tmp", deny: true},
+		{name: "bare ruby", command: "ruby", deny: true},
+		{name: "ruby eval", command: "ruby -e code", deny: true},
+		{name: "ruby eval attached", command: "ruby -ecode", deny: true},
+		{name: "ruby script", command: "ruby tools/check.rb"},
+		{name: "versioned ruby eval", command: "ruby3.3 -ecode", deny: true},
+		{name: "ruby include option", command: "ruby -I lib", deny: true},
+		{name: "bare php", command: "php", deny: true},
+		{name: "php run", command: "php -r code", deny: true},
+		{name: "php short run attached", command: "php -recho", deny: true},
+		{name: "php run attached", command: "php --run=code", deny: true},
+		{name: "php process begin", command: "php -B code", deny: true},
+		{name: "php short process begin attached", command: "php -Becho", deny: true},
+		{name: "php process begin attached", command: "php --process-begin=code", deny: true},
+		{name: "php process code", command: "php -R code", deny: true},
+		{name: "php short process code attached", command: "php -Recho", deny: true},
+		{name: "php process code attached", command: "php --process-code=code", deny: true},
+		{name: "php process end", command: "php -E code", deny: true},
+		{name: "php short process end attached", command: "php -Eecho", deny: true},
+		{name: "php process end attached", command: "php --process-end=code", deny: true},
+		{name: "php interactive", command: "php -a", deny: true},
+		{name: "php setting option", command: "php -d memory_limit=1G", deny: true},
+		{name: "php script", command: "php tools/check.php"},
+		{name: "php file", command: "php -f tools/check.php"},
+		{name: "php file uppercase", command: "php -F tools/check.php"},
+		{name: "versioned php run", command: "php8.2 -r=code", deny: true},
+		{name: "ordinary unknown interpreter-like tool", command: "interpreter-tool --module test-suite --flag value"},
+		{name: "ordinary python-prefixed helper", command: "python-tool --module test-suite --flag value"},
+	}
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		for _, testCase := range testCases {
+			testCase := testCase
+			t.Run(string(provider)+"/"+testCase.name, func(t *testing.T) {
+				t.Parallel()
+
+				request := activeWorker(testCase.command)
+				request.Provider = provider
+				result := Classify(request)
+				if testCase.deny {
+					if result.Decision != DecisionDeny || result.Diagnostic == nil {
+						t.Fatalf("%q: decision=%q diagnostic=%#v, want dynamic launch denial", testCase.command, result.Decision, result.Diagnostic)
+					}
+					if result.Diagnostic.Code != CodePlanDynamicLaunchDenied || result.Diagnostic.Predicate != "dynamic-interpreter-launch" {
+						t.Fatalf("%q: diagnostic=%#v, want %q/dynamic-interpreter-launch", testCase.command, result.Diagnostic, CodePlanDynamicLaunchDenied)
+					}
+					return
+				}
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Fatalf("%q: decision=%q diagnostic=%#v, want allow", testCase.command, result.Decision, result.Diagnostic)
+				}
+			})
+		}
 	}
 }
 
@@ -330,6 +511,269 @@ func TestGateModeCapabilityShapeIsReportedFromParsedPlans(t *testing.T) {
 	if len(ordinary.Capabilities) != 0 {
 		t.Fatalf("ordinary command capabilities=%v, want none", ordinary.Capabilities)
 	}
+}
+
+// repositoryDefaultGitArchiveCapabilityCase defines one raw command grammar
+// case shared by classifier and installed-binary capability tests.
+type repositoryDefaultGitArchiveCapabilityCase struct {
+	name                  string
+	command               string
+	wantArchiveCapability bool
+	targetsActiveMarker   bool
+	wantDecision          DecisionKind
+	wantDiagnosticCode    DiagnosticCode
+}
+
+// repositoryDefaultGitArchiveCapabilityCases lists every accepted and
+// rejected raw command shape for the repository-default archive capability.
+var repositoryDefaultGitArchiveCapabilityCases = []repositoryDefaultGitArchiveCapabilityCase{
+	{
+		name:                  "direct HEAD",
+		command:               "git archive HEAD",
+		wantArchiveCapability: true,
+	},
+	{
+		name:                  "exact tar output",
+		command:               "git archive --format=tar --output=artifact.tar HEAD",
+		wantArchiveCapability: true,
+	},
+	{
+		name:                "active marker output",
+		command:             "git archive --format=tar --output=<active-marker> HEAD",
+		targetsActiveMarker: true,
+		wantDecision:        DecisionDeny,
+		wantDiagnosticCode:  CodePlanLiveControlDenied,
+	},
+	{
+		name:    "quoted revision",
+		command: "git archive 'HEAD'",
+	},
+	{
+		name:    "quoted executable",
+		command: "'git' archive HEAD",
+	},
+	{
+		name:    "escaped executable",
+		command: "g\\it archive HEAD",
+	},
+	{
+		name:    "absolute executable path",
+		command: "/usr/bin/git archive HEAD",
+	},
+	{
+		name:    "relative executable path",
+		command: "./git archive HEAD",
+	},
+	{
+		name:    "environment wrapper",
+		command: "env git archive HEAD",
+	},
+	{
+		name:    "compound plan",
+		command: "git archive HEAD && printf done",
+	},
+	{
+		name:    "redirection",
+		command: "git archive HEAD > artifact.tar",
+	},
+	{
+		name:    "repository context",
+		command: "git -C /tmp archive HEAD",
+	},
+	{
+		name:    "configuration context",
+		command: "git -c core.pager=cat archive HEAD",
+	},
+	{
+		name:    "git directory context",
+		command: "git --git-dir=.git archive HEAD",
+	},
+	{
+		name:    "work tree context",
+		command: "git --work-tree=. archive HEAD",
+	},
+	{
+		name:    "configuration environment context",
+		command: "git --config-env=core.foo=FOO archive HEAD",
+	},
+	{
+		name:    "execution path context",
+		command: "git --exec-path=/tmp archive HEAD",
+	},
+	{
+		name:    "namespace context",
+		command: "git --namespace=namespace archive HEAD",
+	},
+	{
+		name:    "super prefix context",
+		command: "git --super-prefix=prefix archive HEAD",
+	},
+	{
+		name:    "text conversion context",
+		command: "git --textconv archive HEAD",
+	},
+	{
+		name:    "external diff context",
+		command: "git --ext-diff archive HEAD",
+	},
+	{
+		name:    "archive remote attached",
+		command: "git archive --remote=origin HEAD",
+	},
+	{
+		name:    "archive remote separate",
+		command: "git archive --remote origin HEAD",
+	},
+	{
+		name:    "archive exec attached",
+		command: "git archive --exec=git-upload-archive HEAD",
+	},
+	{
+		name:    "archive exec separate",
+		command: "git archive --exec git-upload-archive HEAD",
+	},
+	{
+		name:    "output inference",
+		command: "git archive --output=artifact.tar HEAD",
+	},
+	{
+		name:    "separate output argument",
+		command: "git archive --format=tar --output artifact.tar HEAD",
+	},
+	{
+		name:    "empty output value",
+		command: "git archive --format=tar --output= HEAD",
+	},
+	{
+		name:    "quoted output value",
+		command: "git archive --format=tar --output='artifact.tar' HEAD",
+	},
+	{
+		name:    "custom archive format",
+		command: "git archive --format=zip --output=artifact.zip HEAD",
+	},
+	{
+		name:    "additional file",
+		command: "git archive --format=tar --output=artifact.tar --add-file=README HEAD",
+	},
+	{
+		name:    "pathspec",
+		command: "git archive --format=tar --output=artifact.tar HEAD README",
+	},
+	{
+		name:    "extra archive option",
+		command: "git archive --format=tar --output=artifact.tar HEAD --prefix=release/",
+	},
+	{
+		name:    "output option before format",
+		command: "git archive --output=artifact.tar --format=tar HEAD",
+	},
+}
+
+// TestRepositoryDefaultGitArchiveCapabilityRequiresExactRawPlan verifies that
+// only the two repository-default archive argv shapes carry the capability.
+//
+// Example: git archive --format=tar --output=artifact.tar HEAD is eligible,
+// while a wrapper, quote, context option, or additional archive argument is not.
+func TestRepositoryDefaultGitArchiveCapabilityRequiresExactRawPlan(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range repositoryDefaultGitArchiveCapabilityCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			request := repositoryDefaultGitArchiveCapabilityRequest(t, testCase)
+			result := Classify(request)
+			if testCase.wantDecision != "" && result.Decision != testCase.wantDecision {
+				t.Fatalf("%q: decision=%q, want %q; diagnostic=%#v", request.Command, result.Decision, testCase.wantDecision, result.Diagnostic)
+			}
+			if testCase.wantDiagnosticCode != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.wantDiagnosticCode) {
+				t.Fatalf("%q: diagnostic=%#v, want code %q", request.Command, result.Diagnostic, testCase.wantDiagnosticCode)
+			}
+			if testCase.wantArchiveCapability {
+				if len(result.Capabilities) != 1 || result.Capabilities[0] != CapabilityRepositoryDefaultGitArchive {
+					t.Fatalf("%q: capabilities=%v, want [%q]", testCase.command, result.Capabilities, CapabilityRepositoryDefaultGitArchive)
+				}
+				return
+			}
+			if len(result.Capabilities) != 0 {
+				t.Fatalf("%q: capabilities=%v, want none", testCase.command, result.Capabilities)
+			}
+		})
+	}
+}
+
+// TestInstalledBinaryEmitsRepositoryDefaultGitArchiveCapability verifies the
+// shipped planner applies the shared raw archive capability matrix exactly.
+//
+// Example: a hook can consume the binary response without re-tokenizing any
+// accepted or rejected original shell command.
+func TestInstalledBinaryEmitsRepositoryDefaultGitArchiveCapability(t *testing.T) {
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+
+	for _, testCase := range repositoryDefaultGitArchiveCapabilityCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := repositoryDefaultGitArchiveCapabilityRequest(t, testCase)
+			input, err := json.Marshal(request)
+			if err != nil {
+				t.Fatalf("marshal %q request: %v", request.Command, err)
+			}
+
+			var stdout bytes.Buffer
+			status := runBinary(t, binary, input, &stdout)
+			var result Result
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatalf("decode %q response: %v; output=%s", request.Command, err, stdout.String())
+			}
+			if testCase.wantDecision != "" && result.Decision != testCase.wantDecision {
+				t.Fatalf("%q: decision=%q, want %q; diagnostic=%#v", request.Command, result.Decision, testCase.wantDecision, result.Diagnostic)
+			}
+			if testCase.wantDiagnosticCode != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.wantDiagnosticCode) {
+				t.Fatalf("%q: diagnostic=%#v, want code %q", request.Command, result.Diagnostic, testCase.wantDiagnosticCode)
+			}
+			if testCase.wantArchiveCapability {
+				if status != StatusAllow {
+					t.Fatalf("%q: status=%d output=%s, want %d", request.Command, status, stdout.String(), StatusAllow)
+				}
+				const want = "{\"decision\":\"allow\",\"capabilities\":[\"repository-default-git-archive\"]}\n"
+				if stdout.String() != want {
+					t.Fatalf("%q: JSON=%s, want %s", request.Command, stdout.String(), want)
+				}
+				return
+			}
+			if len(result.Capabilities) != 0 {
+				t.Fatalf("%q: capabilities=%v, want none", request.Command, result.Capabilities)
+			}
+			if testCase.wantDecision == DecisionDeny && status != StatusDeny {
+				t.Fatalf("%q: status=%d output=%s, want %d", request.Command, status, stdout.String(), StatusDeny)
+			}
+		})
+	}
+}
+
+// repositoryDefaultGitArchiveCapabilityRequest materializes an active marker
+// target when a shared grammar case needs to prove control inspection wins
+// before the planner capability can be consumed.
+func repositoryDefaultGitArchiveCapabilityRequest(t *testing.T, testCase repositoryDefaultGitArchiveCapabilityCase) Request {
+	t.Helper()
+
+	request := activeWorker(testCase.command)
+	if !testCase.targetsActiveMarker {
+		return request
+	}
+
+	marker := filepath.Join(t.TempDir(), "eci_active")
+	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
+		t.Fatalf("write active marker %s: %v", marker, err)
+	}
+	request.ActiveMarkers = []string{marker}
+	request.Command = "git archive --format=tar --output=" + marker + " HEAD"
+	return request
 }
 
 func TestGateModeIdentityAndWorkerOwnershipAreCompiled(t *testing.T) {
@@ -725,7 +1169,7 @@ func TestProtectedOperationsRouteByRole(t *testing.T) {
 		code     DiagnosticCode
 	}{
 		{name: "worker Git mutation", role: RoleWorker, command: "git commit -m nope", decision: DecisionDeny, code: CodeWorkerGitOwnershipDenied},
-		{name: "worker lifecycle control", role: RoleWorker, command: "eci-active status", decision: DecisionDefer},
+		{name: "worker lifecycle control", role: RoleWorker, command: "eci-active status", decision: DecisionDeny, code: CodeControlOwnerRequired},
 		{name: "worker source write", role: RoleWorker, command: "touch source.txt", decision: DecisionAllow},
 		{name: "coordinator source write", role: RoleCoordinator, command: "touch source.txt", decision: DecisionDefer},
 		{name: "coordinator outside-CWD source write", role: RoleCoordinator, cwd: "/workspace", command: "touch /tmp/source.txt", decision: DecisionAllow},
@@ -1139,6 +1583,170 @@ func TestLifecycleScriptCapabilityDefersToProviderAdapters(t *testing.T) {
 	}
 }
 
+// TestActiveWorkerUnwrappedLifecycleIdentityDeniesCopies verifies that the
+// planner applies lifecycle ownership after transparent wrapper unwrapping.
+//
+// Example: env FOO=bar /tmp/eci-active-copy status is worker control, not
+// ordinary env work.
+func TestActiveWorkerUnwrappedLifecycleIdentityDeniesCopies(t *testing.T) {
+	if os.Getenv("ECI_TEST_LIFECYCLE_IDENTITY_SYMLINK_CASE") == "1" {
+		runLifecycleIdentitySymlinkScenario(t)
+		return
+	}
+
+	source := filepath.Join(providerHome(ProviderCodex), "bin", "eci-active")
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("read canonical lifecycle executable: %v", err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatalf("stat canonical lifecycle executable: %v", err)
+	}
+	directory := t.TempDir()
+	providerRoot := filepath.Join(directory, "provider-root")
+	providerBin := filepath.Join(providerRoot, "bin")
+	if err := os.MkdirAll(providerBin, 0o755); err != nil {
+		t.Fatalf("create provider bin: %v", err)
+	}
+	canonicalActive := filepath.Join(providerBin, "eci-active")
+	if err := os.WriteFile(canonicalActive, contents, info.Mode().Perm()); err != nil {
+		t.Fatalf("write canonical lifecycle executable: %v", err)
+	}
+	for _, alias := range []string{"eci-review-gate", "eci-stage"} {
+		path := filepath.Join(providerBin, alias)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write canonical %s: %v", alias, err)
+		}
+	}
+	providerAlias := filepath.Join(directory, "provider-home-alias")
+	if err := os.Symlink(providerRoot, providerAlias); err != nil {
+		t.Fatalf("create provider home alias: %v", err)
+	}
+	copyPath := filepath.Join(directory, "eci-active-copy")
+	if err := os.WriteFile(copyPath, contents, info.Mode().Perm()); err != nil {
+		t.Fatalf("write lifecycle copy: %v", err)
+	}
+	ordinaryPath := filepath.Join(directory, "ordinary-worker")
+	if err := os.WriteFile(ordinaryPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write ordinary worker: %v", err)
+	}
+	arbitraryStage := filepath.Join(directory, "eci-stage")
+	arbitraryReviewGate := filepath.Join(directory, "eci-review-gate")
+	for _, path := range []string{arbitraryStage, arbitraryReviewGate} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write arbitrary basename control: %v", err)
+		}
+	}
+
+	child := exec.Command(os.Args[0], "-test.run=^TestActiveWorkerUnwrappedLifecycleIdentityDeniesCopies$")
+	child.Env = append(
+		os.Environ(),
+		"ECI_TEST_LIFECYCLE_IDENTITY_SYMLINK_CASE=1",
+		"CODEX_HOME="+providerAlias+string(filepath.Separator),
+		"ECI_TEST_LIFECYCLE_IDENTITY_DIRECTORY="+directory,
+		"ECI_TEST_LIFECYCLE_IDENTITY_COPY="+copyPath,
+		"ECI_TEST_LIFECYCLE_IDENTITY_ORDINARY="+ordinaryPath,
+		"ECI_TEST_LIFECYCLE_IDENTITY_ARBITRARY_STAGE="+arbitraryStage,
+		"ECI_TEST_LIFECYCLE_IDENTITY_ARBITRARY_REVIEW_GATE="+arbitraryReviewGate,
+	)
+	output, err := child.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run symlink-home lifecycle identity scenario: %v\n%s", err, output)
+	}
+}
+
+// runLifecycleIdentitySymlinkScenario verifies lifecycle identity after a
+// child process configures CODEX_HOME as a symlink with a trailing separator.
+//
+// Example: env -- <symlink-home>/bin/eci-active status stays worker control.
+func runLifecycleIdentitySymlinkScenario(t *testing.T) {
+	directory := os.Getenv("ECI_TEST_LIFECYCLE_IDENTITY_DIRECTORY")
+	copyPath := os.Getenv("ECI_TEST_LIFECYCLE_IDENTITY_COPY")
+	ordinaryPath := os.Getenv("ECI_TEST_LIFECYCLE_IDENTITY_ORDINARY")
+	arbitraryStage := os.Getenv("ECI_TEST_LIFECYCLE_IDENTITY_ARBITRARY_STAGE")
+	arbitraryReviewGate := os.Getenv("ECI_TEST_LIFECYCLE_IDENTITY_ARBITRARY_REVIEW_GATE")
+	for name, value := range map[string]string{
+		"directory":             directory,
+		"copy":                  copyPath,
+		"ordinary":              ordinaryPath,
+		"arbitrary stage":       arbitraryStage,
+		"arbitrary review gate": arbitraryReviewGate,
+	} {
+		if value == "" {
+			t.Fatalf("missing symlink lifecycle test %s", name)
+		}
+	}
+
+	providerBin := filepath.Join(providerHome(ProviderCodex), "bin")
+	protectedCommands := []struct {
+		name    string
+		command string
+	}{
+		{name: "copied direct status", command: copyPath + " status"},
+		{name: "copied direct nested exit", command: copyPath + " nested-exit"},
+		{name: "copied env assignment", command: "env FOO=bar " + copyPath + " status"},
+		{name: "copied env separator", command: "env -- " + copyPath + " status"},
+		{name: "copied env isolated", command: "env -i " + copyPath + " nested-exit"},
+		{name: "copied env unset", command: "env -u PATH " + copyPath + " status"},
+		{name: "copied stdbuf", command: "stdbuf -oL " + copyPath + " status"},
+		{name: "copied busybox", command: "busybox -- " + copyPath + " status"},
+		{name: "copied prlimit", command: "prlimit --nofile=1024 " + copyPath + " status"},
+		{name: "copied chronic", command: "chronic " + copyPath + " status"},
+		{name: "canonical active", command: filepath.Join(providerBin, "eci-active") + " status"},
+		{name: "canonical active env", command: "env FOO=bar " + filepath.Join(providerBin, "eci-active") + " status"},
+		{name: "canonical review gate", command: filepath.Join(providerBin, "eci-review-gate") + " status"},
+		{name: "canonical stage", command: filepath.Join(providerBin, "eci-stage") + " status"},
+	}
+	ordinaryCommands := []struct {
+		name    string
+		command string
+	}{
+		{name: "ordinary direct", command: ordinaryPath},
+		{name: "ordinary env assignment", command: "env FOO=bar " + ordinaryPath},
+		{name: "ordinary env separator", command: "env -- " + ordinaryPath},
+		{name: "ordinary env isolated", command: "env -i " + ordinaryPath},
+		{name: "ordinary env unset", command: "env -u PATH " + ordinaryPath},
+		{name: "ordinary stdbuf", command: "stdbuf -oL " + ordinaryPath},
+		{name: "ordinary busybox", command: "busybox -- " + ordinaryPath},
+		{name: "ordinary prlimit", command: "prlimit --nofile=1024 " + ordinaryPath},
+		{name: "ordinary chronic", command: "chronic " + ordinaryPath},
+		{name: "arbitrary eci stage basename", command: arbitraryStage + " status"},
+		{name: "arbitrary eci review gate basename", command: arbitraryReviewGate + " status"},
+	}
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		for _, testCase := range protectedCommands {
+			testCase := testCase
+			t.Run(string(provider)+"/protected/"+testCase.name, func(t *testing.T) {
+				request := activeWorker(testCase.command)
+				request.Provider = provider
+				request.CWD = directory
+				result := Classify(request)
+				if result.Decision != DecisionDeny || result.Diagnostic == nil {
+					t.Fatalf("%q: decision=%q diagnostic=%#v, want worker lifecycle denial", testCase.command, result.Decision, result.Diagnostic)
+				}
+				if result.Diagnostic.Code != CodeControlOwnerRequired || result.Diagnostic.Operation != "worker-control" || result.Diagnostic.Predicate != "worker-lifecycle-control" {
+					t.Fatalf("%q: diagnostic=%#v, want worker lifecycle control denial", testCase.command, result.Diagnostic)
+				}
+			})
+		}
+		for _, testCase := range ordinaryCommands {
+			testCase := testCase
+			t.Run(string(provider)+"/ordinary/"+testCase.name, func(t *testing.T) {
+				request := activeWorker(testCase.command)
+				request.Provider = provider
+				request.CWD = directory
+				result := Classify(request)
+				if result.Decision != DecisionAllow || result.Diagnostic != nil {
+					t.Fatalf("%q: decision=%q diagnostic=%#v, want ordinary wrapped allow", testCase.command, result.Decision, result.Diagnostic)
+				}
+			})
+		}
+	}
+}
+
 func TestWorkerCompoundPlansRouteByOperator(t *testing.T) {
 	t.Parallel()
 
@@ -1207,11 +1815,14 @@ func TestWorkerCompoundPlansRouteByOperator(t *testing.T) {
 				t.Fatalf("protected semicolon diagnostic: got code=%q segment=%d, want code=%q segment=2", protectedSemicolonResult.Diagnostic.Code, protectedSemicolonResult.Diagnostic.Segment, CodeEnvironmentEnumerationDenied)
 			}
 
-			deferredSemicolon := activeWorker("printf left; eci-active status")
-			deferredSemicolon.Provider = provider
-			deferredSemicolonResult := Classify(deferredSemicolon)
-			if deferredSemicolonResult.Decision != DecisionDefer || deferredSemicolonResult.Diagnostic != nil {
-				t.Fatalf("deferred semicolon plan: decision=%q diagnostic=%#v, want deferred without diagnostic", deferredSemicolonResult.Decision, deferredSemicolonResult.Diagnostic)
+			lifecycleSemicolon := activeWorker("printf left; eci-active status")
+			lifecycleSemicolon.Provider = provider
+			lifecycleSemicolonResult := Classify(lifecycleSemicolon)
+			if lifecycleSemicolonResult.Decision != DecisionDeny || lifecycleSemicolonResult.Diagnostic == nil {
+				t.Fatalf("lifecycle semicolon plan: decision=%q diagnostic=%#v, want worker lifecycle denial", lifecycleSemicolonResult.Decision, lifecycleSemicolonResult.Diagnostic)
+			}
+			if lifecycleSemicolonResult.Diagnostic.Code != CodeControlOwnerRequired || lifecycleSemicolonResult.Diagnostic.Segment != 2 || lifecycleSemicolonResult.Diagnostic.Predicate != "worker-lifecycle-control" {
+				t.Fatalf("lifecycle semicolon diagnostic: got %#v, want worker-lifecycle-control at segment 2", lifecycleSemicolonResult.Diagnostic)
 			}
 		})
 	}

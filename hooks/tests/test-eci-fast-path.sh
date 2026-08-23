@@ -24,8 +24,9 @@ jq -n --arg cwd "$ROOT" '{session_id:"t00-session", transcript_path:"", stop_hoo
 # The callback path must not recurse through arbitrary proof-root descendants.
 # Keep this structural assertion beside a non-marker directory stress fixture.
 ! grep -Fq 'find "$root" -mindepth 2 -maxdepth 2 -print0' "$ROOT/hooks/stop-gate.sh"
-grep -Fq 'eci_stop_max_root_entries=' "$ROOT/hooks/stop-gate.sh"
-grep -Fq 'find "$root" -mindepth 1 -maxdepth 1 -print0' "$ROOT/hooks/stop-gate.sh"
+grep -Fq 'find "$root" -mindepth 2 -maxdepth 2 -name eci_active -print0' "$ROOT/hooks/stop-gate.sh"
+grep -Fq 'eci_stop_max_markers=' "$ROOT/hooks/stop-gate.sh"
+! grep -Fq 'find "$root" -mindepth 1 -maxdepth 1 -print0' "$ROOT/hooks/stop-gate.sh"
 ! grep -Fq 'for marker in "$root"/*/eci_active' "$ROOT/hooks/stop-gate.sh"
 non_marker_root="$tmp/non-marker-root"
 mkdir -p "$non_marker_root"

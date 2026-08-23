@@ -357,6 +357,10 @@ read_only_sed_candidate() {
 read_only_git_c_status_candidate() {
   local -a words=()
   local repo approved_repo="" token saw_limit=false saw_option=false verb_index=1
+  # A worker may inspect only its declared current repository.  Approved
+  # `-C` contexts remain a coordinator route and must not be re-admitted by
+  # this legacy candidate after the worker Git capability parser defers them.
+  [ "$hook_is_subagent" != true ] || return 1
   [ "${CODEX_GIT_STATUS_CONTEXT_SAFE:-false}" = true ] && trusted_executable_on_path git || return 1
   read -r -a words <<<"${1:-}"
   [ "${#words[@]}" -ge 4 ] || return 1
@@ -645,15 +649,24 @@ PY
 # These are conservative lexical prefilters for deferred legacy routes.  The
 # route parser remains authoritative; a false positive only spends the route's
 # existing validation cost, while a false negative must never skip a protected
-# capability.  The Go planner's capability field is the parsed gate-mode bit.
+# capability. The Go planner exposes exact parsed capability values.
 deferred_route_gate_mode_shape() {
   [ "${plan_status:-}" -eq 3 ] || return 1
   [[ "${plan_output:-}" == *'"gate-mode"'* ]]
 }
 
 deferred_route_lifecycle_shape() {
-  case "${1:-}" in
-    *eci-active*|*eci-review-gate*|*eci-stage*|*stop-gate.sh*|*ate-orchestrator-gate.sh*) return 0 ;;
+  local executable="${1:-}"
+  # Inspect only the visible executable token.  Matching lifecycle names
+  # anywhere in a command incorrectly deferred ordinary operands such as
+  # `./tools/eci-review-gate.sh verify`; canonical identity/ownership checks
+  # remain authoritative after this cheap prefilter.
+  executable="${executable%%[[:space:]]*}"
+  case "$executable" in
+    eci-active|eci-active-gate.sh|eci-review-gate|eci-review-gate.sh|eci-stage|stop-gate.sh|ate-orchestrator-gate.sh|\
+    */bin/eci-active|*/bin/eci-review-gate|*/bin/eci-stage|\
+    */hooks/eci-active-gate.sh|*/hooks/eci-review-gate.sh|*/hooks/stop-gate.sh|*/hooks/ate-orchestrator-gate.sh)
+      return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -673,7 +686,24 @@ deferred_route_environment_shape() {
   esac
 }
 
+repository_default_git_archive_capability() {
+  [ "${plan_status:-}" -eq 0 ] || return 1
+  [ "${CODEX_GIT_STATUS_CONTEXT_SAFE:-false}" = true ] || return 1
+  trusted_executable_on_path git || return 1
+  jq -e '
+    type == "object" and
+    .decision == "allow" and
+    .capabilities == ["repository-default-git-archive"]
+  ' <<<"${plan_output:-}" >/dev/null 2>&1
+}
+
 deferred_route_git_shape() {
+  # Only the Go planner's exact raw-argv capability can skip legacy Git
+  # routing. A caller-selected executable, inherited Git context, wrapper,
+  # compound, or any other archive argv keeps the existing legacy behavior.
+  if repository_default_git_archive_capability; then
+    return 1
+  fi
   case "${1:-}" in
     git|git\ *|*/git|*/git\ *|*\ git\ *|*\/git\ *) return 0 ;;
     *) return 1 ;;
@@ -703,7 +733,7 @@ deferred_route_proof_path_shape() {
 
 deferred_route_hook_repair_shape() {
   case "${1:-}" in
-    chmod\ 755\ *|*install-pre-commit-go-mod.sh*|*pre-commit-go-mod.sh*) return 0 ;;
+    *install-pre-commit-go-mod.sh*|*pre-commit-go-mod.sh*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -721,17 +751,41 @@ deferred_worker_operator_shape() {
 }
 
 deferred_worker_wrapper_shape() {
+  # Transparent launch wrappers still need the legacy ownership route. Shell
+  # script launchers stay here because the script body is an indirection
+  # boundary. Do not classify language runtimes themselves as wrappers: the
+  # compiled planner has already validated the complete finite argv, so a
+  # direct module/test invocation is ordinary work regardless of language.
+  # Known eval/stdin forms are rejected by the planner; visible shell-eval
+  # spellings below remain deferred as a provider-boundary safeguard.
   if [ "${plan_role:-coordinator}" != worker ]; then
     case "${1:-}" in
       env\ [A-Za-z_]*=*\ *|env\ -i\ *|env\ -u\ [A-Za-z_]*\ *|env\ --\ *) return 1 ;;
+    esac
+  elif [ "${plan_marker_state:-inactive}" = active ] &&
+    [ "${plan_status:-1}" -eq 0 ]; then
+    # The compiled planner owns the complete finite argv decision.  Reuse the
+    # role-neutral env recognizer only to distinguish a transparent literal
+    # prefix from enumeration, context, or dynamic env forms; do not
+    # reintroduce an executable/language allowlist for the child argv.
+    case "${1:-}" in
+      env|env\ *)
+        if [ "${ECI_ENVIRONMENT_BOUNDARY_CHECKED:-false}" != true ]; then
+          enforce_environment_command_boundary
+        fi
+        case "${ECI_ENVIRONMENT_COMMAND_STATE:-}" in
+          ALLOW|WRAPPER)
+            return 1
+            ;;
+        esac
+        ;;
     esac
   fi
   case "${1:-}" in
     env|env\ *|printenv|printenv\ *|command|command\ *|builtin|builtin\ *|exec|exec\ *|\
     bash|bash\ *|sh|sh\ *|dash|dash\ *|zsh|zsh\ *|ksh|ksh\ *|ash|ash\ *|fish|fish\ *|\
     */bash|*/bash\ *|*/sh|*/sh\ *|*/dash|*/dash\ *|*/zsh|*/zsh\ *|\
-    python|python\ *|python2|python2\ *|python3|python3\ *|perl|perl\ *|ruby|ruby\ *|\
-    node|node\ *|php|php\ *|timeout|timeout\ *|time|time\ *|nice|nice\ *|nohup|nohup\ *|\
+    timeout|timeout\ *|time|time\ *|nice|nice\ *|nohup|nohup\ *|\
     setsid|setsid\ *|sudo|sudo\ *|doas|doas\ *|systemd-run|systemd-run\ *|\
     xargs|xargs\ *|find|find\ *|*' -c '*|*' --command '*|*' --eval '*|*' --execute '*) return 0 ;;
     *) return 1 ;;
@@ -1663,21 +1717,21 @@ def known_test_script(path):
         return False
     expected = {
         "run.sh": "09c23c2490a8c3a134a5c21de6aa8eec30eea67ba58548f2ed75189a37045380",
-        "test-eci-fast-path.sh": "dc1233b4c496954d496c6645f4304aadb6e07b22fb1e1a6fc4f820d81811bd3a",
+        "test-eci-fast-path.sh": "2f67e222bf10b79d0491841053f644e20224aa483f1ee9730707f6231ff4bd77",
         "test-eci-post-compact-refresh.sh": "7735c9d4b5d71d1f57dffedbafae32ce818019c865ba7250520971010aca66cf",
-        "test-eci-review-gate.sh": "6fdb8d8a0e8a4aab410f96d5030225a7d873605956d93ae3f0d26dad93be8a88",
+        "test-eci-review-gate.sh": "1fccf9e11c0c651078f600909e4b663f14d21bf2820df100099f567aa4ed19f6",
         "test-session-snapshot-refresh.sh": "bd093a9a8a6e282e3a4d48b1905ebac59a370a273b0c416bec5defd5129d428d",
-        "test-validate-bash-classifier.sh": "d4e488073a53300581510b5293404fea82640e346a15555a6fb2d45d7d397e5e",
+        "test-validate-bash-classifier.sh": "ffb1d49a44f8fd33cab1283609c1ed7ee851e4f2d808349af57754d5dbc56a82",
         "test-validate-bash-git-approvals.sh": "62553126dffa4373880142dd802d5737da29a9535868f7e7b7568f0b920c8261",
         "test-policy-design-boundary.sh": "e084a05ad1ed7a001c6bbd7816a36ba5aad386d91fd27012329d1671d87a1de3",
         "test-eci-edit-control-paths.sh": "ba7e26be82c09748e57c4c79d092ab46420a40f116bcdff2e6988e00142ce2f7",
         "test-eci-diagnostic-specificity.sh": "fbb40f2b717834f3eaad96535a3c3ed52e576f25c2ce8b678d84b6add2ab4dc0",
-        "test-eci-marker-scope.sh": "64300cd57c7feef8b1de358078541acba4f1844e9e789c153cae56acfc089875",
+        "test-eci-marker-scope.sh": "0f50c85f9f7a7bab5ee436c2a2011ecf93ae199c2fcf85273778440c40ad4b8e",
         "test-pretooluse-latency.sh": "7e8f73f23dafd6389103c97f599c558aa56a6b46ee5d8d82fc32df3ed4e7dcca",
         "test-pre-commit-go-mod.sh": "39256e08a8512ca00263dfb8b4a67593c512a3488c8ea16e684f68ffd6b095a4",
-        "test-eci-command-syntax-gating.sh": "78fe91f5dfd1d92c051ab260eb62dd47c47a4bed0362179c3c53d007a43894d8",
+        "test-eci-command-syntax-gating.sh": "38172badbec1800bf89313e6516a47feb912b1bf48b31f3d3053b47a9366ff3a",
         "test-go-mod-hook-parity.sh": "63ba8579491e894bfb2adfe6d84e1bd056c1d814c4c5c0e97c25e417c3cbb5cf",
-        "test-stop-loop-guidance.sh": "f8fa9f1f036a8511a029d90e5466736b292dd089106a5fc735d4336d79d538d6",
+        "test-stop-loop-guidance.sh": "caa8fdf230ad85f08dde9eb37d23862ff6b95c8cf53be98b0df42b7910651143",
         "test-stop-marker-validation.sh": "3483c29a26283369929f782c18e0c91bc332748730dbc6539a1a22033e39bd57",
     }
     name = normalized.rsplit("/", 1)[-1]
@@ -1978,19 +2032,20 @@ def inspect(segment, depth=0):
     if index >= len(segment):
         return False
     # Lifecycle ownership must not depend on the copied executable retaining
-    # the canonical basename. A direct path to any executable/script is an
-    # opaque worker launcher; inspecting its arguments cannot prove that it
-    # will not mutate ECI state. Canonical shell/test routes are handled
-    # below before this generic path check.
+    # the canonical basename. Canonical shell/test routes are handled by
+    # their identity checks before this capability classifier.
     program = segment[index]
     name = os.path.basename(segment[index])
-    # `PATH` can expose a copied/renamed lifecycle binary.  Resolve the
-    # actual executable (and its bounded digest) before the generic slash
-    # check, so a bare `eci-stage wait` cannot evade the worker boundary.
-    if lifecycle_executable(program) or name == "eci-active" or "/" in program:
+    # `PATH` can expose a copied/renamed lifecycle binary. Resolve the actual
+    # executable (and its bounded digest) before admitting ordinary direct
+    # paths, so a bare `eci-active` cannot evade the worker boundary.
+    if lifecycle_executable(program) or name == "eci-active":
         return True
-    if name == "eci-review-gate.sh":
-        return True
+    # A noncanonical slash-qualified direct argv is still a finite capability
+    # plan. Canonical lifecycle/review-gate ownership was checked above by the
+    # dedicated identity routes; path syntax alone is not an opaque launcher.
+    if "/" in program:
+        return False
     if name == "eval":
         # Shell evaluation is arbitrary indirection even when its payload
         # happens not to contain an obvious control path.
@@ -2482,10 +2537,16 @@ import sys
 
 command, hook_cwd = sys.argv[1:]
 OPS = {";", "&", "|", "||", ">", ">>", ">|", ">&", "<", "<<", "<<<", "<&", "(", ")"}
-SAFE = {
-    ("status", "--short"), ("status", "--porcelain"),
-    ("submodule", "status"), ("diff", "--stat"),
+READ_ONLY = {
+    "branch", "describe", "diff", "grep", "log", "ls-files", "remote",
+    "rev-parse", "show", "status", "submodule",
 }
+CONTEXT_OPTIONS = {
+    "-c", "--config-env", "--exec-path", "--git-dir", "--namespace",
+    "--super-prefix", "--work-tree", "--textconv", "--ext-diff",
+}
+OUTPUT_OPTIONS = {"-o", "--output", "--to-file", "--output-directory"}
+PATH_MARKERS = ("$", "`", "\n", "\r", "*", "?", "[", "]", "(", ")")
 
 def reject(reason):
     print("worker-project-inspection-route reason=" + reason)
@@ -2551,20 +2612,56 @@ def repo_ok(value):
             and not os.path.islink(candidate) and os.path.realpath(candidate) == candidate
             and any(candidate == root for root in roots))
 
+def safe_value(value, allow_option=False):
+    return bool(value) and (allow_option or not value.startswith("-")) and not any(
+        marker in value for marker in PATH_MARKERS
+    )
+
+def safe_git_read_only(args):
+    if not args or args[0] not in READ_ONLY:
+        return False
+    subcommand, values = args[0], args[1:]
+    if any(value in CONTEXT_OPTIONS or value.startswith(tuple(
+            option + "=" for option in CONTEXT_OPTIONS if option.startswith("--")
+    )) for value in values):
+        return False
+    if any(value in OUTPUT_OPTIONS or value.startswith(("--output=", "--to-file=", "--output-directory="))
+           for value in values):
+        return False
+    if subcommand == "submodule":
+        return values == ["status"]
+    if subcommand == "status":
+        return all(value in {"--short", "--porcelain", "--branch"} for value in values)
+    if subcommand == "branch":
+        mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move",
+                    "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
+        return all(value.startswith("-") and value not in mutators for value in values)
+    if subcommand == "remote":
+        return not values or values in (["-v"], ["--verbose"], ["show"], ["get-url"])
+    if subcommand == "diff":
+        delimiter = values.index("--") if "--" in values else len(values)
+        options, paths = values[:delimiter], values[delimiter + 1:]
+        allowed_options = {"--binary", "--cached", "--staged", "--check", "--stat",
+                           "--name-only", "--name-status", "--no-ext-diff", "--no-textconv"}
+        if any(option not in allowed_options for option in options):
+            return False
+        return all(safe_value(path) for path in paths)
+    if subcommand == "grep":
+        return bool(values) and all(safe_value(value, allow_option=True) for value in values)
+    if subcommand in {"log", "show", "ls-files", "describe", "rev-parse"}:
+        return all(safe_value(value, allow_option=True) for value in values)
+    return False
+
 for segment in chunks:
     if segment[0] != "git" or any("/" in token for token in segment[:1]):
         reject("segment must invoke the trusted literal git executable")
     args = segment[1:]
-    repo = hook_cwd
     if args[:1] == ["-C"]:
-        if len(args) < 3 or not repo_ok(args[1]):
-            reject("-C target must be an approved canonical repository root")
-        repo = args[1]
-        args = args[2:]
-    elif not repo_ok(hook_cwd):
+        reject("repository context selection with -C is coordinator-owned")
+    if not repo_ok(hook_cwd):
         reject("inspection cwd is not an approved canonical repository root")
-    if tuple(args) not in SAFE:
-        reject("segment must be git status --short, git submodule status, or git diff --stat")
+    if not safe_git_read_only(args):
+        reject("segment is outside the bounded read-only Git capability grammar")
 print("ok")
 PY
   )" || true
@@ -7176,6 +7273,17 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   worker_project_inspection_route "$command" || true
 fi
 
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  [ "$WORKER_PROJECT_INSPECTION_ALLOWED" != true ]; then
+  case "$command" in
+    git\ -C|git\ -C\ *|git\ -C?*)
+      deny_eci "ECI_GIT_EXECUTION_CONTEXT_DENIED" "git-execution-context" \
+        "ECI worker Git route denied repository context selection: token=-C; predicate=worker-git-context; reason=active workers may inspect only the declared current repository, while -C selects a different execution context" \
+        "remove the reported -C context and invoke the read-only Git argv from the current repository, or route repository selection through the coordinator"
+      ;;
+  esac
+fi
+
 coordinator_go_test_capture_route() {
   [ "$hook_is_subagent" != true ] || return 1
   [ "$(classify_eci_command "$1" 2>/dev/null || true)" = "verification" ]
@@ -7194,6 +7302,7 @@ fi
 
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   ! command_invokes_eci_binary "$command" &&
+  [ "$WORKER_PROJECT_INSPECTION_ALLOWED" != true ] &&
   [ -z "$worker_protected_control_identity" ] &&
   worker_control_detail="$(worker_control_path_detail 2>/dev/null || true)" &&
   [ -n "$worker_control_detail" ]; then
@@ -7213,82 +7322,6 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
       "ECI worker boundary denied a command path owned by the coordinator: $worker_control_detail" \
       "route ECI marker, proof, ledger, or teardown state through the main/orchestrator coordinator; workers may not mutate ECI control files or other coordinator-owned control paths"
   fi
-fi
-
-worker_reserved_lifecycle_alias_detail() {
-  [ "$hook_is_subagent" = true ] || return 1
-  python3 - "$1" "$HOOK_DIR" <<'PY'
-import hashlib
-import json
-import os
-import shlex
-import shutil
-import sys
-
-command, hook_dir = sys.argv[1:]
-try:
-    tokens = shlex.split(command, posix=True)
-except ValueError:
-    raise SystemExit(1)
-if not tokens or any(token in {";", "&", "&&", "|", "||", "(", ")"} for token in tokens):
-    raise SystemExit(1)
-
-provider_bin_aliases = {"eci-review-gate", "eci-stage"}
-
-roots = []
-seen_roots = set()
-for value in (
-    os.environ.get("CODEX_HOME", ""), os.environ.get("KIMI_CODE_HOME", ""),
-    os.path.dirname(hook_dir),
-):
-    if value and os.path.isabs(value) and os.path.isdir(value) and not os.path.islink(value):
-        root = os.path.realpath(value)
-        if root not in seen_roots:
-            seen_roots.add(root)
-            roots.append(root)
-
-def digest(path):
-    try:
-        with open(path, "rb") as stream:
-            value = hashlib.sha256()
-            for chunk in iter(lambda: stream.read(65536), b""):
-                value.update(chunk)
-            return value.hexdigest()
-    except OSError:
-        return None
-
-candidate = tokens[0]
-resolved = shutil.which(candidate) if not os.path.isabs(candidate) else candidate
-if not resolved or not os.path.isfile(resolved) or os.path.islink(resolved):
-    raise SystemExit(1)
-resolved = os.path.realpath(resolved)
-if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
-    raise SystemExit(1)
-candidate_digest = digest(resolved)
-for root in roots:
-    alias = os.path.basename(candidate)
-    provider_alias = os.path.join(root, "bin", alias)
-    if alias in provider_bin_aliases and resolved == provider_alias:
-        print("canonical_target=%s invocation=reserved-alias argv=%s" %
-              (provider_alias, json.dumps(tokens[1:], separators=(",", ":"))))
-        raise SystemExit(0)
-    canonical = os.path.join(root, "bin", "eci-active")
-    if os.path.isfile(canonical) and candidate_digest and candidate_digest == digest(canonical):
-        print("canonical_target=%s invocation=direct argv=%s" %
-              (canonical, json.dumps(tokens[1:], separators=(",", ":"))))
-        raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
-
-worker_reserved_lifecycle_alias=""
-if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-  worker_reserved_lifecycle_alias="$(worker_reserved_lifecycle_alias_detail "$command" 2>/dev/null || true)"
-fi
-if [ -n "$worker_reserved_lifecycle_alias" ]; then
-  deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
-    "ECI worker boundary denied coordinator-owned lifecycle/control invocation: ${worker_reserved_lifecycle_alias}; predicate=worker-lifecycle-control; reason=the reserved lifecycle executable alias owns ECI control state" \
-    "route this exact lifecycle/control invocation through the main/orchestrator coordinator"
 fi
 
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
@@ -7484,21 +7517,21 @@ reviewed_digests = {
     ".codex": {
         "hooks/install-pre-commit-go-mod.sh": "7d98c8e7a6644fab8383631c58a30ec8f6bf62572b18cce74b6241462d6c7cd0",
         "hooks/tests/run.sh": "09c23c2490a8c3a134a5c21de6aa8eec30eea67ba58548f2ed75189a37045380",
-        "hooks/tests/test-eci-fast-path.sh": "dc1233b4c496954d496c6645f4304aadb6e07b22fb1e1a6fc4f820d81811bd3a",
+        "hooks/tests/test-eci-fast-path.sh": "2f67e222bf10b79d0491841053f644e20224aa483f1ee9730707f6231ff4bd77",
         "hooks/tests/test-eci-post-compact-refresh.sh": "7735c9d4b5d71d1f57dffedbafae32ce818019c865ba7250520971010aca66cf",
-        "hooks/tests/test-eci-review-gate.sh": "6fdb8d8a0e8a4aab410f96d5030225a7d873605956d93ae3f0d26dad93be8a88",
+        "hooks/tests/test-eci-review-gate.sh": "1fccf9e11c0c651078f600909e4b663f14d21bf2820df100099f567aa4ed19f6",
         "hooks/tests/test-session-snapshot-refresh.sh": "bd093a9a8a6e282e3a4d48b1905ebac59a370a273b0c416bec5defd5129d428d",
-        "hooks/tests/test-validate-bash-classifier.sh": "d4e488073a53300581510b5293404fea82640e346a15555a6fb2d45d7d397e5e",
+        "hooks/tests/test-validate-bash-classifier.sh": "ffb1d49a44f8fd33cab1283609c1ed7ee851e4f2d808349af57754d5dbc56a82",
         "hooks/tests/test-validate-bash-git-approvals.sh": "62553126dffa4373880142dd802d5737da29a9535868f7e7b7568f0b920c8261",
         "hooks/tests/test-policy-design-boundary.sh": "e084a05ad1ed7a001c6bbd7816a36ba5aad386d91fd27012329d1671d87a1de3",
         "hooks/tests/test-eci-edit-control-paths.sh": "ba7e26be82c09748e57c4c79d092ab46420a40f116bcdff2e6988e00142ce2f7",
         "hooks/tests/test-eci-diagnostic-specificity.sh": "fbb40f2b717834f3eaad96535a3c3ed52e576f25c2ce8b678d84b6add2ab4dc0",
-        "hooks/tests/test-eci-marker-scope.sh": "64300cd57c7feef8b1de358078541acba4f1844e9e789c153cae56acfc089875",
+        "hooks/tests/test-eci-marker-scope.sh": "0f50c85f9f7a7bab5ee436c2a2011ecf93ae199c2fcf85273778440c40ad4b8e",
         "hooks/tests/test-pretooluse-latency.sh": "7e8f73f23dafd6389103c97f599c558aa56a6b46ee5d8d82fc32df3ed4e7dcca",
         "hooks/tests/test-pre-commit-go-mod.sh": "39256e08a8512ca00263dfb8b4a67593c512a3488c8ea16e684f68ffd6b095a4",
-        "hooks/tests/test-eci-command-syntax-gating.sh": "78fe91f5dfd1d92c051ab260eb62dd47c47a4bed0362179c3c53d007a43894d8",
+        "hooks/tests/test-eci-command-syntax-gating.sh": "38172badbec1800bf89313e6516a47feb912b1bf48b31f3d3053b47a9366ff3a",
         "hooks/tests/test-go-mod-hook-parity.sh": "63ba8579491e894bfb2adfe6d84e1bd056c1d814c4c5c0e97c25e417c3cbb5cf",
-        "hooks/tests/test-stop-loop-guidance.sh": "f8fa9f1f036a8511a029d90e5466736b292dd089106a5fc735d4336d79d538d6",
+        "hooks/tests/test-stop-loop-guidance.sh": "caa8fdf230ad85f08dde9eb37d23862ff6b95c8cf53be98b0df42b7910651143",
     },
     ".kimi-code": {
         "hooks/install-pre-commit-go-mod.sh": "7d98c8e7a6644fab8383631c58a30ec8f6bf62572b18cce74b6241462d6c7cd0",
@@ -9316,6 +9349,12 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     read_only=true
     coordinator_inspection_allowed=true
   elif [ "$(classify_eci_command "$command" 2>/dev/null || true)" = read-only ]; then
+    read_only=true
+  elif [ "$hook_is_subagent" = true ] && [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]; then
+    # The worker Git route has already validated the current-repository
+    # read-only capability and ownership boundary.  Preserve that decision
+    # through the legacy adapter instead of reapplying its old command-name
+    # allowlist.
     read_only=true
   fi
 elif command_is_read_only "$command"; then

@@ -61,12 +61,11 @@ proof_dir="$root/$session_id"
 # Stop marker namespace.
 eci_stop_max_markers=64
 eci_stop_max_marker_bytes="$codex_eci_marker_max_bytes"
-# The fallback ambiguity scan is deliberately finite.  It only inspects
-# immediate session marker paths; it never expands an unbounded shell glob or
-# walks arbitrary descendants.  A typed direct-session lookup remains the
-# normal O(1) marker probe, while this cap preserves duplicate-owner checks
-# when ambiguity must be examined.
-eci_stop_max_root_entries=64
+# The fallback ambiguity scan is deliberately finite. It only emits actual
+# immediate-session eci_active candidates; unrelated proof files/directories
+# do not consume the candidate bound. A typed direct-session lookup remains
+# the normal O(1) marker probe, while this cap preserves duplicate-owner
+# checks when ambiguity must be examined.
 
 stop_direct_marker_path() {
   local candidate
@@ -77,23 +76,15 @@ stop_direct_marker_path() {
 }
 
 stop_marker_scan() {
-  local marker marker_count=0 root_entry_count=0
+  local marker marker_count=0
 
   [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  # Do not use "$root"/* here: pathname expansion happens before the shell
-  # can enforce a cap and can allocate an attacker-sized array.  Count
-  # immediate proof-root entries before checking marker types; an overflow is
-  # unsafe ambiguity state, while a valid typed session with no direct marker
-  # skips this fallback entirely.
+  # Enumerate only the bounded marker namespace. The find depth is exactly the
+  # proof-root/session/eci_active layout, so ordinary proof artifacts never
+  # consume marker capacity. Existing candidates, including symlink or
+  # non-regular eci_active paths, are emitted for strict validation below
+  # instead of being silently discarded.
   while IFS= read -r -d '' marker; do
-    root_entry_count=$((root_entry_count + 1))
-    if [ "$root_entry_count" -gt "$eci_stop_max_root_entries" ]; then
-      printf '%s\0' '__ECI_STOP_ROOT_ENTRY_OVERFLOW__'
-      return 0
-    fi
-    [ -d "$marker" ] && [ ! -L "$marker" ] || continue
-    marker="${marker%/}/eci_active"
-    [ -e "$marker" ] || [ -L "$marker" ] || continue
     marker_count=$((marker_count + 1))
     if [ "$marker_count" -gt "$eci_stop_max_markers" ]; then
       # A sentinel avoids an unbounded output/status channel in process
@@ -102,7 +93,7 @@ stop_marker_scan() {
       return 0
     fi
     printf '%s\0' "$marker"
-  done < <(find "$root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
+  done < <(find "$root" -mindepth 2 -maxdepth 2 -name eci_active -print0 2>/dev/null || true)
 }
 
 stop_marker_cache=()
@@ -202,7 +193,7 @@ stop_marker_cache_load() {
   [ -d "$root" ] || return 0
   while IFS= read -r -d '' marker; do
     case "$marker" in
-      __ECI_STOP_MARKER_OVERFLOW__|__ECI_STOP_ROOT_ENTRY_OVERFLOW__)
+      __ECI_STOP_MARKER_OVERFLOW__)
         stop_marker_cache_status=2
         return 2
         ;;
@@ -390,15 +381,66 @@ stop_diagnostic() {
   eci_diagnostic_reason "$code" "Stop" "stop-admission" "$subject" "$reason" "$remediation"
 }
 
+# When a bounded marker scan finds unsafe state, diagnostics must still bind
+# to the callback's owner. A stale marker from another session/cwd is not a
+# candidate for a current-session scope error. Prefer the direct marker first;
+# otherwise admit only the current session (or a reserved marker whose
+# embedded owner and cwd match) to diagnostic selection.
+stop_marker_candidate_matches_current() {
+  local marker="$1" marker_dir marker_name marker_owner marker_cwd
+
+  [ -n "$session_id" ] || return 1
+  case "$marker" in
+    "$root"/*/eci_active) ;;
+    *) return 1 ;;
+  esac
+  marker_dir="${marker%/*}"
+  marker_name="${marker_dir##*/}"
+  if codex_eci_marker_path_session_matches "$marker" "$session_id"; then
+    return 0
+  fi
+  codex_reserved_proof_dir "$marker_name" || return 1
+  marker_owner="$(codex_state_value "$marker" session_id 2>/dev/null || true)"
+  [ "$marker_owner" = "$session_id" ] || return 1
+  marker_cwd="$(codex_state_value "$marker" cwd 2>/dev/null || true)"
+  [ -n "$marker_cwd" ] || return 1
+  [ "$(codex_canonical_cwd "$marker_cwd")" = "${canonical_stop_cwd:-$cwd}" ]
+}
+
 # Active ECI is a main/orchestrator concern. Keep the ordinary authoritative
 # fast path to marker probes; only a direct-session validated wait state reads
 # bounded state/report data, and that exceptional path never mutates it.
 json_block_fast() {
-  local marker="$1" reason marker_code
+  local marker="$1" reason marker_code direct_marker=""
   [ -n "$marker" ] || marker="$stop_invalid_marker"
-  if [ -z "$marker" ] && [ "${#stop_marker_cache[@]}" -gt 0 ]; then
+
+  # A queued callback or older selector can supply a marker path that is no
+  # longer authoritative. A non-transcript callback with a direct current
+  # marker must diagnose that current owner, while an unsafe/overflowed scan
+  # remains the higher-priority fail-closed condition.
+  if [ -z "${transcript_path:-}" ] &&
+    codex_valid_session_id "${session_id:-}" &&
+    [ "${stop_marker_cache_status:-0}" -ne 2 ] &&
+    codex_proof_root_is_safe &&
+    direct_marker="$(stop_direct_marker_path 2>/dev/null || true)" &&
+    [ -n "$direct_marker" ] && [ "$marker" != "$direct_marker" ]; then
+    marker="$direct_marker"
+    if codex_eci_marker_is_valid_for_cwd "$marker" "${canonical_stop_cwd:-$cwd}"; then
+      stop_direct_marker_valid_fast=true
+    fi
+  fi
+
+  if [ -z "$marker" ] &&
+    [ "${stop_marker_cache_status:-0}" -ne 2 ] &&
+    [ "${#stop_marker_cache[@]}" -gt 0 ]; then
     local candidate candidate_code
     for candidate in "${stop_marker_cache[@]}"; do
+      # A nonempty malformed session cannot equal any path owner, but its
+      # active marker still needs a concrete scope diagnostic. Empty and
+      # syntactically valid sessions keep the current-owner filter.
+      if [ -z "$session_id" ] || codex_valid_session_id "$session_id"; then
+        stop_marker_candidate_matches_current "$candidate" || continue
+      fi
       candidate_code="$(codex_eci_marker_failure_code "$candidate" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
       if [ -n "$candidate_code" ] && [ "$candidate_code" != ECI_MARKER_VALID ]; then
         marker="$candidate"
@@ -866,32 +908,6 @@ stop_direct_marker_is_valid_fast() {
   marker_dir="${marker%/*}"
   marker_name="${marker_dir##*/}"
   [ "$marker_name" = "$session_id" ]
-}
-
-# When a bounded marker scan finds unsafe state, diagnostics must still bind
-# to the callback's owner.  A stale marker from another session/cwd is not a
-# candidate for a current-session scope error.  Prefer the direct marker
-# first; otherwise admit only the current session (or a reserved marker whose
-# embedded owner and cwd match) to diagnostic selection.
-stop_marker_candidate_matches_current() {
-  local marker="$1" marker_dir marker_name marker_owner marker_cwd
-
-  [ -n "$session_id" ] || return 1
-  case "$marker" in
-    "$root"/*/eci_active) ;;
-    *) return 1 ;;
-  esac
-  marker_dir="${marker%/*}"
-  marker_name="${marker_dir##*/}"
-  if codex_eci_marker_path_session_matches "$marker" "$session_id"; then
-    return 0
-  fi
-  codex_reserved_proof_dir "$marker_name" || return 1
-  marker_owner="$(codex_state_value "$marker" session_id 2>/dev/null || true)"
-  [ "$marker_owner" = "$session_id" ] || return 1
-  marker_cwd="$(codex_state_value "$marker" cwd 2>/dev/null || true)"
-  [ -n "$marker_cwd" ] || return 1
-  [ "$(codex_canonical_cwd "$marker_cwd")" = "${canonical_stop_cwd:-$cwd}" ]
 }
 
 active_eci_marker_for_stop() {

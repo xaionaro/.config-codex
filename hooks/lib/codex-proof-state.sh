@@ -72,7 +72,7 @@ codex_eci_marker_path_session_matches() {
 # the shared writer/reader helpers so creation and the Stop fast path enforce
 # the same finite bound without scanning recovery state.
 codex_eci_marker_max_bytes=4096
-codex_eci_marker_scan_max_root_entries=64
+codex_eci_marker_scan_max_candidates=64
 codex_eci_marker_scan_overflow_token="__CODEX_ECI_MARKER_SCAN_OVERFLOW__"
 codex_eci_marker_scan_unsafe_token="__CODEX_ECI_MARKER_SCAN_UNSAFE__"
 
@@ -97,11 +97,13 @@ codex_eci_marker_file_is_bounded() {
   [ "$within" = true ]
 }
 
-# Enumerate only a finite number of immediate proof-root entries.  Callers
-# treat the overflow token as unsafe control state; no active Stop path should
-# walk an unbounded set of unrelated session-like directories.
+# Enumerate only a finite number of immediate-session eci_active candidates.
+# Unrelated proof files/directories do not consume marker capacity. Callers
+# treat the overflow token as unsafe control state; malformed or unsafe
+# candidates remain in the stream for strict validation rather than being
+# silently discarded.
 codex_eci_marker_candidates_bounded() {
-  local root entry marker count=0
+  local root entry count=0
 
   root="$(codex_proof_root)"
   if ! codex_proof_root_is_safe; then
@@ -111,16 +113,12 @@ codex_eci_marker_candidates_bounded() {
   [ -d "$root" ] || return 0
   while IFS= read -r -d '' entry; do
     count=$((count + 1))
-    if [ "$count" -gt "$codex_eci_marker_scan_max_root_entries" ]; then
+    if [ "$count" -gt "$codex_eci_marker_scan_max_candidates" ]; then
       printf '%s\n' "$codex_eci_marker_scan_overflow_token"
       return 0
     fi
-    [ -d "$entry" ] && [ ! -L "$entry" ] || continue
-    marker="$entry/eci_active"
-    if [ -e "$marker" ] || [ -L "$marker" ]; then
-      printf '%s\n' "$marker"
-    fi
-  done < <(find "$root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+    printf '%s\n' "$entry"
+  done < <(find "$root" -mindepth 2 -maxdepth 2 -name eci_active -print0 2>/dev/null)
 }
 
 # State writers use these no-follow final-component checks before mkdir or

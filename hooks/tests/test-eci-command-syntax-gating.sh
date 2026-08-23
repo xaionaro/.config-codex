@@ -103,6 +103,32 @@ assert_unbound_marker_allows_multiline() {
   }
 }
 
+assert_malformed_marker_binding() {
+  local hook="$1" proof_root output session_id=malformed-marker expected_code=ECI_MARKER_MALFORMED marker_path
+  proof_root="$TMP_ROOT/$(basename "$(dirname "$hook")")-malformed-marker"
+  output="$TMP_ROOT/$(basename "$(dirname "$hook")")-malformed-marker.out"
+  case "$hook" in
+    */.codex/*) expected_code=ECI_MARKER_OWNERSHIP_INVALID ;;
+  esac
+  mkdir -p "$proof_root/$session_id"
+  printf '%s\n' \
+    'scope: malformed-marker' \
+    "cwd: $ROOT" \
+    'session_id: malformed!' \
+    'created_utc: 2026-08-18T00:00:00Z' \
+    >"$proof_root/$session_id/eci_active"
+  marker_path="$proof_root/$session_id/eci_active"
+  # Direct Git inspection must validate an active marker before the
+  # coordinator read-only route admits the command.
+  run_hook "$hook" "$proof_root" "$session_id" "git status --short" "$output"
+  jq -e --arg session "$session_id" --arg expected_code "$expected_code" --arg marker_path "$marker_path" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains(("[" + $expected_code + "]"))) and
+    (.hookSpecificOutput.permissionDecisionReason | contains($marker_path)) and
+    (.hookSpecificOutput.permissionDecisionReason | contains($session))
+  ' "$output" >/dev/null
+}
+
 assert_active_overflow_without_owner_allows() {
   local hook="$1" proof_root output session_id=active-overflow
   proof_root="$TMP_ROOT/$(basename "$(dirname "$hook")")-active-overflow"
@@ -175,6 +201,7 @@ assert_active_allows_bounded_read_only() {
     "printenv PATH" \
     "printenv PATH PWD" \
     "env FOO=bar novel-tool --flag value" \
+    "env FOO=bar python3 -m pytest tests" \
     "env -i novel-tool" \
     "env -u FOO novel-tool"; do
     run_hook "$hook" "$proof_root" "$session_id" "$environment_command" "$output"
@@ -185,7 +212,8 @@ assert_active_allows_bounded_read_only() {
     "env | sort;ECI_ENVIRONMENT_ENUMERATION_DENIED;token=env;argv_index=0" \
     "env | sort | rg '^PATH=';ECI_ENVIRONMENT_ENUMERATION_DENIED;token=env;argv_index=0" \
     "printenv;ECI_ENVIRONMENT_ENUMERATION_DENIED;token=printenv;argv_index=0" \
-    "printenv OPENAI_API_KEY;ECI_ENVIRONMENT_NAME_DENIED;token=OPENAI_API_KEY;argv_index=1"; do
+    "printenv OPENAI_API_KEY;ECI_ENVIRONMENT_NAME_DENIED;token=OPENAI_API_KEY;argv_index=1" \
+    "env --unset=9FOO novel-tool;ECI_ENVIRONMENT_OPTION_DENIED;token=--unset=9FOO;argv_index=1"; do
     IFS=';' read -r environment_command environment_code environment_token environment_index <<<"$environment_case"
     run_hook "$hook" "$proof_root" "$session_id" "$environment_command" "$output"
     jq -e --arg code "[$environment_code]" --arg token "$environment_token" --arg index "$environment_index" '
@@ -198,6 +226,15 @@ assert_active_allows_bounded_read_only() {
       (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
     ' "$output" >/dev/null || return 1
   done
+  run_hook "$hook" "$proof_root" "$session_id" "env FOO=bar python3 -c 'print(1)'" "$output"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_DYNAMIC_LAUNCH_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("token=-c")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=dynamic-interpreter-launch")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null || return 1
   run_hook "$hook" "$proof_root" "$session_id" "sed -n '1p' $log_path" "$output"
   [ ! -s "$output" ] || return 1
   evidence_dir="$proof_root/$session_id/evidence"
@@ -337,6 +374,7 @@ assert_inactive_allows_multiline "$ROOT/hooks/validate-bash.sh"
 assert_inactive_allows_shell_substitution "$ROOT/hooks/validate-bash.sh"
 assert_inactive_allows_bounded_read_only "$ROOT/hooks/validate-bash.sh"
 assert_unbound_marker_allows_multiline "$ROOT/hooks/validate-bash.sh"
+assert_malformed_marker_binding "$ROOT/hooks/validate-bash.sh"
 assert_active_allows_multiline_plan "$ROOT/hooks/validate-bash.sh"
 assert_active_allows_bounded_read_only "$ROOT/hooks/validate-bash.sh"
 assert_active_overflow_without_owner_allows "$ROOT/hooks/validate-bash.sh"
@@ -347,6 +385,7 @@ assert_inactive_allows_multiline "$KIMI_ROOT/hooks/validate-bash.sh"
 assert_inactive_allows_shell_substitution "$KIMI_ROOT/hooks/validate-bash.sh"
 assert_inactive_allows_bounded_read_only "$KIMI_ROOT/hooks/validate-bash.sh"
 assert_unbound_marker_allows_multiline "$KIMI_ROOT/hooks/validate-bash.sh"
+assert_malformed_marker_binding "$KIMI_ROOT/hooks/validate-bash.sh"
 assert_active_allows_multiline_plan "$KIMI_ROOT/hooks/validate-bash.sh"
 assert_active_allows_bounded_read_only "$KIMI_ROOT/hooks/validate-bash.sh"
 assert_active_cleanup_route "$KIMI_ROOT/hooks/validate-bash.sh"

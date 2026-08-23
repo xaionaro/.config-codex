@@ -47,7 +47,10 @@ rebind_manifest_row_identity() {
   rebound_spawn="$spawn.rebound-$index"
   rebound_report="$report.rebound-$index"
   rebound_adjudication="$adjudication.rebound-$index"
-  sed -E "s/^child_identity: .*/child_identity: $child/" "$spawn" >"$rebound_spawn"
+  sed -E \
+    -e "s/^target_id: .*/target_id: $target_id/" \
+    -e "s/^child_identity: .*/child_identity: $child/" \
+    "$spawn" >"$rebound_spawn"
   sed -E "s/^eci_critic_identity: .*/eci_critic_identity: session_id=$sid;target_id=$target_id;critic_role=$role;gate_phase=$phase;child_identity=$child;critic_provider=$provider;critic_semantic_role=$semantic_role;critic_provenance=$provenance/" "$report" >"$rebound_report"
   spawn_sha="$(sha "$rebound_spawn")"
   report_sha="$(sha "$rebound_report")"
@@ -1297,31 +1300,40 @@ test_deletion_target_uses_explicit_tombstone_route() {
 }
 
 test_prewrite_requires_exact_c_admission() {
-  local proof_root="$TMP_ROOT/prewrite" sid session_dir out err manifest original ledger
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  printf '%s\n' 'scope: active prewrite' >"$session_dir/eci_active"
-  manifest="$session_dir/eci-required-critics.json"
-  original="$TMP_ROOT/prewrite-original.json"
-  cp "$manifest" "$original"
-  jq -c '.rows |= map(select(.critic_role == "C" and .gate_phase == "prewrite"))' "$original" >"$manifest"
-  ledger="$session_dir/eci-required-critics.prewrite.1.ledger"
-  if ECI_PREWRITE_TARGET="$ROOT/hooks/eci-review-gate.sh" \
-    ECI_PREWRITE_WRITER_SESSION='wrong-writer' \
-    run_gate "$proof_root" prewrite "$sid" "$TMP_ROOT/prewrite-invalid.out" "$TMP_ROOT/prewrite-invalid.err"; then
-    return 1
-  fi
-  [ ! -e "$ledger" ] || [ ! -s "$ledger" ] || return 1
-  out="$TMP_ROOT/prewrite.out"; err="$TMP_ROOT/prewrite.err"
-  ECI_PREWRITE_TARGET="$ROOT/hooks/eci-review-gate.sh" \
-    ECI_PREWRITE_WRITER_SESSION='session-root' \
-    run_gate "$proof_root" prewrite "$sid" "$out" "$err"
-  grep -Fq 'phase=prewrite' "$out"
-  grep -Fq 'target_path: ' "$session_dir/eci-prewrite-admitted.1"
+  local proof_root="$TMP_ROOT/prewrite" fixture_repo="$TMP_ROOT/prewrite-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir out err manifest original ledger
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    printf '%s\n' 'scope: active prewrite' >"$session_dir/eci_active"
+    manifest="$session_dir/eci-required-critics.json"
+    original="$TMP_ROOT/prewrite-original.json"
+    cp "$manifest" "$original"
+    jq -c '.rows |= map(select(.critic_role == "C" and .gate_phase == "prewrite"))' "$original" >"$manifest"
+    ledger="$session_dir/eci-required-critics.prewrite.1.ledger"
+    if ECI_PREWRITE_TARGET="$fixture_target" \
+      ECI_PREWRITE_WRITER_SESSION='wrong-writer' \
+      run_gate "$proof_root" prewrite "$sid" "$TMP_ROOT/prewrite-invalid.out" "$TMP_ROOT/prewrite-invalid.err"; then
+      return 1
+    fi
+    [ ! -e "$ledger" ] || [ ! -s "$ledger" ] || return 1
+    out="$TMP_ROOT/prewrite.out"; err="$TMP_ROOT/prewrite.err"
+    ECI_PREWRITE_TARGET="$fixture_target" \
+      ECI_PREWRITE_WRITER_SESSION='session-root' \
+      run_gate "$proof_root" prewrite "$sid" "$out" "$err"
+    grep -Fq 'phase=prewrite' "$out"
+    grep -Fq 'target_path: ' "$session_dir/eci-prewrite-admitted.1"
+  )
 }
 
 test_acceptance_version_and_prewrite_lifecycle() {
-  local proof_root sid manifest original
+  local proof_root sid manifest original fixture_repo="$TMP_ROOT/acceptance-version-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh"
 
   proof_root="$TMP_ROOT/version-header"
   sid="$(build_manifest "$proof_root" root)"
@@ -1331,320 +1343,375 @@ test_acceptance_version_and_prewrite_lifecycle() {
   jq -c '.acceptance_version = "0"' "$original" >"$manifest"
   assert_reject "$proof_root" "$sid" 'manifest v2 schema'
 
-  proof_root="$TMP_ROOT/version-row"
-  sid="$(build_manifest "$proof_root" root)"
-  manifest="$proof_root/$sid/eci-required-critics.json"
-  jq -c '.rows[0].acceptance_version = "2"' "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  assert_reject "$proof_root" "$sid" 'changed acceptance_version'
+  prepare_clean_review_gate_fixture "$fixture_repo"
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
 
-  proof_root="$TMP_ROOT/prewrite-late"
-  sid="$(build_manifest "$proof_root" root)"
-  manifest="$proof_root/$sid/eci-required-critics.json"
-  run_gate "$proof_root" final "$sid" "$TMP_ROOT/prewrite-late-final.out" "$TMP_ROOT/prewrite-late-final.err"
-  jq -c '.rows |= map(select(.critic_role == "C" and .gate_phase == "prewrite"))' "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  if ECI_PREWRITE_TARGET="$ROOT/hooks/eci-review-gate.sh" \
-    ECI_PREWRITE_WRITER_SESSION='session-root' \
-    run_gate "$proof_root" prewrite "$sid" "$TMP_ROOT/prewrite-late.out" "$TMP_ROOT/prewrite-late.err"; then
-    return 1
-  fi
-  [ -s "$TMP_ROOT/prewrite-late.err" ]
+    proof_root="$TMP_ROOT/version-row"
+    sid="$(build_manifest "$proof_root" root)"
+    manifest="$proof_root/$sid/eci-required-critics.json"
+    jq -c '.rows[0].acceptance_version = "2"' "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    assert_reject "$proof_root" "$sid" 'changed acceptance_version'
 
-  proof_root="$TMP_ROOT/version-snapshot"
-  sid="$(build_manifest "$proof_root" root)"
-  manifest="$proof_root/$sid/eci-required-critics.json"
-  run_gate "$proof_root" final "$sid" "$TMP_ROOT/version-snapshot-v1.out" "$TMP_ROOT/version-snapshot-v1.err"
-  jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2")' "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/version-snapshot-v2.out" "$TMP_ROOT/version-snapshot-v2.err"; then
-    return 1
-  fi
-  grep -Fq 'unchanged snapshot' "$TMP_ROOT/version-snapshot-v2.err"
-  [ -f "$proof_root/$sid/eci-required-critics.final.1.ledger" ]
-  [ "$(wc -l <"$proof_root/$sid/eci-required-critics.final.1.ledger")" -eq 4 ]
+    proof_root="$TMP_ROOT/prewrite-late"
+    sid="$(build_manifest "$proof_root" root)"
+    manifest="$proof_root/$sid/eci-required-critics.json"
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/prewrite-late-final.out" "$TMP_ROOT/prewrite-late-final.err"
+    jq -c '.rows |= map(select(.critic_role == "C" and .gate_phase == "prewrite"))' "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    if ECI_PREWRITE_TARGET="$fixture_target" \
+      ECI_PREWRITE_WRITER_SESSION='session-root' \
+      run_gate "$proof_root" prewrite "$sid" "$TMP_ROOT/prewrite-late.out" "$TMP_ROOT/prewrite-late.err"; then
+      return 1
+    fi
+    [ -s "$TMP_ROOT/prewrite-late.err" ]
+
+    proof_root="$TMP_ROOT/version-snapshot"
+    sid="$(build_manifest "$proof_root" root)"
+    manifest="$proof_root/$sid/eci-required-critics.json"
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/version-snapshot-v1.out" "$TMP_ROOT/version-snapshot-v1.err"
+    jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2")' "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/version-snapshot-v2.out" "$TMP_ROOT/version-snapshot-v2.err"; then
+      return 1
+    fi
+    grep -Fq 'unchanged snapshot' "$TMP_ROOT/version-snapshot-v2.err"
+    [ -f "$proof_root/$sid/eci-required-critics.final.1.ledger" ]
+    [ "$(wc -l <"$proof_root/$sid/eci-required-critics.final.1.ledger")" -eq 4 ]
+  )
 }
 
 test_commit_to_changed_snapshot_off_transition() {
   local first_root="$TMP_ROOT/transition-first" second_root="$TMP_ROOT/transition-second"
+  local fixture_repo="$TMP_ROOT/transition-repo" fixture_target="$TMP_ROOT/transition-repo/hooks/eci-review-gate.sh"
   local sid session_dir second_session_dir transition manifest out err
-  sid="$(build_manifest "$first_root" root)"
-  run_gate "$first_root" commit "$sid" "$TMP_ROOT/transition-commit.out" "$TMP_ROOT/transition-commit.err"
-  session_dir="$first_root/$sid"
-  transition="$ROOT/hooks/.eci-review-gate-transition-$BASHPID"
-  root_fixture="$transition"
-  # Keep this fixture until the off snapshot consumes it.  The top-level EXIT
-  # cleanup is the failure fallback; a process-wide RETURN trap here can be
-  # inherited by callers running bash with functrace and disturb diagnostics.
-  printf '%s\n' transition >"$transition"
+  prepare_clean_review_gate_fixture "$fixture_repo"
+  root_fixture="$fixture_repo/hooks/.eci-review-gate-transition-$BASHPID"
 
-  build_manifest "$second_root" root >/dev/null
-  second_session_dir="$second_root/$sid"
-  cp "$session_dir/eci-acceptance-anchor" "$second_session_dir/eci-acceptance-anchor"
-  cp "$session_dir/eci-required-critics.commit.1.ledger" "$second_session_dir/eci-required-critics.commit.1.ledger"
-  cp "$session_dir/eci-critic-identities.ledger" "$second_session_dir/eci-critic-identities.ledger"
-  manifest="$second_session_dir/eci-required-critics.json"
-  jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2" | .child_identity += "-v2")' \
-    "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  # The v2 transition intentionally uses fresh child identities.  Rebind each
-  # copied adjudication artifact to that identity before testing the off
-  # boundary; otherwise the closed adjudication contract rejects the fixture
-  # before the transition lineage is exercised.
-  for index in $(jq -r 'range(.rows | length)' "$manifest"); do
-    child="$(jq -r ".rows[$index].child_identity" "$manifest")"
-    rebind_manifest_row_identity "$manifest" "$index" "$child"
-  done
-  {
-    printf 'scope: transition\n'
-    printf 'cwd: %s\n' "$ROOT"
-    printf 'session_id: %s\n' "$sid"
-    printf 'created_utc: 2026-01-01T00:00:00Z\n'
-  } >"$second_session_dir/eci_active"
-  out="$TMP_ROOT/transition-off.out"
-  err="$TMP_ROOT/transition-off.err"
-  if ! run_gate "$second_root" off "$sid" "$out" "$err"; then
-    cat "$err" >&2
-    return 1
-  fi
-  grep -Fq 'phase=off' "$out"
-  rm -f -- "$transition"
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$first_root" root)"
+    run_gate "$first_root" commit "$sid" "$TMP_ROOT/transition-commit.out" "$TMP_ROOT/transition-commit.err"
+    session_dir="$first_root/$sid"
+    transition="$root_fixture"
+    # Keep this fixture until the off snapshot consumes it.  The top-level EXIT
+    # cleanup is the failure fallback; a process-wide RETURN trap here can be
+    # inherited by callers running bash with functrace and disturb diagnostics.
+    printf '%s\n' transition >"$transition"
+
+    build_manifest "$second_root" root >/dev/null
+    second_session_dir="$second_root/$sid"
+    cp "$session_dir/eci-acceptance-anchor" "$second_session_dir/eci-acceptance-anchor"
+    cp "$session_dir/eci-required-critics.commit.1.ledger" "$second_session_dir/eci-required-critics.commit.1.ledger"
+    cp "$session_dir/eci-critic-identities.ledger" "$second_session_dir/eci-critic-identities.ledger"
+    manifest="$second_session_dir/eci-required-critics.json"
+    jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2" | .child_identity += "-v2")' \
+      "$manifest" >"$manifest.tmp"
+    mv "$manifest.tmp" "$manifest"
+    # The v2 transition intentionally uses fresh child identities.  Rebind each
+    # copied adjudication artifact to that identity before testing the off
+    # boundary; otherwise the closed adjudication contract rejects the fixture
+    # before the transition lineage is exercised.
+    for index in $(jq -r 'range(.rows | length)' "$manifest"); do
+      child="$(jq -r ".rows[$index].child_identity" "$manifest")"
+      rebind_manifest_row_identity "$manifest" "$index" "$child"
+    done
+    {
+      printf 'scope: transition\n'
+      printf 'cwd: %s\n' "$fixture_repo"
+      printf 'session_id: %s\n' "$sid"
+      printf 'created_utc: 2026-01-01T00:00:00Z\n'
+    } >"$second_session_dir/eci_active"
+    out="$TMP_ROOT/transition-off.out"
+    err="$TMP_ROOT/transition-off.err"
+    if ! run_gate "$second_root" off "$sid" "$out" "$err"; then
+      cat "$err" >&2
+      return 1
+    fi
+    grep -Fq 'phase=off' "$out"
+    rm -f -- "$transition"
+  )
   root_fixture=""
 }
 
 test_final_to_off_consumes_admitted_identity() {
-  local proof_root="$TMP_ROOT/final-off" sid session_dir out err
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  run_gate "$proof_root" final "$sid" "$TMP_ROOT/final-off-final.out" "$TMP_ROOT/final-off-final.err"
-  {
-    printf 'scope: final-off\n'
-    printf 'cwd: %s\n' "$ROOT"
-    printf 'session_id: %s\n' "$sid"
-    printf 'created_utc: 2026-01-01T00:00:00Z\n'
-  } >"$session_dir/eci_active"
-  out="$TMP_ROOT/final-off-off.out"
-  err="$TMP_ROOT/final-off-off.err"
-  run_gate "$proof_root" off "$sid" "$out" "$err"
-  grep -Fq 'phase=off' "$out"
+  local proof_root="$TMP_ROOT/final-off" fixture_repo="$TMP_ROOT/final-off-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir out err
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/final-off-final.out" "$TMP_ROOT/final-off-final.err"
+    {
+      printf 'scope: final-off\n'
+      printf 'cwd: %s\n' "$fixture_repo"
+      printf 'session_id: %s\n' "$sid"
+      printf 'created_utc: 2026-01-01T00:00:00Z\n'
+    } >"$session_dir/eci_active"
+    out="$TMP_ROOT/final-off-off.out"
+    err="$TMP_ROOT/final-off-off.err"
+    run_gate "$proof_root" off "$sid" "$out" "$err"
+    grep -Fq 'phase=off' "$out"
+  )
 }
 
 test_identity_reuse_across_target_is_rejected() {
-  local proof_root="$TMP_ROOT/identity-reuse" sid session_dir manifest
-  local index adjudication candidate_adjudication target_id role phase child report_sha adjudication_sha
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  manifest="$session_dir/eci-required-critics.json"
-  run_gate "$proof_root" final "$sid" "$TMP_ROOT/identity-reuse-root.out" "$TMP_ROOT/identity-reuse-root.err"
-  jq -c '
-    .targets += [(.targets[0] | .target_id = "target-candidate" | .target_kind = "candidate-fix")] |
-    .rows += [.rows[0:4][] | .target_id = "target-candidate" | .target_kind = "candidate-fix" | .child_identity = (.child_identity + "-candidate")] |
-    .rows[5].child_identity = .rows[1].child_identity
-  ' "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  # Rebind the synthetic candidate rows so the closed adjudication record is
-  # valid and the assertion reaches the intended duplicate-identity check.
-  for index in 4 5 6 7; do
-    adjudication="$(jq -r ".rows[$index].adjudication_artifact" "$manifest")"
-    candidate_adjudication="${adjudication%.json}-candidate-$index.json"
-    cp -- "$adjudication" "$candidate_adjudication"
-    target_id="$(jq -r ".rows[$index].target_id" "$manifest")"
-    role="$(jq -r ".rows[$index].critic_role" "$manifest")"
-    phase="$(jq -r ".rows[$index].gate_phase" "$manifest")"
-    child="$(jq -r ".rows[$index].child_identity" "$manifest")"
-    report_sha="$(jq -r ".rows[$index].report_sha256" "$manifest")"
-    jq -c --arg target "$target_id" --arg role "$role" --arg phase "$phase" \
-      --arg child "$child" --arg report "$report_sha" \
-      '.target_id = $target | .critic_role = $role | .gate_phase = $phase | .child_identity = $child | .report_sha256 = $report' \
-      "$candidate_adjudication" >"$candidate_adjudication.tmp"
-    mv "$candidate_adjudication.tmp" "$candidate_adjudication"
-    adjudication_sha="$(sha "$candidate_adjudication")"
-    jq -c --argjson index "$index" --arg path "$candidate_adjudication" --arg sha "$adjudication_sha" \
-      '.rows[$index].adjudication_artifact = $path | .rows[$index].adjudication_sha256 = $sha' \
-      "$manifest" >"$manifest.tmp"
+  local proof_root="$TMP_ROOT/identity-reuse" fixture_repo="$TMP_ROOT/identity-reuse-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir manifest
+  local index child
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    manifest="$session_dir/eci-required-critics.json"
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/identity-reuse-root.out" "$TMP_ROOT/identity-reuse-root.err"
+    jq -c '
+      .targets += [(.targets[0] | .target_id = "target-candidate" | .target_kind = "candidate-fix")] |
+      .rows += [.rows[0:4][] | .target_id = "target-candidate" | .target_kind = "candidate-fix" | .child_identity = (.child_identity + "-candidate")] |
+      .rows[5].child_identity = .rows[1].child_identity
+    ' "$manifest" >"$manifest.tmp"
     mv "$manifest.tmp" "$manifest"
-  done
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/identity-reuse.out" "$TMP_ROOT/identity-reuse.err"; then
-    return 1
-  fi
-  grep -Fq 'reused critic identity' "$TMP_ROOT/identity-reuse.err" ||
-    grep -Fq 'reused child identity' "$TMP_ROOT/identity-reuse.err" ||
-    grep -Fq 'changed manifest after admission' "$TMP_ROOT/identity-reuse.err"
+    # Rebind the synthetic candidate rows so the closed adjudication record is
+    # valid and the assertion reaches the intended duplicate-identity check.
+    for index in 4 5 6 7; do
+      child="$(jq -r ".rows[$index].child_identity" "$manifest")"
+      rebind_manifest_row_identity "$manifest" "$index" "$child"
+    done
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/identity-reuse.out" "$TMP_ROOT/identity-reuse.err"; then
+      return 1
+    fi
+    grep -Fq 'reused critic identity' "$TMP_ROOT/identity-reuse.err" ||
+      grep -Fq 'reused child identity' "$TMP_ROOT/identity-reuse.err"
+  )
 }
 
 test_historical_admission_state_cannot_be_recreated() {
-  local proof_root="$TMP_ROOT/historical-state" sid session_dir ledger anchor
+  local proof_root="$TMP_ROOT/historical-state" fixture_repo="$TMP_ROOT/historical-state-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir ledger anchor
   local original_ledger first_char replacement first_line second_line
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  ledger="$session_dir/eci-required-critics.final.1.ledger"
-  anchor="$session_dir/eci-acceptance-anchor"
-  run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-first.out" "$TMP_ROOT/historical-first.err"
-  original_ledger="$TMP_ROOT/historical-state-original.ledger"
-  cp -- "$ledger" "$original_ledger"
-  first_char="$(head -c 1 -- "$ledger")"
-  case "$first_char" in
-    0) replacement=1 ;;
-    *) replacement=0 ;;
-  esac
-  { printf '%s' "$replacement"; tail -c +2 -- "$ledger"; } >"$ledger.mutated"
-  mv -- "$ledger.mutated" "$ledger"
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-mutated.out" "$TMP_ROOT/historical-mutated.err"; then
-    return 1
-  fi
-  grep -Fq 'mutated historical critic ledger' "$TMP_ROOT/historical-mutated.err"
-  cp -- "$original_ledger" "$ledger"
-  first_line="$(sed -n '1p' "$ledger")"
-  second_line="$(sed -n '2p' "$ledger")"
-  {
-    printf '%s\n' "$second_line"
-    printf '%s\n' "$first_line"
-    tail -n +3 -- "$ledger"
-  } >"$ledger.reordered"
-  mv -- "$ledger.reordered" "$ledger"
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-reordered.out" "$TMP_ROOT/historical-reordered.err"; then
-    return 1
-  fi
-  grep -Fq 'mutated historical critic ledger' "$TMP_ROOT/historical-reordered.err"
-  cp -- "$original_ledger" "$ledger"
-  rm -f -- "$ledger"
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-missing-ledger.out" "$TMP_ROOT/historical-missing-ledger.err"; then
-    return 1
-  fi
-  grep -Fq 'shortened or deleted ledger' "$TMP_ROOT/historical-missing-ledger.err"
+  prepare_clean_review_gate_fixture "$fixture_repo"
 
-  proof_root="$TMP_ROOT/historical-anchor"
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  anchor="$session_dir/eci-acceptance-anchor"
-  run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-anchor-first.out" "$TMP_ROOT/historical-anchor-first.err"
-  rm -f -- "$anchor"
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-missing-anchor.out" "$TMP_ROOT/historical-missing-anchor.err"; then
-    return 1
-  fi
-  grep -Fq 'historical critic evidence without its acceptance anchor' "$TMP_ROOT/historical-missing-anchor.err"
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    ledger="$session_dir/eci-required-critics.final.1.ledger"
+    anchor="$session_dir/eci-acceptance-anchor"
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-first.out" "$TMP_ROOT/historical-first.err"
+    original_ledger="$TMP_ROOT/historical-state-original.ledger"
+    cp -- "$ledger" "$original_ledger"
+    first_char="$(head -c 1 -- "$ledger")"
+    case "$first_char" in
+      0) replacement=1 ;;
+      *) replacement=0 ;;
+    esac
+    { printf '%s' "$replacement"; tail -c +2 -- "$ledger"; } >"$ledger.mutated"
+    mv -- "$ledger.mutated" "$ledger"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-mutated.out" "$TMP_ROOT/historical-mutated.err"; then
+      return 1
+    fi
+    grep -Fq 'mutated historical critic ledger' "$TMP_ROOT/historical-mutated.err"
+    cp -- "$original_ledger" "$ledger"
+    first_line="$(sed -n '1p' "$ledger")"
+    second_line="$(sed -n '2p' "$ledger")"
+    {
+      printf '%s\n' "$second_line"
+      printf '%s\n' "$first_line"
+      tail -n +3 -- "$ledger"
+    } >"$ledger.reordered"
+    mv -- "$ledger.reordered" "$ledger"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-reordered.out" "$TMP_ROOT/historical-reordered.err"; then
+      return 1
+    fi
+    grep -Fq 'mutated historical critic ledger' "$TMP_ROOT/historical-reordered.err"
+    cp -- "$original_ledger" "$ledger"
+    rm -f -- "$ledger"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-missing-ledger.out" "$TMP_ROOT/historical-missing-ledger.err"; then
+      return 1
+    fi
+    grep -Fq 'shortened or deleted ledger' "$TMP_ROOT/historical-missing-ledger.err"
+
+    proof_root="$TMP_ROOT/historical-anchor"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    anchor="$session_dir/eci-acceptance-anchor"
+    run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-anchor-first.out" "$TMP_ROOT/historical-anchor-first.err"
+    rm -f -- "$anchor"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/historical-missing-anchor.out" "$TMP_ROOT/historical-missing-anchor.err"; then
+      return 1
+    fi
+    grep -Fq 'historical critic evidence without its acceptance anchor' "$TMP_ROOT/historical-missing-anchor.err"
+  )
 }
 
 test_acceptance_transaction_recovers_each_publication_boundary() {
   local boundary proof_root sid session_dir transaction anchor ledger
-  for boundary in ledger identity anchor; do
-    proof_root="$TMP_ROOT/recovery-$boundary"
-    sid="$(build_manifest "$proof_root" root)"
-    session_dir="$proof_root/$sid"
-    transaction="$session_dir/eci-acceptance-transaction"
-    anchor="$session_dir/eci-acceptance-anchor"
-    ledger="$session_dir/eci-required-critics.final.1.ledger"
-    if ECI_REVIEW_GATE_TEST_FAIL_AFTER="$boundary" run_gate "$proof_root" final "$sid" \
-      "$TMP_ROOT/recovery-$boundary-fail.out" "$TMP_ROOT/recovery-$boundary-fail.err"; then
-      return 1
-    fi
-    [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
-    case "$boundary" in
-      ledger) [ -f "$ledger" ] && [ ! -e "$anchor" ] || return 1 ;;
-      identity) [ -f "$ledger" ] && [ -f "$session_dir/eci-critic-identities.ledger" ] && [ ! -e "$anchor" ] || return 1 ;;
-      anchor) [ -f "$anchor" ] || return 1 ;;
-    esac
-    run_gate "$proof_root" final "$sid" \
-      "$TMP_ROOT/recovery-$boundary-replay.out" "$TMP_ROOT/recovery-$boundary-replay.err"
-    [ -f "$anchor" ] && [ ! -e "$transaction" ] || return 1
-  done
+  local fixture_repo="$TMP_ROOT/recovery-publication-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh"
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    for boundary in ledger identity anchor; do
+      proof_root="$TMP_ROOT/recovery-$boundary"
+      sid="$(build_manifest "$proof_root" root)"
+      session_dir="$proof_root/$sid"
+      transaction="$session_dir/eci-acceptance-transaction"
+      anchor="$session_dir/eci-acceptance-anchor"
+      ledger="$session_dir/eci-required-critics.final.1.ledger"
+      if ECI_REVIEW_GATE_TEST_FAIL_AFTER="$boundary" run_gate "$proof_root" final "$sid" \
+        "$TMP_ROOT/recovery-$boundary-fail.out" "$TMP_ROOT/recovery-$boundary-fail.err"; then
+        return 1
+      fi
+      [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
+      case "$boundary" in
+        ledger) [ -f "$ledger" ] && [ ! -e "$anchor" ] || return 1 ;;
+        identity) [ -f "$ledger" ] && [ -f "$session_dir/eci-critic-identities.ledger" ] && [ ! -e "$anchor" ] || return 1 ;;
+        anchor) [ -f "$anchor" ] || return 1 ;;
+      esac
+      run_gate "$proof_root" final "$sid" \
+        "$TMP_ROOT/recovery-$boundary-replay.out" "$TMP_ROOT/recovery-$boundary-replay.err"
+      [ -f "$anchor" ] && [ ! -e "$transaction" ] || return 1
+    done
+  )
 }
 
 test_acceptance_transaction_binds_published_prefixes() {
-  local proof_root="$TMP_ROOT/recovery-prefix" sid session_dir transaction out err
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  transaction="$session_dir/eci-acceptance-transaction"
-  out="$TMP_ROOT/recovery-prefix-fail.out"
-  err="$TMP_ROOT/recovery-prefix-fail.err"
-  if ECI_REVIEW_GATE_TEST_FAIL_AFTER=ledger run_gate "$proof_root" final "$sid" "$out" "$err"; then
-    return 1
-  fi
-  [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
-  grep -Fxq 'schema: eci-acceptance-transaction/v2' "$transaction" || return 1
-  grep -Fxq 'state: ledger-published' "$transaction" || return 1
-  grep -Fq 'ledger_sha256: ' "$transaction" || return 1
-  grep -Fq 'identity_sha256: ' "$transaction" || return 1
+  local proof_root="$TMP_ROOT/recovery-prefix" fixture_repo="$TMP_ROOT/recovery-prefix-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir transaction out err
+  prepare_clean_review_gate_fixture "$fixture_repo"
 
-  # A recovery record whose published prefix no longer matches must not be
-  # silently repaired as if the ledger/identity publication never happened.
-  sed -i 's/^ledger_sha256: .*/ledger_sha256: 0000000000000000000000000000000000000000000000000000000000000000/' "$transaction"
-  if run_gate "$proof_root" final "$sid" "$TMP_ROOT/recovery-prefix-tampered.out" "$TMP_ROOT/recovery-prefix-tampered.err"; then
-    return 1
-  fi
-  grep -Fq 'transaction ledger prefix' "$TMP_ROOT/recovery-prefix-tampered.err"
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    transaction="$session_dir/eci-acceptance-transaction"
+    out="$TMP_ROOT/recovery-prefix-fail.out"
+    err="$TMP_ROOT/recovery-prefix-fail.err"
+    if ECI_REVIEW_GATE_TEST_FAIL_AFTER=ledger run_gate "$proof_root" final "$sid" "$out" "$err"; then
+      return 1
+    fi
+    [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
+    grep -Fxq 'schema: eci-acceptance-transaction/v2' "$transaction" || return 1
+    grep -Fxq 'state: ledger-published' "$transaction" || return 1
+    grep -Fq 'ledger_sha256: ' "$transaction" || return 1
+    grep -Fq 'identity_sha256: ' "$transaction" || return 1
 
-  proof_root="$TMP_ROOT/recovery-identity-prefix"
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  transaction="$session_dir/eci-acceptance-transaction"
-  if ECI_REVIEW_GATE_TEST_FAIL_AFTER=identity run_gate "$proof_root" final "$sid" \
-    "$TMP_ROOT/recovery-identity-prefix-fail.out" "$TMP_ROOT/recovery-identity-prefix-fail.err"; then
-    return 1
-  fi
-  [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
-  grep -Fxq 'schema: eci-acceptance-transaction/v2' "$transaction" || return 1
-  grep -Fxq 'state: identity-published' "$transaction" || return 1
-  grep -Fq 'identity_sha256: ' "$transaction" || return 1
-  sed -i 's/^identity_sha256: .*/identity_sha256: 0000000000000000000000000000000000000000000000000000000000000000/' "$transaction"
-  if run_gate "$proof_root" final "$sid" \
-    "$TMP_ROOT/recovery-identity-prefix-tampered.out" "$TMP_ROOT/recovery-identity-prefix-tampered.err"; then
-    return 1
-  fi
-  grep -Fq 'transaction identity prefix' "$TMP_ROOT/recovery-identity-prefix-tampered.err"
+    # A recovery record whose published prefix no longer matches must not be
+    # silently repaired as if the ledger/identity publication never happened.
+    sed -i 's/^ledger_sha256: .*/ledger_sha256: 0000000000000000000000000000000000000000000000000000000000000000/' "$transaction"
+    if run_gate "$proof_root" final "$sid" "$TMP_ROOT/recovery-prefix-tampered.out" "$TMP_ROOT/recovery-prefix-tampered.err"; then
+      return 1
+    fi
+    grep -Fq 'transaction ledger prefix' "$TMP_ROOT/recovery-prefix-tampered.err"
+
+    proof_root="$TMP_ROOT/recovery-identity-prefix"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    transaction="$session_dir/eci-acceptance-transaction"
+    if ECI_REVIEW_GATE_TEST_FAIL_AFTER=identity run_gate "$proof_root" final "$sid" \
+      "$TMP_ROOT/recovery-identity-prefix-fail.out" "$TMP_ROOT/recovery-identity-prefix-fail.err"; then
+      return 1
+    fi
+    [ -f "$transaction" ] && [ ! -L "$transaction" ] || return 1
+    grep -Fxq 'schema: eci-acceptance-transaction/v2' "$transaction" || return 1
+    grep -Fxq 'state: identity-published' "$transaction" || return 1
+    grep -Fq 'identity_sha256: ' "$transaction" || return 1
+    sed -i 's/^identity_sha256: .*/identity_sha256: 0000000000000000000000000000000000000000000000000000000000000000/' "$transaction"
+    if run_gate "$proof_root" final "$sid" \
+      "$TMP_ROOT/recovery-identity-prefix-tampered.out" "$TMP_ROOT/recovery-identity-prefix-tampered.err"; then
+      return 1
+    fi
+    grep -Fq 'transaction identity prefix' "$TMP_ROOT/recovery-identity-prefix-tampered.err"
+  )
 }
 
 test_unanchored_identity_row_is_rejected() {
-  local proof_root="$TMP_ROOT/unanchored-identity" sid session_dir identity
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  identity="$session_dir/eci-critic-identities.ledger"
-  run_gate "$proof_root" final "$sid" \
-    "$TMP_ROOT/unanchored-identity-first.out" "$TMP_ROOT/unanchored-identity-first.err"
-  printf 'commit:1:%s:%s:%s:%s:%s\n' \
-    "$(printf '%064d' 0)" "$(printf '%064d' 0)" "$(printf '%064d' 0)" \
-    "$(printf '%064d' 0)" "$(printf '%064d' 0)" >>"$identity"
-  if run_gate "$proof_root" final "$sid" \
-    "$TMP_ROOT/unanchored-identity-replay.out" "$TMP_ROOT/unanchored-identity-replay.err"; then
-    return 1
-  fi
-  grep -Fq 'unanchored critic identity row' "$TMP_ROOT/unanchored-identity-replay.err"
+  local proof_root="$TMP_ROOT/unanchored-identity" fixture_repo="$TMP_ROOT/unanchored-identity-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh" sid session_dir identity
+  prepare_clean_review_gate_fixture "$fixture_repo"
+
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    identity="$session_dir/eci-critic-identities.ledger"
+    run_gate "$proof_root" final "$sid" \
+      "$TMP_ROOT/unanchored-identity-first.out" "$TMP_ROOT/unanchored-identity-first.err"
+    printf 'commit:1:%s:%s:%s:%s:%s\n' \
+      "$(printf '%064d' 0)" "$(printf '%064d' 0)" "$(printf '%064d' 0)" \
+      "$(printf '%064d' 0)" "$(printf '%064d' 0)" >>"$identity"
+    if run_gate "$proof_root" final "$sid" \
+      "$TMP_ROOT/unanchored-identity-replay.out" "$TMP_ROOT/unanchored-identity-replay.err"; then
+      return 1
+    fi
+    grep -Fq 'unanchored critic identity row' "$TMP_ROOT/unanchored-identity-replay.err"
+  )
 }
 
 test_spawn_and_report_identity_bindings_are_required() {
-  local proof_root sid session_dir manifest spawn report adjudication tmp new_sha report_sha adjudication_sha
+  local proof_root fixture_repo="$TMP_ROOT/spawn-report-binding-repo"
+  local fixture_target="$fixture_repo/hooks/eci-review-gate.sh"
+  local sid session_dir manifest spawn report adjudication tmp new_sha report_sha adjudication_sha
+  prepare_clean_review_gate_fixture "$fixture_repo"
 
-  proof_root="$TMP_ROOT/spawn-binding"
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  manifest="$session_dir/eci-required-critics.json"
-  spawn="$(jq -r '.rows[1].spawn_request_artifact' "$manifest")"
-  tmp="$spawn.tmp"
-  sed 's/^authority: non-authoritative$/authority: authoritative/' "$spawn" >"$tmp"
-  mv "$tmp" "$spawn"
-  new_sha="$(sha "$spawn")"
-  jq -c --arg sha "$new_sha" '.rows[1].spawn_request_sha256 = $sha' "$manifest" >"$tmp"
-  mv "$tmp" "$manifest"
-  assert_reject "$proof_root" "$sid" 'spawn authority binding'
+  (
+    export ECI_TEST_REPO="$fixture_repo"
+    export ECI_TEST_TARGET="$fixture_target"
+    export ECI_TEST_CWD="$fixture_repo"
+    proof_root="$TMP_ROOT/spawn-binding"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    manifest="$session_dir/eci-required-critics.json"
+    spawn="$(jq -r '.rows[1].spawn_request_artifact' "$manifest")"
+    tmp="$spawn.tmp"
+    sed 's/^authority: non-authoritative$/authority: authoritative/' "$spawn" >"$tmp"
+    mv "$tmp" "$spawn"
+    new_sha="$(sha "$spawn")"
+    jq -c --arg sha "$new_sha" '.rows[1].spawn_request_sha256 = $sha' "$manifest" >"$tmp"
+    mv "$tmp" "$manifest"
+    assert_reject "$proof_root" "$sid" 'spawn authority binding'
 
-  proof_root="$TMP_ROOT/report-binding"
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  manifest="$session_dir/eci-required-critics.json"
-  report="$(jq -r '.rows[0].report_artifact' "$manifest")"
-  adjudication="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
-  tmp="$report.tmp"
-  sed 's/^eci_critic_identity: .*$/eci_critic_identity: session_id=wrong-session;target_id=target-root;critic_role=C;gate_phase=prewrite;child_identity=child-root-C-prewrite;critic_provider=unavailable_by_schema;critic_semantic_role=ECI Critic C;critic_provenance=requested-special/' "$report" >"$tmp"
-  mv "$tmp" "$report"
-  report_sha="$(sha "$report")"
-  jq -c --arg sha "$report_sha" '.report_sha256 = $sha' "$adjudication" >"$tmp"
-  mv "$tmp" "$adjudication"
-  adjudication_sha="$(sha "$adjudication")"
-  jq -c --arg report_sha "$report_sha" --arg adjudication_sha "$adjudication_sha" \
-    '.rows[0].report_sha256 = $report_sha | .rows[0].adjudication_sha256 = $adjudication_sha' \
-    "$manifest" >"$tmp"
-  mv "$tmp" "$manifest"
-  assert_reject "$proof_root" "$sid" 'report identity binding'
+    proof_root="$TMP_ROOT/report-binding"
+    sid="$(build_manifest "$proof_root" root)"
+    session_dir="$proof_root/$sid"
+    manifest="$session_dir/eci-required-critics.json"
+    report="$(jq -r '.rows[0].report_artifact' "$manifest")"
+    adjudication="$(jq -r '.rows[0].adjudication_artifact' "$manifest")"
+    tmp="$report.tmp"
+    sed 's/^eci_critic_identity: .*$/eci_critic_identity: session_id=wrong-session;target_id=target-root;critic_role=C;gate_phase=prewrite;child_identity=child-root-C-prewrite;critic_provider=unavailable_by_schema;critic_semantic_role=ECI Critic C;critic_provenance=requested-special/' "$report" >"$tmp"
+    mv "$tmp" "$report"
+    report_sha="$(sha "$report")"
+    jq -c --arg sha "$report_sha" '.report_sha256 = $sha' "$adjudication" >"$tmp"
+    mv "$tmp" "$adjudication"
+    adjudication_sha="$(sha "$adjudication")"
+    jq -c --arg report_sha "$report_sha" --arg adjudication_sha "$adjudication_sha" \
+      '.rows[0].report_sha256 = $report_sha | .rows[0].adjudication_sha256 = $adjudication_sha' \
+      "$manifest" >"$tmp"
+    mv "$tmp" "$manifest"
+    assert_reject "$proof_root" "$sid" 'report identity binding'
+  )
 }
 
 test_nested_marker_lifecycle_is_owned_and_locked() {

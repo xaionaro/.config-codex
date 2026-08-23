@@ -260,6 +260,39 @@ assert_unknown() {
   }
 }
 
+# A non-capable archive form must reach the legacy Git parser rather than the
+# planner fast path. The legacy result itself may be allow or deny; a Python
+# process is the observable route boundary while strace is available.
+assert_archive_legacy_git_route() {
+  local name command path_value git_dir trace output
+  name="$1"
+  command="$2"
+  path_value="${3:-$ROOT/bin:$PATH}"
+  git_dir="${4:-}"
+
+  command -v strace >/dev/null 2>&1 || return 0
+
+  trace="$TMP_ROOT/archive-legacy-$name.trace"
+  output="$TMP_ROOT/archive-legacy-$name.output"
+  if [ -n "$git_dir" ]; then
+    jq -cn --arg cwd "$ROOT" --arg command "$command" \
+      '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
+      GIT_DIR="$git_dir" CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$kimi_root" PATH="$path_value" \
+        strace -f -qq -e trace=process -o "$trace" \
+          bash "$ROOT/hooks/validate-bash.sh" >"$output"
+  else
+    jq -cn --arg cwd "$ROOT" --arg command "$command" \
+      '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
+      CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$kimi_root" PATH="$path_value" \
+        strace -f -qq -e trace=process -o "$trace" \
+          bash "$ROOT/hooks/validate-bash.sh" >"$output"
+  fi
+  grep -Eq 'execve\(".*/python3"' "$trace" || {
+    printf 'archive command unexpectedly bypassed the legacy Git route: %q\n' "$command" >&2
+    return 1
+  }
+}
+
 zero_marker_commit_output="$(run_hook_without_marker "git commit -m 'inactive boundary'")"
 [ ! -s "$zero_marker_commit_output" ] || {
   cat -- "$zero_marker_commit_output" >&2
@@ -463,6 +496,7 @@ for ordinary_literal in \
   "cargo test --workspace" \
   "pytest -q tests" \
   "python3 -m pytest tests" \
+  "interpreter-tool --module test-suite --flag value" \
   "python3 tools/check.py --mode strict" \
   "node scripts/check.mjs" \
   "npm test -- --runInBand" \
@@ -473,7 +507,6 @@ for ordinary_literal in \
   "meson test -C build" \
   "mvn -q test" \
   "./gradlew test" \
-  "bash scripts/test.sh" \
   "novel-tool --flag value" \
   "./tools/repo-check --context" \
   "rg -n -C 3 'needle' hooks"; do
@@ -485,8 +518,11 @@ done
 # allowlist.
 for protected_literal in \
   "eval 'go test ./...'" \
+  "bash scripts/test.sh" \
   "python3 -c 'print(1)'" \
+  "python3 -" \
   "node -e 'console.log(1)'" \
+  "interpreter-tool -c 'dynamic payload'" \
   "env -S python3 -m pytest tests" \
   "go test \$(printf ./...)" \
   $'go test ./...\nrm -f marker' \
@@ -549,17 +585,76 @@ jq -e '
 coordinator_tmp_output="$(run_hook "touch /tmp/eci-finite-literal-probe")"
 [ ! -s "$coordinator_tmp_output" ]
 for ordinary_worker_shell in \
-  "bash -e scripts/test.sh" \
-  "bash -x scripts/test.sh" \
-  "bash -O extglob scripts/test.sh" \
-  "bash --noprofile scripts/test.sh" \
-  "sh -e scripts/test.sh" \
+  "python3 -m pytest tests" \
+  "python3 tools/check.py" \
+  "python3 tools/check.py -c" \
+  "node scripts/check.mjs" \
+  "nodejs scripts/check.mjs" \
+  "perl tools/check.pl" \
+  "ruby tools/check.rb" \
+  "php tools/check.php" \
+  "php -f tools/check.php" \
+  "php -F tools/check.php" \
+  "interpreter-tool --module test-suite --flag value" \
+  "python-tool --module test-suite --flag value" \
   "./tools/eci-review-gate.sh verify" \
   "novel-worker-tool --flag value"; do
   ordinary_worker_output="$(run_subagent_hook "$ordinary_worker_shell")"
   [ ! -s "$ordinary_worker_output" ] || {
     printf 'ordinary finite worker argv was denied: %s\n' "$ordinary_worker_shell" >&2
     cat -- "$ordinary_worker_output" >&2
+    exit 1
+  }
+done
+for protected_worker_interpreter in \
+  "bash -e scripts/test.sh" \
+  "bash -x scripts/test.sh" \
+  "bash -O extglob scripts/test.sh" \
+  "bash --noprofile scripts/test.sh" \
+  "sh -e scripts/test.sh" \
+  "python3 -" \
+  "interpreter-tool -c 'dynamic payload'"; do
+  protected_worker_output="$(run_subagent_hook "$protected_worker_interpreter")"
+  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$protected_worker_output" >/dev/null || {
+    printf 'shell/interpreter indirection was unexpectedly allowed for worker argv: %s\n' "$protected_worker_interpreter" >&2
+    cat -- "$protected_worker_output" >&2
+    exit 1
+  }
+done
+for protected_worker_runtime in \
+  "python3" \
+  "python3 -cprint" \
+  "python3.11 -cprint" \
+  "python3 -W ignore" \
+  "python3 -X dev" \
+  "python3 -i tools/check.py" \
+  "node" \
+  "nodejs --eval=code" \
+  "node -p code" \
+  "node --loader loader.mjs" \
+  "perl" \
+  "perl5 -Ecode" \
+  "perl -I /tmp" \
+  "ruby" \
+  "ruby3.3 -ecode" \
+  "ruby -I lib" \
+  "php" \
+  "php8.2 -r=code" \
+  "php -recho" \
+  "php -Becho" \
+  "php -Recho" \
+  "php -Eecho" \
+  "php --process-end=code" \
+  "php -d memory_limit=1G" \
+  "php -a"; do
+  protected_worker_runtime_output="$(run_subagent_hook "$protected_worker_runtime")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_DYNAMIC_LAUNCH_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=dynamic-interpreter-launch"))
+  ' "$protected_worker_runtime_output" >/dev/null || {
+    printf 'named runtime was unexpectedly allowed for worker argv: %s\n' "$protected_worker_runtime" >&2
+    cat -- "$protected_worker_runtime_output" >&2
     exit 1
   }
 done
@@ -1107,8 +1202,24 @@ cp -- "$ROOT/bin/eci-active" "$copied_eci"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$copied_worker"
 chmod +x "$copied_eci" "$copied_worker"
 for launcher in \
-  "$copied_eci off $TMP_ROOT/disengage.md" \
-  "$copied_eci wait $TMP_ROOT/eci_user_owned_wait.md"; do
+  "$copied_eci status" \
+  "$copied_eci nested-exit" \
+  "env FOO=bar $copied_eci status" \
+  "env FOO=bar $copied_eci nested-exit" \
+  "env -- $copied_eci status" \
+  "env -- $copied_eci nested-exit" \
+  "env -i $copied_eci status" \
+  "env -i $copied_eci nested-exit" \
+  "env -u PATH $copied_eci status" \
+  "env -u PATH $copied_eci nested-exit" \
+  "stdbuf -oL $copied_eci status" \
+  "stdbuf -oL $copied_eci nested-exit" \
+  "busybox -- $copied_eci status" \
+  "busybox -- $copied_eci nested-exit" \
+  "prlimit --nofile=1024 $copied_eci status" \
+  "prlimit --nofile=1024 $copied_eci nested-exit" \
+  "chronic $copied_eci status" \
+  "chronic $copied_eci nested-exit"; do
   output="$(run_subagent_hook "$launcher")"
   jq -e --arg canonical_target "$subagent_codex_home/bin/eci-active" '
     .hookSpecificOutput.permissionDecision == "deny" and
@@ -1119,8 +1230,16 @@ for launcher in \
     (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null
 done
-output="$(run_subagent_hook "$copied_worker")"
-[ ! -s "$output" ]
+for launcher in \
+  "$copied_worker" \
+  "env FOO=bar $copied_worker" \
+  "stdbuf -oL $copied_worker" \
+  "busybox -- $copied_worker" \
+  "prlimit --nofile=1024 $copied_worker" \
+  "chronic $copied_worker"; do
+  output="$(run_subagent_hook "$launcher")"
+  [ ! -s "$output" ]
+done
 
 # Dynamic execution-context mutation and writer forms remain protected.
 for launcher in \
@@ -1424,18 +1543,64 @@ for protected_ref in \
   ' "$output" >/dev/null
 done
 # `git archive` reads a tree and emits an archive; it does not mutate Git
-# acceptance/history.  Direct and explicit-output forms are ordinary finite
-# project work because the destination is not an exact live-control artifact.
-assert_allowed "git archive HEAD"
+# acceptance/history. Only the two raw Go-planner capability shapes may avoid
+# the legacy Git route: direct HEAD and exact attached tar output.
+archive_direct_output="$(run_hook "git archive HEAD")"
+[ ! -s "$archive_direct_output" ] || {
+  printf 'repository-default git archive unexpectedly denied:\n' >&2
+  cat -- "$archive_direct_output" >&2
+  exit 1
+}
 archive_worker_output="$(run_subagent_hook "git archive HEAD")"
 [ ! -s "$archive_worker_output" ]
 for command in \
-  "git archive --output=$proof_root/t00-session/archive.tar HEAD" \
   "git archive --format=tar --output=$proof_root/t00-session/archive.tar HEAD"; do
   assert_allowed "$command"
   archive_worker_output="$(run_subagent_hook "$command")"
   [ ! -s "$archive_worker_output" ]
 done
+
+# A fake PATH hit, inherited Git context, wrapper, compound, repository
+# context, remote, exec, and every other archive shape remain legacy-routed.
+assert_archive_legacy_git_route fake-path "git archive HEAD" "$fake_bin:$ROOT/bin:$PATH"
+assert_archive_legacy_git_route inherited-git-context "git archive HEAD" "$ROOT/bin:$PATH" "$TMP_ROOT/inherited-git-dir"
+for command in \
+  "env git archive HEAD" \
+  "git archive HEAD && printf after" \
+  "git -C $ROOT archive HEAD" \
+  "git archive --remote=origin HEAD" \
+  "git archive --remote origin HEAD" \
+  "git archive --exec=git-upload-archive HEAD" \
+  "git archive --exec git-upload-archive HEAD" \
+  "git archive --output=$proof_root/t00-session/archive.tar HEAD" \
+  "git archive --format=zip --output=$proof_root/t00-session/archive.zip HEAD" \
+  "git archive --format=tar --output=$proof_root/t00-session/archive.tar HEAD README"; do
+  assert_archive_legacy_git_route archive-shape "$command"
+done
+assert_unknown "git -c core.pager=cat archive HEAD"
+
+# Existing strace coverage makes the direct capable path observable: removing
+# the inline parser means this callback must not start Python merely to decide
+# whether its archive argv can bypass legacy Git handling.
+if command -v strace >/dev/null 2>&1; then
+  archive_trace="$TMP_ROOT/repository-default-git-archive.trace"
+  archive_trace_output="$TMP_ROOT/repository-default-git-archive.output"
+  jq -cn --arg cwd "$ROOT" --arg command 'git archive HEAD' \
+    '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
+    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$kimi_root" PATH="$ROOT/bin:$PATH" \
+      strace -f -qq -e trace=process -o "$archive_trace" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$archive_trace_output"
+  [ ! -s "$archive_trace_output" ] || {
+    printf 'traced repository-default git archive unexpectedly denied:\n' >&2
+    cat -- "$archive_trace_output" >&2
+    exit 1
+  }
+  ! grep -Eq 'execve\(".*/python3"' "$archive_trace" || {
+    printf 'repository-default git archive unexpectedly executed python3:\n' >&2
+    grep -E 'execve\(".*/python3"' "$archive_trace" >&2
+    exit 1
+  }
+fi
 archive_control_output="$(run_subagent_hook "git archive --output=$proof_root/t00-session/eci_active HEAD")"
 jq -e --arg target "$proof_root/t00-session/eci_active" '
   .hookSpecificOutput.permissionDecision == "deny" and
@@ -1525,6 +1690,9 @@ for protected_worker_git in \
   "git commit -m forbidden" \
   "git config user.name worker" \
   "git reset --hard HEAD" \
+  "git checkout -- hooks/validate-bash.sh" \
+  "git -C $ROOT status --short" \
+  "git --git-dir=.git status --short" \
   "git worktree add /tmp/eci-worker-tree HEAD"; do
   instruction_read_output="$(run_subagent_hook "$protected_worker_git")"
   jq -e '
@@ -1541,6 +1709,11 @@ for command in \
   "git status --short --branch" \
   "git submodule status" \
   "git diff --stat" \
+  "git log --format=%H -- skills/go-coding-style/SKILL.md AGENTS.md" \
+  "git status" \
+  "git diff --check" \
+  "git show" \
+  "git ls-files" \
   "git log -1 --oneline" \
   "git branch --all --contains HEAD"; do
   assert_allowed "$command"

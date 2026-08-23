@@ -74,6 +74,11 @@ type Capability string
 const (
 	// CapabilityGateMode identifies command-gate mode operations.
 	CapabilityGateMode Capability = "gate-mode"
+	// CapabilityRepositoryDefaultGitArchive identifies one direct repository
+	// archive plan with no caller-selected Git execution context.
+	//
+	// Example: git archive --format=tar --output=artifact.tar HEAD.
+	CapabilityRepositoryDefaultGitArchive Capability = "repository-default-git-archive"
 )
 
 // DiagnosticCode is the stable machine-readable reason for a denial.
@@ -261,7 +266,15 @@ func Classify(request Request) Result {
 	return Result{Decision: decision, Capabilities: capabilities}
 }
 
+// capabilitiesForPlan returns the one explicit capability represented by the
+// raw parsed command plan, when any.
+//
+// Example: a direct git archive HEAD plan returns its repository-default
+// archive capability before command inspection determines its final decision.
 func capabilitiesForPlan(parsed plan) []Capability {
+	if isRepositoryDefaultGitArchivePlan(parsed) {
+		return []Capability{CapabilityRepositoryDefaultGitArchive}
+	}
 	for segmentIndex, current := range parsed.segments {
 		argv, diagnostic := unwrap(current.argv, segmentIndex+1)
 		if diagnostic == nil && isGateModeCapability(argv) {
@@ -269,6 +282,41 @@ func capabilitiesForPlan(parsed plan) []Capability {
 		}
 	}
 	return nil
+}
+
+// isRepositoryDefaultGitArchivePlan reports whether parsed is exactly one
+// unquoted repository-default git archive command with an optional tar output.
+//
+// Example: git archive HEAD is true, while git -C repo archive HEAD is false.
+func isRepositoryDefaultGitArchivePlan(parsed plan) bool {
+	if len(parsed.segments) != 1 || len(parsed.operators) != 0 {
+		return false
+	}
+
+	argv := parsed.segments[0].argv
+	if len(argv) != 3 && len(argv) != 5 {
+		return false
+	}
+	for _, argument := range argv {
+		if argument.quoted {
+			return false
+		}
+	}
+	if argv[0].value != "git" || argv[1].value != "archive" {
+		return false
+	}
+	switch len(argv) {
+	case 3:
+		return argv[2].value == "HEAD"
+	case 5:
+		output := strings.TrimPrefix(argv[3].value, "--output=")
+		return argv[2].value == "--format=tar" &&
+			strings.HasPrefix(argv[3].value, "--output=") &&
+			output != "" &&
+			argv[4].value == "HEAD"
+	default:
+		return false
+	}
 }
 
 func isGateModeCapability(argv []token) bool {
@@ -714,6 +762,11 @@ func inspectSegment(
 		}
 		return DecisionAllow, nil
 	}
+	if request.Marker == MarkerActive && request.Role == RoleWorker {
+		if diagnostic := inspectActiveWorkerLifecycleIdentity(request, current.argv, argv, segmentIndex); diagnostic != nil {
+			return DecisionDeny, diagnostic
+		}
+	}
 	if request.Marker == MarkerActive && isLifecycleScriptCapability(request.CWD, argv) {
 		// The provider adapter owns canonical lifecycle-script identity,
 		// arguments, and role authorization. Recognize only a visible script
@@ -1017,6 +1070,132 @@ func candidateMatchesGateMode(target token, cwd string, identity gateModeIdentit
 		return false, "reserved-copy-digest-mismatch", candidate
 	}
 	return false, "", candidate
+}
+
+// inspectActiveWorkerLifecycleIdentity rejects an unwrapped executable that is
+// a canonical lifecycle target or byte-identical copy of either provider's
+// eci-active executable.
+//
+// Example: stdbuf -oL /tmp/eci-active-copy status is worker control.
+func inspectActiveWorkerLifecycleIdentity(
+	request Request,
+	original []token,
+	argv []token,
+	segmentIndex int,
+) *Diagnostic {
+	if len(argv) == 0 {
+		return nil
+	}
+
+	candidate := resolveExecutable(argv[0].value, request.CWD)
+	if candidate == "" {
+		return nil
+	}
+	resolvedCandidate, resolveErr := resolvePathWithMissingSuffix(candidate)
+	if resolveErr != nil {
+		// A transient filesystem resolution failure cannot prove lifecycle
+		// identity. Keep the lexical candidate for exact canonical paths.
+		resolvedCandidate = candidate
+	}
+	for _, root := range canonicalLifecycleRoots() {
+		for _, alias := range [...]string{"eci-review-gate", "eci-stage"} {
+			canonical := filepath.Join(root, "bin", alias)
+			if candidate == canonical || resolvedCandidate == canonical {
+				return workerLifecycleIdentityDiagnostic(original, argv[0], segmentIndex, canonical)
+			}
+		}
+	}
+
+	candidateInfo, err := os.Stat(candidate)
+	if err != nil || !candidateInfo.Mode().IsRegular() || !fileOwnedByCurrentUser(candidateInfo) || candidateInfo.Mode().Perm()&0111 == 0 {
+		return nil
+	}
+
+	var candidateDigest [sha256.Size]byte
+	hasCandidateDigest := false
+	for _, root := range canonicalLifecycleRoots() {
+		canonical := filepath.Join(root, "bin", "eci-active")
+		canonicalInfo, err := os.Lstat(canonical)
+		if err != nil || canonicalInfo.Mode()&os.ModeSymlink != 0 || !canonicalInfo.Mode().IsRegular() ||
+			!fileOwnedByCurrentUser(canonicalInfo) || canonicalInfo.Mode().Perm()&0111 == 0 {
+			continue
+		}
+		if os.SameFile(candidateInfo, canonicalInfo) {
+			return workerLifecycleIdentityDiagnostic(original, argv[0], segmentIndex, canonical)
+		}
+		if candidateInfo.Size() != canonicalInfo.Size() {
+			continue
+		}
+		if !hasCandidateDigest {
+			candidateDigest, err = digestRegularFile(candidate, candidateInfo)
+			if err != nil {
+				return nil
+			}
+			hasCandidateDigest = true
+		}
+		canonicalDigest, err := digestRegularFile(canonical, canonicalInfo)
+		if err == nil && candidateDigest == canonicalDigest {
+			return workerLifecycleIdentityDiagnostic(original, argv[0], segmentIndex, canonical)
+		}
+	}
+	return nil
+}
+
+// canonicalLifecycleRoots returns existing, canonical provider homes that may
+// own lifecycle executables.
+//
+// Example: a CODEX_HOME symlink contributes its resolved bin/eci-active.
+func canonicalLifecycleRoots() []string {
+	home := os.Getenv("HOME")
+	values := []string{
+		firstNonEmpty(os.Getenv("CODEX_HOME"), filepath.Join(home, ".codex")),
+		firstNonEmpty(os.Getenv("KIMI_CODE_HOME"), filepath.Join(home, ".kimi-code")),
+	}
+	roots := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, root := range values {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(filepath.Clean(root))
+		if err != nil || !filepath.IsAbs(resolved) {
+			continue
+		}
+		resolved = filepath.Clean(resolved)
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if _, exists := seen[resolved]; exists {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		roots = append(roots, resolved)
+	}
+	return roots
+}
+
+// workerLifecycleIdentityDiagnostic reports ownership of an unwrapped
+// lifecycle executable while preserving the original command token position.
+//
+// Example: an env child is reported at its original child argv index.
+func workerLifecycleIdentityDiagnostic(
+	original []token,
+	target token,
+	segmentIndex int,
+	canonical string,
+) *Diagnostic {
+	diagnostic := diagnosticForToken(
+		CodeControlOwnerRequired,
+		"worker argv selects coordinator-owned lifecycle executable: canonical_target="+canonical+" invocation=unwrapped",
+		segmentIndex,
+		originalTokenIndex(original, target),
+		target,
+		"route the exact lifecycle/control invocation through the coordinator",
+		"worker-lifecycle-control",
+	)
+	diagnostic.Path = canonical
+	return diagnostic
 }
 
 func resolveExecutable(value, cwd string) string {
@@ -1887,13 +2066,12 @@ func inspectPrintenv(argv []token, segmentIndex int) *Diagnostic {
 }
 
 func inspectInterpreter(name string, argv []token, segmentIndex int) *Diagnostic {
+	runtime := namedRuntimeFamily(name)
+	if runtime != "" {
+		return inspectNamedRuntime(runtime, argv, segmentIndex)
+	}
 	for index, argument := range argv[1:] {
-		value := argument.value
-		dynamic := value == "-c" || value == "-s" || value == "-" || value == "--stdin"
-		if name == "node" {
-			dynamic = dynamic || value == "-e" || value == "--eval" || strings.HasPrefix(value, "-e=") || strings.HasPrefix(value, "--eval=")
-		}
-		if dynamic {
+		if interpreterInlineCodeArgument("", argument.value) {
 			return diagnosticForToken(
 				CodePlanDynamicLaunchDenied,
 				"inline or stdin interpreter code hides the executed argv",
@@ -1906,6 +2084,132 @@ func inspectInterpreter(name string, argv []token, segmentIndex int) *Diagnostic
 		}
 	}
 	return nil
+}
+
+// inspectNamedRuntime accepts only a runtime selector followed by a visible
+// literal target; every trailing argument belongs to that confirmed target.
+//
+// Example: python3 -m pytest -c is a module invocation with script argv.
+func inspectNamedRuntime(
+	runtime string,
+	argv []token,
+	segmentIndex int,
+) *Diagnostic {
+	arguments := argv[1:]
+	if len(arguments) == 0 {
+		return literalRuntimeTargetDiagnostic(runtime, segmentIndex, 0, argv[0])
+	}
+
+	selector := arguments[0]
+	if interpreterInlineCodeArgument(runtime, selector.value) {
+		return diagnosticForToken(
+			CodePlanDynamicLaunchDenied,
+			"inline or stdin interpreter code hides the executed argv",
+			segmentIndex,
+			1,
+			selector,
+			"invoke a literal script path or direct executable argv",
+			"dynamic-interpreter-launch",
+		)
+	}
+
+	if runtime == "python" && selector.value == "-m" {
+		if len(arguments) > 1 && isLiteralRuntimeTarget(arguments[1]) {
+			return nil
+		}
+		if len(arguments) > 1 {
+			return literalRuntimeTargetDiagnostic(runtime, segmentIndex, 2, arguments[1])
+		}
+		return literalRuntimeTargetDiagnostic(runtime, segmentIndex, 1, selector)
+	}
+	if runtime == "php" && (selector.value == "-f" || selector.value == "-F") {
+		if len(arguments) > 1 && isLiteralRuntimeTarget(arguments[1]) {
+			return nil
+		}
+		if len(arguments) > 1 {
+			return literalRuntimeTargetDiagnostic(runtime, segmentIndex, 2, arguments[1])
+		}
+		return literalRuntimeTargetDiagnostic(runtime, segmentIndex, 1, selector)
+	}
+	if isLiteralRuntimeTarget(selector) {
+		return nil
+	}
+	return literalRuntimeTargetDiagnostic(runtime, segmentIndex, 1, selector)
+}
+
+// literalRuntimeTargetDiagnostic reports a named runtime invocation that has
+// no supported literal selector and target.
+//
+// Example: python3 -W ignore is not a direct source or module invocation.
+func literalRuntimeTargetDiagnostic(
+	runtime string,
+	segmentIndex int,
+	argvIndex int,
+	argument token,
+) *Diagnostic {
+	return diagnosticForToken(
+		CodePlanDynamicLaunchDenied,
+		fmt.Sprintf("%s runtime argv has no supported literal source, module, or test target", runtime),
+		segmentIndex,
+		argvIndex,
+		argument,
+		"invoke a literal script or the runtime's supported literal selector before trailing argv",
+		"dynamic-interpreter-launch",
+	)
+}
+
+// interpreterInlineCodeArgument reports whether value makes a recognized
+// interpreter execute inline or stdin-provided code.
+//
+// Example: Python -cprint and PHP -recho both execute code from argv.
+func interpreterInlineCodeArgument(
+	runtime string,
+	value string,
+) bool {
+	if value == "-c" || value == "-s" || value == "-" || value == "--stdin" {
+		return true
+	}
+
+	switch runtime {
+	case "python":
+		return strings.HasPrefix(value, "-c")
+	case "node", "nodejs":
+		return value == "-e" || value == "--eval" || value == "-p" || value == "--print" ||
+			strings.HasPrefix(value, "-e=") || strings.HasPrefix(value, "--eval=") ||
+			strings.HasPrefix(value, "-p=") || strings.HasPrefix(value, "--print=")
+	case "perl":
+		return value == "-e" || value == "-E" || strings.HasPrefix(value, "-e") || strings.HasPrefix(value, "-E")
+	case "ruby":
+		return value == "-e" || strings.HasPrefix(value, "-e")
+	case "php":
+		return value == "-a" || phpInlineCodeArgument(value, "-r", "--run") ||
+			phpInlineCodeArgument(value, "-B", "--process-begin") ||
+			phpInlineCodeArgument(value, "-R", "--process-code") ||
+			phpInlineCodeArgument(value, "-E", "--process-end")
+	default:
+		return false
+	}
+}
+
+// phpInlineCodeArgument reports whether value is a PHP code option. PHP
+// accepts attached short-option payloads, while long options attach only with
+// an equals sign.
+//
+// Example: -recho and --run=echo are both inline code forms.
+func phpInlineCodeArgument(
+	value string,
+	shortOption string,
+	longOption string,
+) bool {
+	return strings.HasPrefix(value, shortOption) || value == longOption || strings.HasPrefix(value, longOption+"=")
+}
+
+// isLiteralRuntimeTarget reports whether argument is a nonempty visible
+// source, module, or test target rather than a runtime option.
+//
+// Example: pytest is a target, while -W is a runtime option.
+func isLiteralRuntimeTarget(argument token) bool {
+	return argument.value != "" && !strings.HasPrefix(argument.value, "-")
 }
 
 func inspectGit(
@@ -2410,12 +2714,59 @@ func isEnvironmentContextName(name string) bool {
 }
 
 func isInterpreter(name string) bool {
+	if namedRuntimeFamily(name) != "" {
+		return true
+	}
 	switch name {
-	case "bash", "dash", "sh", "zsh", "python", "python2", "python3", "perl", "ruby", "node", "php":
+	case "bash", "dash", "sh", "zsh":
 		return true
 	default:
 		return false
 	}
+}
+
+// namedRuntimeFamily recognizes only runtime basenames and numeric version
+// suffixes. Arbitrary similarly named helper executables remain ordinary argv.
+//
+// Example: python3.11 is Python, while python-tool is not a runtime alias.
+func namedRuntimeFamily(name string) string {
+	for _, runtime := range [...]string{"python", "nodejs", "node", "perl", "ruby", "php"} {
+		if name == runtime {
+			if runtime == "nodejs" {
+				return "node"
+			}
+			return runtime
+		}
+		if strings.HasPrefix(name, runtime) && isNumericVersionSuffix(strings.TrimPrefix(name, runtime)) {
+			if runtime == "nodejs" {
+				return "node"
+			}
+			return runtime
+		}
+	}
+	return ""
+}
+
+// isNumericVersionSuffix reports whether value is a dot-separated numeric
+// runtime version suffix.
+//
+// Example: 3.11 is valid, while -tool and 3..11 are not.
+func isNumericVersionSuffix(value string) bool {
+	if value == "" {
+		return false
+	}
+	previousDot := true
+	for _, character := range value {
+		switch {
+		case character >= '0' && character <= '9':
+			previousDot = false
+		case character == '.' && !previousDot:
+			previousDot = true
+		default:
+			return false
+		}
+	}
+	return !previousDot
 }
 
 func isLifecycleScriptCapability(cwd string, argv []token) bool {
@@ -2752,7 +3103,7 @@ func gitSubcommandIndex(argv []token) int {
 func gitMutation(argv []token, subcommandIndex int) (int, string) {
 	subcommand := argv[subcommandIndex].value
 	switch subcommand {
-	case "add", "am", "apply", "cherry-pick", "commit", "config", "gc", "merge", "mv", "push", "rebase", "rename", "replace", "reset", "restore", "revert", "rm", "tag", "update-index", "worktree":
+	case "add", "am", "apply", "cherry-pick", "checkout", "commit", "config", "gc", "merge", "mv", "push", "rebase", "rename", "replace", "reset", "restore", "revert", "rm", "tag", "update-index", "worktree":
 		return subcommandIndex, subcommand
 	case "submodule":
 		if subcommandIndex+1 >= len(argv) || argv[subcommandIndex+1].value != "status" {
