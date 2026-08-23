@@ -910,7 +910,11 @@ codex_eci_marker_failure_code() {
   }
   marker_owner="$(codex_state_value "$marker" session_id || true)"
   marker_cwd="$(codex_state_value "$marker" cwd || true)"
-  [ -n "$marker_owner" ] && [ "$marker_owner" = "$name" ] || {
+  [ -n "$marker_owner" ] && [ -n "$marker_cwd" ] || {
+    printf '%s\n' 'ECI_MARKER_MALFORMED'
+    return 0
+  }
+  [ "$marker_owner" = "$name" ] || {
     printf '%s\n' 'ECI_MARKER_OWNERSHIP_INVALID'
     return 0
   }

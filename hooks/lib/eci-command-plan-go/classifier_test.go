@@ -5,9 +5,31 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func providerHome(provider Provider) string {
+	envName := "CODEX_HOME"
+	directory := ".codex"
+	if provider == ProviderKimi {
+		envName = "KIMI_CODE_HOME"
+		directory = ".kimi-code"
+	}
+	if configured := os.Getenv(envName); configured != "" {
+		return filepath.Clean(configured)
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	return filepath.Join(home, directory)
+}
+
+func gateModePath(provider Provider) string {
+	return filepath.Join(providerHome(provider), "bin", "eci-command-gate-mode")
+}
 
 func TestClassifyFiniteCommandPlans(t *testing.T) {
 	t.Parallel()
@@ -170,14 +192,58 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 	}
 }
 
+func TestActiveControlFileIndexBoundsSessionDirectory(t *testing.T) {
+	t.Parallel()
+
+	temporaryRoot := t.TempDir()
+	sessionDir := filepath.Join(temporaryRoot, "proof", "session")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("create session directory: %v", err)
+	}
+	marker := filepath.Join(sessionDir, "eci_active")
+	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	for index := 0; index <= maxActiveControlEntries; index++ {
+		path := filepath.Join(sessionDir, "ordinary-entry-"+strconv.Itoa(index))
+		if err := os.WriteFile(path, []byte("ordinary\n"), 0o600); err != nil {
+			t.Fatalf("write session entry %d: %v", index, err)
+		}
+	}
+
+	index := activeControlFileIndex([]string{marker})
+	if !index.overflow {
+		t.Fatal("active control index did not report bounded directory overflow")
+	}
+	if len(index.files) != 0 {
+		t.Fatalf("overflow index retained %d entries; want bounded empty index", len(index.files))
+	}
+
+	result := Classify(Request{
+		Provider:      ProviderCodex,
+		Role:          RoleWorker,
+		CWD:           temporaryRoot,
+		Marker:        MarkerActive,
+		ActiveSession: "session",
+		Command:       "cat ordinary-entry-0",
+		ActiveMarkers: []string{marker},
+	})
+	if result.Decision != DecisionDeny || result.Diagnostic == nil {
+		t.Fatalf("overflow classification: decision=%q diagnostic=%#v, want deny with diagnostic", result.Decision, result.Diagnostic)
+	}
+	if result.Diagnostic.Code != CodePlanLiveControlDenied || result.Diagnostic.Predicate != "bounded-control-index" {
+		t.Fatalf("overflow diagnostic: code=%q predicate=%q, want %q/bounded-control-index", result.Diagnostic.Code, result.Diagnostic.Predicate, CodePlanLiveControlDenied)
+	}
+}
+
 func TestGateModeCapabilityShapeIsReportedFromParsedPlans(t *testing.T) {
 	t.Parallel()
 
 	for _, command := range []string{
-		"/home/pheona/.codex/bin/eci-command-gate-mode set enforcing",
-		"env FOO=bar /home/pheona/.codex/bin/eci-command-gate-mode set permissive",
-		"python3 /home/pheona/.codex/bin/eci-command-gate-mode get",
-		"printf before && /home/pheona/.codex/bin/eci-command-gate-mode set enforcing",
+		gateModePath(ProviderCodex) + " set enforcing",
+		"env FOO=bar " + gateModePath(ProviderCodex) + " set permissive",
+		"python3 " + gateModePath(ProviderCodex) + " get",
+		"printf before && " + gateModePath(ProviderCodex) + " set enforcing",
 	} {
 		result := Classify(Request{
 			Provider:      ProviderCodex,
@@ -208,7 +274,7 @@ func TestGateModeCapabilityShapeIsReportedFromParsedPlans(t *testing.T) {
 func TestGateModeIdentityAndWorkerOwnershipAreCompiled(t *testing.T) {
 	t.Parallel()
 
-	canonical := "/home/pheona/.codex/bin/eci-command-gate-mode"
+	canonical := gateModePath(ProviderCodex)
 	coordinator := Classify(Request{
 		Provider:      ProviderCodex,
 		Role:          RoleCoordinator,
@@ -259,6 +325,40 @@ func TestGateModeIdentityAndWorkerOwnershipAreCompiled(t *testing.T) {
 	}
 	if identity.Diagnostic.Code != CodeControlIdentityDenied || identity.Diagnostic.Predicate != "gate-mode-identity" {
 		t.Fatalf("altered coordinator diagnostic: code=%q predicate=%q, want %q/gate-mode-identity", identity.Diagnostic.Code, identity.Diagnostic.Predicate, CodeControlIdentityDenied)
+	}
+}
+
+func TestInactiveWorkerGateModeMutationIsDeniedForBothProviders(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		provider Provider
+		command  string
+	}{
+		{provider: ProviderCodex, command: gateModePath(ProviderCodex) + " set enforcing"},
+		{provider: ProviderKimi, command: gateModePath(ProviderKimi) + " set permissive"},
+	} {
+		testCase := testCase
+		t.Run(string(testCase.provider), func(t *testing.T) {
+			t.Parallel()
+			result := Classify(Request{
+				Provider:      testCase.provider,
+				Role:          RoleWorker,
+				CWD:           "/tmp",
+				Marker:        MarkerInactive,
+				ActiveSession: "test-session",
+				Command:       testCase.command,
+			})
+			if result.Decision != DecisionDeny || result.Diagnostic == nil {
+				t.Fatalf("inactive worker gate mode command=%q: decision=%q diagnostic=%#v, want deny with diagnostic", testCase.command, result.Decision, result.Diagnostic)
+			}
+			if result.Diagnostic.Code != CodeControlOwnerRequired || result.Diagnostic.Predicate != "gate-mode-mutation" {
+				t.Fatalf("inactive worker diagnostic: code=%q predicate=%q, want %q/gate-mode-mutation", result.Diagnostic.Code, result.Diagnostic.Predicate, CodeControlOwnerRequired)
+			}
+			if result.Diagnostic.Token != "set" || result.Diagnostic.ArgvIndex != 1 || result.Diagnostic.Segment != 1 {
+				t.Fatalf("inactive worker location: token=%q argv_index=%d segment=%d, want set/1/1", result.Diagnostic.Token, result.Diagnostic.ArgvIndex, result.Diagnostic.Segment)
+			}
+		})
 	}
 }
 
@@ -370,6 +470,18 @@ func TestGitExecutionContextDiagnosticUsesStableCode(t *testing.T) {
 			}
 			if !strings.Contains(diagnostic.Remediation, "bounded coordinator Git route") {
 				t.Errorf("remediation=%q, want bounded coordinator Git route", diagnostic.Remediation)
+			}
+
+			foreign := Classify(Request{
+				Provider:      provider,
+				Role:          RoleWorker,
+				CWD:           "/tmp",
+				Marker:        MarkerActive,
+				ActiveSession: "test-session",
+				Command:       "git -C /tmp/foreign-repo status --short",
+			})
+			if foreign.Decision != DecisionDefer || foreign.Diagnostic != nil {
+				t.Fatalf("foreign Git context: decision=%q diagnostic=%#v, want defer without diagnostic", foreign.Decision, foreign.Diagnostic)
 			}
 		})
 	}
@@ -1062,6 +1174,90 @@ func TestCoordinatorHookRepairDefersToProviderAdapters(t *testing.T) {
 			})
 			if result.Decision != DecisionDefer || result.Diagnostic != nil {
 				t.Fatalf("decision: got %q diagnostic=%#v", result.Decision, result.Diagnostic)
+			}
+		})
+	}
+}
+
+func TestActivePreCommitHookModeRepairRoutesByRole(t *testing.T) {
+	t.Parallel()
+
+	const command = "chmod 755 hooks/pre-commit-go-mod.sh"
+	negativeCases := []struct {
+		name    string
+		command string
+		marker  Marker
+	}{
+		{name: "wrapper", command: "env chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+		{name: "executable alias", command: "/bin/chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+		{name: "alternate target spelling", command: "chmod 755 ./hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+		{name: "another target", command: "chmod 755 hooks/install-pre-commit-go-mod.sh", marker: MarkerActive},
+		{name: "inactive exact", command: command, marker: MarkerInactive},
+	}
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+
+			worker := Classify(Request{
+				Provider:      provider,
+				Role:          RoleWorker,
+				CWD:           "/workspace",
+				Marker:        MarkerActive,
+				ActiveSession: "test-session",
+				Command:       command,
+			})
+			if worker.Decision != DecisionDeny || worker.Diagnostic == nil {
+				t.Fatalf("worker decision: got %q diagnostic=%#v, want deny with diagnostic", worker.Decision, worker.Diagnostic)
+			}
+			diagnostic := worker.Diagnostic
+			if diagnostic.Code != CodeControlOwnerRequired {
+				t.Errorf("worker code: got %q, want %q", diagnostic.Code, CodeControlOwnerRequired)
+			}
+			if diagnostic.Operation != "worker-control" {
+				t.Errorf("worker operation: got %q, want worker-control", diagnostic.Operation)
+			}
+			if diagnostic.Predicate != "hook-mode-repair" {
+				t.Errorf("worker predicate: got %q, want hook-mode-repair", diagnostic.Predicate)
+			}
+			if diagnostic.Token != "hooks/pre-commit-go-mod.sh" {
+				t.Errorf("worker token: got %q, want hooks/pre-commit-go-mod.sh", diagnostic.Token)
+			}
+			if diagnostic.ArgvIndex != 2 {
+				t.Errorf("worker argv index: got %d, want 2", diagnostic.ArgvIndex)
+			}
+
+			coordinatorRequest := Request{
+				Provider:      provider,
+				Role:          RoleCoordinator,
+				CWD:           "/workspace",
+				Marker:        MarkerActive,
+				ActiveSession: "test-session",
+				Command:       command,
+			}
+			coordinator := Classify(coordinatorRequest)
+			if coordinator.Decision != DecisionDefer || coordinator.Diagnostic != nil {
+				t.Fatalf("coordinator decision: got %q diagnostic=%#v, want defer without diagnostic", coordinator.Decision, coordinator.Diagnostic)
+			}
+
+			for _, testCase := range negativeCases {
+				testCase := testCase
+				t.Run(testCase.name, func(t *testing.T) {
+					result := Classify(Request{
+						Provider:      provider,
+						Role:          RoleWorker,
+						CWD:           "/workspace",
+						Marker:        testCase.marker,
+						ActiveSession: "test-session",
+						Command:       testCase.command,
+					})
+					if result.Diagnostic != nil && result.Diagnostic.Predicate == "hook-mode-repair" {
+						t.Fatalf("%s selected hook-mode-repair: decision=%q diagnostic=%#v", testCase.command, result.Decision, result.Diagnostic)
+					}
+					if testCase.marker == MarkerInactive && (result.Decision != DecisionAllow || result.Diagnostic != nil) {
+						t.Fatalf("inactive exact command: decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
+					}
+				})
 			}
 		})
 	}

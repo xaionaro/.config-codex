@@ -10,16 +10,21 @@ import (
 
 const (
 	maxRequestBytes = 64 * 1024
-	StatusAllow     = 0
-	StatusDeny      = 2
-	StatusDefer     = 3
-	StatusInternal  = 64
+	// StatusAllow is the process status for an admitted command plan.
+	StatusAllow = 0
+	// StatusDeny is the process status for a denied command plan.
+	StatusDeny = 2
+	// StatusDefer is the process status for a provider-routed capability.
+	StatusDefer = 3
+	// StatusInternal is the process status for malformed input or I/O failure.
+	StatusInternal = 64
 )
 
 func main() {
 	os.Exit(Run(os.Stdin, os.Stdout))
 }
 
+// Run classifies one bounded JSON request and writes one JSON response.
 func Run(input io.Reader, output io.Writer) int {
 	requestBytes, err := io.ReadAll(io.LimitReader(input, maxRequestBytes+1))
 	if err != nil || len(requestBytes) > maxRequestBytes {

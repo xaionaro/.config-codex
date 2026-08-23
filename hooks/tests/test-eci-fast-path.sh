@@ -371,6 +371,23 @@ if CODEX_SESSION_ID=t00-oversized CODEX_PROOF_ROOT="$oversized_root" \
   exit 1
 fi
 
+# A bounded but malformed direct marker must retain its concrete path and
+# classify the content failure as ECI_MARKER_MALFORMED, not as an ambiguous
+# proof-root scan failure.
+malformed_direct_root="$tmp/malformed-direct-root"
+mkdir -p "$malformed_direct_root/t00-malformed"
+malformed_direct_marker="$malformed_direct_root/t00-malformed/eci_active"
+printf '%s\n' 'scope: malformed direct marker' >"$malformed_direct_marker"
+jq -n --arg cwd "$ROOT" \
+  '{session_id:"t00-malformed",transcript_path:"",stop_hook_active:false,cwd:$cwd}' >"$stop_input"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$malformed_direct_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$stop_input" >"$stop_out"
+[ "$(jq -r '.decision // empty' "$stop_out")" = block ]
+jq -e --arg marker "$malformed_direct_marker" \
+  '.reason | contains("[ECI_MARKER_MALFORMED]") and contains($marker) and (contains("[ECI_STOP_MARKER_SCAN_UNSAFE]") | not)' \
+  "$stop_out" >/dev/null
+[ ! -e "$malformed_direct_root/t00-malformed/stop_timestamps" ]
+
 # A duplicate identity key must not be resolved by the first regex match. The
 # active-marker path performs one strict object/duplicate/type check and blocks
 # without creating callback bookkeeping.

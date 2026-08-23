@@ -379,6 +379,9 @@ stop_diagnostic() {
     ECI_STOP_LOOP_STATE_UNSAFE)
       remediation="repair or remove the coordinator-owned stop-loop state through the coordinator route; retry Stop only after the state is a regular, bounded record"
       ;;
+    ECI_STOP_LOOP_DEDUP)
+      remediation="take one distinct recovery action or complete coordinator teardown; Stop remains denied until the reported condition changes"
+      ;;
   esac
   eci_diagnostic_reason "$code" "Stop" "stop-admission" "$subject" "$reason" "$remediation"
 }
@@ -462,17 +465,35 @@ eci_stop_marker_set_is_bounded() {
   return 0
 }
 
-marker_bound_status=0
-eci_stop_marker_set_is_bounded || marker_bound_status=$?
-if [ "$marker_bound_status" -eq 2 ]; then
-  json_block_fast ""
-  exit 0
-fi
+# Bind loop state to the current marker publication. Session IDs and
+# canonical cwd can be reused after a clean teardown, so a persisted terminal
+# counter must not suppress a fresh denial for a newly published marker. The
+# marker is already bounded before active-stop admission reaches this helper;
+# include both its inode metadata and bytes so recreation with identical
+# content still starts a new generation.
+codex_stop_loop_marker_generation() {
+  local marker_path="${1:-}" metadata content_hash
+  if [ -z "$marker_path" ]; then
+    printf '%s' 'no-active-marker'
+    return 0
+  fi
+  if [ -f "$marker_path" ] && [ ! -L "$marker_path" ]; then
+    metadata="$(stat -Lc '%d:%i:%s:%Y:%Z' -- "$marker_path" 2>/dev/null || true)"
+    content_hash="$(sha256sum -- "$marker_path" 2>/dev/null | awk '{print $1}' || true)"
+    if [[ "$metadata" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] &&
+      [[ "$content_hash" =~ ^[0-9a-f]{64}$ ]]; then
+      printf '%s|%s' "$metadata" "$content_hash"
+      return 0
+    fi
+  fi
+  printf '%s' 'unavailable-marker'
+}
 
 json_block_with_loop_state() {
   local reason="$1"
-  local loop_state loop_tmp loop_code loop_cwd loop_count loop_emitted
-  local loop_line loop_key loop_version loop_state_code loop_state_session loop_state_cwd
+  local loop_state loop_tmp loop_code loop_cwd loop_fingerprint loop_count loop_emitted
+  local loop_marker_generation
+  local loop_line loop_key loop_version loop_state_code loop_state_session loop_state_cwd loop_state_fingerprint
   local loop_state_count loop_state_emitted loop_line_count loop_state_valid
   local loop_already_emitted
 
@@ -482,6 +503,8 @@ json_block_with_loop_state() {
   loop_state_code=""
   loop_state_session=""
   loop_state_cwd=""
+  loop_state_fingerprint=""
+  loop_version=""
   loop_state_count=0
   loop_state_emitted=false
   loop_line_count=0
@@ -500,6 +523,11 @@ json_block_with_loop_state() {
     loop_state="$proof_dir/stop_loop_state"
     loop_code="$(eci_diagnostic_code_for_reason "$reason")"
     loop_cwd="${canonical_stop_cwd:-$(codex_canonical_cwd "${cwd:-$PWD}")}"
+    loop_marker_generation="$(codex_stop_loop_marker_generation "${marker:-}")"
+    loop_fingerprint="$(codex_hash_string "${loop_code}|${reason}|${loop_marker_generation}" 2>/dev/null || true)"
+    if ! [[ "$loop_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+      loop_fingerprint="$(printf '%s' "${loop_code}|${reason}|${loop_marker_generation}" | sha256sum | awk '{print $1}')"
+    fi
     loop_count=0
     loop_emitted=false
     loop_state_valid=true
@@ -510,6 +538,7 @@ json_block_with_loop_state() {
         loop_state_code=""
         loop_state_session=""
         loop_state_cwd=""
+        loop_state_fingerprint=""
         loop_state_count=""
         loop_state_emitted=""
         loop_version=""
@@ -518,17 +547,27 @@ json_block_with_loop_state() {
           loop_line_count=$((loop_line_count + 1))
           case "$loop_line" in
             'version: 1') [ -z "$loop_version" ] || loop_state_valid=false; loop_version=1 ;;
+            'version: 2') [ -z "$loop_version" ] || loop_state_valid=false; loop_version=2 ;;
             'code: '*) [ -z "$loop_state_code" ] || loop_state_valid=false; loop_state_code="${loop_line#code: }" ;;
             'session_id: '*) [ -z "$loop_state_session" ] || loop_state_valid=false; loop_state_session="${loop_line#session_id: }" ;;
             'cwd: '*) [ -z "$loop_state_cwd" ] || loop_state_valid=false; loop_state_cwd="${loop_line#cwd: }" ;;
+            'fingerprint: '*) [ -z "$loop_state_fingerprint" ] || loop_state_valid=false; loop_state_fingerprint="${loop_line#fingerprint: }" ;;
             'count: '*) [ -z "$loop_state_count" ] || loop_state_valid=false; loop_state_count="${loop_line#count: }" ;;
             'loop_emitted: true') [ -z "$loop_state_emitted" ] || loop_state_valid=false; loop_state_emitted=true ;;
             'loop_emitted: false') [ -z "$loop_state_emitted" ] || loop_state_valid=false; loop_state_emitted=false ;;
             *) loop_state_valid=false ;;
           esac
-          [ "$loop_line_count" -le 6 ] || loop_state_valid=false
+          [ "$loop_line_count" -le 7 ] || loop_state_valid=false
         done <"$loop_state"
-        [[ "$loop_version" = 1 && "$loop_line_count" -eq 6 ]] || loop_state_valid=false
+        [[ "$loop_version" = 1 || "$loop_version" = 2 ]] || loop_state_valid=false
+        if [ "$loop_version" = 1 ]; then
+          # Version-1 state predates callback fingerprints. Its persisted
+          # count is stale by definition; reset it on this callback.
+          [ "$loop_line_count" -eq 6 ] || loop_state_valid=false
+        else
+          [ "$loop_line_count" -eq 7 ] || loop_state_valid=false
+          [[ "$loop_state_fingerprint" =~ ^[0-9a-f]{64}$ ]] || loop_state_valid=false
+        fi
         [[ "$loop_state_code" =~ ^[A-Z0-9_]{1,128}$ ]] || loop_state_valid=false
         codex_valid_session_id "$loop_state_session" || loop_state_valid=false
         [[ "$loop_state_count" =~ ^[1-9][0-9]{0,5}$ ]] || loop_state_valid=false
@@ -536,13 +575,17 @@ json_block_with_loop_state() {
       fi
       if [ "$loop_state_valid" != true ]; then
         local loop_state_reason
-        loop_state_reason="[ECI_STOP_LOOP_STATE_UNSAFE] Stop gate refused to consume malformed or unsafe normalized loop state at $loop_state; expected exactly version/code/session_id/cwd/count/loop_emitted fields with bounded values."
+        loop_state_reason="[ECI_STOP_LOOP_STATE_UNSAFE] Stop gate refused to consume malformed or unsafe normalized loop state at $loop_state; expected exactly version/fingerprint/code/session_id/cwd/count/loop_emitted fields with bounded values."
         loop_state_reason="$(stop_diagnostic "$loop_state_reason" "${marker:-<none>}" "${instructions:-<none>}")"
         jq -n --arg reason "$loop_state_reason" '{decision: "block", reason: $reason}'
         return 0
       fi
     fi
-    if [ "$loop_state_code" = "$loop_code" ] &&
+    if [ "$loop_version" = 1 ]; then
+      loop_state_fingerprint=""
+    fi
+    if [ "$loop_state_fingerprint" = "$loop_fingerprint" ] &&
+      [ "$loop_state_code" = "$loop_code" ] &&
       [ "$loop_state_session" = "${session_id:-}" ] &&
       [ "$loop_state_cwd" = "$loop_cwd" ]; then
       loop_count=$((loop_state_count + 1))
@@ -564,23 +607,23 @@ json_block_with_loop_state() {
       return 0
     }
     {
-      printf 'version: 1\ncode: %s\nsession_id: %s\ncwd: %s\ncount: %s\nloop_emitted: %s\n' \
-        "$loop_code" "${session_id:-}" "$loop_cwd" "$loop_count" "$loop_emitted"
+      printf 'version: 2\nfingerprint: %s\ncode: %s\nsession_id: %s\ncwd: %s\ncount: %s\nloop_emitted: %s\n' \
+        "$loop_fingerprint" "$loop_code" "${session_id:-}" "$loop_cwd" "$loop_count" "$loop_emitted"
     } >"$loop_tmp" && mv -- "$loop_tmp" "$loop_state"
 
-    if [ "$loop_count" -ge 5 ] && [ "$loop_already_emitted" = true ]; then
-      jq -n '{continue: true}'
-      return 0
-    fi
     if [ "$loop_count" -ge 5 ]; then
       # A prior stop denial may have told the caller to "stop again".  Once
       # the loop diagnostic is emitted, retain the concrete denial detail but
       # remove that stale instruction so this message cannot restart the loop.
+      if [ "$loop_already_emitted" = true ]; then
+        reason="[ECI_STOP_LOOP_DEDUP] Stop remains denied because the same normalized stop condition is unchanged after $loop_count admissions; take one distinct recovery action or complete coordinator teardown."
+      else
       case "$reason" in
         *', then stop again.') reason="${reason%, then stop again.}" ;;
         *'then stop again.') reason="${reason%then stop again.}" ;;
       esac
       reason="$reason LOOP DETECTED (same diagnostic code/session/cwd repeated $loop_count times). Treat this as unchanged control metadata: do not emit another final/status/question, retry, poll, or stop attempt. Execute at most one distinct recovery action or record one concrete user-owned blocker, then wait for new external state."
+      fi
     fi
   fi
 
@@ -593,6 +636,13 @@ json_block_with_loop_state() {
 json_block() {
   json_block_with_loop_state "$1"
 }
+
+marker_bound_status=0
+eci_stop_marker_set_is_bounded || marker_bound_status=$?
+if [ "$marker_bound_status" -eq 2 ]; then
+  json_block_fast ""
+  exit 0
+fi
 
 # Validate an ECI marker without following the final session/marker symlinks.
 # Return 0 for a regular marker, 1 for an absent marker, and 2 for an unsafe
@@ -973,13 +1023,23 @@ block_if_eci_active_for_stop() {
     # Block without exposing or repairing it, and before generic bookkeeping.
     if [ "$marker_status" -eq 2 ]; then
       stop_invalid_marker=""
-      for candidate in "${stop_marker_cache[@]}"; do
-        candidate_code="$(codex_eci_marker_failure_code "$candidate" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
-        if [ -n "$candidate_code" ] && [ "$candidate_code" != ECI_MARKER_VALID ]; then
-          stop_invalid_marker="$candidate"
-          break
+      # A bounded scan overflow has no trustworthy concrete owner; retain the
+      # dedicated scan diagnostic instead of accidentally selecting a direct
+      # marker. Otherwise prefer the exact invalid candidate from the cache,
+      # falling back to the typed session's direct marker for malformed records
+      # that do not require an ambiguity scan.
+      if [ "${stop_marker_cache_status:-0}" -ne 2 ]; then
+        for candidate in "${stop_marker_cache[@]}"; do
+          candidate_code="$(codex_eci_marker_failure_code "$candidate" "${canonical_stop_cwd:-$cwd}" "${session_id:-}" 2>/dev/null || true)"
+          if [ -n "$candidate_code" ] && [ "$candidate_code" != ECI_MARKER_VALID ]; then
+            stop_invalid_marker="$candidate"
+            break
+          fi
+        done
+        if [ -z "$stop_invalid_marker" ]; then
+          stop_invalid_marker="$(stop_direct_marker_path 2>/dev/null || true)"
         fi
-      done
+      fi
       json_block_fast ""
       return 0
     fi

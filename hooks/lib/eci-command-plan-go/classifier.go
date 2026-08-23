@@ -15,73 +15,108 @@ import (
 )
 
 const (
-	maxCommandBytes  = 16 * 1024
-	maxSegments      = 8
-	maxArguments     = 128
-	maxArgumentBytes = 4 * 1024
-	maxWrapperDepth  = 8
-	maxProofAnchors  = 128
+	maxCommandBytes         = 16 * 1024
+	maxSegments             = 8
+	maxArguments            = 128
+	maxArgumentBytes        = 4 * 1024
+	maxWrapperDepth         = 8
+	maxProofAnchors         = 128
 	maxActiveControlEntries = 128
 )
 
+// Provider identifies the provider adapter requesting command-plan admission.
 type Provider string
 
 const (
+	// ProviderCodex selects the Codex adapter contract.
 	ProviderCodex Provider = "codex"
-	ProviderKimi  Provider = "kimi"
+	// ProviderKimi selects the Kimi adapter contract.
+	ProviderKimi Provider = "kimi"
 )
 
+// Role identifies whether the callback belongs to the coordinator or a worker.
 type Role string
 
 const (
+	// RoleCoordinator identifies the main/orchestrator owner.
 	RoleCoordinator Role = "coordinator"
-	RoleWorker      Role = "worker"
+	// RoleWorker identifies a delegated worker callback.
+	RoleWorker Role = "worker"
 )
 
+// Marker identifies whether the callback has a validated active ECI marker.
 type Marker string
 
 const (
-	MarkerActive   Marker = "active"
+	// MarkerActive indicates that ECI ownership checks are active.
+	MarkerActive Marker = "active"
+	// MarkerInactive indicates that no active ECI marker was discovered.
 	MarkerInactive Marker = "inactive"
 )
 
+// DecisionKind is the compiled planner's admission disposition.
 type DecisionKind string
 
 const (
+	// DecisionAllow admits the finite command plan.
 	DecisionAllow DecisionKind = "allow"
+	// DecisionDefer routes the capability to a provider-specific adapter.
 	DecisionDefer DecisionKind = "defer"
-	DecisionDeny  DecisionKind = "deny"
+	// DecisionDeny rejects the command plan with a structured diagnostic.
+	DecisionDeny DecisionKind = "deny"
+	// DecisionError reports an invalid planner request or internal failure.
 	DecisionError DecisionKind = "error"
 )
 
+// Capability identifies a recognized protected command capability.
 type Capability string
 
 const (
+	// CapabilityGateMode identifies command-gate mode operations.
 	CapabilityGateMode Capability = "gate-mode"
 )
 
+// DiagnosticCode is the stable machine-readable reason for a denial.
 type DiagnosticCode string
 
 const (
-	CodePlanSyntaxDenied             DiagnosticCode = "ECI_PLAN_SYNTAX_DENIED"
-	CodePlanLimitDenied              DiagnosticCode = "ECI_PLAN_LIMIT_DENIED"
-	CodePlanWrapperDenied            DiagnosticCode = "ECI_PLAN_WRAPPER_DENIED"
-	CodePlanDynamicLaunchDenied      DiagnosticCode = "ECI_PLAN_DYNAMIC_LAUNCH_DENIED"
+	// CodePlanSyntaxDenied reports unsupported shell-plan syntax.
+	CodePlanSyntaxDenied DiagnosticCode = "ECI_PLAN_SYNTAX_DENIED"
+	// CodePlanLimitDenied reports a bounded command-plan limit violation.
+	CodePlanLimitDenied DiagnosticCode = "ECI_PLAN_LIMIT_DENIED"
+	// CodePlanWrapperDenied reports an incomplete transparent wrapper.
+	CodePlanWrapperDenied DiagnosticCode = "ECI_PLAN_WRAPPER_DENIED"
+	// CodePlanDynamicLaunchDenied reports dynamic executable launching.
+	CodePlanDynamicLaunchDenied DiagnosticCode = "ECI_PLAN_DYNAMIC_LAUNCH_DENIED"
+	// CodeEnvironmentEnumerationDenied reports unbounded environment enumeration.
 	CodeEnvironmentEnumerationDenied DiagnosticCode = "ECI_ENVIRONMENT_ENUMERATION_DENIED"
-	CodeEnvironmentNameDenied        DiagnosticCode = "ECI_ENVIRONMENT_NAME_DENIED"
-	CodeEnvironmentOptionDenied      DiagnosticCode = "ECI_ENVIRONMENT_OPTION_DENIED"
-	CodeEnvironmentContextDenied     DiagnosticCode = "ECI_ENVIRONMENT_CONTEXT_DENIED"
-	CodeWorkerGitOwnershipDenied     DiagnosticCode = "ECI_WORKER_GIT_OWNERSHIP_DENIED"
-	CodeGitExecutionContextDenied    DiagnosticCode = "ECI_GIT_EXECUTION_CONTEXT_DENIED"
-	CodeControlOwnerRequired         DiagnosticCode = "ECI_CONTROL_OWNER_REQUIRED"
-	CodeControlIdentityDenied        DiagnosticCode = "ECI_CONTROL_IDENTITY_DENIED"
-	CodeBroadDestructiveDenied       DiagnosticCode = "ECI_BROAD_DESTRUCTIVE_DENIED"
-	CodeLedgerAppendOnly             DiagnosticCode = "ECI_LEDGER_APPEND_ONLY"
-	CodeProofPathEscapeDenied        DiagnosticCode = "ECI_PROOF_PATH_ESCAPE_DENIED"
-	CodePlanLiveControlDenied        DiagnosticCode = "ECI_PLAN_LIVE_CONTROL_DENIED"
-	CodePlanInternalDenied           DiagnosticCode = "ECI_PLAN_INTERNAL_DENIED"
+	// CodeEnvironmentNameDenied reports an unregistered environment name.
+	CodeEnvironmentNameDenied DiagnosticCode = "ECI_ENVIRONMENT_NAME_DENIED"
+	// CodeEnvironmentOptionDenied reports an unsupported environment option.
+	CodeEnvironmentOptionDenied DiagnosticCode = "ECI_ENVIRONMENT_OPTION_DENIED"
+	// CodeEnvironmentContextDenied reports unsafe environment execution context.
+	CodeEnvironmentContextDenied DiagnosticCode = "ECI_ENVIRONMENT_CONTEXT_DENIED"
+	// CodeWorkerGitOwnershipDenied reports worker-owned Git mutation.
+	CodeWorkerGitOwnershipDenied DiagnosticCode = "ECI_WORKER_GIT_OWNERSHIP_DENIED"
+	// CodeGitExecutionContextDenied reports unsafe Git execution context.
+	CodeGitExecutionContextDenied DiagnosticCode = "ECI_GIT_EXECUTION_CONTEXT_DENIED"
+	// CodeControlOwnerRequired reports a coordinator-owned control mutation.
+	CodeControlOwnerRequired DiagnosticCode = "ECI_CONTROL_OWNER_REQUIRED"
+	// CodeControlIdentityDenied reports an untrusted control executable identity.
+	CodeControlIdentityDenied DiagnosticCode = "ECI_CONTROL_IDENTITY_DENIED"
+	// CodeBroadDestructiveDenied reports a broad destructive operation.
+	CodeBroadDestructiveDenied DiagnosticCode = "ECI_BROAD_DESTRUCTIVE_DENIED"
+	// CodeLedgerAppendOnly reports a direct mutation of an append-only ledger.
+	CodeLedgerAppendOnly DiagnosticCode = "ECI_LEDGER_APPEND_ONLY"
+	// CodeProofPathEscapeDenied reports a proof-path ownership escape.
+	CodeProofPathEscapeDenied DiagnosticCode = "ECI_PROOF_PATH_ESCAPE_DENIED"
+	// CodePlanLiveControlDenied reports a live control-file ownership violation.
+	CodePlanLiveControlDenied DiagnosticCode = "ECI_PLAN_LIVE_CONTROL_DENIED"
+	// CodePlanInternalDenied reports malformed planner input or internal failure.
+	CodePlanInternalDenied DiagnosticCode = "ECI_PLAN_INTERNAL_DENIED"
 )
 
+// Request is the bounded JSON request consumed by the compiled planner.
 type Request struct {
 	Provider      Provider `json:"provider"`
 	Role          Role     `json:"role"`
@@ -92,6 +127,7 @@ type Request struct {
 	ActiveMarkers []string `json:"active_markers"`
 }
 
+// Diagnostic describes one denied command-plan coordinate and remediation.
 type Diagnostic struct {
 	Code            DiagnosticCode `json:"code"`
 	Operation       string         `json:"operation"`
@@ -106,12 +142,14 @@ type Diagnostic struct {
 	RejectedSegment string         `json:"rejected_segment"`
 }
 
+// HookSpecificOutput carries the provider-neutral PreToolUse denial payload.
 type HookSpecificOutput struct {
 	HookEventName            string `json:"hookEventName"`
 	PermissionDecision       string `json:"permissionDecision"`
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
+// Result is the compiled planner's structured admission response.
 type Result struct {
 	Decision           DecisionKind        `json:"decision"`
 	Capabilities       []Capability        `json:"capabilities,omitempty"`
@@ -167,6 +205,7 @@ func (err *planError) Error() string {
 	return err.diagnostic.Reason
 }
 
+// Classify parses and admits one bounded command plan.
 func Classify(request Request) Result {
 	parsed, err := parsePlan(request.Command)
 	if err != nil {
@@ -673,6 +712,24 @@ func inspectSegment(
 		// paths or peer allowlists in the compiled planner.
 		return DecisionDefer, nil
 	}
+	if request.Marker == MarkerActive {
+		if target, ok := isPreCommitHookModeRepair(current.argv); ok {
+			if request.Role == RoleWorker {
+				return DecisionDeny, diagnosticForToken(
+					CodeControlOwnerRequired,
+					"worker argv selects coordinator-owned pre-commit hook mode repair",
+					segmentIndex,
+					originalTokenIndex(current.argv, target),
+					target,
+					"route the exact pre-commit hook mode repair through the coordinator",
+					"hook-mode-repair",
+				)
+			}
+			if request.Role == RoleCoordinator {
+				return DecisionDefer, nil
+			}
+		}
+	}
 	if name == "find" {
 		for index, argument := range argv[1:] {
 			switch argument.value {
@@ -741,7 +798,7 @@ func inspectGateMode(request Request, original, argv []token, segmentIndex int) 
 		diagnostic.Path = candidate
 		return diagnostic
 	}
-	if request.Marker != MarkerActive || request.Role != RoleWorker || !matched || argv[actionIndex].value != "set" {
+	if request.Role != RoleWorker || !matched || argv[actionIndex].value != "set" {
 		return nil
 	}
 	return diagnosticForToken(
@@ -1753,7 +1810,11 @@ func inspectGit(
 	argv []token,
 	segmentIndex int,
 ) (DecisionKind, *Diagnostic) {
+	repositoryContext := false
 	for index, argument := range argv[1:] {
+		if argument.value == "-C" || strings.HasPrefix(argument.value, "-C") && len(argument.value) > 2 {
+			repositoryContext = true
+		}
 		if isGitContextOption(argument.value) {
 			return DecisionDeny, diagnosticForToken(
 				CodeGitExecutionContextDenied,
@@ -1771,6 +1832,26 @@ func inspectGit(
 		return DecisionAllow, nil
 	}
 	mutationIndex, action := gitMutation(argv, subcommandIndex)
+	if repositoryContext {
+		// Repository selection is provider-owned capability: the adapter must
+		// establish that the target is one approved canonical root before a
+		// worker can use an otherwise read-only Git verb. Preserve the worker
+		// ownership diagnostic for mutations even when a -C context is visible.
+		if action != "" && request.Marker == MarkerActive && request.Role == RoleWorker {
+			return DecisionDeny, diagnosticForToken(
+				CodeWorkerGitOwnershipDenied,
+				fmt.Sprintf("worker argv selects acceptance-sensitive Git operation %s", action),
+				segmentIndex,
+				mutationIndex,
+				argv[mutationIndex],
+				"route this exact Git mutation through the main/orchestrator coordinator acceptance path",
+				"worker-git-ownership",
+			)
+		}
+		// In particular this prevents an active worker fast path from
+		// admitting git -C /tmp/foreign status without approved-root proof.
+		return DecisionDefer, nil
+	}
 	if action == "" {
 		return DecisionAllow, nil
 	}
@@ -1861,7 +1942,7 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 		if err != nil {
 			continue
 		}
-		entries, err := directory.Readdir(maxActiveControlEntries + 1)
+		entries, err := directory.ReadDir(maxActiveControlEntries + 1)
 		closeErr := directory.Close()
 		if err != nil && !errors.Is(err, io.EOF) {
 			continue
@@ -1875,7 +1956,7 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if entry.Mode()&os.ModeSymlink != 0 || !isECIControlBasename(name) {
+			if entry.Type()&os.ModeSymlink != 0 || !isECIControlBasename(name) {
 				continue
 			}
 			info, err := entry.Info()
@@ -1911,6 +1992,19 @@ func activeControlHardlinkPath(path string, index []activeControlFile) string {
 		}
 	}
 	return ""
+}
+
+func isCanonicalWorkerHandoffPath(path string, markers []string) bool {
+	base := filepath.Base(path)
+	switch base {
+	case "instructions.md", "project-understanding.md", "high_level_log.md", "latest-status-report.md":
+		for _, marker := range markers {
+			if path == filepath.Join(filepath.Dir(marker), base) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // activeControlResolvedPath follows one candidate alias and compares its
@@ -1969,6 +2063,9 @@ func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagno
 				return diagnostic
 			}
 		}
+		if isCanonicalWorkerHandoffPath(candidate, request.ActiveMarkers) {
+			continue
+		}
 		if controlPath := activeControlResolvedPath(candidate, controlIndex.files); controlPath != "" {
 			diagnostic := diagnosticForToken(
 				CodePlanLiveControlDenied,
@@ -2018,6 +2115,9 @@ func deniedResult(request Request, diagnostic Diagnostic) Result {
 
 func suppressInactiveDiagnostic(request Request, diagnostic *Diagnostic) bool {
 	if request.Marker != MarkerInactive {
+		return false
+	}
+	if diagnostic.Operation == "worker-control" {
 		return false
 	}
 	code := string(diagnostic.Code)
@@ -2279,6 +2379,16 @@ func isCoordinatorHookRepair(argv []token) bool {
 		}
 	}
 	return false
+}
+
+// isPreCommitHookModeRepair recognizes only the exact direct pre-commit hook mode repair argv.
+//
+// Example: chmod 755 hooks/pre-commit-go-mod.sh.
+func isPreCommitHookModeRepair(argv []token) (token, bool) {
+	if len(argv) != 3 || argv[0].value != "chmod" || argv[1].value != "755" || argv[2].value != "hooks/pre-commit-go-mod.sh" {
+		return token{}, false
+	}
+	return argv[2], true
 }
 
 func isGitContextOption(value string) bool {

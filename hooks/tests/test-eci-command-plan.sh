@@ -4,7 +4,16 @@ set -euo pipefail
 
 CODEX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KIMI_ROOT="${KIMI_CODE_HOME:-${HOME:?}/.kimi-code}"
-TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-command-plan.XXXXXX")"
+tmp_parent="${CODEX_TMPDIR:-${HOME:?}/tmp}"
+codex_device="$(stat -Lc '%d' -- "$CODEX_ROOT" 2>/dev/null || true)"
+tmp_device="$(stat -Lc '%d' -- "$tmp_parent" 2>/dev/null || true)"
+if [ -z "$codex_device" ] || [ "$codex_device" != "$tmp_device" ]; then
+  # Hardlink identity cases must be created on the same filesystem as the
+  # provider source.  The fallback is fixture setup only; every production
+  # hardlink assertion below remains strict.
+  tmp_parent="$CODEX_ROOT"
+fi
+TMP_ROOT="$(mktemp -d "$tmp_parent/.eci-command-plan.XXXXXX")"
 HELPER_HARDLINK="$CODEX_ROOT/hooks/lib/.eci-command-plan-test-helper-$BASHPID"
 CODEX_WORKER_SESSION_ID="11111111-1111-4111-8111-111111111111"
 CODEX_WORKER_TRANSCRIPT=""
@@ -510,7 +519,7 @@ for provider in codex kimi; do
   assert_plan_denied "$provider" worker active \
     "cat $session_root/goal_state" ECI_PLAN_LIVE_CONTROL_DENIED
   assert_denied "$provider" worker active \
-    "cat $TMP_ROOT/$provider-live-symlink" ECI_WORKER_CONTROL_READ_DENIED
+    "cat $TMP_ROOT/$provider-live-symlink" ECI_PLAN_LIVE_CONTROL_DENIED
   assert_plan_denied "$provider" worker active \
     "cat $TMP_ROOT/$provider-live-hardlink" ECI_PLAN_LIVE_CONTROL_DENIED
   assert_allowed "$provider" worker active \

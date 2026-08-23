@@ -15,8 +15,8 @@ import (
 func TestProviderInstallUsesOneHardLinkedImplementation(t *testing.T) {
 	t.Parallel()
 
-	codexRoot := filepath.Clean(filepath.Join("..", "..", ".."))
-	kimiRoot := "/home/pheona/.kimi-code"
+	codexRoot := providerHome(ProviderCodex)
+	kimiRoot := providerHome(ProviderKimi)
 	for _, name := range []string{
 		"go.mod",
 		"classifier.go",
@@ -45,8 +45,8 @@ func TestProviderValidatorsUseCompiledJSONInterface(t *testing.T) {
 	t.Parallel()
 
 	for _, validator := range []string{
-		filepath.Clean(filepath.Join("..", "..", "validate-bash.sh")),
-		"/home/pheona/.kimi-code/hooks/validate-bash.sh",
+		filepath.Join(providerHome(ProviderCodex), "hooks", "validate-bash.sh"),
+		filepath.Join(providerHome(ProviderKimi), "hooks", "validate-bash.sh"),
 	} {
 		source, err := os.ReadFile(validator)
 		if err != nil {
@@ -98,6 +98,120 @@ func TestInstalledBinaryProviderParity(t *testing.T) {
 		if result.Diagnostic == nil || result.Diagnostic.Code != CodeEnvironmentEnumerationDenied {
 			t.Fatalf("%s diagnostic: %#v", provider, result.Diagnostic)
 		}
+	}
+}
+
+func TestInstalledBinaryRoutesActivePreCommitHookModeRepairByRole(t *testing.T) {
+	t.Parallel()
+
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+	const command = "chmod 755 hooks/pre-commit-go-mod.sh"
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		provider := provider
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+
+			workerRequest := Request{
+				Provider:      provider,
+				Role:          RoleWorker,
+				CWD:           "/workspace",
+				Marker:        MarkerActive,
+				ActiveSession: "test-session",
+				Command:       command,
+			}
+			workerInput, err := json.Marshal(workerRequest)
+			if err != nil {
+				t.Fatalf("marshal worker request: %v", err)
+			}
+			var workerOutput bytes.Buffer
+			workerStatus := runBinary(t, binary, workerInput, &workerOutput)
+			if workerStatus != StatusDeny {
+				t.Fatalf("worker status: got %d, want %d; output=%s", workerStatus, StatusDeny, workerOutput.String())
+			}
+			var workerResult Result
+			if err := json.Unmarshal(workerOutput.Bytes(), &workerResult); err != nil {
+				t.Fatalf("decode worker result: %v", err)
+			}
+			if workerResult.Decision != DecisionDeny || workerResult.Diagnostic == nil {
+				t.Fatalf("worker result: decision=%q diagnostic=%#v, want deny with diagnostic", workerResult.Decision, workerResult.Diagnostic)
+			}
+			diagnostic := workerResult.Diagnostic
+			if diagnostic.Code != CodeControlOwnerRequired {
+				t.Errorf("worker code: got %q, want %q", diagnostic.Code, CodeControlOwnerRequired)
+			}
+			if diagnostic.Operation != "worker-control" {
+				t.Errorf("worker operation: got %q, want worker-control", diagnostic.Operation)
+			}
+			if diagnostic.Predicate != "hook-mode-repair" {
+				t.Errorf("worker predicate: got %q, want hook-mode-repair", diagnostic.Predicate)
+			}
+			if diagnostic.Token != "hooks/pre-commit-go-mod.sh" {
+				t.Errorf("worker token: got %q, want hooks/pre-commit-go-mod.sh", diagnostic.Token)
+			}
+			if diagnostic.ArgvIndex != 2 {
+				t.Errorf("worker argv index: got %d, want 2", diagnostic.ArgvIndex)
+			}
+
+			coordinatorRequest := workerRequest
+			coordinatorRequest.Role = RoleCoordinator
+			coordinatorInput, err := json.Marshal(coordinatorRequest)
+			if err != nil {
+				t.Fatalf("marshal coordinator request: %v", err)
+			}
+			var coordinatorOutput bytes.Buffer
+			coordinatorStatus := runBinary(t, binary, coordinatorInput, &coordinatorOutput)
+			if coordinatorStatus != StatusDefer {
+				t.Fatalf("coordinator status: got %d, want %d; output=%s", coordinatorStatus, StatusDefer, coordinatorOutput.String())
+			}
+			var coordinatorResult Result
+			if err := json.Unmarshal(coordinatorOutput.Bytes(), &coordinatorResult); err != nil {
+				t.Fatalf("decode coordinator result: %v", err)
+			}
+			if coordinatorResult.Decision != DecisionDefer || coordinatorResult.Diagnostic != nil {
+				t.Fatalf("coordinator result: decision=%q diagnostic=%#v, want defer without diagnostic", coordinatorResult.Decision, coordinatorResult.Diagnostic)
+			}
+
+			for _, testCase := range []struct {
+				name    string
+				command string
+				marker  Marker
+			}{
+				{name: "wrapper", command: "env chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+				{name: "executable alias", command: "/bin/chmod 755 hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+				{name: "alternate target spelling", command: "chmod 755 ./hooks/pre-commit-go-mod.sh", marker: MarkerActive},
+				{name: "another target", command: "chmod 755 hooks/install-pre-commit-go-mod.sh", marker: MarkerActive},
+				{name: "inactive exact", command: command, marker: MarkerInactive},
+			} {
+				testCase := testCase
+				t.Run(testCase.name, func(t *testing.T) {
+					request := workerRequest
+					request.Marker = testCase.marker
+					request.Command = testCase.command
+					input, err := json.Marshal(request)
+					if err != nil {
+						t.Fatalf("marshal request: %v", err)
+					}
+					var output bytes.Buffer
+					status := runBinary(t, binary, input, &output)
+					if status == StatusInternal {
+						t.Fatalf("status: got internal error; output=%s", output.String())
+					}
+					var result Result
+					if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+						t.Fatalf("decode result: %v", err)
+					}
+					if result.Diagnostic != nil && result.Diagnostic.Predicate == "hook-mode-repair" {
+						t.Fatalf("%s selected hook-mode-repair: status=%d result=%#v", testCase.command, status, result)
+					}
+					if testCase.marker == MarkerInactive && (status != StatusAllow || result.Decision != DecisionAllow || result.Diagnostic != nil) {
+						t.Fatalf("inactive exact command: status=%d result=%#v, want allow without diagnostic", status, result)
+					}
+				})
+			}
+		})
 	}
 }
 

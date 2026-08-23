@@ -3,6 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="$(mktemp -d "/tmp/codex-eci-edit-controls.XXXXXX")"
+export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
+export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
+mkdir -p "$XDG_CONFIG_HOME/eci" "$XDG_STATE_HOME"
+printf '%s\n' enforcing >"$XDG_CONFIG_HOME/eci/command-gate-mode"
+chmod 700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/eci"
+chmod 600 "$XDG_CONFIG_HOME/eci/command-gate-mode"
 proof_root="$ROOT/.eci-edit-control-proof-$BASHPID"
 repo_hardlink_alias="$(pwd)/.eci-active-hardlink-alias-$BASHPID"
 ledger_hardlink_alias="$ROOT/.latest-status-report-hardlink-alias-$BASHPID"
@@ -23,12 +29,14 @@ transcript="$codex_home/sessions/codex-edit-control-test.jsonl"
 printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' >"$transcript"
 
 run_bash_worker() {
-  local command="$1" expected_code="${2:-ECI_WORKER_CONTROL_READ_DENIED}" expected_path="${3:-}" out="$TMP_ROOT/bash-worker.out"
+  local command="$1" expected_code="${2:-ECI_WORKER_CONTROL_READ_DENIED}"
+  local expected_path="${3:-}"
+  local expected_resolved="${4:-$expected_path}" out="$TMP_ROOT/bash-worker.out"
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
       bash "$ROOT/hooks/validate-bash.sh" >"$out"
-  jq -e --arg expected "$expected_code" --arg expected_path "$expected_path" '
+  jq -e --arg expected "$expected_code" --arg expected_path "$expected_path" --arg expected_resolved "$expected_resolved" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains($expected)) and
     (if $expected == "ECI_WORKER_CONTROL_READ_DENIED" then
@@ -37,7 +45,7 @@ run_bash_worker() {
       (.hookSpecificOutput.permissionDecisionReason | contains("resolved=")) and
       (.hookSpecificOutput.permissionDecisionReason | contains("route=coordinator-inspection-route")) and
       (if $expected_path == "" then true else
-        (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $expected_path)) and contains(("resolved=" + $expected_path)))
+        (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $expected_path)) and contains(("resolved=" + $expected_resolved)))
       end)
     else true end)
   ' "$out" >/dev/null
@@ -49,11 +57,15 @@ run_bash_worker_allowed() {
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
       bash "$ROOT/hooks/validate-bash.sh" >"$out"
-  [ ! -s "$out" ]
+  [ ! -s "$out" ] || {
+    cat -- "$out" >&2
+    return 1
+  }
 }
 
 for provider_sessions in "$ROOT/sessions" "$home/.kimi-code/sessions"; do
-  run_bash_worker "readlink -f $provider_sessions" ECI_WORKER_CONTROL_READ_DENIED "$provider_sessions"
+  provider_session_resolved="$(realpath -m -- "$provider_sessions")"
+  run_bash_worker "readlink -f $provider_sessions" ECI_WORKER_CONTROL_READ_DENIED "$provider_sessions" "$provider_session_resolved"
 done
 
 run_bash_coordinator() {
@@ -122,7 +134,7 @@ done
 for command in \
   "cat $proof_root/$sid/eci_active" \
   "sed -n '1p' $proof_root/$sid/eci_active"; do
-  run_bash_worker "$command"
+  run_bash_worker "$command" ECI_PLAN_LIVE_CONTROL_DENIED
   run_bash_coordinator "$command"
 done
 
@@ -132,8 +144,9 @@ run_patch "$repo_hardlink_alias"
 for command in \
   "cat $repo_hardlink_alias" \
   "sed -n '1p' $repo_hardlink_alias"; do
-  run_bash_worker "$command"
+  run_bash_worker "$command" ECI_PLAN_LIVE_CONTROL_DENIED
 done
+unlink "$repo_hardlink_alias"
 
 # A hardlink to an ordinary provider helper must remain an ordinary read even
 # though the alias has an arbitrary basename and lives outside the proof root.
@@ -147,7 +160,7 @@ run_patch "$ledger_hardlink_alias"
 for command in \
   "cat $ledger_hardlink_alias" \
   "sed -n '1p' $ledger_hardlink_alias"; do
-  run_bash_worker "$command"
+  run_bash_worker "$command" ECI_PLAN_LIVE_CONTROL_DENIED
 done
 
 # Atomic publication uses temporary siblings; those names are coordinator
