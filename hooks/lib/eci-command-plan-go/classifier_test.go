@@ -2803,6 +2803,169 @@ func TestEnvironmentUnsetOptions(t *testing.T) {
 	}
 }
 
+func TestGitFsckLostFoundWorkerRouteAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{
+		"env git fsck --lost-found",
+		"env git fsck '--lost-found'",
+		`"env" git fsck --lost-found`,
+		`env "git" fsck --lost-found`,
+		`env git "fsck" --lost-found`,
+		"env FOO=bar BAR=baz git fsck --lost-found",
+		"env -i git fsck --lost-found",
+		"env -u FOO git fsck --lost-found",
+		"env -C . git fsck --lost-found",
+		"env -- git fsck --full --lost-found --no-progress",
+	} {
+		result := Classify(activeWorker(command))
+		if result.Decision != DecisionDefer || result.Diagnostic != nil {
+			t.Errorf("positive %q: decision=%q diagnostic=%#v, want defer without diagnostic", command, result.Decision, result.Diagnostic)
+		}
+		if result.DeferredRoute != DeferredRouteWorkerEnvGitFsckLostFound {
+			t.Errorf("positive %q: route=%q, want %q", command, result.DeferredRoute, DeferredRouteWorkerEnvGitFsckLostFound)
+		}
+	}
+
+	testCases := []struct {
+		name          string
+		request       Request
+		wantDecision  DecisionKind
+		wantCode      DiagnosticCode
+		wantRoute     DeferredRoute
+		wantToken     string
+		wantArgvIndex int
+	}{
+		{name: "raw", request: activeWorker("git fsck --lost-found"), wantDecision: DecisionDeny, wantCode: CodeWorkerGitOwnershipDenied, wantToken: "--lost-found", wantArgvIndex: 2},
+		{name: "path-qualified", request: activeWorker("env /usr/bin/git fsck --lost-found"), wantDecision: DecisionDeny, wantCode: CodeWorkerGitOwnershipDenied, wantToken: "--lost-found", wantArgvIndex: 3},
+		{name: "wrapped", request: activeWorker("env command git fsck --lost-found"), wantDecision: DecisionDeny, wantCode: CodeWorkerGitOwnershipDenied, wantToken: "--lost-found", wantArgvIndex: 4},
+		{name: "global option", request: activeWorker("env git --no-pager fsck --lost-found"), wantDecision: DecisionDeny, wantCode: CodeWorkerGitOwnershipDenied, wantToken: "--lost-found", wantArgvIndex: 4},
+		{name: "operator", request: activeWorker("env git fsck --lost-found && printf after"), wantDecision: DecisionDeny, wantCode: CodeWorkerGitOwnershipDenied, wantToken: "--lost-found", wantArgvIndex: 3},
+		{name: "equals form", request: activeWorker("env git fsck --lost-found=ignored"), wantDecision: DecisionAllow},
+		{name: "bare fsck", request: activeWorker("git fsck"), wantDecision: DecisionAllow},
+		{name: "coordinator", request: func() Request {
+			request := activeWorker("git fsck --lost-found")
+			request.Role = RoleCoordinator
+			return request
+		}(), wantDecision: DecisionDefer},
+		{name: "Kimi", request: func() Request {
+			request := activeWorker("git fsck --lost-found")
+			request.Provider = ProviderKimi
+			return request
+		}(), wantDecision: DecisionDefer},
+		{name: "inactive", request: func() Request {
+			request := activeWorker("git fsck --lost-found")
+			request.Marker = MarkerInactive
+			request.ActiveSession = ""
+			return request
+		}(), wantDecision: DecisionDefer},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			result := Classify(testCase.request)
+			if result.Decision != testCase.wantDecision {
+				t.Fatalf("decision=%q, want %q; diagnostic=%#v", result.Decision, testCase.wantDecision, result.Diagnostic)
+			}
+			if result.DeferredRoute != testCase.wantRoute {
+				t.Errorf("route=%q, want %q", result.DeferredRoute, testCase.wantRoute)
+			}
+			if testCase.wantCode == "" {
+				if result.Diagnostic != nil {
+					t.Fatalf("diagnostic=%#v, want nil", result.Diagnostic)
+				}
+				return
+			}
+			if result.Diagnostic == nil || result.Diagnostic.Code != testCase.wantCode {
+				t.Fatalf("diagnostic=%#v, want code %q", result.Diagnostic, testCase.wantCode)
+			}
+			if result.Diagnostic.Token != testCase.wantToken || result.Diagnostic.ArgvIndex != testCase.wantArgvIndex {
+				t.Errorf("diagnostic token/index=%q/%d, want %q/%d", result.Diagnostic.Token, result.Diagnostic.ArgvIndex, testCase.wantToken, testCase.wantArgvIndex)
+			}
+			if result.Diagnostic.Predicate != "worker-git-ownership" {
+				t.Errorf("diagnostic predicate=%q, want worker-git-ownership", result.Diagnostic.Predicate)
+			}
+		})
+	}
+}
+
+func TestGitFsckLostFoundGitContextDiagnosticPreservation(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		command       string
+		wantToken     string
+		wantArgvIndex int
+	}{
+		{name: "direct git-dir attached", command: "git --git-dir=.git fsck --lost-found", wantToken: "--git-dir=.git", wantArgvIndex: 1},
+		{name: "direct work-tree attached", command: "git --work-tree=/tmp fsck --lost-found", wantToken: "--work-tree=/tmp", wantArgvIndex: 1},
+		{name: "direct namespace attached", command: "git --namespace=foo fsck --lost-found", wantToken: "--namespace=foo", wantArgvIndex: 1},
+		{name: "direct exec-path attached", command: "git --exec-path=/tmp fsck --lost-found", wantToken: "--exec-path=/tmp", wantArgvIndex: 1},
+		{name: "direct config-env attached", command: "git --config-env=GIT_CONFIG_COUNT=0 fsck --lost-found", wantToken: "--config-env=GIT_CONFIG_COUNT=0", wantArgvIndex: 1},
+		{name: "env git-dir attached", command: "env git --git-dir=.git fsck --lost-found", wantToken: "--git-dir=.git", wantArgvIndex: 1},
+		{name: "env work-tree attached", command: "env git --work-tree=/tmp fsck --lost-found", wantToken: "--work-tree=/tmp", wantArgvIndex: 1},
+		{name: "env namespace attached", command: "env git --namespace=foo fsck --lost-found", wantToken: "--namespace=foo", wantArgvIndex: 1},
+		{name: "env exec-path attached", command: "env git --exec-path=/tmp fsck --lost-found", wantToken: "--exec-path=/tmp", wantArgvIndex: 1},
+		{name: "env config-env attached", command: "env git --config-env=GIT_CONFIG_COUNT=0 fsck --lost-found", wantToken: "--config-env=GIT_CONFIG_COUNT=0", wantArgvIndex: 1},
+		{name: "direct git-dir split", command: "git --git-dir .git fsck --lost-found", wantToken: "--git-dir", wantArgvIndex: 1},
+		{name: "direct work-tree split", command: "git --work-tree /tmp fsck --lost-found", wantToken: "--work-tree", wantArgvIndex: 1},
+		{name: "direct namespace split", command: "git --namespace foo fsck --lost-found", wantToken: "--namespace", wantArgvIndex: 1},
+		{name: "direct exec-path split", command: "git --exec-path /tmp fsck --lost-found", wantToken: "--exec-path", wantArgvIndex: 1},
+		{name: "direct config-env split", command: "git --config-env GIT_CONFIG_COUNT fsck --lost-found", wantToken: "--config-env", wantArgvIndex: 1},
+		{name: "env git-dir split", command: "env git --git-dir .git fsck --lost-found", wantToken: "--git-dir", wantArgvIndex: 1},
+		{name: "env work-tree split", command: "env git --work-tree /tmp fsck --lost-found", wantToken: "--work-tree", wantArgvIndex: 1},
+		{name: "env namespace split", command: "env git --namespace foo fsck --lost-found", wantToken: "--namespace", wantArgvIndex: 1},
+		{name: "env exec-path split", command: "env git --exec-path /tmp fsck --lost-found", wantToken: "--exec-path", wantArgvIndex: 1},
+		{name: "env config-env split", command: "env git --config-env GIT_CONFIG_COUNT fsck --lost-found", wantToken: "--config-env", wantArgvIndex: 1},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			result := Classify(activeWorker(testCase.command))
+			if result.Decision != DecisionDeny || result.Diagnostic == nil {
+				t.Fatalf("decision=%q diagnostic=%#v, want deny with diagnostic", result.Decision, result.Diagnostic)
+			}
+			if result.Diagnostic.Code != CodeGitExecutionContextDenied {
+				t.Errorf("diagnostic code=%q, want %q", result.Diagnostic.Code, CodeGitExecutionContextDenied)
+			}
+			if result.Diagnostic.Token != testCase.wantToken || result.Diagnostic.ArgvIndex != testCase.wantArgvIndex {
+				t.Errorf("diagnostic token/index=%q/%d, want %q/%d", result.Diagnostic.Token, result.Diagnostic.ArgvIndex, testCase.wantToken, testCase.wantArgvIndex)
+			}
+			if result.Diagnostic.Predicate != "git-execution-context" {
+				t.Errorf("diagnostic predicate=%q, want git-execution-context", result.Diagnostic.Predicate)
+			}
+			if result.DeferredRoute != "" {
+				t.Errorf("route=%q, want omitted", result.DeferredRoute)
+			}
+		})
+	}
+}
+
+func TestDeferredRouteJSONEncoding(t *testing.T) {
+	t.Parallel()
+	positive, err := json.Marshal(Classify(activeWorker("env git fsck '--lost-found'")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsBytes(positive, []byte(`"deferred_route":"worker-env-git-fsck-lost-found"`)) {
+		t.Fatalf("positive JSON omitted route: %s", positive)
+	}
+	for _, request := range []Request{
+		activeWorker("git fsck --lost-found"),
+		activeWorker("env git --no-pager fsck --lost-found"),
+		activeWorker("env git fsck --lost-found=ignored"),
+	} {
+		encoded, err := json.Marshal(Classify(request))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if containsBytes(encoded, []byte(`"deferred_route"`)) {
+			t.Errorf("negative JSON contains route: %s", encoded)
+		}
+	}
+}
+
 func activeWorker(command string) Request {
 	return Request{
 		Provider:      ProviderCodex,

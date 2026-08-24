@@ -86,6 +86,16 @@ const (
 	CapabilityDirectPathGitStatus Capability = "direct-path-git-status"
 )
 
+// DeferredRoute identifies one provider-owned route selected after complete
+// command-plan classification.
+type DeferredRoute string
+
+const (
+	// DeferredRouteWorkerEnvGitFsckLostFound identifies a direct transparent
+	// env-prefixed Git fsck writer for the active Codex worker boundary.
+	DeferredRouteWorkerEnvGitFsckLostFound DeferredRoute = "worker-env-git-fsck-lost-found"
+)
+
 // DiagnosticCode is the stable machine-readable reason for a denial.
 type DiagnosticCode string
 
@@ -164,6 +174,7 @@ type HookSpecificOutput struct {
 type Result struct {
 	Decision           DecisionKind        `json:"decision"`
 	Capabilities       []Capability        `json:"capabilities,omitempty"`
+	DeferredRoute      DeferredRoute       `json:"deferred_route,omitempty"`
 	Diagnostic         *Diagnostic         `json:"diagnostic,omitempty"`
 	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
@@ -267,7 +278,44 @@ func Classify(request Request) Result {
 			}
 		}
 	}
-	return Result{Decision: decision, Capabilities: capabilities}
+	return Result{
+		Decision:      decision,
+		Capabilities:  capabilities,
+		DeferredRoute: deferredRouteForPlan(request, parsed, decision, capabilities),
+	}
+}
+
+// deferredRouteForPlan selects the one transparent-env worker route only
+// after complete plan classification. The route is intentionally narrower
+// than generic wrapper and Git-option interpretation.
+func deferredRouteForPlan(request Request, parsed plan, decision DecisionKind, capabilities []Capability) DeferredRoute {
+	if request.Provider != ProviderCodex || request.Marker != MarkerActive || request.Role != RoleWorker {
+		return ""
+	}
+	if decision != DecisionDefer || len(capabilities) != 0 {
+		return ""
+	}
+	if len(parsed.segments) != 1 || len(parsed.operators) != 0 {
+		return ""
+	}
+	if isWorkerEnvGitFsckLostFound(parsed.segments[0].argv) {
+		return DeferredRouteWorkerEnvGitFsckLostFound
+	}
+	return ""
+}
+
+// isWorkerEnvGitFsckLostFound recognizes only a direct transparent env child
+// with exact child positions git fsck and a later standalone --lost-found.
+func isWorkerEnvGitFsckLostFound(argv []token) bool {
+	if len(argv) == 0 || argv[0].value != "env" {
+		return false
+	}
+	child, diagnostic := unwrapEnv(argv, 1)
+	if diagnostic != nil || len(child) < 3 || child[0].value != "git" || child[1].value != "fsck" {
+		return false
+	}
+	_, ok := gitFsckLostFoundOption(child, 1)
+	return ok
 }
 
 // capabilitiesForPlan returns the one explicit capability represented by the
@@ -748,6 +796,26 @@ func inspectSegment(
 		return DecisionDeny, diagnostic
 	}
 	name := filepath.Base(argv[0].value)
+	if name == "git" {
+		if optionIndex, ok := gitFsckLostFoundOption(argv, gitSubcommandIndex(argv)); ok {
+			if hasAttachedGitContextOption(argv) {
+				return inspectGit(request, argv, segmentIndex)
+			}
+			routeQualified := wholeSingleSegmentPlan && isWorkerEnvGitFsckLostFound(current.argv)
+			if request.Provider == ProviderCodex && request.Marker == MarkerActive && request.Role == RoleWorker && !routeQualified {
+				return DecisionDeny, diagnosticForToken(
+					CodeWorkerGitOwnershipDenied,
+					"worker argv selects Git fsck --lost-found writer",
+					segmentIndex,
+					originalTokenIndex(current.argv, argv[optionIndex]),
+					argv[optionIndex],
+					"route this exact Git fsck writer through the main/orchestrator coordinator acceptance path",
+					"worker-git-ownership",
+				)
+			}
+			return DecisionDefer, nil
+		}
+	}
 	if request.Marker == MarkerActive && name == "mktemp" {
 		// Temporary-directory setup is coordinator-owned capability. Defer
 		// every active invocation to the provider route, which validates the
@@ -3106,6 +3174,15 @@ func isGitContextOption(value string) bool {
 	}
 }
 
+func hasAttachedGitContextOption(argv []token) bool {
+	for _, argument := range argv[1:] {
+		if strings.Contains(argument.value, "=") && isGitContextOption(argument.value) {
+			return true
+		}
+	}
+	return false
+}
+
 func gitSubcommandIndex(argv []token) int {
 	index := 1
 	for index < len(argv) {
@@ -3120,6 +3197,21 @@ func gitSubcommandIndex(argv []token) int {
 		}
 	}
 	return index
+}
+
+// gitFsckLostFoundOption returns the exact --lost-found token after the fsck
+// subcommand. The caller supplies the already-selected subcommand position so
+// the worker route does not inherit generic Git option interpretation.
+func gitFsckLostFoundOption(argv []token, subcommandIndex int) (int, bool) {
+	if subcommandIndex >= len(argv) || argv[subcommandIndex].value != "fsck" {
+		return 0, false
+	}
+	for index, argument := range argv[subcommandIndex+1:] {
+		if argument.value == "--lost-found" {
+			return subcommandIndex + 1 + index, true
+		}
+	}
+	return 0, false
 }
 
 func gitMutation(argv []token, subcommandIndex int) (int, string) {

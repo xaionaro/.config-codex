@@ -9742,6 +9742,33 @@ if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "
   deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the main/orchestrator through the bounded literal route." "route mktemp -d setup through the main/orchestrator using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
 fi
 
+# A deferred, capability-free planner result for one direct env-prefixed Git
+# fsck writer needs the worker launcher diagnostic before generic admission.
+# The compiled planner owns the complete env/argv grammar and publishes this
+# route only after final classification.
+worker_env_git_fsck_lost_found_shape() {
+  [ "$hook_is_subagent" = true ] || return 1
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  [ "${plan_role:-coordinator}" = worker ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  [ "${plan_status:-1}" -eq 3 ] || return 1
+  jq -e '
+    type == "object" and
+    .decision == "defer" and
+    .deferred_route == "worker-env-git-fsck-lost-found" and
+    (.diagnostic == null) and
+    ((.capabilities // []) | length == 0)
+  ' <<<"${plan_output:-}" >/dev/null 2>&1 || return 1
+}
+
+if worker_env_git_fsck_lost_found_shape; then
+  launcher_identity="$(eci_command_identity_subject "$command")"
+  launcher_detail="$(rejected_command_detail "$command" 2>/dev/null || printf 'segment=<unclassified>')"
+  deny_eci "ECI_WORKER_LAUNCHER_DENIED" "worker-launcher" \
+    "ECI worker boundary denied transparent env Git fsck writer: command=${launcher_identity}; detail=${launcher_detail}; predicate=worker-env-git-fsck-lost-found; reason=the exact --lost-found option writes dangling objects under the repository metadata" \
+    "remove --lost-found or route the Git fsck writer through the main/orchestrator"
+fi
+
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   [ "$ECI_LITERAL_ADMITTED" != true ] &&
   [ "$worker_read_only_pipeline_candidate" != true ] &&
