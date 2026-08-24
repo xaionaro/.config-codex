@@ -79,6 +79,11 @@ const (
 	//
 	// Example: git archive --format=tar --output=artifact.tar HEAD.
 	CapabilityRepositoryDefaultGitArchive Capability = "repository-default-git-archive"
+	// CapabilityDirectPathGitStatus identifies one direct, unquoted Git status
+	// argv without treating its path or bytes as trusted executable identity.
+	//
+	// Example: /tmp/task/git status.
+	CapabilityDirectPathGitStatus Capability = "direct-path-git-status"
 )
 
 // DiagnosticCode is the stable machine-readable reason for a denial.
@@ -262,7 +267,6 @@ func Classify(request Request) Result {
 			}
 		}
 	}
-
 	return Result{Decision: decision, Capabilities: capabilities}
 }
 
@@ -275,6 +279,9 @@ func capabilitiesForPlan(parsed plan) []Capability {
 	if isRepositoryDefaultGitArchivePlan(parsed) {
 		return []Capability{CapabilityRepositoryDefaultGitArchive}
 	}
+	if isDirectPathGitStatusPlan(parsed) {
+		return []Capability{CapabilityDirectPathGitStatus}
+	}
 	for segmentIndex, current := range parsed.segments {
 		argv, diagnostic := unwrap(current.argv, segmentIndex+1)
 		if diagnostic == nil && isGateModeCapability(argv) {
@@ -282,6 +289,21 @@ func capabilitiesForPlan(parsed plan) []Capability {
 		}
 	}
 	return nil
+}
+
+// isDirectPathGitStatusPlan reports whether parsed is exactly one direct,
+// unquoted, path-selected Git status argv before any wrapper is unwrapped.
+//
+// Example: ./tools/git status is true while env ./tools/git status is false.
+func isDirectPathGitStatusPlan(parsed plan) bool {
+	if len(parsed.segments) != 1 || len(parsed.operators) != 0 {
+		return false
+	}
+
+	argv := parsed.segments[0].argv
+	return len(argv) == 2 && !argv[0].quoted && !argv[1].quoted &&
+		strings.ContainsRune(argv[0].value, filepath.Separator) &&
+		filepath.Base(argv[0].value) == "git" && argv[1].value == "status"
 }
 
 // isRepositoryDefaultGitArchivePlan reports whether parsed is exactly one

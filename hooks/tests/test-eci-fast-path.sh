@@ -21,6 +21,30 @@ input="$tmp/input.json"
 out="$tmp/out.json"
 jq -n --arg cwd "$ROOT" '{session_id:"t00-session", transcript_path:"", stop_hook_active:false, cwd:$cwd}' >"$input"
 
+# The bounded-marker preflight runs before the later direct-marker helper is
+# declared. An oversized direct marker must still produce the concrete
+# malformed-marker block without leaking a masked Bash command-not-found
+# diagnostic on stderr.
+oversized_root="$tmp/oversized-marker-root"
+oversized_err="$tmp/oversized-marker.err"
+mkdir -p "$oversized_root/t00-session"
+{
+  printf '%s\n' 'scope: oversized direct marker'
+  printf 'cwd: %s\n' "$ROOT"
+  printf '%s\n' 'session_id: t00-session'
+  printf 'created_utc: '
+  head -c 5000 /dev/zero | tr '\0' x
+  printf '\n'
+} >"$oversized_root/t00-session/eci_active"
+env -u CODEX_HOME -u CODEX_ROLE HOME="$home" CODEX_PROOF_ROOT="$oversized_root" \
+  bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$out" 2>"$oversized_err"
+[ ! -s "$oversized_err" ] || {
+  cat "$oversized_err" >&2
+  exit 1
+}
+[ "$(jq -r '.decision // empty' "$out")" = block ]
+jq -e '.reason | contains("[ECI_MARKER_MALFORMED]")' "$out" >/dev/null
+
 # The callback path must not recurse through arbitrary proof-root descendants.
 # Keep this structural assertion beside a non-marker directory stress fixture.
 ! grep -Fq 'find "$root" -mindepth 2 -maxdepth 2 -print0' "$ROOT/hooks/stop-gate.sh"

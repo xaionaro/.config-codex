@@ -6,7 +6,35 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 classifier_tmp_parent="$(realpath -m -- "${CODEX_TMPDIR:-${TMPDIR:-${HOME:?}/tmp}}")"
 mkdir -p -- "$classifier_tmp_parent"
 TMP_ROOT="$(mktemp -d "$classifier_tmp_parent/eci-classifier-${BASHPID}.XXXXXX")"
-kimi_root="${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}"
+# Cross-provider assertions must not trust a concurrently edited peer worktree.
+# Clone its committed HEAD into the test sandbox instead.  The peer lifecycle
+# recognizer intentionally binds Kimi to $HOME/.kimi-code, so keep that
+# temporary parent as kimi_home for peer-only hook invocations below.
+kimi_source_root="${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}"
+kimi_root="$kimi_source_root"
+kimi_home="${HOME:-}"
+if [[ "$kimi_source_root" = /* ]] && [ -d "$kimi_source_root" ] &&
+  [ ! -L "$kimi_source_root" ] &&
+  [ "$(realpath -m -- "$kimi_source_root")" = "$kimi_source_root" ] &&
+  kimi_source_head="$(git -C "$kimi_source_root" rev-parse --verify HEAD^{commit} 2>/dev/null)"; then
+  kimi_home="$TMP_ROOT/kimi-home"
+  kimi_root="$kimi_home/.kimi-code"
+  mkdir -p -- "$kimi_home"
+  git clone --quiet --no-checkout --no-local --no-tags "$kimi_source_root" "$kimi_root"
+  git -C "$kimi_root" checkout --quiet --detach "$kimi_source_head"
+  [ "$(git -C "$kimi_root" rev-parse HEAD)" = "$kimi_source_head" ]
+  [ -z "$(git -C "$kimi_root" status --porcelain)" ]
+
+  # The committed snapshot has no runtime receipt.  Add a test-local receipt
+  # so the altered-peer assertion below proves lifecycle byte binding rather
+  # than merely a non-canonical path denial.
+  kimi_active_digest="$(sha256sum -- "$kimi_root/bin/eci-active" | awk '{print $1}')"
+  kimi_active_mode="$(stat -c '%a' -- "$kimi_root/bin/eci-active")"
+  printf 'bin/eci-active\t%s\t%s\n' "$kimi_active_digest" "$kimi_active_mode" >"$kimi_root/.eci-runtime-sync-manifest"
+  chmod 600 -- "$kimi_root/.eci-runtime-sync-manifest"
+  printf '/.eci-runtime-sync-manifest\n' >>"$kimi_root/.git/info/exclude"
+  [ -z "$(git -C "$kimi_root" status --porcelain)" ]
+fi
 subagent_transcript=""
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
@@ -80,6 +108,16 @@ run_hook() {
   printf '%s\n' "$output"
 }
 
+run_hook_with_canonical_tmpdir() {
+  local command="$1" output
+  output="$TMP_ROOT/output-with-canonical-tmpdir"
+  jq -cn --arg cwd "$ROOT" --arg command "$command" \
+    '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
+    TMPDIR="$classifier_tmp_parent" CODEX_TMPDIR="$classifier_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$kimi_root" PATH="$ROOT/bin:$PATH" \
+      bash "$ROOT/hooks/validate-bash.sh" >"$output"
+  printf '%s\n' "$output"
+}
+
 run_hook_without_marker() {
   local command="$1" output
   output="$TMP_ROOT/output-without-marker"
@@ -91,13 +129,22 @@ run_hook_without_marker() {
 }
 
 run_hook_with_kimi_home() {
-  local command="$1" companion_home="$2" output
+  local command="$1" companion_root="$2" companion_home output
+  companion_home="$(dirname -- "$companion_root")"
   output="$TMP_ROOT/output-with-kimi-home"
   jq -cn --arg cwd "$ROOT" --arg command "$command" \
     '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$companion_home" PATH="$ROOT/bin:$PATH" \
+    HOME="$companion_home" CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" KIMI_CODE_HOME="$companion_root" PATH="$ROOT/bin:$PATH" \
       bash "$ROOT/hooks/validate-bash.sh" >"$output"
   printf '%s\n' "$output"
+}
+
+run_peer_hook() {
+  run_hook_with_kimi_home "$1" "$kimi_root"
+}
+
+run_altered_peer_hook() {
+  run_hook_with_kimi_home "$1" "$altered_kimi_root"
 }
 
 run_hook_without_kimi_home() {
@@ -105,7 +152,7 @@ run_hook_without_kimi_home() {
   output="$TMP_ROOT/output-without-kimi-home"
   jq -cn --arg cwd "$ROOT" --arg command "$command" \
     '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
-    env -u KIMI_CODE_HOME CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" PATH="$ROOT/bin:$PATH" \
+    env -u KIMI_CODE_HOME HOME="$kimi_home" CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" PATH="$ROOT/bin:$PATH" \
       bash "$ROOT/hooks/validate-bash.sh" >"$output"
   printf '%s\n' "$output"
 }
@@ -216,8 +263,8 @@ assert_role_environment_denied() {
 }
 
 assert_allowed() {
-  local command="$1" output
-  output="$(run_hook "$command")"
+  local command="$1" runner="${2:-run_hook}" output
+  output="$("$runner" "$command")"
   [ ! -s "$output" ] || {
     cat "$output" >&2
     return 1
@@ -234,9 +281,19 @@ assert_denied() {
   }
 }
 
-assert_script_batch_denied_by_manifest() {
+assert_subagent_worker_launcher_denied() {
   local command="$1" output
-  output="$(run_hook "$command")"
+  output="$(run_subagent_hook "$command")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_LAUNCHER_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-launcher"))
+  ' "$output" >/dev/null
+}
+
+assert_script_batch_denied_by_manifest() {
+  local command="$1" runner="${2:-run_hook}" output
+  output="$("$runner" "$command")"
   jq -e '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains("reviewed digest manifest"))
@@ -248,8 +305,8 @@ assert_script_batch_denied_by_manifest() {
 }
 
 assert_unknown() {
-  local command="$1" output
-  output="$(run_hook "$command")"
+  local command="$1" runner="${2:-run_hook}" output
+  output="$("$runner" "$command")"
   jq -e '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_") and contains("phase=") and contains("operation=") and contains("reason:") and contains("remediation:"))
@@ -397,8 +454,8 @@ assert_ledger_append_only_denied() {
 }
 
 assert_lifecycle_denied() {
-  local command="$1" output
-  output="$(run_hook "$command")"
+  local command="$1" runner="${2:-run_hook}" output
+  output="$("$runner" "$command")"
   jq -e --arg command "$command" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_LIFECYCLE_ARGUMENTS_DENIED]")) and
@@ -411,8 +468,8 @@ assert_lifecycle_denied() {
 }
 
 assert_lifecycle_identity_denied() {
-  local command="$1" expected_name="$2" observed_name="$3" output
-  output="$(run_hook "$command")"
+  local command="$1" expected_name="$2" observed_name="$3" runner="${4:-run_hook}" output
+  output="$("$runner" "$command")"
   jq -e --arg expected_name "$expected_name" --arg observed_name "$observed_name" '
     .hookSpecificOutput.permissionDecision == "deny" and
     ((.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_LIFECYCLE_IDENTITY_DENIED]")) or
@@ -482,6 +539,7 @@ system_tmp_lifecycle_output="$(run_hook "env TMPDIR=$system_tmp CODEX_SESSION_ID
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_LIFECYCLE_ARGUMENTS_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=eci-lifecycle")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("TMPDIR must be a canonical non-system temporary directory")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
 ' "$system_tmp_lifecycle_output" >/dev/null
@@ -533,22 +591,28 @@ done
 
 if [[ "$kimi_root" = /* ]] && [ -d "$kimi_root" ] && [ ! -L "$kimi_root" ] &&
   [ -f "$kimi_root/bin/eci-active" ] && [ ! -L "$kimi_root/bin/eci-active" ]; then
-  assert_allowed "$kimi_root/bin/eci-active status"
-  assert_allowed "$kimi_root/bin/eci-active --help"
-  assert_allowed "env KIMI_SESSION_ID=t00-session $kimi_root/bin/eci-active status"
-  assert_lifecycle_identity_denied "env CODEX_SESSION_ID=t00-session $kimi_root/bin/eci-active status" KIMI_SESSION_ID CODEX_SESSION_ID
-  assert_lifecycle_identity_denied "env KIMI_SESSION_ID=wrong-session $kimi_root/bin/eci-active ledger-append 'mismatch probe'" KIMI_SESSION_ID wrong-session
-  assert_allowed "$kimi_root/bin/eci-active on 'peer coordinator scope'"
-  assert_allowed "$kimi_root/bin/eci-active off /tmp/eci-peer-disengage.md"
-  assert_lifecycle_denied "$kimi_root/bin/eci-active on peer-scope extra"
+  assert_allowed "$kimi_root/bin/eci-active status" run_peer_hook
+  assert_allowed "$kimi_root/bin/eci-active --help" run_peer_hook
+  assert_allowed "env KIMI_SESSION_ID=t00-session $kimi_root/bin/eci-active status" run_peer_hook
+  assert_lifecycle_identity_denied "env CODEX_SESSION_ID=t00-session $kimi_root/bin/eci-active status" KIMI_SESSION_ID CODEX_SESSION_ID run_peer_hook
+  assert_lifecycle_identity_denied "env KIMI_SESSION_ID=wrong-session $kimi_root/bin/eci-active ledger-append 'mismatch probe'" KIMI_SESSION_ID wrong-session run_peer_hook
+  assert_allowed "$kimi_root/bin/eci-active on 'peer coordinator scope'" run_peer_hook
+  assert_allowed "$kimi_root/bin/eci-active off /tmp/eci-peer-disengage.md" run_peer_hook
+  assert_lifecycle_denied "$kimi_root/bin/eci-active on peer-scope extra" run_peer_hook
   peer_worker_output="$(run_subagent_hook "$kimi_root/bin/eci-active status")"
   jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$peer_worker_output" >/dev/null
-  altered_kimi_root="$TMP_ROOT/altered-kimi-home"
-  mkdir -p "$altered_kimi_root/bin"
-  cp -- "$kimi_root/bin/eci-active" "$altered_kimi_root/bin/eci-active"
+  altered_kimi_home="$TMP_ROOT/altered-kimi-home"
+  altered_kimi_root="$altered_kimi_home/.kimi-code"
+  mkdir -p -- "$altered_kimi_home"
+  cp -a -- "$kimi_root" "$altered_kimi_root"
   printf '\n' >>"$altered_kimi_root/bin/eci-active"
   altered_peer_output="$(run_hook_with_kimi_home "$altered_kimi_root/bin/eci-active status" "$altered_kimi_root")"
   jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$altered_peer_output" >/dev/null
+  if [ -f "$altered_kimi_root/hooks/tests/test-block-no-progress.sh" ]; then
+    printf '\n' >>"$altered_kimi_root/hooks/tests/test-block-no-progress.sh"
+    assert_script_batch_denied_by_manifest "bash $altered_kimi_root/hooks/tests/test-block-no-progress.sh" \
+      run_altered_peer_hook
+  fi
 fi
 assert_allowed "ps -o pid,etime,stat,cmd"
 assert_allowed "ps -o pid,cmd"
@@ -821,6 +885,18 @@ jq -e '
 assert_allowed "realpath /usr/bin/tail"
 assert_allowed "ls -l /usr/bin/tail"
 assert_allowed "readlink /usr/bin/tail"
+assert_worker_dynamic_find_action_denied() {
+  local command="$1" output
+  output="$(run_subagent_hook "$command")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_DYNAMIC_LAUNCH_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=dynamic-find-action"))
+  ' "$output" >/dev/null
+}
+assert_worker_dynamic_find_action_denied "find /tmp -maxdepth 1 -type d -delete"
+assert_worker_dynamic_find_action_denied "find /tmp -maxdepth 1 -type d -exec true \\;"
 worker_tmp_output="$(run_subagent_hook "find /tmp -maxdepth 1 -type d -print")"
 [ ! -s "$worker_tmp_output" ]
 
@@ -838,6 +914,7 @@ assert_allowed "stat -Lc '%F %s %n' $kimi_root/hooks/validate-bash.sh"
 assert_allowed "stat -Lc '%F %N' $kimi_root/hooks/validate-bash.sh"
 assert_allowed "stat -Lc '%i %a %h %s %n' $kimi_root/hooks/validate-bash.sh"
 assert_allowed "stat -c '%s' $kimi_root/hooks/validate-bash.sh"
+assert_unknown "stat -c '%x' $kimi_root/hooks/validate-bash.sh"
 assert_allowed "stat -c '%a %n' $kimi_root/hooks/validate-bash.sh"
 assert_allowed "stat -c '%A %n' $kimi_root/hooks/validate-bash.sh"
 assert_allowed "ls -1 $evidence_dir"
@@ -863,10 +940,14 @@ for coordinator_finite_argv in \
   "find $kimi_find_a $kimi_find_b -maxdepth 2 -type f -print /etc/passwd" \
   "find $kimi_find_a $kimi_find_b/../outside -maxdepth 2 -type f -print" \
   "ls -ld $kimi_root $kimi_find_b/../outside" \
-  "stat -Lc '%i %a %n' $kimi_root/hooks/../outside" \
-  "realpath -e $evidence_file && rm -f $TMP_ROOT/denied"; do
+  "stat -Lc '%i %a %n' $kimi_root/hooks/../outside"; do
   assert_allowed "$coordinator_finite_argv"
 done
+# The compound cleanup route intentionally permits only a direct child of the
+# canonical temporary parent.  The command is only classified, never run.
+compound_cleanup_target="$classifier_tmp_parent/eci-classifier-compound-${BASHPID}-cleanup"
+assert_allowed "realpath -e $evidence_file && rm -f $compound_cleanup_target" run_hook_with_canonical_tmpdir
+assert_unknown "realpath -e $evidence_file && rm -f $TMP_ROOT/denied" run_hook_with_canonical_tmpdir
 compound_broad_output="$(run_hook "realpath -e $evidence_file && rm -rf /")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
@@ -882,6 +963,9 @@ worker_kimi_stat_output="$(run_subagent_hook "stat -Lc '%F %N' $kimi_root/hooks/
 [ ! -s "$worker_kimi_stat_output" ]
 worker_readlink_output="$(run_subagent_hook "readlink -f $ROOT/sessions")"
 jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$worker_readlink_output" >/dev/null
+# Git pathspec inspection admits at most sixteen literal operands.
+printf -v git_diff_pathspecs_16 ' AGENTS.md%.0s' {1..16}
+git_diff_pathspecs_17="$git_diff_pathspecs_16 AGENTS.md"
 for git_read_argv in \
   "git -C $ROOT -C $ROOT status --short" \
   "git -C $ROOT -C $ROOT diff -- hooks/validate-bash.sh" \
@@ -889,11 +973,12 @@ for git_read_argv in \
   "git -C $ROOT diff --stat /etc/passwd" \
   "git -C $ROOT diff -- /etc/passwd" \
   "git -C $ROOT diff -- ../outside" \
-  "git -C $ROOT diff -- AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md AGENTS.md" \
+  "git -C $ROOT diff --$git_diff_pathspecs_16" \
   "git -C $ROOT log -1 --oneline ':(exclude)hooks'" \
   "git -C $ROOT show --stat -1 hooks//validate-bash.sh"; do
   assert_allowed "$git_read_argv"
 done
+assert_unknown "git -C $ROOT diff --$git_diff_pathspecs_17"
 assert_denied "git -C $TMP_ROOT status --short"
 assert_denied "git -C $ROOT -C $TMP_ROOT status --short"
 assert_denied "git -C $ROOT diff -- :(exclude)AGENTS.md"
@@ -1000,6 +1085,16 @@ mkdir -p "$fake_bin"
 cp -- /bin/true "$fake_bin/git"
 chmod +x "$fake_bin/git"
 assert_allowed "$fake_bin/git status"
+# The active-worker fast path consumes the exact direct-path Git status
+# capability too; this must not fall through to the legacy Git parser.
+assert_allowed "$fake_bin/git status" run_subagent_hook
+fake_git_commit_output="$(run_subagent_hook "$fake_bin/git commit -m nope")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=commit"))
+' "$fake_git_commit_output" >/dev/null
 
 assert_subagent_lifecycle_denied() {
   local command="$1" output
@@ -1151,15 +1246,61 @@ output="$(run_subagent_hook "bash hooks/tests/test-validate-bash-git-approvals.s
 output="$(run_subagent_hook "bash hooks/tests/test-pre-commit-go-mod.sh")"
 [ ! -s "$output" ]
 
-# Ordinary repository-local test scripts are admitted as finite literals; a
-# reviewed digest is not executable authority outside protected routes.
-mutable_script="$ROOT/hooks/tests/test-eci-fast-path.sh"
-mutable_backup="$TMP_ROOT/test-eci-fast-path.backup"
-cp -- "$mutable_script" "$mutable_backup"
-printf '%s\n' '# worker mutation probe' >>"$mutable_script"
-output="$(run_subagent_hook "bash hooks/tests/test-eci-fast-path.sh")"
-cp -- "$mutable_backup" "$mutable_script"
-[ ! -s "$output" ]
+# Digest binding must reject changed worker script bytes without modifying the
+# tracked source used by this suite.  The copy has its own active marker and
+# worker home, so the real validator resolves the script from the fixture CWD.
+isolated_worker_home="$TMP_ROOT/isolated-home"
+isolated_worker_root="$isolated_worker_home/.codex"
+isolated_worker_session="isolated-worker-session"
+isolated_worker_proof_root="$TMP_ROOT/isolated-worker-proof"
+isolated_worker_script_relative="hooks/tests/test-eci-fast-path.sh"
+isolated_worker_script="$isolated_worker_root/$isolated_worker_script_relative"
+isolated_worker_transcript="$isolated_worker_root/sessions/codex-validate-bash-isolated-$BASHPID.jsonl"
+mkdir -p -- "$isolated_worker_root/bin" "$isolated_worker_root/sessions" \
+  "$(dirname -- "$isolated_worker_script")" "$isolated_worker_proof_root/$isolated_worker_session"
+cp -- "$ROOT/bin/eci-active" "$isolated_worker_root/bin/eci-active"
+chmod +x "$isolated_worker_root/bin/eci-active"
+printf '%s\n' '# isolated worker Codex instructions' >"$isolated_worker_root/CODEX.md"
+printf '%s\n' '# isolated worker agent instructions' >"$isolated_worker_root/AGENTS.md"
+cp -- "$ROOT/$isolated_worker_script_relative" "$isolated_worker_script"
+printf '%s\n' \
+  'scope: isolated worker script fixture' \
+  "cwd: $isolated_worker_root" \
+  "session_id: $isolated_worker_session" \
+  'created_utc: 2026-08-24T00:00:00Z' \
+  >"$isolated_worker_proof_root/$isolated_worker_session/eci_active"
+printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"isolated-worker-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"fixture-parent","depth":1,"agent_nickname":"Fixture","agent_role":"default"}}}}}' \
+  >"$isolated_worker_transcript"
+
+run_isolated_worker_hook() {
+  local command="$1" output
+  output="$TMP_ROOT/isolated-worker-output"
+  (
+    cd "$isolated_worker_root"
+    jq -cn --arg cwd "$isolated_worker_root" --arg command "$command" \
+      --arg transcript "$isolated_worker_transcript" --arg session "$isolated_worker_session" \
+      '{session_id:$session,cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
+      HOME="$isolated_worker_home" CODEX_PROOF_ROOT="$isolated_worker_proof_root" \
+        CODEX_HOME="$isolated_worker_root" PATH="$isolated_worker_root/bin:$PATH" \
+        bash "$ROOT/hooks/validate-bash.sh" >"$output"
+  )
+  printf '%s\n' "$output"
+}
+
+live_worker_script="$ROOT/$isolated_worker_script_relative"
+live_worker_script_sha_before="$(sha256sum -- "$live_worker_script" | awk '{print $1}')"
+isolated_clean_worker_output="$(run_isolated_worker_hook "bash $isolated_worker_script_relative")"
+[ ! -s "$isolated_clean_worker_output" ]
+printf '%s\n' '# isolated worker mutation probe' >>"$isolated_worker_script"
+isolated_mutated_worker_output="$(run_isolated_worker_hook "bash $isolated_worker_script_relative")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_LAUNCHER_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-launcher")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("payload=hooks/tests/test-eci-fast-path.sh"))
+' "$isolated_mutated_worker_output" >/dev/null
+live_worker_script_sha_after="$(sha256sum -- "$live_worker_script" | awk '{print $1}')"
+[ "$live_worker_script_sha_before" = "$live_worker_script_sha_after" ]
 assert_allowed "eci-active nested-exit"
 
 # Startup-sensitive execution context must not be attached to an allowlisted
@@ -1202,6 +1343,9 @@ cp -- "$ROOT/bin/eci-active" "$copied_eci"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$copied_worker"
 chmod +x "$copied_eci" "$copied_worker"
 for launcher in \
+  "env $subagent_codex_home/bin/eci-active" \
+  "env $copied_eci" \
+  "timeout 5 $copied_eci" \
   "$copied_eci status" \
   "$copied_eci nested-exit" \
   "env FOO=bar $copied_eci status" \
@@ -1232,14 +1376,15 @@ for launcher in \
 done
 for launcher in \
   "$copied_worker" \
-  "env FOO=bar $copied_worker" \
   "stdbuf -oL $copied_worker" \
   "busybox -- $copied_worker" \
-  "prlimit --nofile=1024 $copied_worker" \
   "chronic $copied_worker"; do
   output="$(run_subagent_hook "$launcher")"
   [ ! -s "$output" ]
 done
+assert_subagent_worker_launcher_denied "env FOO=bar $copied_worker"
+assert_subagent_worker_launcher_denied "env -- $copied_worker"
+assert_subagent_worker_launcher_denied "prlimit --nofile=1024 $copied_worker"
 
 # Dynamic execution-context mutation and writer forms remain protected.
 for launcher in \
@@ -1297,18 +1442,24 @@ for launcher in \
   jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null
 done
 
-# Transparent wrappers around one visible finite argv remain executable-
-# agnostic.  The same wrappers must preserve a visible Git acceptance denial.
+# Transparent wrappers never re-admit an arbitrary script path for an active
+# worker. A visible Git acceptance mutation stays coordinator-owned beneath
+# each wrapper, rather than becoming an ordinary script-launch exception.
 for launcher in \
-  "env" \
+  "env FOO=bar" \
+  "env --" \
+  "env FOO=bar timeout 5" \
   "exec" \
   "nohup" \
   "setsid" \
   "sudo" \
   "doas" \
-  "systemd-run --unit eci"; do
-  output="$(run_subagent_hook "$launcher /tmp/eci-escape.sh")"
-  [ ! -s "$output" ]
+  "systemd-run --unit eci" \
+  "timeout 5" \
+  "time" \
+  "nice" \
+  "prlimit --cpu=1"; do
+  assert_subagent_worker_launcher_denied "$launcher /var/eci-escape.sh"
   output="$(run_subagent_hook "$launcher git commit -m nope")"
   jq -e '
     .hookSpecificOutput.permissionDecision == "deny" and
@@ -1316,23 +1467,29 @@ for launcher in \
   ' "$output" >/dev/null
 done
 
-# Bounded resource wrappers recurse into one finite literal argv.  An ordinary
-# payload remains ordinary, while a visible Git acceptance mutation remains
-# coordinator-owned through the same wrapper.
-for wrapper in \
-  "timeout 5" \
-  "time" \
-  "nice" \
-  "prlimit --cpu=1" \
-  "chronic"; do
-  output="$(run_subagent_hook "$wrapper /tmp/eci-escape.sh")"
-  [ ! -s "$output" ]
-  output="$(run_subagent_hook "$wrapper git commit -m nope")"
-  jq -e '
-    .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]") and contains("operation=worker-git-ownership") and contains("git commit -m nope") and contains("token=commit") and contains("main/orchestrator"))
-  ' "$output" >/dev/null
-done
+# A direct ordinary path remains distinct from an env-wrapped launcher.
+assert_allowed "/var/eci-escape.sh" run_subagent_hook
+assert_allowed "./worker-wrapper-probe" run_subagent_hook
+worker_env_git_commit_output="$(run_subagent_hook "env FOO=bar git commit -m nope")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=commit"))
+' "$worker_env_git_commit_output" >/dev/null
+
+# chronic has no supported worker launcher route, so its arbitrary script
+# child reaches the generic bounded-worker command denial instead.
+output="$(run_subagent_hook "chronic /tmp/eci-escape.sh")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_COMMAND_NOT_ALLOWLISTED]") and contains("operation=worker-command"))
+' "$output" >/dev/null
+output="$(run_subagent_hook "chronic git commit -m nope")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]") and contains("operation=worker-git-ownership") and contains("git commit -m nope") and contains("token=commit") and contains("main/orchestrator"))
+' "$output" >/dev/null
 
 # Lifecycle ownership is based on the visible mutation verb, not successful
 # CLI arity.  Extra arguments and `on` must not become worker escape routes.
@@ -1564,6 +1721,8 @@ done
 # context, remote, exec, and every other archive shape remain legacy-routed.
 assert_archive_legacy_git_route fake-path "git archive HEAD" "$fake_bin:$ROOT/bin:$PATH"
 assert_archive_legacy_git_route inherited-git-context "git archive HEAD" "$ROOT/bin:$PATH" "$TMP_ROOT/inherited-git-dir"
+assert_archive_legacy_git_route direct-path "$fake_bin/git archive HEAD"
+assert_archive_legacy_git_route direct-path-no-pager "$fake_bin/git --no-pager archive HEAD"
 for command in \
   "env git archive HEAD" \
   "git archive HEAD && printf after" \
@@ -1735,9 +1894,6 @@ for environment_role in coordinator worker; do
   for environment_command in \
     "printenv PATH" \
     "printenv PATH PWD" \
-    "env FOO=bar novel-tool --flag value" \
-    "env -i novel-tool" \
-    "env -u FOO novel-tool" \
     "rg -n 'env | sort' hooks/validate-bash.sh"; do
     environment_output="$(run_role_hook "$environment_role" "$environment_command")"
     [ ! -s "$environment_output" ] || {
@@ -1774,6 +1930,13 @@ for environment_role in coordinator worker; do
     (.hookSpecificOutput.permissionDecisionReason | contains("path=/")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("predicate=broad-destructive"))
   ' "$environment_output" >/dev/null
+done
+for environment_command in \
+  "env FOO=bar novel-tool --flag value" \
+  "env -i novel-tool" \
+  "env -u FOO novel-tool"; do
+  assert_allowed "$environment_command"
+  assert_subagent_worker_launcher_denied "$environment_command"
 done
 worker_unknown_output="$(run_subagent_hook "unrecognized-worker-command")"
 [ ! -s "$worker_unknown_output" ]

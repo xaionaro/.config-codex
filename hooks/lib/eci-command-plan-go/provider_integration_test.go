@@ -120,6 +120,48 @@ func TestProviderValidatorsRouteRepositoryDefaultGitArchiveThroughPlannerCapabil
 	}
 }
 
+// TestCodexValidatorRoutesDirectPathGitStatusThroughPlannerCapability verifies
+// the current Codex validator consumes the exact direct-path status capability
+// without adding executable identity or an early validation exit.
+//
+// Example: /tmp/task/git status bypasses only the legacy Git prefilter.
+func TestCodexValidatorRoutesDirectPathGitStatusThroughPlannerCapability(t *testing.T) {
+	t.Parallel()
+
+	validator := filepath.Join(providerHome(ProviderCodex), "hooks", "validate-bash.sh")
+	source, err := os.ReadFile(validator)
+	if err != nil {
+		t.Fatalf("read %s: %v", validator, err)
+	}
+	text := string(source)
+	region := directPathGitStatusRoutingRegion(t, text)
+	if strings.Contains(region, "python3") {
+		t.Errorf("%s direct-path Git route still launches python3", validator)
+	}
+	if !strings.Contains(region, "direct_path_git_status_capability()") {
+		t.Errorf("%s direct-path Git status route has no planner capability helper", validator)
+	}
+	if !strings.Contains(region, "if direct_path_git_status_capability; then") {
+		t.Errorf("%s direct-path Git status route does not consult the planner capability", validator)
+	}
+	if !strings.Contains(region, `.capabilities == ["direct-path-git-status"]`) {
+		t.Errorf("%s direct-path Git status helper does not require the exact singleton capability", validator)
+	}
+	if strings.Contains(region, "trusted_executable_on_path") {
+		t.Errorf("%s direct-path Git status helper unexpectedly adds executable identity checks", validator)
+	}
+	if !strings.Contains(region, `[ "${CODEX_GIT_STATUS_CONTEXT_SAFE:-false}" = true ]`) {
+		t.Errorf("%s direct-path Git status helper does not require a safe inherited Git context", validator)
+	}
+	planStatusStart := strings.Index(text, "case \"$plan_status\" in")
+	if planStatusStart < 0 {
+		t.Fatalf("%s has no planner status dispatch", validator)
+	}
+	if strings.Contains(text[planStatusStart:], "direct_path_git_status_capability") {
+		t.Errorf("%s direct-path Git status capability bypasses generic post-planner validation", validator)
+	}
+}
+
 // TestInstalledProviderValidatorsUseRepositoryDefaultGitArchiveCapability
 // verifies the installed validators admit only the exact planner capability.
 // Exact positives take the traced capability-helper fast path; near misses
@@ -835,6 +877,39 @@ func archiveRoutingRegion(t *testing.T, source string) string {
 		t.Fatal("validator archive-routing region has no literal_git_mutation_shape boundary")
 	}
 	return source[regionStart : gitRouteStart+regionEndOffset]
+}
+
+// directPathGitStatusRoutingRegion returns only the direct-path status capability and
+// deferred Git prefilter, excluding unrelated legacy classifiers elsewhere.
+//
+// Example: the returned region spans direct_path_git_status_capability through
+// deferred_route_git_shape.
+func directPathGitStatusRoutingRegion(t *testing.T, source string) string {
+	t.Helper()
+
+	const (
+		helperDefinition = "direct_path_git_status_capability() {"
+		routeDefinition  = "deferred_route_git_shape() {"
+	)
+	if count := strings.Count(source, helperDefinition); count != 1 {
+		t.Errorf("validator has %d direct-path Git capability helper definitions, want exactly one", count)
+	}
+	if count := strings.Count(source, routeDefinition); count != 1 {
+		t.Errorf("validator has %d deferred Git route definitions, want exactly one", count)
+	}
+	routeStart := strings.Index(source, routeDefinition)
+	if routeStart < 0 {
+		t.Fatal("validator has no deferred_route_git_shape")
+	}
+	helperStart := strings.LastIndex(source[:routeStart], helperDefinition)
+	if helperStart < 0 {
+		t.Fatal("validator has no direct-path Git capability helper")
+	}
+	routeEndOffset := strings.Index(source[routeStart:], "\nliteral_git_mutation_shape() {")
+	if routeEndOffset < 0 {
+		t.Fatal("validator direct-path Git routing region has no literal_git_mutation_shape boundary")
+	}
+	return source[helperStart : routeStart+routeEndOffset]
 }
 
 // runInstalledProviderArchiveValidator runs one installed validator with an

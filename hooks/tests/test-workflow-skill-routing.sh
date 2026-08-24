@@ -6,7 +6,11 @@ ROOT="${WORKFLOW_SKILL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd 
 ECI="$ROOT/skills/explore-critique-implement/SKILL.md"
 STATUS_REPORT="$ROOT/skills/writing-status-reports/SKILL.md"
 ATE="$ROOT/skills/agent-teams-execution/SKILL.md"
+ECI_COVERAGE="$ROOT/skills/explore-critique-implement/references/coverage-map.md"
+ATE_COVERAGE="$ROOT/skills/agent-teams-execution/references/coverage-map.md"
 EMERGENCY="$ROOT/skills/explore-critique-implement/references/emergency-unblock.md"
+PAUSE="$ROOT/skills/references/workflow-runtime/pause-all-work.md"
+POLICY="$ROOT/skills/references/workflow-runtime/policy-pressure-tests.md"
 ECI_CRITIQUE="$ROOT/skills/explore-critique-implement/references/critique.md"
 REVIEW="$ROOT/skills/explore-critique-implement/references/review.md"
 COORDINATOR="$ROOT/skills/explore-critique-implement/references/coordinator.md"
@@ -33,6 +37,8 @@ assert_local_links_resolve() {
   local -a documents=(
     "$ECI"
     "$ATE"
+    "$ECI_COVERAGE"
+    "$ATE_COVERAGE"
     "$ROOT/skills/explore-critique-implement/references/coordinator.md"
     "$ROOT/skills/explore-critique-implement/references/critique.md"
     "$EMERGENCY"
@@ -138,6 +144,15 @@ assert_eci_relationships() {
   [ "$count" -eq 4 ] || fail "ECI relationship table has $count skill rows; want 4"
   ! grep -Fq -- '| `systematic-debugging` |' <<<"$table" || fail 'ECI relationship table includes systematic-debugging'
   ! grep -Fq -- '| `proof-driven-development` |' <<<"$table" || fail 'ECI relationship table includes proof-driven-development'
+}
+
+assert_compaction_provenance() {
+  require_text "$ECI" 'Maintenance provenance: [coverage map](references/coverage-map.md).'
+  require_text "$ATE" 'Maintenance provenance: [coverage map](references/coverage-map.md).'
+  require_text "$ECI_COVERAGE" '## Pre-split coverage map'
+  require_text "$ECI_COVERAGE" 'Baseline source SHA-256: `ee11cdc0d7a092a22d4abb71c03103cc87c2a6a7e788a4020ee61605a40f1713`.'
+  require_text "$ATE_COVERAGE" '## Pre-split coverage map'
+  require_text "$ATE_COVERAGE" 'Baseline source SHA-256: `9d9d990b4c65c2175bd10d87949512293fc64704aeb4672a868702aa0bcd6623`.'
 }
 
 assert_reviewer_role_split() {
@@ -334,8 +349,9 @@ assert_emergency_and_go_preference() {
   require_text "$EMERGENCY" '**“provisional Emergency Unblock — unchecked”**'
   require_text "$EMERGENCY" 'Immediately after that action, start normal ECI Step 1 against the changed state.'
   require_text "$EMERGENCY" 'If the repair fails, uncertainty appears, diagnosis is hard, or another unchecked change seems necessary, make no second emergency repair: load `debugging-discipline` and enter the normal debugging route.'
-  require_text "$ATE" 'concrete failure diagnosis uses systematic-debugging and debugging-discipline first.'
+  require_text "$ATE" 'concrete failure diagnosis uses debugging-discipline first.'
   require_text "$ROOT/CODEX.md" '- Use Go, not Python, for new code, scripts, helpers, and tooling. Do not port existing Python solely to apply this preference.'
+  require_text "$ROOT/CODEX.md" '| Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` |'
 }
 
 assert_status_lane_stage_contract() {
@@ -390,14 +406,76 @@ assert_status_lane_stage_transition_fixture() {
   fi
 }
 
+assert_pause_resume_closure_contract() {
+  local state source role message normalized
+
+  require_text "$PAUSE" '| Resume | `resume all work` |'
+  require_text "$PAUSE" '| Closure | `close all work` |'
+  require_text "$PAUSE" 'Accept either command only while the current session has a verified'
+  require_text "$PAUSE" 'verified `pause-all-work-report.md` and pause transaction bound to its session and canonical cwd.'
+  require_text "$PAUSE" 'An active marker from another session never satisfies this binding.'
+  require_text "$PAUSE" 'Quoted, conditional, status, timer, provider, and one-task variants never match.'
+  require_text "$POLICY" 'after a verified pause, accept only exact user-owned resume/closure commands bound to the current pause transaction'
+
+  pause_resume_action() {
+    state="$1"
+    source="$2"
+    role="$3"
+    message="$4"
+    normalized="${message#"${message%%[![:space:]]*}"}"
+    normalized="${normalized%"${normalized##*[![:space:]]}"}"
+    normalized="${normalized,,}"
+    [ "$state" = paused-current-session ] || return 0
+    [ "$source" = direct-current-top-level-user-message ] || return 0
+    [ "$role" = coordinator ] || return 0
+    case "$normalized" in
+      'resume all work') printf '%s\n' resume ;;
+      'close all work') printf '%s\n' closure ;;
+    esac
+  }
+
+  [ "$(pause_resume_action paused-current-session direct-current-top-level-user-message coordinator '  ReSuMe all work  ')" = resume ] ||
+    fail 'exact all-active resume command was not admitted after normalization'
+  [ "$(pause_resume_action paused-current-session direct-current-top-level-user-message coordinator '  ClOsE all work  ')" = closure ] ||
+    fail 'exact all-active closure command was not admitted'
+
+  for message in \
+    '"resume all work"' \
+    'if possible, resume all work' \
+    'status: resume all work' \
+    'resume all work in 5 minutes' \
+    'Codex: resume all work' \
+    'resume this task' \
+    '"close all work"' \
+    'if possible, close all work' \
+    'status: close all work' \
+    'close all work in 5 minutes' \
+    'Codex: close all work' \
+    'close this task'; do
+    [ -z "$(pause_resume_action paused-current-session direct-current-top-level-user-message coordinator "$message")" ] ||
+      fail "non-exact resume variant was admitted: $message"
+  done
+
+  [ -z "$(pause_resume_action active-unrelated-session direct-current-top-level-user-message coordinator 'resume all work')" ] ||
+    fail 'resume command crossed into an unrelated active ECI session'
+  [ -z "$(pause_resume_action active-unrelated-session direct-current-top-level-user-message coordinator 'close all work')" ] ||
+    fail 'closure command crossed into an unrelated active ECI session'
+  [ -z "$(pause_resume_action paused-current-session direct-current-top-level-user-message worker 'resume all work')" ] ||
+    fail 'worker role was allowed to resume all work'
+  [ -z "$(pause_resume_action paused-current-session provider-event coordinator 'resume all work')" ] ||
+    fail 'provider event was allowed to resume all work'
+}
+
 assert_local_links_resolve
 assert_role_rows_are_local
 assert_eci_relationships
+assert_compaction_provenance
 assert_reviewer_role_split
 assert_ate_ordinary_role_split
 assert_emergency_qualification_source
 assert_emergency_and_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture
+assert_pause_resume_closure_contract
 assert_eci_ordinary_role_split
 printf '%s\n' 'workflow skill routing assertions: PASS'

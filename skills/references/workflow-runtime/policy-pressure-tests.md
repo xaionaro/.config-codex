@@ -20,7 +20,7 @@ Also pressure these focused scenarios: requested-special/effective-unavailable; 
 
 | Counter | Required invariant |
 | --- | --- |
-| `pause_continue_hold_ambiguity` | Trigger only the exact direct all-active imperative; hold quoted, qualified, one-task, status, timer, provider, silence, and `stop for today` cases. |
+| `pause_continue_hold_ambiguity` | Trigger pause only on the exact direct all-active imperative; after a verified pause, accept only exact user-owned resume/closure commands bound to the current pause transaction; hold quoted, qualified, one-task, status, timer, provider, silence, `stop for today`, and unrelated-session cases. |
 | `pause_missing_report` | Reject wrong scalar types/literals, wrong proof path, noncanonical body/trailer/manifest/transaction, stale hashes, missing atomic marker projection, and malformed role/profile boundary. Distinguish report-only unavailable-drain from attested transaction. |
 | `pause_missing_quarantine` | Preserve every output with simultaneous `unreviewed`, `unrouted`, and `uncommitted`; no-call proceeds immediately. |
 | `pause_interrupt_cancel` | A current top-level call reaches safe boundary; no-call proceeds; pause never cancels merely for pause. |

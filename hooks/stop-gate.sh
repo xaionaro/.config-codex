@@ -453,8 +453,12 @@ json_block_fast() {
     json_block_with_loop_state "$reason"
     return 0
   fi
+  # The direct fast validator assumes the startup bounded-marker preflight
+  # accepted the record. A rejected preflight must use the bounded diagnostic
+  # path instead of rereading the untrusted marker.
   if [ "${stop_direct_marker_valid_fast:-false}" = true ] ||
-    { [ -n "$marker" ] && [ -z "$transcript_path" ] &&
+    { [ "${marker_bound_status:-0}" -ne 2 ] &&
+      [ -n "$marker" ] && [ -z "$transcript_path" ] &&
       [ "$marker" = "$root/$session_id/eci_active" ] &&
       ! stop_root_requires_ambiguity_scan &&
       stop_direct_marker_is_valid_fast "$marker" "${canonical_stop_cwd:-$cwd}"; }; then

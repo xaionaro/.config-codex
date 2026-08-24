@@ -461,6 +461,7 @@ case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}" in
 esac
 plan_marker_state=inactive
 [ "${#syntax_eci_markers[@]}" -eq 0 ] || plan_marker_state=active
+
 command_plan_binary="$HOOK_DIR/lib/eci-command-plan-go/eci-command-plan"
 [ -x "$command_plan_binary" ] || deny_eci \
   "ECI_PLAN_BINARY_UNAVAILABLE" "plan-segment" \
@@ -697,11 +698,24 @@ repository_default_git_archive_capability() {
   ' <<<"${plan_output:-}" >/dev/null 2>&1
 }
 
+direct_path_git_status_capability() {
+  [ "${plan_status:-}" -eq 0 ] || return 1
+  [ "${CODEX_GIT_STATUS_CONTEXT_SAFE:-false}" = true ] || return 1
+  jq -e '
+    type == "object" and
+    .decision == "allow" and
+    .capabilities == ["direct-path-git-status"]
+  ' <<<"${plan_output:-}" >/dev/null 2>&1
+}
+
 deferred_route_git_shape() {
-  # Only the Go planner's exact raw-argv capability can skip legacy Git
+  # Only the Go planner's exact raw-argv Git capabilities can skip legacy
   # routing. A caller-selected executable, inherited Git context, wrapper,
-  # compound, or any other archive argv keeps the existing legacy behavior.
+  # compound, flag, or any non-status Git argv keeps legacy behavior.
   if repository_default_git_archive_capability; then
+    return 1
+  fi
+  if direct_path_git_status_capability; then
     return 1
   fi
   case "${1:-}" in
@@ -762,32 +776,14 @@ deferred_worker_wrapper_shape() {
     case "${1:-}" in
       env\ [A-Za-z_]*=*\ *|env\ -i\ *|env\ -u\ [A-Za-z_]*\ *|env\ --\ *) return 1 ;;
     esac
-  elif [ "${plan_marker_state:-inactive}" = active ] &&
-    [ "${plan_status:-1}" -eq 0 ]; then
-    # The compiled planner owns the complete finite argv decision.  Reuse the
-    # role-neutral env recognizer only to distinguish a transparent literal
-    # prefix from enumeration, context, or dynamic env forms; do not
-    # reintroduce an executable/language allowlist for the child argv.
-    case "${1:-}" in
-      env|env\ *)
-        if [ "${ECI_ENVIRONMENT_BOUNDARY_CHECKED:-false}" != true ]; then
-          enforce_environment_command_boundary
-        fi
-        case "${ECI_ENVIRONMENT_COMMAND_STATE:-}" in
-          ALLOW|WRAPPER)
-            return 1
-            ;;
-        esac
-        ;;
-    esac
   fi
   case "${1:-}" in
     env|env\ *|printenv|printenv\ *|command|command\ *|builtin|builtin\ *|exec|exec\ *|\
     bash|bash\ *|sh|sh\ *|dash|dash\ *|zsh|zsh\ *|ksh|ksh\ *|ash|ash\ *|fish|fish\ *|\
     */bash|*/bash\ *|*/sh|*/sh\ *|*/dash|*/dash\ *|*/zsh|*/zsh\ *|\
-    timeout|timeout\ *|time|time\ *|nice|nice\ *|nohup|nohup\ *|\
+    timeout|timeout\ *|time|time\ *|nice|nice\ *|prlimit|prlimit\ *|nohup|nohup\ *|\
     setsid|setsid\ *|sudo|sudo\ *|doas|doas\ *|systemd-run|systemd-run\ *|\
-    xargs|xargs\ *|find|find\ *|*' -c '*|*' --command '*|*' --eval '*|*' --execute '*) return 0 ;;
+    xargs|xargs\ *|*' -c '*|*' --command '*|*' --eval '*|*' --execute '*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1717,19 +1713,19 @@ def known_test_script(path):
         return False
     expected = {
         "run.sh": "09c23c2490a8c3a134a5c21de6aa8eec30eea67ba58548f2ed75189a37045380",
-        "test-eci-fast-path.sh": "2f67e222bf10b79d0491841053f644e20224aa483f1ee9730707f6231ff4bd77",
+        "test-eci-fast-path.sh": "f4859e76917ad5d1ac1056dc83f1b47b602b36ba80f99918b39faa3e43b4b1a5",
         "test-eci-post-compact-refresh.sh": "7735c9d4b5d71d1f57dffedbafae32ce818019c865ba7250520971010aca66cf",
         "test-eci-review-gate.sh": "1fccf9e11c0c651078f600909e4b663f14d21bf2820df100099f567aa4ed19f6",
         "test-session-snapshot-refresh.sh": "bd093a9a8a6e282e3a4d48b1905ebac59a370a273b0c416bec5defd5129d428d",
-        "test-validate-bash-classifier.sh": "ffb1d49a44f8fd33cab1283609c1ed7ee851e4f2d808349af57754d5dbc56a82",
+        "test-validate-bash-classifier.sh": "b72bc8bd4e72c4a39546e447d06f7c5aec45f9c852ffd91064b7887c762fd61f",
         "test-validate-bash-git-approvals.sh": "62553126dffa4373880142dd802d5737da29a9535868f7e7b7568f0b920c8261",
         "test-policy-design-boundary.sh": "e084a05ad1ed7a001c6bbd7816a36ba5aad386d91fd27012329d1671d87a1de3",
         "test-eci-edit-control-paths.sh": "ba7e26be82c09748e57c4c79d092ab46420a40f116bcdff2e6988e00142ce2f7",
         "test-eci-diagnostic-specificity.sh": "fbb40f2b717834f3eaad96535a3c3ed52e576f25c2ce8b678d84b6add2ab4dc0",
         "test-eci-marker-scope.sh": "0f50c85f9f7a7bab5ee436c2a2011ecf93ae199c2fcf85273778440c40ad4b8e",
         "test-pretooluse-latency.sh": "7e8f73f23dafd6389103c97f599c558aa56a6b46ee5d8d82fc32df3ed4e7dcca",
-        "test-pre-commit-go-mod.sh": "39256e08a8512ca00263dfb8b4a67593c512a3488c8ea16e684f68ffd6b095a4",
-        "test-eci-command-syntax-gating.sh": "38172badbec1800bf89313e6516a47feb912b1bf48b31f3d3053b47a9366ff3a",
+        "test-pre-commit-go-mod.sh": "a5f2455957f77d70dff52c64b8cd4d9076bb4f08f1988ed0e73058544b6ad7f0",
+        "test-eci-command-syntax-gating.sh": "bd64b6a907f2147635e494d6f9abc3493ca76e2c0d2b6c08e341b919e1cb5ecf",
         "test-go-mod-hook-parity.sh": "63ba8579491e894bfb2adfe6d84e1bd056c1d814c4c5c0e97c25e417c3cbb5cf",
         "test-stop-loop-guidance.sh": "caa8fdf230ad85f08dde9eb37d23862ff6b95c8cf53be98b0df42b7910651143",
         "test-stop-marker-validation.sh": "3483c29a26283369929f782c18e0c91bc332748730dbc6539a1a22033e39bd57",
@@ -4622,12 +4618,12 @@ def bounded_read_only_args(command, args):
         while index < len(args):
             token = args[index]
             if command == "stat" and token in {"-c", "--format"} and index + 1 < len(args):
-                if args[index + 1] not in {"%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}:
+                if args[index + 1] not in {"%s", "%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}:
                     return False
                 index += 2
                 continue
             if command == "stat" and token.startswith("--format="):
-                if token.split("=", 1)[1] not in {"%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}:
+                if token.split("=", 1)[1] not in {"%s", "%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}:
                     return False
                 index += 1
                 continue
@@ -4635,7 +4631,7 @@ def bounded_read_only_args(command, args):
                 index += 1
                 continue
             if command == "stat" and token in {"-Lc", "-cL"} and index + 1 < len(args):
-                if args[index + 1] not in {"%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}:
+                if args[index + 1] not in {"%s", "%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}:
                     return False
                 index += 2
                 continue
@@ -7517,19 +7513,19 @@ reviewed_digests = {
     ".codex": {
         "hooks/install-pre-commit-go-mod.sh": "7d98c8e7a6644fab8383631c58a30ec8f6bf62572b18cce74b6241462d6c7cd0",
         "hooks/tests/run.sh": "09c23c2490a8c3a134a5c21de6aa8eec30eea67ba58548f2ed75189a37045380",
-        "hooks/tests/test-eci-fast-path.sh": "2f67e222bf10b79d0491841053f644e20224aa483f1ee9730707f6231ff4bd77",
+        "hooks/tests/test-eci-fast-path.sh": "f4859e76917ad5d1ac1056dc83f1b47b602b36ba80f99918b39faa3e43b4b1a5",
         "hooks/tests/test-eci-post-compact-refresh.sh": "7735c9d4b5d71d1f57dffedbafae32ce818019c865ba7250520971010aca66cf",
         "hooks/tests/test-eci-review-gate.sh": "1fccf9e11c0c651078f600909e4b663f14d21bf2820df100099f567aa4ed19f6",
         "hooks/tests/test-session-snapshot-refresh.sh": "bd093a9a8a6e282e3a4d48b1905ebac59a370a273b0c416bec5defd5129d428d",
-        "hooks/tests/test-validate-bash-classifier.sh": "ffb1d49a44f8fd33cab1283609c1ed7ee851e4f2d808349af57754d5dbc56a82",
+        "hooks/tests/test-validate-bash-classifier.sh": "b72bc8bd4e72c4a39546e447d06f7c5aec45f9c852ffd91064b7887c762fd61f",
         "hooks/tests/test-validate-bash-git-approvals.sh": "62553126dffa4373880142dd802d5737da29a9535868f7e7b7568f0b920c8261",
         "hooks/tests/test-policy-design-boundary.sh": "e084a05ad1ed7a001c6bbd7816a36ba5aad386d91fd27012329d1671d87a1de3",
         "hooks/tests/test-eci-edit-control-paths.sh": "ba7e26be82c09748e57c4c79d092ab46420a40f116bcdff2e6988e00142ce2f7",
         "hooks/tests/test-eci-diagnostic-specificity.sh": "fbb40f2b717834f3eaad96535a3c3ed52e576f25c2ce8b678d84b6add2ab4dc0",
         "hooks/tests/test-eci-marker-scope.sh": "0f50c85f9f7a7bab5ee436c2a2011ecf93ae199c2fcf85273778440c40ad4b8e",
         "hooks/tests/test-pretooluse-latency.sh": "7e8f73f23dafd6389103c97f599c558aa56a6b46ee5d8d82fc32df3ed4e7dcca",
-        "hooks/tests/test-pre-commit-go-mod.sh": "39256e08a8512ca00263dfb8b4a67593c512a3488c8ea16e684f68ffd6b095a4",
-        "hooks/tests/test-eci-command-syntax-gating.sh": "38172badbec1800bf89313e6516a47feb912b1bf48b31f3d3053b47a9366ff3a",
+        "hooks/tests/test-pre-commit-go-mod.sh": "a5f2455957f77d70dff52c64b8cd4d9076bb4f08f1988ed0e73058544b6ad7f0",
+        "hooks/tests/test-eci-command-syntax-gating.sh": "bd64b6a907f2147635e494d6f9abc3493ca76e2c0d2b6c08e341b919e1cb5ecf",
         "hooks/tests/test-go-mod-hook-parity.sh": "63ba8579491e894bfb2adfe6d84e1bd056c1d814c4c5c0e97c25e417c3cbb5cf",
         "hooks/tests/test-stop-loop-guidance.sh": "caa8fdf230ad85f08dde9eb37d23862ff6b95c8cf53be98b0df42b7910651143",
     },
@@ -8062,7 +8058,7 @@ def bounded_rg(args):
     return (pattern or files_mode) and (not paths or safe_paths(paths))
 
 def bounded_stat(args):
-    formats = {"%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n",
+    formats = {"%s", "%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n",
                "%d:%i %F", "%d:%i %F %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}
     paths = []
     index = 0
@@ -8386,7 +8382,7 @@ if tokens and tokens[0] == "rg":
     raise SystemExit(0)
 
 if tokens and tokens[0] == "stat":
-    formats = {"%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%d:%i %F", "%d:%i %F %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}
+    formats = {"%s", "%a %n", "%A %n", "%i %a %n", "%i %a %h %n", "%d:%i %a %h %n", "%d:%i %F", "%d:%i %F %n", "%F %N", "%F %s %n", "%y %n", "%y %s %n"}
     paths = []
     index = 1
     while index < len(tokens):

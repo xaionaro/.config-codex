@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-eci-command-syntax.XXXXXX")"
+TMP_ROOT="$(realpath -e -- "$TMP_ROOT")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
@@ -319,6 +320,7 @@ assert_active_cleanup_route() {
   mkdir -p "$cleanup_real_tmpdir"
   export TMPDIR="$cleanup_real_tmpdir"
   export CODEX_TMPDIR="$cleanup_real_tmpdir"
+  export KIMI_TMPDIR="$cleanup_real_tmpdir"
   cleanup_quarantine="$cleanup_real_tmpdir/eci-generated-cleanup-syntax-gating"
   rm -rf -- "$cleanup_quarantine"
   cleanup_allow "mv -- $cleanup_codex/migrations-effort.json $cleanup_quarantine"

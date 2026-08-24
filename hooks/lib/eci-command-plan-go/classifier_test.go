@@ -217,31 +217,42 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 	}
 }
 
-// TestFiniteReadOnlyGitCapabilityParity keeps the worker adapter aligned with
-// the planner's capability boundary: ordinary current-repository inspection
-// is admitted by verb, while repository-context selection and mutations stay
-// on their ownership routes.
-func TestFiniteReadOnlyGitCapabilityParity(t *testing.T) {
+// TestFiniteReadOnlyGitPlansKeepLegacyRouting verifies ordinary
+// current-repository Git inspection remains an ordinary planner allow without
+// creating a broad Git capability.
+//
+// Example: git status remains capability-free while git -C repo status stays
+// deferred.
+func TestFiniteReadOnlyGitPlansKeepLegacyRouting(t *testing.T) {
 	t.Parallel()
 
 	readOnly := []string{
 		"git log --format=%H -- skills/go-coding-style/SKILL.md AGENTS.md",
 		"git status",
+		"git status --short --untracked-files=all",
 		"git diff --check",
 		"git show",
 		"git ls-files",
+		"git branch --all --contains HEAD",
+		"git rev-parse HEAD",
 	}
 	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
 		provider := provider
 		t.Run(string(provider), func(t *testing.T) {
 			t.Parallel()
 
-			for _, command := range readOnly {
-				request := activeWorker(command)
-				request.Provider = provider
-				result := Classify(request)
-				if result.Decision != DecisionAllow || result.Diagnostic != nil {
-					t.Errorf("%q: decision=%q diagnostic=%#v, want allow without diagnostic", command, result.Decision, result.Diagnostic)
+			for _, role := range []Role{RoleCoordinator, RoleWorker} {
+				for _, command := range readOnly {
+					request := activeWorker(command)
+					request.Provider = provider
+					request.Role = role
+					result := Classify(request)
+					if result.Decision != DecisionAllow || result.Diagnostic != nil {
+						t.Errorf("role=%q %q: decision=%q diagnostic=%#v, want allow without diagnostic", role, command, result.Decision, result.Diagnostic)
+					}
+					if len(result.Capabilities) != 0 {
+						t.Errorf("role=%q %q: capabilities=%v, want none", role, command, result.Capabilities)
+					}
 				}
 			}
 
@@ -249,6 +260,8 @@ func TestFiniteReadOnlyGitCapabilityParity(t *testing.T) {
 			foreignContext.Provider = provider
 			if result := Classify(foreignContext); result.Decision != DecisionDefer || result.Diagnostic != nil {
 				t.Errorf("foreign context: decision=%q diagnostic=%#v, want defer without diagnostic", result.Decision, result.Diagnostic)
+			} else if len(result.Capabilities) != 0 {
+				t.Errorf("foreign context: capabilities=%v, want none", result.Capabilities)
 			}
 
 			for _, testCase := range []struct {
@@ -266,6 +279,18 @@ func TestFiniteReadOnlyGitCapabilityParity(t *testing.T) {
 				result := Classify(request)
 				if result.Decision != DecisionDeny || result.Diagnostic == nil || result.Diagnostic.Code != testCase.code {
 					t.Errorf("%q: decision=%q diagnostic=%#v, want deny/%q", testCase.command, result.Decision, result.Diagnostic, testCase.code)
+				}
+				if len(result.Capabilities) != 0 {
+					t.Errorf("%q: capabilities=%v, want none", testCase.command, result.Capabilities)
+				}
+			}
+
+			for _, command := range []string{"env git status", "git status && printf after"} {
+				request := activeWorker(command)
+				request.Provider = provider
+				result := Classify(request)
+				if len(result.Capabilities) != 0 {
+					t.Errorf("%q: capabilities=%v, want none", command, result.Capabilities)
 				}
 			}
 		})
@@ -774,6 +799,191 @@ func repositoryDefaultGitArchiveCapabilityRequest(t *testing.T, testCase reposit
 	request.ActiveMarkers = []string{marker}
 	request.Command = "git archive --format=tar --output=" + marker + " HEAD"
 	return request
+}
+
+// directPathGitStatusCapabilityCase defines one raw command grammar case for
+// the one direct Git status capability without asserting executable identity.
+//
+// Example: /tmp/fake-bin/git status carries the direct-path capability.
+type directPathGitStatusCapabilityCase struct {
+	name               string
+	command            string
+	wantCapability     Capability
+	wantDecision       DecisionKind
+	wantDiagnosticCode DiagnosticCode
+}
+
+// directPathGitStatusCapabilityCases lists the closed direct-status grammar
+// and every adjacent raw shape that must remain outside the capability.
+//
+// Example: a status flag or wrapper around /tmp/fake-bin/git stays uncategorized.
+var directPathGitStatusCapabilityCases = []directPathGitStatusCapabilityCase{
+	{
+		name:           "direct status",
+		command:        "/tmp/task/git status",
+		wantCapability: CapabilityDirectPathGitStatus,
+		wantDecision:   DecisionAllow,
+	},
+	{
+		name:           "relative direct status",
+		command:        "./tools/git status",
+		wantCapability: CapabilityDirectPathGitStatus,
+		wantDecision:   DecisionAllow,
+	},
+	{
+		name:         "bare status keeps legacy route",
+		command:      "git status",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "quoted executable",
+		command:      "\"/tmp/task/git\" status",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "status short flag",
+		command:      "/tmp/task/git status --short",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "status porcelain flag",
+		command:      "/tmp/task/git status --porcelain=v1",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "no pager status",
+		command:      "/tmp/task/git --no-pager status",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "direct archive",
+		command:      "/tmp/task/git archive HEAD",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "direct no pager archive",
+		command:      "/tmp/task/git --no-pager archive HEAD",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "environment wrapper",
+		command:      "env /tmp/task/git status",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "compound",
+		command:      "/tmp/task/git status && printf after",
+		wantDecision: DecisionDefer,
+	},
+	{
+		name:               "mutation",
+		command:            "/tmp/task/git commit -m nope",
+		wantDecision:       DecisionDeny,
+		wantDiagnosticCode: CodeWorkerGitOwnershipDenied,
+	},
+	{
+		name:         "direct notes mutation",
+		command:      "/tmp/task/git notes add -m note",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "direct stash mutation",
+		command:      "/tmp/task/git stash push",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "direct clean mutation",
+		command:      "/tmp/task/git clean -f",
+		wantDecision: DecisionAllow,
+	},
+	{
+		name:         "direct reflog mutation",
+		command:      "/tmp/task/git reflog expire",
+		wantDecision: DecisionAllow,
+	},
+}
+
+// TestDirectPathGitStatusCapabilityRequiresExactRawPlan verifies that only
+// one direct, unquoted Git status argv exposes the planner capability.
+//
+// Example: /tmp/fake-bin/git status carries the direct-path capability while
+// bare git status carries the repository-default read-only capability.
+func TestDirectPathGitStatusCapabilityRequiresExactRawPlan(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range directPathGitStatusCapabilityCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := Classify(activeWorker(testCase.command))
+			if result.Decision != testCase.wantDecision {
+				t.Fatalf("%q: decision=%q, want %q; diagnostic=%#v", testCase.command, result.Decision, testCase.wantDecision, result.Diagnostic)
+			}
+			if testCase.wantDiagnosticCode != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.wantDiagnosticCode) {
+				t.Fatalf("%q: diagnostic=%#v, want code %q", testCase.command, result.Diagnostic, testCase.wantDiagnosticCode)
+			}
+			if testCase.wantCapability != "" {
+				if len(result.Capabilities) != 1 || result.Capabilities[0] != testCase.wantCapability {
+					t.Fatalf("%q: capabilities=%v, want [%s]", testCase.command, result.Capabilities, testCase.wantCapability)
+				}
+				return
+			}
+			if len(result.Capabilities) != 0 {
+				t.Fatalf("%q: capabilities=%v, want none", testCase.command, result.Capabilities)
+			}
+		})
+	}
+}
+
+// TestInstalledBinaryEmitsDirectPathGitStatusCapability verifies the shipped
+// planner preserves the direct-path capability without a provider reparse.
+//
+// Example: /tmp/fake-bin/git status emits the exact singleton capability.
+func TestInstalledBinaryEmitsDirectPathGitStatusCapability(t *testing.T) {
+	binary, err := filepath.Abs("eci-command-plan")
+	if err != nil {
+		t.Fatalf("resolve installed binary: %v", err)
+	}
+
+	for _, testCase := range directPathGitStatusCapabilityCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			input, err := json.Marshal(activeWorker(testCase.command))
+			if err != nil {
+				t.Fatalf("marshal %q request: %v", testCase.command, err)
+			}
+
+			var stdout bytes.Buffer
+			status := runBinary(t, binary, input, &stdout)
+			var result Result
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatalf("decode %q response: %v; output=%s", testCase.command, err, stdout.String())
+			}
+			if result.Decision != testCase.wantDecision {
+				t.Fatalf("%q: decision=%q, want %q; diagnostic=%#v", testCase.command, result.Decision, testCase.wantDecision, result.Diagnostic)
+			}
+			if testCase.wantCapability != "" {
+				if status != StatusAllow {
+					t.Fatalf("%q: status=%d output=%s, want %d", testCase.command, status, stdout.String(), StatusAllow)
+				}
+				want := "{\"decision\":\"allow\",\"capabilities\":[\"" + string(testCase.wantCapability) + "\"]}\n"
+				if stdout.String() != want {
+					t.Fatalf("%q: JSON=%s, want %s", testCase.command, stdout.String(), want)
+				}
+				return
+			}
+			if len(result.Capabilities) != 0 {
+				t.Fatalf("%q: capabilities=%v, want none", testCase.command, result.Capabilities)
+			}
+			if testCase.wantDecision == DecisionDeny && status != StatusDeny {
+				t.Fatalf("%q: status=%d output=%s, want %d", testCase.command, status, stdout.String(), StatusDeny)
+			}
+			if testCase.wantDecision == DecisionDefer && status != StatusDefer {
+				t.Fatalf("%q: status=%d output=%s, want %d", testCase.command, status, stdout.String(), StatusDefer)
+			}
+		})
+	}
 }
 
 func TestGateModeIdentityAndWorkerOwnershipAreCompiled(t *testing.T) {
@@ -1683,6 +1893,8 @@ func runLifecycleIdentitySymlinkScenario(t *testing.T) {
 		name    string
 		command string
 	}{
+		{name: "copied env no args", command: "env " + copyPath},
+		{name: "copied timeout no args", command: "timeout 5 " + copyPath},
 		{name: "copied direct status", command: copyPath + " status"},
 		{name: "copied direct nested exit", command: copyPath + " nested-exit"},
 		{name: "copied env assignment", command: "env FOO=bar " + copyPath + " status"},
@@ -1693,6 +1905,7 @@ func runLifecycleIdentitySymlinkScenario(t *testing.T) {
 		{name: "copied busybox", command: "busybox -- " + copyPath + " status"},
 		{name: "copied prlimit", command: "prlimit --nofile=1024 " + copyPath + " status"},
 		{name: "copied chronic", command: "chronic " + copyPath + " status"},
+		{name: "canonical active env no args", command: "env " + filepath.Join(providerBin, "eci-active")},
 		{name: "canonical active", command: filepath.Join(providerBin, "eci-active") + " status"},
 		{name: "canonical active env", command: "env FOO=bar " + filepath.Join(providerBin, "eci-active") + " status"},
 		{name: "canonical review gate", command: filepath.Join(providerBin, "eci-review-gate") + " status"},
@@ -1729,6 +1942,9 @@ func runLifecycleIdentitySymlinkScenario(t *testing.T) {
 				}
 				if result.Diagnostic.Code != CodeControlOwnerRequired || result.Diagnostic.Operation != "worker-control" || result.Diagnostic.Predicate != "worker-lifecycle-control" {
 					t.Fatalf("%q: diagnostic=%#v, want worker lifecycle control denial", testCase.command, result.Diagnostic)
+				}
+				if len(result.Capabilities) != 0 {
+					t.Fatalf("%q: capabilities=%v, want none for protected lifecycle control", testCase.command, result.Capabilities)
 				}
 			})
 		}

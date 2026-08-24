@@ -86,7 +86,7 @@ While an ECI marker is active:
 
 | Trigger | Skill |
 |---|---|
-| Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` and any installed systematic-debugging skill |
+| Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` |
 | Go / Python code | `go-coding-style` / `python-coding-style` |
 | Tests / code implementation / logic-heavy implementation | `testing-discipline` / `test-driven-development` / `proof-driven-development` |
 | Android device work: `adb`, `fastboot`, flashing, kernel updates | `android-device` |
