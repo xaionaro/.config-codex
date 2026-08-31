@@ -744,14 +744,17 @@ func Classify(request Request) Result {
 
 	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
 	var timeoutLaunches []TimeoutLaunch
-	if request.Marker == MarkerActive {
-		// Observed launches are active-marker facts; inactive work stays
-		// transparent without probing a callback-selected executable.
-		timeoutLaunches = timeoutLaunchesForPlan(request, parsed)
-	}
 	decision := DecisionAllow
 	ledgerRedirectAppend := false
 	for index, current := range parsed.segments {
+		if request.Marker == MarkerActive {
+			// Observe this segment only after all earlier segments have had a
+			// chance to return their concrete diagnostic.
+			launch, observed := timeoutLaunchForSegment(request, current, index+1)
+			if observed {
+				timeoutLaunches = append(timeoutLaunches, launch)
+			}
+		}
 		segmentDecision, diagnostic := inspectSegment(
 			request,
 			current,
@@ -1441,25 +1444,6 @@ func isFileDescriptorDuplicationTarget(value string) bool {
 	return value == "-" || isDecimalFileDescriptor(value)
 }
 
-// timeoutLaunchesForPlan probes only direct literal timeout segments and
-// records the prefixes whose replacement child visibly ran.
-//
-// Example: a direct `timeout 5 git status` may record segment one, while
-// `env timeout 5 git status` does not probe or expose a child.
-func timeoutLaunchesForPlan(request Request, parsed plan) []TimeoutLaunch {
-	launches := make([]TimeoutLaunch, 0, len(parsed.segments))
-	for index, current := range parsed.segments {
-		launch, ok := timeoutLaunchForSegment(request, current, index+1)
-		if ok {
-			launches = append(launches, launch)
-		}
-	}
-	if len(launches) == 0 {
-		return nil
-	}
-	return launches
-}
-
 // timeoutLaunchForSegment records one direct timeout prefix only after the
 // callback-selected executable runs the harmless probe child.
 //
@@ -1479,8 +1463,12 @@ func timeoutLaunchForSegment(
 	if !ok {
 		return TimeoutLaunch{}, false
 	}
-	executable, ok := resolveTimeoutExecutable(current.argv[0].value, request.CWD, request.CommandPath)
-	if !ok || !timeoutExecutableLaunchesProbeChild(executable, prefix) {
+	callbackCWD, callbackPath, ok := timeoutProbeContext(request)
+	if !ok {
+		return TimeoutLaunch{}, false
+	}
+	executable, ok := resolveTimeoutExecutable(current.argv[0].value, callbackCWD, callbackPath)
+	if !ok || !timeoutExecutableLaunchesProbeChild(executable, prefix, callbackCWD, callbackPath) {
 		return TimeoutLaunch{}, false
 	}
 
@@ -1498,6 +1486,31 @@ func timeoutLaunchForSegment(
 // Example: `timeout --signal '$SIGNAL' 5 git status` receives no launch fact.
 func timeoutSegmentIsLiteral(command string) bool {
 	return !strings.ContainsAny(command, "$`\\*?[]{}~")
+}
+
+// timeoutProbeContext returns the verified callback working directory and PATH
+// used to run an observed timeout probe.
+//
+// Example: an absolute existing callback directory and PATH entries allow a
+// probe, while a missing directory leaves timeout opaque.
+func timeoutProbeContext(request Request) (string, string, bool) {
+	if !filepath.IsAbs(request.CWD) || request.CommandPath == "" {
+		return "", "", false
+	}
+	info, err := os.Stat(request.CWD)
+	if err != nil || !info.IsDir() {
+		return "", "", false
+	}
+	for _, entry := range strings.Split(request.CommandPath, ":") {
+		if !filepath.IsAbs(entry) {
+			return "", "", false
+		}
+		info, err := os.Stat(entry)
+		if err != nil || !info.IsDir() {
+			return "", "", false
+		}
+	}
+	return request.CWD, request.CommandPath, true
 }
 
 // resolveTimeoutExecutable resolves a direct timeout literal from the original
@@ -1553,12 +1566,17 @@ func resolvedExecutable(path string) (string, bool) {
 }
 
 // timeoutExecutableLaunchesProbeChild runs a short bounded replacement-child
-// probe and reports whether the child, rather than the timeout executable's
-// exit status, acknowledged its launch.
+// probe in the verified callback CWD and PATH, and reports whether the child,
+// rather than the timeout executable's exit status, acknowledged its launch.
 //
 // Example: a timeout implementation that exits zero without invoking its child
 // returns false.
-func timeoutExecutableLaunchesProbeChild(executable string, prefix []token) bool {
+func timeoutExecutableLaunchesProbeChild(
+	executable string,
+	prefix []token,
+	callbackCWD string,
+	callbackPath string,
+) bool {
 	probeChild, ok := resolvedExecutable(timeoutProbeChild)
 	if !ok || len(prefix) < 2 {
 		return false
@@ -1578,6 +1596,8 @@ func timeoutExecutableLaunchesProbeChild(executable string, prefix []token) bool
 	}
 	arguments = append(arguments, probeChild, "%s", timeoutProbeAcknowledgement)
 	command := exec.CommandContext(ctx, executable, arguments...)
+	command.Dir = callbackCWD
+	command.Env = []string{"PATH=" + callbackPath, "PWD=" + callbackCWD}
 	command.Stdout = writer
 	command.Stderr = io.Discard
 	command.WaitDelay = timeoutProbeWaitDelay

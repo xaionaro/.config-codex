@@ -501,11 +501,12 @@ esac
 			}},
 		},
 		{
-			name:     "slash qualified literal resolves from cwd",
-			command:  "./timeout --signal TERM 5 git commit -m note",
-			cwd:      timeoutDirectory,
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			name:        "slash qualified literal resolves from cwd",
+			command:     "./timeout --signal TERM 5 git commit -m note",
+			cwd:         timeoutDirectory,
+			commandPath: timeoutDirectory,
+			decision:    DecisionDeny,
+			code:        CodeWorkerGitOwnershipDenied,
 			wantLaunches: []timeoutLaunchFact{{
 				Segment: 1,
 				Prefix:  []string{"./timeout", "--signal", "TERM", "5"},
@@ -658,6 +659,130 @@ func TestInactiveTimeoutDoesNotProbeCallbackExecutable(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
 		t.Fatalf("timeout probe sentinel=%q err=%v, want absent", sentinelPath, err)
+	}
+}
+
+// TestTimeoutProbeUsesVerifiedCallbackContext verifies that an observed launch
+// executes the replacement child with the callback's verified CWD and PATH.
+//
+// Example: a callback-selected timeout can expose a worker Git commit only
+// when its probe receives the same temporary CWD and PATH as the callback.
+func TestTimeoutProbeUsesVerifiedCallbackContext(t *testing.T) {
+	t.Parallel()
+
+	callbackCWD := t.TempDir()
+	timeoutDirectory := t.TempDir()
+	timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+	contextPath := filepath.Join(t.TempDir(), "probe-context")
+	timeoutScript := "#!/bin/sh\nset -eu\nprintf '%s\\n%s\\n' \"$PWD\" \"$PATH\" > " + strconv.Quote(contextPath) + "\n[ \"$1\" = 5 ]\nshift\n[ \"$PWD\" = " + strconv.Quote(callbackCWD) + " ]\n[ \"$PATH\" = " + strconv.Quote(timeoutDirectory) + " ]\nexec \"$@\"\n"
+	if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+		t.Fatalf("write context timeout: %v", err)
+	}
+
+	request := activeWorker("timeout 5 git commit -m note")
+	request.CWD = callbackCWD
+	request.CommandPath = timeoutDirectory
+	result := Classify(request)
+	context, err := os.ReadFile(contextPath)
+	if err != nil {
+		t.Fatalf("read probe context: %v", err)
+	}
+	wantContext := callbackCWD + "\n" + timeoutDirectory + "\n"
+	if string(context) != wantContext {
+		t.Fatalf("probe context=%q, want %q", context, wantContext)
+	}
+	if result.Decision != DecisionDeny || result.Diagnostic == nil ||
+		result.Diagnostic.Code != CodeWorkerGitOwnershipDenied {
+		t.Fatalf("result=%#v, want observed worker Git denial", result)
+	}
+	if len(result.TimeoutLaunches) != 1 {
+		t.Fatalf("timeout launches=%#v, want one observed launch", result.TimeoutLaunches)
+	}
+}
+
+// TestTimeoutProbeRejectsInvalidCallbackContext verifies that a malformed
+// callback CWD or PATH leaves timeout opaque without launching its executable.
+//
+// Example: a missing callback directory or PATH entry cannot create a timeout
+// launch fact for an otherwise literal timeout command.
+func TestTimeoutProbeRejectsInvalidCallbackContext(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name        string
+		callbackCWD func(t *testing.T) string
+		commandPath func(t *testing.T, timeoutDirectory string) string
+	}{
+		{
+			name: "missing callback directory",
+			callbackCWD: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing")
+			},
+			commandPath: func(_ *testing.T, timeoutDirectory string) string {
+				return timeoutDirectory
+			},
+		},
+		{
+			name: "missing callback PATH entry",
+			callbackCWD: func(t *testing.T) string {
+				return t.TempDir()
+			},
+			commandPath: func(t *testing.T, timeoutDirectory string) string {
+				return timeoutDirectory + ":" + filepath.Join(t.TempDir(), "missing")
+			},
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			timeoutDirectory := t.TempDir()
+			timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+			sentinelPath := timeoutPath + ".sentinel"
+			timeoutScript := "#!/bin/sh\n: > \"$0.sentinel\"\nexit 0\n"
+			if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+				t.Fatalf("write sentinel timeout: %v", err)
+			}
+
+			request := activeWorker("timeout 5 git status")
+			request.CWD = testCase.callbackCWD(t)
+			request.CommandPath = testCase.commandPath(t, timeoutDirectory)
+			result := Classify(request)
+			if result.Decision != DecisionAllow || result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
+				t.Fatalf("result=%#v, want opaque ordinary timeout", result)
+			}
+			if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
+				t.Fatalf("timeout probe sentinel=%q err=%v, want absent", sentinelPath, err)
+			}
+		})
+	}
+}
+
+// TestTimeoutProbeStopsAfterEarlierConcreteDenial verifies that ordered
+// inspection returns before probing a later timeout after a concrete denial.
+//
+// Example: `rm -rf / && timeout 5 git status` denies the root deletion without
+// invoking the later callback-selected timeout executable.
+func TestTimeoutProbeStopsAfterEarlierConcreteDenial(t *testing.T) {
+	t.Parallel()
+
+	timeoutDirectory := t.TempDir()
+	timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+	sentinelPath := timeoutPath + ".sentinel"
+	timeoutScript := "#!/bin/sh\n: > \"$0.sentinel\"\nexit 0\n"
+	if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+		t.Fatalf("write sentinel timeout: %v", err)
+	}
+
+	request := activeWorker("rm -rf / && timeout 5 git status")
+	request.CommandPath = timeoutDirectory
+	result := Classify(request)
+	if result.Decision != DecisionDeny || result.Diagnostic == nil ||
+		result.Diagnostic.Code != CodeBroadDestructiveDenied {
+		t.Fatalf("result=%#v, want earlier broad destructive denial", result)
+	}
+	if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
+		t.Fatalf("later timeout probe sentinel=%q err=%v, want absent", sentinelPath, err)
 	}
 }
 

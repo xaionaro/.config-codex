@@ -4599,7 +4599,9 @@ def inspect(segment, depth=0):
     if name in {"command", "builtin", "exec", "sudo", "doas", "nohup", "setsid"}:
         index += 1
         return inspect(segment[index:], depth + 1)
-    if name in {"timeout", "systemd-run", "nice", "time", "prlimit", "chronic"}:
+    if name == "timeout":
+        return False
+    if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
         index += 1
         value_options = {
             "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
@@ -4611,8 +4613,6 @@ def inspect(segment, depth=0):
                 index += 1
                 break
             index += 2 if segment[index] in value_options else 1
-        if name == "timeout" and index < len(segment):
-            index += 1
         return inspect(segment[index:], depth + 1)
     if name != "git":
         return False
@@ -5556,7 +5556,9 @@ def inspect(segment, depth=0):
                 continue
             break
         return any(inspect(part, depth + 1) for part in split(segment[index:]))
-    if name in {"timeout", "systemd-run", "nice", "time", "prlimit", "chronic"}:
+    if name == "timeout":
+        return False
+    if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
         index += 1
         value_options = {
             "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
@@ -5573,10 +5575,6 @@ def inspect(segment, depth=0):
                     return True
                 index += 2
                 continue
-            index += 1
-        if name == "timeout":
-            if index >= len(segment):
-                return True
             index += 1
         return inspect(segment[index:], depth + 1)
     if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
@@ -7780,9 +7778,13 @@ def segment_spec(tokens, segment_index):
         environment[name] = value
         index += 1
 
-    # `env NAME=value git ...` is a normal spelling.  Its assignments help
+    index = transparent_timeout_command_index(tokens, index, segment_index)
+    if index is None:
+        return None
+
+    # `env NAME=value git ...` is a normal spelling. Its assignments help
     # resolve a concrete target, but do not themselves require a special
-    # route. Unknown env options simply leave the effect advisory.
+    # route. An observed direct timeout may select this exact env child.
     if index < len(tokens) and os.path.basename(tokens[index]) == "env":
         index += 1
         while index < len(tokens):
@@ -7799,9 +7801,6 @@ def segment_spec(tokens, segment_index):
                 return None
             break
 
-    index = transparent_timeout_command_index(tokens, index, segment_index)
-    if index is None:
-        return None
     if index >= len(tokens) or os.path.basename(tokens[index]) != "git":
         return None
     index += 1
@@ -7991,6 +7990,9 @@ def git_add_whole_worktree_selector(segment, segment_index):
     index = 0
     while index < len(segment) and assignment.match(segment[index]):
         index += 1
+    index = transparent_timeout_command_index(segment, index, segment_index)
+    if index is None:
+        return None
     if index < len(segment) and os.path.basename(segment[index]) == "env":
         index += 1
         while index < len(segment):
@@ -8003,9 +8005,6 @@ def git_add_whole_worktree_selector(segment, segment_index):
             if segment[index].startswith("-"):
                 return None
             break
-    index = transparent_timeout_command_index(segment, index, segment_index)
-    if index is None:
-        return None
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
         return None
     index += 1
@@ -8070,13 +8069,13 @@ def broad_reset(segment, segment_index):
     index = 0
     while index < len(segment) and assignment.match(segment[index]):
         index += 1
+    index = transparent_timeout_command_index(segment, index, segment_index)
+    if index is None:
+        return False
     if index < len(segment) and os.path.basename(segment[index]) == "env":
         index += 1
         while index < len(segment) and assignment.match(segment[index]):
             index += 1
-    index = transparent_timeout_command_index(segment, index, segment_index)
-    if index is None:
-        return False
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
         return False
     index += 1
@@ -8905,7 +8904,9 @@ def unwrap(values):
             values = values[1:]
             depth += 1
             continue
-        if name in {"timeout", "nice", "time", "prlimit", "chronic", "systemd-run"}:
+        if name == "timeout":
+            return values
+        if name in {"nice", "time", "prlimit", "chronic", "systemd-run"}:
             index = 1
             value_options = {
                 "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
@@ -8917,8 +8918,6 @@ def unwrap(values):
                     index += 1
                     break
                 index += 2 if values[index] in value_options else 1
-            if name == "timeout" and index < len(values):
-                index += 1
             values = values[index:]
             depth += 1
             continue

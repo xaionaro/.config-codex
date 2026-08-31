@@ -202,6 +202,10 @@ for role in coordinator worker; do
     "active_repo=$REPO target_repo=$FOREIGN_REPO"
   assert_denied_code "timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
     "effect=whole-worktree-staging target=$REPO selector=."
+  assert_denied_code "timeout --signal TERM 5 env git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED "$role" \
+    "active_repo=$REPO target_repo=$FOREIGN_REPO"
+  assert_denied_code "timeout --signal TERM 5 env git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=."
   assert_allowed "timeout --signal '\$TIMEOUT_SIGNAL' 5 git add ." "$role"
 done
 # The fact coordinates include the planner segment, so a preceding ordinary
@@ -220,8 +224,15 @@ CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
 for role in coordinator worker; do
   assert_allowed "timeout --signal TERM 5 git -C $FOREIGN_REPO add -- file.txt" "$role"
   assert_allowed "timeout --signal TERM 5 git add ." "$role"
+  assert_allowed "timeout --signal TERM 5 env git -C $FOREIGN_REPO add -- file.txt" "$role"
+  assert_allowed "timeout --signal TERM 5 env git add ." "$role"
   assert_allowed "timeout --signal 0 5 git add ." "$role"
 done
+# A nonlaunching timeout is opaque to each worker recognizer. It must not
+# reconstruct a direct Git child or a piped branch mutation from argv alone.
+assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker
+assert_allowed "timeout --signal TERM 5 git merge topic" worker
+assert_allowed "printf prepare | timeout --signal TERM 5 git branch --delete topic" worker
 
 # A fake timeout that rejects its signal and a structurally malformed prefix
 # both have no observed child launch. They remain ordinary runtime behavior.
