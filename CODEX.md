@@ -79,7 +79,7 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - After every implementer handoff, the coordinator independently verifies the exact scoped diff and creates one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration.
 - A checkpoint commit is not acceptance.
 - Stage only exact iteration paths or hunks. Never stage a whole dirty path or tree merely to capture one hunk.
-- If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit only independently verified predecessor content as a separately named `pre-existing baseline`, then checkpoint the iteration separately.
+- If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit a separately named `pre-existing baseline` containing only independently verified, already-completed predecessor content currently coordinator-owned for the same lane. Exclude user-owned, another worker/lane, and in-flight content. Then checkpoint the iteration separately.
 - If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.
 - A later repair is a separate iteration and commit. Do not amend or delay the prior checkpoint.
 - Normal targeted Git coordination needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
