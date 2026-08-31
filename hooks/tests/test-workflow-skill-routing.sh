@@ -84,6 +84,12 @@ forbid_forecast_advisory_contradiction() {
     fail "$file contradicts the advisory forecast contract: $text"
 }
 
+forbid_generic_forecast_recalibration_placeholder() {
+  local file="$1" placeholder="$2"
+  ! grep -Fq -- "$placeholder" "$file" ||
+    fail "$file retains non-UTC forecast recalibration placeholder: $placeholder"
+}
+
 forbid_pattern() {
   local file="$1" pattern="$2"
   ! grep -Eiq -- "$pattern" "$file" || fail "$file retains an ordinary-work gate matching: $pattern"
@@ -806,6 +812,8 @@ assert_lane_forecast_contract() {
     require_text "$file" "$recalibration"
     require_text "$file" "$baseline"
     require_text "$file" "$completed"
+    forbid_generic_forecast_recalibration_placeholder "$file" '<prior deadline>'
+    forbid_generic_forecast_recalibration_placeholder "$file" '<current deadline>'
     require_pattern "$file" 'closed lanes record completion without reviving forecasts' "$closed_lane_contract_pattern"
     require_pattern "$file" 'forecast deadlines are forecasts, not promises' 'Forecast[[:space:]]+deadlines[[:space:]]+are[[:space:]]+forecasts,[[:space:]]+not[[:space:]]+promises\.'
     forbid_legacy_duration_forecast_form "$file" 'Remaining forecast'
