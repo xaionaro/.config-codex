@@ -789,7 +789,7 @@ assert_status_lane_stage_transition_fixture() {
 }
 
 assert_lane_forecast_contract() {
-  local file header active_deadline recalibration baseline completed closed_lane_contract_pattern parallel_rule_pattern coordinator_progress_update_contract
+  local file header active_deadline recalibration baseline completed closed_lane_contract_pattern parallel_rule_pattern coordinator_progress_update_pattern
 
   active_deadline='`Forecast deadline: by <UTC ISO8601> — forecast, not a promise.`'
   recalibration='`Forecast recalibration: moved earlier | moved later | unchanged — <prior UTC ISO8601> → <current UTC ISO8601>; <why>; <evidence>`'
@@ -797,9 +797,9 @@ assert_lane_forecast_contract() {
   completed='`Completed: <UTC ISO8601>; no active forecast deadline.`'
   closed_lane_contract_pattern='A[[:space:]]+`CLOSED`[[:space:]]+lane[[:space:]]+records[[:space:]]+completion;[[:space:]]+do[[:space:]]+not[[:space:]]+invent[[:space:]]+or[[:space:]]+revive[[:space:]]+a[[:space:]]+forecast[[:space:]]+deadline[[:space:]]+or[[:space:]]+recalibration\.'
   parallel_rule_pattern='For[[:space:]]+parallel[[:space:]]+children,[[:space:]]+report[[:space:]]+the[[:space:]]+single[[:space:]]+critical-path[[:space:]]+deadline;[[:space:]]+child[[:space:]]+deadlines[[:space:]]+remain[[:space:]]+parallel;[[:space:]]+never[[:space:]]+add[[:space:]]+or[[:space:]]+sum[[:space:]]+parallel[[:space:]]+child[[:space:]]+deadlines[[:space:]]+into[[:space:]]+a[[:space:]]+parent,[[:space:]]+root,[[:space:]]+or[[:space:]]+mission[[:space:]]+deadline\.'
-  coordinator_progress_update_contract='For every relevant coordinator-to-user ECI progress update, state each executing lane’s Forecast deadline: by <UTC ISO8601> — forecast, not a promise. If its target changes, state <prior UTC ISO8601> → <current UTC ISO8601>, why, and evidence. If the forecast is missing or stale, say so and reconcile it alongside safe work; do not delay the update. Forecasts are advisory—not promises, work gates, permissions, or per-command ceremony.'
+  coordinator_progress_update_pattern='For[[:space:]]+every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update,[[:space:]]+state[[:space:]]+each[[:space:]]+executing[[:space:]]+lane’s[[:space:]]+Forecast[[:space:]]+deadline:[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>[[:space:]]+—[[:space:]]+forecast,[[:space:]]+not[[:space:]]+a[[:space:]]+promise\.[[:space:]]+If[[:space:]]+its[[:space:]]+target[[:space:]]+changes,[[:space:]]+state[[:space:]]+<prior[[:space:]]+UTC[[:space:]]+ISO8601>[[:space:]]+→[[:space:]]+<current[[:space:]]+UTC[[:space:]]+ISO8601>,[[:space:]]+why,[[:space:]]+and[[:space:]]+evidence\.[[:space:]]+If[[:space:]]+the[[:space:]]+forecast[[:space:]]+is[[:space:]]+missing[[:space:]]+or[[:space:]]+stale,[[:space:]]+say[[:space:]]+so[[:space:]]+and[[:space:]]+reconcile[[:space:]]+it[[:space:]]+alongside[[:space:]]+safe[[:space:]]+work;[[:space:]]+do[[:space:]]+not[[:space:]]+delay[[:space:]]+the[[:space:]]+update\.[[:space:]]+Forecasts[[:space:]]+are[[:space:]]+advisory—not[[:space:]]+promises,[[:space:]]+work[[:space:]]+gates,[[:space:]]+permissions,[[:space:]]+or[[:space:]]+per-command[[:space:]]+ceremony\.'
 
-  require_text "$COORDINATOR" "$coordinator_progress_update_contract"
+  require_pattern "$COORDINATOR" 'coordinator-to-user ECI lane forecast update contract' "$coordinator_progress_update_pattern"
 
   require_line "$STATUS_REPORT" '## Lane forecasts'
   header="$(grep -F -- '| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner |' "$STATUS_REPORT" || true)"
