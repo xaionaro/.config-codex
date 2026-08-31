@@ -1044,6 +1044,7 @@ assert_lane_forecast_contract() {
   require_pattern "$ECI" 'serial implementation and review stay one lane' "$serial_lane_pattern"
   require_pattern "$ECI" 'only independently advancing work becomes a new lane' "$distinct_lane_pattern"
   assert_coordinator_progress_forecast_contract "$COORDINATOR" "$(<"$COORDINATOR")"
+  require_line "$COORDINATOR" '- Use the two templates above exactly: named lane/task or root outcome and UTC deadline only. Do not append text.'
   require_pattern "$COORDINATOR" 'coordinator missing/stale forecasts do not delay updates' "$missing_stale_pattern"
 
   require_line "$STATUS_REPORT" '## Lane forecasts'
