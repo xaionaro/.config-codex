@@ -70,6 +70,20 @@ forbid_legacy_duration_forecast_form() {
   ! grep -Fq -- "$text" "$file" || fail "$file retains legacy duration forecast form: $text"
 }
 
+forbid_legacy_duration_forecast_pattern() {
+  local file="$1" description="$2" pattern="$3" text
+
+  text="$(tr '\n' ' ' <"$file")"
+  ! grep -Eiq -- "$pattern" <<<"$text" ||
+    fail "$file retains legacy duration forecast form: $description"
+}
+
+forbid_forecast_advisory_contradiction() {
+  local file="$1" text="$2"
+  ! grep -Fq -- "$text" "$file" ||
+    fail "$file contradicts the advisory forecast contract: $text"
+}
+
 forbid_pattern() {
   local file="$1" pattern="$2"
   ! grep -Eiq -- "$pattern" "$file" || fail "$file retains an ordinary-work gate matching: $pattern"
@@ -769,12 +783,14 @@ assert_status_lane_stage_transition_fixture() {
 }
 
 assert_lane_forecast_contract() {
-  local file header active_deadline recalibration baseline completed
+  local file header active_deadline recalibration baseline completed closed_lane_contract_pattern parallel_rule_pattern
 
   active_deadline='`Forecast deadline: by <UTC ISO8601> — forecast, not a promise.`'
   recalibration='`Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>`'
   baseline='`Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`'
   completed='`Completed: <UTC ISO8601>; no active forecast deadline.`'
+  closed_lane_contract_pattern='A[[:space:]]+`CLOSED`[[:space:]]+lane[[:space:]]+records[[:space:]]+completion;[[:space:]]+do[[:space:]]+not[[:space:]]+invent[[:space:]]+or[[:space:]]+revive[[:space:]]+a[[:space:]]+forecast[[:space:]]+deadline[[:space:]]+or[[:space:]]+recalibration\.'
+  parallel_rule_pattern='For[[:space:]]+parallel[[:space:]]+children,[[:space:]]+report[[:space:]]+the[[:space:]]+single[[:space:]]+critical-path[[:space:]]+deadline;[[:space:]]+child[[:space:]]+deadlines[[:space:]]+remain[[:space:]]+parallel;[[:space:]]+never[[:space:]]+add[[:space:]]+or[[:space:]]+sum[[:space:]]+parallel[[:space:]]+child[[:space:]]+deadlines[[:space:]]+into[[:space:]]+a[[:space:]]+parent,[[:space:]]+root,[[:space:]]+or[[:space:]]+mission[[:space:]]+deadline\.'
 
   require_line "$STATUS_REPORT" '## Lane forecasts'
   header="$(grep -F -- '| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner |' "$STATUS_REPORT" || true)"
@@ -790,26 +806,34 @@ assert_lane_forecast_contract() {
     require_text "$file" "$recalibration"
     require_text "$file" "$baseline"
     require_text "$file" "$completed"
+    require_pattern "$file" 'closed lanes record completion without reviving forecasts' "$closed_lane_contract_pattern"
     require_pattern "$file" 'forecast deadlines are forecasts, not promises' 'Forecast[[:space:]]+deadlines[[:space:]]+are[[:space:]]+forecasts,[[:space:]]+not[[:space:]]+promises\.'
-    require_pattern "$file" 'forecast non-gate boundary' 'They[[:space:]]+never[[:space:]]+gate[[:space:]]+work,[[:space:]]+authorize[[:space:]]+or[[:space:]]+deny[[:space:]]+work,[[:space:]]+create[[:space:]]+a[[:space:]]+blocker,[[:space:]]+require[[:space:]]+a[[:space:]]+receipt[[:space:]]+or[[:space:]]+artifact,[[:space:]]+or[[:space:]]+require[[:space:]]+per-command[[:space:]]+updates\.'
-    require_text "$file" 'For parallel children, report the single critical-path deadline; child deadlines remain parallel.'
     forbid_legacy_duration_forecast_form "$file" 'Remaining forecast'
     forbid_legacy_duration_forecast_form "$file" 'remaining range'
     forbid_legacy_duration_forecast_form "$file" 'increased | decreased | unchanged'
-    forbid_legacy_duration_forecast_form "$file" 'Never add overlapping child estimates into a parent or mission forecast;'
+    forbid_legacy_duration_forecast_pattern "$file" 'wrapped additive child-estimate wording' 'Never[[:space:]]+add[[:space:]]+overlapping[[:space:]]+child[[:space:]]+estimates[[:space:]]+into[[:space:]]+a[[:space:]]+parent[[:space:]]+or[[:space:]]+mission[[:space:]]+forecast;'
     forbid_legacy_duration_forecast_form "$file" 'overlapping estimates stay non-additive.'
+    forbid_forecast_advisory_contradiction "$file" 'A `CLOSED` lane must retain a forecast deadline or recalibration.'
+    forbid_forecast_advisory_contradiction "$file" 'Parallel child deadlines may be added into a parent, root, or mission deadline.'
+    forbid_forecast_advisory_contradiction "$file" 'A forecast may gate work.'
+    forbid_forecast_advisory_contradiction "$file" 'A forecast may block work.'
+    forbid_forecast_advisory_contradiction "$file" 'A forecast may authorize work.'
+    forbid_forecast_advisory_contradiction "$file" 'A forecast may require a receipt or artifact.'
+    forbid_forecast_advisory_contradiction "$file" 'A forecast promises completion.'
+    require_pattern "$file" 'forecast non-gate boundary' 'They[[:space:]]+never[[:space:]]+gate[[:space:]]+work,[[:space:]]+authorize[[:space:]]+or[[:space:]]+deny[[:space:]]+work,[[:space:]]+create[[:space:]]+a[[:space:]]+blocker,[[:space:]]+require[[:space:]]+a[[:space:]]+receipt[[:space:]]+or[[:space:]]+artifact,[[:space:]]+or[[:space:]]+require[[:space:]]+per-command[[:space:]]+updates\.'
+    require_pattern "$file" 'parallel deadlines use one non-additive critical path' "$parallel_rule_pattern"
   done
 
   require_line "$LEDGER" '### Lane forecasts'
-  require_pattern "$STATUS_REPORT" 'status-report deadline recalibration' 'Every[[:space:]]+material[[:space:]]+status[[:space:]]+report[[:space:]]+recalibrates[[:space:]]+each[[:space:]]+affected[[:space:]]+lane[[:space:]]+with[[:space:]]+its[[:space:]]+prior[[:space:]]+and[[:space:]]+current[[:space:]]+deadline,[[:space:]]+why,[[:space:]]+and[[:space:]]+evidence\.'
+  require_pattern "$STATUS_REPORT" 'status-report active-lane deadline recalibration' 'Every[[:space:]]+material[[:space:]]+status[[:space:]]+report[[:space:]]+recalibrates[[:space:]]+each[[:space:]]+affected[[:space:]]+active[[:space:]]+lane[[:space:]]+with[[:space:]]+its[[:space:]]+prior[[:space:]]+and[[:space:]]+current[[:space:]]+deadline,[[:space:]]+why,[[:space:]]+and[[:space:]]+evidence\.'
   require_pattern "$LEDGER" 'Progress source and status projection' 'Progress[[:space:]]+is[[:space:]]+the[[:space:]]+source[[:space:]]+of[[:space:]]+truth;[[:space:]]+`latest-status-report\.md`[[:space:]]+projects[[:space:]]+these[[:space:]]+fields[[:space:]]+using[[:space:]]+`writing-status-reports`\.'
-  require_pattern "$LEDGER" 'ledger deadline recalibration' 'Every[[:space:]]+material[[:space:]]+ledger[[:space:]]+refresh[[:space:]]+recalibrates[[:space:]]+each[[:space:]]+affected[[:space:]]+lane[[:space:]]+with[[:space:]]+its[[:space:]]+prior[[:space:]]+and[[:space:]]+current[[:space:]]+deadline,[[:space:]]+why,[[:space:]]+and[[:space:]]+evidence\.'
+  require_pattern "$LEDGER" 'ledger active-lane deadline recalibration' 'Every[[:space:]]+material[[:space:]]+ledger[[:space:]]+refresh[[:space:]]+recalibrates[[:space:]]+each[[:space:]]+affected[[:space:]]+active[[:space:]]+lane[[:space:]]+with[[:space:]]+its[[:space:]]+prior[[:space:]]+and[[:space:]]+current[[:space:]]+deadline,[[:space:]]+why,[[:space:]]+and[[:space:]]+evidence\.'
   require_pattern "$LEDGER" 'forecast planning-quality, non-gate treatment' 'Missing[[:space:]]+or[[:space:]]+stale[[:space:]]+forecast[[:space:]]+deadlines[[:space:]]+are[[:space:]]+planning-quality[[:space:]]+defects\.[[:space:]]+Reconcile[[:space:]]+them[[:space:]]+alongside[[:space:]]+safe[[:space:]]+work;[[:space:]]+they[[:space:]]+never[[:space:]]+gate[[:space:]]+work,[[:space:]]+authorization,[[:space:]]+blockers,[[:space:]]+or[[:space:]]+status[[:space:]]+reporting\.'
   require_text "$STATUS_REPORT" 'An active lane missing a named milestone or forecast deadline is corrected alongside safe work.'
   require_text "$STATUS_REPORT" 'A forecast deadline copied without prior/current deadlines, why, and evidence is stale.'
-  require_text "$STATUS_REPORT" 'For parallel children, report the single critical-path deadline; child deadlines remain parallel.'
-  require_text "$STATUS_REPORT" '| Lane forecasts | Every active lane names a milestone, forecast deadline, recalibration, and critical-path treatment. Closed lanes record a completion timestamp and no active forecast deadline. Parallel child deadlines remain parallel under one critical-path deadline. |'
-  require_text "$LEDGER" 'An active lane lacks its Lane forecasts fields, a material refresh lacks recalibration, or a `CLOSED` lane lacks `Completed: <UTC ISO8601>; no active forecast deadline.`'
+  require_pattern "$STATUS_REPORT" 'status-report parallel deadlines use one non-additive critical path' "$parallel_rule_pattern"
+  require_text "$STATUS_REPORT" '| Lane forecasts | Every active lane names a milestone, forecast deadline, recalibration, and critical-path treatment. Closed lanes record a completion timestamp instead of a deadline or recalibration. Parallel child deadlines remain parallel under one critical-path deadline. |'
+  require_pattern "$LEDGER" 'ledger active-only recalibration and closed-lane completion rule' 'An[[:space:]]+active[[:space:]]+lane[[:space:]]+lacks[[:space:]]+its[[:space:]]+Lane[[:space:]]+forecasts[[:space:]]+fields[[:space:]]+or[[:space:]]+an[[:space:]]+affected[[:space:]]+active[[:space:]]+lane[[:space:]]+lacks[[:space:]]+recalibration;[[:space:]]+a[[:space:]]+`CLOSED`[[:space:]]+lane[[:space:]]+lacks[[:space:]]+`Completed:[[:space:]]+<UTC[[:space:]]+ISO8601>;[[:space:]]+no[[:space:]]+active[[:space:]]+forecast[[:space:]]+deadline\.`[[:space:]]+or[[:space:]]+retains[[:space:]]+a[[:space:]]+forecast[[:space:]]+deadline/recalibration\.'
 }
 
 assert_lineage_context_contract() {

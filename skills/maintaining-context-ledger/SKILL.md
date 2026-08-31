@@ -128,9 +128,13 @@ source of truth; `latest-status-report.md` projects these fields using
 
 Every non-`CLOSED` lane names its next milestone and forecast deadline. A
 `CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
+A `CLOSED` lane records completion; do not invent or revive a forecast deadline
+or recalibration.
 For an initial forecast, write `Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`.
 
-State dependencies and parallel work. For parallel children, report the single critical-path deadline; child deadlines remain parallel.
+State dependencies and parallel work. For parallel children, report the single
+critical-path deadline; child deadlines remain parallel; never add or sum
+parallel child deadlines into a parent, root, or mission deadline.
 
 Forecast deadlines are forecasts, not promises. They are coordination aids for
 catching stale planning assumptions under the non-malicious-bot principle. They
@@ -163,8 +167,8 @@ Use `### <subject>` subsections when a section grows large enough that a fresh a
 
 Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
 
-Every material ledger refresh recalibrates each affected lane with its prior
-and current deadline, why, and evidence.
+Every material ledger refresh recalibrates each affected active lane with its
+prior and current deadline, why, and evidence.
 
 When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
 
@@ -199,5 +203,9 @@ Reject the ledger if any holds:
 - Headings no longer fit the content.
 - The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
 - The latest status report is missing, lacks a UTC timestamp, predates the last ledger update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
-- An active lane lacks its Lane forecasts fields, a material refresh lacks recalibration, or a `CLOSED` lane lacks `Completed: <UTC ISO8601>; no active forecast deadline.` This is a planning-quality defect: reconcile it alongside safe work; never gate work, authorization, blockers, or status reporting.
+- An active lane lacks its Lane forecasts fields or an affected active lane lacks
+  recalibration; a `CLOSED` lane lacks `Completed: <UTC ISO8601>; no active
+  forecast deadline.` or retains a forecast deadline/recalibration. This is a
+  planning-quality defect: reconcile it alongside safe work; never gate work,
+  authorization, blockers, or status reporting.
 - Secrets, credentials, or unnecessary personal data are recorded.

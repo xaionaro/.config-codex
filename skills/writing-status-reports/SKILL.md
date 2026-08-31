@@ -58,11 +58,15 @@ Use these labels in every multi-lane row and single-lane report.
 
 Every non-`CLOSED` lane names its next milestone and forecast deadline. A
 `CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
+A `CLOSED` lane records completion; do not invent or revive a forecast deadline
+or recalibration.
 For an initial forecast, write `Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`.
 
-Every material status report recalibrates each affected lane with its prior and
-current deadline, why, and evidence. State dependencies and parallel work.
-For parallel children, report the single critical-path deadline; child deadlines remain parallel.
+Every material status report recalibrates each affected active lane with its
+prior and current deadline, why, and evidence. State dependencies and parallel
+work. For parallel children, report the single critical-path deadline; child
+deadlines remain parallel; never add or sum parallel child deadlines into a
+parent, root, or mission deadline.
 
 Forecast deadlines are forecasts, not promises. They are coordination aids for
 catching stale planning assumptions under the non-malicious-bot principle. They
@@ -74,7 +78,7 @@ deadlines alongside safe work.
 | --- | --- |
 | Active lane lacks a milestone or deadline | An active lane missing a named milestone or forecast deadline is corrected alongside safe work. |
 | Forecast deadline was copied without current evidence | A forecast deadline copied without prior/current deadlines, why, and evidence is stale. |
-| Parallel children | For parallel children, report the single critical-path deadline; child deadlines remain parallel. |
+| Parallel children | For parallel children, report the single critical-path deadline; child deadlines remain parallel; never add or sum parallel child deadlines into a parent, root, or mission deadline. |
 | Dependency is paused | A paused dependency names its owner and resume condition; it is not a user blocker. |
 
 ## Multi-Lane Mission Status
@@ -152,4 +156,4 @@ Under time pressure, classify by the lane's next required action. For example: "
 | BLOCKED semantics | A lane unable to make more progress until the user supplies a named input/decision is labeled `BLOCKED` with `owner=user` and an exact unblock action; dependency-only waiting is not `BLOCKED`. |
 | Dependency propagation | If a dependency lane is `BLOCKED` on user input, the dependent lane remains `PAUSED` until its own next required action needs user input. |
 | Status separation | Source-level completion, test E2E, and production E2E are never merged into one status. |
-| Lane forecasts | Every active lane names a milestone, forecast deadline, recalibration, and critical-path treatment. Closed lanes record a completion timestamp and no active forecast deadline. Parallel child deadlines remain parallel under one critical-path deadline. |
+| Lane forecasts | Every active lane names a milestone, forecast deadline, recalibration, and critical-path treatment. Closed lanes record a completion timestamp instead of a deadline or recalibration. Parallel child deadlines remain parallel under one critical-path deadline. |
