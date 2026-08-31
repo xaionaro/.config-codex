@@ -397,6 +397,270 @@ func TestTimeoutPrefixRequiresValidDurationsBeforeClassifyingGitChild(t *testing
 	}
 }
 
+// TestTimeoutLaunchRequiresObservedChild verifies that a timeout-wrapped Git
+// child is visible only when the callback-selected timeout executable actually
+// launches the planner's harmless replacement child.
+//
+// Example: a fake timeout that executes its replacement child exposes a worker
+// Git commit, while fake timeout outcomes that accept or reject a signal
+// without launching the child remain ordinary commands.
+func TestTimeoutLaunchRequiresObservedChild(t *testing.T) {
+	t.Parallel()
+
+	timeoutDirectory := t.TempDir()
+	timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+	timeoutScript := `#!/bin/sh
+set -eu
+
+signal=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --signal)
+      signal="${2-}"
+      shift 2
+      ;;
+    --signal=*)
+      signal="${1#--signal=}"
+      shift
+      ;;
+    -s)
+      signal="${2-}"
+      shift 2
+      ;;
+    -s*)
+      signal="${1#-s}"
+      shift
+      ;;
+    --preserve-status|--foreground|--verbose|-p|-f|-v)
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      duration="$1"
+      shift
+      break
+      ;;
+  esac
+done
+
+[ "${duration:-}" = 5 ] || exit 125
+case "$signal" in
+  0)
+    exit 0
+    ;;
+  invalid-signal)
+    exit 125
+    ;;
+esac
+
+case "${1:-}" in
+  */printf)
+    exec "$@"
+    ;;
+  *)
+    exit 126
+    ;;
+esac
+`
+	if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+		t.Fatalf("write fake timeout: %v", err)
+	}
+	nonLaunchingDirectory := t.TempDir()
+	nonLaunchingPath := filepath.Join(nonLaunchingDirectory, "timeout")
+	if err := os.WriteFile(nonLaunchingPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write accepting non-launching timeout: %v", err)
+	}
+	redirectOutput := filepath.Join(t.TempDir(), "original-child-output")
+
+	type timeoutLaunchFact struct {
+		Segment int      `json:"segment"`
+		Prefix  []string `json:"prefix"`
+	}
+	for _, testCase := range []struct {
+		name           string
+		command        string
+		cwd            string
+		commandPath    string
+		decision       DecisionKind
+		code           DiagnosticCode
+		wantLaunches   []timeoutLaunchFact
+		redirectOutput string
+	}{
+		{
+			name:        "launches replacement child",
+			command:     "timeout --signal TERM 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionDeny,
+			code:        CodeWorkerGitOwnershipDenied,
+			wantLaunches: []timeoutLaunchFact{{
+				Segment: 1,
+				Prefix:  []string{"timeout", "--signal", "TERM", "5"},
+			}},
+		},
+		{
+			name:     "slash qualified literal resolves from cwd",
+			command:  "./timeout --signal TERM 5 git commit -m note",
+			cwd:      timeoutDirectory,
+			decision: DecisionDeny,
+			code:     CodeWorkerGitOwnershipDenied,
+			wantLaunches: []timeoutLaunchFact{{
+				Segment: 1,
+				Prefix:  []string{"./timeout", "--signal", "TERM", "5"},
+			}},
+		},
+		{
+			name:           "probe does not run original redirects",
+			command:        "timeout --signal TERM 5 git commit -m note > " + redirectOutput,
+			commandPath:    timeoutDirectory,
+			decision:       DecisionDeny,
+			code:           CodeWorkerGitOwnershipDenied,
+			redirectOutput: redirectOutput,
+			wantLaunches: []timeoutLaunchFact{{
+				Segment: 1,
+				Prefix:  []string{"timeout", "--signal", "TERM", "5"},
+			}},
+		},
+		{
+			name:        "relative callback path stays opaque",
+			command:     "timeout --signal TERM 5 git commit -m note",
+			commandPath: "relative:" + timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "slash literal with relative cwd stays opaque",
+			command:     "./timeout --signal TERM 5 git commit -m note",
+			cwd:         "relative-cwd",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:     "missing callback path stays opaque",
+			command:  "timeout --signal TERM 5 git commit -m note",
+			decision: DecisionAllow,
+		},
+		{
+			name:        "signal zero accepts without launch",
+			command:     "timeout --signal 0 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "invalid signal does not launch",
+			command:     "timeout --signal invalid-signal 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "environment wrapper stays opaque",
+			command:     "env timeout --signal TERM 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "assignment stays opaque",
+			command:     "TIMEOUT_MODE=test timeout --signal TERM 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "transparent wrapper stays opaque",
+			command:     "nice timeout --signal TERM 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "dynamic signal stays opaque",
+			command:     "timeout --signal '$TIMEOUT_SIGNAL' 5 git commit -m note",
+			commandPath: timeoutDirectory,
+			decision:    DecisionAllow,
+		},
+		{
+			name:        "accepting timeout does not launch",
+			command:     "timeout --signal TERM 5 git commit -m note",
+			commandPath: nonLaunchingDirectory,
+			decision:    DecisionAllow,
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			request := activeWorker(testCase.command)
+			if testCase.cwd != "" {
+				request.CWD = testCase.cwd
+			}
+			request.CommandPath = testCase.commandPath
+			result := Classify(request)
+			if result.Decision != testCase.decision {
+				t.Errorf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.code != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.code) {
+				t.Errorf("diagnostic=%#v, want code %q", result.Diagnostic, testCase.code)
+			}
+			if testCase.code == "" && result.Diagnostic != nil {
+				t.Errorf("diagnostic=%#v, want none", result.Diagnostic)
+			}
+
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			var output struct {
+				TimeoutLaunches []timeoutLaunchFact `json:"timeout_launches"`
+			}
+			if err := json.Unmarshal(encoded, &output); err != nil {
+				t.Fatalf("decode result: %v", err)
+			}
+			if len(output.TimeoutLaunches) != len(testCase.wantLaunches) {
+				t.Errorf("timeout launches=%#v, want %#v", output.TimeoutLaunches, testCase.wantLaunches)
+				return
+			}
+			for index, want := range testCase.wantLaunches {
+				got := output.TimeoutLaunches[index]
+				if got.Segment != want.Segment || strings.Join(got.Prefix, "\x00") != strings.Join(want.Prefix, "\x00") {
+					t.Errorf("timeout launch[%d]=%#v, want %#v", index, got, want)
+				}
+			}
+			if testCase.redirectOutput != "" {
+				if _, err := os.Stat(testCase.redirectOutput); !os.IsNotExist(err) {
+					t.Errorf("original redirect output=%q err=%v, want no file", testCase.redirectOutput, err)
+				}
+			}
+		})
+	}
+}
+
+// TestInactiveTimeoutDoesNotProbeCallbackExecutable verifies that ordinary
+// inactive work never invokes a callback-selected timeout executable.
+//
+// Example: an inactive `timeout 5 git status` remains transparent even when
+// its callback PATH resolves a literal timeout binary.
+func TestInactiveTimeoutDoesNotProbeCallbackExecutable(t *testing.T) {
+	t.Parallel()
+
+	timeoutDirectory := t.TempDir()
+	timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+	sentinelPath := timeoutPath + ".sentinel"
+	timeoutScript := "#!/bin/sh\n: > \"$0.sentinel\"\nexit 0\n"
+	if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+		t.Fatalf("write sentinel timeout: %v", err)
+	}
+
+	request := activeWorker("timeout 5 git status")
+	request.Marker = MarkerInactive
+	request.CommandPath = timeoutDirectory
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Diagnostic != nil {
+		t.Fatalf("decision=%q diagnostic=%#v, want ordinary allow", result.Decision, result.Diagnostic)
+	}
+	if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
+		t.Fatalf("timeout probe sentinel=%q err=%v, want absent", sentinelPath, err)
+	}
+}
+
 // TestClassifyOrdinaryShellFormsDoNotBecomePermissionBoundaries verifies that
 // syntax and launcher spelling alone do not turn routine work into a denial.
 // Concrete destructive targets remain independently detectable.
@@ -2417,6 +2681,7 @@ func TestActiveGitDefersToProviderAdapters(t *testing.T) {
 								Provider:      provider,
 								Role:          role,
 								CWD:           "/tmp",
+								CommandPath:   callbackPathForTimeoutTests(),
 								Marker:        MarkerActive,
 								ActiveSession: "test-session",
 								Command:       testCase.command,
@@ -5233,10 +5498,19 @@ func activeWorker(command string) Request {
 		Provider:      ProviderCodex,
 		Role:          RoleWorker,
 		CWD:           "/tmp",
+		CommandPath:   callbackPathForTimeoutTests(),
 		Marker:        MarkerActive,
 		ActiveSession: "test-session",
 		Command:       command,
 	}
+}
+
+func callbackPathForTimeoutTests() string {
+	timeoutPath, _ := exec.LookPath("timeout")
+	if timeoutPath == "" {
+		return ""
+	}
+	return filepath.Dir(timeoutPath)
 }
 
 // TestCodexLifecycleTargetCandidatesDeferWithoutLexicalAuthority keeps

@@ -1028,11 +1028,12 @@ plan_input="$(
     --arg marker "$plan_marker_state" \
     --arg active_session "$session_id" \
     --arg command "$command" \
+    --arg command_path "$CODEX_COMMAND_PATH" \
     --arg approved_root_1 "$CODEX_APPROVED_REPO_ROOT_1" \
     --arg approved_root_2 "$CODEX_APPROVED_REPO_ROOT_2" \
     --arg approved_root_3 "$CODEX_APPROVED_REPO_ROOT_3" \
     --args \
-    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
+    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
     "${syntax_eci_markers[@]}"
 )"
 if [ "$CODEX_PLAN_CURRENT_SOURCE" = true ]; then
@@ -1208,6 +1209,32 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   PLAN_GIT_CLONE_LAUNCH_CLASS="$(jq -r '.git_clone_launch.class' <<<"${plan_output:-}")"
   PLAN_GIT_CLONE_GIT_EXECUTABLE="$(jq -r '.git_clone_launch.git_executable' <<<"${plan_output:-}")"
   PLAN_GIT_CLONE_ENV_EXECUTABLE="$(jq -r '.git_clone_launch.env_executable // ""' <<<"${plan_output:-}")"
+fi
+
+# planner_timeout_launches_shape accepts only the planner's observed timeout
+# child-launch facts. Bash uses these facts as coordinates; it does not rebuild
+# timeout's option or signal behavior from a local compatibility table.
+planner_timeout_launches_shape() {
+  [ "${plan_status:-64}" -eq 0 ] || [ "${plan_status:-64}" -eq 3 ] || return 1
+  jq -e '
+    def exact_keys($expected): (keys | sort) == $expected;
+    def positive_integer: type == "number" and floor == . and . >= 1 and . <= 8;
+    def bounded_string: type == "string" and length > 0 and length <= 4096;
+    def launch_fact:
+      type == "object" and
+      exact_keys(["prefix", "segment"]) and
+      (.segment | positive_integer) and
+      (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; bounded_string));
+    type == "object" and
+    (.decision == "allow" or .decision == "defer") and
+    (.diagnostic == null) and
+    ((.timeout_launches // []) | type == "array" and all(.[]; launch_fact))
+  ' <<<"${plan_output:-}" >/dev/null 2>&1
+}
+
+PLAN_TIMEOUT_LAUNCHES='[]'
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && planner_timeout_launches_shape; then
+  PLAN_TIMEOUT_LAUNCHES="$(jq -c '.timeout_launches // []' <<<"${plan_output:-}")"
 fi
 
 # planner_current_ledger_append_shape accepts the planner's concrete resolved
@@ -7696,8 +7723,9 @@ git_mutation_specs() {
   # This resolver enriches known Git targets. It is not a permission parser:
   # unfamiliar spelling or shell topology is advisory and must not turn
   # ordinary repository work into a denial.
-  local command_text="${1:-$command}"
-  python3 - "$command_text" "${cwd:-$PWD}" <<'PY'
+  local command_text="${1:-$command}" timeout_launches="${PLAN_TIMEOUT_LAUNCHES:-[]}"
+  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_launches" <<'PY'
+import json
 import os
 import re
 import shlex
@@ -7705,6 +7733,10 @@ import sys
 
 command = sys.argv[1]
 cwd = sys.argv[2] or os.getcwd()
+try:
+    timeout_launches = json.loads(sys.argv[3])
+except (IndexError, TypeError, ValueError):
+    raise SystemExit(0)
 MUTATING_WORKTREE = {"add", "remove", "move", "prune", "lock", "unlock", "repair"}
 SEPARATORS = {";", "&", "&&", "|", "||"}
 UNRESOLVED_TOPOLOGY = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
@@ -7718,97 +7750,23 @@ def resolve(path, base):
     return os.path.normpath(os.path.join(base, path))
 
 
-def transparent_timeout_command_index(tokens, index):
+def transparent_timeout_command_index(tokens, index, segment_index):
     if index >= len(tokens) or os.path.basename(tokens[index]) != "timeout":
         return index
-    index += 1
-    duration = re.compile(r"\+?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?[smhd]?")
-    def valid_duration(value):
-        return duration.fullmatch(value) is not None
-    def valid_signal_number(value):
-        if not value:
-            return False
-        number = 0
-        for character in value:
-            if character < "0" or character > "9":
-                return False
-            number = number * 10 + ord(character) - ord("0")
-            if number > 64:
-                return False
-        return number > 0
-    def valid_signal(value):
-        if not value:
-            return False
-        signal = value.upper()
-        if signal.startswith("SIG"):
-            signal = signal[3:]
-        if valid_signal_number(signal):
-            return True
-        if signal in {"ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "EMT", "FPE", "HUP", "ILL", "INFO", "INT", "IO", "IOT", "KILL", "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP", "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ"}:
-            return True
-        for prefix in {"RTMIN+", "RTMAX-"}:
-            if signal.startswith(prefix):
-                return valid_signal_number(signal[len(prefix):])
-        return False
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
-            index += 1
-            break
-        if token in {"--preserve-status", "--foreground", "--verbose"}:
-            index += 1
+    for launch in timeout_launches:
+        if not isinstance(launch, dict) or launch.get("segment") != segment_index:
             continue
-        if token in {"--kill-after", "--signal"}:
-            if index + 1 >= len(tokens):
-                return None
-            if token == "--kill-after" and not valid_duration(tokens[index + 1]):
-                return None
-            if token == "--signal" and not valid_signal(tokens[index + 1]):
-                return None
-            index += 2
+        prefix = launch.get("prefix")
+        if not isinstance(prefix, list) or not all(isinstance(value, str) for value in prefix):
             continue
-        if token.startswith("--kill-after="):
-            if not valid_duration(token.split("=", 1)[1]):
-                return None
-            index += 1
+        if len(prefix) < 2 or index + len(prefix) >= len(tokens):
             continue
-        if token.startswith("--signal="):
-            if not valid_signal(token.split("=", 1)[1]):
-                return None
-            index += 1
-            continue
-        if token.startswith("--"):
-            return None
-        if token.startswith("-") and token != "-":
-            options = token[1:]
-            while options:
-                option, options = options[0], options[1:]
-                if option in {"p", "f", "v"}:
-                    continue
-                if option not in {"k", "s"}:
-                    return None
-                argument = options[1:] if options.startswith("=") else options
-                if not argument:
-                    if index + 1 >= len(tokens):
-                        return None
-                    index += 1
-                    argument = tokens[index]
-                if option == "k" and not valid_duration(argument):
-                    return None
-                if option == "s" and not valid_signal(argument):
-                    return None
-                options = ""
-            index += 1
-            continue
-        break
-    # `timeout` needs a duration and a launched command.  An incomplete or
-    # unfamiliar wrapper stays advisory instead of becoming a parser denial.
-    if index + 1 >= len(tokens) or not valid_duration(tokens[index]):
-        return None
-    return index + 1
+        if tokens[index:index + len(prefix)] == prefix:
+            return index + len(prefix)
+    return None
 
 
-def segment_spec(tokens):
+def segment_spec(tokens, segment_index):
     if not tokens:
         return None
 
@@ -7841,7 +7799,7 @@ def segment_spec(tokens):
                 return None
             break
 
-    index = transparent_timeout_command_index(tokens, index)
+    index = transparent_timeout_command_index(tokens, index, segment_index)
     if index is None:
         return None
     if index >= len(tokens) or os.path.basename(tokens[index]) != "git":
@@ -7948,8 +7906,8 @@ for token in tokens + [";"]:
     else:
         current.append(token)
 
-for segment in segments:
-    spec = segment_spec(segment)
+for segment_index, segment in enumerate(segments, 1):
+    spec = segment_spec(segment, segment_index)
     if spec:
         print(spec[0])
         print(spec[1])
@@ -7967,15 +7925,20 @@ git_mutation_cross_scope_detail() {
 }
 
 git_mutation_broad_effect_detail() {
-  local target_repo="$1" command_text="${2:-$command}" command_cwd="${3:-$cwd}"
+  local target_repo="$1" command_text="${2:-$command}" command_cwd="${3:-$cwd}" timeout_launches="${PLAN_TIMEOUT_LAUNCHES:-[]}"
 
-  python3 - "$command_text" "$target_repo" "$command_cwd" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_launches" <<'PY'
+import json
 import os
 import re
 import shlex
 import sys
 
-command, repo, cwd = sys.argv[1:]
+command, repo, cwd = sys.argv[1:4]
+try:
+    timeout_launches = json.loads(sys.argv[4])
+except (IndexError, TypeError, ValueError):
+    raise SystemExit(1)
 try:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -8008,95 +7971,23 @@ def resolve(path, base):
     return os.path.normpath(os.path.join(base, path))
 
 
-def transparent_timeout_command_index(tokens, index):
+def transparent_timeout_command_index(tokens, index, segment_index):
     if index >= len(tokens) or os.path.basename(tokens[index]) != "timeout":
         return index
-    index += 1
-    duration = re.compile(r"\+?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?[smhd]?")
-    def valid_duration(value):
-        return duration.fullmatch(value) is not None
-    def valid_signal_number(value):
-        if not value:
-            return False
-        number = 0
-        for character in value:
-            if character < "0" or character > "9":
-                return False
-            number = number * 10 + ord(character) - ord("0")
-            if number > 64:
-                return False
-        return number > 0
-    def valid_signal(value):
-        if not value:
-            return False
-        signal = value.upper()
-        if signal.startswith("SIG"):
-            signal = signal[3:]
-        if valid_signal_number(signal):
-            return True
-        if signal in {"ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "EMT", "FPE", "HUP", "ILL", "INFO", "INT", "IO", "IOT", "KILL", "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP", "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ"}:
-            return True
-        for prefix in {"RTMIN+", "RTMAX-"}:
-            if signal.startswith(prefix):
-                return valid_signal_number(signal[len(prefix):])
-        return False
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
-            index += 1
-            break
-        if token in {"--preserve-status", "--foreground", "--verbose"}:
-            index += 1
+    for launch in timeout_launches:
+        if not isinstance(launch, dict) or launch.get("segment") != segment_index:
             continue
-        if token in {"--kill-after", "--signal"}:
-            if index + 1 >= len(tokens):
-                return None
-            if token == "--kill-after" and not valid_duration(tokens[index + 1]):
-                return None
-            if token == "--signal" and not valid_signal(tokens[index + 1]):
-                return None
-            index += 2
+        prefix = launch.get("prefix")
+        if not isinstance(prefix, list) or not all(isinstance(value, str) for value in prefix):
             continue
-        if token.startswith("--kill-after="):
-            if not valid_duration(token.split("=", 1)[1]):
-                return None
-            index += 1
+        if len(prefix) < 2 or index + len(prefix) >= len(tokens):
             continue
-        if token.startswith("--signal="):
-            if not valid_signal(token.split("=", 1)[1]):
-                return None
-            index += 1
-            continue
-        if token.startswith("--"):
-            return None
-        if token.startswith("-") and token != "-":
-            options = token[1:]
-            while options:
-                option, options = options[0], options[1:]
-                if option in {"p", "f", "v"}:
-                    continue
-                if option not in {"k", "s"}:
-                    return None
-                argument = options[1:] if options.startswith("=") else options
-                if not argument:
-                    if index + 1 >= len(tokens):
-                        return None
-                    index += 1
-                    argument = tokens[index]
-                if option == "k" and not valid_duration(argument):
-                    return None
-                if option == "s" and not valid_signal(argument):
-                    return None
-                options = ""
-            index += 1
-            continue
-        break
-    if index + 1 >= len(tokens) or not valid_duration(tokens[index]):
-        return None
-    return index + 1
+        if tokens[index:index + len(prefix)] == prefix:
+            return index + len(prefix)
+    return None
 
 
-def git_add_whole_worktree_selector(segment):
+def git_add_whole_worktree_selector(segment, segment_index):
     index = 0
     while index < len(segment) and assignment.match(segment[index]):
         index += 1
@@ -8112,7 +8003,7 @@ def git_add_whole_worktree_selector(segment):
             if segment[index].startswith("-"):
                 return None
             break
-    index = transparent_timeout_command_index(segment, index)
+    index = transparent_timeout_command_index(segment, index, segment_index)
     if index is None:
         return None
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
@@ -8175,7 +8066,7 @@ def git_add_whole_worktree_selector(segment):
     return None
 
 
-def broad_reset(segment):
+def broad_reset(segment, segment_index):
     index = 0
     while index < len(segment) and assignment.match(segment[index]):
         index += 1
@@ -8183,7 +8074,7 @@ def broad_reset(segment):
         index += 1
         while index < len(segment) and assignment.match(segment[index]):
             index += 1
-    index = transparent_timeout_command_index(segment, index)
+    index = transparent_timeout_command_index(segment, index, segment_index)
     if index is None:
         return False
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
@@ -8218,12 +8109,12 @@ def broad_reset(segment):
         return "reset-index"
     return False
 
-for segment in segments:
-    effect = broad_reset(segment)
+for segment_index, segment in enumerate(segments, 1):
+    effect = broad_reset(segment, segment_index)
     if effect:
         print("effect=%s target=%s" % (effect, repo))
         raise SystemExit(0)
-    selector = git_add_whole_worktree_selector(segment)
+    selector = git_add_whole_worktree_selector(segment, segment_index)
     if selector:
         print("effect=whole-worktree-staging target=%s selector=%s" % (repo, selector))
         raise SystemExit(0)

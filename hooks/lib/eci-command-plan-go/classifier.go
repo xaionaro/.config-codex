@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -11,17 +12,22 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 )
 
 const (
-	maxCommandBytes         = 16 * 1024
-	maxSegments             = 8
-	maxArguments            = 128
-	maxArgumentBytes        = 4 * 1024
-	maxWrapperDepth         = 8
-	maxProofAnchors         = 128
-	maxActiveControlEntries = 128
+	maxCommandBytes             = 16 * 1024
+	maxSegments                 = 8
+	maxArguments                = 128
+	maxArgumentBytes            = 4 * 1024
+	maxWrapperDepth             = 8
+	maxProofAnchors             = 128
+	maxActiveControlEntries     = 128
+	timeoutProbeTimeout         = 150 * time.Millisecond
+	timeoutProbeWaitDelay       = 25 * time.Millisecond
+	timeoutProbeChild           = "/usr/bin/printf"
+	timeoutProbeAcknowledgement = "eci-timeout-child-launch-v1"
 )
 
 // Provider identifies the provider adapter requesting command-plan admission.
@@ -200,11 +206,23 @@ type Request struct {
 	Provider      Provider `json:"provider"`
 	Role          Role     `json:"role"`
 	CWD           string   `json:"cwd"`
+	CommandPath   string   `json:"command_path,omitempty"`
 	Marker        Marker   `json:"marker"`
 	ActiveSession string   `json:"active_session"`
 	Command       string   `json:"command"`
 	ActiveMarkers []string `json:"active_markers"`
 	ApprovedRoots []string `json:"approved_roots"`
+}
+
+// TimeoutLaunch records the callback-selected timeout prefix whose harmless
+// replacement child was observed running before the planner examines its
+// original child argv.
+//
+// Example: `timeout --signal TERM 5 git status` records the prefix
+// ["timeout", "--signal", "TERM", "5"] for its command segment.
+type TimeoutLaunch struct {
+	Segment int      `json:"segment"`
+	Prefix  []string `json:"prefix"`
 }
 
 // Diagnostic describes one denied command-plan coordinate and remediation.
@@ -277,6 +295,7 @@ type Result struct {
 	Diagnostic           *Diagnostic         `json:"diagnostic,omitempty"`
 	HookSpecificOutput   *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 	LedgerRedirectAppend bool                `json:"ledger_redirect_append,omitempty"`
+	TimeoutLaunches      []TimeoutLaunch     `json:"timeout_launches,omitempty"`
 	Plan                 *PlanTopology       `json:"plan,omitempty"`
 }
 
@@ -724,6 +743,12 @@ func Classify(request Request) Result {
 	}
 
 	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
+	var timeoutLaunches []TimeoutLaunch
+	if request.Marker == MarkerActive {
+		// Observed launches are active-marker facts; inactive work stays
+		// transparent without probing a callback-selected executable.
+		timeoutLaunches = timeoutLaunchesForPlan(request, parsed)
+	}
 	decision := DecisionAllow
 	ledgerRedirectAppend := false
 	for index, current := range parsed.segments {
@@ -732,6 +757,7 @@ func Classify(request Request) Result {
 			current,
 			index+1,
 			wholeSingleSegmentPlan,
+			timeoutLaunches,
 			&ledgerRedirectAppend,
 		)
 		if diagnostic != nil {
@@ -745,7 +771,9 @@ func Classify(request Request) Result {
 				decision = DecisionDefer
 				continue
 			}
-			return withCompoundPlan(deniedResult(request, *diagnostic), parsed)
+			result := withCompoundPlan(deniedResult(request, *diagnostic), parsed)
+			result.TimeoutLaunches = timeoutLaunches
+			return result
 		}
 		if segmentDecision == DecisionDefer {
 			decision = DecisionDefer
@@ -757,14 +785,15 @@ func Classify(request Request) Result {
 		// adapter to validate the complete raw topology before it can execute.
 		decision = DecisionDefer
 	}
-	gitCloneLaunch := gitCloneSourceAcquisitionLaunchForPlan(request, parsed, decision)
-	capabilities := capabilitiesForPlan(request, parsed, decision, gitCloneLaunch)
+	gitCloneLaunch := gitCloneSourceAcquisitionLaunchForPlan(request, parsed, decision, timeoutLaunches)
+	capabilities := capabilitiesForPlan(request, parsed, decision, gitCloneLaunch, timeoutLaunches)
 	return Result{
 		Decision:             decision,
 		Capabilities:         capabilities,
 		GitCloneLaunch:       gitCloneLaunch,
 		DeferredRoute:        deferredRouteForPlan(request, parsed, decision, capabilities),
 		LedgerRedirectAppend: ledgerRedirectAppend,
+		TimeoutLaunches:      timeoutLaunches,
 		Plan:                 compoundPlanTopology(parsed),
 	}
 }
@@ -823,6 +852,7 @@ func capabilitiesForPlan(
 	parsed plan,
 	decision DecisionKind,
 	gitCloneLaunch *GitCloneLaunch,
+	timeoutLaunches []TimeoutLaunch,
 ) []Capability {
 	if request.Marker != MarkerActive || decision != DecisionAllow ||
 		len(parsed.segments) != 1 || len(parsed.operators) != 0 {
@@ -832,7 +862,7 @@ func capabilitiesForPlan(
 		return []Capability{CapabilityGitCloneSourceAcquisition}
 	}
 	original := parsed.segments[0].argv
-	unwrapped, diagnostic := unwrapWithMetadata(original, 1)
+	unwrapped, diagnostic := unwrapWithMetadata(original, 1, timeoutLaunches)
 	if diagnostic != nil {
 		return nil
 	}
@@ -851,13 +881,14 @@ func gitCloneSourceAcquisitionLaunchForPlan(
 	request Request,
 	parsed plan,
 	decision DecisionKind,
+	timeoutLaunches []TimeoutLaunch,
 ) *GitCloneLaunch {
 	if request.Marker != MarkerActive || decision != DecisionAllow ||
 		len(parsed.segments) != 1 || len(parsed.operators) != 0 {
 		return nil
 	}
 	original := parsed.segments[0].argv
-	unwrapped, diagnostic := unwrapWithMetadata(original, 1)
+	unwrapped, diagnostic := unwrapWithMetadata(original, 1, timeoutLaunches)
 	if diagnostic != nil {
 		return nil
 	}
@@ -1410,11 +1441,191 @@ func isFileDescriptorDuplicationTarget(value string) bool {
 	return value == "-" || isDecimalFileDescriptor(value)
 }
 
+// timeoutLaunchesForPlan probes only direct literal timeout segments and
+// records the prefixes whose replacement child visibly ran.
+//
+// Example: a direct `timeout 5 git status` may record segment one, while
+// `env timeout 5 git status` does not probe or expose a child.
+func timeoutLaunchesForPlan(request Request, parsed plan) []TimeoutLaunch {
+	launches := make([]TimeoutLaunch, 0, len(parsed.segments))
+	for index, current := range parsed.segments {
+		launch, ok := timeoutLaunchForSegment(request, current, index+1)
+		if ok {
+			launches = append(launches, launch)
+		}
+	}
+	if len(launches) == 0 {
+		return nil
+	}
+	return launches
+}
+
+// timeoutLaunchForSegment records one direct timeout prefix only after the
+// callback-selected executable runs the harmless probe child.
+//
+// Example: `timeout --signal TERM 5 git status` can record its prefix, while a
+// leading assignment or an env wrapper remains an ordinary opaque command.
+func timeoutLaunchForSegment(
+	request Request,
+	current segment,
+	segmentIndex int,
+) (TimeoutLaunch, bool) {
+	if len(current.argv) == 0 || assignmentName(current.argv[0]) != "" ||
+		filepath.Base(current.argv[0].value) != "timeout" ||
+		!timeoutSegmentIsLiteral(current.command) {
+		return TimeoutLaunch{}, false
+	}
+	prefix, _, ok := timeoutPrefix(current.argv)
+	if !ok {
+		return TimeoutLaunch{}, false
+	}
+	executable, ok := resolveTimeoutExecutable(current.argv[0].value, request.CWD, request.CommandPath)
+	if !ok || !timeoutExecutableLaunchesProbeChild(executable, prefix) {
+		return TimeoutLaunch{}, false
+	}
+
+	values := make([]string, len(prefix))
+	for index, argument := range prefix {
+		values[index] = argument.value
+	}
+	return TimeoutLaunch{Segment: segmentIndex, Prefix: values}, true
+}
+
+// timeoutSegmentIsLiteral conservatively rejects shell forms whose values can
+// expand before timeout receives its argv. Quoted literal spellings containing
+// these characters also stay opaque, which preserves ordinary behavior.
+//
+// Example: `timeout --signal '$SIGNAL' 5 git status` receives no launch fact.
+func timeoutSegmentIsLiteral(command string) bool {
+	return !strings.ContainsAny(command, "$`\\*?[]{}~")
+}
+
+// resolveTimeoutExecutable resolves a direct timeout literal from the original
+// callback path or from the callback cwd without consulting the hook-mutated
+// process PATH.
+//
+// Example: bare `timeout` uses Request.CommandPath, while `./timeout` resolves
+// under Request.CWD.
+func resolveTimeoutExecutable(literal, cwd, commandPath string) (string, bool) {
+	switch {
+	case literal == "timeout":
+		if commandPath == "" {
+			return "", false
+		}
+		entries := strings.Split(commandPath, ":")
+		for _, entry := range entries {
+			if !filepath.IsAbs(entry) {
+				return "", false
+			}
+		}
+		for _, entry := range entries {
+			if executable, ok := resolvedExecutable(filepath.Join(entry, literal)); ok {
+				return executable, true
+			}
+		}
+		return "", false
+	case filepath.IsAbs(literal):
+		return resolvedExecutable(literal)
+	case strings.ContainsRune(literal, filepath.Separator):
+		if !filepath.IsAbs(cwd) {
+			return "", false
+		}
+		return resolvedExecutable(filepath.Join(cwd, literal))
+	default:
+		return "", false
+	}
+}
+
+// resolvedExecutable returns an existing regular executable after filesystem
+// resolution so a probe invokes the same target selected by a literal path.
+//
+// Example: a symlinked timeout path resolves to its executable target.
+func resolvedExecutable(path string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !filepath.IsAbs(resolved) {
+		return "", false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return "", false
+	}
+	return filepath.Clean(resolved), true
+}
+
+// timeoutExecutableLaunchesProbeChild runs a short bounded replacement-child
+// probe and reports whether the child, rather than the timeout executable's
+// exit status, acknowledged its launch.
+//
+// Example: a timeout implementation that exits zero without invoking its child
+// returns false.
+func timeoutExecutableLaunchesProbeChild(executable string, prefix []token) bool {
+	probeChild, ok := resolvedExecutable(timeoutProbeChild)
+	if !ok || len(prefix) < 2 {
+		return false
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return false
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutProbeTimeout)
+	defer cancel()
+	arguments := make([]string, 0, len(prefix)+2)
+	for _, argument := range prefix[1:] {
+		arguments = append(arguments, argument.value)
+	}
+	arguments = append(arguments, probeChild, "%s", timeoutProbeAcknowledgement)
+	command := exec.CommandContext(ctx, executable, arguments...)
+	command.Stdout = writer
+	command.Stderr = io.Discard
+	command.WaitDelay = timeoutProbeWaitDelay
+	if err := command.Start(); err != nil {
+		return false
+	}
+	if err := writer.Close(); err != nil {
+		cancel()
+		_ = command.Wait()
+		return false
+	}
+
+	acknowledgement := make(chan bool, 1)
+	go func() {
+		buffer := make([]byte, len(timeoutProbeAcknowledgement))
+		_, readErr := io.ReadFull(reader, buffer)
+		acknowledgement <- readErr == nil && string(buffer) == timeoutProbeAcknowledgement
+	}()
+	completed := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(completed)
+	}()
+
+	select {
+	case observed := <-acknowledgement:
+		cancel()
+		<-completed
+		return observed
+	case <-ctx.Done():
+		<-completed
+		return false
+	case <-completed:
+		select {
+		case observed := <-acknowledgement:
+			return observed
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 func inspectSegment(
 	request Request,
 	current segment,
 	segmentIndex int,
 	wholeSingleSegmentPlan bool,
+	timeoutLaunches []TimeoutLaunch,
 	ledgerRedirectAppend *bool,
 ) (DecisionKind, *Diagnostic) {
 	if len(current.argv) == 0 {
@@ -1464,7 +1675,7 @@ func inspectSegment(
 		return DecisionAllow, nil
 	}
 
-	unwrapped, diagnostic := unwrapWithMetadata(argvForUnwrap, segmentIndex)
+	unwrapped, diagnostic := unwrapWithMetadata(argvForUnwrap, segmentIndex, timeoutLaunches)
 	if diagnostic != nil {
 		// Wrapper option spelling and an incomplete wrapper do not identify a
 		// concrete target. Leave those ordinary forms to the invoked shell.
@@ -2739,7 +2950,7 @@ type unwrappedCommand struct {
 //
 // Example: env NAME=value cat file returns the cat argv.
 func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
-	result, diagnostic := unwrapWithMetadata(argv, segmentIndex)
+	result, diagnostic := unwrapWithMetadata(argv, segmentIndex, nil)
 	if diagnostic != nil {
 		return nil, diagnostic
 	}
@@ -2750,7 +2961,11 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 // transparent wrapper changed the child environment before it starts.
 //
 // Example: exec env NAME=value tool returns tool with hasEnvironment set.
-func unwrapWithMetadata(argv []token, segmentIndex int) (unwrappedCommand, *Diagnostic) {
+func unwrapWithMetadata(
+	argv []token,
+	segmentIndex int,
+	timeoutLaunches []TimeoutLaunch,
+) (unwrappedCommand, *Diagnostic) {
 	current := argv
 	hasEnvironment := false
 	hasTransparentWrapper := false
@@ -2793,9 +3008,16 @@ func unwrapWithMetadata(argv []token, segmentIndex int) (unwrappedCommand, *Diag
 			}
 			current = child
 		case "timeout":
-			child, diagnostic := unwrapTimeout(current, segmentIndex)
+			child, diagnostic := unwrapTimeout(current, segmentIndex, timeoutLaunches)
 			if diagnostic != nil {
 				return unwrappedCommand{}, diagnostic
+			}
+			if len(child) == 0 {
+				return unwrappedCommand{
+					argv:                  current,
+					hasEnvironment:        hasEnvironment,
+					hasTransparentWrapper: hasTransparentWrapper,
+				}, nil
 			}
 			current = child
 		case "time":
@@ -3125,12 +3347,58 @@ func unwrapNice(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 	return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
 }
 
-// unwrapTimeout returns timeout's child only after every option and duration
-// that determines whether timeout can launch that child is definitely valid.
+// unwrapTimeout returns timeout's child only when the exact prefix has a
+// matching observed-launch fact; every other timeout form stays opaque.
 //
-// Example: timeout -p --kill-after=1s 5 git status returns git status, while
-// timeout not-a-duration git status has no planner-visible child.
-func unwrapTimeout(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+// Example: a recorded `timeout --signal TERM 5` prefix exposes its child,
+// while the same literal prefix without a child acknowledgement remains opaque.
+func unwrapTimeout(
+	argv []token,
+	segmentIndex int,
+	timeoutLaunches []TimeoutLaunch,
+) ([]token, *Diagnostic) {
+	prefix, child, ok := timeoutPrefix(argv)
+	if !ok || !timeoutLaunchMatches(timeoutLaunches, segmentIndex, prefix) {
+		return nil, nil
+	}
+	return child, nil
+}
+
+// timeoutLaunchMatches reports whether one planner fact has the same segment
+// and literal prefix as the timeout argv currently being unwrapped.
+//
+// Example: a segment-one fact for ["timeout", "5"] does not match a
+// segment-two timeout or a different duration.
+func timeoutLaunchMatches(
+	launches []TimeoutLaunch,
+	segmentIndex int,
+	prefix []token,
+) bool {
+	for _, launch := range launches {
+		if launch.Segment != segmentIndex || len(launch.Prefix) != len(prefix) {
+			continue
+		}
+		matched := true
+		for index, argument := range prefix {
+			if launch.Prefix[index] != argument.value {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+// timeoutPrefix returns the literal timeout prefix through its duration and
+// the original child argv only for a structurally complete direct timeout
+// invocation. Signal validity remains runtime behavior for the probe.
+//
+// Example: `timeout --signal TERM 5 git status` returns the four-token prefix
+// and `git status` child, while an unknown option returns no prefix.
+func timeoutPrefix(argv []token) ([]token, []token, bool) {
 	index := 1
 	for index < len(argv) {
 		value := argv[index].value
@@ -3147,36 +3415,36 @@ func unwrapTimeout(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 			continue
 		case value == "--kill-after", value == "--signal":
 			if index+1 >= len(argv) {
-				return nil, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+				return nil, nil, false
 			}
 			if value == "--kill-after" && !isTimeoutDuration(argv[index+1].value) {
-				return nil, timeoutOptionDiagnostic(argv[index+1], segmentIndex, index+1)
+				return nil, nil, false
 			}
-			if value == "--signal" && !isTimeoutSignal(argv[index+1].value) {
-				return nil, timeoutOptionDiagnostic(argv[index+1], segmentIndex, index+1)
+			if value == "--signal" && argv[index+1].value == "" {
+				return nil, nil, false
 			}
 			index += 2
 			continue
 		case strings.HasPrefix(value, "--kill-after="):
 			duration := strings.TrimPrefix(value, "--kill-after=")
 			if !isTimeoutDuration(duration) {
-				return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+				return nil, nil, false
 			}
 			index++
 			continue
 		case strings.HasPrefix(value, "--signal="):
 			signal := strings.TrimPrefix(value, "--signal=")
-			if !isTimeoutSignal(signal) {
-				return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			if signal == "" {
+				return nil, nil, false
 			}
 			index++
 			continue
 		case strings.HasPrefix(value, "--"):
-			return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			return nil, nil, false
 		default:
-			next, diagnostic := unwrapTimeoutShortOptions(argv, index, segmentIndex)
-			if diagnostic != nil {
-				return nil, diagnostic
+			next, ok := timeoutPrefixShortOptions(argv, index)
+			if !ok {
+				return nil, nil, false
 			}
 			index = next
 			continue
@@ -3184,23 +3452,20 @@ func unwrapTimeout(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 	}
 
 	if index >= len(argv) || !isTimeoutDuration(argv[index].value) {
-		if index >= len(argv) {
-			return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
-		}
-		return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+		return nil, nil, false
 	}
 	index++
 	if index >= len(argv) {
-		return nil, malformedWrapperDiagnostic(argv[index-1], segmentIndex, index-1)
+		return nil, nil, false
 	}
-	return argv[index:], nil
+	return argv[:index], argv[index:], true
 }
 
-// unwrapTimeoutShortOptions validates GNU-compatible timeout short flags and
-// returns the index of the required duration after those flags.
+// timeoutPrefixShortOptions identifies GNU-compatible short option boundaries
+// without maintaining a platform signal vocabulary.
 //
 // Example: -pfk1s advances over preserve-status, foreground, and kill-after.
-func unwrapTimeoutShortOptions(argv []token, index, segmentIndex int) (int, *Diagnostic) {
+func timeoutPrefixShortOptions(argv []token, index int) (int, bool) {
 	options := argv[index].value[1:]
 	for len(options) > 0 {
 		option := options[0]
@@ -3215,40 +3480,23 @@ func unwrapTimeoutShortOptions(argv []token, index, segmentIndex int) (int, *Dia
 			}
 			if argument == "" {
 				if index+1 >= len(argv) {
-					return 0, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+					return 0, false
 				}
 				argument = argv[index+1].value
 				index++
 			}
 			if option == 'k' && !isTimeoutDuration(argument) {
-				return 0, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+				return 0, false
 			}
-			if option == 's' && !isTimeoutSignal(argument) {
-				return 0, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			if option == 's' && argument == "" {
+				return 0, false
 			}
-			return index + 1, nil
+			return index + 1, true
 		default:
-			return 0, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			return 0, false
 		}
 	}
-	return index + 1, nil
-}
-
-// timeoutOptionDiagnostic records a timeout prefix that cannot be proven to
-// launch its apparent child, so callers preserve ordinary timeout behavior.
-//
-// Example: --kill-after=not-a-duration receives this diagnostic and does not
-// expose a subsequent Git argv to the planner.
-func timeoutOptionDiagnostic(target token, segmentIndex, argumentIndex int) *Diagnostic {
-	return diagnosticForToken(
-		CodePlanWrapperDenied,
-		"timeout option or duration is not definitely valid before its child argv",
-		segmentIndex,
-		argumentIndex,
-		target,
-		"use one GNU-compatible timeout duration and complete option operands before the child command",
-		"timeout-prefix",
-	)
+	return index + 1, true
 }
 
 // isTimeoutDuration reports whether value is a nonnegative GNU-compatible
@@ -3315,52 +3563,6 @@ func isTimeoutDuration(value string) bool {
 		index++
 	}
 	return exponentDigits > 0
-}
-
-// isTimeoutSignal reports whether value names a signal accepted by GNU-style
-// timeout option parsing without requiring a runtime signal lookup.
-//
-// Example: TERM, SIGTERM, and 15 are valid, while unknown-signal is not.
-func isTimeoutSignal(value string) bool {
-	if value == "" {
-		return false
-	}
-	signal := strings.ToUpper(value)
-	signal = strings.TrimPrefix(signal, "SIG")
-	if isTimeoutSignalNumber(signal) {
-		return true
-	}
-	switch signal {
-	case "ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "EMT", "FPE", "HUP", "ILL", "INFO", "INT", "IO", "IOT", "KILL", "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP", "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ":
-		return true
-	}
-	for _, prefix := range []string{"RTMIN+", "RTMAX-"} {
-		if strings.HasPrefix(signal, prefix) {
-			return isTimeoutSignalNumber(strings.TrimPrefix(signal, prefix))
-		}
-	}
-	return false
-}
-
-// isTimeoutSignalNumber reports whether value is a positive bounded signal
-// number that timeout can pass to the operating system.
-//
-// Example: 15 is valid while 0 and 999 are not.
-func isTimeoutSignalNumber(value string) bool {
-	if value == "" {
-		return false
-	}
-	number := 0
-	for _, character := range value {
-		if character < '0' || character > '9' {
-			return false
-		}
-		number = number*10 + int(character-'0')
-		if number > 64 {
-			return false
-		}
-	}
-	return number > 0
 }
 
 func unwrapTime(argv []token, segmentIndex int) ([]token, *Diagnostic) {

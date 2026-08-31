@@ -87,6 +87,41 @@ printf '%s\n' \
   'created_utc: 2026-08-28T00:00:00Z' \
   >"$PROOF_ROOT/$SESSION/eci_active"
 
+# The callback PATH is deliberately deterministic because the planner must
+# resolve a bare timeout from the callback's original PATH, before the hook
+# prepends its own trusted utility directories.
+BASE_CALLBACK_PATH="$RUNTIME_ROOT/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+CALLBACK_PATH="$BASE_CALLBACK_PATH"
+
+FAKE_TIMEOUT_LAUNCH_DIR="$TMP_ROOT/fake-timeout-launch"
+FAKE_TIMEOUT_ACCEPT_DIR="$TMP_ROOT/fake-timeout-accept"
+FAKE_TIMEOUT_INVALID_DIR="$TMP_ROOT/fake-timeout-invalid"
+mkdir -p -- "$FAKE_TIMEOUT_LAUNCH_DIR" "$FAKE_TIMEOUT_ACCEPT_DIR" "$FAKE_TIMEOUT_INVALID_DIR"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'signal=""' \
+  'while (($#)); do' \
+  '  case "$1" in' \
+  '    --signal) signal="${2:-}"; shift 2 ;;' \
+  '    --signal=*) signal="${1#--signal=}"; shift ;;' \
+  '    -s) signal="${2:-}"; shift 2 ;;' \
+  '    -s*) signal="${1#-s}"; shift ;;' \
+  '    --preserve-status|--foreground|--verbose|-p|-f|-v) shift ;;' \
+  '    --) shift; break ;;' \
+  '    -*) exit 125 ;;' \
+  '    *) shift; break ;;' \
+  '  esac' \
+  'done' \
+  'case "$signal" in' \
+  '  0|invalid-signal) exit 125 ;;' \
+  'esac' \
+  'exec "$@"' \
+  >"$FAKE_TIMEOUT_LAUNCH_DIR/timeout"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$FAKE_TIMEOUT_ACCEPT_DIR/timeout"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 125' >"$FAKE_TIMEOUT_INVALID_DIR/timeout"
+chmod 755 -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FAKE_TIMEOUT_ACCEPT_DIR/timeout" "$FAKE_TIMEOUT_INVALID_DIR/timeout"
+
 run_hook() {
   local command="$1" role="${2:-coordinator}" output="$TMP_ROOT/output.json" stderr=/dev/null
   local subagent=false
@@ -103,7 +138,7 @@ run_hook() {
     HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
       CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$subagent" \
       XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" \
-      PATH="$RUNTIME_ROOT/bin:$PATH" \
+      PATH="$CALLBACK_PATH" \
       "${runner[@]}" -c "$BASH_LAUNCHER" >"$output" 2>>"$stderr"
   printf '%s\n' "$output"
 }
@@ -156,67 +191,49 @@ assert_allowed "git -C $REPO reset -- file.txt"
 assert_allowed "git add -- hooks.json" worker
 assert_allowed "git add README.md" worker
 
-# A valid timeout launch prefix does not change the Git target or effect. The
-# worker may still stage a named path in this repository, while resolved
-# foreign, whole-worktree, and reset-working-tree effects retain their
-# concrete diagnostics.
-assert_allowed "timeout 5 git add -- hooks.json" worker
-assert_allowed "timeout +5 git add -- hooks.json" worker
-assert_allowed "timeout -p 5 git add -- hooks.json" worker
-assert_allowed "timeout -f 5 git add -- hooks.json" worker
-assert_allowed "timeout --preserve-status 5 git add -- hooks.json" worker
-assert_allowed "timeout --foreground 5 git add -- hooks.json" worker
-# A statically valid signal preserves the launched Git child. Exercise the
-# separated, attached, and short forms through local, foreign, and broad
-# targets for both roles.
+# A timeout-wrapped Git child is exposed only after the exact callback-PATH
+# timeout executable launches the planner's harmless replacement child. The
+# launch fixture therefore keeps normal named-path work ordinary and preserves
+# the resolved foreign and broad target boundaries for both roles.
+CALLBACK_PATH="$FAKE_TIMEOUT_LAUNCH_DIR:$BASE_CALLBACK_PATH"
 for role in coordinator worker; do
-  assert_allowed "timeout --signal term 5 git add -- hooks.json" "$role"
-  assert_denied_code "timeout --signal=SIGterm 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED "$role" \
+  assert_allowed "timeout --signal TERM 5 git add -- hooks.json" "$role"
+  assert_denied_code "timeout --signal TERM 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED "$role" \
     "active_repo=$REPO target_repo=$FOREIGN_REPO"
-  assert_denied_code "timeout -s RTMIN+1 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+  assert_denied_code "timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
     "effect=whole-worktree-staging target=$REPO selector=."
+  assert_allowed "timeout --signal '\$TIMEOUT_SIGNAL' 5 git add ." "$role"
 done
-assert_denied_code "timeout 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker \
-  "active_repo=$REPO target_repo=$FOREIGN_REPO"
-assert_denied_code "timeout -f 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker \
-  "active_repo=$REPO target_repo=$FOREIGN_REPO"
-assert_denied_code "timeout 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
+# The fact coordinates include the planner segment, so a preceding ordinary
+# segment cannot lend its observation to this Git child.
+assert_denied_code "printf prepare && timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
   "effect=whole-worktree-staging target=$REPO selector=."
-assert_denied_code "timeout +5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
-assert_denied_code "timeout -p 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
-assert_denied_code "timeout -f 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
-assert_denied_code "timeout --preserve-status 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
-assert_denied_code "timeout --foreground 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
-assert_denied_code "timeout 5 git add -A" ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=-A"
-assert_denied_code "timeout 5 git add --all" ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=--all"
-assert_denied_code "timeout 5 git reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=reset-working-tree target=$REPO"
-assert_denied_code "printf prepare && timeout 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
-# Timeout does not turn history acceptance into local index work.
-assert_denied_code "timeout 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+# Timeout does not turn history acceptance into local index work after a
+# positive launch observation.
+assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
   "token=commit"
-# An incomplete timeout invocation or an unfamiliar launcher has no resolved
-# Git effect for this advisory extractor. Let its own runtime decide it.
+
+# An executable that accepts the same prefix but does not start its child must
+# leave foreign and broad Git forms ordinary. This is an E2E A/B check against
+# the launching executable above, not a timeout option-name table.
+CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+for role in coordinator worker; do
+  assert_allowed "timeout --signal TERM 5 git -C $FOREIGN_REPO add -- file.txt" "$role"
+  assert_allowed "timeout --signal TERM 5 git add ." "$role"
+  assert_allowed "timeout --signal 0 5 git add ." "$role"
+done
+
+# A fake timeout that rejects its signal and a structurally malformed prefix
+# both have no observed child launch. They remain ordinary runtime behavior.
+CALLBACK_PATH="$FAKE_TIMEOUT_INVALID_DIR:$BASE_CALLBACK_PATH"
+for role in coordinator worker; do
+  assert_allowed "timeout --signal invalid-signal 5 git add ." "$role"
+done
+CALLBACK_PATH="$FAKE_TIMEOUT_LAUNCH_DIR:$BASE_CALLBACK_PATH"
 assert_allowed "timeout not-a-duration git add ." worker
 assert_allowed "timeout --not-a-timeout-option 5 git add ." worker
 assert_allowed "chronic git add ." worker
-# Invalid and literal-dynamic signal operands do not prove a launchable child.
-# They must remain ordinary timeout runtime behavior in both roles.
-for role in coordinator worker; do
-  assert_allowed "timeout --signal unknown-signal 5 git add ." "$role"
-  assert_allowed "timeout --signal=unknown-signal 5 git add ." "$role"
-  assert_allowed "timeout -s unknown-signal 5 git add ." "$role"
-  assert_allowed "timeout --signal '\$TIMEOUT_SIGNAL' 5 git add ." "$role"
-  assert_allowed "timeout --signal='\$TIMEOUT_SIGNAL' 5 git add ." "$role"
-done
+CALLBACK_PATH="$BASE_CALLBACK_PATH"
 
 # Preserve only resolved accidental-risk boundaries.
 assert_denied_code "git -C $REPO reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED
