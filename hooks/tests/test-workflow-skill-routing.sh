@@ -880,7 +880,7 @@ assert_implementer_iteration_checkpoint_contract() {
   baseline_exclusions='Exclude user-owned, another worker/lane, and in-flight content.'
   ambiguity_contract='If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.'
   step4_bridge='After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule. Step 4 receives the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions; a `pre-existing baseline` remains context outside the iteration range.'
-  coordinator_sequence='After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The named checkpoint, its parent-to-checkpoint diff, and explicit exclusions define the review packet. A `pre-existing baseline` is context outside the iteration range. Neither is acceptance.'
+  coordinator_sequence='After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The review packet gives each reviewer the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions. A `pre-existing baseline` is context outside the iteration range. A checkpoint commit is not acceptance.'
   review_range='The checkpointed `current diff` is the named parent-to-checkpoint range.'
   scope_exclusions='Respect explicit exclusions and exclude later ambient worktree changes.'
   scope_not_admission='This is review scope, not admission proof.'
@@ -909,8 +909,7 @@ assert_implementer_iteration_checkpoint_contract() {
   require_order "$(<"$COORDINATOR")" "$coordinator_sequence" 'After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C.' ||
     fail 'coordinator checkpoint packet must precede reviewer dispatch'
   forbid_text "$COORDINATOR" 'Another implementation iteration may begin before the checkpoint.'
-  require_text "$COORDINATOR" 'Each reviewer is independent of producers and receives original requirements, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules.'
-  forbid_text "$COORDINATOR" 'Each reviewer is independent of producers and receives original requirements, named checkpoint, its parent-to-checkpoint diff, explicit exclusions,'
+  require_text "$COORDINATOR" 'Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.'
   require_text "$COORDINATOR_RUNTIME" 'After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration.'
   for clause in "$review_range" "$scope_exclusions" "$scope_not_admission"; do
     require_text "$REVIEW" "$clause"
