@@ -14,7 +14,9 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 ## Step 4 — Review coordination
 
-After Step 3, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
+Before reviewer dispatch, independently verify the implementer handoff's exact scoped diff and create the narrow coordinator-owned checkpoint commit required by `CODEX.md`. If a `pre-existing baseline` is used, identify it as review context. Neither is acceptance.
+
+After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
 
 E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 

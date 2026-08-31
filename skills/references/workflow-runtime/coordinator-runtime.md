@@ -55,7 +55,7 @@ The optional Critic C prewrite note may help a selected skip-design route, and a
 
 Only governed target paths need the assigned review; leave unrelated changes out of that review. The coordinator maintains the review summary through the ordinary coordination path. A document path, writer spelling, redirection, or generic file operation is not a permission boundary; protect only real active control records and other sessions' control state.
 
-Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route. Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
+Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route. After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration. Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
 
 After ECI `off`, record a concise teardown summary and the actual current repository state. If a historical coordination note disagrees, reconcile it; do not make hashes, receipts, or byte-exact records a prerequisite for normal teardown.
 

@@ -75,7 +75,14 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - Before a destructive Git action, inspect `git status` and the affected paths. Stop and explain a safe narrower action only when the resolved target is broad, unresolved, or would discard unrelated user work. Examples: an unscoped `reset --hard`, `clean -fdx` without an agreed target, or removing an unrelated worktree.
 - Normal commits and targeted Git actions need no approval artifact, canonical spelling, receipt, hash, or command-shape ceremony. Keep normal review and preservation of unrelated changes.
 - Push only on explicit user request.
-- Keep each unpushed logical change in one commit; amend a bad original rather than stack a fix commit. Reset only through the gate. Hold commits until stable. After push, prefer a new commit.
+- Implementers never commit.
+- After every implementer handoff, the coordinator independently verifies the exact scoped diff and creates one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration.
+- A checkpoint commit is not acceptance.
+- Stage only exact iteration paths or hunks. Never stage a whole dirty path or tree merely to capture one hunk.
+- If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit only independently verified predecessor content as a separately named `pre-existing baseline`, then checkpoint the iteration separately.
+- If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.
+- A later repair is a separate iteration and commit. Do not amend or delay the prior checkpoint.
+- Normal targeted Git coordination needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
 - Do not add AI co-author lines.
 
 ## Skills/Agents

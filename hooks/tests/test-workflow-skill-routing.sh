@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="${WORKFLOW_SKILL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+CODEX="$ROOT/CODEX.md"
 ECI="$ROOT/skills/explore-critique-implement/SKILL.md"
 DEBUGGING="$ROOT/skills/debugging-discipline/SKILL.md"
 STATUS_REPORT="$ROOT/skills/writing-status-reports/SKILL.md"
@@ -18,6 +19,7 @@ ECI_CRITIQUE="$ROOT/skills/explore-critique-implement/references/critique.md"
 IMPLEMENT="$ROOT/skills/explore-critique-implement/references/implement.md"
 REVIEW="$ROOT/skills/explore-critique-implement/references/review.md"
 COORDINATOR="$ROOT/skills/explore-critique-implement/references/coordinator.md"
+COORDINATOR_RUNTIME="$ROOT/skills/references/workflow-runtime/coordinator-runtime.md"
 REVIEW_POLICY="$ROOT/skills/references/workflow-runtime/review-policy.md"
 SNITCH="$ROOT/skills/agent-teams-execution/references/snitch.md"
 ATE_ORCHESTRATION="$ROOT/skills/agent-teams-execution/references/orchestration.md"
@@ -859,6 +861,26 @@ assert_pause_resume_closure_contract() {
     fail 'provider event was allowed to resume all work'
 }
 
+assert_implementer_iteration_checkpoint_contract() {
+  require_text "$CODEX" 'Implementers never commit.'
+  require_text "$CODEX" 'After every implementer handoff, the coordinator independently verifies the exact scoped diff and creates one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration.'
+  require_text "$CODEX" 'A checkpoint commit is not acceptance.'
+  require_text "$CODEX" 'Stage only exact iteration paths or hunks. Never stage a whole dirty path or tree merely to capture one hunk.'
+  require_text "$CODEX" 'If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit only independently verified predecessor content as a separately named `pre-existing baseline`, then checkpoint the iteration separately.'
+  require_text "$CODEX" 'If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.'
+  require_text "$CODEX" 'A later repair is a separate iteration and commit. Do not amend or delay the prior checkpoint.'
+  require_text "$CODEX" 'Normal targeted Git coordination needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
+  forbid_text "$CODEX" 'Hold commits until stable.'
+  forbid_text "$CODEX" 'amend a bad original rather than stack a fix commit'
+
+  require_text "$IMPLEMENT" 'Never commit, declare accepted/complete, publish a manifest, or tear down ECI from this role.'
+  require_text "$ECI" 'After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule.'
+  require_text "$COORDINATOR" 'Before reviewer dispatch, independently verify the implementer handoff'"'"'s exact scoped diff and create the narrow coordinator-owned checkpoint commit required by `CODEX.md`.'
+  require_text "$COORDINATOR" 'If a `pre-existing baseline` is used, identify it as review context. Neither is acceptance.'
+  require_text "$COORDINATOR_RUNTIME" 'After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration.'
+  require_text "$COORDINATOR_RUNTIME" 'Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
+}
+
 assert_local_links_resolve
 assert_role_rows_are_local
 assert_debugging_role_routes
@@ -880,4 +902,5 @@ assert_lane_forecast_contract
 assert_lineage_context_contract
 assert_pause_resume_closure_contract
 assert_eci_ordinary_role_split
+assert_implementer_iteration_checkpoint_contract
 printf '%s\n' 'workflow skill routing assertions: PASS'

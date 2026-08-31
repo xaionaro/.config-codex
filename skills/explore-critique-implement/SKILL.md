@@ -48,6 +48,7 @@ Potential Emergency Unblock cases load [Emergency Unblock](references/emergency-
 1. Explorer ranks tagged, evidence-backed options and required PoC/style-source proposal.
 2. Fresh special Step 2 critic independently baselines, admits scope, rejects bad options, and selects concrete winner text or returns bounded re-exploration.
 3. Reusable implementer applies only the winner and `treatment: now` corrections with causal/proof evidence.
+After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule.
 4. Fresh A/B/C critics review in parallel; E2E joins as required by the [Configuration E2E contract](#configuration-e2e-contract) or [Runtime E2E policy](#runtime-e2e-policy). Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
 
 ## Relationship to other skills
