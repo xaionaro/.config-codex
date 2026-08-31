@@ -27,7 +27,9 @@ func TestPythonOracleParityForBoundedCore(t *testing.T) {
 		{command: "printf before | env | printf after"},
 		{command: "timeout 5 git commit -m nope"},
 		{command: "git archive HEAD"},
-		{command: "printenv OPENAI_API_KEY"},
+		{command: "printenv ECI_UNREGISTERED_TEST_VALUE"},
+		{command: `printf '%s\n' "$HOME/ordinary-path"`},
+		{command: `printf '%s\n' "${HOME}/ordinary-path"`},
 		{command: "rm -rf /"},
 	}
 
@@ -55,6 +57,35 @@ func TestPythonOracleParityForBoundedCore(t *testing.T) {
 					goResult.Diagnostic.Code,
 					pythonOutput,
 				)
+			}
+		})
+	}
+}
+
+// TestPythonOracleParityAdmitsUnregisteredPrintenvName verifies that a bounded
+// explicit environment lookup does not become an admission boundary merely
+// because its name is not in a planner-owned registry.
+func TestPythonOracleParityAdmitsUnregisteredPrintenvName(t *testing.T) {
+	t.Parallel()
+
+	oracle, err := filepath.Abs(filepath.Join("..", "eci-command-plan.py"))
+	if err != nil {
+		t.Fatalf("resolve oracle: %v", err)
+	}
+	for _, role := range []Role{RoleCoordinator, RoleWorker} {
+		role := role
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+
+			request := activeWorker("printenv ECI_TEST_UNREGISTERED_NAME")
+			request.Role = role
+			goResult := Classify(request)
+			if goResult.Decision != DecisionAllow || goResult.Diagnostic != nil {
+				t.Fatalf("Go result: %#v, want allow without diagnostic", goResult)
+			}
+			pythonStatus, pythonOutput := runPythonOracle(t, oracle, request)
+			if pythonStatus != StatusAllow {
+				t.Fatalf("Python status=%d output=%s, want allow", pythonStatus, pythonOutput)
 			}
 		})
 	}

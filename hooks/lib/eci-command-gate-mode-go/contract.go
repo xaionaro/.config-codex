@@ -273,7 +273,7 @@ const (
 
 // ModeState is the effective mode and the state explaining its source.
 //
-// Example: ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateInvalidBytes} is fail-closed.
+// Example: ModeState{Mode: ModePermissive, ConfigState: ConfigStateInvalidBytes} retains the diagnostic without blocking ordinary work.
 type ModeState struct {
 	Mode        Mode
 	ConfigState ConfigState

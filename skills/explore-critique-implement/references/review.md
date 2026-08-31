@@ -16,9 +16,11 @@ Check correctness, safety, concrete requirements, interfaces, non-style boundari
 
 Check maintainability harm from debt, coupling, hidden dependencies, code smells, layer/module fit, naming, abstraction, architecture, and self-explaining intention. If assigned a pre-write intention check, return `reconstructed intention:` followed by 2–4 bullets and stop; a later full-context review remains independent.
 
-## E2E — code and debug work
+## E2E
 
-For code or debugging, build, run the full suite, exercise the affected real UI/API/device/CLI path, cite output/state/screenshot, and check related regressions. Under a real capacity constraint, use the shortest faithful repro while preserving the required real-path evidence.
+For required E2E, independently repeat or extend the implementer-owned E2E: build and run the full suite where applicable, exercise the affected actual consumer path, cite output/state/screenshot as appropriate, and check related regressions. Proxy evidence alone is insufficient. Under a real capacity constraint, use the shortest faithful repro while preserving the required real-path evidence.
+
+E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
 ## Review red flags
 

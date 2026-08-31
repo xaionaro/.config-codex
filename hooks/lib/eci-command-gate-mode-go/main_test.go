@@ -166,6 +166,55 @@ func TestRunFinalizeEnforcingForwardsBytesWithoutTelemetry(t *testing.T) {
 	}
 }
 
+// TestRunFinalizeInvalidModeConfigDoesNotForwardWouldDeny checks the mode fallback at the admission boundary.
+//
+// Example: a corrupted user preference file must not turn a harmless command's would-deny result into a visible denial.
+func TestRunFinalizeInvalidModeConfigDoesNotForwardWouldDeny(t *testing.T) {
+	root := newCLIStateRoot(t)
+	configRoot := filepath.Join(root, "config")
+	stateRoot := filepath.Join(root, "state")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+
+	configDirectory := filepath.Join(configRoot, ConfigDirectoryName)
+	if err := os.MkdirAll(configDirectory, 0o700); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	configPath := filepath.Join(configDirectory, ConfigFileName)
+	if err := os.WriteFile(configPath, []byte("permissive\r\n"), 0o600); err != nil {
+		t.Fatalf("write malformed config: %v", err)
+	}
+
+	denial := `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"[ECI_COMMAND_SYNTAX_DENIED] ECI gate denied (phase=PreToolUse, operation=plan-segment)"}}`
+	var stdout, stderr bytes.Buffer
+	if status := run(
+		[]string{"finalize", "codex", "coordinator", "active", "parser"},
+		strings.NewReader(denial),
+		&stdout,
+		&stderr,
+	); status != 0 {
+		t.Fatalf("finalize status = %d; stderr=%q", status, stderr.String())
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("invalid config finalized output = stdout %q stderr %q, want both empty", stdout.String(), stderr.String())
+	}
+
+	logPath := filepath.Join(stateRoot, TelemetryParentDirectoryName, TelemetryDirectoryName, TelemetryFileName)
+	record, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fallback telemetry: %v", err)
+	}
+	var event struct {
+		ConfigState string `json:"config_state"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(record), &event); err != nil {
+		t.Fatalf("decode fallback telemetry: %v; record=%q", err, record)
+	}
+	if event.ConfigState != string(ConfigStateInvalidBytes) {
+		t.Fatalf("fallback telemetry config state = %q, want %q", event.ConfigState, ConfigStateInvalidBytes)
+	}
+}
+
 func TestRunFinalizePermissiveMalformedAndOversizeWarns(t *testing.T) {
 	root := newCLIStateRoot(t)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))

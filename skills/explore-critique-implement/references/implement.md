@@ -6,7 +6,9 @@ Receive the Step 2 concrete winner verbatim, only `treatment: now` fixes, admitt
 
 For code/debug work, load test-driven-development, debugging-discipline, and every matching coding-style skill. Repair the causal mechanism, not timing/visibility/blast radius unless containment was requested. Include a falsifiable root-cause rationale, `regression: yes|no|unknown`, evidence, and why the diff repairs the cause. Every factual submission claim has a T1–T5 tag.
 
-Before submit, perform required unit/proof checks. Runtime behavior reachable through UI/API/device/CLI requires build, full suite, and affected real user path with cited output/state/screenshot; proxy evidence alone is insufficient. Docs, prompts, config-only changes, tests-only changes, and pure refactors skip E2E honestly. If required E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; missing E2E/rationale bounces before Step 4.
+Before submit, perform required unit/proof checks. When E2E is required, build and run the full suite where applicable, exercise the affected actual consumer path, and cite output/state/screenshot as appropriate; proxy evidence alone is insufficient. The implementer owns this E2E. If required E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; missing E2E/rationale bounces before Step 4.
+
+E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
 ## Write boundary and submission
 

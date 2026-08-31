@@ -7,14 +7,20 @@
 ECI_SHARED_CLEANUP_ROUTE_DETAIL=""
 eci_shared_cleanup_route() {
   [ "${hook_is_subagent:-false}" != true ] || return 1
-  local detail
-  detail="$(python3 - "$1" <<'PY'
+  local allow_private_session_child="${2:-false}" detail
+  case "$allow_private_session_child" in
+    true|false) ;;
+    *) return 1 ;;
+  esac
+  detail="$(python3 - "$1" "$allow_private_session_child" <<'PY'
 import os
 import re
 import shlex
+import stat
 import sys
 
 command = sys.argv[1]
+allow_private_session_child = sys.argv[2] == "true"
 def reject(reason):
     print("coordinator-cleanup-route command=" + command + " reason=" + reason)
     raise SystemExit(1)
@@ -60,6 +66,18 @@ if temporary_unqualified_file_remove:
     temporary_roots = set()
     home = os.environ.get("HOME", "")
     canonical_home = os.path.realpath(home) if home else ""
+
+    def exact_home_tmp_alias(raw, canonical):
+        if raw != os.path.join(home, "tmp") or not os.path.islink(raw):
+            return False
+        if (not home or not os.path.isabs(home) or
+                os.path.normpath(home) != home or
+                not os.path.isdir(home) or os.path.islink(home) or
+                not canonical_home or canonical_home != home or
+                os.path.realpath(canonical_home) != canonical_home):
+            return False
+        return canonical != "/tmp" and not canonical.startswith("/tmp/")
+
     def canonical_directory(raw):
         if (not raw or not os.path.isabs(raw) or
                 os.path.normpath(raw) != raw):
@@ -75,7 +93,7 @@ if temporary_unqualified_file_remove:
         home_scoped = bool(canonical_home and
                            (canonical == canonical_home or
                             canonical.startswith(canonical_home + os.sep)))
-        if os.path.islink(raw) and not home_scoped:
+        if os.path.islink(raw) and not home_scoped and not exact_home_tmp_alias(raw, canonical):
             return ""
         return canonical
 
@@ -89,13 +107,40 @@ if temporary_unqualified_file_remove:
             temporary_roots.add(canonical)
     if not temporary_roots:
         reject("no canonical temporary directory is available")
+
+    session_temp_name = re.compile(r"^eci-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    def private_session_temp_parent(root, parent):
+        if parent == root:
+            return False
+        if os.path.dirname(parent) != root:
+            return False
+        if (not os.path.isdir(parent) or os.path.islink(parent) or
+                os.path.realpath(parent) != parent or
+                not session_temp_name.fullmatch(os.path.basename(parent))):
+            return False
+        metadata = os.lstat(parent)
+        return (stat.S_ISDIR(metadata.st_mode) and
+                metadata.st_uid == os.geteuid() and
+                (metadata.st_mode & 0o7777) == 0o700)
+
     for path in paths:
-        if not os.path.isabs(path) or os.path.normpath(path) != path:
+        if (not os.path.isabs(path) or os.path.normpath(path) != path or
+                any(character in path for character in "*?[]")):
             reject("path=" + path + " reason=temporary cleanup requires canonical absolute paths")
         parent = os.path.dirname(path)
         canonical_parent = os.path.realpath(parent)
-        if canonical_parent not in temporary_roots:
+        if parent != canonical_parent:
+            reject("path=" + path + " reason=temporary cleanup parent must use its canonical root spelling")
+        candidate_roots = [candidate for candidate in temporary_roots
+                           if parent == candidate or os.path.dirname(parent) == candidate]
+        root = max(candidate_roots, key=lambda candidate: (len(candidate), candidate), default="")
+        if not root:
             reject("path=" + path + " reason=unqualified rm -f is limited to canonical temporary roots")
+        if parent != root:
+            if (not allow_private_session_child or len(paths) != 1 or
+                    not private_session_temp_parent(root, parent)):
+                reject("path=" + path + " reason=temporary cleanup permits one regular leaf only under a private direct eci session directory")
         if os.path.islink(path):
             reject("path=" + path + " reason=symlink targets are not cleanup-eligible")
         if os.path.lexists(path) and (not os.path.isfile(path) or os.path.realpath(path) != path):

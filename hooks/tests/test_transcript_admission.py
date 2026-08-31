@@ -96,6 +96,27 @@ class TranscriptAdmissionTests(unittest.TestCase):
             self.assertEqual((subagent.returncode, subagent.stdout), (0, b""))
             self.assertEqual((parent.returncode, parent.stdout), (0, b"parent-session\n"))
 
+    def test_poisoned_codex_home_cannot_redirect_global_override_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="transcript-admission-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            canonical_root = home / ".codex"
+            foreign_root = root / "foreign-codex"
+            canonical_root.mkdir(parents=True)
+            foreign_root.mkdir()
+
+            result = invoke(
+                "codex_eci_accidental_override_global_root",
+                "",
+                home,
+                codex_home=foreign_root,
+            )
+
+            self.assertEqual(
+                (result.returncode, result.stdout, result.stderr),
+                (0, os.fsencode(canonical_root.resolve()) + b"\n", b""),
+            )
+
     def test_trusted_codex_home_alias_does_not_weaken_below_root_nofollow(self) -> None:
         with tempfile.TemporaryDirectory(prefix="transcript-admission-") as temporary:
             root = Path(temporary)
@@ -114,47 +135,47 @@ class TranscriptAdmissionTests(unittest.TestCase):
             self.assertEqual((admission.returncode, admission.stdout), (0, b""))
             self.assertEqual((parent.returncode, parent.stdout), (0, b"parent-session\n"))
 
-    def test_configured_sessions_root_allows_logical_child_and_rejects_physical_alias(
-        self,
-    ) -> None:
+    def test_poisoned_codex_home_cannot_redirect_canonical_sessions_root(self) -> None:
         with tempfile.TemporaryDirectory(prefix="transcript-admission-") as temporary:
             root = Path(temporary)
             home = root / "home"
-            physical_sessions = home / ".codex/sessions"
-            logical_codex = root / "logical-codex"
-            logical_sessions = logical_codex / "sessions"
-            physical_sessions.mkdir(parents=True)
-            logical_codex.mkdir()
-            logical_sessions.symlink_to(physical_sessions, target_is_directory=True)
-            logical_transcript = logical_sessions / "valid.jsonl"
-            logical_transcript.write_bytes(SUBAGENT_RECORD)
+            canonical_sessions = home / ".codex/sessions"
+            foreign_sessions = root / "foreign-codex/sessions"
+            canonical_sessions.mkdir(parents=True)
+            foreign_sessions.mkdir(parents=True)
+            canonical_transcript = canonical_sessions / "canonical.jsonl"
+            foreign_transcript = foreign_sessions / "foreign.jsonl"
+            canonical_transcript.write_bytes(SUBAGENT_RECORD)
+            foreign_transcript.write_bytes(
+                SUBAGENT_RECORD.replace(b"parent-session", b"foreign-parent")
+            )
 
             admission = invoke(
                 HELPERS[0],
-                logical_transcript,
+                canonical_transcript,
                 home,
-                codex_home=logical_codex,
+                codex_home=foreign_sessions.parent,
             )
             subagent = invoke(
                 HELPERS[1],
-                logical_transcript,
+                canonical_transcript,
                 home,
-                codex_home=logical_codex,
+                codex_home=foreign_sessions.parent,
             )
             parent = invoke(
                 HELPERS[2],
-                logical_transcript,
+                canonical_transcript,
                 home,
-                codex_home=logical_codex,
+                codex_home=foreign_sessions.parent,
             )
 
             self.assertEqual((admission.returncode, admission.stdout), (0, b""))
             self.assertEqual((subagent.returncode, subagent.stdout), (0, b""))
             self.assertEqual((parent.returncode, parent.stdout), (0, b"parent-session\n"))
             self.assert_all_reject(
-                physical_sessions / "valid.jsonl",
+                foreign_transcript,
                 home,
-                codex_home=logical_codex,
+                codex_home=foreign_sessions.parent,
             )
 
     def test_nonexistent_and_nonregular_transcripts_are_rejected(self) -> None:

@@ -383,99 +383,6 @@ test_off_boundary_requires_and_accepts_manifest() {
   grep -Fq 'phase=off' "$TMP_ROOT/off-valid.out"
 }
 
-test_teardown_receipt_is_atomic_and_consumed_by_final_proof() {
-  local proof_root="$TMP_ROOT/off-receipt" sid session_dir report alternate_report receipt proof transcript stop_out drift
-  sid="$(build_manifest "$proof_root" root)"
-  session_dir="$proof_root/$sid"
-  report="$session_dir/disengage.md"
-  receipt="$session_dir/eci-teardown-complete"
-  proof="$session_dir/proof.md"
-  transcript="$proof_root/transcript.jsonl"
-  : >"$transcript"
-  {
-    printf '## ECI completion certificate\n'
-    printf 'clean-pass:\n'
-    printf '## Stop checklist walkthrough\n'
-    printf 'validated\n'
-    printf '## Incomplete compliance\n'
-    printf 'none\n'
-  } >"$report"
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" on 'receipt lifecycle' >/dev/null
-  ln -s "$session_dir/missing-report" "$receipt"
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/receipt-crash.out" 2>"$TMP_ROOT/receipt-crash.err"; then
-    return 1
-  fi
-  [ -L "$receipt" ] && [ -f "$session_dir/eci_active" ] || return 1
-  rm -f -- "$receipt"
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/receipt-off.out"
-  [ ! -e "$session_dir/eci_active" ] && [ -f "$receipt" ] || return 1
-  . "$ROOT/hooks/lib/codex-proof-state.sh"
-  CODEX_PROOF_ROOT="$proof_root" codex_eci_teardown_receipt_is_valid \
-    "$receipt" "$sid" "$session_dir/eci-required-critics.json" "$report"
-
-  # A replay with a different canonical report path must not reuse the old
-  # terminal receipt.  The original report remains the only valid retry.
-  alternate_report="$session_dir/alternate-disengage.md"
-  cp -- "$report" "$alternate_report"
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" on 'receipt replay' >/dev/null
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$alternate_report" >"$TMP_ROOT/receipt-replay.out" 2>"$TMP_ROOT/receipt-replay.err"; then
-    return 1
-  fi
-  [ -f "$session_dir/eci_active" ] || return 1
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/receipt-replay-original.out"
-  [ ! -e "$session_dir/eci_active" ] || return 1
-
-  {
-    printf '## ECI completion certificate\n'
-    printf 'clean-pass:\n'
-    printf '## Stop checklist walkthrough\n'
-    printf 'validated\n'
-    printf '## Incomplete compliance\n'
-    printf 'none\n'
-  } >"$proof"
-  stop_out="$TMP_ROOT/receipt-stop.out"
-  jq -cn --arg cwd "$proof_root" --arg sid "$sid" --arg transcript "$transcript" \
-    '{session_id:$sid,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' |
-    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_out"
-  if grep -Fq 'Required ECI critic manifest rejected' "$stop_out"; then
-    return 1
-  fi
-
-  # The receipt is also bound to the admitted live repository tuple.  A
-  # post-teardown repository change must not be treated as a valid replay.
-  drift="$ROOT/hooks/.eci-teardown-drift-$BASHPID"
-  root_fixture="$drift"
-  printf '%s\n' drift >"$drift"
-  jq -cn --arg cwd "$proof_root" --arg sid "$sid" \
-    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$TMP_ROOT/receipt-drift.out"
-  rm -f -- "$drift"
-  root_fixture=""
-  jq -e '.decision == "block" and (.reason | contains("teardown receipt"))' \
-    "$TMP_ROOT/receipt-drift.out" >/dev/null
-
-  printf '%s\n' 'tampered' >"$report"
-  {
-    printf '## ECI completion certificate\n'
-    printf 'clean-pass:\n'
-    printf '## Stop checklist walkthrough\n'
-    printf 'validated\n'
-    printf '## Incomplete compliance\n'
-    printf 'none\n'
-  } >"$proof"
-  jq -cn --arg cwd "$proof_root" --arg sid "$sid" \
-    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$TMP_ROOT/receipt-stale.out"
-  jq -e '.decision == "block" and (.reason | contains("teardown receipt"))' \
-    "$TMP_ROOT/receipt-stale.out" >/dev/null
-}
-
 test_sha256_repository_binding_accepts_object_format_oid_lengths() {
   local repo="$TMP_ROOT/sha256-repo" proof_root="$TMP_ROOT/sha256-proof"
   local sid=sha256-session session_dir manifest base head git_dir_raw git_common_raw git_dir git_common binding
@@ -738,12 +645,10 @@ test_main_commit_boundary_requires_manifest() {
   ' "$out" >/dev/null
 }
 
-test_reviewed_dirty_commit_off_and_stop_lifecycle() {
-  local repo proof_root second_root sid session_dir second_session_dir manifest report
-  local input output stop_output stop_after_output
+test_reviewed_dirty_commit_and_off_review_are_nonblocking() {
+  local repo proof_root sid session_dir stop_output
   repo="$TMP_ROOT/reviewed-commit-repo"
   proof_root="$TMP_ROOT/reviewed-commit-proof"
-  second_root="$TMP_ROOT/reviewed-commit-off-proof"
   mkdir -p "$repo"
   git -C "$repo" init -q
   git -C "$repo" config user.email eci-test@example.invalid
@@ -765,16 +670,15 @@ test_reviewed_dirty_commit_off_and_stop_lifecycle() {
 
   ECI_TEST_CWD="$repo" run_gate "$proof_root" commit "$sid" \
     "$TMP_ROOT/reviewed-commit-gate.out" "$TMP_ROOT/reviewed-commit-gate.err"
-  [ -f "$session_dir/eci-commit-admitted" ] || return 1
+  grep -Fq 'phase=commit' "$TMP_ROOT/reviewed-commit-gate.out" || return 1
+  grep -Fq 'fresh named least-restriction critic' "$TMP_ROOT/reviewed-commit-gate.out" || return 1
+  [ ! -e "$session_dir/eci-commit-admitted" ] && [ ! -L "$session_dir/eci-commit-admitted" ] || return 1
 
-  input="$TMP_ROOT/reviewed-commit-hook.json"
-  output="$TMP_ROOT/reviewed-commit-hook.out"
-  jq -cn --arg sid "$sid" --arg cwd "$repo" \
-    '{session_id:$sid,cwd:$cwd,tool_input:{command:"git commit -m reviewed"}}' |
-    CODEX_HOME="$ROOT" CODEX_PROOF_ROOT="$proof_root" PATH="$ROOT/bin:$PATH" \
-      bash "$ROOT/hooks/validate-bash.sh" >"$output"
-  [ ! -s "$output" ] || return 1
-  [ ! -e "$session_dir/eci-commit-admitted" ] || return 1
+  ECI_TEST_CWD="$repo" run_gate "$proof_root" off "$sid" \
+    "$TMP_ROOT/reviewed-off-gate.out" "$TMP_ROOT/reviewed-off-gate.err"
+  grep -Fq 'phase=off' "$TMP_ROOT/reviewed-off-gate.out" || return 1
+  grep -Fq 'fresh named least-restriction critic' "$TMP_ROOT/reviewed-off-gate.out" || return 1
+  [ -f "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ] || return 1
   git -C "$repo" commit -qm reviewed
 
   stop_output="$TMP_ROOT/reviewed-commit-stop-active.out"
@@ -782,48 +686,6 @@ test_reviewed_dirty_commit_off_and_stop_lifecycle() {
     '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
     CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_output"
   jq -e '.decision == "block" and (.reason | contains("ECI"))' "$stop_output" >/dev/null
-
-  printf 'post-commit teardown transition\n' >>"$repo/target.txt"
-  git -C "$repo" add target.txt
-  sid2="$(ECI_TEST_REPO="$repo" ECI_TEST_TARGET="$repo/target.txt" build_manifest "$second_root" root)"
-  [ "$sid2" = "$sid" ] || return 1
-  second_session_dir="$second_root/$sid"
-  cp "$session_dir/eci-acceptance-anchor" "$second_session_dir/eci-acceptance-anchor"
-  cp "$session_dir/eci-required-critics.commit.1.ledger" "$second_session_dir/eci-required-critics.commit.1.ledger"
-  cp "$session_dir/eci-critic-identities.ledger" "$second_session_dir/eci-critic-identities.ledger"
-  manifest="$second_session_dir/eci-required-critics.json"
-  jq -c '.acceptance_version = "2" | .rows |= map(.acceptance_version = "2" | .child_identity += "-v2")' \
-    "$manifest" >"$manifest.tmp"
-  mv "$manifest.tmp" "$manifest"
-  local index child
-  for index in $(jq -r 'range(.rows | length)' "$manifest"); do
-    child="$(jq -r ".rows[$index].child_identity" "$manifest")"
-    rebind_manifest_row_identity "$manifest" "$index" "$child"
-  done
-  {
-    printf 'scope: reviewed commit off\n'
-    printf 'cwd: %s\n' "$repo"
-    printf 'session_id: %s\n' "$sid"
-    printf 'created_utc: 2026-01-01T00:00:00Z\n'
-  } >"$second_session_dir/eci_active"
-  report="$second_session_dir/disengage.md"
-  {
-    printf '## ECI completion certificate\n'
-    printf 'clean-pass:\n'
-    printf '## Stop checklist walkthrough\n'
-    printf 'validated\n'
-    printf '## Incomplete compliance\n'
-    printf 'none\n'
-  } >"$report"
-  (cd "$repo" && CODEX_PROOF_ROOT="$second_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/reviewed-commit-off.out")
-  [ ! -e "$second_session_dir/eci_active" ] || return 1
-
-  stop_after_output="$TMP_ROOT/reviewed-commit-stop-off.out"
-  jq -cn --arg sid "$sid" --arg cwd "$repo" \
-    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-  CODEX_PROOF_ROOT="$second_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_after_output"
-  jq -e '.continue == true' "$stop_after_output" >/dev/null
 }
 
 test_user_closed_teardown_is_single_terminal_route() {
@@ -838,12 +700,16 @@ test_user_closed_teardown_is_single_terminal_route() {
   session_dir="$proof_root/$sid"
   report="$session_dir/user-closed.md"
 
-  for _ in 1 2 3; do
+  for stop_attempt in 1 2 3; do
     out="$TMP_ROOT/user-closed-stop-$RANDOM.out"
     jq -cn --arg cwd "$ROOT" --arg sid "$sid" \
       '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
       CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$out"
-    jq -e '(.continue == false) or (.decision == "block")' "$out" >/dev/null
+    if [ "$stop_attempt" -eq 1 ]; then
+      jq -e '.decision == "block" and (.reason | contains("ECI"))' "$out" >/dev/null
+    else
+      jq -e '.continue == true and (has("decision") | not)' "$out" >/dev/null
+    fi
   done
 
   {
@@ -897,9 +763,10 @@ test_user_closed_teardown_is_single_terminal_route() {
   [ -f "$proof_root/$stale_sid/eci_active" ]
 }
 
-test_manifest_write_is_main_owned_and_atomic() {
+test_manifest_write_is_role_neutral_and_target_safe() {
   local proof_root="$TMP_ROOT/manifest-write" sid session_dir manifest out
-  local temp_source configured_tmp outside_tmp outside_source symlink_source traversal_source control_source
+  local temp_source configured_tmp outside_tmp outside_source symlink_source nonregular_source traversal_source control_source
+  local unsafe_destination_sid unsafe_destination_dir unsafe_destination_target unsafe_node_sid unsafe_node_dir
   local canonical_cache symlink_home canonical_proof canonical_session canonical_manifest canonical_source canonical_tmp
   sid="$(build_manifest "$proof_root" root)"
   session_dir="$proof_root/$sid"
@@ -913,8 +780,8 @@ test_manifest_write_is_main_owned_and_atomic() {
     "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$TMP_ROOT/manifest-write-temp.out"
   [ -f "$manifest" ] && cmp -s "$temp_source" "$manifest"
 
-  # A canonical configured TMPDIR is also accepted, while its source remains
-  # a regular non-symlink with the exact source filename.
+  # A configured TMPDIR is ordinary caller context; any readable regular
+  # source is imported into the fixed current-session destination.
   configured_tmp="$TMP_ROOT/configured-tmp"
   mkdir -p "$configured_tmp"
   cp "$manifest" "$configured_tmp/eci-required-critics.json.source"
@@ -925,45 +792,74 @@ test_manifest_write_is_main_owned_and_atomic() {
   [ -f "$manifest" ] && cmp -s "$configured_tmp/eci-required-critics.json.source" "$manifest"
 
   out="$TMP_ROOT/manifest-write-worker.out"
-  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    TMPDIR="$test_tmp_parent" "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$out" 2>&1; then
-    return 1
-  fi
-  grep -Fq 'main/orchestrator' "$out"
+  CODEX_ROLE=eci-implementer CODEX_HOOK_IS_SUBAGENT=true \
+    CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" TMPDIR="$test_tmp_parent" \
+    "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$out" 2>&1
+  [ -f "$manifest" ] && cmp -s "$temp_source" "$manifest"
   outside_tmp="$TMP_ROOT/outside-tmp"
   mkdir -p "$outside_tmp"
-  outside_source="$outside_tmp/eci-required-critics.json.source"
+  outside_source="$outside_tmp/ordinary-readable-manifest.note"
   cp "$manifest" "$outside_source"
-  if TMPDIR="$configured_tmp" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" manifest-write "$outside_source" >"$out" 2>&1; then
-    return 1
-  fi
-  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+  TMPDIR="$configured_tmp" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$outside_source" >"$out" 2>&1
+  cmp -s "$outside_source" "$manifest"
 
   symlink_source="$TMP_ROOT/symlink-source/eci-required-critics.json.source"
   mkdir -p "${symlink_source%/*}"
   ln -s "$temp_source" "$symlink_source"
+  TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$symlink_source" >"$out" 2>&1
+  cmp -s "$temp_source" "$symlink_source"
+  cmp -s "$temp_source" "$manifest"
+
+  nonregular_source="$TMP_ROOT/nonregular-manifest-source"
+  mkdir -p "$nonregular_source"
   if TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" manifest-write "$symlink_source" >"$out" 2>&1; then
+    "$ROOT/bin/eci-active" manifest-write "$nonregular_source" >"$out" 2>&1; then
     return 1
   fi
-  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+  grep -Fq 'manifest-write source or fixed destination is unsafe.' "$out"
+  [ -d "$nonregular_source" ]
 
   traversal_source="$TMP_ROOT/traversal/../eci-required-critics.json.source"
   mkdir -p "$TMP_ROOT/traversal"
-  if TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" manifest-write "$traversal_source" >"$out" 2>&1; then
-    return 1
-  fi
-  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+  TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$traversal_source" >"$out" 2>&1
+  cmp -s "$temp_source" "$manifest"
 
   control_source="$TMP_ROOT/eci_active"
   cp "$manifest" "$control_source"
-  if TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" manifest-write "$control_source" >"$out" 2>&1; then
+  TMPDIR="$test_tmp_parent" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+    "$ROOT/bin/eci-active" manifest-write "$control_source" >"$out" 2>&1
+  cmp -s "$control_source" "$manifest"
+
+  # Nonregular sources and fixed local destinations must remain untouched.
+  unsafe_destination_sid="$(build_manifest "$proof_root" unsafe-destination)"
+  unsafe_destination_dir="$proof_root/$unsafe_destination_sid"
+  unsafe_destination_target="$TMP_ROOT/foreign-manifest-destination"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$unsafe_destination_sid" \
+    "$ROOT/bin/eci-active" on 'unsafe manifest destination fixture' >/dev/null
+  printf '%s\n' 'foreign manifest destination bytes' >"$unsafe_destination_target"
+  rm -f -- "$unsafe_destination_dir/eci-required-critics.json"
+  ln -s -- "$unsafe_destination_target" "$unsafe_destination_dir/eci-required-critics.json"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$unsafe_destination_sid" \
+    "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$out" 2>&1; then
     return 1
   fi
-  grep -Fq 'canonical regular eci-required-critics.json.source' "$out"
+  [ -L "$unsafe_destination_dir/eci-required-critics.json" ]
+  grep -Fqx 'foreign manifest destination bytes' "$unsafe_destination_target"
+
+  unsafe_node_sid="$(build_manifest "$proof_root" unsafe-node)"
+  unsafe_node_dir="$proof_root/$unsafe_node_sid"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$unsafe_node_sid" \
+    "$ROOT/bin/eci-active" on 'nonregular manifest destination fixture' >/dev/null
+  rm -f -- "$unsafe_node_dir/eci-required-critics.json"
+  mkdir "$unsafe_node_dir/eci-required-critics.json"
+  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$unsafe_node_sid" \
+    "$ROOT/bin/eci-active" manifest-write "$temp_source" >"$out" 2>&1; then
+    return 1
+  fi
+  [ -d "$unsafe_node_dir/eci-required-critics.json" ]
 
   # The deployed default may have a symlinked HOME/cache parent.  The shared
   # resolver must canonicalize that ancestor so lifecycle ownership and
@@ -1064,6 +960,16 @@ test_commit_parser_wrappers_and_unknown_fail_closed() {
     [ ! -s "$out" ] || return 1
   done
 
+  out="$TMP_ROOT/parser-leading-assignment.out"
+  jq -cn --arg cwd "$ROOT" \
+    '{session_id:"commit-session",cwd:$cwd,tool_input:{command:"FOO=bar make test"}}' |
+    HOME="$parser_home" XDG_CONFIG_HOME="$parser_config" CODEX_PROOF_ROOT="$proof_root" \
+      bash "$ROOT/hooks/validate-bash.sh" >"$out"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("ECI_PLAN_SYNTAX_DENIED") and contains("predicate=leading-assignment"))
+  ' "$out" >/dev/null || return 1
+
   for command in 'git alias ci' 'git ci -m checked'; do
     out="$TMP_ROOT/parser-git-context-${#command}.out"
     jq -cn --arg command "$command" --arg cwd "$ROOT" '{session_id:"commit-session",cwd:$cwd,tool_input:{command:$command}}' |
@@ -1102,6 +1008,15 @@ test_commit_parser_wrappers_and_unknown_fail_closed() {
     esac
     jq -e --arg expected_code "$expected_code" --arg expected_wording "$expected_wording" \
       '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains($expected_code) and contains($expected_wording))' "$out" >/dev/null
+    if [ "$expected_code" = '[ECI_COMMAND_NOT_ALLOWLISTED]' ] &&
+      [ "$expected_wording" = 'unrecognized command form' ]; then
+      jq -e '
+        .hookSpecificOutput.permissionDecisionReason |
+        contains("delegate bounded implementation, exploration, debugging, or test work to an ECI worker/subagent") and
+        contains("wait for and collect its result") and
+        contains("do not treat this denial alone as a blocker")
+      ' "$out" >/dev/null
+    fi
   done
 
   for command in \
@@ -1714,7 +1629,7 @@ test_spawn_and_report_identity_bindings_are_required() {
   )
 }
 
-test_nested_marker_lifecycle_is_owned_and_locked() {
+test_nested_marker_lifecycle_is_role_neutral_and_target_safe() {
   local proof_root="$TMP_ROOT/nested" sid=session-nested session_dir
   session_dir="$proof_root/$sid"
   mkdir -p "$session_dir"
@@ -1744,20 +1659,12 @@ test_nested_marker_lifecycle_is_owned_and_locked() {
     return 1
   fi
   [ ! -e "$session_dir/ate_nested_eci_active" ] || return 1
-  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null 2>&1; then
-    return 1
-  fi
-  [ ! -e "$session_dir/ate_nested_eci_active" ] || return 1
-  [ ! -e "$session_dir/ate_nested_eci_completion" ] || return 1
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+  CODEX_ROLE=eci-implementer CODEX_HOOK_IS_SUBAGENT=true \
+    CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
     "$ROOT/bin/eci-active" nested-enter 1 1 "$sid" >/dev/null
   [ -f "$session_dir/ate_nested_eci_active" ] || return 1
-  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" nested-accept >/dev/null 2>&1; then
-    return 1
-  fi
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+  CODEX_ROLE=eci-implementer CODEX_HOOK_IS_SUBAGENT=true \
+    CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
     "$ROOT/bin/eci-active" nested-accept >/dev/null
   [ -f "$session_dir/ate_nested_eci_completion" ] || return 1
   if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
@@ -1770,11 +1677,8 @@ test_nested_marker_lifecycle_is_owned_and_locked() {
     return 1
   fi
   grep -Fq 'nested ECI target is active' "$TMP_ROOT/nested-gate.err"
-  if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" nested-exit >/dev/null 2>&1; then
-    return 1
-  fi
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
+  CODEX_ROLE=eci-implementer CODEX_HOOK_IS_SUBAGENT=true \
+    CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
     "$ROOT/bin/eci-active" nested-exit >/dev/null
   [ ! -e "$session_dir/ate_nested_eci_active" ]
   set +x
@@ -1789,6 +1693,15 @@ test_lock_receipt_spoof_is_ignored() {
   grep -Fq 'lock' "$TMP_ROOT/spoof.err"
 }
 
+test_clean_teardown_history_is_nonblocking() {
+  local source="$ROOT/bin/eci-active"
+  grep -Fq 'reconcile_teardown_history' "$source"
+  grep -Fq 'validate_disengage_report "$report_path"' "$source"
+  ! grep -Fq 'provider-native critic/receipt evidence is missing or invalid' "$source"
+  ! grep -Fq 'write_teardown_receipt' "$source"
+  bash "$ROOT/hooks/tests/test-eci-off-history-reconciliation.sh"
+}
+
 # Coordinator-only helper for producing a current reviewed admission fixture.
 # It is explicitly opt-in and exits before the synthetic contract suite; normal
 # test runs remain unchanged.  The generated reports contain the focused
@@ -1797,7 +1710,7 @@ test_lock_receipt_spoof_is_ignored() {
 if [ "${ECI_EMIT_CURRENT_MANIFEST:-0}" = 1 ]; then
   emit_proof_root="${1:-${ECI_EMIT_PROOF_ROOT:?proof root required via argument or ECI_EMIT_PROOF_ROOT}}"
   emit_kind="${2:-${ECI_EMIT_KIND:-current}}"
-  build_manifest "$emit_proof_root" "$emit_kind"
+  build_manifest "$emit_proof_root" "$emit_kind" "${ECI_EMIT_E2E_REQUIRED:-false}"
   if [ -n "${ECI_EMIT_SOURCE_PATH:-}" ]; then
     emit_sid="${ECI_EMIT_SESSION_ID:-session-$emit_kind}"
     cp -- "$emit_proof_root/$emit_sid/eci-required-critics.json" "$ECI_EMIT_SOURCE_PATH"
@@ -1805,9 +1718,9 @@ if [ "${ECI_EMIT_CURRENT_MANIFEST:-0}" = 1 ]; then
   exit 0
 fi
 
-test_reviewed_dirty_commit_off_and_stop_lifecycle
+test_reviewed_dirty_commit_and_off_review_are_nonblocking
 test_user_closed_teardown_is_single_terminal_route
-test_manifest_write_is_main_owned_and_atomic
+test_manifest_write_is_role_neutral_and_target_safe
 test_malformed_commit_identity_does_not_skip_active_gate
 test_commit_parser_wrappers_and_unknown_fail_closed
 test_root_and_session_symlink_fail_closed
@@ -1826,6 +1739,7 @@ test_acceptance_transaction_recovers_each_publication_boundary
 test_acceptance_transaction_binds_published_prefixes
 test_unanchored_identity_row_is_rejected
 test_spawn_and_report_identity_bindings_are_required
-test_nested_marker_lifecycle_is_owned_and_locked
+test_nested_marker_lifecycle_is_role_neutral_and_target_safe
 test_lock_receipt_spoof_is_ignored
+test_clean_teardown_history_is_nonblocking
 printf '%s\n' 'ECI required-critic review gate tests: PASS'

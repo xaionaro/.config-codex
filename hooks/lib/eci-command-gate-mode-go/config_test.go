@@ -58,10 +58,10 @@ func TestConfigStoreSetAndReadPreservesExactValues(t *testing.T) {
 	}
 }
 
-// TestConfigStoreMalformedValuesFailClosed checks invalid byte and size states.
+// TestConfigStoreMalformedValuesFallBackToPermissive checks invalid byte and size states.
 //
-// Example: CRLF, unknown values, and oversized data must all select enforcing mode.
-func TestConfigStoreMalformedValuesFailClosed(t *testing.T) {
+// Example: CRLF, unknown values, and oversized data must not turn ordinary work into a denial.
+func TestConfigStoreMalformedValuesFallBackToPermissive(t *testing.T) {
 	store := newTestConfigStore(t)
 	configDir := filepath.Join(store.Root, ConfigDirectoryName)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
@@ -87,8 +87,8 @@ func TestConfigStoreMalformedValuesFailClosed(t *testing.T) {
 			t.Fatalf("chmod fixture: %v", err)
 		}
 		state := store.ReadMode()
-		if state.Mode != ModeEnforcing {
-			t.Fatalf("ReadMode(%q) mode = %q, want enforcing", value, state.Mode)
+		if state.Mode != ModePermissive {
+			t.Fatalf("ReadMode(%q) mode = %q, want permissive", value, state.Mode)
 		}
 		if state.ConfigState != ConfigStateInvalidBytes {
 			t.Fatalf("ReadMode(%q) state = %q, want invalid-bytes", value, state.ConfigState)
@@ -103,8 +103,55 @@ func TestConfigStoreMalformedValuesFailClosed(t *testing.T) {
 		t.Fatalf("write oversized fixture: %v", err)
 	}
 	state := store.ReadMode()
-	if want := (ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateOversize}); state != want {
+	if want := (ModeState{Mode: ModePermissive, ConfigState: ConfigStateOversize}); state != want {
 		t.Fatalf("oversized ReadMode() = %#v, want %#v", state, want)
+	}
+}
+
+// TestConfigStoreWorldWritableModeRecordFallsBackToPermissive checks malformed mode-file metadata.
+//
+// Example: a group- or world-writable mode record is ignored rather than enabling enforcement by accident.
+func TestConfigStoreWorldWritableModeRecordFallsBackToPermissive(t *testing.T) {
+	store := newTestConfigStore(t)
+	if err := store.SetMode(ModeEnforcing); err != nil {
+		t.Fatalf("seed enforcing mode: %v", err)
+	}
+
+	configPath := filepath.Join(store.Root, ConfigDirectoryName, ConfigFileName)
+	if err := os.Chmod(configPath, 0o666); err != nil {
+		t.Fatalf("make mode record world writable: %v", err)
+	}
+
+	state := store.ReadMode()
+	if want := (ModeState{Mode: ModePermissive, ConfigState: ConfigStateInvalidMetadata}); state != want {
+		t.Fatalf("world-writable ReadMode() = %#v, want %#v", state, want)
+	}
+}
+
+// TestConfigStoreWorldWritableConfigRootFallsBackToPermissive checks the preference root metadata.
+//
+// Example: an enforcing record below a world-writable configuration root cannot accidentally enable enforcement.
+func TestConfigStoreWorldWritableConfigRootFallsBackToPermissive(t *testing.T) {
+	store := newTestConfigStore(t)
+	unsafeRoot := filepath.Join(store.Root, "world-writable-config")
+	if err := os.Mkdir(unsafeRoot, 0o700); err != nil {
+		t.Fatalf("create unsafe config root: %v", err)
+	}
+	if err := os.Chmod(unsafeRoot, 0o777); err != nil {
+		t.Fatalf("make config root world writable: %v", err)
+	}
+	configDirectory := filepath.Join(unsafeRoot, ConfigDirectoryName)
+	if err := os.Mkdir(configDirectory, 0o700); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	configPath := filepath.Join(configDirectory, ConfigFileName)
+	if err := os.WriteFile(configPath, []byte("enforcing\n"), 0o600); err != nil {
+		t.Fatalf("write enforcing config: %v", err)
+	}
+
+	state := (ConfigStore{Root: unsafeRoot}).ReadMode()
+	if want := (ModeState{Mode: ModePermissive, ConfigState: ConfigStateInvalidMetadata}); state != want {
+		t.Fatalf("world-writable root ReadMode() = %#v, want %#v", state, want)
 	}
 }
 
@@ -129,8 +176,8 @@ func TestConfigStoreRejectsUnsafeConfigurationObjects(t *testing.T) {
 	if err := os.Symlink(outside, configPath); err != nil {
 		t.Fatalf("create config symlink: %v", err)
 	}
-	if state := store.ReadMode(); state.ConfigState != ConfigStateInvalidPath {
-		t.Fatalf("symlink state = %#v, want invalid-path", state)
+	if state := store.ReadMode(); state.ConfigState != ConfigStateInvalidPath || state.Mode != ModePermissive {
+		t.Fatalf("symlink state = %#v, want permissive invalid-path", state)
 	}
 	if err := store.SetMode(ModeEnforcing); err != nil {
 		t.Fatalf("SetMode over config symlink: %v", err)
@@ -149,8 +196,8 @@ func TestConfigStoreRejectsUnsafeConfigurationObjects(t *testing.T) {
 	if err := os.Link(hardlinkTarget, configPath); err != nil {
 		t.Fatalf("create config hardlink: %v", err)
 	}
-	if state := store.ReadMode(); state.ConfigState != ConfigStateInvalidMetadata {
-		t.Fatalf("hardlink state = %#v, want invalid-metadata", state)
+	if state := store.ReadMode(); state.ConfigState != ConfigStateInvalidMetadata || state.Mode != ModePermissive {
+		t.Fatalf("hardlink state = %#v, want permissive invalid-metadata", state)
 	}
 }
 

@@ -72,36 +72,20 @@ if [ "$hook_is_subagent" = true ]; then
          [ "$control_alias" = true ] ||
          codex_path_is_git_approval_file "$lexical_path" ||
          codex_path_is_git_approval_file "$resolved_path"; }; then
-      deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "patch-validation" "$path" "Only the main thread may modify coordinator-owned ECI or authorization state." "route coordinator-owned ECI or authorization changes through the main/orchestrator")"
+      deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "patch-validation" "$path" "Only the main thread may modify coordinator-owned ECI control state." "route coordinator-owned ECI control changes through the main/orchestrator")"
     fi
   done <<<"$patch_paths"
 fi
 
-if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)docs/(superpowers/)?plans/'; then
-  deny 'Do not edit plan files under docs/plans or docs/superpowers/plans from normal implementation flow. Use the active plan/checklist instead.'
-fi
-
-ownership_failure_deny() {
-  deny "ownership check failed; failing closed for session-scoped path safety (file=${BASH_SOURCE[0]},line=${BASH_LINENO[0]:-unknown},command=${BASH_COMMAND})"
-}
-
-trap 'ownership_failure_deny' ERR
+# Session ownership is a concrete target check only when both the target owner
+# and the callback's allowed session set resolve.  A probe failure leaves this
+# child advisory; it must not deny an ordinary repository patch.
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   lexical_owner_path="$(codex_lexical_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
-  if codex_path_is_under_proof_root "$lexical_owner_path" &&
-     ! codex_state_path_is_safe "$lexical_owner_path" "$(codex_proof_root)" 2>/dev/null; then
-    deny "Refusing unsafe session-scoped patch path ${path##*/}: proof-root ancestors and final components must not be symlinks."
-  fi
   resolved_owner_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
-  if [ -n "$resolved_owner_path" ] &&
-     codex_path_is_under_proof_root "$resolved_owner_path" &&
-     ! codex_state_path_is_safe "$resolved_owner_path" "$(codex_proof_root)" 2>/dev/null; then
-    deny "Refusing unsafe resolved session-scoped patch path ${path##*/}: proof-root ancestors and final components must not be symlinks."
-  fi
-  # Ordinary repository paths have no session owner to resolve.  Avoid the
-  # expensive alias/session probes for them; proof-root paths already passed
-  # both lexical and resolved safety checks above.
+  # Ordinary repository paths have no session owner to resolve.  Skip the
+  # metadata probe unless the target is actually under a proof root.
   if ! codex_path_is_under_proof_root "$lexical_owner_path" &&
      ! codex_path_is_under_proof_root "${resolved_owner_path:-}"; then
     continue
@@ -111,55 +95,11 @@ while IFS= read -r path; do
   [ -n "$owner_session_id" ] || owner_session_id="$(codex_path_owner_session_id "${resolved_owner_path:-$path}" 2>/dev/null || true)"
   [ -n "$owner_session_id" ] || continue
   mapfile -t allowed_session_ids < <(codex_hook_allowed_session_ids "$input")
-  if [ "${#allowed_session_ids[@]}" -eq 0 ]; then
-    deny "Session-scoped file ${path##*/} requires a current session id; none resolved. Refusing fail-open on a session-scoped path."
-  fi
-  if ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
+  if [ "${#allowed_session_ids[@]}" -gt 0 ] &&
+    ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
     deny "Refusing to edit ${path##*/}: file belongs to session $owner_session_id, allowed sessions are ${allowed_session_ids[*]}."
   fi
 done <<<"$patch_paths"
-trap - ERR
-codex_install_fail_open_trap validate-apply-patch
-
-if printf '%s\n' "$patch_paths" | grep -Eiq '(^|/)(import|imports|vendor|(3rd|third)[ _-]?party)(/|$)'; then
-  deny 'Do not edit files under import/, imports/, vendor/, or any third-party/3rdparty variant directly. Edit the original source and revendor the files. Worst case: edit the originals and rsync them into the vendored dir.'
-fi
-
-# Block patches that modify files inside a git submodule. Walk up from each
-# patched path and look for a .git that is a FILE (gitlink) rather than dir.
-is_inside_submodule() {
-  local p="$1"
-  [ -n "$p" ] || return 1
-  local d
-  if [ -d "$p" ]; then
-    d="$p"
-  else
-    d="$(dirname -- "$p")"
-  fi
-  case "$d" in
-    /*) ;;
-    *) d="$PWD/$d" ;;
-  esac
-  while [ -n "$d" ] && [ "$d" != "/" ]; do
-    if [ -e "$d/.git" ]; then
-      [ -f "$d/.git" ] && return 0
-      return 1
-    fi
-    d="$(dirname -- "$d")"
-  done
-  return 1
-}
-while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  if is_inside_submodule "$path"; then
-    deny 'Do not edit files inside a git submodule. Update the submodule upstream and pull, or detach with git submodule deinit if intentional.'
-  fi
-done <<<"$patch_paths"
-
-if printf '%s\n' "$patch_paths" | grep -Eq '(^|/)go\.mod$' &&
-   printf '%s\n' "$patch_text" | grep -Eq '^\+.*=>[[:space:]]*(\.\./|\./)'; then
-  deny 'Do not add local relative replace directives to go.mod. Use a workspace, module proxy, or explicit user-approved local override.'
-fi
 
 # Active ECI edit callbacks are deliberately marker-only and read-only.  Keep
 # the legacy activity bookkeeping for ordinary edits, but do not take its

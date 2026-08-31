@@ -186,8 +186,8 @@ if [ "$verdict" = "deny" ]; then
     edit_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // .tool_input.path // empty' 2>/dev/null || true)
     subject="tool=$(eci_diagnostic_value "$tool_name"),path=$(eci_diagnostic_value "${edit_path:-<missing>}"),session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}")"
   fi
-  detail=$(printf 'Pre-tool admission reviewer denied the first tool call of this turn.\n\nReason: %s\n\nLoad the matching skill or delegate before invoking %s directly.\n\nOverride: touch %s/bypass' "$reason" "$tool_name" "$state_dir")
-  message="$(eci_diagnostic_reason "$(eci_diagnostic_code_for_reason "$detail")" "PreToolUse" "pre-reviewer-admission" "$subject" "$detail" "load the matching skill or delegate before invoking the tool; use the scoped bypass only when the coordinator has authorized it")"
+  detail=$(printf 'Pre-tool admission reviewer denied the first tool call of this turn.\n\nReason: %s\n\nLoad the matching skill or delegate before invoking %s directly. The recovery route is unavailable; report the blocker.' "$reason" "$tool_name")
+  message="$(eci_diagnostic_reason "$(eci_diagnostic_code_for_reason "$detail")" "PreToolUse" "pre-reviewer-admission" "$subject" "$detail" "load the matching skill or delegate before invoking the tool; report the blocker if recovery is unavailable")"
   jq -n --arg reason "$message" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

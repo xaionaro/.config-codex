@@ -20,9 +20,8 @@ assert_absent() {
   fi
 }
 
-# These are active runtime writers.  Security-policy fixtures and diagnostics
-# may still mention the system temporary root as an adversarial input; they are
-# intentionally outside this default-path assertion.
+# These are active runtime writers.  Their private scratch defaults must not
+# turn a caller's ordinary named temporary path into a command denial.
 assert_absent '${TMPDIR:-/tmp}' "$ROOT/hooks/pre-commit-go-mod.sh"
 assert_absent '${TMPDIR:-/tmp}' "$ROOT/hooks/pretooluse-edit-dispatch.sh"
 assert_absent '${TMPDIR:-/tmp}' "$ROOT/hooks/stop-gate.sh"
@@ -49,21 +48,15 @@ run_helper_probe() {
   status=$?
   set -e
   [ "$status" -eq 0 ] || fail "$provider helper probe failed: $output"
+  printf '%s\n' "$output" | grep -Fq 'status=0' || fail "$provider helper treated TMPDIR=/tmp as a failure: $output"
   printf '%s\n' "$output" | grep -Fq "tmpdir=$root/tmp" || fail "$provider helper did not select home/tmp: $output"
   printf '%s\n' "$output" | grep -Fq "probe=$root/tmp/probe." || fail "$provider helper wrote outside home/tmp: $output"
-  [ -f "$root/diagnostic" ] || fail "$provider helper did not record unsafe TMPDIR diagnostic"
-  grep -Fq '[ECI_TMPDIR_SYSTEM_ROOT]' "$root/diagnostic" || fail "$provider helper diagnostic omitted ECI_TMPDIR_SYSTEM_ROOT"
+  [ ! -s "$root/diagnostic" ] || fail "$provider helper emitted a user-facing TMPDIR denial: $(cat -- "$root/diagnostic")"
   rm -rf -- "$root/tmp/probe."*
 }
 
 codex_home="$TEST_ROOT/codex-home"
 mkdir -p "$codex_home/tmp"
 run_helper_probe codex "$ROOT/hooks/lib/codex-tmp.sh" CODEX_TMPDIR codex_init_tmp "$codex_home"
-
-if [ -f "$HOME_ROOT/.kimi-code/hooks/lib/kimi-tmp.sh" ]; then
-  kimi_home="$TEST_ROOT/kimi-home"
-  mkdir -p "$kimi_home/tmp"
-  run_helper_probe kimi "$HOME_ROOT/.kimi-code/hooks/lib/kimi-tmp.sh" KIMI_TMPDIR kimi_init_tmp "$kimi_home"
-fi
 
 printf '%s\n' 'home-scoped temporary-directory policy: PASS'

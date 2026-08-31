@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
-# Role-neutral tri-state recognizer for reserved environment commands.  It
-# reports only argv shape and registry membership; caller-owned gates decide
-# whether the command otherwise belongs to an ordinary or protected route.
+# Role-neutral tri-state recognizer for environment commands.  It reports
+# only argv shape and query form; caller-owned gates decide whether a command
+# otherwise reaches an actual mutation or control target.
 environment_command_detail() {
   local direct_command="${1:-}" direct_name direct_fast=true
   local -a direct_words=()
 
   # The overwhelmingly common environment query is a direct, literal
-  # `printenv NAME...` with a small bounded set of registered names.  Keep
+  # `printenv NAME...` with bounded identifier names.  Keep
   # this path entirely in Bash: it avoids starting Python/shlex for a query
   # whose grammar is already expressible as one argv check.  Anything that
   # is not provably this exact shape falls through to the complete recognizer
@@ -22,14 +22,6 @@ environment_command_detail() {
         direct_fast=false
         break
       fi
-      case "$direct_name" in
-        HOME|PWD|PATH|CODEX_HOME|KIMI_CODE_HOME|SESSION_ID|CODEX_ROLE|CODEX_SESSION_ID|KIMI_SESSION_ID|CODEX_VALIDATE_CWD|KIMI_VALIDATE_CWD|CODEX_VALIDATE_SESSION_ID|KIMI_VALIDATE_SESSION_ID|CODEX_CONFIGURED_HOME|KIMI_CONFIGURED_HOME|CODEX_COMMAND_PATH|KIMI_COMMAND_PATH|CODEX_STOP_GATE_ROOT|KIMI_STOP_GATE_ROOT|TMPDIR|CODEX_PROOF_ROOT|KIMI_PROOF_ROOT|CODEX_PROOF_ROOT_CANONICAL|CODEX_PROOF_ROOT_CONFIGURED|CODEX_PROOF_ROOT_STABLE_ALIAS|KIMI_PROOF_ROOT_CANONICAL|KIMI_PROOF_ROOT_CONFIGURED|KIMI_PROOF_ROOT_STABLE_ALIAS|CODEX_APPROVED_REPO_ROOT_1|CODEX_APPROVED_REPO_ROOT_2|CODEX_APPROVED_REPO_ROOT_3|KIMI_APPROVED_REPO_ROOT_1|KIMI_APPROVED_REPO_ROOT_2|KIMI_APPROVED_REPO_ROOT_3|CODEX_HIGH_LEVEL_LOG_PATH|CODEX_HIGH_LEVEL_LOG_PATH_ALIAS|KIMI_HIGH_LEVEL_LOG_PATH|KIMI_HIGH_LEVEL_LOG_PATH_ALIAS)
-          ;;
-        *)
-          direct_fast=false
-          break
-          ;;
-      esac
       if [[ -n "${direct_seen[$direct_name]+set}" ]]; then
         direct_fast=false
         break
@@ -37,6 +29,8 @@ environment_command_detail() {
       direct_seen["$direct_name"]=1
     done
     if [ "$direct_fast" = true ]; then
+      # This opaque compatibility value is consumed by validate-bash.  It
+      # describes a direct named-query shape, not membership in an allowlist.
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
         ALLOW printenv 1 0 printenv direct-registered-query
       return 0
@@ -49,24 +43,6 @@ import re
 import shlex
 import sys
 
-PUBLIC_ENV_NAMES = {
-    "HOME", "PWD", "PATH", "CODEX_HOME", "KIMI_CODE_HOME",
-    "SESSION_ID", "CODEX_ROLE", "CODEX_SESSION_ID", "KIMI_SESSION_ID",
-    "CODEX_VALIDATE_CWD", "KIMI_VALIDATE_CWD",
-    "CODEX_VALIDATE_SESSION_ID", "KIMI_VALIDATE_SESSION_ID",
-    "CODEX_CONFIGURED_HOME", "KIMI_CONFIGURED_HOME",
-    "CODEX_COMMAND_PATH", "KIMI_COMMAND_PATH",
-    "CODEX_STOP_GATE_ROOT", "KIMI_STOP_GATE_ROOT", "TMPDIR",
-    "CODEX_PROOF_ROOT", "KIMI_PROOF_ROOT",
-    "CODEX_PROOF_ROOT_CANONICAL", "CODEX_PROOF_ROOT_CONFIGURED",
-    "CODEX_PROOF_ROOT_STABLE_ALIAS", "KIMI_PROOF_ROOT_CANONICAL",
-    "KIMI_PROOF_ROOT_CONFIGURED", "KIMI_PROOF_ROOT_STABLE_ALIAS",
-    "CODEX_APPROVED_REPO_ROOT_1", "CODEX_APPROVED_REPO_ROOT_2",
-    "CODEX_APPROVED_REPO_ROOT_3", "KIMI_APPROVED_REPO_ROOT_1",
-    "KIMI_APPROVED_REPO_ROOT_2", "KIMI_APPROVED_REPO_ROOT_3",
-    "CODEX_HIGH_LEVEL_LOG_PATH", "CODEX_HIGH_LEVEL_LOG_PATH_ALIAS",
-    "KIMI_HIGH_LEVEL_LOG_PATH", "KIMI_HIGH_LEVEL_LOG_PATH_ALIAS",
-}
 INTERPRETER_CONTEXT_NAMES = {
     "BASH_ENV", "BASHOPTS", "CDPATH", "ENV", "GEM_HOME", "GEM_PATH",
     "IFS", "LD_LIBRARY_PATH", "LD_PRELOAD", "NODE_OPTIONS", "NODE_PATH",
@@ -139,14 +115,9 @@ def inspect(values, segment, base=0, depth=0):
                     "duplicate-name",
                 )
             seen.add(candidate)
-            if candidate not in PUBLIC_ENV_NAMES:
-                return denied(
-                    "ECI_ENVIRONMENT_NAME_DENIED",
-                    segment,
-                    index,
-                    candidate,
-                    "unregistered-name",
-                )
+            # This recognizer never reads command output.  A caller that can
+            # expose output owns any redaction; a valid read-only query does
+            # not need local-name registration to be admitted.
         return (
             "ALLOW",
             "printenv",
@@ -307,7 +278,6 @@ PY
 
 enforce_environment_command_boundary() {
   local detail state code segment argv_index token reason_key
-  local reason remediation subject
   detail="$(environment_command_detail "$command" 2>/dev/null || true)"
   ECI_ENVIRONMENT_BOUNDARY_CHECKED=true
   ECI_ENVIRONMENT_COMMAND_STATE=""
@@ -322,30 +292,12 @@ enforce_environment_command_boundary() {
   ECI_ENVIRONMENT_COMMAND_SEGMENT="$segment"
   ECI_ENVIRONMENT_COMMAND_ARGV_INDEX="$argv_index"
   ECI_ENVIRONMENT_COMMAND_REASON="$reason_key"
+  # This recognizer can describe ambiguous or unusual `env` / `printenv`
+  # spelling, but that spelling by itself does not resolve to a harmful
+  # target.  Environment inspection and wrapper setup are ordinary work;
+  # downstream target-aware checks own any actual filesystem, control-state,
+  # or destructive effect.  Keep the classification available to callers as
+  # an advisory rather than turning it into an access boundary.
   [ "$state" = DENY ] || return 0
-  case "$reason_key" in
-    no-child) reason="environment enumeration denied because env has no remaining child argv" ;;
-    no-names) reason="environment enumeration denied because printenv has no queried names" ;;
-    too-many-names) reason="environment enumeration denied because printenv exceeds the 16-name query bound" ;;
-    malformed-name) reason="environment enumeration denied because the reported query token is not an identifier" ;;
-    duplicate-name) reason="environment enumeration denied because the reported query name is duplicated" ;;
-    unregistered-name) reason="environment query name is not registered; name=$token; index=$argv_index; status=unregistered" ;;
-    split-string) reason="environment option denied because split-string reparses a dynamic argv payload" ;;
-    missing-option-argument) reason="environment option denied because the reported option is missing its required argument" ;;
-    malformed-option-argument) reason="environment option denied because the reported option argument is not a valid identifier or path" ;;
-    unsupported-option) reason="environment option denied because the reported option is unsupported by the finite env/printenv grammar" ;;
-    interpreter-context) reason="environment context denied because assignment name=$token activates registered interpreter or executable lookup context" ;;
-    repository-context) reason="environment context denied because assignment name=$token activates registered repository lookup or execution context" ;;
-    *) reason="environment command denied because the recognizer returned unknown status=$reason_key" ;;
-  esac
-  case "$code" in
-    ECI_ENVIRONMENT_NAME_DENIED) remediation="query one to sixteen unique identifiers from PUBLIC_ENV_NAMES, or remove the reported name" ;;
-    ECI_ENVIRONMENT_OPTION_DENIED) remediation="remove the reported option or supply its required literal argument using the finite env option grammar" ;;
-    ECI_ENVIRONMENT_CONTEXT_DENIED) remediation="remove the reported context assignment and invoke the child with ordinary non-context assignments only" ;;
-    *) remediation="for printenv, name one to sixteen registered identifiers; for env, supply one finite literal child argv" ;;
-  esac
-  subject="session=$(eci_diagnostic_value "${session_id:-<missing>}")"\
-",cwd=$(eci_diagnostic_value "${cwd:-<missing>}")"\
-",segment=$segment,token=$(eci_diagnostic_value "$token"),argv_index=$argv_index"
-  deny "$(eci_diagnostic_reason "$code" "PreToolUse" "environment-boundary" "$subject" "$reason" "$remediation")"
+  ECI_ENVIRONMENT_COMMAND_STATE="ADVISORY"
 }

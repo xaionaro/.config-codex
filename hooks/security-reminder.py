@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse security reminders for risky edit patterns."""
+"""Optional, task-requested risk-review reminders for edit patterns."""
 
 import json
 import os
@@ -130,7 +130,9 @@ def patch_paths(content: str) -> list[str]:
 
 
 def main() -> int:
-    if os.environ.get("ENABLE_SECURITY_REMINDER", "1") == "0":
+    # Ordinary edits do not need this advisory or its per-session state. A
+    # task that explicitly requests risk review opts in with this exact flag.
+    if os.environ.get("ENABLE_SECURITY_REMINDER") != "1":
         return 0
     if random.random() < 0.1:
         cleanup_old_state()
@@ -172,7 +174,10 @@ def main() -> int:
             return 0
         state.add(key)
         save_state(state_path, state)
-        print(json.dumps({"systemMessage": pattern["reminder"]}))
+        # This is an informational advisory, not a provider hook envelope.
+        # Keep it off stdout so the edit dispatcher cannot forward it as an
+        # invalid top-level PreToolUse JSON object.
+        print(json.dumps({"systemMessage": pattern["reminder"]}), file=sys.stderr)
         return 0
 
     return 0

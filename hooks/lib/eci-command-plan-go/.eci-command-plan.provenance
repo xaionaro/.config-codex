@@ -1,0 +1,14 @@
+contract	closed-go-build/v1
+go_path	/usr/lib/go-1.24/bin/go
+go_sha256	9968e592a8b0f6a4fdde06462000388b0fe96a2e265ee760156bc0ee5311dc58
+go_version	go version go1.24.4 linux/arm64
+go_root	/usr/lib/go-1.24
+go_tool_path	/usr/lib/go-1.24/pkg/tool/linux_arm64
+go_tool_sha256	f541f081dacd1f40dc6e277b5b9517daeab3ecda6ea22576828f903fc2255076
+target	linux/arm64
+source_go.mod_sha256	11600decc6c49183e5e420524fbfbc02eca566dc2c0640ee551aaa7daba5c10e
+source_main.go_sha256	f93ba8655df0d61c8092e54bc07b5015db56117c71a50315ba968f9c80f255de
+source_classifier.go_sha256	03536ef22c7ed7206a2e6872234d318555c6787aac21e1445ac063d39d702755
+binary_sha256	d2ed579238b34cf8787833f30bf263b082f4648630d3c833d5bc35b89437f6ee
+binary_size	3520006
+binary_mode	755

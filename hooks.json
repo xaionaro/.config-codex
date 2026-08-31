@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/session-snapshot.sh\"'",
+            "command": "bash -lc 'exec \"$HOME/.codex/hooks/session-snapshot.sh\"'",
             "statusMessage": "Loading Codex session rules"
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/eci-post-compact-refresh.sh\"'",
+            "command": "bash -c 'exec \"$HOME/.codex/hooks/eci-post-compact-refresh.sh\"'",
             "statusMessage": "Refreshing ECI rules after compaction"
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/prompt-task-reminder.sh\"'"
+            "command": "bash -lc 'exec \"$HOME/.codex/hooks/prompt-task-reminder.sh\"'"
           }
         ]
       }
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/validate-bash.sh\"",
+            "command": "bash \"$HOME/.codex/hooks/validate-bash.sh\"",
             "timeout": 75,
             "statusMessage": "Checking shell command"
           }
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"",
+            "command": "bash \"$HOME/.codex/hooks/pretooluse-edit-dispatch.sh\"",
             "statusMessage": "Checking edit gates"
           }
         ]
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CODEX_HOME:-$HOME/.codex}/hooks/pretooluse-edit-dispatch.sh\"",
+            "command": "bash \"$HOME/.codex/hooks/pretooluse-edit-dispatch.sh\"",
             "statusMessage": "Checking edit gates"
           }
         ]
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'exec \"${CODEX_HOME:-$HOME/.codex}/hooks/stop-gate.sh\"'",
+            "command": "bash -lc 'exec \"$HOME/.codex/hooks/stop-gate.sh\"'",
             "timeout": 300,
             "statusMessage": "Checking stop criteria"
           }

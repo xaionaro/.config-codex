@@ -1,150 +1,127 @@
 #!/usr/bin/env bash
 
+# Stop is a post-response continuation hook. A valid active marker gets one
+# useful reminder; identical later callbacks continue so the client does not
+# loop through repeated final/retry/poll attempts.
+
 set -euo pipefail
 
-ROOT="${ECI_TEST_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-stop-loop.XXXXXX")"
+ROOT="${ECI_TEST_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+TMP_PARENT="${CODEX_TMPDIR:-${TMPDIR:-${HOME:?}/tmp}}"
+mkdir -p -- "$TMP_PARENT"
+TMP_ROOT="$(mktemp -d "$TMP_PARENT/eci-stop-loop.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
-proof_root="$TMP_ROOT/proof"
-mkdir -p "$proof_root/activity/sessions/t00-session"
-printf '%s\n' 'created_utc: 2026-08-17T00:00:00Z' >"$proof_root/activity/sessions/t00-session/shell"
-repo="$TMP_ROOT/repo"
-mkdir -p "$repo"
-git -C "$repo" init -q
-git -C "$repo" config user.email 'eci-test@example.invalid'
-git -C "$repo" config user.name 'ECI stop-loop test'
-printf '%s\n' 'clean stop-loop fixture' >"$repo/README"
-git -C "$repo" add README
-git -C "$repo" commit -qm 'create clean stop-loop fixture'
+FIXTURE_HOME="$TMP_ROOT/home"
+FIXTURE_CODEX="$FIXTURE_HOME/.codex"
+PROOF_ROOT="$TMP_ROOT/proof"
+REPO="$TMP_ROOT/repo"
+
+mkdir -p -- "$FIXTURE_CODEX" "$FIXTURE_HOME/tmp" "$PROOF_ROOT" "$REPO"
+cp -a -- "$ROOT/hooks" "$FIXTURE_CODEX/hooks"
+
+run_stop() {
+  local input="$1" output="$2" proof_root="${3:-$PROOF_ROOT}"
+
+  env -u CODEX_HOME -u CODEX_ROLE \
+    HOME="$FIXTURE_HOME" CODEX_PROOF_ROOT="$proof_root" \
+    bash "$FIXTURE_CODEX/hooks/stop-gate.sh" <"$input" >"$output"
+}
+
+write_marker() {
+  local proof_root="$1" session="$2" marker_cwd="$3"
+  local marker="$proof_root/$session/eci_active"
+
+  mkdir -p -- "${marker%/*}"
+  printf 'scope: stop-loop fixture\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-08-28T00:00:00Z\n' \
+    "$marker_cwd" "$session" >"$marker"
+  printf '%s\n' "$marker"
+}
+
+assert_continue() {
+  local output="$1"
+
+  jq -e '.continue == true and (has("decision") | not)' "$output" >/dev/null || {
+    cat "$output" >&2
+    exit 1
+  }
+}
+
+git -C "$REPO" init -q
+git -C "$REPO" config user.email 'eci-stop-loop@example.invalid'
+git -C "$REPO" config user.name 'ECI stop loop test'
+printf 'base\n' >"$REPO/README.md"
+git -C "$REPO" add README.md
+git -C "$REPO" commit -qm 'initial fixture'
+
+# A valid direct marker is authoritative even if sibling records are stale or
+# malformed. The first callback tells the agent to resume work or teardown.
+session=stop-loop-session
+sibling=stale-sibling
+marker="$(write_marker "$PROOF_ROOT" "$session" "$REPO")"
+mkdir -p -- "$PROOF_ROOT/$sibling"
+printf 'stale sibling marker\n' >"$PROOF_ROOT/$sibling/eci_active"
+cp -- "$marker" "$TMP_ROOT/marker.before"
+
 input="$TMP_ROOT/input.json"
-jq -cn --arg cwd "$repo" \
-  --arg transcript "$TMP_ROOT/nonexistent-stop-loop-transcript.jsonl" \
-  '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' >"$input"
-output="$TMP_ROOT/output.json"
-for _ in 1 2 3 4 5; do
-  CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
-done
+first="$TMP_ROOT/first.json"
+second="$TMP_ROOT/second.json"
+third="$TMP_ROOT/third.json"
+jq -cn --arg session_id "$session" --arg cwd "$REPO" \
+  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:false}' >"$input"
 
+run_stop "$input" "$first"
+jq -e --arg marker "$marker" '
+  .decision == "block" and
+  ((.reason // "") | contains("[ECI_STOP_ACTIVE_ECI]")) and
+  ((.reason // "") | contains($marker)) and
+  ((.reason // "") | contains("sibling marker state is advisory")) and
+  ((.reason // "") | contains("ECI_STOP_LOOP_CONTRACT_DEFECT") | not)
+' "$first" >/dev/null || {
+  cat "$first" >&2
+  exit 1
+}
+state="$PROOF_ROOT/$session/stop_loop_state"
+grep -qx 'count: 1' "$state"
+grep -qx 'loop_emitted: true' "$state"
+cmp -s "$TMP_ROOT/marker.before" "$marker"
+
+# The same unchanged callback must be stable continuation, not another Stop
+# denial. Its marker and one-reminder state remain untouched.
+cp -- "$state" "$TMP_ROOT/state.after-reminder"
+run_stop "$input" "$second"
+assert_continue "$second"
+run_stop "$input" "$third"
+assert_continue "$third"
+cmp -s "$second" "$third"
+cmp -s "$TMP_ROOT/marker.before" "$marker"
+cmp -s "$TMP_ROOT/state.after-reminder" "$state"
+
+# An actually mismatched direct marker is still a concrete first-callback
+# boundary. It is not converted into a generic sibling or loop diagnostic.
+mismatch_root="$TMP_ROOT/mismatch-proof"
+mismatch_session=mismatch-session
+mkdir -p -- "$mismatch_root/$mismatch_session" "$TMP_ROOT/other-cwd"
+printf 'scope: mismatch\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-08-28T00:00:00Z\n' \
+  "$TMP_ROOT/other-cwd" "$mismatch_session" >"$mismatch_root/$mismatch_session/eci_active"
+mismatch_input="$TMP_ROOT/mismatch-input.json"
+mismatch_output="$TMP_ROOT/mismatch-output.json"
+jq -cn --arg session_id "$mismatch_session" --arg cwd "$REPO" \
+  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:false}' >"$mismatch_input"
+run_stop "$mismatch_input" "$mismatch_output" "$mismatch_root"
 jq -e '
   .decision == "block" and
-  (.reason | startswith("[ECI_STOP_LOOP_DEDUP]")) and
-  (.reason | contains("LOOP DETECTED")) and
-  (.reason | contains("unchanged control metadata")) and
-  (.reason | contains("Automated stop checks")) and
-  (.reason | contains("do not emit another final/status/question")) and
-  (.reason | contains("Delegate the next bounded work item through the approved coordinator route")) and
-  (.reason | contains("wait for and collect its result")) and
-  (.reason | contains("do not finish this turn without taking that action")) and
-  (.reason | contains("remediation: delegate the next bounded work item to a subagent through the approved coordinator route")) and
-  (.reason | contains("one concrete user-owned blocker")) and
-  (.reason | contains("wait for new external state")) and
-  (.reason | contains("stop again") | not)
-' "$output" >/dev/null || {
-  cat "$output" >&2
+  ((.reason // "") | contains("[ECI_MARKER_SCOPE_MISMATCH]")) and
+  ((.reason // "") | contains("ECI_STOP_LOOP_CONTRACT_DEFECT") | not)
+' "$mismatch_output" >/dev/null || {
+  cat "$mismatch_output" >&2
   exit 1
 }
 
-printf '%s\n' 'stop loop guidance assertions: PASS'
+# Once normal teardown leaves no active marker, Stop has no ECI loop boundary.
+teardown_root="$TMP_ROOT/teardown-proof"
+teardown_output="$TMP_ROOT/teardown-output.json"
+run_stop "$input" "$teardown_output" "$teardown_root"
+assert_continue "$teardown_output"
 
-# Once the same normalized diagnostic has emitted loop guidance, a repeated
-# identical Stop admission must remain blocked with one deduplicated diagnostic;
-# it must not produce another LOOP DETECTED message or invite another retry.
-CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
-jq -e '
-  .decision == "block" and
-  ((.reason // "") | startswith("[ECI_STOP_LOOP_DEDUP]")) and
-  ((.reason // "") | contains("wait for and collect its result")) and
-  ((.reason // "") | contains("do not finish this turn without taking that action")) and
-  ((.reason // "") | contains("LOOP DETECTED") | not) and
-  ((.reason // "") | test("retry|poll|final|status|question"; "i") | not)
-' "$output" >/dev/null || {
-  cat "$output" >&2
-  exit 1
-}
-
-printf '%s\n' 'stop loop repeat convergence assertions: PASS'
-
-# Scope-mismatch denials use the active-marker fast path. They must share the
-# same bounded loop state as ordinary Stop denials instead of repeating the
-# identical marker diagnostic forever.
-scope_proof_root="$TMP_ROOT/scope-mismatch-proof"
-scope_session=t00-scope-mismatch
-scope_input="$TMP_ROOT/scope-mismatch-input.json"
-scope_output="$TMP_ROOT/scope-mismatch-output.json"
-mkdir -p "$scope_proof_root/$scope_session" "$scope_proof_root/unrelated" "$TMP_ROOT/other-cwd"
-printf 'scope: scope mismatch\ncwd: %s\nsession_id: %s\n' \
-  "$TMP_ROOT/other-cwd" "$scope_session" >"$scope_proof_root/$scope_session/eci_active"
-jq -cn --arg cwd "$repo" --arg session_id "$scope_session" \
-  --arg transcript "$TMP_ROOT/nonexistent-scope-mismatch-transcript.jsonl" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' \
-  >"$scope_input"
-for _ in 1 2 3 4 5; do
-  CODEX_PROOF_ROOT="$scope_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$scope_input" >"$scope_output"
-done
-jq -e '
-  .decision == "block" and
-  (.reason | contains("[ECI_MARKER_SCOPE_MISMATCH]")) and
-  (.reason | contains("LOOP DETECTED")) and
-  (.reason | contains("retry, poll, or stop attempt")) and
-  (.reason | contains("wait for new external state"))
-' "$scope_output" >/dev/null || { cat "$scope_output" >&2; exit 1; }
-CODEX_PROOF_ROOT="$scope_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$scope_input" >"$scope_output"
-jq -e '
-  .decision == "block" and
-  ((.reason // "") | contains("ECI_STOP_LOOP_DEDUP")) and
-  ((.reason // "") | contains("LOOP DETECTED") | not) and
-  ((.continue // false) | not)
-' "$scope_output" >/dev/null || { cat "$scope_output" >&2; exit 1; }
-
-printf '%s\n' 'scope mismatch loop convergence assertions: PASS'
-
-# An active ATE session with no courier must not end a turn without an
-# explicit delegated action. The Stop denial names delegation, waiting, and
-# result collection so the coordinator cannot mistake it for a passive hint.
-ate_proof_root="$TMP_ROOT/ate-proof"
-ate_output="$TMP_ROOT/ate-output.json"
-mkdir -p "$ate_proof_root/ate/sessions/t00-session"
-printf '%s\n' 'phase: execution' >"$ate_proof_root/ate/sessions/t00-session/ate_active"
-CODEX_PROOF_ROOT="$ate_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$ate_output"
-jq -e '
-  .decision == "block" and
-  (.reason | contains("Delegate the next bounded work item")) and
-  (.reason | contains("wait for and collect its result")) and
-  (.reason | contains("do not finish this turn without taking that action"))
-' "$ate_output" >/dev/null || { cat "$ate_output" >&2; exit 1; }
-
-printf '%s\n' 'active ATE delegation guidance assertions: PASS'
-
-# A terminal v2 counter from a prior resolved marker generation must not make
-# the next same-session/same-diagnostic Stop callback silently continue. Keep
-# the old fingerprint and identity fields intentionally unchanged, then
-# republish the marker with identical bytes so only the current publication
-# generation differs; this catches second-resolution fingerprint reuse.
-generation_proof_root="$TMP_ROOT/stale-generation-proof"
-generation_session=t00-session
-generation_session_dir="$generation_proof_root/$generation_session"
-mkdir -p "$generation_session_dir" "$generation_proof_root/activity/sessions/$generation_session"
-printf '%s\n' 'created_utc: 2026-08-17T00:00:00Z' >"$generation_proof_root/activity/sessions/$generation_session/shell"
-printf 'scope: prior generation\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-08-17T00:00:00Z\n' \
-  "$repo" "$generation_session" >"$generation_session_dir/eci_active"
-CODEX_PROOF_ROOT="$generation_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
-generation_state="$generation_session_dir/stop_loop_state"
-[ -f "$generation_state" ] || { cat "$output" >&2; exit 1; }
-old_fingerprint="$(awk -F': ' '$1 == "fingerprint" {print $2; exit}' "$generation_state")"
-old_code="$(awk -F': ' '$1 == "code" {print $2; exit}' "$generation_state")"
-old_cwd="$(awk -F': ' '$1 == "cwd" {print $2; exit}' "$generation_state")"
-[ -n "$old_fingerprint" ] && [ -n "$old_code" ] && [ -n "$old_cwd" ] || { cat "$generation_state" >&2; exit 1; }
-printf 'version: 2\nfingerprint: %s\ncode: %s\nsession_id: %s\ncwd: %s\ncount: 11\nloop_emitted: true\n' \
-  "$old_fingerprint" "$old_code" "$generation_session" "$old_cwd" >"$generation_state"
-cp -- "$generation_session_dir/eci_active" "$generation_session_dir/eci_active.republish"
-mv -- "$generation_session_dir/eci_active.republish" "$generation_session_dir/eci_active"
-CODEX_PROOF_ROOT="$generation_proof_root" bash "$ROOT/hooks/stop-gate.sh" <"$input" >"$output"
-jq -e '
-  .decision == "block" and
-  ((.reason // "") | contains("LOOP DETECTED") | not) and
-  ((.continue // false) | not)
-' "$output" >/dev/null || { cat "$output" >&2; exit 1; }
-grep -q '^count: 1$' "$generation_state"
-
-printf '%s\n' 'stale stop-loop generation reset assertions: PASS'
+printf '%s\n' 'stop loop one-reminder continuation assertions: PASS'

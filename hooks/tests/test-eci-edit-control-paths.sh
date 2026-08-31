@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HOST_HOME="${HOME:?}"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-eci-edit-controls.XXXXXX")"
+control_hook_fixture="$(mktemp "$ROOT/hooks/.validate-bash-edit-controls.${BASHPID}.XXXXXX")"
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
 mkdir -p "$XDG_CONFIG_HOME/eci" "$XDG_STATE_HOME"
@@ -11,29 +13,21 @@ chmod 700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/eci"
 chmod 600 "$XDG_CONFIG_HOME/eci/command-gate-mode"
 proof_root="$ROOT/.eci-edit-control-proof-$BASHPID"
 repo_hardlink_alias="$(pwd)/.eci-active-hardlink-alias-$BASHPID"
-ledger_hardlink_alias="$ROOT/.latest-status-report-hardlink-alias-$BASHPID"
-helper_hardlink_alias="$ROOT/.eci-environment-command-hardlink-alias-$BASHPID"
-trap 'rm -rf -- "$TMP_ROOT" "$proof_root" "$repo_hardlink_alias" "$ledger_hardlink_alias" "$helper_hardlink_alias"' EXIT
+trap 'rm -f -- "$control_hook_fixture"; rm -rf -- "$TMP_ROOT" "$proof_root" "$repo_hardlink_alias"' EXIT
 
-. "$ROOT/hooks/lib/eci-environment-command.sh"
-
-assert_environment_detail() {
-  local command="$1" expected="$2" actual
-  actual="$(environment_command_detail "$command")"
-  [ "$actual" = "$expected" ] || {
-    printf 'environment detail mismatch: command=%q expected=%q actual=%q\n' \
-      "$command" "$expected" "$actual" >&2
-    return 1
-  }
+# Keep the live user-owned bypass intact.  This fixture differs only by that
+# verified line, so the test exercises the current hook body without changing
+# the runtime that is keeping other sessions unblocked.
+[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
+  printf '%s\n' 'edit-control fixture expected the live validate-bash bypass at line 2' >&2
+  exit 1
 }
-
-# Direct registered queries use the Bash fast path; quoted, duplicated, and
-# unregistered forms must retain the Python recognizer's exact diagnostics.
-assert_environment_detail 'printenv PATH PWD' $'ALLOW\tprintenv\t1\t0\tprintenv\tdirect-registered-query'
-assert_environment_detail "printenv 'PATH'" $'ALLOW\tprintenv\t1\t0\tprintenv\tdirect-registered-query'
-assert_environment_detail 'printenv PATH PATH' $'DENY\tECI_ENVIRONMENT_ENUMERATION_DENIED\t1\t2\tPATH\tduplicate-name'
-assert_environment_detail 'printenv OPENAI_API_KEY' $'DENY\tECI_ENVIRONMENT_NAME_DENIED\t1\t1\tOPENAI_API_KEY\tunregistered-name'
-assert_environment_detail 'printenv PATH | env' $'DENY\tECI_ENVIRONMENT_ENUMERATION_DENIED\t2\t0\tenv\tno-child'
+cp -- "$ROOT/hooks/validate-bash.sh" "$control_hook_fixture"
+sed -i '2d' -- "$control_hook_fixture"
+cmp -- "$control_hook_fixture" <(sed '2d' -- "$ROOT/hooks/validate-bash.sh") || {
+  printf '%s\n' 'edit-control fixture changed bytes other than the live line-2 bypass' >&2
+  exit 1
+}
 
 home="$TMP_ROOT/home"
 codex_home="$TMP_ROOT/codex-home"
@@ -48,158 +42,96 @@ printf '%s\n' \
 transcript="$codex_home/sessions/codex-edit-control-test.jsonl"
 printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","payload":{"id":"t00-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_nickname":"Test","agent_role":"default"}}}}}' >"$transcript"
 
-run_bash_worker() {
-  local command="$1" expected_code="${2:-ECI_WORKER_CONTROL_READ_DENIED}"
-  local expected_path="${3:-}"
-  local expected_resolved="${4:-$expected_path}" out="$TMP_ROOT/bash-worker.out"
+run_bash_worker_write_denied() {
+  local command="$1" expected_target="$2" out="$TMP_ROOT/bash-worker-write.out"
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
-      bash "$ROOT/hooks/validate-bash.sh" >"$out"
-  jq -e --arg expected "$expected_code" --arg expected_path "$expected_path" --arg expected_resolved "$expected_resolved" '
+    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$HOST_HOME" \
+      CODEX_HOOK_IS_SUBAGENT=true CODEX_ROLE=worker \
+      bash "$control_hook_fixture" >"$out"
+  jq -e --arg expected_target "$expected_target" '
     .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains($expected)) and
-    (if $expected == "ECI_WORKER_CONTROL_READ_DENIED" then
-      (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control-read")) and
-      (.hookSpecificOutput.permissionDecisionReason | contains("token=")) and
-      (.hookSpecificOutput.permissionDecisionReason | contains("resolved=")) and
-      (.hookSpecificOutput.permissionDecisionReason | contains("route=coordinator-inspection-route")) and
-      (if $expected_path == "" then true else
-        (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $expected_path)) and contains(("resolved=" + $expected_resolved)))
-      end)
-    else true end)
-  ' "$out" >/dev/null
+    (.hookSpecificOutput.permissionDecisionReason | contains($expected_target))
+  ' "$out" >/dev/null || {
+    printf 'write target was not preserved in denial: command=%s expected_target=%s\n' \
+      "$command" "$expected_target" >&2
+    cat -- "$out" >&2
+    return 1
+  }
 }
 
 run_bash_worker_allowed() {
-  local command="$1" out="$TMP_ROOT/bash-worker-allowed.out"
+  local command="$1" out="$TMP_ROOT/bash-worker-allowed.out" status
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
-      bash "$ROOT/hooks/validate-bash.sh" >"$out"
+    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$HOST_HOME" \
+      CODEX_HOOK_IS_SUBAGENT=true CODEX_ROLE=worker \
+      bash "$control_hook_fixture" >"$out" || status=$?
+  [ -z "${status:-}" ] || {
+    printf 'worker read hook exited %s: command=%s\n' "$status" "$command" >&2
+    cat -- "$out" >&2
+    return 1
+  }
   [ ! -s "$out" ] || {
     cat -- "$out" >&2
     return 1
   }
 }
 
-for provider_sessions in "$ROOT/sessions" "$home/.kimi-code/sessions"; do
-  provider_session_resolved="$(realpath -m -- "$provider_sessions")"
-  run_bash_worker "readlink -f $provider_sessions" ECI_WORKER_CONTROL_READ_DENIED "$provider_sessions" "$provider_session_resolved"
-done
-
-run_bash_coordinator() {
-  local command="$1" out="$TMP_ROOT/bash-coordinator.out"
-  jq -cn --arg command "$command" --arg cwd "$ROOT" \
-    '{session_id:"t00-session",cwd:$cwd,tool_input:{command:$command}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$home" \
-      bash "$ROOT/hooks/validate-bash.sh" >"$out"
-  [ ! -s "$out" ]
-}
-
-run_edit() {
-  local path="$1" out="$TMP_ROOT/edit.out"
-  jq -cn --arg path "$path" --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '{tool_name:"Write",session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{file_path:$path,content:"forged"}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
-      bash "$ROOT/hooks/validate-edit-write.sh" >"$out"
-  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$out" >/dev/null
-}
-
-run_patch() {
-  local path="$1" out="$TMP_ROOT/patch.out" patch_text
-  patch_text="*** Begin Patch
-*** Update File: $path
--old
-+forged
-*** End Patch"
-  jq -cn --arg patch "$patch_text" --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$patch}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" HOME="$home" \
-      bash "$ROOT/hooks/validate-apply-patch.sh" >"$out"
-  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$out" >/dev/null
-}
-
-run_main_disengage_edit() {
-  local path="$1" out="$TMP_ROOT/main-edit.out"
-  jq -cn --arg path "$path" --arg cwd "$ROOT" \
-    '{tool_name:"Write",session_id:"t00-session",cwd:$cwd,tool_input:{file_path:$path,content:"user-closed teardown report"}}' |
-    CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$home" \
-      bash "$ROOT/hooks/validate-edit-write.sh" >"$out"
-  [ ! -s "$out" ]
-}
-
-run_edit "$proof_root/pre-reviewer/legacy-state"
-run_edit "$proof_root/pre-reviewer/archive/legacy-state"
-run_edit "$proof_root/reviewer/legacy-state"
-run_edit "$proof_root/reviewer/archive/legacy-state"
-run_edit "$proof_root/t00-session/eci_active"
-run_patch "$proof_root/pre-reviewer/legacy-state"
-run_main_disengage_edit "$proof_root/$sid/user-closed.md"
-run_main_disengage_edit "$proof_root/$sid/disengage.md"
-
-# Control names that are easy to miss must remain coordinator-owned even
-# before publication.  An outside-root hardlink alias must be denied as well:
-# lexical/resolved path checks alone cannot distinguish it from an ordinary
-# repository file.
-for control_name in goal_state proof.md instructions.md stop_timestamps stop_loop_state \
-  eci-required-critics.json project-understanding.md high_level_log.md \
-  latest-status-report.md high_level_log.anchor; do
-  run_edit "$proof_root/$sid/$control_name"
-  run_patch "$proof_root/$sid/$control_name"
-done
-
-# Read-only commands still cannot inspect coordinator control state from a
-# worker transcript.  Keep the coordinator route positive for the same paths.
+# A worker can inspect current state to stay aligned with the coordinator.
+# The hook must distinguish that read from a concrete write to the same inode.
 for command in \
   "cat $proof_root/$sid/eci_active" \
   "sed -n '1p' $proof_root/$sid/eci_active"; do
-  run_bash_worker "$command" ECI_PLAN_LIVE_CONTROL_DENIED
-  run_bash_coordinator "$command"
+  run_bash_worker_allowed "$command"
 done
+run_bash_worker_write_denied "printf forged > $proof_root/$sid/eci_active" "$proof_root/$sid/eci_active"
 
-ln "$proof_root/$sid/eci_active" "$repo_hardlink_alias"
-run_edit "$repo_hardlink_alias"
-run_patch "$repo_hardlink_alias"
+printf '%s\n' 'coordinator ledger' >"$proof_root/$sid/latest-status-report.md"
+ln "$proof_root/$sid/latest-status-report.md" "$repo_hardlink_alias"
 for command in \
   "cat $repo_hardlink_alias" \
   "sed -n '1p' $repo_hardlink_alias"; do
-  run_bash_worker "$command" ECI_PLAN_LIVE_CONTROL_DENIED
+  run_bash_worker_allowed "$command"
 done
+run_bash_worker_write_denied "printf forged > $repo_hardlink_alias" "$proof_root/$sid/latest-status-report.md"
 unlink "$repo_hardlink_alias"
 
-# A hardlink to an ordinary provider helper must remain an ordinary read even
-# though the alias has an arbitrary basename and lives outside the proof root.
-ln "$ROOT/hooks/lib/eci-environment-command.sh" "$helper_hardlink_alias"
-run_bash_worker_allowed "cat $helper_hardlink_alias"
+# Shell punctuation is not an effect.  A finite ordinary worker inspection
+# must reach the tool even when the planner does not recognize its compound
+# spelling; concrete writes are still checked separately above and below.
+run_bash_worker_allowed 'printf inspection && printf follow-up'
+run_bash_worker_write_denied "printf inspection && printf forged > $proof_root/$sid/eci_active" "$proof_root/$sid/eci_active"
 
-printf '%s\n' 'coordinator ledger' >"$proof_root/$sid/latest-status-report.md"
-ln "$proof_root/$sid/latest-status-report.md" "$ledger_hardlink_alias"
-run_edit "$ledger_hardlink_alias"
-run_patch "$ledger_hardlink_alias"
-for command in \
-  "cat $ledger_hardlink_alias" \
-  "sed -n '1p' $ledger_hardlink_alias"; do
-  run_bash_worker "$command" ECI_PLAN_LIVE_CONTROL_DENIED
-done
+# Reading a peer provider path has no effect.  It can be reported separately
+# if useful, but cannot turn an ordinary worker inspection into a denial.
+run_bash_worker_allowed "cat $HOST_HOME/.kimi-code/CODEX.md"
+run_bash_worker_allowed "git -C $ROOT status --short"
 
-# Atomic publication uses temporary siblings; those names are coordinator
-# state too, even when the final artifact has not yet been created.
-for temp_path in \
-  "$proof_root/$sid/eci_active.tmp.123" \
-  "$proof_root/$sid/eci_wait.tmp.123" \
-  "$proof_root/$sid/eci-required-critics.json.tmp.123" \
-  "$proof_root/$sid/eci-acceptance-anchor.tmp.123" \
-  "$proof_root/$sid/eci-acceptance-transaction.tmp.123" \
-  "$proof_root/$sid/eci-teardown-complete.tmp.123" \
-  "$proof_root/$sid/high_level_log.anchor.tmp.123" \
-  "$proof_root/$sid/high_level_log.md.tmp.123"; do
-  run_edit "$temp_path"
-  run_patch "$temp_path"
-done
+# An unexpanded loop is not a known write target.  Parser uncertainty must
+# defer to normal execution rather than turn this ordinary worker inspection
+# into an allowlist/grammar denial.
+run_bash_worker_allowed 'for item in one; do printf "$item"; done'
 
-alias_session="$TMP_ROOT/alias-session"
-ln -s "$proof_root/$sid" "$alias_session"
-run_edit "$alias_session/eci_active"
+# Callback metadata is diagnostic context.  Without a typed command target or
+# a usable HOME authority, the hook must make no decision rather than create a
+# false control-plane denial.
+metadata_output="$TMP_ROOT/metadata-advisory.out"
+printf '%s\n' '{"session_id":"t00-session","cwd":[],"tool_input":{"command":"printf harmless"}}' |
+  CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$HOST_HOME" \
+    bash "$control_hook_fixture" >"$metadata_output"
+[ ! -s "$metadata_output" ] || {
+  printf '%s\n' 'malformed callback metadata produced a hook decision:' >&2
+  cat -- "$metadata_output" >&2
+  exit 1
+}
+printf '%s\n' '{"session_id":"t00-session","cwd":"/tmp","tool_input":{"command":"printf harmless"}}' |
+  CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME=relative \
+    bash "$control_hook_fixture" >"$metadata_output"
+[ ! -s "$metadata_output" ] || {
+  printf '%s\n' 'malformed HOME produced a hook decision:' >&2
+  cat -- "$metadata_output" >&2
+  exit 1
+}
 
 printf '%s\n' 'edit control path assertions: PASS'

@@ -67,6 +67,9 @@ baseline="$proof_dir/baseline_head"
 baseline_binding="$proof_dir/baseline_head.binding"
 nested_marker="$proof_dir/ate_nested_eci_active"
 baseline_max_bytes=4096
+aggregate_plan="$proof_dir/eci-aggregate-plan.json"
+aggregate_active=false
+aggregate_plan_present=false
 
 nested_marker_is_active() {
   local bytes line_count writer
@@ -118,6 +121,23 @@ fi
 
 mkdir -p "$proof_dir"
 codex_session_dir_is_safe "$root" "$session_id" || exit 0
+
+# A recovered aggregate session owns one non-Git parent marker and namespaced
+# member proof. Never create the singleton baseline files beside that plan,
+# even when SessionStart happens from inside one sibling repository.
+if [ -e "$aggregate_plan" ] || [ -L "$aggregate_plan" ]; then
+  aggregate_plan_present=true
+  if [ -f "$proof_dir/eci_active" ] && [ ! -L "$proof_dir/eci_active" ]; then
+    aggregate_outer_raw="$(codex_state_value "$proof_dir/eci_active" cwd 2>/dev/null || true)"
+    if [ -n "$aggregate_outer_raw" ]; then
+      aggregate_outer="$(codex_canonical_cwd "$aggregate_outer_raw")"
+      if codex_eci_aggregate_plan_is_valid "$aggregate_plan" "$session_id" \
+        "$aggregate_outer" "$proof_dir/eci_active"; then
+        aggregate_active=true
+      fi
+    fi
+  fi
+fi
 
 # The baseline and binding are separate legacy files, so publish them with
 # no-overwrite hard links and repair a half-publication on the next
@@ -215,7 +235,7 @@ publish_baseline_binding() {
   return 1
 }
 
-if baseline_context_is_valid; then
+if [ "$aggregate_plan_present" != true ] && baseline_context_is_valid; then
   baseline_present=false
   binding_present=false
   [ -e "$baseline" ] || [ -L "$baseline" ] && baseline_present=true
@@ -299,7 +319,7 @@ prune_marker_dirs "$root/side-stop/sessions" side_stop
 ctx='Load ~/.codex/CODEX.md and matching ~/.codex/skills when applicable.'
 eci_marker="$proof_dir/eci_active"
 if [ -d "$proof_dir" ] && [ ! -L "$proof_dir" ] &&
-    { direct_marker_is_active || nested_marker_is_active; }; then
+    { [ "$aggregate_active" = true ] || direct_marker_is_active || nested_marker_is_active; }; then
   ctx='ECI is active. ECI refresh signal (not proof of compaction): after compaction, the coordinator/lead must immediately re-read the entire skills/explore-critique-implement/SKILL.md and re-invoke it before the next decision/tool.'
 fi
 

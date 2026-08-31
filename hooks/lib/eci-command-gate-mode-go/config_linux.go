@@ -34,15 +34,15 @@ type ConfigStore struct {
 	Root string
 }
 
-// configPathError preserves the fail-closed state associated with a path failure.
+// configPathError preserves the diagnostic state associated with a path failure.
 //
-// Example: an unsafe symlink path becomes ConfigStateInvalidPath instead of permissive mode.
+// Example: an unsafe symlink path becomes ConfigStateInvalidPath while normal work falls back to permissive mode.
 type configPathError struct {
 	state ConfigState
 	err   error
 }
 
-// Error returns the path failure with its security classification.
+// Error returns the path failure with its configuration classification.
 //
 // Example: callers can retain the original errno through Unwrap.
 func (err *configPathError) Error() string {
@@ -90,9 +90,12 @@ type fileIdentity struct {
 	size   int64
 }
 
-// ReadMode returns the effective mode, failing closed for unsafe configuration state.
+// ReadMode returns the configured mode or a permissive fallback when configuration cannot be used.
 //
 // Example: an absent root returns ModePermissive with ConfigStateMissing.
+//
+// An unreadable or malformed preference record must not manufacture enforcement. Its diagnostic
+// state remains available to permissive telemetry while ordinary command admission continues.
 func (store ConfigStore) ReadMode() ModeState {
 	parent, err := store.openConfigDirectory(false)
 	if err != nil {
@@ -113,17 +116,17 @@ func (store ConfigStore) ReadMode() ModeState {
 	defer config.close()
 
 	if config.identity.size > MaxConfigBytes {
-		return ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateOversize}
+		return ModeState{Mode: ModePermissive, ConfigState: ConfigStateOversize}
 	}
 	value, err := readConfigBytes(config)
 	if err != nil {
-		return ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateReadError}
+		return ModeState{Mode: ModePermissive, ConfigState: ConfigStateReadError}
 	}
 	if err := validateConfigFileIdentity(config, ConfigFileName); err != nil {
 		return modeStateForConfigError(err)
 	}
 	if len(value) > MaxConfigBytes {
-		return ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateOversize}
+		return ModeState{Mode: ModePermissive, ConfigState: ConfigStateOversize}
 	}
 	switch string(value) {
 	case string(ModePermissive) + "\n":
@@ -131,7 +134,7 @@ func (store ConfigStore) ReadMode() ModeState {
 	case string(ModeEnforcing) + "\n":
 		return ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateConfiguredEnforcing}
 	default:
-		return ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateInvalidBytes}
+		return ModeState{Mode: ModePermissive, ConfigState: ConfigStateInvalidBytes}
 	}
 }
 
@@ -204,15 +207,15 @@ func (store ConfigStore) SetMode(mode Mode) (returnErr error) {
 	return nil
 }
 
-// modeStateForConfigError converts a classified path failure into fail-closed state.
+// modeStateForConfigError converts a classified path failure into a permissive fallback state.
 //
-// Example: invalid metadata becomes enforcing without exposing a permissive fallback.
+// Example: invalid metadata is retained for telemetry without turning ordinary work into a denial.
 func modeStateForConfigError(err error) ModeState {
 	var pathErr *configPathError
 	if errors.As(err, &pathErr) {
-		return ModeState{Mode: ModeEnforcing, ConfigState: pathErr.state}
+		return ModeState{Mode: ModePermissive, ConfigState: pathErr.state}
 	}
-	return ModeState{Mode: ModeEnforcing, ConfigState: ConfigStateReadError}
+	return ModeState{Mode: ModePermissive, ConfigState: ConfigStateReadError}
 }
 
 // openConfigDirectory opens the configured root and its owned `eci` child by descriptor.
@@ -221,6 +224,10 @@ func modeStateForConfigError(err error) ModeState {
 func (store ConfigStore) openConfigDirectory(create bool) (*configDirectoryHandle, error) {
 	root, err := openDirectoryPath(store.Root, create)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateOwnedWritableDirectory(root.fd); err != nil {
+		root.close()
 		return nil, err
 	}
 	child, err := openOwnedDirectory(root, ConfigDirectoryName, create)
@@ -262,7 +269,7 @@ func openDirectoryPath(path string, create bool) (*configDirectoryHandle, error)
 		}
 		nextFD, openErr := syscall.Openat(current.fd, component, directoryOpenFlags, 0)
 		if errors.Is(openErr, syscall.ENOENT) && create {
-			if err := validateCreationParent(current.fd); err != nil {
+			if err := validateOwnedWritableDirectory(current.fd); err != nil {
 				current.close()
 				return nil, err
 			}
@@ -311,7 +318,7 @@ func openOwnedDirectory(parent *configDirectoryHandle, name string, create bool)
 	}
 	childFD, err := syscall.Openat(parent.fd, name, directoryOpenFlags, 0)
 	if errors.Is(err, syscall.ENOENT) && create {
-		if err := validateCreationParent(parent.fd); err != nil {
+		if err := validateOwnedWritableDirectory(parent.fd); err != nil {
 			return nil, err
 		}
 		if mkdirErr := syscall.Mkdirat(parent.fd, name, ownedDirectoryMode); mkdirErr != nil && !errors.Is(mkdirErr, syscall.EEXIST) {
@@ -410,10 +417,10 @@ func validateAbsoluteNormalizedPath(path string) error {
 	return nil
 }
 
-// validateCreationParent checks ownership and writable permissions before mkdirat.
+// validateOwnedWritableDirectory checks metadata for a user-owned configuration directory.
 //
-// Example: a world-writable or foreign parent cannot receive command-gate state.
-func validateCreationParent(fd int) error {
+// Example: a world-writable configuration root is diagnostic-only and cannot enable enforcement.
+func validateOwnedWritableDirectory(fd int) error {
 	identity, err := statDescriptor(fd)
 	if err != nil {
 		return &configPathError{state: ConfigStateInvalidPath, err: err}

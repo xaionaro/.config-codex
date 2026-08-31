@@ -28,7 +28,11 @@ Examples: a changed persistence model, ownership rule, public contract, or secur
 
 ## Three-critic review
 
-For governed code, use fresh blind Critic A (style), Critic B (correctness/fidelity), and fresh special Critic C (long-term health) in parallel; add E2E when code applies. All report only. A/B/C independently classify findings and state impact. Critic A checks the admitted style record and never lets style downgrade a hard contract. Critic B guards behavior, security, interfaces, tests/proof, and fidelity. Critic C checks long-term health, architecture, actual scope/admission reconciliation, and final-state clarity. Withhold the gate until all required reports and E2E arrive.
+For governed code, use fresh blind Critic A (style), Critic B (correctness/fidelity), and fresh special Critic C (long-term health) in parallel. Add E2E when an applicable policy requires it.
+
+E2E requirements: [Configuration E2E contract](../../explore-critique-implement/SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../../explore-critique-implement/SKILL.md#runtime-e2e-policy).
+
+All report only. A/B/C independently classify findings and state impact. Critic A checks the admitted style record and never lets style downgrade a hard contract. Critic B guards behavior, security, interfaces, tests/proof, and fidelity. Critic C checks long-term health, architecture, actual scope/admission reconciliation, and final-state clarity. Withhold the gate until all required reports and E2E arrive.
 
 ## Review packet and finding contract
 
@@ -36,11 +40,11 @@ Normal reviewer packets contain original user requirements, exact target/diff, `
 
 Critic A loads each matching installed style skill and checks actual material adherence. Critic B independently verifies stated purpose and interface fulfillment before quality. Critic C judges final state, not change-history defense, and flags materially harmful coupling, hidden dependencies, wrong layer, unclear names, duplication, missing/premature abstraction, or architectural mismatch. Cosmetic taste is NIT; “would refactor someday” is not a finding without concrete harm.
 
-Code E2E builds, runs full suite, exercises affected UI/API/device/CLI path, cites output/screenshot/state, and checks related regressions. Docs/config/design/tests-only/pure-refactor tasks skip E2E honestly. A missing required E2E/rationale returns to the implementer before gate, not to a false approval.
+Required E2E builds and runs the full suite where applicable, exercises the affected actual consumer path, cites output/state/screenshot as appropriate, and checks related regressions. A missing required E2E/rationale returns to the implementer before gate, not to a false approval.
 
 ## Gate evaluation
 
-After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean gate has no remaining `now` issue and all required same-run proof. Scope-creep debt, valid defer, and ignored contradiction are recorded future work, not clean-pass defects.
+After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean gate has no remaining `now` issue and all required same-run proof, including required E2E. Scope-creep debt, valid defer, and ignored contradiction are recorded future work, not clean-pass defects.
 
 The design-revision batch groups all remaining issues by affected artifact/API/contract and includes source reviewer, severity, impact, evidence location, exact issue text, relevant debt/defer reference, and acceptance criteria. Never patch substantive gate issues one by one without the design loop. Review caps and loop-breaker/BRP escalation remain owned by the outer workflow.
 

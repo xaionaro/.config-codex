@@ -72,42 +72,89 @@ const (
 type Capability string
 
 const (
-	// CapabilityGateMode identifies command-gate mode operations.
+	// CapabilityGateMode identifies a command-gate mode mutation.
 	CapabilityGateMode Capability = "gate-mode"
-	// CapabilityRepositoryDefaultGitArchive identifies one direct repository
-	// archive plan with no caller-selected Git execution context.
+	// CapabilityGitCloneSourceAcquisition identifies a direct Git clone
+	// whose clone options and operands remain owned by Git.
 	//
-	// Example: git archive --format=tar --output=artifact.tar HEAD.
-	CapabilityRepositoryDefaultGitArchive Capability = "repository-default-git-archive"
-	// CapabilityDirectPathGitStatus identifies one direct, unquoted Git status
-	// argv without treating its path or bytes as trusted executable identity.
-	//
-	// Example: /tmp/task/git status.
-	CapabilityDirectPathGitStatus Capability = "direct-path-git-status"
+	// Example: git clone --branch release source destination selects this capability.
+	CapabilityGitCloneSourceAcquisition Capability = "git-clone-source-acquisition"
 )
+
+// GitCloneLaunchClass identifies the finite launcher form that selects a Git
+// clone source-acquisition capability.
+type GitCloneLaunchClass string
+
+const (
+	// GitCloneLaunchDirect identifies a direct Git executable argv.
+	GitCloneLaunchDirect GitCloneLaunchClass = "direct"
+	// GitCloneLaunchCommand identifies command [--] Git argv.
+	GitCloneLaunchCommand GitCloneLaunchClass = "command"
+	// GitCloneLaunchEnv identifies env [--] Git argv with no environment change.
+	GitCloneLaunchEnv GitCloneLaunchClass = "env"
+)
+
+// GitCloneLaunch records the literal executable tokens that the provider must
+// bind before it can fast-admit an otherwise opaque Git clone argv.
+//
+// Git continues to own clone option and operand parsing. This metadata only
+// describes the executable and inherited-environment launch boundary.
+type GitCloneLaunch struct {
+	Class                GitCloneLaunchClass `json:"class"`
+	GitArgvIndex         int                 `json:"git_argv_index"`
+	GitExecutable        string              `json:"git_executable"`
+	EnvironmentPreserved bool                `json:"environment_preserved"`
+	EnvArgvIndex         *int                `json:"env_argv_index,omitempty"`
+	EnvExecutable        string              `json:"env_executable,omitempty"`
+}
 
 // DeferredRoute identifies one provider-owned route selected after complete
 // command-plan classification.
 type DeferredRoute string
 
 const (
+	// DeferredRouteCodexLifecycle identifies a candidate whose executable must
+	// be resolved by the provider adapter. The adapter compares the actual
+	// target with the current Codex lifecycle executable; spelling alone does
+	// not grant or remove lifecycle access.
+	DeferredRouteCodexLifecycle DeferredRoute = "codex-lifecycle"
 	// DeferredRouteWorkerEnvGitFsckLostFound identifies a direct transparent
 	// env-prefixed Git fsck writer for the active Codex worker boundary.
 	DeferredRouteWorkerEnvGitFsckLostFound DeferredRoute = "worker-env-git-fsck-lost-found"
+	// DeferredRouteReviewedScriptTrace identifies the one bounded coordinator
+	// trace diagnostic that hands a reviewed test to the existing script route.
+	DeferredRouteReviewedScriptTrace DeferredRoute = "reviewed-script-trace"
+	// DeferredRouteReviewedScriptCompound identifies a compound plan containing
+	// a finite shell-script invocation. The provider adapter validates the
+	// complete raw topology before a reviewed script can run.
+	DeferredRouteReviewedScriptCompound DeferredRoute = "reviewed-script-compound"
 )
 
 // DiagnosticCode is the stable machine-readable reason for a denial.
 type DiagnosticCode string
 
 const (
+	// CodeLifecycleCanonicalPathDenied reports a Codex lifecycle-looking
+	// executable that is not one of the two literal current-home spellings.
+	CodeLifecycleCanonicalPathDenied DiagnosticCode = "ECI_LIFECYCLE_CANONICAL_PATH_DENIED"
 	// CodePlanSyntaxDenied reports unsupported shell-plan syntax.
 	CodePlanSyntaxDenied DiagnosticCode = "ECI_PLAN_SYNTAX_DENIED"
-	// CodePlanLimitDenied reports a bounded command-plan limit violation.
+	// CodePlanLimitDenied reports a parser capacity result. Classify maps it to
+	// transparent target-aware fallback rather than exposing it as a denial.
 	CodePlanLimitDenied DiagnosticCode = "ECI_PLAN_LIMIT_DENIED"
 	// CodePlanWrapperDenied reports an incomplete transparent wrapper.
 	CodePlanWrapperDenied DiagnosticCode = "ECI_PLAN_WRAPPER_DENIED"
 	// CodePlanDynamicLaunchDenied reports dynamic executable launching.
 	CodePlanDynamicLaunchDenied DiagnosticCode = "ECI_PLAN_DYNAMIC_LAUNCH_DENIED"
+	// CodePlanStatFormatDenied reports a stat inspection outside the bounded
+	// literal metadata grammar.
+	CodePlanStatFormatDenied DiagnosticCode = "ECI_PLAN_STAT_FORMAT_DENIED"
+	// CodePlanFileOptionDenied reports a file invocation that can compile a
+	// magic database or otherwise falls outside its bounded inspection grammar.
+	CodePlanFileOptionDenied DiagnosticCode = "ECI_PLAN_FILE_OPTION_DENIED"
+	// CodePlanUniqArgumentsDenied reports uniq's optional output operand or an
+	// unsupported option outside its bounded filter grammar.
+	CodePlanUniqArgumentsDenied DiagnosticCode = "ECI_PLAN_UNIQ_ARGUMENTS_DENIED"
 	// CodeEnvironmentEnumerationDenied reports unbounded environment enumeration.
 	CodeEnvironmentEnumerationDenied DiagnosticCode = "ECI_ENVIRONMENT_ENUMERATION_DENIED"
 	// CodeEnvironmentNameDenied reports an unregistered environment name.
@@ -128,6 +175,18 @@ const (
 	CodeBroadDestructiveDenied DiagnosticCode = "ECI_BROAD_DESTRUCTIVE_DENIED"
 	// CodeLedgerAppendOnly reports a direct mutation of an append-only ledger.
 	CodeLedgerAppendOnly DiagnosticCode = "ECI_LEDGER_APPEND_ONLY"
+	// CodeLedgerRewriteDenied reports a redirect that would replace the
+	// selected session's high-level ledger instead of appending at EOF.
+	CodeLedgerRewriteDenied DiagnosticCode = "ECI_LEDGER_REWRITE_DENIED"
+	// CodeLedgerAnchorWriteDenied reports a redirect that targets the selected
+	// session's high-level ledger anchor control artifact.
+	CodeLedgerAnchorWriteDenied DiagnosticCode = "ECI_LEDGER_ANCHOR_WRITE_DENIED"
+	// CodeLedgerForeignSessionDenied reports a redirect that targets a sibling
+	// proof session's ledger record.
+	CodeLedgerForeignSessionDenied DiagnosticCode = "ECI_LEDGER_FOREIGN_SESSION_DENIED"
+	// CodeLedgerSharedInodeDenied reports an append target whose inode has more
+	// than one link and therefore cannot be uniquely owned by the session log.
+	CodeLedgerSharedInodeDenied DiagnosticCode = "ECI_LEDGER_SHARED_INODE_DENIED"
 	// CodeProofPathEscapeDenied reports a proof-path ownership escape.
 	CodeProofPathEscapeDenied DiagnosticCode = "ECI_PROOF_PATH_ESCAPE_DENIED"
 	// CodePlanLiveControlDenied reports a live control-file ownership violation.
@@ -170,13 +229,55 @@ type HookSpecificOutput struct {
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
+// PlanSegment records one lossless direct-command slice from a bounded
+// compound plan. The Bash adapter revalidates Command through the same direct
+// route that a standalone callback would use.
+//
+// Example: the middle segment of `sed && printf ok` is ` printf ok`.
+type PlanSegment struct {
+	Command string `json:"command"`
+}
+
+// ReviewedScriptTraceTopology records the complete literal grammar for the
+// one reviewed-test trace diagnostic. Command keeps the original bytes while
+// the remaining fields preserve each bounded shell topology component.
+//
+// Example: `bash -x hooks/tests/example.sh 2>&1 | tail -n 20` has a bash
+// shell, `-x` flag, literal script, stderr redirect, pipe, trusted tail sink,
+// `-n` flag, and `20` line count.
+type ReviewedScriptTraceTopology struct {
+	Command   string `json:"command"`
+	Shell     string `json:"shell"`
+	ShellFlag string `json:"shell_flag"`
+	Script    string `json:"script"`
+	Redirect  string `json:"redirect"`
+	Operator  string `json:"operator"`
+	Sink      string `json:"sink"`
+	SinkFlag  string `json:"sink_flag"`
+	Lines     string `json:"lines"`
+}
+
+// PlanTopology records either the ordered direct-command slices and shell
+// operators parsed from one finite compound plan, or the one typed reviewed
+// trace topology. A raw punctuation plan is never represented as Trace.
+//
+// Example: `printf left && printf right` has two segments and one `&&` operator.
+type PlanTopology struct {
+	Segments  []PlanSegment                `json:"segments,omitempty"`
+	Operators []string                     `json:"operators,omitempty"`
+	Trace     *ReviewedScriptTraceTopology `json:"trace,omitempty"`
+}
+
 // Result is the compiled planner's structured admission response.
 type Result struct {
-	Decision           DecisionKind        `json:"decision"`
-	Capabilities       []Capability        `json:"capabilities,omitempty"`
-	DeferredRoute      DeferredRoute       `json:"deferred_route,omitempty"`
-	Diagnostic         *Diagnostic         `json:"diagnostic,omitempty"`
-	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	Decision             DecisionKind        `json:"decision"`
+	Capabilities         []Capability        `json:"capabilities,omitempty"`
+	GitCloneLaunch       *GitCloneLaunch     `json:"git_clone_launch,omitempty"`
+	DeferredRoute        DeferredRoute       `json:"deferred_route,omitempty"`
+	Diagnostic           *Diagnostic         `json:"diagnostic,omitempty"`
+	HookSpecificOutput   *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	LedgerRedirectAppend bool                `json:"ledger_redirect_append,omitempty"`
+	Plan                 *PlanTopology       `json:"plan,omitempty"`
 }
 
 type token struct {
@@ -185,14 +286,80 @@ type token struct {
 	quoted bool
 }
 
-type segment struct {
-	argv   []token
+// outputRedirectEffect identifies the actual filesystem effect of one shell
+// output redirect independently of the command that produced its bytes.
+//
+// Example: `>> log` is append while `>| log` is force-overwrite.
+type outputRedirectEffect string
+
+const (
+	// outputRedirectAppend records an EOF append effect.
+	outputRedirectAppend outputRedirectEffect = "append"
+	// outputRedirectOverwrite records a normal truncating overwrite effect.
+	outputRedirectOverwrite outputRedirectEffect = "overwrite"
+	// outputRedirectForceOverwrite records an overwrite that bypasses noclobber.
+	outputRedirectForceOverwrite outputRedirectEffect = "force-overwrite"
+)
+
+// outputRedirect records the target token and resolved shell effect of one
+// output redirect without presenting the target as an executable argv word.
+//
+// Example: `printf note 2>> log` records log with the append effect.
+type outputRedirect struct {
+	target                token
+	effect                outputRedirectEffect
+	descriptorDuplication bool
+}
+
+// lifecycleLexicalWord retains a decoded shell word and its source offset for
+// the provider adapter. Its original spelling is diagnostic context only;
+// executable identity, not quote or expansion spelling, determines lifecycle
+// authority.
+type lifecycleLexicalWord struct {
+	raw    string
+	value  string
 	offset int
+}
+
+type segment struct {
+	argv      []token
+	redirects []outputRedirect
+	offset    int
+	command   string
 }
 
 type plan struct {
 	segments  []segment
 	operators []string
+}
+
+// compoundPlanTopology copies the lossless ordered parser output for an
+// adapter that must validate compound segments through direct command routes.
+//
+// Example: a direct argv has no topology, while `left && right` has two
+// command slices and one operator.
+func compoundPlanTopology(parsed plan) *PlanTopology {
+	if len(parsed.operators) == 0 {
+		return nil
+	}
+	segments := make([]PlanSegment, 0, len(parsed.segments))
+	for _, current := range parsed.segments {
+		segments = append(segments, PlanSegment{Command: current.command})
+	}
+	return &PlanTopology{
+		Segments:  segments,
+		Operators: append([]string(nil), parsed.operators...),
+	}
+}
+
+// withCompoundPlan attaches parser-owned compound topology to one planner
+// result without changing the result's decision or diagnostic.
+//
+// Example: a denial in segment two still returns the complete two-segment
+// topology so an adapter can preserve parser diagnostic precedence.
+func withCompoundPlan(result Result, parsed plan) Result {
+	result.Plan = compoundPlanTopology(parsed)
+	return result
 }
 
 type proofSession struct {
@@ -202,9 +369,6 @@ type proofSession struct {
 
 type gateModeIdentity struct {
 	canonicalPaths []string
-	canonicalInfo  os.FileInfo
-	size           int64
-	digest         [sha256.Size]byte
 	failure        string
 }
 
@@ -214,6 +378,7 @@ var eciControlBasenames = [...]string{
 	"eci-acceptance-anchor", "eci-acceptance-transaction",
 	"eci-teardown-complete", "eci-baseline-binding", "baseline_head",
 	"eci-commit-admitted", "eci-user-closed.ledger", "proof.md",
+	"eci-aggregate", "eci-aggregate-plan.json", "eci-aggregate-teardown-complete",
 	"instructions.md", "stop_timestamps", "stop_loop_state",
 	"disengage.md", "user-closed.md", "project-understanding.md",
 	"high_level_log.md", "latest-status-report.md", "high_level_log.anchor",
@@ -227,10 +392,324 @@ func (err *planError) Error() string {
 	return err.diagnostic.Reason
 }
 
+// classifyCodexLifecycleTargetCandidate selects a direct eci-active target or
+// an env-launched target for provider-owned identity resolution. It does not
+// authorize a raw command spelling: the provider compares the executable the
+// shell would select with the current Codex target.
+//
+// Example: `"$HOME"/.codex/bin/eci-active status` and `eci-active status`
+// both defer so the provider can compare their resolved executable identities.
+func classifyCodexLifecycleTargetCandidate(command string) (lifecycleLexicalWord, string, bool) {
+	words, ok := lexLifecycleWords(command)
+	if !ok || len(words) == 0 {
+		return lifecycleLexicalWord{}, "", false
+	}
+
+	childIndex := 0
+	if lifecycleEnvironmentLauncherCandidate(words[0].value) {
+		childIndex = 1
+		if childIndex < len(words) && words[childIndex].value == "--" {
+			childIndex++
+		}
+		for childIndex < len(words) {
+			name, _, hasAssignment := strings.Cut(words[childIndex].value, "=")
+			if !hasAssignment || !isIdentifier(name) {
+				break
+			}
+			childIndex++
+		}
+	}
+
+	if childIndex >= len(words) {
+		return lifecycleLexicalWord{}, "", false
+	}
+	child := words[childIndex]
+	if !lifecycleExecutableCandidate(child.value) {
+		return lifecycleLexicalWord{}, "", false
+	}
+	verb := ""
+	if childIndex+1 < len(words) {
+		verb = words[childIndex+1].value
+	}
+	return child, verb, true
+}
+
+// isLifecycleReadOnlyVerb reports whether verb only discovers lifecycle state
+// or CLI usage and therefore has no visible control mutation target.
+//
+// Example: status and --help are read-only, while teardown is not.
+func isLifecycleReadOnlyVerb(verb string) bool {
+	switch verb {
+	case "status", "--help", "-h":
+		return true
+	default:
+		return false
+	}
+}
+
+// isLifecycleReadOnlyInvocation reports whether an unwrapped lifecycle argv
+// starts with a state-discovery or usage verb.
+//
+// Example: a copied eci-active status command stays ordinary even when the
+// executable bytes match a provider lifecycle binary.
+func isLifecycleReadOnlyInvocation(argv []token) bool {
+	return len(argv) >= 2 && isLifecycleReadOnlyVerb(argv[1].value)
+}
+
+// lifecycleEnvironmentLauncherCandidate recognizes an env-looking first
+// word for later identity verification. The provider rejects a PATH shadow
+// unless it resolves to the real system env executable.
+//
+// Example: `/usr/bin/env eci-active status` is a candidate, while `command
+// eci-active status` remains outside this direct-launch route.
+func lifecycleEnvironmentLauncherCandidate(value string) bool {
+	return filepath.Base(value) == "env"
+}
+
+// lifecycleExecutableCandidate recognizes a target that may resolve to
+// eci-active. The provider performs the actual same-file comparison and lets
+// unknown syntax fall through without a lifecycle-spelling denial.
+//
+// Example: `$CODEX_HOME/bin/eci-active` is a candidate even though its value
+// depends on the caller's environment.
+func lifecycleExecutableCandidate(value string) bool {
+	return filepath.Base(value) == "eci-active"
+}
+
+func isCodexLifecycleDispatcherLookalike(value string) bool {
+	if value == "eci-active-dispatch" {
+		return true
+	}
+	return (filepath.IsAbs(value) || strings.HasPrefix(value, "~") || strings.HasPrefix(value, "$")) &&
+		filepath.Base(value) == "eci-active-dispatch"
+}
+
+// classifyCodexLifecycleDispatcherInvocation finds an explicit dispatcher
+// target and its visible verb for the separate control boundary. It
+// intentionally does not inspect eci-active candidates, which use same-target
+// identity resolution instead.
+//
+// Example: `eci-active-dispatch --help` returns the dispatcher and --help.
+func classifyCodexLifecycleDispatcherInvocation(command string) (lifecycleLexicalWord, string, bool) {
+	words, ok := lexLifecycleWords(command)
+	if !ok {
+		return lifecycleLexicalWord{}, "", false
+	}
+	for index, word := range words {
+		if isCodexLifecycleDispatcherLookalike(word.value) {
+			verb := ""
+			if index+1 < len(words) {
+				verb = words[index+1].value
+			}
+			return word, verb, true
+		}
+	}
+	return lifecycleLexicalWord{}, "", false
+}
+
+// lexLifecycleWords implements only the finite shell-word subset needed to
+// retain a raw lifecycle executable token. Shell controls and malformed
+// quoting intentionally return false so the general planner can deny them.
+func lexLifecycleWords(command string) ([]lifecycleLexicalWord, bool) {
+	if !utf8.ValidString(command) || strings.IndexAny(command, "\x00\r\n") >= 0 {
+		return nil, false
+	}
+
+	words := make([]lifecycleLexicalWord, 0, 4)
+	for index := 0; index < len(command); {
+		for index < len(command) && (command[index] == ' ' || command[index] == '\t') {
+			index++
+		}
+		if index == len(command) {
+			break
+		}
+		start := index
+		var value strings.Builder
+		quote := byte(0)
+		escaped := false
+		for index < len(command) {
+			character := command[index]
+			if escaped {
+				value.WriteByte(character)
+				escaped = false
+				index++
+				continue
+			}
+			if quote == '\'' {
+				if character == '\'' {
+					quote = 0
+				} else {
+					value.WriteByte(character)
+				}
+				index++
+				continue
+			}
+			if character == '\\' {
+				escaped = true
+				index++
+				continue
+			}
+			if character == '\'' || character == '"' {
+				if quote == character {
+					quote = 0
+				} else if quote == 0 {
+					quote = character
+				} else {
+					value.WriteByte(character)
+				}
+				index++
+				continue
+			}
+			if quote == 0 {
+				if character == ' ' || character == '\t' {
+					break
+				}
+				if strings.ContainsRune(";|&()<>", rune(character)) {
+					return nil, false
+				}
+			}
+			value.WriteByte(character)
+			index++
+		}
+		if escaped || quote != 0 || start == index {
+			return nil, false
+		}
+		words = append(words, lifecycleLexicalWord{raw: command[start:index], value: value.String(), offset: start})
+	}
+	return words, true
+}
+
+// codexLifecycleDispatcherDiagnostic reports an eci-active-dispatch control
+// target. The dispatcher is distinct from eci-active and does not participate
+// in same-target lifecycle compatibility resolution.
+func codexLifecycleDispatcherDiagnostic(command string, word lifecycleLexicalWord) Diagnostic {
+	return Diagnostic{
+		Code:            CodeLifecycleCanonicalPathDenied,
+		Operation:       "eci-lifecycle",
+		Segment:         1,
+		ArgvIndex:       0,
+		ByteOffset:      word.offset,
+		Token:           word.raw,
+		Path:            "n/a",
+		Predicate:       "distinct-lifecycle-dispatcher-target",
+		Reason:          "eci-active-dispatch is a distinct lifecycle control target, not the eci-active command",
+		Remediation:     "invoke the intended eci-active target directly",
+		RejectedSegment: shellEscape(command),
+	}
+}
+
+// ledgerAppendRemediation returns copy-paste-safe ledger guidance for a provider.
+//
+// Example: a Codex denial names the literal current-home lifecycle executable.
+func ledgerAppendRemediation(provider Provider) string {
+	if provider == ProviderCodex {
+		return `use "$HOME/.codex/bin/eci-active" ledger-append`
+	}
+	// Kimi does not share Codex's literal current-home lifecycle grammar.
+	return "use eci-active ledger-append"
+}
+
+// reviewedScriptTraceTopology recognizes exactly the coordinator diagnostic
+// grammar `bash|sh -x REVIEWED_TEST 2>&1 | tail -n N`. It deliberately runs
+// before parsePlan because the redirect and pipe are part of this one typed
+// topology, not a general shell-syntax admission.
+func reviewedScriptTraceTopology(command string) (*ReviewedScriptTraceTopology, bool) {
+	words := strings.Split(command, " ")
+	if len(words) != 8 || words[0] != "bash" && words[0] != "sh" ||
+		words[1] != "-x" || !literalReviewedTestPath(words[2]) ||
+		words[3] != "2>&1" || words[4] != "|" || words[5] != "tail" ||
+		words[6] != "-n" || !boundedTraceLineCount(words[7]) {
+		return nil, false
+	}
+	return &ReviewedScriptTraceTopology{
+		Command:   command,
+		Shell:     words[0],
+		ShellFlag: words[1],
+		Script:    words[2],
+		Redirect:  words[3],
+		Operator:  words[4],
+		Sink:      words[5],
+		SinkFlag:  words[6],
+		Lines:     words[7],
+	}, true
+}
+
+// literalReviewedTestPath admits only the literal path-token alphabet used by
+// the reviewed-test adapter. Canonical root, regular-file, non-symlink,
+// reviewed-membership, and digest checks remain adapter-owned.
+func literalReviewedTestPath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "-") || !strings.HasSuffix(value, ".sh") ||
+		strings.Contains(value, "..") {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' || character == '.' || character == '_' ||
+			character == '-' || character == '/' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// boundedTraceLineCount accepts the documented inclusive decimal range 1..200
+// without accepting alternate spellings such as a leading-zero count.
+func boundedTraceLineCount(value string) bool {
+	if len(value) == 0 || len(value) > 3 || value[0] == '0' {
+		return false
+	}
+	count := 0
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+		count = count*10 + int(character-'0')
+	}
+	return count >= 1 && count <= 200
+}
+
 // Classify parses and admits one bounded command plan.
 func Classify(request Request) Result {
+	if request.Provider == ProviderCodex {
+		if _, verb, candidate := classifyCodexLifecycleTargetCandidate(request.Command); candidate &&
+			(isLifecycleReadOnlyVerb(verb) || request.Marker == MarkerActive && request.Role == RoleCoordinator) {
+			return Result{Decision: DecisionDefer, DeferredRoute: DeferredRouteCodexLifecycle}
+		}
+		if request.Marker == MarkerActive {
+			if word, verb, dispatcher := classifyCodexLifecycleDispatcherInvocation(request.Command); dispatcher &&
+				verb != "--help" && verb != "-h" {
+				return deniedResult(request, codexLifecycleDispatcherDiagnostic(request.Command, word))
+			}
+		}
+	}
+	if request.Provider == ProviderCodex && request.Marker == MarkerActive && request.Role == RoleCoordinator {
+		if trace, ok := reviewedScriptTraceTopology(request.Command); ok {
+			return Result{
+				Decision:      DecisionDefer,
+				DeferredRoute: DeferredRouteReviewedScriptTrace,
+				Plan:          &PlanTopology{Trace: trace},
+			}
+		}
+	}
+
 	parsed, err := parsePlan(request.Command)
 	if err != nil {
+		if err.diagnostic.Code == CodePlanLimitDenied {
+			// Parser capacity is not a command boundary. An active callback
+			// defers to the existing target-aware fallback; an inactive callback
+			// remains transparent. Neither path exposes a split instruction.
+			if request.Marker == MarkerActive {
+				return Result{Decision: DecisionDefer}
+			}
+			return Result{Decision: DecisionAllow}
+		}
+		if err.diagnostic.Code == CodePlanSyntaxDenied {
+			// A parser's incomplete shell grammar is not a concrete target or
+			// accidental-damage finding. Leave ordinary shell evaluation to the
+			// caller instead of turning punctuation or expansion into a gate.
+			return Result{Decision: DecisionAllow}
+		}
 		if request.Marker == MarkerInactive && strings.HasPrefix(string(err.diagnostic.Code), "ECI_PLAN_") {
 			// Inactive callbacks remain transparent to shell syntax, while
 			// deferring dynamic expansion lets the provider adapter retain
@@ -244,11 +723,17 @@ func Classify(request Request) Result {
 		return deniedResult(request, err.diagnostic)
 	}
 
-	capabilities := capabilitiesForPlan(parsed)
 	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
 	decision := DecisionAllow
+	ledgerRedirectAppend := false
 	for index, current := range parsed.segments {
-		segmentDecision, diagnostic := inspectSegment(request, current, index+1, wholeSingleSegmentPlan)
+		segmentDecision, diagnostic := inspectSegment(
+			request,
+			current,
+			index+1,
+			wholeSingleSegmentPlan,
+			&ledgerRedirectAppend,
+		)
 		if diagnostic != nil {
 			diagnostic.RejectedSegment = rejectedSegment(current, diagnostic.Code)
 			if suppressInactiveDiagnostic(request, diagnostic) {
@@ -260,52 +745,61 @@ func Classify(request Request) Result {
 				decision = DecisionDefer
 				continue
 			}
-			return deniedResult(request, *diagnostic)
+			return withCompoundPlan(deniedResult(request, *diagnostic), parsed)
 		}
 		if segmentDecision == DecisionDefer {
 			decision = DecisionDefer
 		}
 	}
-	if request.Marker == MarkerActive && request.Role == RoleWorker && len(parsed.operators) > 0 {
-		// A finite semicolon batch whose every segment passed the capability
-		// inspection above is still an ordinary worker plan. Keep control-flow
-		// operators on the provider adapter route, and let any protected segment
-		// retain the defer/deny decision it already selected.
-		for _, operator := range parsed.operators {
-			if operator != ";" {
-				decision = DecisionDefer
-				break
-			}
-		}
+	if request.Marker == MarkerActive && request.Role == RoleCoordinator &&
+		compoundPlanContainsFiniteShellScriptInvocation(parsed) {
+		// A compound shell-script invocation needs the provider's reviewed-script
+		// adapter to validate the complete raw topology before it can execute.
+		decision = DecisionDefer
 	}
+	gitCloneLaunch := gitCloneSourceAcquisitionLaunchForPlan(request, parsed, decision)
+	capabilities := capabilitiesForPlan(request, parsed, decision, gitCloneLaunch)
 	return Result{
-		Decision:      decision,
-		Capabilities:  capabilities,
-		DeferredRoute: deferredRouteForPlan(request, parsed, decision, capabilities),
+		Decision:             decision,
+		Capabilities:         capabilities,
+		GitCloneLaunch:       gitCloneLaunch,
+		DeferredRoute:        deferredRouteForPlan(request, parsed, decision, capabilities),
+		LedgerRedirectAppend: ledgerRedirectAppend,
+		Plan:                 compoundPlanTopology(parsed),
 	}
 }
 
-// deferredRouteForPlan selects the one transparent-env worker route only
-// after complete plan classification. The route is intentionally narrower
-// than generic wrapper and Git-option interpretation.
+// deferredRouteForPlan selects a provider route only after the complete plan
+// has been classified. The route intentionally inspects one raw env argv and
+// the child selected by the existing env grammar; it does not inherit any
+// executable basename, generic wrapper, or Git option interpretation.
 func deferredRouteForPlan(request Request, parsed plan, decision DecisionKind, capabilities []Capability) DeferredRoute {
-	if request.Provider != ProviderCodex || request.Marker != MarkerActive || request.Role != RoleWorker {
+	if request.Provider != ProviderCodex || request.Marker != MarkerActive {
 		return ""
 	}
 	if decision != DecisionDefer || len(capabilities) != 0 {
 		return ""
 	}
+	if request.Role == RoleCoordinator && compoundPlanContainsFiniteShellScriptInvocation(parsed) {
+		return DeferredRouteReviewedScriptCompound
+	}
+	if request.Role != RoleWorker {
+		return ""
+	}
 	if len(parsed.segments) != 1 || len(parsed.operators) != 0 {
 		return ""
 	}
+
 	if isWorkerEnvGitFsckLostFound(parsed.segments[0].argv) {
 		return DeferredRouteWorkerEnvGitFsckLostFound
 	}
 	return ""
 }
 
-// isWorkerEnvGitFsckLostFound recognizes only a direct transparent env child
-// with exact child positions git fsck and a later standalone --lost-found.
+// isWorkerEnvGitFsckLostFound recognizes the one direct env child grammar that
+// owns the worker fsck route. It deliberately uses the env-specific unwrapping
+// rules and direct child positions; generic wrapper and Git-option handling
+// remain outside this route predicate.
 func isWorkerEnvGitFsckLostFound(argv []token) bool {
 	if len(argv) == 0 || argv[0].value != "env" {
 		return false
@@ -318,80 +812,164 @@ func isWorkerEnvGitFsckLostFound(argv []token) bool {
 	return ok
 }
 
-// capabilitiesForPlan returns the one explicit capability represented by the
-// raw parsed command plan, when any.
+// capabilitiesForPlan returns the one protected capability that the planner
+// can fast-admit after every segment and envelope predicate has succeeded.
 //
-// Example: a direct git archive HEAD plan returns its repository-default
-// archive capability before command inspection determines its final decision.
-func capabilitiesForPlan(parsed plan) []Capability {
-	if isRepositoryDefaultGitArchivePlan(parsed) {
-		return []Capability{CapabilityRepositoryDefaultGitArchive}
+// Example: the exact current-provider gate-mode binary followed by `set`
+// returns CapabilityGateMode; a direct Git clone returns
+// CapabilityGitCloneSourceAcquisition; a bare command name returns no capability.
+func capabilitiesForPlan(
+	request Request,
+	parsed plan,
+	decision DecisionKind,
+	gitCloneLaunch *GitCloneLaunch,
+) []Capability {
+	if request.Marker != MarkerActive || decision != DecisionAllow ||
+		len(parsed.segments) != 1 || len(parsed.operators) != 0 {
+		return nil
 	}
-	if isDirectPathGitStatusPlan(parsed) {
-		return []Capability{CapabilityDirectPathGitStatus}
+	if gitCloneLaunch != nil {
+		return []Capability{CapabilityGitCloneSourceAcquisition}
 	}
-	for segmentIndex, current := range parsed.segments {
-		argv, diagnostic := unwrap(current.argv, segmentIndex+1)
-		if diagnostic == nil && isGateModeCapability(argv) {
-			return []Capability{CapabilityGateMode}
-		}
+	original := parsed.segments[0].argv
+	unwrapped, diagnostic := unwrapWithMetadata(original, 1)
+	if diagnostic != nil {
+		return nil
 	}
-	return nil
+	if !isExactGateModeEnvelope(request, original, unwrapped.argv, true) ||
+		len(unwrapped.argv) < 2 || unwrapped.argv[1].value != "set" {
+		return nil
+	}
+	return []Capability{CapabilityGateMode}
 }
 
-// isDirectPathGitStatusPlan reports whether parsed is exactly one direct,
-// unquoted, path-selected Git status argv before any wrapper is unwrapped.
-//
-// Example: ./tools/git status is true while env ./tools/git status is false.
-func isDirectPathGitStatusPlan(parsed plan) bool {
-	if len(parsed.segments) != 1 || len(parsed.operators) != 0 {
-		return false
+// gitCloneSourceAcquisitionLaunchForPlan returns launch metadata only for one
+// active, fully allowed direct plan. Compound topology remains planner-owned:
+// its adapter recursively classifies each segment rather than carrying this
+// top-level capability across shell operators.
+func gitCloneSourceAcquisitionLaunchForPlan(
+	request Request,
+	parsed plan,
+	decision DecisionKind,
+) *GitCloneLaunch {
+	if request.Marker != MarkerActive || decision != DecisionAllow ||
+		len(parsed.segments) != 1 || len(parsed.operators) != 0 {
+		return nil
 	}
-
-	argv := parsed.segments[0].argv
-	return len(argv) == 2 && !argv[0].quoted && !argv[1].quoted &&
-		strings.ContainsRune(argv[0].value, filepath.Separator) &&
-		filepath.Base(argv[0].value) == "git" && argv[1].value == "status"
+	original := parsed.segments[0].argv
+	unwrapped, diagnostic := unwrapWithMetadata(original, 1)
+	if diagnostic != nil {
+		return nil
+	}
+	launch, _ := gitCloneSourceAcquisitionLaunch(original, unwrapped, true)
+	return launch
 }
 
-// isRepositoryDefaultGitArchivePlan reports whether parsed is exactly one
-// unquoted repository-default git archive command with an optional tar output.
-//
-// Example: git archive HEAD is true, while git -C repo archive HEAD is false.
-func isRepositoryDefaultGitArchivePlan(parsed plan) bool {
-	if len(parsed.segments) != 1 || len(parsed.operators) != 0 {
-		return false
+// gitCloneSourceAcquisitionLaunch recognizes the finite launch forms whose
+// executable and inherited environment can be bound by the provider without
+// interpreting Git clone options or operands. Its boolean reports a visible
+// Git clone whose launcher changed that boundary and therefore must not fall
+// through to generic active admission.
+func gitCloneSourceAcquisitionLaunch(
+	original []token,
+	unwrapped unwrappedCommand,
+	wholeSingleSegmentPlan bool,
+) (*GitCloneLaunch, bool) {
+	if !wholeSingleSegmentPlan {
+		return nil, false
 	}
+	if !isGitCloneSourceAcquisitionArgv(unwrapped.argv) {
+		return nil, isCommandQueryGitCloneLaunch(original)
+	}
+	if launch := directGitCloneLaunch(original, unwrapped); launch != nil {
+		return launch, true
+	}
+	if launch := commandGitCloneLaunch(original); launch != nil {
+		return launch, true
+	}
+	if launch := envGitCloneLaunch(original); launch != nil {
+		return launch, true
+	}
+	return nil, true
+}
 
-	argv := parsed.segments[0].argv
-	if len(argv) != 3 && len(argv) != 5 {
-		return false
+func isGitCloneSourceAcquisitionArgv(argv []token) bool {
+	return len(argv) >= 2 && filepath.Base(argv[0].value) == "git" && argv[1].value == "clone"
+}
+
+// isCommandQueryGitCloneLaunch recognizes command's query-only forms when
+// they visibly name a Git clone. They do not launch Git, so they cannot carry
+// the source-acquisition capability or fall through to generic active allow.
+func isCommandQueryGitCloneLaunch(original []token) bool {
+	return len(original) >= 4 && original[0].value == "command" &&
+		(original[1].value == "-v" || original[1].value == "-V") &&
+		isGitCloneSourceAcquisitionArgv(original[2:])
+}
+
+func directGitCloneLaunch(original []token, unwrapped unwrappedCommand) *GitCloneLaunch {
+	if unwrapped.hasEnvironment || unwrapped.hasTransparentWrapper ||
+		len(original) != len(unwrapped.argv) || !isGitCloneSourceAcquisitionArgv(original) {
+		return nil
 	}
-	for _, argument := range argv {
-		if argument.quoted {
-			return false
-		}
-	}
-	if argv[0].value != "git" || argv[1].value != "archive" {
-		return false
-	}
-	switch len(argv) {
-	case 3:
-		return argv[2].value == "HEAD"
-	case 5:
-		output := strings.TrimPrefix(argv[3].value, "--output=")
-		return argv[2].value == "--format=tar" &&
-			strings.HasPrefix(argv[3].value, "--output=") &&
-			output != "" &&
-			argv[4].value == "HEAD"
-	default:
-		return false
+	return &GitCloneLaunch{
+		Class:                GitCloneLaunchDirect,
+		GitArgvIndex:         0,
+		GitExecutable:        original[0].value,
+		EnvironmentPreserved: true,
 	}
 }
 
-func isGateModeCapability(argv []token) bool {
-	_, _, ok := gateModeIndexes(argv)
-	return ok
+func commandGitCloneLaunch(original []token) *GitCloneLaunch {
+	if len(original) < 3 || original[0].value != "command" {
+		return nil
+	}
+	gitIndex := 1
+	if original[gitIndex].value == "--" {
+		gitIndex++
+	}
+	if !isGitCloneSourceAcquisitionArgv(original[gitIndex:]) {
+		return nil
+	}
+	return &GitCloneLaunch{
+		Class:                GitCloneLaunchCommand,
+		GitArgvIndex:         gitIndex,
+		GitExecutable:        original[gitIndex].value,
+		EnvironmentPreserved: true,
+	}
+}
+
+func envGitCloneLaunch(original []token) *GitCloneLaunch {
+	if len(original) < 3 || filepath.Base(original[0].value) != "env" {
+		return nil
+	}
+	gitIndex := 1
+	if original[gitIndex].value == "--" {
+		gitIndex++
+	}
+	if !isGitCloneSourceAcquisitionArgv(original[gitIndex:]) {
+		return nil
+	}
+	envIndex := 0
+	return &GitCloneLaunch{
+		Class:                GitCloneLaunchEnv,
+		GitArgvIndex:         gitIndex,
+		GitExecutable:        original[gitIndex].value,
+		EnvironmentPreserved: true,
+		EnvArgvIndex:         &envIndex,
+		EnvExecutable:        original[envIndex].value,
+	}
+}
+
+func gitCloneLaunchContextDiagnostic(original []token, segmentIndex int) *Diagnostic {
+	return diagnosticForToken(
+		CodeGitExecutionContextDenied,
+		"Git clone launch changes the executable or inherited environment context",
+		segmentIndex,
+		0,
+		original[0],
+		"use direct Git clone, command [--] Git clone, or env [--] Git clone without launcher options or environment changes",
+		"git-clone-launch-context",
+	)
 }
 
 func rejectedSegment(current segment, code DiagnosticCode) string {
@@ -416,6 +994,39 @@ func canonicalLifecycleTildePrefix(command string, offset int) bool {
 	return false
 }
 
+// knownHomeExpansion decodes only the shell's unambiguous HOME shorthand.
+// This is not a general expansion evaluator: arbitrary variables, command
+// substitutions, arithmetic, and globs remain unknown to the planner. HOME
+// is already the callback's concrete home authority and must not turn a
+// normal "$HOME/.codex/..." lifecycle or ordinary-path command into a raw
+// syntax denial before its target-aware route can inspect it.
+//
+// Example: `$HOME/.codex/bin/eci-active` becomes the current HOME-prefixed
+// path, while `$HOME_SUFFIX` and `$(date)` remain dynamic.
+func knownHomeExpansion(command string, offset int) (string, int, bool) {
+	if offset < 0 || offset >= len(command) || command[offset] != '$' {
+		return "", 0, false
+	}
+	home := os.Getenv("HOME")
+	if home == "" || !filepath.IsAbs(home) {
+		return "", 0, false
+	}
+	if strings.HasPrefix(command[offset:], "${HOME}") {
+		return home, len("${HOME}"), true
+	}
+	if !strings.HasPrefix(command[offset:], "$HOME") {
+		return "", 0, false
+	}
+	end := offset + len("$HOME")
+	if end < len(command) {
+		next := command[end]
+		if next == '_' || next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next >= '0' && next <= '9' {
+			return "", 0, false
+		}
+	}
+	return home, len("$HOME"), true
+}
+
 func parsePlan(command string) (plan, *planError) {
 	if !utf8.ValidString(command) {
 		return plan{}, newPlanError(
@@ -437,29 +1048,32 @@ func parsePlan(command string) (plan, *planError) {
 			1,
 			0,
 			"<command>",
-			"split the command into smaller finite literal calls",
+			"continue through the ordinary target-aware fallback",
 			"command-byte-limit",
 		)
 	}
-	if index := strings.IndexAny(command, "\x00\r"); index >= 0 {
+	if index := strings.IndexByte(command, '\x00'); index >= 0 {
 		return plan{}, newPlanError(
 			CodePlanSyntaxDenied,
-			"NUL and carriage-return bytes are not command-plan syntax",
+			"NUL bytes are not command-plan syntax",
 			index,
 			1,
 			0,
 			command[index:index+1],
-			"remove the reported byte and retry one literal plan",
+			"remove the NUL byte and retry one literal plan",
 			"forbidden-byte",
 		)
 	}
 
 	var parsed plan
 	var current []token
+	var redirects []outputRedirect
 	var value strings.Builder
+	segmentStart := 0
 	tokenOffset := 0
 	tokenStarted := false
 	tokenQuoted := false
+	var redirectTargetPending *outputRedirect
 	quote := byte(0)
 	escaped := false
 
@@ -476,11 +1090,21 @@ func parsePlan(command string) (plan, *planError) {
 				len(parsed.segments)+1,
 				len(current),
 				argument,
-				"shorten the reported argv element and retry",
+				"continue through the ordinary target-aware fallback",
 				"argv-byte-limit",
 			)
 		}
-		current = append(current, token{value: argument, offset: tokenOffset, quoted: tokenQuoted})
+		parsedToken := token{value: argument, offset: tokenOffset, quoted: tokenQuoted}
+		if redirectTargetPending != nil {
+			redirect := *redirectTargetPending
+			redirect.target = parsedToken
+			if !redirect.descriptorDuplication || !isFileDescriptorDuplicationTarget(parsedToken.value) {
+				redirects = append(redirects, redirect)
+			}
+			redirectTargetPending = nil
+		} else {
+			current = append(current, parsedToken)
+		}
 		value.Reset()
 		tokenStarted = false
 		tokenQuoted = false
@@ -511,14 +1135,22 @@ func parsePlan(command string) (plan, *planError) {
 				len(parsed.segments)+1,
 				0,
 				operator,
-				"split the plan into separately reviewed calls",
+				"continue through the ordinary target-aware fallback",
 				"segment-limit",
 			)
 		}
 		copied := append([]token(nil), current...)
-		parsed.segments = append(parsed.segments, segment{argv: copied, offset: copied[0].offset})
+		parsed.segments = append(parsed.segments, segment{
+			argv:      copied,
+			redirects: append([]outputRedirect(nil), redirects...),
+			offset:    copied[0].offset,
+			command:   command[segmentStart:offset],
+		})
 		parsed.operators = append(parsed.operators, operator)
 		current = current[:0]
+		redirects = redirects[:0]
+		redirectTargetPending = nil
+		segmentStart = offset + len(operator)
 		return nil
 	}
 
@@ -581,13 +1213,30 @@ func parsePlan(command string) (plan, *planError) {
 			continue
 		}
 		if !inDoubleQuote {
+			if character == '&' && index+1 < len(command) && command[index+1] == '>' {
+				if err := flushToken(); err != nil {
+					return plan{}, err
+				}
+				effect := outputRedirectOverwrite
+				next := index + 2
+				if next < len(command) && command[next] == '>' {
+					effect = outputRedirectAppend
+					next++
+				}
+				redirectTargetPending = &outputRedirect{effect: effect}
+				index = next - 1
+				continue
+			}
+			// Shell spelling is not itself an accidental-mistake finding. Keep
+			// enough word boundaries to inspect visible concrete targets below,
+			// but do not turn ordinary punctuation into a denial.
 			operator := ""
 			switch {
 			case index+1 < len(command) && command[index:index+2] == "&&":
 				operator = "&&"
 			case index+1 < len(command) && command[index:index+2] == "||":
 				operator = "||"
-			case character == ';', character == '|', character == '\n':
+			case character == ';', character == '|', character == '\n', character == '&':
 				operator = string(character)
 			}
 			if operator != "" {
@@ -597,85 +1246,76 @@ func parsePlan(command string) (plan, *planError) {
 				index += len(operator) - 1
 				continue
 			}
-			if character == '&' {
-				return plan{}, newPlanError(
-					CodePlanSyntaxDenied,
-					"background execution is not a finite command-plan operator",
-					index,
-					len(parsed.segments)+1,
-					len(current),
-					"&",
-					"remove '&' or use a finite supported plan operator",
-					"background-operator",
-				)
-			}
 			if character == '<' || character == '>' {
-				predicate := "redirection"
-				tokenValue := string(character)
-				if index+1 < len(command) && command[index+1] == '(' {
-					predicate = "process-substitution"
-					tokenValue = command[index : index+2]
+				// A redirection is ordinary shell syntax. Treat it as a word
+				// boundary so a preceding visible `rm -rf /` remains detectable.
+				fileDescriptor := tokenStarted && !tokenQuoted &&
+					tokenOffset+value.Len() == index && isDecimalFileDescriptor(value.String())
+				if fileDescriptor {
+					value.Reset()
+					tokenStarted = false
+					tokenQuoted = false
+				} else if err := flushToken(); err != nil {
+					return plan{}, err
 				}
-				return plan{}, newPlanError(
-					CodePlanSyntaxDenied,
-					strings.ReplaceAll(predicate, "-", " ")+" is not literal argv syntax",
-					index,
-					len(parsed.segments)+1,
-					len(current),
-					tokenValue,
-					"pass paths as literal argv and let the invoked tool perform I/O",
-					predicate,
-				)
+				if character == '<' {
+					if index+1 < len(command) && (command[index+1] == '<' || command[index+1] == '&') {
+						index++
+					}
+					continue
+				}
+
+				effect := outputRedirectOverwrite
+				next := index + 1
+				if next < len(command) && command[next] == '>' {
+					effect = outputRedirectAppend
+					next++
+				}
+				if next < len(command) && command[next] == '|' {
+					effect = outputRedirectForceOverwrite
+					next++
+				}
+				descriptorDuplication := false
+				if next < len(command) && command[next] == '&' {
+					descriptorDuplication = true
+					next++
+				}
+				redirectTargetPending = &outputRedirect{
+					effect:                effect,
+					descriptorDuplication: descriptorDuplication,
+				}
+				index = next - 1
+				continue
 			}
 			if character == '(' || character == ')' {
-				return plan{}, newPlanError(
-					CodePlanSyntaxDenied,
-					"shell grouping and process substitution are not literal argv syntax",
-					index,
-					len(parsed.segments)+1,
-					len(current),
-					string(character),
-					"invoke a finite direct argv without shell grouping",
-					"grouping",
-				)
+				// Grouping and process substitution do not authorize or deny an
+				// action. Their word boundary lets visible nested direct targets
+				// remain available to the ordinary target checks.
+				if err := flushToken(); err != nil {
+					return plan{}, err
+				}
+				continue
 			}
-			if character == '#' && !tokenStarted {
-				return plan{}, newPlanError(
-					CodePlanSyntaxDenied,
-					"unquoted shell comments are not part of a literal command plan",
-					index,
-					len(parsed.segments)+1,
-					len(current),
-					"#",
-					"remove the comment or quote the literal hash character",
-					"comment",
-				)
-			}
-			if strings.ContainsRune("*?[{}", rune(character)) ||
-				(character == '~' && !tokenStarted && !canonicalLifecycleTildePrefix(command, index)) {
-				return plan{}, newPlanError(
-					CodePlanSyntaxDenied,
-					"unquoted expansion syntax makes argv filesystem- or shell-dependent",
-					index,
-					len(parsed.segments)+1,
-					len(current),
-					string(character),
-					"quote or escape the literal metacharacter, or pass explicit argv",
-					"shell-expansion",
-				)
+			if (character == '{' || character == '}') && !tokenStarted {
+				// Shell groups use bare braces, while parameter expansion has a
+				// started '$' word. Split only the former so `{ rm -rf /; }`
+				// retains its visible target without interpreting `${name}`.
+				if err := flushToken(); err != nil {
+					return plan{}, err
+				}
+				continue
 			}
 		}
-		if (character == '$' || character == '`') && quote != '\'' {
-			return plan{}, newPlanError(
-				CodePlanSyntaxDenied,
-				"parameter, command, or arithmetic expansion makes argv dynamic",
-				index,
-				len(parsed.segments)+1,
-				len(current),
-				string(character),
-				"replace expansion with explicit literal argv",
-				"dynamic-expansion",
-			)
+		if character == '$' && quote != '\'' {
+			if home, consumed, ok := knownHomeExpansion(command, index); ok {
+				if !tokenStarted {
+					tokenOffset = index
+				}
+				value.WriteString(home)
+				tokenStarted = true
+				index += consumed - 1
+				continue
+			}
 		}
 		if !tokenStarted {
 			tokenOffset = index
@@ -684,26 +1324,21 @@ func parsePlan(command string) (plan, *planError) {
 		tokenStarted = true
 	}
 
-	if escaped || quote != 0 {
-		tokenValue := "\\"
-		if quote != 0 {
-			tokenValue = string(quote)
-		}
-		return plan{}, newPlanError(
-			CodePlanSyntaxDenied,
-			"shell quoting or escaping is unbalanced",
-			len(command),
-			len(parsed.segments)+1,
-			len(current),
-			tokenValue,
-			"close the reported quote or remove the trailing escape",
-			"unbalanced-quote",
-		)
+	if escaped {
+		value.WriteByte('\\')
+		tokenStarted = true
+		tokenQuoted = true
 	}
 	if err := flushToken(); err != nil {
 		return plan{}, err
 	}
 	if len(current) == 0 {
+		if len(parsed.segments) > 0 {
+			// A trailing shell operator is not a target. Retain the completed
+			// segments for their ordinary target checks rather than denying the
+			// command for punctuation alone.
+			return parsed, nil
+		}
 		tokenValue := "<empty>"
 		if len(parsed.operators) > 0 {
 			tokenValue = parsed.operators[len(parsed.operators)-1]
@@ -719,7 +1354,12 @@ func parsePlan(command string) (plan, *planError) {
 			"empty-segment",
 		)
 	}
-	parsed.segments = append(parsed.segments, segment{argv: append([]token(nil), current...), offset: current[0].offset})
+	parsed.segments = append(parsed.segments, segment{
+		argv:      append([]token(nil), current...),
+		redirects: append([]outputRedirect(nil), redirects...),
+		offset:    current[0].offset,
+		command:   command[segmentStart:],
+	})
 	argumentCount := 0
 	for _, currentSegment := range parsed.segments {
 		argumentCount += len(currentSegment.argv)
@@ -738,7 +1378,7 @@ func parsePlan(command string) (plan, *planError) {
 			len(parsed.segments),
 			len(parsed.segments[len(parsed.segments)-1].argv)-1,
 			"<plan>",
-			"split the plan into smaller separately reviewed calls",
+			"continue through the ordinary target-aware fallback",
 			"plan-limit",
 		)
 	}
@@ -746,11 +1386,36 @@ func parsePlan(command string) (plan, *planError) {
 	return parsed, nil
 }
 
+// isDecimalFileDescriptor reports whether value is the unquoted numeric prefix
+// of a shell output redirection rather than an argv operand.
+//
+// Example: `2>> log` has file descriptor prefix 2, while `two>> log` does not.
+func isDecimalFileDescriptor(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isFileDescriptorDuplicationTarget reports whether a `>&` target denotes an
+// existing descriptor or close marker instead of a filesystem path.
+//
+// Example: 2>&1 and >&- return true, while >& ledger returns false.
+func isFileDescriptorDuplicationTarget(value string) bool {
+	return value == "-" || isDecimalFileDescriptor(value)
+}
+
 func inspectSegment(
 	request Request,
 	current segment,
 	segmentIndex int,
 	wholeSingleSegmentPlan bool,
+	ledgerRedirectAppend *bool,
 ) (DecisionKind, *Diagnostic) {
 	if len(current.argv) == 0 {
 		return DecisionDeny, diagnosticForToken(
@@ -763,39 +1428,55 @@ func inspectSegment(
 			"empty-segment",
 		)
 	}
-	if assignmentName(current.argv[0]) != "" {
-		return DecisionDeny, diagnosticForToken(
-			CodePlanSyntaxDenied,
-			"assignments before the executable are shell context, not literal argv",
-			segmentIndex,
-			0,
-			current.argv[0],
-			"use env with a literal child argv, or remove the leading assignment",
-			"leading-assignment",
-		)
-	}
-	if isReservedControl(current.argv[0]) {
-		return DecisionDeny, diagnosticForToken(
-			CodePlanSyntaxDenied,
-			"reserved shell control words are not literal executable argv",
-			segmentIndex,
-			0,
-			current.argv[0],
-			"invoke one direct finite executable argv",
-			"reserved-shell-control",
-		)
-	}
+	safeLedgerRedirects := make([]bool, len(current.redirects))
 	if request.Marker == MarkerActive {
-		decision, diagnostic := inspectProofPathOwnership(request, current.argv, segmentIndex)
+		decision, diagnostic := inspectProofPathOwnership(request, current.argv, segmentIndex, nil, nil)
 		if diagnostic != nil || decision == DecisionDefer {
 			return decision, diagnostic
 		}
+		for redirectIndex, redirect := range current.redirects {
+			currentLedgerAppend := false
+			decision, diagnostic = inspectProofPathOwnership(
+				request,
+				redirectWriterArgv(redirect),
+				segmentIndex,
+				&redirect,
+				&currentLedgerAppend,
+			)
+			if diagnostic != nil || decision == DecisionDefer {
+				return decision, diagnostic
+			}
+			if currentLedgerAppend {
+				safeLedgerRedirects[redirectIndex] = true
+				if ledgerRedirectAppend != nil {
+					*ledgerRedirectAppend = true
+				}
+			}
+		}
 	}
-	argv, diagnostic := unwrap(current.argv, segmentIndex)
+	argvForUnwrap := current.argv
+	for len(argvForUnwrap) > 0 && assignmentName(argvForUnwrap[0]) != "" {
+		argvForUnwrap = argvForUnwrap[1:]
+	}
+	if len(argvForUnwrap) == 0 {
+		// A shell environment assignment without an executable has no resolved
+		// filesystem, control, or cross-session target for this planner to gate.
+		return DecisionAllow, nil
+	}
+
+	unwrapped, diagnostic := unwrapWithMetadata(argvForUnwrap, segmentIndex)
 	if diagnostic != nil {
-		return DecisionDeny, diagnostic
+		// Wrapper option spelling and an incomplete wrapper do not identify a
+		// concrete target. Leave those ordinary forms to the invoked shell.
+		return DecisionAllow, nil
 	}
+	argv := unwrapped.argv
 	name := filepath.Base(argv[0].value)
+	gitCloneLaunch, gitCloneLaunchVisible := gitCloneSourceAcquisitionLaunch(
+		current.argv,
+		unwrapped,
+		wholeSingleSegmentPlan,
+	)
 	if name == "git" {
 		if optionIndex, ok := gitFsckLostFoundOption(argv, gitSubcommandIndex(argv)); ok {
 			if hasAttachedGitContextOption(argv) {
@@ -824,37 +1505,32 @@ func inspectSegment(
 		return DecisionDefer, nil
 	}
 
-	switch name {
-	case "printenv":
-		if diagnostic := inspectPrintenv(argv, segmentIndex); diagnostic != nil {
-			return DecisionDeny, diagnostic
-		}
-	case "alias", "enable", "eval", "export", "hash", "set", "source", ".", "unset", "xargs":
-		return DecisionDeny, diagnosticForToken(
-			CodePlanDynamicLaunchDenied,
-			fmt.Sprintf("%s constructs or loads executable argv dynamically", name),
-			segmentIndex,
-			0,
-			argv[0],
-			"invoke the resulting finite literal argv directly",
-			"dynamic-launch",
-		)
+	// Interpreter selectors, environment helpers, and utility options are
+	// ordinary command forms. They do not identify a concrete destructive,
+	// cross-session, or ECI-control target by themselves.
+	if isGateModeReadOnlyGet(argv) {
+		return DecisionAllow, nil
 	}
-
-	if isInterpreter(name) {
-		if diagnostic := inspectInterpreter(name, argv, segmentIndex); diagnostic != nil {
-			return DecisionDeny, diagnostic
-		}
-	}
-	if isGateModeCapability(argv) {
-		if diagnostic := inspectGateMode(request, current.argv, argv, segmentIndex); diagnostic != nil {
+	if isGateModeInvocation(argv) {
+		if diagnostic := inspectGateMode(request, current.argv, argv, segmentIndex, wholeSingleSegmentPlan); diagnostic != nil {
 			return DecisionDeny, diagnostic
 		}
 		return DecisionAllow, nil
 	}
-	if request.Marker == MarkerActive && request.Role == RoleWorker {
+	if request.Marker == MarkerActive && request.Role == RoleWorker && !isLifecycleReadOnlyInvocation(argv) {
 		if diagnostic := inspectActiveWorkerLifecycleIdentity(request, current.argv, argv, segmentIndex); diagnostic != nil {
 			return DecisionDeny, diagnostic
+		}
+		if argv[0].value == "eci-active" {
+			return DecisionDeny, diagnosticForToken(
+				CodeControlOwnerRequired,
+				"worker argv selects coordinator-owned bare lifecycle command: executable=eci-active invocation=unwrapped",
+				segmentIndex,
+				originalTokenIndex(current.argv, argv[0]),
+				argv[0],
+				"route the exact lifecycle/control invocation through the coordinator",
+				"worker-lifecycle-control",
+			)
 		}
 	}
 	if request.Marker == MarkerActive && isLifecycleScriptCapability(request.CWD, argv) {
@@ -910,22 +1586,6 @@ func inspectSegment(
 			}
 		}
 	}
-	if name == "find" {
-		for index, argument := range argv[1:] {
-			switch argument.value {
-			case "-exec", "-execdir", "-ok", "-okdir", "-delete":
-				return DecisionDeny, diagnosticForToken(
-					CodePlanDynamicLaunchDenied,
-					"find action constructs nested execution or deletes discovered paths",
-					segmentIndex,
-					index+1,
-					argument,
-					"separate discovery from one finite literal action",
-					"dynamic-find-action",
-				)
-			}
-		}
-	}
 	if name == "git" {
 		decision, diagnostic := inspectGit(request, argv, segmentIndex)
 		if diagnostic != nil {
@@ -934,6 +1594,18 @@ func inspectSegment(
 		if decision == DecisionDefer {
 			return DecisionDefer, nil
 		}
+		if request.Marker == MarkerActive {
+			if gitCloneLaunch != nil {
+				return DecisionAllow, nil
+			}
+			if gitCloneLaunchVisible {
+				return DecisionDeny, gitCloneLaunchContextDiagnostic(current.argv, segmentIndex)
+			}
+			return DecisionDefer, nil
+		}
+	}
+	if request.Marker == MarkerActive && gitCloneLaunchVisible {
+		return DecisionDeny, gitCloneLaunchContextDiagnostic(current.argv, segmentIndex)
 	}
 	if isLifecycleScriptPath(request.CWD, argv[0].value) {
 		return DecisionDefer, nil
@@ -945,69 +1617,265 @@ func inspectSegment(
 		return DecisionDeny, diagnostic
 	}
 	if request.Marker == MarkerActive && request.Role == RoleWorker {
-		if diagnostic := inspectLiveControl(request, argv, segmentIndex); diagnostic != nil {
-			return DecisionDeny, diagnostic
+		if isSourceWriter(name, argv) {
+			if diagnostic := inspectLiveControl(request, argv, segmentIndex); diagnostic != nil {
+				return DecisionDeny, diagnostic
+			}
+		}
+		for redirectIndex, redirect := range current.redirects {
+			if safeLedgerRedirects[redirectIndex] {
+				continue
+			}
+			if diagnostic := inspectLiveControl(request, redirectWriterArgv(redirect), segmentIndex); diagnostic != nil {
+				return DecisionDeny, diagnostic
+			}
 		}
 	}
-	if request.Marker == MarkerActive && request.Role == RoleCoordinator && isSourceWriter(name, argv) && sourceWriterTargetsCWD(request.CWD, name, argv) {
-		return DecisionDefer, nil
-	}
-
 	return DecisionAllow, nil
 }
 
-func inspectGateMode(request Request, original, argv []token, segmentIndex int) *Diagnostic {
-	targetIndex, actionIndex, ok := gateModeIndexes(argv)
+// redirectWriterArgv gives one shell redirect destination the same concrete
+// write-target treatment as a direct writer argument without discarding its
+// independently retained effect.
+//
+// Example: `printf note >> log` produces the synthetic writer argv `tee log`.
+func redirectWriterArgv(redirect outputRedirect) []token {
+	return []token{{value: "tee"}, redirect.target}
+}
+
+// isGateModeInvocation reports whether the executable or a visible interpreter
+// script operand names the command-gate mode control program.
+//
+// Example: command /home/user/.codex/bin/eci-command-gate-mode get is a
+// gate-mode invocation even though command is a transparent wrapper.
+func isGateModeInvocation(argv []token) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	if filepath.Base(argv[0].value) == "eci-command-gate-mode" {
+		return true
+	}
+	return len(argv) > 1 && isInterpreter(filepath.Base(argv[0].value)) &&
+		filepath.Base(argv[1].value) == "eci-command-gate-mode"
+}
+
+// gateModeTarget returns the visible control-program token from a recognized
+// direct or interpreter-shaped gate-mode invocation.
+//
+// Example: python3 /opt/eci-command-gate-mode get returns the script token.
+func gateModeTarget(argv []token) (token, bool) {
+	if len(argv) == 0 {
+		return token{}, false
+	}
+	if filepath.Base(argv[0].value) == "eci-command-gate-mode" {
+		return argv[0], true
+	}
+	if len(argv) > 1 && isInterpreter(filepath.Base(argv[0].value)) &&
+		filepath.Base(argv[1].value) == "eci-command-gate-mode" {
+		return argv[1], true
+	}
+	return token{}, false
+}
+
+// isGateModeReadOnlyGet reports whether a recognized gate-mode program has a
+// visible get action, which only discovers its own state.
+//
+// Example: a copied eci-command-gate-mode get remains an ordinary command.
+func isGateModeReadOnlyGet(argv []token) bool {
+	target, ok := gateModeTarget(argv)
+	if !ok {
+		return false
+	}
+	for index, argument := range argv {
+		if argument.offset == target.offset && argument.value == target.value {
+			return index+1 < len(argv) && argv[index+1].value == "get"
+		}
+	}
+	return false
+}
+
+// isDirectGateModeEnvelope reports whether original contains exactly the
+// unwrapped direct control-program argv without quoting or an operator plan.
+//
+// Example: /home/user/.codex/bin/eci-command-gate-mode get is direct, while
+// env FOO=bar /home/user/.codex/bin/eci-command-gate-mode get is not.
+func isDirectGateModeEnvelope(original, argv []token, wholeSingleSegmentPlan bool) bool {
+	if !wholeSingleSegmentPlan || len(original) != len(argv) || len(argv) < 2 ||
+		filepath.Base(argv[0].value) != "eci-command-gate-mode" {
+		return false
+	}
+	for index := range original {
+		if original[index].quoted || original[index].offset != argv[index].offset ||
+			original[index].value != argv[index].value {
+			return false
+		}
+	}
+	return true
+}
+
+// isExactGateModeArguments reports whether argv has the complete fixed action
+// grammar accepted by the command-gate binary.
+//
+// Example: <gate-mode> set enforcing is exact, while <gate-mode> get extra is
+// not because it has a trailing operand.
+func isExactGateModeArguments(argv []token) bool {
+	switch len(argv) {
+	case 2:
+		return argv[1].value == "get"
+	case 3:
+		return argv[1].value == "set" &&
+			(argv[2].value == "permissive" || argv[2].value == "enforcing")
+	default:
+		return false
+	}
+}
+
+// gateModeProviderPath returns the exact canonical command-gate path selected
+// by the provider whose callback is being classified.
+//
+// Example: ProviderCodex selects the Codex path and never its Kimi peer.
+func gateModeProviderPath(provider Provider, identity gateModeIdentity) (string, bool) {
+	if len(identity.canonicalPaths) != 2 {
+		return "", false
+	}
+	switch provider {
+	case ProviderCodex:
+		return identity.canonicalPaths[0], true
+	case ProviderKimi:
+		return identity.canonicalPaths[1], true
+	default:
+		return "", false
+	}
+}
+
+// gateModeEnvelopeDiagnostic rejects a control-program spelling that cannot
+// prove the exact direct provider-owned control envelope.
+//
+// Example: a bare eci-command-gate-mode name is denied instead of resolving
+// through a caller-controlled PATH.
+func gateModeEnvelopeDiagnostic(
+	original []token,
+	target token,
+	segmentIndex int,
+	predicate string,
+	reason string,
+) *Diagnostic {
+	return diagnosticForToken(
+		CodeControlIdentityDenied,
+		reason,
+		segmentIndex,
+		originalTokenIndex(original, target),
+		target,
+		"invoke the exact canonical provider command-gate binary with get or set <permissive|enforcing>",
+		predicate,
+	)
+}
+
+// inspectGateMode validates every execution-relevant component of a recognized
+// command-gate control invocation before it can receive a generic fast path.
+//
+// Example: the exact current-provider binary with `set enforcing` is valid for
+// a coordinator, while the same command remains worker-owned for a worker.
+func inspectGateMode(
+	request Request,
+	original []token,
+	argv []token,
+	segmentIndex int,
+	wholeSingleSegmentPlan bool,
+) *Diagnostic {
+	target, ok := gateModeTarget(argv)
 	if !ok {
 		return nil
 	}
-	target := argv[targetIndex]
-	interpreterScript := filepath.Base(argv[0].value) == "python" || filepath.Base(argv[0].value) == "python3"
-	identity := gateModeIdentityForEnvironment()
-	matched, identityFailure, candidate := candidateMatchesGateMode(target, request.CWD, identity, interpreterScript)
-	if identityFailure != "" {
-		diagnostic := diagnosticForToken(
-			CodeControlIdentityDenied,
-			"command-gate control executable identity validation failed: failure="+identityFailure,
-			segmentIndex,
-			originalTokenIndex(original, target),
+	if !isDirectGateModeEnvelope(original, argv, wholeSingleSegmentPlan) {
+		return gateModeEnvelopeDiagnostic(
+			original,
 			target,
-			"restore the canonical owner-executable Codex/Kimi hardlink pair before retrying",
-			"gate-mode-identity",
+			segmentIndex,
+			"gate-mode-envelope",
+			"command-gate control requires one unquoted direct canonical executable argv without wrappers or operators",
 		)
-		diagnostic.Path = candidate
+	}
+
+	identity := gateModeIdentityForEnvironment()
+	expected, providerKnown := gateModeProviderPath(request.Provider, identity)
+	if !providerKnown {
+		return gateModeEnvelopeDiagnostic(
+			original,
+			target,
+			segmentIndex,
+			"gate-mode-provider-path",
+			"command-gate control provider has no canonical selected executable path",
+		)
+	}
+	if target.value != expected {
+		predicate := "gate-mode-envelope"
+		reason := "command-gate control requires the exact provider-selected canonical executable path"
+		if filepath.IsAbs(target.value) {
+			predicate = "gate-mode-identity"
+			reason = "command-gate control executable identity does not match the current provider's canonical path"
+			for _, canonicalPath := range identity.canonicalPaths {
+				if target.value == canonicalPath {
+					predicate = "gate-mode-provider-path"
+					reason = "command-gate control executable belongs to the peer provider rather than the current callback provider"
+					break
+				}
+			}
+		}
+		return gateModeEnvelopeDiagnostic(original, target, segmentIndex, predicate, reason)
+	}
+	if !isExactGateModeArguments(argv) {
+		return gateModeEnvelopeDiagnostic(
+			original,
+			target,
+			segmentIndex,
+			"gate-mode-envelope",
+			"command-gate control requires exactly get or set <permissive|enforcing> without trailing argv",
+		)
+	}
+	if identity.failure != "" {
+		diagnostic := gateModeEnvelopeDiagnostic(
+			original,
+			target,
+			segmentIndex,
+			"gate-mode-identity",
+			"command-gate control executable identity validation failed: failure="+identity.failure,
+		)
+		diagnostic.Path = expected
 		return diagnostic
 	}
-	if request.Role != RoleWorker || !matched || argv[actionIndex].value != "set" {
+	if request.Role != RoleWorker || argv[1].value != "set" {
 		return nil
 	}
 	return diagnosticForToken(
 		CodeControlOwnerRequired,
 		"worker argv selects coordinator-owned command-gate mode mutation",
 		segmentIndex,
-		originalTokenIndex(original, argv[actionIndex]),
-		argv[actionIndex],
+		originalTokenIndex(original, argv[1]),
+		argv[1],
 		"route the exact command-gate mode change through the coordinator",
 		"gate-mode-mutation",
 	)
 }
 
-func gateModeIndexes(argv []token) (int, int, bool) {
-	if len(argv) < 2 {
-		return 0, 0, false
+// isExactGateModeEnvelope reports whether parsed is the direct current-provider
+// command-gate capability after identity and argument validation.
+//
+// Example: the exact Codex binary with `get` is an envelope; a peer binary is
+// not when the provider is Codex.
+func isExactGateModeEnvelope(
+	request Request,
+	original []token,
+	argv []token,
+	wholeSingleSegmentPlan bool,
+) bool {
+	if !isDirectGateModeEnvelope(original, argv, wholeSingleSegmentPlan) ||
+		!isExactGateModeArguments(argv) {
+		return false
 	}
-	targetIndex := 0
-	if filepath.Base(argv[0].value) == "python" || filepath.Base(argv[0].value) == "python3" {
-		targetIndex = 1
-	}
-	actionIndex := targetIndex + 1
-	if actionIndex >= len(argv) || filepath.Base(argv[targetIndex].value) != "eci-command-gate-mode" {
-		return 0, 0, false
-	}
-	if argv[actionIndex].value != "set" && argv[actionIndex].value != "get" {
-		return 0, 0, false
-	}
-	return targetIndex, actionIndex, true
+	identity := gateModeIdentityForEnvironment()
+	expected, providerKnown := gateModeProviderPath(request.Provider, identity)
+	return providerKnown && identity.failure == "" && argv[0].value == expected
 }
 
 func originalTokenIndex(original []token, target token) int {
@@ -1022,12 +1890,16 @@ func originalTokenIndex(original []token, target token) int {
 func gateModeIdentityForEnvironment() gateModeIdentity {
 	home := os.Getenv("HOME")
 	roots := []string{
-		firstNonEmpty(os.Getenv("CODEX_HOME"), filepath.Join(home, ".codex")),
+		filepath.Join(home, ".codex"),
 		firstNonEmpty(os.Getenv("KIMI_CODE_HOME"), filepath.Join(home, ".kimi-code")),
 	}
 	paths := make([]string, 0, len(roots))
 	for _, root := range roots {
 		if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+			return gateModeIdentity{canonicalPaths: paths, failure: "canonical-path-invalid"}
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil || filepath.Clean(resolvedRoot) != root {
 			return gateModeIdentity{canonicalPaths: paths, failure: "canonical-path-invalid"}
 		}
 		paths = append(paths, filepath.Join(root, "bin", "eci-command-gate-mode"))
@@ -1054,12 +1926,11 @@ func gateModeIdentityForEnvironment() gateModeIdentity {
 	if err != nil {
 		return gateModeIdentity{canonicalPaths: paths, failure: "canonical-read-race"}
 	}
-	return gateModeIdentity{
-		canonicalPaths: paths,
-		canonicalInfo:  infos[0],
-		size:           infos[0].Size(),
-		digest:         digest,
+	peerDigest, err := digestRegularFile(paths[1], infos[1])
+	if err != nil || digest != peerDigest {
+		return gateModeIdentity{canonicalPaths: paths, failure: "canonical-digest-mismatch"}
 	}
+	return gateModeIdentity{canonicalPaths: paths}
 }
 
 func firstNonEmpty(value, fallback string) string {
@@ -1096,77 +1967,12 @@ func digestRegularFile(path string, expected os.FileInfo) ([sha256.Size]byte, er
 	return digest, nil
 }
 
-func candidateMatchesGateMode(target token, cwd string, identity gateModeIdentity, interpreterScript bool) (bool, string, string) {
-	candidate := resolveExecutable(target.value, cwd)
-	reservedName := filepath.Base(target.value) == "eci-command-gate-mode"
-	namesCanonical := false
-	for _, path := range identity.canonicalPaths {
-		if candidate == path {
-			namesCanonical = true
-			break
-		}
-	}
-	if identity.failure != "" {
-		if reservedName || namesCanonical {
-			return false, identity.failure, candidate
-		}
-		return false, "", candidate
-	}
-	if candidate == "" {
-		if reservedName {
-			return false, "candidate-not-resolved", candidate
-		}
-		return false, "", candidate
-	}
-	info, err := os.Stat(candidate)
-	if err != nil {
-		if reservedName {
-			return false, "candidate-not-readable", candidate
-		}
-		return false, "", candidate
-	}
-	if !info.Mode().IsRegular() || !fileOwnedByCurrentUser(info) {
-		if reservedName {
-			return false, "candidate-metadata-invalid", candidate
-		}
-		return false, "", candidate
-	}
-	if !interpreterScript && info.Mode().Perm()&0111 == 0 {
-		if reservedName {
-			return false, "candidate-not-executable", candidate
-		}
-		return false, "", candidate
-	}
-	if os.SameFile(info, identity.canonicalInfo) {
-		return true, "", candidate
-	}
-	if info.Size() != identity.size {
-		if reservedName {
-			return false, "reserved-copy-size-mismatch", candidate
-		}
-		return false, "", candidate
-	}
-	digest, err := digestRegularFile(candidate, info)
-	if err != nil {
-		if reservedName {
-			return false, "candidate-read-race", candidate
-		}
-		return false, "", candidate
-	}
-	if digest == identity.digest {
-		return true, "", candidate
-	}
-	if reservedName {
-		return false, "reserved-copy-digest-mismatch", candidate
-	}
-	return false, "", candidate
-}
-
-// inspectActiveWorkerLifecycleIdentity rejects an unwrapped executable that is
-// a canonical lifecycle target or byte-identical copy of either provider's
-// eci-active executable.
+// inspectActiveWorkerLifecycleIdentity identifies a non-read-only unwrapped
+// lifecycle control executable that is canonical or byte-identical to either
+// provider's eci-active executable.
 //
-// Example: stdbuf -oL /tmp/eci-active-copy status is worker control.
+// Example: stdbuf -oL /tmp/eci-active-copy nested-exit is lifecycle control,
+// while status/help bypass this identity check as ordinary discovery.
 func inspectActiveWorkerLifecycleIdentity(
 	request Request,
 	original []token,
@@ -1234,11 +2040,12 @@ func inspectActiveWorkerLifecycleIdentity(
 // canonicalLifecycleRoots returns existing, canonical provider homes that may
 // own lifecycle executables.
 //
-// Example: a CODEX_HOME symlink contributes its resolved bin/eci-active.
+// Example: the lexical $HOME/.codex root may contribute its resolved
+// bin/eci-active identity.
 func canonicalLifecycleRoots() []string {
 	home := os.Getenv("HOME")
 	values := []string{
-		firstNonEmpty(os.Getenv("CODEX_HOME"), filepath.Join(home, ".codex")),
+		filepath.Join(home, ".codex"),
 		firstNonEmpty(os.Getenv("KIMI_CODE_HOME"), filepath.Join(home, ".kimi-code")),
 	}
 	roots := make([]string, 0, len(values))
@@ -1306,6 +2113,8 @@ func inspectProofPathOwnership(
 	request Request,
 	argv []token,
 	segmentIndex int,
+	redirect *outputRedirect,
+	ledgerRedirectAppend *bool,
 ) (DecisionKind, *Diagnostic) {
 	proofSessions := make([]proofSession, 0, len(request.ActiveMarkers))
 	for _, marker := range request.ActiveMarkers {
@@ -1322,6 +2131,7 @@ func inspectProofPathOwnership(
 	if len(proofSessions) == 0 {
 		return DecisionAllow, nil
 	}
+	selectedProofSession := proofSessions[0]
 
 	for argumentIndex, argument := range argv {
 		pathArgument, pathLike := outputDestinationOperand(argv, argumentIndex)
@@ -1332,6 +2142,7 @@ func inspectProofPathOwnership(
 		if !pathLike {
 			continue
 		}
+		writer := outputWriter || isSourceWriter(filepath.Base(argv[0].value), argv)
 		lexical := pathArgument.value
 		if !filepath.IsAbs(lexical) {
 			lexical = filepath.Join(request.CWD, lexical)
@@ -1359,8 +2170,40 @@ func inspectProofPathOwnership(
 				containingSession = proofSession.lexical
 			}
 		}
+		if !contained && containingSession != "" && resolveErr == nil && writer {
+			diagnostic := diagnosticForToken(
+				CodeProofPathEscapeDenied,
+				fmt.Sprintf("proof path resolves outside its active session aliases: resolved=%s proof_root=%s", resolved, containingSession),
+				segmentIndex,
+				argumentIndex,
+				pathArgument,
+				"replace the escaping symlink with a canonical path contained by the active proof session",
+				"proof-symlink-escape",
+			)
+			diagnostic.Path = lexical
+			return DecisionDeny, diagnostic
+		}
+		if redirect != nil {
+			handled, diagnostic := inspectCurrentLedgerRedirect(
+				*redirect,
+				selectedProofSession,
+				lexical,
+				resolved,
+				resolveErr,
+				segmentIndex,
+				argumentIndex,
+			)
+			if diagnostic != nil {
+				return DecisionDeny, diagnostic
+			}
+			if handled {
+				if ledgerRedirectAppend != nil && redirect.effect == outputRedirectAppend {
+					*ledgerRedirectAppend = true
+				}
+				continue
+			}
+		}
 		if contained {
-			writer := outputWriter || isSourceWriter(filepath.Base(argv[0].value), argv)
 			if request.Role == RoleCoordinator && writer &&
 				isAppendOnlyLedgerPath(lexical, resolved, proofSessions) {
 				diagnostic := diagnosticForToken(
@@ -1369,8 +2212,22 @@ func inspectProofPathOwnership(
 					segmentIndex,
 					argumentIndex,
 					pathArgument,
-					"use eci-active ledger-append",
+					ledgerAppendRemediation(request.Provider),
 					"append-only-ledger",
+				)
+				diagnostic.Path = lexical
+				return DecisionDeny, diagnostic
+			}
+			if request.Role == RoleCoordinator && writer &&
+				isReservedProofControlPath(lexical, resolved, proofSessions) {
+				diagnostic := diagnosticForToken(
+					CodePlanLiveControlDenied,
+					"coordinator argv targets a reserved ECI control artifact inside the active proof session",
+					segmentIndex,
+					argumentIndex,
+					pathArgument,
+					"use the matching coordinator lifecycle route for the reserved ECI control operation",
+					"coordinator-proof-control",
 				)
 				diagnostic.Path = lexical
 				return DecisionDeny, diagnostic
@@ -1415,6 +2272,12 @@ func inspectProofPathOwnership(
 		if resolveErr != nil {
 			return DecisionDefer, nil
 		}
+		if !writer {
+			// An escaping proof symlink used as an input is an ordinary read.
+			// The resolved target still matters below when this argv operand is
+			// a direct write destination.
+			continue
+		}
 
 		diagnostic := diagnosticForToken(
 			CodeProofPathEscapeDenied,
@@ -1430,6 +2293,234 @@ func inspectProofPathOwnership(
 	}
 
 	return DecisionAllow, nil
+}
+
+// inspectCurrentLedgerRedirect classifies one resolved output redirect against
+// the selected proof session's ledger artifacts and their concrete inode.
+//
+// Example: an EOF append to current/high_level_log.md is handled and allowed,
+// while a sibling session's high_level_log.md receives a foreign-session denial.
+func inspectCurrentLedgerRedirect(
+	redirect outputRedirect,
+	selectedSession proofSession,
+	lexical string,
+	resolved string,
+	resolveErr error,
+	segmentIndex int,
+	argumentIndex int,
+) (bool, *Diagnostic) {
+	selectedLexicalName := filepath.Base(selectedSession.lexical)
+	if session, artifact, ok := ledgerSessionArtifact(lexical, filepath.Dir(selectedSession.lexical)); ok {
+		switch {
+		case session == selectedLexicalName && artifact == "high_level_log.anchor":
+			diagnostic := diagnosticForToken(
+				CodeLedgerAnchorWriteDenied,
+				"selected-session ledger anchor is control state: target=high_level_log.anchor path="+lexical,
+				segmentIndex,
+				argumentIndex,
+				redirect.target,
+				"leave high_level_log.anchor for normal ledger reconciliation",
+				"current-ledger-anchor",
+			)
+			diagnostic.Path = lexical
+			return true, diagnostic
+		case session != selectedLexicalName:
+			diagnostic := diagnosticForToken(
+				CodeLedgerForeignSessionDenied,
+				"ledger redirect targets a sibling proof session: target_session="+session+" path="+lexical,
+				segmentIndex,
+				argumentIndex,
+				redirect.target,
+				"write only the selected session's high_level_log.md",
+				"foreign-ledger-session",
+			)
+			diagnostic.Path = lexical
+			return true, diagnostic
+		}
+	}
+	if resolveErr != nil {
+		return false, nil
+	}
+
+	selectedResolvedName := filepath.Base(selectedSession.resolved)
+	if session, artifact, ok := ledgerSessionArtifact(resolved, filepath.Dir(selectedSession.resolved)); ok {
+		switch {
+		case session == selectedResolvedName && artifact == "high_level_log.anchor":
+			diagnostic := diagnosticForToken(
+				CodeLedgerAnchorWriteDenied,
+				"selected-session ledger anchor is control state: target=high_level_log.anchor path="+resolved,
+				segmentIndex,
+				argumentIndex,
+				redirect.target,
+				"leave high_level_log.anchor for normal ledger reconciliation",
+				"current-ledger-anchor",
+			)
+			diagnostic.Path = lexical
+			return true, diagnostic
+		case session != selectedResolvedName:
+			diagnostic := diagnosticForToken(
+				CodeLedgerForeignSessionDenied,
+				"ledger redirect targets a sibling proof session: target_session="+session+" path="+resolved,
+				segmentIndex,
+				argumentIndex,
+				redirect.target,
+				"write only the selected session's high_level_log.md",
+				"foreign-ledger-session",
+			)
+			diagnostic.Path = lexical
+			return true, diagnostic
+		}
+	}
+
+	selectedLog, err := resolvePathWithMissingSuffix(filepath.Join(selectedSession.lexical, "high_level_log.md"))
+	if err != nil {
+		return false, nil
+	}
+	artifactSession, artifact, info, sameArtifact := ledgerArtifactByInode(selectedSession, resolved)
+	if !sameArtifact {
+		if resolved != selectedLog {
+			return false, nil
+		}
+		artifactSession = selectedLexicalName
+		artifact = "high_level_log.md"
+	}
+	if artifactSession != selectedLexicalName {
+		diagnostic := diagnosticForToken(
+			CodeLedgerForeignSessionDenied,
+			"ledger redirect targets a sibling proof session: target_session="+artifactSession+" path="+resolved,
+			segmentIndex,
+			argumentIndex,
+			redirect.target,
+			"write only the selected session's high_level_log.md",
+			"foreign-ledger-session",
+		)
+		diagnostic.Path = lexical
+		return true, diagnostic
+	}
+	if artifact == "high_level_log.anchor" {
+		diagnostic := diagnosticForToken(
+			CodeLedgerAnchorWriteDenied,
+			"selected-session ledger anchor is control state: target=high_level_log.anchor path="+resolved,
+			segmentIndex,
+			argumentIndex,
+			redirect.target,
+			"leave high_level_log.anchor for normal ledger reconciliation",
+			"current-ledger-anchor",
+		)
+		diagnostic.Path = lexical
+		return true, diagnostic
+	}
+	if artifact != "high_level_log.md" {
+		return false, nil
+	}
+	if redirect.effect != outputRedirectAppend {
+		diagnostic := diagnosticForToken(
+			CodeLedgerRewriteDenied,
+			"selected-session ledger redirect would replace its target: effect="+string(redirect.effect)+" target="+resolved,
+			segmentIndex,
+			argumentIndex,
+			redirect.target,
+			"append at EOF to the selected session's high_level_log.md",
+			"current-ledger-rewrite",
+		)
+		diagnostic.Path = lexical
+		return true, diagnostic
+	}
+
+	if info == nil {
+		info, err = os.Stat(resolved)
+	}
+	if err != nil || info == nil || !info.Mode().IsRegular() {
+		diagnostic := diagnosticForToken(
+			CodeLedgerAppendOnly,
+			"selected-session ledger append target is not a regular file: target="+resolved,
+			segmentIndex,
+			argumentIndex,
+			redirect.target,
+			"append only to the existing regular selected-session high_level_log.md",
+			"current-ledger-target",
+		)
+		diagnostic.Path = lexical
+		return true, diagnostic
+	}
+	state, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || state.Nlink != 1 {
+		linkCount := "unavailable"
+		if ok {
+			linkCount = fmt.Sprintf("%d", state.Nlink)
+		}
+		diagnostic := diagnosticForToken(
+			CodeLedgerSharedInodeDenied,
+			"selected-session ledger append target must have one link: target="+resolved+" nlink="+linkCount,
+			segmentIndex,
+			argumentIndex,
+			redirect.target,
+			"restore a uniquely linked selected-session high_level_log.md before appending",
+			"ledger-shared-inode",
+		)
+		diagnostic.Path = lexical
+		return true, diagnostic
+	}
+	return true, nil
+}
+
+// ledgerArtifactByInode identifies a selected or sibling ledger artifact by
+// concrete filesystem identity rather than by its caller-provided pathname.
+//
+// Example: an external hardlink to current/high_level_log.md returns the
+// selected session and high_level_log.md artifact.
+func ledgerArtifactByInode(selectedSession proofSession, target string) (string, string, fs.FileInfo, bool) {
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		return "", "", nil, false
+	}
+	selectedName := filepath.Base(selectedSession.lexical)
+	for _, artifact := range []string{"high_level_log.md", "high_level_log.anchor"} {
+		candidateInfo, candidateErr := os.Stat(filepath.Join(selectedSession.lexical, artifact))
+		if candidateErr == nil && os.SameFile(targetInfo, candidateInfo) {
+			return selectedName, artifact, targetInfo, true
+		}
+	}
+
+	proofRoot := filepath.Dir(selectedSession.lexical)
+	entries, err := os.ReadDir(proofRoot)
+	if err != nil {
+		return "", "", nil, false
+	}
+	for _, entry := range entries {
+		if entry.Name() == selectedName || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		for _, artifact := range []string{"high_level_log.md", "high_level_log.anchor"} {
+			candidateInfo, candidateErr := os.Stat(filepath.Join(proofRoot, entry.Name(), artifact))
+			if candidateErr == nil && os.SameFile(targetInfo, candidateInfo) {
+				return entry.Name(), artifact, targetInfo, true
+			}
+		}
+	}
+	return "", "", nil, false
+}
+
+// ledgerSessionArtifact identifies a direct session ledger artifact under one
+// proof root without treating nested or similarly named paths as ledger state.
+//
+// Example: proof/session/high_level_log.md returns session and high_level_log.md.
+func ledgerSessionArtifact(path string, proofRoot string) (string, string, bool) {
+	relative, err := filepath.Rel(proofRoot, path)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", false
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	switch parts[1] {
+	case "high_level_log.md", "high_level_log.anchor":
+		return parts[0], parts[1], true
+	default:
+		return "", "", false
+	}
 }
 
 func pathHasMissingComponent(path string) bool {
@@ -1632,51 +2723,91 @@ func pathWithin(path, root string) bool {
 	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
+// unwrappedCommand records the literal child argv and every environment
+// wrapper encountered while removing transparent launch wrappers.
+//
+// Example: command env NAME=value tool produces the tool argv with
+// hasEnvironment set, so the caller cannot fast-admit the altered context.
+type unwrappedCommand struct {
+	argv                  []token
+	hasEnvironment        bool
+	hasTransparentWrapper bool
+}
+
+// unwrap returns the literal child argv selected by supported transparent
+// wrappers while discarding context metadata for existing callers.
+//
+// Example: env NAME=value cat file returns the cat argv.
 func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
+	result, diagnostic := unwrapWithMetadata(argv, segmentIndex)
+	if diagnostic != nil {
+		return nil, diagnostic
+	}
+	return result.argv, nil
+}
+
+// unwrapWithMetadata returns the literal child argv and records whether any
+// transparent wrapper changed the child environment before it starts.
+//
+// Example: exec env NAME=value tool returns tool with hasEnvironment set.
+func unwrapWithMetadata(argv []token, segmentIndex int) (unwrappedCommand, *Diagnostic) {
 	current := argv
+	hasEnvironment := false
+	hasTransparentWrapper := false
 	for depth := 0; depth < maxWrapperDepth; depth++ {
 		name := filepath.Base(current[0].value)
+		hasTransparentWrapper = hasTransparentWrapper || isTransparentWrapperName(name)
 		switch name {
 		case "env":
+			hasEnvironment = true
 			child, diagnostic := unwrapEnv(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
+			}
+			if len(child) == 0 {
+				// env can legally inspect or construct its child command. Its
+				// option spelling alone does not identify a harmful target.
+				return unwrappedCommand{
+					argv:                  current,
+					hasEnvironment:        hasEnvironment,
+					hasTransparentWrapper: hasTransparentWrapper,
+				}, nil
 			}
 			current = child
 		case "command":
 			child, diagnostic := unwrapSimpleOptions(current, segmentIndex, map[string]int{"-p": 0, "--": 0})
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "exec":
 			child, diagnostic := unwrapSimpleOptions(current, segmentIndex, map[string]int{"-a": 1, "-c": 0, "-l": 0, "--": 0})
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "nice":
 			child, diagnostic := unwrapNice(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "timeout":
 			child, diagnostic := unwrapTimeout(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "time":
 			child, diagnostic := unwrapTime(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "prlimit":
 			child, diagnostic := unwrapPrlimit(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "chronic":
@@ -1684,13 +2815,13 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 				"-e": 0, "-f": 0, "-v": 0, "-d": 0, "-s": 0, "--": 0,
 			})
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "nohup":
 			child, diagnostic := unwrapSimpleOptions(current, segmentIndex, map[string]int{"--": 0})
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "setsid":
@@ -1698,45 +2829,49 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 				"-c": 0, "-f": 0, "-w": 0, "--wait": 0, "--fork": 0, "--ctty": 0, "--": 0,
 			})
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "sudo":
 			child, diagnostic := unwrapSudo(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "doas":
 			child, diagnostic := unwrapDoas(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "systemd-run":
 			child, diagnostic := unwrapSystemdRun(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "stdbuf":
 			child, diagnostic := unwrapStdbuf(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		case "busybox":
 			child, diagnostic := unwrapBusybox(current, segmentIndex)
 			if diagnostic != nil {
-				return nil, diagnostic
+				return unwrappedCommand{}, diagnostic
 			}
 			current = child
 		default:
-			return current, nil
+			return unwrappedCommand{
+				argv:                  current,
+				hasEnvironment:        hasEnvironment,
+				hasTransparentWrapper: hasTransparentWrapper,
+			}, nil
 		}
 	}
 
-	return nil, diagnosticForToken(
+	return unwrappedCommand{}, diagnosticForToken(
 		CodePlanWrapperDenied,
 		fmt.Sprintf("transparent wrapper depth exceeds %d", maxWrapperDepth),
 		segmentIndex,
@@ -1745,6 +2880,19 @@ func unwrap(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 		"remove redundant wrappers and invoke one finite child argv",
 		"wrapper-depth-limit",
 	)
+}
+
+// isTransparentWrapperName reports whether name is unwrapped before the
+// planner examines the literal child argv.
+//
+// Example: stdbuf is transparent because its child executable remains visible.
+func isTransparentWrapperName(name string) bool {
+	switch name {
+	case "busybox", "chronic", "command", "doas", "env", "exec", "nice", "nohup", "prlimit", "setsid", "stdbuf", "sudo", "systemd-run", "time", "timeout":
+		return true
+	default:
+		return false
+	}
 }
 
 func unwrapSudo(argv []token, segmentIndex int) ([]token, *Diagnostic) {
@@ -1900,91 +3048,32 @@ func unwrapEnv(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 		case value == "-i", value == "--ignore-environment":
 			index++
 		case value == "-S", value == "--split-string", strings.HasPrefix(value, "--split-string="):
-			return nil, diagnosticForToken(
-				CodeEnvironmentOptionDenied,
-				"env split-string constructs argv dynamically",
-				segmentIndex,
-				index,
-				argv[index],
-				"remove split-string and pass the child argv literally",
-				"environment-split-string",
-			)
+			return nil, nil
 		case value == "-u", value == "--unset", value == "-C", value == "--chdir":
 			if index+1 >= len(argv) {
-				return nil, diagnosticForToken(
-					CodeEnvironmentOptionDenied,
-					fmt.Sprintf("env option %s is missing its required argument", value),
-					segmentIndex,
-					index,
-					argv[index],
-					"supply the required literal option argument",
-					"environment-missing-option-argument",
-				)
+				return nil, nil
 			}
 			index += 2
 		case strings.HasPrefix(value, "--unset="):
-			if !isIdentifier(strings.TrimPrefix(value, "--unset=")) {
-				return nil, diagnosticForToken(
-					CodeEnvironmentOptionDenied,
-					fmt.Sprintf("env option %s argument is not a valid identifier", value),
-					segmentIndex,
-					index,
-					argv[index],
-					"supply --unset=NAME with one literal environment identifier",
-					"environment-invalid-option-argument",
-				)
-			}
 			index++
 		case strings.HasPrefix(value, "--chdir="):
 			index++
 		case strings.HasPrefix(value, "-"):
-			return nil, diagnosticForToken(
-				CodeEnvironmentOptionDenied,
-				fmt.Sprintf("unsupported env option %s", value),
-				segmentIndex,
-				index,
-				argv[index],
-				"use -i, -u NAME, -C DIR, assignments, --, and a literal child argv",
-				"environment-unsupported-option",
-			)
+			return nil, nil
 		default:
 			optionsEnded = true
 		}
 	}
 
 	for index < len(argv) {
-		name := assignmentName(argv[index])
+		name := environmentAssignmentName(argv[index])
 		if name == "" {
 			break
-		}
-		if isEnvironmentContextName(name) {
-			redacted := token{value: name, offset: argv[index].offset}
-			contextKind := "registered interpreter"
-			if strings.HasPrefix(name, "GIT_") {
-				contextKind = "registered repository"
-			}
-			return nil, diagnosticForToken(
-				CodeEnvironmentContextDenied,
-				fmt.Sprintf("environment assignment name %s changes %s context", name, contextKind),
-				segmentIndex,
-				index,
-				redacted,
-				fmt.Sprintf("remove the %s context assignment and invoke the literal child directly", name),
-				"environment-context-assignment",
-			)
 		}
 		index++
 	}
 	if index >= len(argv) {
-		return nil, diagnosticForToken(
-			CodeEnvironmentEnumerationDenied,
-			"env has no remaining child executable and would enumerate inherited environment state",
-			segmentIndex,
-			0,
-			argv[0],
-			"provide one finite literal child argv after env options and assignments",
-			"environment-enumeration",
-		)
+		return nil, nil
 	}
 
 	return argv[index:], nil
@@ -2036,28 +3125,242 @@ func unwrapNice(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 	return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
 }
 
+// unwrapTimeout returns timeout's child only after every option and duration
+// that determines whether timeout can launch that child is definitely valid.
+//
+// Example: timeout -p --kill-after=1s 5 git status returns git status, while
+// timeout not-a-duration git status has no planner-visible child.
 func unwrapTimeout(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 	index := 1
 	for index < len(argv) {
 		value := argv[index].value
-		switch {
-		case value == "--":
+		if value == "--" {
 			index++
-		case value == "-k", value == "--kill-after", value == "-s", value == "--signal":
+			break
+		}
+		if !strings.HasPrefix(value, "-") || value == "-" {
+			break
+		}
+		switch {
+		case value == "--preserve-status", value == "--foreground", value == "--verbose":
+			index++
+			continue
+		case value == "--kill-after", value == "--signal":
 			if index+1 >= len(argv) {
 				return nil, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+			}
+			if value == "--kill-after" && !isTimeoutDuration(argv[index+1].value) {
+				return nil, timeoutOptionDiagnostic(argv[index+1], segmentIndex, index+1)
+			}
+			if value == "--signal" && !isTimeoutSignal(argv[index+1].value) {
+				return nil, timeoutOptionDiagnostic(argv[index+1], segmentIndex, index+1)
 			}
 			index += 2
-		case strings.HasPrefix(value, "--kill-after="), strings.HasPrefix(value, "--signal="), value == "-v", value == "--verbose", value == "--foreground", value == "--preserve-status":
-			index++
-		default:
-			if index+1 >= len(argv) {
-				return nil, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+			continue
+		case strings.HasPrefix(value, "--kill-after="):
+			duration := strings.TrimPrefix(value, "--kill-after=")
+			if !isTimeoutDuration(duration) {
+				return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
 			}
-			return argv[index+1:], nil
+			index++
+			continue
+		case strings.HasPrefix(value, "--signal="):
+			signal := strings.TrimPrefix(value, "--signal=")
+			if !isTimeoutSignal(signal) {
+				return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			}
+			index++
+			continue
+		case strings.HasPrefix(value, "--"):
+			return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+		default:
+			next, diagnostic := unwrapTimeoutShortOptions(argv, index, segmentIndex)
+			if diagnostic != nil {
+				return nil, diagnostic
+			}
+			index = next
+			continue
 		}
 	}
-	return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
+
+	if index >= len(argv) || !isTimeoutDuration(argv[index].value) {
+		if index >= len(argv) {
+			return nil, malformedWrapperDiagnostic(argv[0], segmentIndex, 0)
+		}
+		return nil, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+	}
+	index++
+	if index >= len(argv) {
+		return nil, malformedWrapperDiagnostic(argv[index-1], segmentIndex, index-1)
+	}
+	return argv[index:], nil
+}
+
+// unwrapTimeoutShortOptions validates GNU-compatible timeout short flags and
+// returns the index of the required duration after those flags.
+//
+// Example: -pfk1s advances over preserve-status, foreground, and kill-after.
+func unwrapTimeoutShortOptions(argv []token, index, segmentIndex int) (int, *Diagnostic) {
+	options := argv[index].value[1:]
+	for len(options) > 0 {
+		option := options[0]
+		options = options[1:]
+		switch option {
+		case 'p', 'f', 'v':
+			continue
+		case 'k', 's':
+			argument := options
+			if strings.HasPrefix(argument, "=") {
+				argument = argument[1:]
+			}
+			if argument == "" {
+				if index+1 >= len(argv) {
+					return 0, malformedWrapperDiagnostic(argv[index], segmentIndex, index)
+				}
+				argument = argv[index+1].value
+				index++
+			}
+			if option == 'k' && !isTimeoutDuration(argument) {
+				return 0, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			}
+			if option == 's' && !isTimeoutSignal(argument) {
+				return 0, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+			}
+			return index + 1, nil
+		default:
+			return 0, timeoutOptionDiagnostic(argv[index], segmentIndex, index)
+		}
+	}
+	return index + 1, nil
+}
+
+// timeoutOptionDiagnostic records a timeout prefix that cannot be proven to
+// launch its apparent child, so callers preserve ordinary timeout behavior.
+//
+// Example: --kill-after=not-a-duration receives this diagnostic and does not
+// expose a subsequent Git argv to the planner.
+func timeoutOptionDiagnostic(target token, segmentIndex, argumentIndex int) *Diagnostic {
+	return diagnosticForToken(
+		CodePlanWrapperDenied,
+		"timeout option or duration is not definitely valid before its child argv",
+		segmentIndex,
+		argumentIndex,
+		target,
+		"use one GNU-compatible timeout duration and complete option operands before the child command",
+		"timeout-prefix",
+	)
+}
+
+// isTimeoutDuration reports whether value is a nonnegative GNU-compatible
+// numeric duration with an optional second, minute, hour, or day suffix.
+//
+// Example: .5s and 1e2m are valid, while not-a-duration and 5x are not.
+func isTimeoutDuration(value string) bool {
+	if value == "" {
+		return false
+	}
+	if value[0] == '+' {
+		value = value[1:]
+		if value == "" {
+			return false
+		}
+	}
+	last := value[len(value)-1]
+	switch last {
+	case 's', 'm', 'h', 'd':
+		value = value[:len(value)-1]
+	}
+	if value == "" {
+		return false
+	}
+
+	index := 0
+	digitCount := 0
+	dotSeen := false
+	for index < len(value) {
+		character := value[index]
+		if character >= '0' && character <= '9' {
+			digitCount++
+			index++
+			continue
+		}
+		if character == '.' && !dotSeen {
+			dotSeen = true
+			index++
+			continue
+		}
+		break
+	}
+
+	if digitCount == 0 {
+		return false
+	}
+	if index == len(value) {
+		return true
+	}
+	if value[index] != 'e' && value[index] != 'E' {
+		return false
+	}
+	index++
+	if index < len(value) && (value[index] == '+' || value[index] == '-') {
+		index++
+	}
+	exponentDigits := 0
+	for index < len(value) {
+		character := value[index]
+		if character < '0' || character > '9' {
+			return false
+		}
+		exponentDigits++
+		index++
+	}
+	return exponentDigits > 0
+}
+
+// isTimeoutSignal reports whether value names a signal accepted by GNU-style
+// timeout option parsing without requiring a runtime signal lookup.
+//
+// Example: TERM, SIGTERM, and 15 are valid, while unknown-signal is not.
+func isTimeoutSignal(value string) bool {
+	if value == "" {
+		return false
+	}
+	signal := strings.ToUpper(value)
+	signal = strings.TrimPrefix(signal, "SIG")
+	if isTimeoutSignalNumber(signal) {
+		return true
+	}
+	switch signal {
+	case "ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "EMT", "FPE", "HUP", "ILL", "INFO", "INT", "IO", "IOT", "KILL", "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP", "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ":
+		return true
+	}
+	for _, prefix := range []string{"RTMIN+", "RTMAX-"} {
+		if strings.HasPrefix(signal, prefix) {
+			return isTimeoutSignalNumber(strings.TrimPrefix(signal, prefix))
+		}
+	}
+	return false
+}
+
+// isTimeoutSignalNumber reports whether value is a positive bounded signal
+// number that timeout can pass to the operating system.
+//
+// Example: 15 is valid while 0 and 999 are not.
+func isTimeoutSignalNumber(value string) bool {
+	if value == "" {
+		return false
+	}
+	number := 0
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+		number = number*10 + int(character-'0')
+		if number > 64 {
+			return false
+		}
+	}
+	return number > 0
 }
 
 func unwrapTime(argv []token, segmentIndex int) ([]token, *Diagnostic) {
@@ -2080,79 +3383,437 @@ func unwrapPrlimit(argv []token, segmentIndex int) ([]token, *Diagnostic) {
 	}, "prlimit")
 }
 
-func inspectPrintenv(argv []token, segmentIndex int) *Diagnostic {
-	if len(argv) == 1 {
-		return diagnosticForToken(
-			CodeEnvironmentEnumerationDenied,
-			"printenv has no queried names and would enumerate inherited environment state",
+// inspectPrintenv leaves environment inspection to the invoked utility. Its
+// option or query spelling does not resolve a cross-scope or destructive target.
+//
+// Example: both `printenv` and `printenv -- PATH` remain ordinary commands.
+func inspectPrintenv(_ []token, _ int) *Diagnostic {
+	return nil
+}
+
+// statFormatDirectives is the finite GNU stat metadata vocabulary accepted by
+// the planner.  These directives describe file metadata; they do not select
+// another command, read an input program, or change the inspected path.
+var statFormatDirectives = map[byte]struct{}{
+	'a': {}, 'A': {}, 'b': {}, 'B': {}, 'C': {}, 'd': {}, 'D': {},
+	'f': {}, 'F': {}, 'g': {}, 'G': {}, 'h': {}, 'i': {}, 'm': {},
+	'n': {}, 'N': {}, 'o': {}, 's': {}, 't': {}, 'T': {}, 'u': {},
+	'U': {}, 'w': {}, 'W': {}, 'x': {}, 'X': {}, 'y': {}, 'Y': {},
+	'z': {}, 'Z': {},
+}
+
+const maxStatFormatBytes = 256
+
+// inspectStat keeps stat's read-only route finite and language-neutral.  The
+// legacy provider adapters historically accepted a short list of exact
+// formats, which meant the compiled planner's ordinary status-0 fast path
+// could accidentally admit arbitrary format strings.  Accept a bounded
+// metadata vocabulary instead: literal separators and known directives are
+// fine, while shell markers, width/precision modifiers, and unknown escapes
+// receive a coordinate-specific diagnostic.
+func inspectStat(argv []token, segmentIndex int) *Diagnostic {
+	if len(argv) < 2 {
+		return statDiagnostic(
+			"stat requires one -c/--format metadata expression and at least one literal path",
 			segmentIndex,
 			0,
 			argv[0],
-			"query one to sixteen registered environment names explicitly",
-			"environment-enumeration",
+			"stat-format",
+			"use -c or --format with a finite metadata expression and one to sixteen literal paths",
 		)
 	}
-	if len(argv) > 17 {
-		return diagnosticForToken(
-			CodeEnvironmentNameDenied,
-			"printenv query exceeds sixteen unique registered names",
+
+	formatSeen := false
+	delimiterSeen := false
+	paths := 0
+	for index := 1; index < len(argv); {
+		argument := argv[index]
+		value := argument.value
+		switch {
+		case value == "--":
+			if delimiterSeen {
+				return statDiagnostic(
+					"stat uses the path delimiter more than once",
+					segmentIndex,
+					index,
+					argument,
+					"stat-option",
+					"use one -- delimiter before the finite literal path operands",
+				)
+			}
+			delimiterSeen = true
+			index++
+		case value == "-L" || value == "--dereference":
+			index++
+		case value == "-c" || value == "--format" || value == "-Lc" || value == "-cL":
+			if formatSeen {
+				return statDiagnostic(
+					"stat specifies more than one metadata format",
+					segmentIndex,
+					index,
+					argument,
+					"stat-option",
+					"specify exactly one -c or --format option",
+				)
+			}
+			if index+1 >= len(argv) {
+				return statDiagnostic(
+					"stat format option has no metadata expression",
+					segmentIndex,
+					index,
+					argument,
+					"stat-format",
+					"supply one finite literal metadata expression after the format option",
+				)
+			}
+			formatSeen = true
+			if diagnostic := inspectStatFormat(argv[index+1], segmentIndex, index+1); diagnostic != nil {
+				return diagnostic
+			}
+			index += 2
+		case strings.HasPrefix(value, "--format="):
+			if formatSeen {
+				return statDiagnostic(
+					"stat specifies more than one metadata format",
+					segmentIndex,
+					index,
+					argument,
+					"stat-option",
+					"specify exactly one -c or --format option",
+				)
+			}
+			formatSeen = true
+			format := token{
+				value:  strings.TrimPrefix(value, "--format="),
+				offset: argument.offset + len("--format="),
+				quoted: argument.quoted,
+			}
+			if diagnostic := inspectStatFormat(format, segmentIndex, index); diagnostic != nil {
+				return diagnostic
+			}
+			index++
+		case strings.HasPrefix(value, "-") && !delimiterSeen:
+			return statDiagnostic(
+				fmt.Sprintf("stat option %s is outside the bounded metadata inspection grammar", value),
+				segmentIndex,
+				index,
+				argument,
+				"stat-option",
+				"use only -L/--dereference, one -c/--format option, and literal paths",
+			)
+		default:
+			if !statPathLiteralSafe(value) {
+				return statDiagnostic(
+					fmt.Sprintf("stat path operand %s is not a safe literal path", value),
+					segmentIndex,
+					index,
+					argument,
+					"stat-path",
+					"pass literal paths without shell expansion, globbing, or control syntax",
+				)
+			}
+			paths++
+			if paths > 16 {
+				return statDiagnostic(
+					"stat path operand count exceeds sixteen",
+					segmentIndex,
+					index,
+					argument,
+					"stat-path-limit",
+					"inspect at most sixteen literal paths per command",
+				)
+			}
+			index++
+		}
+	}
+	if !formatSeen {
+		return statDiagnostic(
+			"stat requires an explicit metadata format",
 			segmentIndex,
-			17,
-			argv[17],
-			"query at most sixteen unique registered names",
-			"environment-name-limit",
+			0,
+			argv[0],
+			"stat-format",
+			"use -c or --format with a finite metadata expression",
 		)
 	}
-	seen := make(map[string]struct{}, len(argv)-1)
-	for index, argument := range argv[1:] {
-		name := argument.value
-		if strings.HasPrefix(name, "-") {
-			return diagnosticForToken(
-				CodeEnvironmentOptionDenied,
-				fmt.Sprintf("printenv option %s is unsupported", name),
-				segmentIndex,
-				index+1,
-				argument,
-				"remove the reported option and query one to sixteen registered environment names explicitly",
-				"environment-option-unsupported",
-			)
-		}
-		if !isIdentifier(name) {
-			return diagnosticForToken(
-				CodeEnvironmentEnumerationDenied,
-				fmt.Sprintf("printenv query token %s is not an identifier", name),
-				segmentIndex,
-				index+1,
-				argument,
-				"query one literal registered environment identifier",
-				"environment-invalid-name",
-			)
-		}
-		if _, exists := seen[name]; exists {
-			return diagnosticForToken(
-				CodeEnvironmentEnumerationDenied,
-				fmt.Sprintf("printenv query name %s is duplicated", name),
-				segmentIndex,
-				index+1,
-				argument,
-				"query each registered environment name at most once",
-				"environment-duplicate-name",
-			)
-		}
-		if !isPublicEnvironmentName(name) {
-			return diagnosticForToken(
-				CodeEnvironmentNameDenied,
-				fmt.Sprintf("printenv query name at argv index %d has status=unregistered", index+1),
-				segmentIndex,
-				index+1,
-				argument,
-				"query only unique names from the provider-parity public environment registry",
-				"environment-name-unregistered",
-			)
-		}
-		seen[name] = struct{}{}
+	if paths == 0 {
+		return statDiagnostic(
+			"stat format is present but no literal path operand was supplied",
+			segmentIndex,
+			len(argv)-1,
+			argv[len(argv)-1],
+			"stat-path",
+			"supply one to sixteen literal paths after the metadata format",
+		)
 	}
 	return nil
+}
+
+func inspectStatFormat(argument token, segmentIndex, argvIndex int) *Diagnostic {
+	value := argument.value
+	if value == "" || len(value) > maxStatFormatBytes {
+		return statDiagnostic(
+			"stat metadata format is empty or exceeds the bounded format length",
+			segmentIndex,
+			argvIndex,
+			argument,
+			"stat-format",
+			"use a non-empty metadata format no longer than 256 bytes",
+		)
+	}
+
+	directiveSeen := false
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character == '%' {
+			if index+1 >= len(value) {
+				return statDiagnostic(
+					"stat metadata format ends with an incomplete percent directive",
+					segmentIndex,
+					argvIndex,
+					argument,
+					"stat-format-directive",
+					"use %% or one documented single-character stat metadata directive",
+				)
+			}
+			directive := value[index+1]
+			if directive == '%' {
+				index++
+				continue
+			}
+			if _, ok := statFormatDirectives[directive]; !ok {
+				return statDiagnostic(
+					fmt.Sprintf("stat metadata directive %%%c is outside the bounded vocabulary", directive),
+					segmentIndex,
+					argvIndex,
+					argument,
+					"stat-format-directive",
+					"use one finite documented stat metadata directive without width, precision, or nested expansion",
+				)
+			}
+			directiveSeen = true
+			index++
+			continue
+		}
+		if character < 0x20 || strings.ContainsRune("$`\\;|&<>(){}[]*?", rune(character)) {
+			predicate := "stat-format-syntax"
+			reason := "stat metadata format contains shell syntax or a control byte"
+			if character == '$' || character == '`' {
+				predicate = "stat-format-dynamic"
+				reason = "stat metadata format contains shell expansion syntax"
+			}
+			return statDiagnostic(
+				reason,
+				segmentIndex,
+				argvIndex,
+				argument,
+				predicate,
+				"pass one literal metadata format without shell expansion, control bytes, or nested syntax",
+			)
+		}
+	}
+	if !directiveSeen {
+		return statDiagnostic(
+			"stat metadata format contains no metadata directive",
+			segmentIndex,
+			argvIndex,
+			argument,
+			"stat-format",
+			"include at least one documented stat metadata directive such as %s, %n, %y, or %x",
+		)
+	}
+	return nil
+}
+
+func statPathLiteralSafe(value string) bool {
+	if value == "" || len(value) > 4096 || strings.HasPrefix(value, "-") || strings.HasPrefix(value, "~") {
+		return false
+	}
+	if strings.ContainsAny(value, "$`\\\n\r*?[](){}<>|;&") {
+		return false
+	}
+	return true
+}
+
+func statDiagnostic(reason string, segmentIndex, argvIndex int, argument token, predicate, remediation string) *Diagnostic {
+	return diagnosticForToken(
+		CodePlanStatFormatDenied,
+		reason,
+		segmentIndex,
+		argvIndex,
+		argument,
+		remediation,
+		predicate,
+	)
+}
+
+// inspectFile permits only a finite inspection subset of file.  In
+// particular, -C/--compile writes a compiled .mgc file next to the selected
+// magic database and must never inherit generic read-only admission.
+//
+// Example: file -m magic source is an inspection, while file -C -m magic is
+// denied before it can compile magic.mgc.
+func inspectFile(argv []token, segmentIndex int) *Diagnostic {
+	if len(argv) < 2 {
+		return fileDiagnostic(
+			"file requires at least one literal inspection path",
+			segmentIndex,
+			0,
+			argv[0],
+			"file-path",
+			"pass one to sixteen literal paths to file",
+		)
+	}
+
+	options := true
+	paths := 0
+	magicSeen := false
+	for index := 1; index < len(argv); {
+		argument := argv[index]
+		value := argument.value
+		switch {
+		case options && value == "--":
+			options = false
+			index++
+		case options && (value == "-C" || value == "--compile" || strings.HasPrefix(value, "--compile=") ||
+			(strings.HasPrefix(value, "-") && !strings.HasPrefix(value, "--") && strings.Contains(value[1:], "C"))):
+			return fileDiagnostic(
+				fmt.Sprintf("file option %s compiles a magic database", value),
+				segmentIndex,
+				index,
+				argument,
+				"file-compile",
+				"remove -C/--compile and inspect an existing literal file instead",
+			)
+		case options && (value == "-m" || value == "--magic-file"):
+			if magicSeen || index+1 >= len(argv) || !statPathLiteralSafe(argv[index+1].value) {
+				return fileDiagnostic(
+					"file magic-file option requires one literal path",
+					segmentIndex,
+					index,
+					argument,
+					"file-magic-path",
+					"use one -m/--magic-file argument with a finite literal magic path",
+				)
+			}
+			magicSeen = true
+			index += 2
+		case options && strings.HasPrefix(value, "--magic-file="):
+			magicPath := strings.TrimPrefix(value, "--magic-file=")
+			if magicSeen || !statPathLiteralSafe(magicPath) {
+				return fileDiagnostic(
+					"file --magic-file requires one literal path",
+					segmentIndex,
+					index,
+					argument,
+					"file-magic-path",
+					"use one --magic-file=PATH option with a finite literal magic path",
+				)
+			}
+			magicSeen = true
+			index++
+		case options && isReadOnlyFileOption(value):
+			index++
+		case options && strings.HasPrefix(value, "-"):
+			return fileDiagnostic(
+				fmt.Sprintf("file option %s is outside the bounded inspection grammar", value),
+				segmentIndex,
+				index,
+				argument,
+				"file-option",
+				"use only bounded file inspection options and literal paths; do not compile a magic database",
+			)
+		default:
+			if !statPathLiteralSafe(value) {
+				return fileDiagnostic(
+					fmt.Sprintf("file path operand %s is not a safe literal path", value),
+					segmentIndex,
+					index,
+					argument,
+					"file-path",
+					"pass literal paths without shell expansion, globbing, or control syntax",
+				)
+			}
+			options = false
+			paths++
+			if paths > 16 {
+				return fileDiagnostic(
+					"file path operand count exceeds sixteen",
+					segmentIndex,
+					index,
+					argument,
+					"file-path-limit",
+					"inspect at most sixteen literal paths per command",
+				)
+			}
+			index++
+		}
+	}
+	if paths == 0 {
+		return fileDiagnostic(
+			"file received options but no literal inspection path",
+			segmentIndex,
+			len(argv)-1,
+			argv[len(argv)-1],
+			"file-path",
+			"pass one to sixteen literal paths after the bounded file options",
+		)
+	}
+	return nil
+}
+
+func isReadOnlyFileOption(value string) bool {
+	switch value {
+	case "-b", "--brief", "-h", "--no-dereference", "-i", "--mime", "--mime-encoding", "--mime-type", "-L", "--dereference":
+		return true
+	default:
+		return false
+	}
+}
+
+func fileDiagnostic(reason string, segmentIndex, argvIndex int, argument token, predicate, remediation string) *Diagnostic {
+	return diagnosticForToken(
+		CodePlanFileOptionDenied,
+		reason,
+		segmentIndex,
+		argvIndex,
+		argument,
+		remediation,
+		predicate,
+	)
+}
+
+// inspectUniq permits stdin filtering or one input file only.  GNU uniq's
+// second positional operand is an output file and therefore a writer.
+//
+// Example: uniq input is read-only, while uniq input output is denied.
+func inspectUniq(argv []token, segmentIndex int) *Diagnostic {
+	if len(argv) == 1 {
+		return nil
+	}
+	if len(argv) == 2 && statPathLiteralSafe(argv[1].value) {
+		return nil
+	}
+	predicate := "uniq-option"
+	reason := "uniq options are outside the bounded stdin/one-input inspection grammar"
+	remediation := "use uniq with stdin or one literal input path; do not pass an OUTPUT operand"
+	if len(argv) > 2 {
+		predicate = "uniq-output"
+		reason = "uniq accepts a second positional OUTPUT operand that writes a file"
+	}
+	argumentIndex := len(argv) - 1
+	if argumentIndex > 2 {
+		argumentIndex = 2
+	}
+	return diagnosticForToken(
+		CodePlanUniqArgumentsDenied,
+		reason,
+		segmentIndex,
+		argumentIndex,
+		argv[argumentIndex],
+		remediation,
+		predicate,
+	)
 }
 
 func inspectInterpreter(name string, argv []token, segmentIndex int) *Diagnostic {
@@ -2174,6 +3835,92 @@ func inspectInterpreter(name string, argv []token, segmentIndex int) *Diagnostic
 		}
 	}
 	return nil
+}
+
+// inspectUnknownInterpreter detects dynamic selectors on an executable whose
+// name identifies it as an interpreter/runtime/script runner, without turning
+// the command classifier into an executable allowlist. Named runtimes use
+// their more precise grammar above; this fallback covers a new language tool
+// while keeping ordinary tools such as rg -c and g++ -c literal.
+//
+// Example: interpreter-tool --module test-suite is finite, while
+// interpreter-tool -c 'dynamic payload' is an inline-code launch.
+func inspectUnknownInterpreter(name string, argv []token, segmentIndex int) *Diagnostic {
+	// Git's -c/--exec options select repository configuration or a transport
+	// helper, not interpreter source; its dedicated grammar below owns those
+	// forms.
+	if filepath.Base(name) == "git" {
+		return nil
+	}
+	for index, argument := range argv[1:] {
+		if (interpreterRoleName(name) || genericInterpreterLongCodeArgument(argument.value)) &&
+			genericInterpreterInlineCodeArgument(argument.value) {
+			return diagnosticForToken(
+				CodePlanDynamicLaunchDenied,
+				"inline or stdin interpreter code hides the executed argv",
+				segmentIndex,
+				index+1,
+				argument,
+				"invoke a literal script path, module, or direct executable argv",
+				"dynamic-interpreter-launch",
+			)
+		}
+	}
+	return nil
+}
+
+// interpreterRoleName recognizes semantic role markers rather than executable
+// names. This keeps the fallback ecosystem-neutral: a new tool named for its
+// interpreter/runtime/script role receives the same dynamic-argv boundary,
+// while unrelated tools with ambiguous short options remain ordinary argv.
+func interpreterRoleName(name string) bool {
+	name = strings.ToLower(filepath.Base(name))
+	for _, marker := range [...]string{"interpreter", "runtime", "script", "repl"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// genericInterpreterInlineCodeArgument reports selectors that conventionally
+// make an interpreter consume code or stdin instead of a visible source.
+// Exact and equals-attached long forms avoid treating unrelated short options
+// such as grep's -e or a compiler's -c as interpreter selectors; short forms
+// are applied only after interpreterRoleName has identified the executable.
+func genericInterpreterInlineCodeArgument(value string) bool {
+	switch value {
+	case "-", "-c", "-e", "-s", "--stdin", "--command", "--eval", "--execute", "--exec", "--script", "--run":
+		return true
+	}
+	for _, prefix := range [...]string{
+		"-c", "-e", "-s",
+		"--stdin=", "--command=", "--eval=", "--execute=", "--exec=", "--script=", "--run=",
+	} {
+		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// genericInterpreterLongCodeArgument identifies long selectors whose meaning
+// is unambiguously dynamic even when the executable has an unknown basename.
+// Short selectors remain gated by interpreterRoleName because tools such as
+// rg, grep, and compilers legitimately use -c/-e for bounded literal options.
+func genericInterpreterLongCodeArgument(value string) bool {
+	switch value {
+	case "--stdin", "--command", "--eval", "--execute", "--exec", "--script", "--run":
+		return true
+	}
+	for _, prefix := range [...]string{
+		"--stdin=", "--command=", "--eval=", "--execute=", "--exec=", "--script=", "--run=",
+	} {
+		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // inspectNamedRuntime accepts only a runtime selector followed by a visible
@@ -2326,15 +4073,9 @@ func inspectGit(
 			}
 		}
 		if isGitContextOption(argument.value) {
-			return DecisionDeny, diagnosticForToken(
-				CodeGitExecutionContextDenied,
-				"Git execution or repository context is overridden by a visible option",
-				segmentIndex,
-				index+1,
-				argument,
-				"remove the reported Git context option and use the bounded coordinator Git route for repository-default inspection",
-				"git-execution-context",
-			)
+			// Configuration spelling does not resolve a filesystem or control
+			// target. Let the provider's Git route inspect the actual operation.
+			return DecisionDefer, nil
 		}
 	}
 	if repositoryContextCount > 1 {
@@ -2345,6 +4086,12 @@ func inspectGit(
 		return DecisionAllow, nil
 	}
 	mutationIndex, action := gitMutation(argv, subcommandIndex)
+	if action == "add" || action == "reset" {
+		// Staging and reset effects depend on the resolved repository and path
+		// selector. Let the provider distinguish a local index operation from
+		// a foreign target or a broad working-tree effect.
+		return DecisionDefer, nil
+	}
 	if repositoryContext {
 		// Repository selection is provider-owned capability: the adapter must
 		// establish that the target is one approved canonical root before a
@@ -2413,6 +4160,31 @@ func inspectBroadDestruction(argv []token, segmentIndex int) *Diagnostic {
 			"broad-destructive-filesystem",
 		)
 	}
+	if name == "find" {
+		deleteIndex := -1
+		rootIndex := -1
+		for index, argument := range argv[1:] {
+			if argument.value == "-delete" {
+				deleteIndex = index + 1
+			}
+			if argument.value == "/" || argument.value == "~" {
+				rootIndex = index + 1
+			}
+		}
+		if deleteIndex >= 0 && rootIndex >= 0 {
+			diagnostic := diagnosticForToken(
+				CodeBroadDestructiveDenied,
+				"find -delete selects a broad root",
+				segmentIndex,
+				rootIndex,
+				argv[rootIndex],
+				"replace the broad root with one explicit narrow recoverable target",
+				"broad-destructive-root",
+			)
+			diagnostic.Path = argv[rootIndex].value
+			return diagnostic
+		}
+	}
 	if name != "rm" {
 		return nil
 	}
@@ -2473,7 +4245,7 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 		if err != nil {
 			continue
 		}
-		entries, err := directory.ReadDir(maxActiveControlEntries + 1)
+		entries, err := directory.ReadDir(-1)
 		closeErr := directory.Close()
 		if err != nil && !errors.Is(err, io.EOF) {
 			continue
@@ -2481,10 +4253,8 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 		if closeErr != nil {
 			continue
 		}
-		if len(entries) > maxActiveControlEntries {
-			index.overflow = true
-			continue
-		}
+		sessionControlCount := 0
+		sessionIndexStart := len(index.files)
 		for _, entry := range entries {
 			name := entry.Name()
 			if entry.Type()&os.ModeSymlink != 0 || !isECIControlBasename(name) {
@@ -2493,6 +4263,12 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 			info, err := entry.Info()
 			if err != nil || !info.Mode().IsRegular() {
 				continue
+			}
+			sessionControlCount++
+			if sessionControlCount > maxActiveControlEntries {
+				index.files = index.files[:sessionIndexStart]
+				index.overflow = true
+				break
 			}
 			index.files = append(index.files, activeControlFile{
 				path: filepath.Join(sessionDir, entry.Name()),
@@ -2538,10 +4314,11 @@ func isCanonicalWorkerHandoffPath(path string, markers []string) bool {
 	return false
 }
 
-// activeControlResolvedPath follows one candidate alias and compares its
-// target inode with the bounded active-control index.  This catches both
-// arbitrary hardlink names and symlink aliases before a worker fast path can
-// treat the candidate as an ordinary executable/path operand.
+// activeControlResolvedPath resolves one visible writer operand and compares
+// its target inode with the bounded active-control index.
+//
+// Example: a hardlink used as a touch target resolves to the active marker,
+// while read-only aliases never reach this writer-only check.
 func activeControlResolvedPath(path string, index []activeControlFile) string {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
@@ -2555,19 +4332,17 @@ func activeControlResolvedPath(path string, index []activeControlFile) string {
 	return ""
 }
 
+// inspectLiveControl rejects a worker's concrete active-control write target
+// while leaving index completeness and read-only discovery advisory.
+//
+// Example: `printf value > eci_active` reaches this check through its redirect
+// target, while `cat eci_active` does not.
 func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagnostic {
 	controlIndex := activeControlFileIndex(request.ActiveMarkers)
-	if controlIndex.overflow {
-		return diagnosticForToken(
-			CodePlanLiveControlDenied,
-			"bounded active-control index overflowed before worker ownership could be established",
-			segmentIndex,
-			0,
-			argv[0],
-			"reduce the active session control-record count below the bounded index limit, then retry",
-			"bounded-control-index",
-		)
-	}
+	// A bounded alias index can be incomplete when a session has many control
+	// records. Its completeness is diagnostic metadata, never a reason to
+	// block a visible concrete write target. Exact marker paths below remain
+	// independently checked.
 	for argumentIndex, argument := range argv[1:] {
 		pathArgument, pathLike := commandPathOperand(argv[0].value, argument)
 		if !pathLike {
@@ -2706,6 +4481,8 @@ func diagnosticForToken(
 func operationForCode(code DiagnosticCode) string {
 	value := string(code)
 	switch {
+	case code == CodeLifecycleCanonicalPathDenied:
+		return "eci-lifecycle"
 	case strings.HasPrefix(value, "ECI_PLAN_"):
 		return "plan-segment"
 	case strings.HasPrefix(value, "ECI_ENVIRONMENT_"):
@@ -2750,6 +4527,14 @@ func assignmentName(argument token) string {
 	return argument.value[:separator]
 }
 
+// environmentAssignmentName recognizes env's assignment grammar after shell
+// lexing. Quoting changes shell-leading assignment semantics, but it does not
+// stop env from receiving an assignment token as its own argv element.
+func environmentAssignmentName(argument token) string {
+	argument.quoted = false
+	return assignmentName(argument)
+}
+
 func isIdentifier(value string) bool {
 	if value == "" || !isIdentifierFirst(value[0]) {
 		return false
@@ -2782,24 +4567,53 @@ func isReservedControl(argument token) bool {
 	}
 }
 
-func isPublicEnvironmentName(name string) bool {
+func isEnvironmentContextName(name string) bool {
+	if strings.HasPrefix(name, "GIT_") {
+		return true
+	}
 	switch name {
-	case "CODEX_HOME", "CODEX_ROLE", "CODEX_SESSION_ID", "HOME", "KIMI_CODE_HOME", "KIMI_ROLE", "KIMI_SESSION_ID", "PATH", "PWD", "SESSION_ID", "TMPDIR":
+	case "BASH_ENV", "ENV", "LD_AUDIT", "LD_PRELOAD", "PERL5OPT", "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "RUBYOPT":
 		return true
 	default:
 		return false
 	}
 }
 
-func isEnvironmentContextName(name string) bool {
-	if strings.HasPrefix(name, "GIT_") {
-		return true
+// inspectInheritedExecutionContext rejects an active command when the hook's
+// own environment can preload code into the selected runtime or native child.
+//
+// Example: NODE_OPTIONS=--require=/probe prevents node script.js admission.
+func inspectInheritedExecutionContext(
+	target token,
+	segmentIndex int,
+) *Diagnostic {
+	for _, name := range inheritedExecutionContextNames() {
+		if os.Getenv(name) == "" {
+			continue
+		}
+		return diagnosticForToken(
+			CodeEnvironmentContextDenied,
+			"inherited callback environment changes runtime or executable startup context",
+			segmentIndex,
+			0,
+			token{value: name, offset: target.offset},
+			"clear the reported inherited environment variable before invoking the active command",
+			"inherited-environment-context",
+		)
 	}
-	switch name {
-	case "BASH_ENV", "ENV", "PERL5OPT", "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "RUBYOPT":
-		return true
-	default:
-		return false
+	return nil
+}
+
+// inheritedExecutionContextNames returns every environment name that can alter
+// native process loading or a runtime before a literal child argv runs.
+//
+// Example: NODE_OPTIONS is checked even for a renamed Node executable.
+func inheritedExecutionContextNames() []string {
+	return []string{
+		"BASH_ENV", "ENV", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_PRELOAD",
+		"LUA_CPATH", "LUA_INIT", "LUA_PATH", "NODE_OPTIONS", "NODE_PATH",
+		"PERL5LIB", "PERL5OPT", "PHPRC", "PHP_INI_SCAN_DIR", "PYTHONHOME",
+		"PYTHONPATH", "PYTHONSTARTUP", "RUBYLIB", "RUBYOPT", "ZDOTDIR",
 	}
 }
 
@@ -2889,6 +4703,58 @@ func isLifecycleScriptCapability(cwd string, argv []token) bool {
 				return false
 			}
 			return isLifecycleScriptPath(cwd, value)
+		}
+	}
+
+	return false
+}
+
+// compoundPlanContainsFiniteShellScriptInvocation identifies a compound plan
+// containing one direct finite shell-script argv. The provider adapter keeps
+// ownership of its complete raw shell topology.
+//
+// Example: bash -x test.sh | tail -n 1 returns true, while bash -x test.sh
+// remains a direct one-segment plan.
+func compoundPlanContainsFiniteShellScriptInvocation(parsed plan) bool {
+	if len(parsed.operators) == 0 {
+		return false
+	}
+	for _, current := range parsed.segments {
+		if isFiniteShellScriptInvocation(current.argv) {
+			return true
+		}
+	}
+	return false
+}
+
+// isFiniteShellScriptInvocation recognizes a direct shell interpreter with a
+// visible finite script operand, rather than inline or stdin-provided code.
+//
+// Example: bash -x test.sh is finite; bash -c 'echo x' is not.
+func isFiniteShellScriptInvocation(argv []token) bool {
+	if len(argv) < 2 || !isShellInterpreter(filepath.Base(argv[0].value)) {
+		return false
+	}
+
+	index := 1
+	for index < len(argv) {
+		value := argv[index].value
+		switch value {
+		case "--":
+			index++
+			return index < len(argv) && isLiteralRuntimeTarget(argv[index])
+		case "-e", "-n", "--noexec", "-x", "--trace", "--noprofile", "--norc", "--posix", "--restricted", "--verbose":
+			index++
+		case "-O":
+			if index+1 >= len(argv) {
+				return false
+			}
+			index += 2
+		default:
+			if strings.HasPrefix(value, "-") {
+				return false
+			}
+			return isLiteralRuntimeTarget(argv[index])
 		}
 	}
 
@@ -3132,13 +4998,13 @@ func resolveChmodTargetPath(cwd, value string) (string, bool) {
 
 // protectedHookModeRoots returns canonical provider roots whose tracked hook modes are protected.
 //
-// Example: a Codex callback protects CODEX_HOME, KIMI_CODE_HOME, and the planner root.
+// Example: a Codex callback protects $HOME/.codex, while Kimi keeps its
+// configured KIMI_CODE_HOME root and the planner root remains protected.
 func protectedHookModeRoots() []string {
 	home := os.Getenv("HOME")
 	candidates := []string{
-		os.Getenv("CODEX_HOME"),
-		os.Getenv("KIMI_CODE_HOME"),
 		filepath.Join(home, ".codex"),
+		os.Getenv("KIMI_CODE_HOME"),
 		filepath.Join(home, ".kimi-code"),
 	}
 	if executable, err := os.Executable(); err == nil {
@@ -3201,7 +5067,7 @@ func gitSubcommandIndex(argv []token) int {
 
 // gitFsckLostFoundOption returns the exact --lost-found token after the fsck
 // subcommand. The caller supplies the already-selected subcommand position so
-// the worker route does not inherit generic Git option interpretation.
+// the direct worker route does not inherit generic Git option interpretation.
 func gitFsckLostFoundOption(argv []token, subcommandIndex int) (int, bool) {
 	if subcommandIndex >= len(argv) || argv[subcommandIndex].value != "fsck" {
 		return 0, false
@@ -3212,6 +5078,15 @@ func gitFsckLostFoundOption(argv []token, subcommandIndex int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// isGitFsckLostFound reports whether argv selects Git fsck and passes the
+// exact option that writes dangling objects under the repository metadata.
+//
+// Example: git --no-pager fsck --lost-found is true, while bare git fsck is false.
+func isGitFsckLostFound(argv []token) bool {
+	_, ok := gitFsckLostFoundOption(argv, gitSubcommandIndex(argv))
+	return ok
 }
 
 func gitMutation(argv []token, subcommandIndex int) (int, string) {
@@ -3291,33 +5166,6 @@ func isSourceWriter(name string, argv []token) bool {
 			if argument.value == "-i" || argument.value == "--in-place" || strings.HasPrefix(argument.value, "-i") || strings.HasPrefix(argument.value, "--in-place=") {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func sourceWriterTargetsCWD(cwd, name string, argv []token) bool {
-	root := filepath.Clean(cwd)
-	for _, argument := range argv[1:] {
-		value := argument.value
-		if name == "dd" && strings.HasPrefix(value, "of=") {
-			value = strings.TrimPrefix(value, "of=")
-		} else {
-			pathArgument, pathLike := pathOperand(argument)
-			if !pathLike {
-				continue
-			}
-			value = pathArgument.value
-		}
-		if value == "" {
-			continue
-		}
-		candidate := value
-		if !filepath.IsAbs(candidate) {
-			candidate = filepath.Join(root, candidate)
-		}
-		if pathWithin(filepath.Clean(candidate), root) {
-			return true
 		}
 	}
 	return false

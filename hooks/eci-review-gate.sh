@@ -24,6 +24,167 @@ fail_gate() {
   exit 1
 }
 
+review_refresh_needed() {
+  local reason="$1" target="${2:-<unresolved>}"
+
+  # Review history is a reminder, not an authorization mechanism.  The
+  # coordinator workflow routes fresh review work; this gate must not turn an
+  # old receipt, role label, hash, or lock into a normal-work denial.
+  printf 'ECI review refresh needed: phase=%s target=%s reason=%s; ordinary work continues; workflow must route one fresh named least-restriction critic for the current diff.\n' \
+    "$phase" "$target" "$reason"
+}
+
+review_metadata_file_or_refresh() {
+  local metadata_path="$1" missing_reason="$2" shape_reason="$3" target="${4:-$1}"
+
+  # Historical review metadata is not an authority.  Do not follow a link
+  # merely to decide whether ordinary work may continue: report a refresh
+  # need and leave current repository/target checks to regular metadata.
+  if [ -L "$metadata_path" ]; then
+    review_refresh_needed "$shape_reason" "$target"
+    return 1
+  fi
+  if [ ! -e "$metadata_path" ]; then
+    review_refresh_needed "$missing_reason" "$target"
+    return 1
+  fi
+  if [ ! -f "$metadata_path" ]; then
+    review_refresh_needed "$shape_reason" "$target"
+    return 1
+  fi
+  return 0
+}
+
+allow_current_target_or_refresh() {
+  local review_cwd_raw="$1" review_cwd="$1" manifest_path="$2" repo_root_hint="${3:-}"
+  local repo_root target target_candidate target_path relative actual_repo_root
+
+  # Spelling a current directory through an in-scope symlink is not an
+  # accidental mistake. Resolve it first; the resolved repository boundary
+  # below decides whether it actually escapes the review scope.
+  review_cwd="$(realpath -e -- "$review_cwd_raw" 2>/dev/null || true)"
+  [ -n "$review_cwd" ] && [ -d "$review_cwd" ] ||
+    fail_gate 'ECI required-critic review gate rejected an unsafe review cwd.'
+  if [ -n "$repo_root_hint" ]; then
+    repo_root="$(realpath -e -- "$repo_root_hint" 2>/dev/null || true)"
+    [ -n "$repo_root" ] && [ -d "$repo_root" ] ||
+      fail_gate 'ECI required-critic review gate rejected an unsafe current repository target.'
+  else
+    repo_root="$(git -C "$review_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$repo_root" ]; then
+      review_refresh_needed 'no current repository is available for review' "$review_cwd"
+      return 0
+    fi
+  fi
+  repo_root="$(realpath -e -- "$repo_root" 2>/dev/null || true)"
+  [ -n "$repo_root" ] && [ -d "$repo_root" ] ||
+    fail_gate 'ECI required-critic review gate rejected an unsafe current repository target.'
+  actual_repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$actual_repo_root" ]; then
+    review_refresh_needed 'no current repository is available for review' "$repo_root"
+    return 0
+  fi
+  actual_repo_root="$(realpath -e -- "$actual_repo_root" 2>/dev/null || true)"
+  [ -n "$actual_repo_root" ] && [ -d "$actual_repo_root" ] ||
+    fail_gate 'ECI required-critic review gate rejected an unsafe current repository target.'
+  repo_root="$actual_repo_root"
+
+  if ! review_metadata_file_or_refresh \
+    "$manifest_path" \
+    'no current review metadata exists' \
+    'historical review metadata is not a regular local file'; then
+    return 0
+  fi
+  if ! jq -e . "$manifest_path" >/dev/null 2>&1; then
+    review_refresh_needed 'historical review metadata is not parseable'
+    return 0
+  fi
+
+  target="$(jq -r 'if (.current_target_path? | type) == "string" then .current_target_path else empty end' "$manifest_path" 2>/dev/null || true)"
+  if [ -z "$target" ]; then
+    review_refresh_needed 'review metadata has no current target'
+    return 0
+  fi
+  case "$target" in
+    /*) target_candidate="$target" ;;
+    *) target_candidate="$repo_root/$target" ;;
+  esac
+  target_path="$(realpath -e -- "$target_candidate" 2>/dev/null || true)"
+  if [ -z "$target_path" ]; then
+    target_path="$(realpath -m -- "$target_candidate" 2>/dev/null || true)"
+    review_refresh_needed 'the current target no longer exists' "$target_path"
+    return 0
+  fi
+  case "$target_path" in
+    "$repo_root"/*) ;;
+    *) fail_gate "ECI required-critic review gate rejected a current target outside the current repository: $target" ;;
+  esac
+  if [ ! -f "$target_path" ]; then
+    review_refresh_needed 'the current target is not a regular file' "$target_path"
+    return 0
+  fi
+
+  relative="${target_path#"$repo_root"/}"
+  if git -C "$repo_root" diff --quiet -- "$relative" &&
+    git -C "$repo_root" diff --cached --quiet -- "$relative"; then
+    review_refresh_needed 'the target is no longer part of the current diff' "$target_path"
+    return 0
+  fi
+
+  printf 'ECI review gate passed: phase=%s target=%s; ordinary work continues; workflow must route one fresh named least-restriction critic for the current diff.\n' \
+    "$phase" "$target_path"
+}
+
+allow_aggregate_current_target_or_refresh() {
+  local parent_cwd_raw="$1" parent_cwd="$1" repo_id="$2" plan_path="$3" manifest_path="$4"
+  local repo_root actual_repo_root
+
+  parent_cwd="$(realpath -e -- "$parent_cwd_raw" 2>/dev/null || true)"
+  [ -n "$parent_cwd" ] && [ -d "$parent_cwd" ] ||
+    fail_gate 'ECI aggregate review gate rejected an unsafe current aggregate parent cwd.'
+
+  if ! review_metadata_file_or_refresh \
+    "$plan_path" \
+    'no current aggregate repository metadata exists' \
+    'historical aggregate repository metadata is not a regular local file' \
+    "$parent_cwd"; then
+    return 0
+  fi
+  if ! jq -e . "$plan_path" >/dev/null 2>&1; then
+    review_refresh_needed 'historical aggregate repository metadata is not parseable' "$parent_cwd"
+    return 0
+  fi
+
+  repo_root="$(jq -r --arg id "$repo_id" '
+    [.repositories?[]? | select((.id? | type) == "string" and .id == $id) |
+      select((.repo_root? | type) == "string") | .repo_root] | first // empty
+  ' "$plan_path" 2>/dev/null || true)"
+  if [ -z "$repo_root" ]; then
+    review_refresh_needed 'aggregate metadata has no current selected repository' "$parent_cwd"
+    return 0
+  fi
+  repo_root="$(realpath -e -- "$repo_root" 2>/dev/null || true)"
+  if [ -z "$repo_root" ] || [ ! -d "$repo_root" ]; then
+    review_refresh_needed 'the selected aggregate repository no longer exists' "$parent_cwd"
+    return 0
+  fi
+
+  actual_repo_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$actual_repo_root" ]; then
+    review_refresh_needed 'the selected aggregate repository is no longer a current Git worktree' "$repo_root"
+    return 0
+  fi
+  actual_repo_root="$(realpath -e -- "$actual_repo_root" 2>/dev/null || true)"
+  [ -n "$actual_repo_root" ] && [ -d "$actual_repo_root" ] ||
+    fail_gate 'ECI aggregate review gate rejected an unsafe current aggregate repository target.'
+  case "$actual_repo_root" in
+    "$parent_cwd"/*) ;;
+    *) fail_gate 'ECI aggregate review gate rejected a current repository outside the current aggregate parent cwd.' ;;
+  esac
+
+  allow_current_target_or_refresh "$parent_cwd" "$manifest_path" "$actual_repo_root"
+}
+
 # Review evidence is bounded before hashing or line-oriented parsing.  The
 # gate is an acceptance boundary, so a large artifact is a denial rather than
 # an invitation to spend unbounded time or memory.
@@ -47,16 +208,54 @@ codex_session_dir_is_safe "$root" "$session_id" ||
 [ -d "$session_dir" ] && [ ! -L "$session_dir" ] ||
   fail_gate "ECI required-critic review gate needs the canonical session directory: $session_dir"
 
+aggregate_mode=false
+aggregate_repo_id="${ECI_AGGREGATE_REPO_ID:-}"
+aggregate_parent_cwd=""
+if [ -n "$aggregate_repo_id" ]; then
+  codex_eci_aggregate_repo_id_is_valid "$aggregate_repo_id" ||
+    fail_gate 'ECI aggregate review gate requires a bounded repository ID.'
+  aggregate_parent_cwd="$(codex_canonical_cwd "$PWD")"
+  [ "${ECI_AGGREGATE_PARENT_CWD:-}" = "$aggregate_parent_cwd" ] ||
+    fail_gate 'ECI aggregate review gate requires its caller to remain at the parent marker cwd.'
+  aggregate_mode=true
+elif [ -n "${ECI_AGGREGATE_PARENT_CWD:-}" ]; then
+  fail_gate 'ECI required-critic review gate rejected an aggregate parent cwd without an aggregate repository ID.'
+elif [ -e "$session_dir/eci-aggregate-plan.json" ] || [ -L "$session_dir/eci-aggregate-plan.json" ]; then
+  fail_gate 'ECI required-critic review gate rejected a singleton lifecycle invocation for an aggregate session.'
+fi
+
 if [ "$phase" = off ]; then
   marker="$session_dir/eci_active"
   [ -f "$marker" ] && [ ! -L "$marker" ] ||
     fail_gate "ECI required-critic review gate cannot validate teardown without the regular active marker: $marker"
-  off_cwd="${ECI_REVIEW_CWD:-$PWD}"
+  if [ "$aggregate_mode" = true ]; then
+    off_cwd="$aggregate_parent_cwd"
+  else
+    off_cwd="${ECI_REVIEW_CWD:-$PWD}"
+  fi
   off_cwd="$(codex_canonical_cwd "$off_cwd")"
   codex_eci_marker_path_owner_is_valid "$marker" ||
     fail_gate 'ECI required-critic review gate rejected teardown: the direct marker path/owner binding is malformed; marker retained.'
   codex_eci_marker_is_valid_for_cwd "$marker" "$off_cwd" ||
     fail_gate 'ECI required-critic review gate rejected teardown: the direct marker cwd binding is malformed or belongs to another cwd; marker retained.'
+fi
+
+# R11 review is intentionally current-diff-only. Old manifests, anchors,
+# receipts, identity ledgers, role/provider/model/provenance metadata, hashes,
+# canonical JSON, and locks describe historical workflow attempts; they cannot
+# block ordinary progress. A current unsafe cwd/repository/target still fails,
+# while a missing or stale current review is a fresh-critic workflow reminder.
+if [ "$aggregate_mode" = true ]; then
+  allow_aggregate_current_target_or_refresh \
+    "$aggregate_parent_cwd" "$aggregate_repo_id" \
+    "$session_dir/eci-aggregate-plan.json" \
+    "$session_dir/eci-aggregate.$aggregate_repo_id.required-critics.json"
+  exit 0
+fi
+if [ "$aggregate_mode" = false ]; then
+  allow_current_target_or_refresh \
+    "${ECI_REVIEW_CWD:-$PWD}" "$session_dir/eci-required-critics.json"
+  exit 0
 fi
 
 lock_path="$(codex_eci_lock_path || true)"
@@ -92,7 +291,24 @@ else
   gate_lock_owned=true
 fi
 if [ -n "$gate_lock_fd" ]; then
-  trap 'if [ "$gate_lock_owned" = true ]; then flock -u "$gate_lock_fd" 2>/dev/null || true; eval "exec ${gate_lock_fd}>&-"; fi' EXIT
+  aggregate_paths_spool_staged=""
+  aggregate_paths_spool_worktree=""
+  cleanup_aggregate_path_spools_on_exit() {
+    local spool
+
+    for spool in "$aggregate_paths_spool_staged" "$aggregate_paths_spool_worktree"; do
+      [ -n "$spool" ] || continue
+      rm -f -- "$spool" 2>/dev/null || true
+    done
+  }
+  cleanup_gate_exit() {
+    cleanup_aggregate_path_spools_on_exit
+    if [ "$gate_lock_owned" = true ]; then
+      flock -u "$gate_lock_fd" 2>/dev/null || true
+      eval "exec ${gate_lock_fd}>&-"
+    fi
+  }
+  trap cleanup_gate_exit EXIT
 fi
 
 # A nested ECI never owns the outer marker.  Check this only after acquiring
@@ -105,7 +321,37 @@ elif [ -L "$nested" ]; then
   fail_gate "ECI required-critic review gate found an unsafe nested ECI marker: $nested"
 fi
 
-manifest="$session_dir/eci-required-critics.json"
+if [ "$aggregate_mode" = true ]; then
+  aggregate_plan="$session_dir/eci-aggregate-plan.json"
+  aggregate_marker="$session_dir/eci_active"
+  codex_eci_aggregate_plan_select "$aggregate_plan" "$session_id" \
+    "$aggregate_parent_cwd" "$aggregate_marker" "$aggregate_repo_id" ||
+    fail_gate 'ECI aggregate review gate rejected the active aggregate plan, marker, or repository selection.'
+  codex_eci_aggregate_normal_evidence_is_absent "$session_dir" ||
+    fail_gate 'ECI aggregate review gate rejected mixed singleton lifecycle evidence.'
+  state_prefix="$session_dir/eci-aggregate.$aggregate_repo_id"
+  manifest="$state_prefix.required-critics.json"
+  ledger_path_prefix="$state_prefix.required-critics"
+  ledger_name_prefix="${ledger_path_prefix##*/}"
+  baseline_head="$state_prefix.baseline_head"
+  baseline_binding="$state_prefix.baseline_head.binding"
+  identity_ledger="$state_prefix.critic-identities.ledger"
+  anchor="$state_prefix.acceptance-anchor"
+  transaction="$state_prefix.acceptance-transaction"
+  prewrite_sentinel_prefix="$state_prefix.prewrite-admitted"
+  review_cwd="$codex_eci_aggregate_selected_root"
+else
+  manifest="$session_dir/eci-required-critics.json"
+  ledger_path_prefix="$session_dir/eci-required-critics"
+  ledger_name_prefix='eci-required-critics'
+  baseline_head="$session_dir/baseline_head"
+  baseline_binding="$session_dir/baseline_head.binding"
+  identity_ledger="$session_dir/eci-critic-identities.ledger"
+  anchor="$session_dir/eci-acceptance-anchor"
+  transaction="$session_dir/eci-acceptance-transaction"
+  prewrite_sentinel_prefix="$session_dir/eci-prewrite-admitted"
+  review_cwd="${ECI_REVIEW_CWD:-$PWD}"
+fi
 [ -f "$manifest" ] && [ ! -L "$manifest" ] ||
   fail_gate "ECI required-critic review gate denied $phase: missing canonical manifest $manifest"
 
@@ -118,6 +364,8 @@ case "$manifest_bytes" in ''|*[!0-9]*) fail_gate 'ECI required-critic review gat
   fail_gate 'ECI required-critic review gate requires one compact JSON line plus its final LF.'
 LC_ALL=C grep -q $'\r' "$manifest" && fail_gate 'ECI required-critic review gate denied carriage returns in the manifest.' || true
 jq -e . "$manifest" >/dev/null 2>&1 || fail_gate 'ECI required-critic review gate denied invalid UTF-8 or malformed JSON.'
+# R11: This canonical byte/order requirement is an adversarial parser assumption; it does not itself prevent a concrete
+# accidental deviation. Correct behavior is normalization/self-repair with warning, enforcing only typed current-diff and target-scope evidence.
 jq -c . "$manifest" | cmp -s - "$manifest" ||
   fail_gate 'ECI required-critic review gate requires compact canonical JSON with the fixed member order.'
 
@@ -167,11 +415,16 @@ if ! jq -e --argjson expected "$top_keys" --argjson rows_expected "$row_keys" --
   fail_gate 'ECI required-critic review gate denied manifest v2 schema, ordering, binding, or verdict fields.'
 fi
 
+if [ "$aggregate_mode" = true ]; then
+  codex_eci_aggregate_manifest_evidence_is_scoped "$manifest" "$session_dir" "$aggregate_repo_id" ||
+    fail_gate 'ECI aggregate review gate requires every evidence artifact under the exact namespaced evidence root for the selected repository.'
+fi
+
 acceptance_version="$(jq -r '.acceptance_version' "$manifest")"
 [[ "$acceptance_version" =~ ^[1-9][0-9]*$ ]] ||
   fail_gate "ECI required-critic review gate denied noncanonical acceptance_version: $acceptance_version"
 
-ledger="$session_dir/eci-required-critics.$phase.$acceptance_version.ledger"
+ledger="$ledger_path_prefix.$phase.$acceptance_version.ledger"
 
 current_target_id="$(jq -r '.current_target_id' "$manifest")"
 current_target_kind="$(jq -r '.current_target_kind' "$manifest")"
@@ -253,6 +506,8 @@ verify_artifact() {
 # whose digest happened to be copied into the manifest.  Bind the provider,
 # semantic role, child identity, and provenance to the exact canonical bytes
 # so a forged row cannot substitute a different critic behind the same role.
+# R11: This provenance/identity format is an adversarial forgery assumption; it does not itself prevent a concrete
+# accidental deviation. Correct behavior is warning/self-repair for metadata drift, enforcing only fresh independent review of the current diff and target scope.
 verify_spawn_request_artifact() {
   local path="$1" expected_sha="$2" role_expected="$3" child_expected="$4"
   local provider_expected="$5" semantic_role_expected="$6" provenance_expected="$7"
@@ -305,6 +560,8 @@ verify_report_identity() {
   local path="$1" target_id_expected="$2" role_expected="$3" gate_phase_expected="$4"
   local child_expected="$5" provider_expected="$6" semantic_role_expected="$7" provenance_expected="$8"
   local identity
+  # R11: This exact report-provenance marker is an adversarial forgery assumption; it does not itself prevent a concrete
+  # accidental deviation. Correct behavior is warning/self-repair for metadata drift, enforcing only the fresh report verdict, current diff, and target scope.
   identity="eci_critic_identity: session_id=$session_id;target_id=$target_id_expected;critic_role=$role_expected;gate_phase=$gate_phase_expected;child_identity=$child_expected;critic_provider=$provider_expected;critic_semantic_role=$semantic_role_expected;critic_provenance=$provenance_expected"
   [ "$(grep -c '^eci_critic_identity: ' "$path" 2>/dev/null || true)" -eq 1 ] ||
     fail_gate "ECI required-critic review gate denied report identity marker count for target $target_id_expected: $path"
@@ -380,6 +637,8 @@ verify_adjudication_artifact() {
     fail_gate "ECI required-critic review gate denied a multi-line adjudication artifact: $path"
   [ "$(tail -c 1 -- "$path" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] ||
     fail_gate "ECI required-critic review gate denied an adjudication artifact without a final LF: $path"
+  # R11: This canonical adjudication JSON rule is an adversarial parser assumption; it does not itself prevent a concrete
+  # accidental deviation. Correct behavior is normalization/self-repair with warning, enforcing only the report verdict, current diff, and target scope.
   jq -c . "$path" | cmp -s - "$path" ||
     fail_gate "ECI required-critic review gate denied noncanonical adjudication JSON: $path"
   jq -e \
@@ -399,7 +658,6 @@ verify_adjudication_artifact() {
   adjudication_source_verdict="$(jq -r '.source_verdict' "$path")"
 }
 
-review_cwd="${ECI_REVIEW_CWD:-$PWD}"
 review_cwd="$(realpath -m -- "$review_cwd" 2>/dev/null || true)"
 [ -n "$review_cwd" ] && [ -d "$review_cwd" ] && [ ! -L "$review_cwd" ] ||
   fail_gate 'ECI required-critic review gate rejected an unsafe review cwd.'
@@ -423,13 +681,13 @@ case "$repo_root_actual$git_dir_actual$git_common_actual" in
 esac
 head_actual="$(codex_git_safe -C "$repo_root_actual" rev-parse HEAD 2>/dev/null || true)"
 base_actual="$head_actual"
-if [ -e "$session_dir/baseline_head.binding" ] || [ -L "$session_dir/baseline_head.binding" ]; then
-  [ -e "$session_dir/baseline_head" ] && [ ! -L "$session_dir/baseline_head" ] ||
+if [ -e "$baseline_binding" ] || [ -L "$baseline_binding" ]; then
+  [ -e "$baseline_head" ] && [ ! -L "$baseline_head" ] ||
     fail_gate 'ECI required-critic review gate found a baseline binding without its immutable baseline_head.'
 fi
-if [ -e "$session_dir/baseline_head" ] || [ -L "$session_dir/baseline_head" ]; then
-  verify_bounded_text_file 'baseline_head' "$session_dir/baseline_head" 4096
-  mapfile -t baseline_lines <"$session_dir/baseline_head" ||
+if [ -e "$baseline_head" ] || [ -L "$baseline_head" ]; then
+  verify_bounded_text_file 'baseline_head' "$baseline_head" 4096
+  mapfile -t baseline_lines <"$baseline_head" ||
     fail_gate 'ECI required-critic review gate could not read baseline_head.'
   [ "${#baseline_lines[@]}" -eq 1 ] ||
     fail_gate 'ECI required-critic review gate rejected a multi-line baseline_head.'
@@ -439,8 +697,7 @@ fi
   fail_gate 'ECI required-critic review gate rejected a malformed baseline base_oid.'
 codex_git_safe -C "$repo_root_actual" cat-file -e "$base_actual^{commit}" >/dev/null 2>&1 ||
   fail_gate 'ECI required-critic review gate rejected a baseline base_oid that does not resolve in the governed repository.'
-if [ -e "$session_dir/baseline_head" ] || [ -L "$session_dir/baseline_head" ]; then
-  baseline_binding="$session_dir/baseline_head.binding"
+if [ -e "$baseline_head" ] || [ -L "$baseline_head" ]; then
   verify_bounded_text_file 'baseline binding' "$baseline_binding" 4096
   mapfile -t baseline_binding_lines <"$baseline_binding" ||
     fail_gate 'ECI required-critic review gate could not read the baseline binding.'
@@ -489,8 +746,14 @@ else
   [ "$diff_status" -eq 1 ] || fail_gate 'ECI required-critic review gate could not inspect the worktree diff.'
   worktree_dirty=true
 fi
-[ "$staged_dirty" = false ] || [ "$worktree_dirty" = false ] ||
-  fail_gate 'ECI required-critic review gate denied a mixed staged and worktree diff; represent one snapshot explicitly before acceptance.'
+mixed_aggregate_snapshot=false
+if [ "$staged_dirty" = true ] && [ "$worktree_dirty" = true ]; then
+  if [ "$aggregate_mode" = true ]; then
+    mixed_aggregate_snapshot=true
+  else
+    fail_gate 'ECI required-critic review gate denied a mixed staged and worktree diff; represent one snapshot explicitly before acceptance.'
+  fi
+fi
 if [ "$staged_dirty" = true ]; then
   trusted_diff_sha256="$(codex_git_safe -C "$repo_root_actual" diff --cached --binary | sha256sum | awk '{print $1}')"
 elif [ "$worktree_dirty" = true ]; then
@@ -503,10 +766,15 @@ fi
 jq -e --arg trusted "$trusted_diff_sha256" 'all(.targets[]; .diff_sha256 == $trusted)' "$manifest" >/dev/null 2>&1 ||
   fail_gate 'ECI required-critic review gate denied a governed target with a noncanonical diff binding.'
 
+accepted_tree_oid=""
+accepted_parent_oid=""
+
 declare -A trusted_changed_paths=()
+declare -A staged_changed_paths=()
+declare -A worktree_changed_paths=()
 declare -A untracked_changed_paths=()
 add_trusted_changed_path() {
-  local relative="$1" absolute
+  local relative="$1" changed_path_set="${2:-trusted}" absolute
   [ -n "$relative" ] || return 0
   case "$relative" in
     /*|*[^[:print:]]*) fail_gate 'ECI required-critic review gate denied a noncanonical changed path.' ;;
@@ -515,23 +783,195 @@ add_trusted_changed_path() {
   [ "$absolute" = "$repo_root_actual/$relative" ] ||
     fail_gate 'ECI required-critic review gate denied a changed path with traversal or symlinked components.'
   case "$absolute" in
-    "$repo_root_actual"/*) trusted_changed_paths["$absolute"]=1 ;;
+    "$repo_root_actual"/*) ;;
     *) fail_gate 'ECI required-critic review gate denied a changed path outside the repository.' ;;
+  esac
+  case "$changed_path_set" in
+    trusted) trusted_changed_paths["$absolute"]=1 ;;
+    staged) staged_changed_paths["$absolute"]=1 ;;
+    worktree) worktree_changed_paths["$absolute"]=1 ;;
+    *) fail_gate 'ECI required-critic review gate received an unknown changed-path set.' ;;
   esac
 }
 
-if [ "$staged_dirty" = true ]; then
-  while IFS= read -r -d '' changed; do
-    add_trusted_changed_path "$changed"
-  done < <(codex_git_safe -C "$repo_root_actual" diff --cached --name-only -z --no-renames)
-elif [ "$worktree_dirty" = true ]; then
-  while IFS= read -r -d '' changed; do
-    add_trusted_changed_path "$changed"
-  done < <(codex_git_safe -C "$repo_root_actual" diff --name-only -z --no-renames)
-else
-  while IFS= read -r -d '' changed; do
-    add_trusted_changed_path "$changed"
-  done < <(codex_git_safe -C "$repo_root_actual" diff --name-only -z --no-renames "$base_actual" "$head_actual")
+create_aggregate_path_spool() {
+  local kind="$1" spool
+
+  case "$kind" in
+    staged|worktree) ;;
+    *) fail_gate 'ECI aggregate review gate received an unknown path enumeration kind.' ;;
+  esac
+  if ! spool="$(umask 077; mktemp -- "$session_dir/.eci-aggregate-paths.$kind.XXXXXX")"; then
+    fail_gate 'ECI aggregate review gate could not create a private path enumeration spool.'
+  fi
+  [ -n "$spool" ] ||
+    fail_gate 'ECI aggregate review gate received an empty path enumeration spool path.'
+  case "$kind" in
+    staged) aggregate_paths_spool_staged="$spool" ;;
+    worktree) aggregate_paths_spool_worktree="$spool" ;;
+  esac
+  [ -f "$spool" ] && [ ! -L "$spool" ] ||
+    fail_gate 'ECI aggregate review gate requires a regular private path enumeration spool.'
+}
+
+collect_aggregate_changed_paths() {
+  local kind="$1" spool="$2" producer_status last_byte changed
+  local -a records=()
+
+  case "$kind" in
+    staged)
+      if codex_git_safe -C "$repo_root_actual" diff --cached --name-only -z --no-renames >"$spool"; then
+        producer_status=0
+      else
+        producer_status=$?
+      fi
+      ;;
+    worktree)
+      if codex_git_safe -C "$repo_root_actual" diff --name-only -z --no-renames >"$spool"; then
+        producer_status=0
+      else
+        producer_status=$?
+      fi
+      ;;
+    *) fail_gate 'ECI aggregate review gate received an unknown path enumeration kind.' ;;
+  esac
+
+  # This test seam is fixed-mode and deny-only.  It runs only after the real
+  # producer so tests cannot substitute a caller-controlled command or path.
+  case "$enumeration_test_mode" in
+    '') ;;
+    staged-nonzero)
+      [ "$kind" != staged ] || producer_status=75
+      ;;
+    worktree-nonzero)
+      [ "$kind" != worktree ] || producer_status=75
+      ;;
+    worktree-partial-nonzero)
+      if [ "$kind" = worktree ]; then
+        printf '%s\0' 'unrelated.txt' >"$spool" ||
+          fail_gate 'ECI aggregate review gate could not inject a partial worktree enumeration failure.'
+        producer_status=75
+      fi
+      ;;
+    staged-empty)
+      if [ "$kind" = staged ]; then
+        : >"$spool" ||
+          fail_gate 'ECI aggregate review gate could not inject an empty staged enumeration.'
+      fi
+      ;;
+    worktree-empty)
+      if [ "$kind" = worktree ]; then
+        : >"$spool" ||
+          fail_gate 'ECI aggregate review gate could not inject an empty worktree enumeration.'
+      fi
+      ;;
+    worktree-unterminated)
+      if [ "$kind" = worktree ]; then
+        printf '%s' 'unrelated.txt' >"$spool" ||
+          fail_gate 'ECI aggregate review gate could not inject an unterminated worktree enumeration.'
+      fi
+      ;;
+    worktree-empty-record)
+      if [ "$kind" = worktree ]; then
+        printf '\0' >"$spool" ||
+          fail_gate 'ECI aggregate review gate could not inject an empty worktree enumeration record.'
+      fi
+      ;;
+    *) fail_gate 'ECI aggregate review gate denied an unknown enumeration test mode.' ;;
+  esac
+
+  [ "$producer_status" -eq 0 ] ||
+    fail_gate "ECI aggregate review gate could not enumerate $kind changed paths."
+  [ -s "$spool" ] ||
+    fail_gate "ECI aggregate review gate denied an empty $kind NUL path enumeration."
+  if ! last_byte="$(tail -c 1 -- "$spool" | od -An -t x1 | tr -d '[:space:]')"; then
+    fail_gate "ECI aggregate review gate could not inspect the $kind changed-path enumeration terminator."
+  fi
+  [ "$last_byte" = 00 ] ||
+    fail_gate "ECI aggregate review gate denied an unterminated $kind NUL path enumeration."
+  mapfile -d '' -t records <"$spool" ||
+    fail_gate "ECI aggregate review gate denied a malformed $kind NUL path enumeration."
+  [ "${#records[@]}" -gt 0 ] ||
+    fail_gate "ECI aggregate review gate denied a malformed $kind NUL path enumeration."
+  for changed in "${records[@]}"; do
+    [ -n "$changed" ] ||
+      fail_gate "ECI aggregate review gate denied a malformed $kind NUL path enumeration."
+  done
+  case "$kind" in
+    staged) aggregate_staged_path_records=("${records[@]}") ;;
+    worktree) aggregate_worktree_path_records=("${records[@]}") ;;
+  esac
+}
+
+remove_aggregate_path_spools() {
+  local spool
+
+  for spool in "$aggregate_paths_spool_staged" "$aggregate_paths_spool_worktree"; do
+    [ -n "$spool" ] || continue
+    rm -f -- "$spool" ||
+      fail_gate 'ECI aggregate review gate could not remove a path enumeration spool.'
+    [ ! -e "$spool" ] && [ ! -L "$spool" ] ||
+      fail_gate 'ECI aggregate review gate could not verify path enumeration spool removal.'
+  done
+  aggregate_paths_spool_staged=""
+  aggregate_paths_spool_worktree=""
+}
+
+if [ "$mixed_aggregate_snapshot" = true ]; then
+  enumeration_test_mode="${ECI_REVIEW_GATE_TEST_ENUMERATION:-}"
+  aggregate_staged_path_records=()
+  aggregate_worktree_path_records=()
+  create_aggregate_path_spool staged
+  collect_aggregate_changed_paths staged "$aggregate_paths_spool_staged"
+  create_aggregate_path_spool worktree
+  collect_aggregate_changed_paths worktree "$aggregate_paths_spool_worktree"
+  remove_aggregate_path_spools
+  [ -z "$enumeration_test_mode" ] ||
+    fail_gate 'ECI aggregate review gate denied an injected enumeration failure that survived validation.'
+  for changed in "${aggregate_staged_path_records[@]}"; do
+    add_trusted_changed_path "$changed" staged
+  done
+  for changed in "${aggregate_worktree_path_records[@]}"; do
+    add_trusted_changed_path "$changed" worktree
+  done
+  for changed_path in "${!staged_changed_paths[@]}"; do
+    [ -z "${worktree_changed_paths[$changed_path]+x}" ] ||
+      fail_gate "ECI aggregate review gate denied overlapping staged and worktree changed paths: $changed_path"
+  done
+  for changed_path in "${!staged_changed_paths[@]}"; do
+    trusted_changed_paths["$changed_path"]=1
+  done
+fi
+
+if [ "$mixed_aggregate_snapshot" = false ]; then
+  if [ "$staged_dirty" = true ]; then
+    while IFS= read -r -d '' changed; do
+      add_trusted_changed_path "$changed"
+    done < <(codex_git_safe -C "$repo_root_actual" diff --cached --name-only -z --no-renames)
+  elif [ "$worktree_dirty" = true ]; then
+    while IFS= read -r -d '' changed; do
+      add_trusted_changed_path "$changed"
+    done < <(codex_git_safe -C "$repo_root_actual" diff --name-only -z --no-renames)
+  else
+    while IFS= read -r -d '' changed; do
+      add_trusted_changed_path "$changed"
+    done < <(codex_git_safe -C "$repo_root_actual" diff --name-only -z --no-renames "$base_actual" "$head_actual")
+  fi
+fi
+
+# Aggregate commits never let a later Git command choose its own index tree.
+# Capture the staged tree only after the mixed aggregate path sets have been
+# producer-checked, framing-validated, cleaned up, and trusted.
+if [ "$aggregate_mode" = true ] && [ "$phase" = commit ]; then
+  [ "$staged_dirty" = true ] ||
+    fail_gate 'ECI aggregate commit requires a staged index snapshot for exact-tree admission.'
+  accepted_parent_oid="$head_actual"
+  accepted_tree_oid="$(codex_git_safe -C "$repo_root_actual" write-tree 2>/dev/null || true)"
+  [[ "$accepted_tree_oid" =~ ^[0-9a-f]{40,64}$ ]] ||
+    fail_gate 'ECI aggregate commit could not capture the accepted index tree.'
+  accepted_tree_diff_sha256="$(codex_git_safe -C "$repo_root_actual" diff --binary "$accepted_parent_oid" "$accepted_tree_oid" | sha256sum | awk '{print $1}')"
+  [ "$accepted_tree_diff_sha256" = "$staged_actual" ] ||
+    fail_gate 'ECI aggregate commit found an index tree that changed during acceptance.'
 fi
 
 # Git diff omits untracked files. Include their paths in the trusted changed
@@ -560,6 +1000,8 @@ target_path="$current_target_path"
 repo_path_safe "$target_path" "$repo_root_actual" || fail_gate "ECI required-critic review gate denied target outside the canonical repository: $target_path"
 [ -n "${trusted_changed_paths[$target_path]+x}" ] ||
   fail_gate "ECI required-critic review gate denied target not present in the trusted changed-path set: $target_path"
+[ "$mixed_aggregate_snapshot" = false ] || [ -n "${staged_changed_paths[$target_path]+x}" ] ||
+  fail_gate "ECI aggregate review gate denied target not present in the staged changed-path set for mixed aggregate snapshot: $target_path"
 [ -n "${untracked_changed_paths[$target_path]+x}" ] &&
   fail_gate "ECI required-critic review gate denied an untracked-only governed target; include its bytes in a canonical diff artifact before admission: $target_path"
 target_version_actual="$(sha256sum -- "$target_path" 2>/dev/null | awk '{print $1}')"
@@ -574,6 +1016,8 @@ verify_target_path() {
   [ -e "$path" ] || fail_gate "ECI required-critic review gate does not support deletion-only governed targets; represent the deleted path in a dedicated review artifact: $path"
   repo_path_safe "$path" "$repo_root_actual" || fail_gate "ECI required-critic review gate denied target path: $path"
   [ -n "${trusted_changed_paths[$path]+x}" ] || fail_gate "ECI required-critic review gate denied target not present in the trusted changed-path set: $path"
+  [ "$mixed_aggregate_snapshot" = false ] || [ -n "${staged_changed_paths[$path]+x}" ] ||
+    fail_gate "ECI aggregate review gate denied target not present in the staged changed-path set for mixed aggregate snapshot: $path"
   [ -z "${untracked_changed_paths[$path]+x}" ] || fail_gate "ECI required-critic review gate denied an untracked-only governed target; include its bytes in a canonical diff artifact before admission: $path"
   jq -e --arg path "$path" --arg version "$version" '.target_file_hashes[$path] == $version' "$manifest" >/dev/null 2>&1 ||
     fail_gate "ECI required-critic review gate denied missing target file binding: $path"
@@ -662,7 +1106,6 @@ fi
 manifest_sha256="$(sha256sum -- "$manifest" | awk '{print $1}')"
 target_set_sha256="$(jq -c '[.targets[] | {target_id,target_kind,target_path,target_version}] | sort_by([.target_id,.target_kind,.target_path,.target_version])' "$manifest" | sha256sum | awk '{print $1}')"
 row_identity_sha256="$(jq -c '[.rows[] | {target_id,target_kind,critic_role,gate_phase,child_identity,critic_provider,critic_semantic_role,critic_provenance,spawn_request_artifact,spawn_request_sha256,report_artifact,report_sha256,adjudication_artifact,adjudication_sha256,e2e_artifact,e2e_sha256}] | sort_by([.target_id,.target_kind,.critic_role,.gate_phase,.child_identity,.critic_provider,.critic_provenance])' "$manifest" | sha256sum | awk '{print $1}')"
-identity_ledger="$session_dir/eci-critic-identities.ledger"
 mapfile -t current_identity_hashes < <(
   jq -c '.rows[] | {target_id,target_kind,critic_role,gate_phase,child_identity,critic_provider,critic_semantic_role,critic_provenance,spawn_request_artifact,spawn_request_sha256,report_artifact,report_sha256,adjudication_artifact,adjudication_sha256,e2e_artifact,e2e_sha256}' "$manifest" |
     while IFS= read -r identity_row; do
@@ -768,14 +1211,16 @@ for ((identity_index=0; identity_index<row_count; identity_index++)); do
     done <"$identity_ledger"
   fi
 done
-anchor="$session_dir/eci-acceptance-anchor"
 anchor_append=false
 anchor_exists=false
 anchor_has_exact=false
-transaction="$session_dir/eci-acceptance-transaction"
 transaction_valid=false
 transaction_state=""
-transaction_tuple="$phase:$acceptance_version:$manifest_sha256:$trusted_diff_sha256:$target_set_sha256:$repo_binding_sha256:$row_identity_sha256"
+if [ "$aggregate_mode" = true ] && [ "$phase" = commit ]; then
+  transaction_tuple="$phase:$acceptance_version:$manifest_sha256:$trusted_diff_sha256:$target_set_sha256:$repo_binding_sha256:$row_identity_sha256:$accepted_tree_oid:$accepted_parent_oid"
+else
+  transaction_tuple="$phase:$acceptance_version:$manifest_sha256:$trusted_diff_sha256:$target_set_sha256:$repo_binding_sha256:$row_identity_sha256"
+fi
 
 transaction_file_sha256() {
   local path="$1"
@@ -890,16 +1335,23 @@ if [ -e "$anchor" ] || [ -L "$anchor" ]; then
   anchor_commit_max_version=0
   for ((anchor_index=6; anchor_index<${#anchor_lines[@]}; anchor_index++)); do
     anchor_line="${anchor_lines[$anchor_index]}"
-    IFS=: read -r anchor_prefix anchor_phase anchor_version anchor_manifest anchor_diff anchor_targets anchor_binding anchor_identity anchor_ledger anchor_identity_admission anchor_extra <<<"$anchor_line"
-    [ -z "${anchor_extra:-}" ] && [ "$anchor_prefix" = admission ] ||
+    IFS=: read -r anchor_prefix anchor_phase anchor_version anchor_manifest anchor_diff anchor_targets anchor_binding anchor_identity anchor_ledger anchor_identity_admission anchor_tree anchor_parent anchor_extra <<<"$anchor_line"
+    [ "$anchor_prefix" = admission ] ||
       fail_gate 'ECI required-critic review gate denied a malformed acceptance-anchor admission.'
     case "$anchor_phase" in commit|final|off|prewrite) ;; *) fail_gate 'ECI required-critic review gate denied an unknown acceptance-anchor phase.' ;; esac
+    if [ "$aggregate_mode" = true ] && [ "$anchor_phase" = commit ]; then
+      [[ "$anchor_tree" =~ ^[0-9a-f]{40,64}$ && "$anchor_parent" =~ ^[0-9a-f]{40,64}$ && -z "${anchor_extra:-}" ]] ||
+        fail_gate 'ECI aggregate review gate denied a commit anchor without its exact accepted tree and parent.'
+    else
+      [ -z "${anchor_tree:-}" ] && [ -z "${anchor_parent:-}" ] && [ -z "${anchor_extra:-}" ] ||
+        fail_gate 'ECI required-critic review gate denied a malformed acceptance-anchor admission.'
+    fi
     [[ "$anchor_version" =~ ^[1-9][0-9]*$ ]] || fail_gate 'ECI required-critic review gate denied a noncanonical acceptance-anchor version.'
     [[ "$anchor_manifest" =~ ^[0-9a-f]{64}$ && "$anchor_diff" =~ ^[0-9a-f]{64}$ && "$anchor_targets" =~ ^[0-9a-f]{64}$ && "$anchor_binding" =~ ^[0-9a-f]{64}$ ]] ||
       fail_gate 'ECI required-critic review gate denied malformed acceptance-anchor hashes.'
     [[ "$anchor_identity" =~ ^[0-9a-f]{64}$ && "$anchor_ledger" =~ ^[0-9a-f]{64}$ && "$anchor_identity_admission" =~ ^[0-9a-f]{64}$ ]] ||
       fail_gate 'ECI required-critic review gate denied an acceptance-anchor identity hash.'
-    admission_ledger="$session_dir/eci-required-critics.$anchor_phase.$anchor_version.ledger"
+    admission_ledger="$ledger_path_prefix.$anchor_phase.$anchor_version.ledger"
     [ -f "$admission_ledger" ] && [ ! -L "$admission_ledger" ] ||
       fail_gate "ECI required-critic review gate found a missing ledger for prior admission (shortened or deleted ledger): $admission_ledger"
     [ "${identity_bytes:-0}" -gt 0 ] ||
@@ -929,7 +1381,9 @@ if [ -e "$anchor" ] || [ -L "$anchor" ]; then
           [ "$anchor_binding" = "$repo_binding_sha256" ] &&
           [ "$anchor_identity" = "$row_identity_sha256" ] &&
           [ "$anchor_ledger" = "$current_ledger_sha256" ] &&
-          [ "$anchor_identity_admission" = "$current_identity_admission_sha256" ] ||
+          [ "$anchor_identity_admission" = "$current_identity_admission_sha256" ] &&
+          { [ "$aggregate_mode" != true ] || [ "$phase" != commit ] ||
+            { [ "$anchor_tree" = "$accepted_tree_oid" ] && [ "$anchor_parent" = "$accepted_parent_oid" ]; }; } ||
           fail_gate 'ECI required-critic review gate denied a changed manifest for an already-admitted phase/version (changed manifest after admission).'
         anchor_has_exact=true
       elif [ "$anchor_identity" = "$row_identity_sha256" ]; then
@@ -980,11 +1434,11 @@ fi
 # ledger beside an existing anchor must have an explicit anchor row.
 if [ "$anchor_exists" = true ]; then
   shopt -s nullglob
-  for admission_ledger in "$session_dir"/eci-required-critics.*.*.ledger; do
+  for admission_ledger in "$ledger_path_prefix".*.*.ledger; do
     [ -f "$admission_ledger" ] && [ ! -L "$admission_ledger" ] ||
       fail_gate "ECI required-critic review gate found an unsafe historical ledger: $admission_ledger"
     admission_name="${admission_ledger##*/}"
-    admission_key="${admission_name#eci-required-critics.}"
+    admission_key="${admission_name#${ledger_name_prefix}.}"
     admission_key="${admission_key%.ledger}"
     [[ "$admission_key" =~ ^(commit|final|off|prewrite)\.[1-9][0-9]*$ ]] ||
       fail_gate "ECI required-critic review gate found a malformed historical ledger name: $admission_name"
@@ -996,7 +1450,7 @@ if [ "$anchor_exists" = true ]; then
   shopt -u nullglob
 else
   shopt -s nullglob
-  orphan_ledgers=("$session_dir"/eci-required-critics.*.*.ledger)
+  orphan_ledgers=("$ledger_path_prefix".*.*.ledger)
   if [ "${#orphan_ledgers[@]}" -gt 0 ]; then
     [ "$transaction_valid" = true ] ||
       fail_gate 'ECI required-critic review gate found historical critic evidence without its acceptance anchor or recoverable transaction.'
@@ -1036,7 +1490,7 @@ if [ "$phase" = prewrite ]; then
   # Historical postwrite ledgers from an older acceptance version are evidence,
   # not a reason to reject a new snapshot.
   for post_phase in commit final off; do
-    prior_ledger="$session_dir/eci-required-critics.$post_phase.$acceptance_version.ledger"
+    prior_ledger="$ledger_path_prefix.$post_phase.$acceptance_version.ledger"
     if [ -L "$prior_ledger" ]; then
       fail_gate "ECI prewrite admission found an unsafe prior ledger: $prior_ledger"
     fi
@@ -1052,7 +1506,7 @@ if [ "$phase" = prewrite ]; then
   pre_target="${ECI_PREWRITE_TARGET:-}"
   [ -n "$pre_target" ] || fail_gate 'ECI prewrite admission denied: exact canonical target is required.'
   [ "$pre_target" = "$current_target_path" ] || fail_gate 'ECI prewrite admission denied: target binding does not match the current manifest.'
-  sentinel="$session_dir/eci-prewrite-admitted.$acceptance_version"
+  sentinel="$prewrite_sentinel_prefix.$acceptance_version"
   if [ -e "$sentinel" ] || [ -L "$sentinel" ]; then
     [ -f "$sentinel" ] && [ ! -L "$sentinel" ] || fail_gate 'ECI prewrite admission sentinel is unsafe.'
     [ "$(awk 'END { print NR + 0 }' "$sentinel")" -eq 7 ] || fail_gate 'ECI prewrite admission sentinel has an invalid schema.'
@@ -1232,7 +1686,11 @@ identity_admission_prefix="$phase:$acceptance_version:$manifest_sha256:"
 identity_admission_sha256="$(awk -F: -v prefix="$identity_admission_prefix" 'index($0,prefix)==1 {print}' "$identity_ledger" | sha256sum | awk '{print $1}')"
 [[ "$identity_admission_sha256" =~ ^[0-9a-f]{64}$ ]] ||
   fail_gate 'ECI required-critic review gate could not derive the published critic identity admission hash.'
-anchor_record="admission:$phase:$acceptance_version:$manifest_sha256:$trusted_diff_sha256:$target_set_sha256:$repo_binding_sha256:$row_identity_sha256:$current_ledger_sha256:$identity_admission_sha256"
+if [ "$aggregate_mode" = true ] && [ "$phase" = commit ]; then
+  anchor_record="admission:$phase:$acceptance_version:$manifest_sha256:$trusted_diff_sha256:$target_set_sha256:$repo_binding_sha256:$row_identity_sha256:$current_ledger_sha256:$identity_admission_sha256:$accepted_tree_oid:$accepted_parent_oid"
+else
+  anchor_record="admission:$phase:$acceptance_version:$manifest_sha256:$trusted_diff_sha256:$target_set_sha256:$repo_binding_sha256:$row_identity_sha256:$current_ledger_sha256:$identity_admission_sha256"
+fi
 if [ "$anchor_append" = true ]; then
   anchor_tmp="$anchor.tmp.$$"
   [ ! -e "$anchor_tmp" ] && [ ! -L "$anchor_tmp" ] ||
@@ -1275,7 +1733,7 @@ rm -f -- "$transaction"
 # gate has published its append-only evidence and acceptance anchor.  Publish
 # a tuple-bound receipt last, atomically, so validate-bash can consume it for
 # the one matching direct commit without relying on a hidden user approval.
-if [ "$phase" = commit ]; then
+if [ "$phase" = commit ] && [ "$aggregate_mode" != true ]; then
   commit_marker="$session_dir/eci_active"
   if [ -e "$commit_marker" ] || [ -L "$commit_marker" ]; then
     [ -f "$commit_marker" ] && [ ! -L "$commit_marker" ] ||

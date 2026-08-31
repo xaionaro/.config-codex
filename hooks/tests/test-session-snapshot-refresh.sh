@@ -129,7 +129,7 @@ test_baseline_uses_fixed_git_and_resolves_head() {
   printf '#!/usr/bin/env bash\nprintf poisoned-baseline\\n' >"$fakebin/git"
   chmod +x "$fakebin/git"
   out="$TMP_ROOT/poisoned-git.out"
-  jq -cn '{session_id:"t00-session",transcript_path:"/tmp/x",cwd:"/home/pheona/.codex"}' |
+  jq -cn --arg cwd "$ROOT" '{session_id:"t00-session",transcript_path:"/tmp/x",cwd:$cwd}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" GIT_DIR="$TMP_ROOT/poisoned-git-dir" PATH="$fakebin:$PATH" \
       bash "$ROOT/hooks/session-snapshot.sh" >"$out"
   baseline="$proof_root/t00-session/baseline_head"
@@ -149,7 +149,7 @@ test_baseline_pair_recovers_after_publication_boundary() {
   binding="$proof_root/t00-session/baseline_head.binding"
   out="$TMP_ROOT/baseline-recovery.out"
 
-  if jq -cn '{session_id:"t00-session",transcript_path:"/tmp/session.jsonl",cwd:"/home/pheona/.codex"}' |
+  if jq -cn --arg cwd "$ROOT" '{session_id:"t00-session",transcript_path:"/tmp/session.jsonl",cwd:$cwd}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_SNAPSHOT_FAIL_AFTER=baseline \
       bash "$ROOT/hooks/session-snapshot.sh" >"$out"; then
     return 1
@@ -167,7 +167,7 @@ test_baseline_pair_recovers_after_publication_boundary() {
   baseline="$proof_root/t00-session/baseline_head"
   binding="$proof_root/t00-session/baseline_head.binding"
   mkdir -p "$proof_root"
-  if jq -cn '{session_id:"t00-session",transcript_path:"/tmp/session.jsonl",cwd:"/home/pheona/.codex"}' |
+  if jq -cn --arg cwd "$ROOT" '{session_id:"t00-session",transcript_path:"/tmp/session.jsonl",cwd:$cwd}' |
     HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_SNAPSHOT_FAIL_AFTER=binding \
       bash "$ROOT/hooks/session-snapshot.sh" >"$out"; then
     return 1

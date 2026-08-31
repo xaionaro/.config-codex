@@ -389,7 +389,10 @@ codex_session_ledger_basename() {
 # both lexical and resolved paths when aliases are involved.
 codex_eci_control_basename() {
   case "${1:-}" in
-    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.md|project-understanding.md.*|high_level_log.md|high_level_log.md.*|latest-status-report.md|latest-status-report.md.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.md.tmp.*)
+    eci-wait-repair-authorize|eci-wait-repair-authorize.*)
+      return 0
+      ;;
+    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.md|project-understanding.md.*|high_level_log.md|high_level_log.md.*|latest-status-report.md|latest-status-report.md.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.md.tmp.*)
       return 0
       ;;
     *)
@@ -403,6 +406,10 @@ codex_eci_control_basename() {
 # the regular path/name checks above cannot see this attack.  This helper is
 # only used on edit/control paths (not the Stop hot path) and is bounded to
 # the proof tree plus a finite candidate count.
+# This resolves one concrete accidental-target confusion: a worker can name an
+# alias of a coordinator record without realizing it.  It is not a malicious-
+# actor/evasion control and does not make ordinary aliases suspicious; callers
+# act only when the resolved edit target is an actual control record.
 codex_path_is_eci_control_alias() {
   local path="${1:-}" root candidate target_stat candidate_stat count=0
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
@@ -433,7 +440,7 @@ codex_path_is_git_approval_file() {
 
 codex_path_is_eci_control_file() {
   local path="${1:-}"
-  local actual_root default_root root rest sid filename
+  local actual_root default_root root rest sid filename global_override
 
   [ -n "$path" ] || return 1
   filename="${path##*/}"
@@ -447,6 +454,16 @@ codex_path_is_eci_control_file() {
         rest="${path#"$root"/}"
         sid="${rest%%/*}"
         [ "$rest" != "$sid" ] || continue
+        case "$rest" in
+          */.eci-accidental-mistake-override.claim|*/.eci-accidental-mistake-override.claim/*)
+            codex_valid_session_id "$sid" && return 0
+            continue
+            ;;
+          */eci-wait-repair-authorize.claim|*/eci-wait-repair-authorize.claim/*)
+            codex_valid_session_id "$sid" && return 0
+            continue
+            ;;
+        esac
         # Legacy proof namespaces are coordinator-owned recursively.  Do
         # this before the one-level session-control check so a worker cannot
         # target a deeper descendant such as pre-reviewer/archive/state.
@@ -458,6 +475,16 @@ codex_path_is_eci_control_file() {
         ;;
     esac
   done
+  global_override="$(codex_eci_accidental_override_record_path global 2>/dev/null || true)"
+  if [ -n "$global_override" ] && [ "$path" = "$global_override" ]; then
+    return 0
+  fi
+  if [ -n "$global_override" ] && [ "$path" = "$global_override.claim" ]; then
+    return 0
+  fi
+  if [ -n "$global_override" ] && [[ "$path" == "$global_override.claim/"* ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -508,6 +535,452 @@ codex_hash_string() {
   fi
 }
 
+codex_eci_accidental_override_tool_is_valid() {
+  case "${1:-}" in
+    validate-bash|validate-apply-patch) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+codex_eci_accidental_override_scope_is_valid() {
+  case "${1:-}" in
+    session|global) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+codex_home_lexical_root() {
+  local home="${HOME:-}" root
+
+  [ -n "$home" ] || return 1
+  root="$home/.codex"
+  case "$root" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$root" in
+    *[![:print:]]*|*//*|*/./*|*/../*|*/..|*/.) return 1 ;;
+  esac
+  printf '%s\n' "$root"
+}
+
+codex_eci_accidental_override_global_root() {
+  local root canonical
+
+  root="$(codex_home_lexical_root)" || return 1
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  canonical="$(realpath -e -- "$root" 2>/dev/null || true)"
+  [ -n "$canonical" ] && [ "$canonical" = "$(realpath -m -- "$canonical" 2>/dev/null || true)" ] || return 1
+  printf '%s\n' "$canonical"
+}
+
+codex_eci_accidental_override_record_path() {
+  local scope="$1" session_id="${2:-}" root path
+
+  codex_eci_accidental_override_scope_is_valid "$scope" || return 1
+  case "$scope" in
+    session)
+      codex_valid_session_id "$session_id" || return 1
+      root="$(codex_proof_root)"
+      codex_session_dir_is_safe "$root" "$session_id" || return 1
+      path="$root/$session_id/.eci-accidental-mistake-override"
+      codex_state_path_is_safe "$path" "$root" || return 1
+      ;;
+    global)
+      root="$(codex_eci_accidental_override_global_root)" || return 1
+      path="$root/.eci-accidental-mistake-override"
+      [ "$(realpath -m -- "$path" 2>/dev/null || true)" = "$path" ] || return 1
+      [ ! -L "$path" ] || return 1
+      ;;
+  esac
+  printf '%s\n' "$path"
+}
+
+# Cleanup accepts only the canonical session-claim spelling below the active
+# proof root.  In particular, the global override record is intentionally not
+# a target for this narrow recovery route.
+codex_eci_accidental_override_claim_path_is_canonical() {
+  local claim="${1:-}" root rest session_id
+
+  root="$(codex_proof_root)" || return 1
+  codex_proof_root_is_safe || return 1
+  case "$claim" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$claim" in
+    *[![:print:]]*) return 1 ;;
+  esac
+  case "$claim" in
+    "$root"/*) rest="${claim#"$root"/}" ;;
+    *) return 1 ;;
+  esac
+  [ "$claim" = "$(realpath -m -- "$claim" 2>/dev/null || true)" ] || return 1
+  session_id="${rest%%/*}"
+  [ "$rest" = "$session_id/.eci-accidental-mistake-override.claim" ] || return 1
+  codex_valid_session_id "$session_id" || return 1
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  [ "$claim" = "$root/$session_id/.eci-accidental-mistake-override.claim" ] || return 1
+  [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
+  [ "$claim" = "$(realpath -e -- "$claim" 2>/dev/null || true)" ] || return 1
+}
+
+codex_eci_accidental_override_cleanup_command() {
+  local claim="${1:-}" source provider_root codex_root kimi_root
+
+  codex_eci_accidental_override_claim_path_is_canonical "$claim" || return 1
+  source="$(realpath -e -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+  case "$source" in
+    */hooks/lib/codex-proof-state.sh)
+      provider_root="${source%/hooks/lib/codex-proof-state.sh}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  codex_root="$(realpath -e -- "${HOME:-}/.codex" 2>/dev/null || true)"
+  kimi_root="$(realpath -e -- "${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}" 2>/dev/null || true)"
+
+  case "$provider_root" in
+    "$codex_root")
+      [ -n "$codex_root" ] || return 1
+      printf '"$HOME/.codex/bin/eci-active" accidental-override-cleanup --authorized-by-user %q\n' "$claim"
+      ;;
+    "$kimi_root")
+      [ -n "$kimi_root" ] || return 1
+      printf '"${KIMI_CODE_HOME:-$HOME/.kimi-code}/bin/eci-active" accidental-override-cleanup --authorized-by-user %q\n' "$claim"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+codex_eci_accidental_override_fingerprint() {
+  local scope="$1" tool="$2" session_id="${3:-}" cwd="${4:-}" payload="${5-}" canonical_cwd
+
+  codex_eci_accidental_override_scope_is_valid "$scope" || return 1
+  codex_eci_accidental_override_tool_is_valid "$tool" || return 1
+  codex_valid_session_id "$session_id" || return 1
+  [ -d "$cwd" ] && [ ! -L "$cwd" ] || return 1
+  canonical_cwd="$(codex_canonical_cwd "$cwd")"
+  case "$canonical_cwd" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$scope" in
+    session)
+      codex_hash_string "eci-accidental-mistake-override/v1
+session
+$session_id
+$canonical_cwd
+$tool
+$payload"
+      ;;
+    global)
+      codex_hash_string "eci-accidental-mistake-override/v1
+global
+$tool
+$payload"
+      ;;
+  esac
+}
+
+codex_eci_accidental_override_record_is_valid() {
+  local scope="$1" tool="$2" session_id="$3" cwd="$4" payload="${5-}" record expected_fingerprint canonical_cwd
+  local -a lines=()
+
+  # Legacy structured records are parsed only for status/cleanup compatibility.
+  # They never authorize an operation or affect ordinary command routing.
+
+  record="$(codex_eci_accidental_override_record_path "$scope" "$session_id")" || return 1
+  [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  codex_state_file_owner_is_valid "$record" || return 1
+  [ "$(realpath -m -- "$record" 2>/dev/null || true)" = "$record" ] || return 1
+  [ "$(wc -c <"$record" 2>/dev/null || printf 999999)" -le 4096 ] || return 1
+  [ "$(tail -c 1 -- "$record" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  LC_ALL=C grep -q $'\r' "$record" 2>/dev/null && return 1 || true
+  mapfile -t lines <"$record" || return 1
+  [ "${#lines[@]}" -eq 7 ] || return 1
+  for line in "${lines[@]}"; do
+    LC_ALL=C printf '%s' "$line" | LC_ALL=C grep -q '[[:cntrl:]]' && return 1
+  done
+  canonical_cwd="$(codex_canonical_cwd "$cwd")"
+  [ "${lines[0]}" = 'schema: eci-accidental-mistake-override/v1' ] || return 1
+  [ "${lines[1]}" = "scope: $scope" ] || return 1
+  case "$scope" in
+    session)
+      [ "${lines[2]}" = "session_id: $session_id" ] || return 1
+      [ "${lines[4]}" = "cwd: $canonical_cwd" ] || return 1
+      ;;
+    global)
+      [ "${lines[2]}" = 'session_id: *' ] || return 1
+      [ "${lines[4]}" = 'cwd: *' ] || return 1
+      ;;
+  esac
+  [ "${lines[3]}" = "tool: $tool" ] || return 1
+  expected_fingerprint="$(codex_eci_accidental_override_fingerprint "$scope" "$tool" "$session_id" "$cwd" "$payload")" || return 1
+  [ "${lines[5]}" = "fingerprint: $expected_fingerprint" ] || return 1
+  [ "${lines[6]}" = 'authorized_by: user' ] || return 1
+}
+
+# Legacy override records are retained only for status/cleanup compatibility.
+# Command admission never consumes them or treats their provenance as authority.
+codex_eci_accidental_override_matches() {
+  local scope="$1" tool="$2" session_id="$3" cwd="$4" payload="${5-}"
+  codex_eci_accidental_override_record_is_valid "$scope" "$tool" "$session_id" "$cwd" "$payload"
+}
+
+codex_eci_accidental_override_consume_reason=""
+codex_eci_accidental_override_consume() {
+  local scope="$1" tool="$2" session_id="$3" cwd="$4" payload="${5-}"
+  local record lock_path claim lock_fd recovery_command
+
+  record="$(codex_eci_accidental_override_record_path "$scope" "$session_id")" || return 1
+  claim="$record.claim"
+  if { [ ! -f "$record" ] || [ -L "$record" ]; } &&
+     [ ! -e "$claim" ] && [ ! -L "$claim" ]; then
+    return 1
+  fi
+  lock_path="$(codex_eci_lock_path 2>/dev/null || true)"
+  [ -n "$lock_path" ] || return 1
+  [ ! -L "$lock_path" ] && { [ ! -e "$lock_path" ] || [ -f "$lock_path" ]; } || return 1
+  if ! exec {lock_fd}>>"$lock_path" 2>/dev/null; then
+    return 1
+  fi
+  if ! flock -n "$lock_fd" 2>/dev/null; then
+    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+
+  claim="$record.claim"
+  if [ -e "$claim" ] || [ -L "$claim" ]; then
+    if ! { [ -d "$claim" ] && [ ! -L "$claim" ] &&
+           [ -f "$record" ] && [ ! -L "$record" ] &&
+           rmdir -- "$claim" 2>/dev/null; }; then
+      recovery_command="$(codex_eci_accidental_override_cleanup_command "$claim" 2>/dev/null || true)"
+      if [ -n "$recovery_command" ]; then
+        codex_eci_accidental_override_consume_reason="authorization state is already consumed or interrupted (state=$claim); publish a new explicitly authorized record and use the coordinator recovery route: run from the main coordinator: $recovery_command; do not restore the old record"
+      else
+        codex_eci_accidental_override_consume_reason="authorization state is already consumed or interrupted (state=$claim); publish a new explicitly authorized record and use the coordinator recovery route before retrying; do not restore the old record"
+      fi
+      flock -u "$lock_fd" 2>/dev/null || true
+      eval "exec $lock_fd>&-" 2>/dev/null || true
+      return 1
+    fi
+  fi
+  if [ -e "$claim" ] || [ -L "$claim" ] || ! mkdir -- "$claim" 2>/dev/null; then
+    flock -u "$lock_fd" 2>/dev/null || true
+    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+  if ! codex_eci_accidental_override_record_is_valid "$scope" "$tool" "$session_id" "$cwd" "$payload"; then
+    rmdir -- "$claim" 2>/dev/null || true
+    flock -u "$lock_fd" 2>/dev/null || true
+    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv -- "$record" "$claim/record" 2>/dev/null; then
+    rmdir -- "$claim" 2>/dev/null || true
+    flock -u "$lock_fd" 2>/dev/null || true
+    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+  if ! rm -f -- "$claim/record" 2>/dev/null || ! rmdir -- "$claim" 2>/dev/null; then
+    flock -u "$lock_fd" 2>/dev/null || true
+    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+  flock -u "$lock_fd" 2>/dev/null || true
+  eval "exec ${lock_fd}>&-" 2>/dev/null || true
+  return 0
+}
+
+codex_eci_session_permissive_scope_is_valid() {
+  case "${1:-}" in session|global) return 0 ;; *) return 1 ;; esac
+}
+
+codex_eci_session_permissive_selector_is_valid() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+}
+
+codex_eci_session_permissive_request_is_valid() {
+  local request="${1-}"
+  # The direct lifecycle request describes the user-selected mode. It is not
+  # turned into a hash/authorization artifact before ordinary recovery work.
+  [ -n "$request" ] && [ "${#request}" -le 1048576 ]
+}
+
+codex_eci_session_permissive_record_path() {
+  local scope="$1" session_id="${2:-}" root path
+  codex_eci_session_permissive_scope_is_valid "$scope" || return 1
+  if [ "$scope" = session ]; then
+    codex_valid_session_id "$session_id" || return 1
+    root="$(codex_proof_root)"
+    codex_session_dir_is_safe "$root" "$session_id" || return 1
+    path="$root/$session_id/eci-permissive-mode"
+    codex_state_path_is_safe "$path" "$root" || return 1
+  else
+    root="$(codex_eci_accidental_override_global_root)" || return 1
+    path="$root/.eci-permissive-mode"
+    [ "$(realpath -m -- "$path" 2>/dev/null || true)" = "$path" ] && [ ! -L "$path" ] || return 1
+  fi
+  printf '%s\n' "$path"
+}
+
+codex_eci_session_permissive_record_is_valid() {
+  local scope="$1" session_id="$2" cwd="$3" gate="$4" operation="$5" request="${6-}" reference_epoch="${7-}"
+  local record canonical_cwd='*' session_value='*' now issued expires marker marker_cwd
+  local -a lines=()
+  codex_eci_session_permissive_scope_is_valid "$scope" &&
+    codex_eci_session_permissive_selector_is_valid "$gate" &&
+    codex_eci_session_permissive_selector_is_valid "$operation" &&
+    codex_eci_session_permissive_request_is_valid "$request" || return 1
+  record="$(codex_eci_session_permissive_record_path "$scope" "$session_id")" || return 1
+  [ -f "$record" ] && [ ! -L "$record" ] && codex_state_file_owner_is_valid "$record" || return 1
+  [ "$(stat -Lc '%a' -- "$record" 2>/dev/null || true)" = 600 ] || return 1
+  [ "$(wc -c <"$record" 2>/dev/null || printf 999999)" -le 4096 ] || return 1
+  [ "$(tail -c 1 -- "$record" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  LC_ALL=C grep -q $'\r' "$record" 2>/dev/null && return 1 || true
+  mapfile -t lines <"$record" || return 1
+  [ "${#lines[@]}" -eq 9 ] || return 1
+  if [ "$scope" = session ]; then
+    canonical_cwd="$(codex_canonical_cwd "$cwd")"; session_value="$session_id"
+    marker="$(codex_proof_root)/$session_id/eci_active"
+    marker_cwd="$(codex_eci_direct_marker_cwd "$marker" "$session_id")" || return 1
+    [ "$marker_cwd" = "$canonical_cwd" ] || return 1
+  fi
+  issued="${lines[6]#issued_at_epoch: }"; expires="${lines[7]#expires_at_epoch: }"
+  [[ "$issued" =~ ^[0-9]{1,12}$ && "$expires" =~ ^[0-9]{1,12}$ ]] && [ "$expires" -gt "$issued" ] || return 1
+  [ "${lines[0]}" = 'schema: eci-permissive-mode/v2' ] && [ "${lines[1]}" = "scope: $scope" ] &&
+    [ "${lines[2]}" = "session_id: $session_value" ] && [ "${lines[3]}" = "cwd: $canonical_cwd" ] &&
+    [ "${lines[4]}" = "gate: $gate" ] && [ "${lines[5]}" = "operation: $operation" ] &&
+    [ "${lines[6]}" = "issued_at_epoch: $issued" ] && [ "${lines[7]}" = "expires_at_epoch: $expires" ] &&
+    [ "${lines[8]}" = 'state: active' ] || return 1
+  if [ -n "$reference_epoch" ]; then
+    now="$reference_epoch"
+  else
+    now="$(date -u '+%s')"
+  fi
+  [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+  [ "$now" -lt "$expires" ] || return 2
+}
+
+codex_eci_session_permissive_active() {
+  local scope="$1" session_id="$2" cwd="$3" gate="$4" operation="$5" request="${6-}" record status=0
+  codex_eci_session_permissive_record_is_valid "$scope" "$session_id" "$cwd" "$gate" "$operation" "$request" || status=$?
+  [ "$status" -eq 0 ] && return 0
+  if [ "$status" -eq 2 ]; then
+    record="$(codex_eci_session_permissive_record_path "$scope" "$session_id")" || return 1
+    codex_state_file_owner_is_valid "$record" && rm -f -- "$record" 2>/dev/null || true
+  fi
+  return 1
+}
+
+# Coordinator self-edit state is a short-lived routing preference.  It is not
+# a command permission, authorization record, or receipt.
+codex_eci_coordinator_edit_record_path() {
+  local session_id="$1" root path
+
+  codex_valid_session_id "$session_id" || return 1
+  root="$(codex_proof_root)"
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  path="$root/$session_id/eci-coordinator-edit"
+  codex_state_path_is_safe "$path" "$root" || return 1
+  printf '%s\n' "$path"
+}
+
+# Print `active` or `inactive` for an ordinary record. An accidentally wrong
+# target is surfaced rather than overwritten through a symlink or non-regular
+# object.
+codex_eci_coordinator_edit_record_state() {
+  local session_id="$1" cwd="$2" record canonical_cwd marker marker_cwd bytes issued expires now
+  local -a lines=()
+
+  codex_valid_session_id "$session_id" || return 1
+  [ -d "$cwd" ] && [ ! -L "$cwd" ] || {
+    printf '%s\n' inactive
+    return 0
+  }
+  canonical_cwd="$(codex_canonical_cwd "$cwd")"
+  record="$(codex_eci_coordinator_edit_record_path "$session_id")" || return 1
+  if [ ! -e "$record" ] && [ ! -L "$record" ]; then
+    printf '%s\n' inactive
+    return 0
+  fi
+  [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  bytes="$(wc -c <"$record" 2>/dev/null || true)"
+  case "$bytes" in
+    ''|*[!0-9]*)
+      printf '%s\n' inactive
+      return 0
+      ;;
+  esac
+  [ "$bytes" -le 4096 ] || {
+    printf '%s\n' inactive
+    return 0
+  }
+  [ "$(tail -c 1 -- "$record" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || {
+    printf '%s\n' inactive
+    return 0
+  }
+  LC_ALL=C grep -q $'\r' "$record" 2>/dev/null && {
+    printf '%s\n' inactive
+    return 0
+  }
+  mapfile -t lines <"$record" || return 1
+  [ "${#lines[@]}" -eq 6 ] || {
+    printf '%s\n' inactive
+    return 0
+  }
+  issued="${lines[3]#issued_at_epoch: }"
+  expires="${lines[4]#expires_at_epoch: }"
+  [[ "$issued" =~ ^[0-9]{1,12}$ && "$expires" =~ ^[0-9]{1,12}$ ]] || {
+    printf '%s\n' inactive
+    return 0
+  }
+  [ "${lines[0]}" = 'schema: eci-coordinator-edit/v1' ] &&
+    [ "${lines[1]}" = "session_id: $session_id" ] &&
+    [ "${lines[2]}" = "cwd: $canonical_cwd" ] &&
+    [ "${lines[3]}" = "issued_at_epoch: $issued" ] &&
+    [ "${lines[4]}" = "expires_at_epoch: $expires" ] &&
+    [ "${lines[5]}" = 'state: active' ] || {
+      printf '%s\n' inactive
+      return 0
+    }
+  ((10#$expires == 10#$issued + 600)) || {
+    printf '%s\n' inactive
+    return 0
+  }
+  marker="$(codex_proof_root)/$session_id/eci_active"
+  marker_cwd="$(codex_eci_aggregate_marker_cwd "$marker" "$session_id")" || {
+    printf '%s\n' inactive
+    return 0
+  }
+  [ "$marker_cwd" = "$canonical_cwd" ] || {
+    printf '%s\n' inactive
+    return 0
+  }
+  now="$(date -u '+%s')"
+  [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+  if ((10#$now >= 10#$issued && 10#$now < 10#$expires)); then
+    printf '%s\n' active
+  else
+    printf '%s\n' inactive
+  fi
+}
+
+codex_eci_coordinator_edit_is_active() {
+  local state
+
+  state="$(codex_eci_coordinator_edit_record_state "$1" "$2")" || return 1
+  [ "$state" = active ]
+}
+
+# Permissive state is a short-lived UI/status compatibility record.  It is
+# never consulted by the command gate: ordinary work proceeds without it, and
+# concrete harmful effects are evaluated from their resolved targets instead.
+
 # Repository inspection is acceptance-sensitive.  Resolve Git from fixed
 # system locations once; never let a caller-controlled PATH select the
 # executable.  The active Stop path never calls this helper.
@@ -545,6 +1018,55 @@ codex_git_safe() {
     GIT_ASKPASS=: \
     GIT_TERMINAL_PROMPT=0 \
     "$codex_git_executable" -c core.fsmonitor=false "${safe_args[@]}"
+}
+
+# Create and publish one aggregate commit from the tree admitted by the review
+# anchor. The ref CAS prevents a concurrent head move, while checks on both
+# sides of commit-tree prevent unreviewed index bytes from entering the ref.
+aggregate_commit_accepted_tree_cas() {
+  local repo_root="$1" tree_oid="$2" parent_oid="$3" ref_name="$4" message="$5"
+  local current_tree current_parent current_ref current_ref_oid new_commit post_tree
+
+  aggregate_commit_tree_cas_failure=""
+  [[ "$tree_oid" =~ ^[0-9a-f]{40,64}$ && "$parent_oid" =~ ^[0-9a-f]{40,64}$ ]] || {
+    aggregate_commit_tree_cas_failure='accepted tree or parent is malformed'
+    return 1
+  }
+  case "$ref_name" in refs/heads/*) ;; *)
+    aggregate_commit_tree_cas_failure='accepted branch reference is malformed'
+    return 1
+    ;;
+  esac
+  codex_git_safe -C "$repo_root" check-ref-format "$ref_name" >/dev/null 2>&1 || {
+    aggregate_commit_tree_cas_failure='accepted branch reference is invalid'
+    return 1
+  }
+  current_tree="$(codex_git_safe -C "$repo_root" write-tree 2>/dev/null || true)"
+  [ "$current_tree" = "$tree_oid" ] || {
+    aggregate_commit_tree_cas_failure='index tree changed after acceptance'
+    return 1
+  }
+  current_parent="$(codex_git_safe -C "$repo_root" rev-parse HEAD 2>/dev/null || true)"
+  current_ref="$(codex_git_safe -C "$repo_root" symbolic-ref -q HEAD 2>/dev/null || true)"
+  current_ref_oid="$(codex_git_safe -C "$repo_root" rev-parse --verify "$ref_name^{commit}" 2>/dev/null || true)"
+  [ "$current_parent" = "$parent_oid" ] && [ "$current_ref" = "$ref_name" ] && [ "$current_ref_oid" = "$parent_oid" ] || {
+    aggregate_commit_tree_cas_failure='accepted parent or branch changed before commit publication'
+    return 1
+  }
+  new_commit="$(codex_git_safe -C "$repo_root" commit-tree "$tree_oid" -p "$parent_oid" -F "$message" 2>/dev/null || true)"
+  [[ "$new_commit" =~ ^[0-9a-f]{40,64}$ ]] || {
+    aggregate_commit_tree_cas_failure='could not create an explicit-tree commit object'
+    return 1
+  }
+  post_tree="$(codex_git_safe -C "$repo_root" write-tree 2>/dev/null || true)"
+  [ "$post_tree" = "$tree_oid" ] || {
+    aggregate_commit_tree_cas_failure='index tree changed after acceptance'
+    return 1
+  }
+  codex_git_safe -C "$repo_root" update-ref -m 'ECI aggregate commit' "$ref_name" "$new_commit" "$parent_oid" || {
+    aggregate_commit_tree_cas_failure='accepted parent changed before CAS ref publication'
+    return 1
+  }
 }
 
 # Recompute the bounded repository tuple used by eci-review-gate.  Terminal
@@ -836,14 +1358,463 @@ codex_state_file_owner_is_valid() {
   [ "$owner" = "$expected" ] && [ "$links" = 1 ]
 }
 
+# Aggregate repository IDs are path-component-safe selectors.  The plan, not
+# a command-line path, maps one such ID to its canonical Git worktree.
+codex_eci_aggregate_repo_id_is_valid() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
+}
+
+# Aggregate members are explicit children of the marker-bound non-Git parent.
+# A canonical sibling, ancestor, or external Git root must not become a plan
+# member merely because it is otherwise a valid worktree.
+codex_eci_aggregate_repo_is_strict_descendant() {
+  local outer_cwd="$1" repo_root="$2"
+
+  [ -n "$outer_cwd" ] && [ -n "$repo_root" ] || return 1
+  case "$repo_root" in
+  "$outer_cwd"/*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+# Aggregate staging receives a repository-selected, root-relative literal
+# path. Keep the lexical and filesystem checks here so the lifecycle CLI can
+# validate every item before it makes its one Git index mutation.
+codex_eci_aggregate_stage_path_is_safe() {
+  local repo_root="$1" relative_path="$2"
+  local candidate probe parent resolved list_status ignore_status component tracked relative_bytes
+  local -a components tracked_paths
+
+  [ -n "$repo_root" ] && [ -n "$relative_path" ] || return 1
+  [ "$repo_root" = "$(realpath -e -- "$repo_root" 2>/dev/null || true)" ] || return 1
+  [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
+  case "$relative_path" in
+  /*|.|..|./*|../*|*/|*//*|*/./*|*/../*) return 1 ;;
+  esac
+  [[ "$relative_path" == *'*'* || "$relative_path" == *'?'* ||
+    "$relative_path" == *'['* || "$relative_path" == *']'* ||
+    "$relative_path" == *':('* ]] && return 1
+  case "$relative_path" in *[![:print:]]*) return 1 ;; esac
+  relative_bytes="$(LC_ALL=C printf '%s' "$relative_path" | wc -c)"
+  case "$relative_bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$relative_bytes" -le 4096 ] || return 1
+
+  local IFS=/
+  read -r -a components <<<"$relative_path"
+  [ "${#components[@]}" -gt 0 ] || return 1
+  probe="$repo_root"
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || return 1
+    [ "$component" != . ] && [ "$component" != .. ] || return 1
+    [ "$component" != .git ] || return 1
+    case "$component" in .git-*-approved-once) return 1 ;; esac
+    codex_eci_control_basename "$component" && return 1
+    codex_path_is_git_approval_file "$component" && return 1
+    probe="$probe/$component"
+    [ ! -L "$probe" ] || return 1
+  done
+
+  candidate="$repo_root/$relative_path"
+  [ "$candidate" = "$(realpath -m -- "$candidate" 2>/dev/null || true)" ] || return 1
+
+  if codex_git_safe -C "$repo_root" --literal-pathspecs ls-files --error-unmatch -- "$relative_path" >/dev/null 2>&1; then
+    mapfile -d '' -t tracked_paths < <(
+      codex_git_safe -C "$repo_root" --literal-pathspecs ls-files -z --error-unmatch -- "$relative_path" 2>/dev/null
+    )
+    [ "${#tracked_paths[@]}" -eq 1 ] && [ "${tracked_paths[0]}" = "$relative_path" ] || return 1
+    tracked=true
+  else
+    list_status=$?
+    [ "$list_status" -eq 1 ] || return 1
+    tracked=false
+  fi
+
+  if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || return 1
+    resolved="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+    case "$resolved" in
+    "$repo_root"/*) ;;
+    *) return 1 ;;
+    esac
+    if [ "$tracked" = false ]; then
+      if codex_git_safe -C "$repo_root" check-ignore -q -- "./$relative_path"; then
+        return 1
+      else
+        ignore_status=$?
+        [ "$ignore_status" -eq 1 ] || return 1
+      fi
+    fi
+    return 0
+  fi
+
+  [ "$tracked" = true ] || return 1
+  probe="$candidate"
+  while [ ! -e "$probe" ] && [ ! -L "$probe" ]; do
+    parent="${probe%/*}"
+    [ "$parent" != "$probe" ] || return 1
+    probe="$parent"
+  done
+  [ -d "$probe" ] && [ ! -L "$probe" ] || return 1
+  resolved="$(realpath -e -- "$probe" 2>/dev/null || true)"
+  case "$resolved" in
+  "$repo_root"|"$repo_root"/*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+# Return the one evidence directory that a declared aggregate member may use.
+# The directory is deliberately separate from control records so a member's
+# proof cannot be substituted from the parent session or another member.
+codex_eci_aggregate_evidence_root() {
+  local session_dir="$1" repo_id="$2" root session_id evidence_root
+
+  codex_eci_aggregate_repo_id_is_valid "$repo_id" || return 1
+  root="$(codex_proof_root)"
+  codex_proof_root_is_safe || return 1
+  session_id="${session_dir##*/}"
+  codex_valid_session_id "$session_id" || return 1
+  [ "$session_dir" = "$root/$session_id" ] || return 1
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  evidence_root="$session_dir/eci-aggregate.$repo_id.evidence"
+  codex_state_path_is_safe "$evidence_root" "$root" || return 1
+  [ -d "$evidence_root" ] && [ ! -L "$evidence_root" ] || return 1
+  [ "$(realpath -m -- "$evidence_root" 2>/dev/null || true)" = "$evidence_root" ] || return 1
+  [ "$(realpath -e -- "$evidence_root" 2>/dev/null || true)" = "$evidence_root" ] || return 1
+  printf '%s\n' "$evidence_root"
+}
+
+# Return success only for one regular, canonical evidence artifact below the
+# exact namespaced root selected by an immutable aggregate plan member.
+codex_eci_aggregate_evidence_artifact_is_scoped() {
+  local artifact="$1" evidence_root="$2" root canonical
+
+  root="$(codex_proof_root)"
+  case "$artifact" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$artifact" in
+    *[![:print:]]*|*//*|*/./*|*/../*|*/..|*/.) return 1 ;;
+  esac
+  canonical="$(realpath -m -- "$artifact" 2>/dev/null || true)"
+  [ "$canonical" = "$artifact" ] || return 1
+  case "$artifact" in
+    "$evidence_root"/*) ;;
+    *) return 1 ;;
+  esac
+  codex_state_path_is_safe "$artifact" "$root" || return 1
+  [ -f "$artifact" ] && [ ! -L "$artifact" ] || return 1
+  [ "$(realpath -e -- "$artifact" 2>/dev/null || true)" = "$artifact" ]
+}
+
+# Validate that every evidence-bearing member of an aggregate v2 manifest is
+# owned by the selected member's exact namespaced evidence directory. The
+# caller performs schema validation; this helper enforces path ownership even
+# when copied bytes and hashes are otherwise valid.
+codex_eci_aggregate_manifest_evidence_is_scoped() {
+  local manifest="$1" session_dir="$2" repo_id="$3" evidence_root artifact
+
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+  evidence_root="$(codex_eci_aggregate_evidence_root "$session_dir" "$repo_id")" || return 1
+  jq -e '
+    [
+      .current_diff_artifact,
+      (.targets[] | .diff_artifact),
+      (.rows[] | .diff_artifact),
+      (.rows[] | .spawn_request_artifact),
+      (.rows[] | .report_artifact),
+      (.rows[] | .adjudication_artifact),
+      (.rows[] | .intention_artifact),
+      (.rows[] | .e2e_artifact)
+    ] | length > 0 and all(.[]; . == null or type == "string")
+  ' "$manifest" >/dev/null 2>&1 || return 1
+  while IFS= read -r artifact; do
+    codex_eci_aggregate_evidence_artifact_is_scoped "$artifact" "$evidence_root" || return 1
+  done < <(jq -r '
+    [
+      .current_diff_artifact,
+      (.targets[] | .diff_artifact),
+      (.rows[] | .diff_artifact),
+      (.rows[] | .spawn_request_artifact),
+      (.rows[] | .report_artifact),
+      (.rows[] | .adjudication_artifact),
+      (.rows[] | .intention_artifact),
+      (.rows[] | .e2e_artifact)
+    ] | .[] | select(. != null)
+  ' "$manifest")
+}
+
+# Aggregate recovery has its own namespaced proof records. Singleton lifecycle
+# artifacts are local coordination residue, not competing authority: bots here
+# are non-malicious and this support layer catches accidental deviation rather
+# than enforcing an adversarial security boundary. Keep observing residue for
+# diagnostics, but do not follow, rewrite, or block selected safe aggregate
+# work because of it. The historical predicate name remains for callers.
+codex_eci_aggregate_coordination_residue_seen=false
+codex_eci_aggregate_normal_evidence_is_absent() {
+  local session_dir="$1" path
+  local nullglob_was_set=false
+
+  codex_eci_aggregate_coordination_residue_seen=false
+  shopt -q nullglob && nullglob_was_set=true
+  shopt -s nullglob
+  for path in \
+    "$session_dir"/eci-required-critics.json* \
+    "$session_dir"/eci-required-critics.* \
+    "$session_dir"/eci-critic-identities.ledger* \
+    "$session_dir"/eci-acceptance-anchor* \
+    "$session_dir"/eci-acceptance-transaction* \
+    "$session_dir"/eci-teardown-complete* \
+    "$session_dir"/eci-prewrite-admitted.* \
+    "$session_dir"/eci-baseline-binding* \
+    "$session_dir"/baseline_head* \
+    "$session_dir"/eci-commit-admitted* \
+    "$session_dir"/eci-user-closed.ledger* \
+    "$session_dir"/ate_nested_eci_active* \
+    "$session_dir"/ate_nested_eci_completion* \
+    "$session_dir"/eci_wait*; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    codex_eci_aggregate_coordination_residue_seen=true
+  done
+  [ "$nullglob_was_set" = true ] || shopt -u nullglob
+  return 0
+}
+
+# Read only the direct marker fields that establish the live current-session
+# mapping. Other bytes are historical/advisory metadata: ordinary lifecycle
+# work must not depend on record size, order, schema, receipt, or ownership
+# ceremony. The direct final path and semantic session/CWD mapping remain the
+# concrete accidental-wrong-target boundary.
+codex_eci_direct_marker_cwd() {
+  local marker="$1" session_id="$2" root line value marker_session='' marker_cwd=''
+  local session_count=0 cwd_count=0 canonical
+
+  codex_valid_session_id "$session_id" || return 1
+  root="$(codex_proof_root)"
+  codex_proof_root_is_safe || return 1
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  [ "$marker" = "$root/$session_id/eci_active" ] || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(realpath -e -- "$marker" 2>/dev/null || true)" = "$marker" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      'session_id: '*)
+        value="${line#session_id: }"
+        if [ "$session_count" -gt 0 ] && [ "$value" != "$marker_session" ]; then
+          return 1
+        fi
+        session_count=$((session_count + 1))
+        marker_session="$value"
+        ;;
+      'cwd: '*)
+        value="${line#cwd: }"
+        canonical="$(codex_canonical_cwd "$value")"
+        [ -n "$canonical" ] && [ -d "$canonical" ] && [ ! -L "$canonical" ] || return 1
+        if [ "$cwd_count" -gt 0 ] && [ "$canonical" != "$marker_cwd" ]; then
+          return 1
+        fi
+        cwd_count=$((cwd_count + 1))
+        marker_cwd="$canonical"
+        ;;
+    esac
+  done <"$marker"
+  [ "$session_count" -ge 1 ] && [ "$marker_session" = "$session_id" ] || return 1
+  [ "$cwd_count" -ge 1 ] && [ -n "$marker_cwd" ] || return 1
+  printf '%s\n' "$marker_cwd"
+}
+
+# Aggregate lifecycle uses the same direct current-session marker mapping as
+# singleton lifecycle. Keep the historical public helper name for callers.
+codex_eci_aggregate_marker_cwd() {
+  codex_eci_direct_marker_cwd "$@"
+}
+
+codex_eci_aggregate_marker_matches_cwd() {
+  local marker="$1" session_id="$2" expected_cwd="$3" marker_cwd
+
+  marker_cwd="$(codex_eci_aggregate_marker_cwd "$marker" "$session_id")" || return 1
+  [ "$marker_cwd" = "$expected_cwd" ]
+}
+
+# Re-derive Git metadata from the selected live worktree. Stored plan copies
+# are coordination residue, so only the resolved repository root and its
+# actual Git topology control a mutation target.
+codex_eci_aggregate_live_repo_git_dir=''
+codex_eci_aggregate_live_repo_git_common_dir=''
+codex_eci_aggregate_live_repo_metadata() {
+  local outer_cwd="$1" repo_root="$2" actual_root git_dir_raw git_common_raw
+  local actual_git_dir actual_git_common
+
+  case "$repo_root" in /*) ;; *) return 1 ;; esac
+  case "$repo_root" in *[![:print:]]*|*//*|*/./*|*/../*|*/..|*/.) return 1 ;; esac
+  [ "$repo_root" = "$(realpath -m -- "$repo_root" 2>/dev/null || true)" ] || return 1
+  [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
+  [ "$(realpath -e -- "$repo_root" 2>/dev/null || true)" = "$repo_root" ] || return 1
+  codex_eci_aggregate_repo_is_strict_descendant "$outer_cwd" "$repo_root" || return 1
+  actual_root="$(codex_git_safe -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+  actual_root="$(realpath -e -- "$actual_root" 2>/dev/null || true)"
+  [ "$actual_root" = "$repo_root" ] || return 1
+  git_dir_raw="$(codex_git_safe -C "$repo_root" rev-parse --git-dir 2>/dev/null || true)"
+  git_common_raw="$(codex_git_safe -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || true)"
+  case "$git_dir_raw" in /*) actual_git_dir="$git_dir_raw" ;; *) actual_git_dir="$repo_root/$git_dir_raw" ;; esac
+  case "$git_common_raw" in /*) actual_git_common="$git_common_raw" ;; *) actual_git_common="$repo_root/$git_common_raw" ;; esac
+  actual_git_dir="$(realpath -e -- "$actual_git_dir" 2>/dev/null || true)"
+  actual_git_common="$(realpath -e -- "$actual_git_common" 2>/dev/null || true)"
+  [ -d "$actual_git_dir" ] && [ ! -L "$actual_git_dir" ] || return 1
+  [ -d "$actual_git_common" ] && [ ! -L "$actual_git_common" ] || return 1
+  codex_eci_aggregate_live_repo_git_dir="$actual_git_dir"
+  codex_eci_aggregate_live_repo_git_common_dir="$actual_git_common"
+}
+
+# A selected aggregate child remains a real, top-level Git worktree directly
+# below the marker-bound parent. When that parent is itself Git-controlled,
+# its child is eligible only if the two worktrees have distinct actual common
+# directories; an independently initialized nested repository is ordinary
+# work, while an outer worktree or linked worktree is still the same target.
+codex_eci_aggregate_selected_child_is_genuinely_independent() {
+  local outer_cwd="$1" repo_root="$2" outer_inside outer_common_raw outer_common
+
+  codex_eci_aggregate_live_repo_metadata "$outer_cwd" "$repo_root" || return 1
+  outer_inside="$(codex_git_safe -C "$outer_cwd" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+  [ "$outer_inside" = true ] || return 0
+  outer_common_raw="$(codex_git_safe -C "$outer_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
+  [ -n "$outer_common_raw" ] || return 1
+  case "$outer_common_raw" in
+  /*) outer_common="$outer_common_raw" ;;
+  *) outer_common="$outer_cwd/$outer_common_raw" ;;
+  esac
+  outer_common="$(realpath -e -- "$outer_common" 2>/dev/null || true)"
+  [ -d "$outer_common" ] && [ ! -L "$outer_common" ] || return 1
+  [ "$codex_eci_aggregate_live_repo_git_common_dir" != "$outer_common" ]
+}
+
+# The plan is local routing residue, not an immutable authorization receipt.
+# Validate only the semantic mapping needed to resolve a real, contained Git
+# target; schema/order/session/hash/record-owner and copied Git fields are
+# advisory and are re-derived from the current filesystem.
+codex_eci_aggregate_validated_outer_cwd=''
+codex_eci_aggregate_plan_is_valid() {
+  local plan="$1" session_id="$2" expected_outer_cwd="${3:-}" marker="${4:-}"
+  local root session_dir expected_plan plan_outer_cwd repo_count index repo_id repo_root prior
+  local -a prior_roots=()
+
+  codex_eci_aggregate_validated_outer_cwd=''
+  codex_valid_session_id "$session_id" || return 1
+  root="$(codex_proof_root)"
+  codex_proof_root_is_safe || return 1
+  session_dir="$root/$session_id"
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  expected_plan="$session_dir/eci-aggregate-plan.json"
+  [ "$plan" = "$expected_plan" ] || return 1
+  [ -f "$plan" ] && [ ! -L "$plan" ] || return 1
+  [ "$(realpath -e -- "$plan" 2>/dev/null || true)" = "$plan" ] || return 1
+  jq -e '
+    type == "object" and
+    (.repositories | type == "array" and length > 0) and
+    all(.repositories[];
+      type == "object" and
+      (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")) and
+      (.repo_root | type == "string" and length > 0)) and
+    (([.repositories[].id] | unique | length) == (.repositories | length))
+  ' "$plan" >/dev/null 2>&1 || return 1
+
+  if [ -n "$expected_outer_cwd" ]; then
+    [ "$expected_outer_cwd" = "$(codex_canonical_cwd "$expected_outer_cwd")" ] || return 1
+    plan_outer_cwd="$expected_outer_cwd"
+  else
+    plan_outer_cwd="$(jq -r '.outer_cwd // empty' "$plan" 2>/dev/null || true)"
+    case "$plan_outer_cwd" in /*) ;; *) return 1 ;; esac
+    [ "$plan_outer_cwd" = "$(codex_canonical_cwd "$plan_outer_cwd")" ] || return 1
+  fi
+  [ -d "$plan_outer_cwd" ] && [ ! -L "$plan_outer_cwd" ] || return 1
+  if [ -n "$marker" ]; then
+    [ "$marker" = "$session_dir/eci_active" ] || return 1
+    codex_eci_aggregate_marker_matches_cwd "$marker" "$session_id" "$plan_outer_cwd" || return 1
+  fi
+
+  repo_count="$(jq -r '.repositories | length' "$plan" 2>/dev/null || true)"
+  [[ "$repo_count" =~ ^[1-9][0-9]*$ ]] || return 1
+  for ((index = 0; index < repo_count; index++)); do
+    repo_id="$(jq -r ".repositories[$index].id" "$plan" 2>/dev/null || true)"
+    repo_root="$(jq -r ".repositories[$index].repo_root" "$plan" 2>/dev/null || true)"
+    codex_eci_aggregate_repo_id_is_valid "$repo_id" || return 1
+    codex_eci_aggregate_selected_child_is_genuinely_independent "$plan_outer_cwd" "$repo_root" || return 1
+    for prior in "${prior_roots[@]}"; do
+      case "$repo_root" in "$prior"|"$prior"/*) return 1 ;; esac
+      case "$prior" in "$repo_root"/*) return 1 ;; esac
+    done
+    prior_roots+=("$repo_root")
+  done
+  codex_eci_aggregate_validated_outer_cwd="$plan_outer_cwd"
+}
+
+# Select one validated aggregate repository without accepting a caller path.
+codex_eci_aggregate_plan_select() {
+  local plan="$1" session_id="$2" outer_cwd="$3" marker="$4" repo_id="$5"
+  local index
+
+  codex_eci_aggregate_repo_id_is_valid "$repo_id" || return 1
+  codex_eci_aggregate_plan_is_valid "$plan" "$session_id" "$outer_cwd" "$marker" || return 1
+  index="$(jq -r --arg id "$repo_id" '.repositories | map(.id) | index($id) // empty' "$plan" 2>/dev/null || true)"
+  [[ "$index" =~ ^[0-9]+$ ]] || return 1
+  codex_eci_aggregate_selected_id="$repo_id"
+  codex_eci_aggregate_selected_root="$(jq -r ".repositories[$index].repo_root" "$plan")"
+  codex_eci_aggregate_selected_child_is_genuinely_independent "$codex_eci_aggregate_validated_outer_cwd" \
+    "$codex_eci_aggregate_selected_root" || return 1
+  codex_eci_aggregate_selected_git_dir="$codex_eci_aggregate_live_repo_git_dir"
+  codex_eci_aggregate_selected_git_common_dir="$codex_eci_aggregate_live_repo_git_common_dir"
+}
+
+# Select the single aggregate plan member that owns an arbitrary callback cwd.
+# This is for boundary classification only: callers still use an explicit ID
+# for every aggregate mutation. It therefore cannot become a path-to-repo
+# control route.
+codex_eci_aggregate_plan_select_cwd() {
+  local plan="$1" session_id="$2" marker="$3" requested_cwd="$4"
+  local outer_cwd canonical_cwd repo_count index repo_root match_index=""
+
+  [ "$marker" = "$(codex_proof_root)/$session_id/eci_active" ] || return 1
+  outer_cwd="$(codex_eci_aggregate_marker_cwd "$marker" "$session_id")" || return 1
+  codex_eci_aggregate_plan_is_valid "$plan" "$session_id" "$outer_cwd" "$marker" || return 1
+  canonical_cwd="$(codex_canonical_cwd "$requested_cwd")"
+  [ -n "$canonical_cwd" ] && [ -d "$canonical_cwd" ] || return 1
+  repo_count="$(jq -r '.repositories | length' "$plan" 2>/dev/null || true)"
+  [[ "$repo_count" =~ ^[1-9][0-9]*$ ]] || return 1
+  for ((index = 0; index < repo_count; index++)); do
+    repo_root="$(jq -r ".repositories[$index].repo_root" "$plan" 2>/dev/null || true)"
+    case "$canonical_cwd" in
+      "$repo_root"|"$repo_root"/*)
+        [ -z "$match_index" ] || return 1
+        match_index="$index"
+        ;;
+    esac
+  done
+  [[ "$match_index" =~ ^[0-9]+$ ]] || return 1
+  codex_eci_aggregate_selected_id="$(jq -r ".repositories[$match_index].id" "$plan")"
+  codex_eci_aggregate_selected_root="$(jq -r ".repositories[$match_index].repo_root" "$plan")"
+  codex_eci_aggregate_selected_child_is_genuinely_independent "$codex_eci_aggregate_validated_outer_cwd" \
+    "$codex_eci_aggregate_selected_root" || return 1
+  codex_eci_aggregate_selected_git_dir="$codex_eci_aggregate_live_repo_git_dir"
+  codex_eci_aggregate_selected_git_common_dir="$codex_eci_aggregate_live_repo_git_common_dir"
+}
+
 # Parse the four-line active marker with shell builtins.  Stop callbacks use
 # this bounded record check; avoid grep/awk/sed process fan-out on every active
 # callback while retaining the same path, owner, cwd, and control-byte rules.
 codex_eci_marker_metadata_is_valid() {
-  local marker="$1" expected_cwd="${2:-}" root dir name marker_cwd marker_owner marker_scope
+  local marker="$1" expected_cwd="${2:-}" root root_real marker_real dir name marker_cwd marker_owner marker_scope
   local -a lines=()
 
+  codex_proof_root_is_safe || return 1
   root="$(codex_proof_root)"
+  [ -n "$root" ] && [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  root_real="$(realpath -e -- "$root" 2>/dev/null || true)"
+  [ -n "$root_real" ] && [ -d "$root_real" ] || return 1
+  [ ! -L "$marker" ] || return 1
+  marker_real="$(realpath -e -- "$marker" 2>/dev/null || true)"
+  [ -n "$marker_real" ] || return 1
+  root="$root_real"
+  marker="$marker_real"
   case "$marker" in
     "$root"/*/eci_active) ;;
     *) return 1 ;;
@@ -1142,12 +2113,10 @@ codex_bind_side_stop_to_session() {
 }
 
 codex_hook_sessions_root() {
-  local configured_root="${CODEX_HOME:-$HOME/.codex}"
+  local root
 
-  case "$configured_root" in
-    /*) printf '%s/sessions\n' "$configured_root" ;;
-    *) return 1 ;;
-  esac
+  root="$(codex_home_lexical_root)" || return 1
+  printf '%s/sessions\n' "$root"
 }
 
 codex_hook_transcript_first_record() {
@@ -1486,4 +2455,202 @@ codex_eci_teardown_receipt_is_valid() {
   [ "$actual" = "$report_sha" ] || return 1
   actual="$(codex_eci_live_repo_binding_sha256 "$manifest" 2>/dev/null || true)"
   [ "$actual" = "$repo_binding" ] || return 1
+}
+
+# Validate the one terminal receipt for a parent aggregate session.  It binds
+# every immutable plan member to the exact namespaced v2 manifest and current
+# live Git tuple that the aggregate off operation validated before marker
+# removal.
+codex_eci_aggregate_teardown_receipt_is_valid() {
+  local receipt="$1" session_id="$2"
+  local root session_dir expected_receipt plan receipt_bytes top_keys repo_keys plan_sha actual
+  local report_path report_sha repo_count index repo_id manifest_sha repo_binding manifest
+
+  codex_valid_session_id "$session_id" || return 1
+  root="$(codex_proof_root)"
+  codex_proof_root_is_safe || return 1
+  session_dir="$root/$session_id"
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  expected_receipt="$session_dir/eci-aggregate-teardown-complete"
+  [ "$receipt" = "$expected_receipt" ] || return 1
+  codex_state_file_owner_is_valid "$receipt" || return 1
+  receipt_bytes="$(wc -c <"$receipt" 2>/dev/null || true)"
+  case "$receipt_bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$receipt_bytes" -le 16384 ] || return 1
+  [ "$(tail -c 1 -- "$receipt" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  LC_ALL=C grep -q $'\r' "$receipt" 2>/dev/null && return 1 || true
+  [ "$(awk 'END { print NR + 0 }' "$receipt" 2>/dev/null || printf 0)" -eq 1 ] || return 1
+  jq -e . "$receipt" >/dev/null 2>&1 || return 1
+  jq -c . "$receipt" | cmp -s - "$receipt" || return 1
+  top_keys='["schema","session_id","plan_sha256","disengage_report_path","disengage_report_sha256","repositories","state"]'
+  repo_keys='["id","manifest_sha256","repo_binding_sha256"]'
+  jq -e --argjson expected "$top_keys" --argjson repo_expected "$repo_keys" --arg sid "$session_id" '
+    (keys_unsorted == $expected) and
+    (.schema == "eci-aggregate-teardown-complete/v1") and
+    (.session_id == $sid) and
+    (.plan_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.disengage_report_path | type == "string") and
+    (.disengage_report_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.repositories | type == "array" and length > 0 and length <= 16) and
+    all(.repositories[];
+      (keys_unsorted == $repo_expected) and
+      (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")) and
+      (.manifest_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+      (.repo_binding_sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+    ([.repositories[].id] == ([.repositories[].id] | sort)) and
+    (([.repositories[].id] | unique | length) == (.repositories | length)) and
+    (.state == "complete")
+  ' "$receipt" >/dev/null 2>&1 || return 1
+  plan="$session_dir/eci-aggregate-plan.json"
+  codex_eci_aggregate_plan_is_valid "$plan" "$session_id" || return 1
+  plan_sha="$(jq -r '.plan_sha256' "$receipt")"
+  actual="$(sha256sum -- "$plan" 2>/dev/null | awk '{print $1}')"
+  [ "$actual" = "$plan_sha" ] || return 1
+  report_path="$(jq -r '.disengage_report_path' "$receipt")"
+  report_sha="$(jq -r '.disengage_report_sha256' "$receipt")"
+  codex_eci_teardown_report_path_is_safe "$report_path" || return 1
+  actual="$(sha256sum -- "$report_path" 2>/dev/null | awk '{print $1}')"
+  [ "$actual" = "$report_sha" ] || return 1
+  repo_count="$(jq -r '.repositories | length' "$receipt" 2>/dev/null || true)"
+  [ "$repo_count" = "$(jq -r '.repositories | length' "$plan" 2>/dev/null || true)" ] || return 1
+  for ((index = 0; index < repo_count; index++)); do
+    repo_id="$(jq -r ".repositories[$index].id" "$receipt" 2>/dev/null || true)"
+    [ "$repo_id" = "$(jq -r ".repositories[$index].id" "$plan" 2>/dev/null || true)" ] || return 1
+    manifest_sha="$(jq -r ".repositories[$index].manifest_sha256" "$receipt" 2>/dev/null || true)"
+    repo_binding="$(jq -r ".repositories[$index].repo_binding_sha256" "$receipt" 2>/dev/null || true)"
+    manifest="$session_dir/eci-aggregate.$repo_id.required-critics.json"
+    [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+    actual="$(sha256sum -- "$manifest" 2>/dev/null | awk '{print $1}')"
+    [ "$actual" = "$manifest_sha" ] || return 1
+    actual="$(codex_eci_live_repo_binding_sha256 "$manifest" 2>/dev/null || true)"
+    [ "$actual" = "$repo_binding" ] || return 1
+  done
+}
+
+# Read the exact tree and parent captured by one aggregate commit anchor.
+# Receipt publication and Git execution consume these values instead of
+# calculating a new tree after review has already completed.
+codex_eci_aggregate_commit_anchor_tree_is_valid() {
+  local anchor="$1" session_id="$2" repo_id="$3" manifest="$4"
+  local repo_root="$5" git_dir="$6" git_common_dir="$7"
+  local version manifest_sha base bytes anchor_index anchor_line
+  local prefix phase anchor_version anchor_manifest anchor_diff anchor_targets anchor_binding anchor_identity
+  local anchor_ledger anchor_identity_admission tree_oid parent_oid extra matches=0
+  local -a lines=()
+
+  codex_valid_session_id "$session_id" || return 1
+  codex_eci_aggregate_repo_id_is_valid "$repo_id" || return 1
+  [ "$anchor" = "$(codex_proof_root)/$session_id/eci-aggregate.$repo_id.acceptance-anchor" ] || return 1
+  [ -f "$anchor" ] && [ ! -L "$anchor" ] || return 1
+  codex_state_file_owner_is_valid "$anchor" || return 1
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+  version="$(jq -r '.acceptance_version // empty' "$manifest" 2>/dev/null || true)"
+  manifest_sha="$(sha256sum -- "$manifest" 2>/dev/null | awk '{print $1}')"
+  base="$(jq -r '.base_oid // empty' "$manifest" 2>/dev/null || true)"
+  [[ "$version" =~ ^[1-9][0-9]*$ && "$manifest_sha" =~ ^[0-9a-f]{64}$ && "$base" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+  bytes="$(wc -c <"$anchor" 2>/dev/null || true)"
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$bytes" -le 16384 ] || return 1
+  [ "$(tail -c 1 -- "$anchor" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  LC_ALL=C grep -q $'\r' "$anchor" 2>/dev/null && return 1 || true
+  mapfile -t lines <"$anchor" || return 1
+  [ "${#lines[@]}" -ge 7 ] || return 1
+  [ "${lines[0]}" = 'schema: eci-acceptance-anchor/v1' ] || return 1
+  [ "${lines[1]}" = "session_id: $session_id" ] || return 1
+  [ "${lines[2]}" = "repo_root: $repo_root" ] || return 1
+  [ "${lines[3]}" = "git_dir: $git_dir" ] || return 1
+  [ "${lines[4]}" = "git_common_dir: $git_common_dir" ] || return 1
+  [ "${lines[5]}" = "base_oid: $base" ] || return 1
+  for ((anchor_index = 6; anchor_index < ${#lines[@]}; anchor_index++)); do
+    anchor_line="${lines[$anchor_index]}"
+    IFS=: read -r prefix phase anchor_version anchor_manifest anchor_diff anchor_targets anchor_binding anchor_identity \
+      anchor_ledger anchor_identity_admission tree_oid parent_oid extra <<<"$anchor_line"
+    [ "$prefix" = admission ] && [ "$phase" = commit ] || continue
+    [ "$anchor_version" = "$version" ] && [ "$anchor_manifest" = "$manifest_sha" ] || continue
+    [[ "$anchor_diff" =~ ^[0-9a-f]{64}$ && "$anchor_targets" =~ ^[0-9a-f]{64}$ && "$anchor_binding" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$anchor_identity" =~ ^[0-9a-f]{64}$ && "$anchor_ledger" =~ ^[0-9a-f]{64}$ && "$anchor_identity_admission" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$tree_oid" =~ ^[0-9a-f]{40,64}$ && "$parent_oid" =~ ^[0-9a-f]{40,64}$ && -z "${extra:-}" ]] || return 1
+    [ "$parent_oid" = "$(jq -r '.head_oid // empty' "$manifest" 2>/dev/null || true)" ] || return 1
+    codex_git_safe -C "$repo_root" cat-file -e "$tree_oid^{tree}" >/dev/null 2>&1 || return 1
+    matches=$((matches + 1))
+    codex_eci_aggregate_commit_anchor_tree_oid="$tree_oid"
+    codex_eci_aggregate_commit_anchor_parent_oid="$parent_oid"
+  done
+  [ "$matches" -eq 1 ]
+}
+
+# Validate the short-lived per-member aggregate commit admission. Unlike the
+# singleton receipt, this state is never consumed by an arbitrary `git commit`:
+# the aggregate lifecycle command owns the exact Git invocation under its lock.
+codex_eci_aggregate_commit_admission_receipt_is_valid() {
+  local receipt="$1" session_id="$2" repo_id="$3" message_source="$4"
+  local root session_dir plan manifest anchor version expected bytes top_keys manifest_sha
+  local binding anchor_sha message_sha actual tree_oid parent_oid ref_name ref_oid
+
+  codex_valid_session_id "$session_id" || return 1
+  codex_eci_aggregate_repo_id_is_valid "$repo_id" || return 1
+  root="$(codex_proof_root)"
+  codex_proof_root_is_safe || return 1
+  session_dir="$root/$session_id"
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  plan="$session_dir/eci-aggregate-plan.json"
+  codex_eci_aggregate_plan_is_valid "$plan" "$session_id" || return 1
+  manifest="$session_dir/eci-aggregate.$repo_id.required-critics.json"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 1
+  version="$(jq -r '.acceptance_version // empty' "$manifest" 2>/dev/null || true)"
+  [[ "$version" =~ ^[1-9][0-9]*$ ]] || return 1
+  expected="$session_dir/eci-aggregate.$repo_id.commit-admitted.$version"
+  [ "$receipt" = "$expected" ] || return 1
+  codex_state_file_owner_is_valid "$receipt" || return 1
+  bytes="$(wc -c <"$receipt" 2>/dev/null || true)"
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$bytes" -le 4096 ] || return 1
+  [ "$(tail -c 1 -- "$receipt" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  LC_ALL=C grep -q $'\r' "$receipt" 2>/dev/null && return 1 || true
+  [ "$(awk 'END { print NR + 0 }' "$receipt" 2>/dev/null || printf 0)" -eq 1 ] || return 1
+  jq -e . "$receipt" >/dev/null 2>&1 || return 1
+  jq -c . "$receipt" | cmp -s - "$receipt" || return 1
+  top_keys='["schema","session_id","repository_id","acceptance_version","manifest_sha256","repo_binding_sha256","anchor_sha256","message_sha256","tree_oid","parent_oid","ref_name","state"]'
+  jq -e --argjson expected "$top_keys" --arg sid "$session_id" --arg id "$repo_id" --arg version "$version" '
+    (keys_unsorted == $expected) and
+    (.schema == "eci-aggregate-commit-admission/v2") and
+    (.session_id == $sid) and (.repository_id == $id) and
+    (.acceptance_version == $version) and
+    (.manifest_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.repo_binding_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.anchor_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.message_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.tree_oid | type == "string" and test("^[0-9a-f]{40,64}$")) and
+    (.parent_oid | type == "string" and test("^[0-9a-f]{40,64}$")) and
+    (.ref_name | type == "string" and startswith("refs/heads/")) and
+    (.state == "admitted")
+  ' "$receipt" >/dev/null 2>&1 || return 1
+  codex_eci_aggregate_plan_select "$plan" "$session_id" "" "" "$repo_id" || return 1
+  jq -e --arg root "$codex_eci_aggregate_selected_root" --arg git_dir "$codex_eci_aggregate_selected_git_dir" --arg git_common "$codex_eci_aggregate_selected_git_common_dir" '
+    .repo_root == $root and .git_dir == $git_dir and .git_common_dir == $git_common and
+    all(.rows[]; .repo_root == $root and .git_dir == $git_dir and .git_common_dir == $git_common)
+  ' "$manifest" >/dev/null 2>&1 || return 1
+  anchor="$session_dir/eci-aggregate.$repo_id.acceptance-anchor"
+  codex_state_file_owner_is_valid "$anchor" || return 1
+  codex_eci_aggregate_commit_anchor_tree_is_valid "$anchor" "$session_id" "$repo_id" "$manifest" \
+    "$codex_eci_aggregate_selected_root" "$codex_eci_aggregate_selected_git_dir" "$codex_eci_aggregate_selected_git_common_dir" || return 1
+  [ -f "$message_source" ] && [ ! -L "$message_source" ] || return 1
+  manifest_sha="$(sha256sum -- "$manifest" 2>/dev/null | awk '{print $1}')"
+  binding="$(codex_eci_live_repo_binding_sha256 "$manifest" 2>/dev/null || true)"
+  anchor_sha="$(sha256sum -- "$anchor" 2>/dev/null | awk '{print $1}')"
+  message_sha="$(sha256sum -- "$message_source" 2>/dev/null | awk '{print $1}')"
+  [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ && "$binding" =~ ^[0-9a-f]{64}$ &&
+    "$anchor_sha" =~ ^[0-9a-f]{64}$ && "$message_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ "$(jq -r '.manifest_sha256' "$receipt")" = "$manifest_sha" ] || return 1
+  [ "$(jq -r '.repo_binding_sha256' "$receipt")" = "$binding" ] || return 1
+  [ "$(jq -r '.anchor_sha256' "$receipt")" = "$anchor_sha" ] || return 1
+  [ "$(jq -r '.message_sha256' "$receipt")" = "$message_sha" ] || return 1
+  tree_oid="$(jq -r '.tree_oid' "$receipt")"
+  parent_oid="$(jq -r '.parent_oid' "$receipt")"
+  ref_name="$(jq -r '.ref_name' "$receipt")"
+  [ "$tree_oid" = "$codex_eci_aggregate_commit_anchor_tree_oid" ] || return 1
+  [ "$parent_oid" = "$codex_eci_aggregate_commit_anchor_parent_oid" ] || return 1
+  codex_git_safe -C "$codex_eci_aggregate_selected_root" check-ref-format "$ref_name" >/dev/null 2>&1 || return 1
+  ref_oid="$(codex_git_safe -C "$codex_eci_aggregate_selected_root" rev-parse --verify "$ref_name^{commit}" 2>/dev/null || true)"
+  [ "$ref_oid" = "$parent_oid" ]
 }

@@ -8,102 +8,80 @@ eci_runtime_sync_fail() {
   return 1
 }
 
-eci_runtime_sync_abs_path() {
-  local value="$1" normalized
-  case "$value" in
-    /*) ;;
-    *) return 1 ;;
-  esac
-  case "$value" in
-    *[![:print:]]* | *//* | */./* | */../* | */.. | */.) return 1 ;;
-  esac
-  normalized="$(realpath -m -- "$value" 2>/dev/null || true)"
-  [ -n "$normalized" ] && [ "$normalized" = "$value" ]
-}
-
 eci_runtime_sync_tmp_root() {
   local home="${HOME:-}" root
   [ -n "$home" ] || return 1
-  eci_runtime_sync_abs_path "$home" || return 1
   root="$home/tmp"
   [ -d "$root" ] || return 1
   root="$(realpath -e -- "$root" 2>/dev/null || true)"
   [ -n "$root" ] || return 1
-  [ "$root" != / ] && [ "$root" != /tmp ] && [[ "$root" != /tmp/* ]] || return 1
+  # The staging directory is freshly created per run.  A user-selected
+  # HOME/tmp -> /tmp alias changes only that scratch location; it does not
+  # change the selected provider source or a resolved publish target.
+  [ "$root" != / ] || return 1
   printf '%s\n' "$root"
 }
 
 eci_runtime_sync_provider_home() {
-  local provider="$1" home="${HOME:-}" root
+  local provider="$1" requested_root="$2" home="${HOME:-}" expected_root root
+
+  # The caller may be a deployed or mounted copy of this runtime. Always
+  # select the provider's configured source; its spelling is diagnostic, not
+  # an admission condition for repair.
+  : "$requested_root"
   case "$provider" in
-    codex) root="${CODEX_HOME:-$home/.codex}" ;;
-    kimi) root="${KIMI_CODE_HOME:-$home/.kimi-code}" ;;
+    codex) expected_root="$home/.codex" ;;
+    kimi) expected_root="${KIMI_CODE_HOME:-$home/.kimi-code}" ;;
     *) eci_runtime_sync_fail ECI_RUNTIME_SYNC_PROVIDER_UNKNOWN "provider=$provider"; return 1 ;;
   esac
-  eci_runtime_sync_abs_path "$root" || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_INVALID "provider=$provider source=$root is not absolute and lexically normalized"
-    return 1
-  }
-  [ -d "$root" ] && [ ! -L "$root" ] || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_MISSING "provider=$provider source=$root is not a canonical directory"
-    return 1
-  }
-  [ "$(realpath -e -- "$root" 2>/dev/null || true)" = "$root" ] || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_ALIAS "provider=$provider source=$root resolves through an alias"
+  root="$(realpath -e -- "$expected_root" 2>/dev/null || true)"
+  [ -n "$root" ] && [ -d "$root" ] || {
+    eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_INVALID "provider=$provider canonical source=$expected_root could not be resolved"
     return 1
   }
   printf '%s\n' "$root"
 }
 
-eci_runtime_sync_validate_root() {
-  local provider="$1" root="$2" uid mode required
-  eci_runtime_sync_abs_path "$root" || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_INVALID "provider=$provider target=$root is not absolute and lexically normalized"
-    return 1
-  }
-  [ -d "$root" ] && [ ! -L "$root" ] || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_MISSING "provider=$provider target=$root is not a canonical directory"
-    return 1
-  }
-  [ "$(realpath -e -- "$root" 2>/dev/null || true)" = "$root" ] || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_ALIAS "provider=$provider target=$root resolves through an alias"
+eci_runtime_sync_resolve_target_root() {
+  local provider="$1" requested_root="$2" root
+
+  root="$(realpath -e -- "$requested_root" 2>/dev/null || true)"
+  [ -n "$root" ] && [ -d "$root" ] || {
+    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_MISSING "provider=$provider target=$requested_root is unavailable"
     return 1
   }
   case "$provider:$root" in
     codex:*/.codex|kimi:*/.kimi-code) ;;
     *) eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_PROVIDER_MISMATCH "provider=$provider target=$root has the wrong provider directory name"; return 1 ;;
   esac
-  uid="$(id -u)"
-  mode="$(stat -c '%a' -- "$root" 2>/dev/null || true)"
-  [ -n "$mode" ] && [ "$(stat -c '%u' -- "$root" 2>/dev/null || true)" = "$uid" ] || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_METADATA "provider=$provider target=$root is not owned by uid=$uid"
-    return 1
-  }
-  case "$mode" in
-    ''|*[!0-9]*) eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_METADATA "provider=$provider target=$root has no numeric mode"; return 1 ;;
+  printf '%s\n' "$root"
+}
+
+eci_runtime_sync_validate_target_root() {
+  eci_runtime_sync_resolve_target_root "$@" >/dev/null
+}
+
+eci_runtime_sync_validate_source_root() {
+  local provider="$1" root="$2" required required_files
+
+  case "$provider" in
+    codex) required_files='hooks.json bin/eci-active bin/eci-active-dispatch bin/eci-runtime-sync hooks/validate-bash.sh' ;;
+    kimi) required_files='config.toml bin/eci-active bin/eci-active-dispatch bin/eci-runtime-sync hooks/validate-bash.sh' ;;
+    *) eci_runtime_sync_fail ECI_RUNTIME_SYNC_PROVIDER_UNKNOWN "provider=$provider"; return 1 ;;
   esac
-  (( (8#$mode & 2) == 0 )) || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_METADATA "provider=$provider target=$root is world-writable mode=$mode"
-    return 1
-  }
-  for required in bin/eci-active hooks/validate-bash.sh; do
-    [ -f "$root/$required" ] && [ ! -L "$root/$required" ] || {
-      eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_IDENTITY "provider=$provider target=$root lacks canonical installation file $required"
-      return 1
-    }
-    [ "$(stat -c '%u' -- "$root/$required" 2>/dev/null || true)" = "$uid" ] || {
-      eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_METADATA "provider=$provider target=$root/$required is not owned by uid=$uid"
+  for required in $required_files; do
+    [ -f "$root/$required" ] || {
+      eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_IDENTITY "provider=$provider source=$root lacks managed runtime file $required"
       return 1
     }
   done
 }
 
 eci_runtime_sync_add_root() {
-  local candidate="$1" root
+  local provider="$1" candidate="$2" root
   [ -n "$candidate" ] || return 0
-  root="$(realpath -m -- "$candidate" 2>/dev/null || true)"
+  root="$(eci_runtime_sync_resolve_target_root "$provider" "$candidate" 2>/dev/null || true)"
   [ -n "$root" ] || return 0
-  [ -d "$root" ] && [ ! -L "$root" ] || return 0
   case "\n${eci_runtime_sync_roots:-}\n" in
     *$'\n'"$root"$'\n'*) return 0 ;;
   esac
@@ -116,7 +94,7 @@ eci_runtime_sync_discover_targets() {
   local explicit_roots=""
   local -a configured_roots=()
   eci_runtime_sync_roots=""
-  eci_runtime_sync_add_root "$source_root"
+  eci_runtime_sync_add_root "$provider" "$source_root"
   case "$provider" in
     codex) variable=CODEX_RUNTIME_ROOTS ;;
     kimi) variable=KIMI_RUNTIME_ROOTS ;;
@@ -125,10 +103,9 @@ eci_runtime_sync_discover_targets() {
   if [ -n "$configured" ]; then
     IFS=: read -r -a configured_roots <<<"$configured"
     for value in "${configured_roots[@]}"; do
-      candidate="$(realpath -m -- "$value" 2>/dev/null || true)"
-      eci_runtime_sync_validate_root "$provider" "$candidate" || return 1
+      candidate="$(eci_runtime_sync_resolve_target_root "$provider" "$value")" || return 1
       explicit_roots="${explicit_roots}${candidate}"$'\n'
-      eci_runtime_sync_add_root "$value"
+      eci_runtime_sync_add_root "$provider" "$candidate"
     done
   fi
   # Derive alternate mount-backed spellings from mountinfo instead of baking a
@@ -139,20 +116,20 @@ eci_runtime_sync_discover_targets() {
     [ -n "$mount" ] || continue
     case "$mount" in *[![:print:]]*|*\ *|*\\*) continue ;; esac
     candidate="/$mount/$relative"
-    eci_runtime_sync_add_root "$candidate"
+    eci_runtime_sync_add_root "$provider" "$candidate"
   done < <(awk '{print $5}' /proc/self/mountinfo 2>/dev/null || true)
   while IFS= read -r root; do
     [ -n "$root" ] || continue
     case "\n$explicit_roots" in
       *$'\n'"$root"$'\n'*) ;;
-      *) eci_runtime_sync_validate_root "$provider" "$root" || continue ;;
+      *) eci_runtime_sync_validate_target_root "$provider" "$root" || continue ;;
     esac
     printf '%s\n' "$root"
   done <<<"${eci_runtime_sync_roots:-}"
 }
 
 eci_runtime_sync_collect() {
-  local provider="$1" source_root="$2" stage_root="$3" relative source mode parent sha
+  local provider="$1" source_root="$2" stage_root="$3" relative source mode parent sha live_sha live_mode
   : >"$stage_root/manifest.tsv"
   {
     case "$provider" in
@@ -163,29 +140,48 @@ eci_runtime_sync_collect() {
     # Both providers register the coordinator lifecycle through this binary;
     # the provider-specific config above is the only root-level difference.
     printf '%s\n' bin/eci-active
+    printf '%s\n' bin/eci-active-dispatch
+    printf '%s\n' bin/eci-runtime-sync
     [ -f "$source_root/bin/eci-command-gate-mode" ] && printf '%s\n' bin/eci-command-gate-mode
-    find "$source_root/hooks" -type f ! -path "$source_root/hooks/tests/*" ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '*.pyo' -printf 'hooks/%P\n' 2>/dev/null
+    # Planner builds stage short-lived Go files here; pruning this known tree
+    # prevents an accidental sync race without excluding ordinary source.
+    find "$source_root/hooks" -type d -name '.eci-command-plan.txn.*' -prune -o -type f ! -path "$source_root/hooks/tests/*" ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '*.pyo' ! -name '.eci-command-plan.lock' ! -name '.eci-command-plan.publish.lock' -printf 'hooks/%P\n' 2>/dev/null
   } | LC_ALL=C sort -u | while IFS= read -r relative; do
     [ -n "$relative" ] || continue
     case "$relative" in
       /*|*..*|*[![:print:]]*) eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_PATH "source=$source_root relative=$relative is not a safe manifest path"; return 1 ;;
     esac
     source="$source_root/$relative"
-    [ -f "$source" ] && [ ! -L "$source" ] || {
-      eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_FILE "source=$source is not a canonical regular file"
-      return 1
-    }
-    [ "$(stat -c '%u' -- "$source" 2>/dev/null || true)" = "$(id -u)" ] || {
-      eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_METADATA "source=$source is not owned by uid=$(id -u)"
-      return 1
+    [ -f "$source" ] || {
+      # A source file disappearing during collection is ordinary concurrent
+      # editing, not an authority problem. Leave it for the next sync.
+      printf 'ECI runtime maintenance advisory: source disappeared during collection: %s\n' "$source" >&2
+      continue
     }
     mode="$(stat -c '%a' -- "$source" 2>/dev/null || true)"
-    case "$mode" in ''|*[!0-9]*) eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_METADATA "source=$source has no numeric mode"; return 1 ;; esac
+    case "$mode" in
+      ''|*[!0-9]*)
+        printf 'ECI runtime maintenance advisory: using mode 644 for unreadable source metadata: %s\n' "$source" >&2
+        mode=644
+        ;;
+    esac
     parent="$stage_root/${relative%/*}"
     [ "$parent" = "$stage_root/$relative" ] && parent="$stage_root"
     mkdir -p -- "$parent"
     install -m "$mode" -- "$source" "$stage_root/$relative"
-    sha="$(sha256sum -- "$source" | awk '{print $1}')"
+    # The staged file is this run's snapshot. A later live-source edit is
+    # ordinary concurrent work for the next sync, not a reason to publish a
+    # mixed manifest or fail after publishing some target files.
+    sha="$(sha256sum -- "$stage_root/$relative" | awk '{print $1}')"
+    if [ -f "$source" ] && [ ! -L "$source" ]; then
+      live_sha="$(sha256sum -- "$source" 2>/dev/null | awk '{print $1}')"
+      live_mode="$(stat -c '%a' -- "$source" 2>/dev/null || true)"
+      if [ "$live_sha" != "$sha" ] || [ "$live_mode" != "$mode" ]; then
+        printf 'ECI runtime maintenance advisory: source changed after staging; published snapshot remains current until the next sync: %s\n' "$source" >&2
+      fi
+    else
+      printf 'ECI runtime maintenance advisory: source changed or disappeared after staging; published snapshot remains current until the next sync: %s\n' "$source" >&2
+    fi
     printf '%s\t%s\t%s\n' "$relative" "$sha" "$mode" >>"$stage_root/manifest.tsv"
   done
 }
@@ -233,8 +229,10 @@ eci_runtime_sync_publish_target() {
       }
       if [ -e "$target" ] || [ -L "$target" ]; then
         [ -f "$target" ] && [ ! -L "$target" ] || {
-          eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_FILE "provider=$provider target=$target is not a replaceable regular file"
-          return 1
+          [ -L "$target" ] || {
+            eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_FILE "provider=$provider target=$target is not a replaceable file"
+            return 1
+          }
         }
       fi
       if [[ "$relative" == */* ]]; then
@@ -259,8 +257,27 @@ eci_runtime_sync_publish_target() {
         return 1
       }
     done <"$stage_root/manifest.tsv"
-    install -m 600 -- "$stage_root/manifest.tsv" "$target_tmp/.eci-runtime-sync-manifest"
-    mv -f -- "$target_tmp/.eci-runtime-sync-manifest" "$receipt"
+    # Receipts are descriptive output, never a condition for the managed
+    # files above. A stale directory cannot be safely replaced as a leaf, so
+    # leave it intact and report the skipped metadata refresh.
+    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+      if [ -f "$receipt" ] || [ -L "$receipt" ]; then
+        if ! rm -f -- "$receipt"; then
+          printf 'ECI runtime maintenance advisory: could not replace target receipt: %s\n' "$receipt" >&2
+          receipt=''
+        fi
+      else
+        printf 'ECI runtime maintenance advisory: target receipt is not a replaceable file: %s\n' "$receipt" >&2
+        receipt=''
+      fi
+    fi
+    if [ -n "$receipt" ]; then
+      if ! install -m 600 -- "$stage_root/manifest.tsv" "$target_tmp/.eci-runtime-sync-manifest" ||
+        ! mv -f -- "$target_tmp/.eci-runtime-sync-manifest" "$receipt"; then
+        printf 'ECI runtime maintenance advisory: could not publish target receipt: %s\n' "$receipt" >&2
+        rm -f -- "$target_tmp/.eci-runtime-sync-manifest" 2>/dev/null || true
+      fi
+    fi
   ); then
     :
   else
@@ -277,20 +294,25 @@ eci_runtime_sync_publish_target() {
 eci_runtime_sync_publish_source_receipt() {
   local provider="$1" source_root="$2" stage_root="$3" receipt="$source_root/.eci-runtime-sync-manifest"
   local receipt_tmp="$source_root/.eci-runtime-sync-source.$$.${RANDOM}"
-  [ ! -e "$receipt_tmp" ] && [ ! -L "$receipt_tmp" ] || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TRANSACTION_EXISTS "provider=$provider source=$source_root transaction=$receipt_tmp already exists"
-    return 1
-  }
-  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-    [ -f "$receipt" ] && [ ! -L "$receipt" ] || {
-      eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_RECEIPT "provider=$provider source=$receipt is not a replaceable regular file"
-      return 1
-    }
+  if [ -e "$receipt_tmp" ] || [ -L "$receipt_tmp" ]; then
+    printf 'ECI runtime maintenance advisory: source receipt temporary path already exists: %s\n' "$receipt_tmp" >&2
+    return 0
   fi
-  mkdir -- "$receipt_tmp" || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TRANSACTION_CREATE "provider=$provider source=$source_root transaction=$receipt_tmp could not be created"
-    return 1
-  }
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    if [ -f "$receipt" ] || [ -L "$receipt" ]; then
+      if ! rm -f -- "$receipt"; then
+        printf 'ECI runtime maintenance advisory: could not replace source receipt: %s\n' "$receipt" >&2
+        return 0
+      fi
+    else
+      printf 'ECI runtime maintenance advisory: source receipt is not a replaceable file: %s\n' "$receipt" >&2
+      return 0
+    fi
+  fi
+  if ! mkdir -- "$receipt_tmp"; then
+    printf 'ECI runtime maintenance advisory: could not stage source receipt: %s\n' "$receipt_tmp" >&2
+    return 0
+  fi
   if install -m 600 -- "$stage_root/manifest.tsv" "$receipt_tmp/manifest" &&
     mv -f -- "$receipt_tmp/manifest" "$receipt"; then
     rmdir -- "$receipt_tmp"
@@ -299,16 +321,16 @@ eci_runtime_sync_publish_source_receipt() {
     return 0
   fi
   rm -rf -- "$receipt_tmp"
-  eci_runtime_sync_fail ECI_RUNTIME_SYNC_SOURCE_RECEIPT "provider=$provider source=$receipt could not be published atomically"
-  return 1
+  printf 'ECI runtime maintenance advisory: could not publish source receipt: %s\n' "$receipt" >&2
+  return 0
 }
 
 eci_runtime_sync_run() {
   local provider="$1" source_root="$2" tmp_root stage_root target_root targets_file count=0
-  source_root="$(eci_runtime_sync_provider_home "$provider")" || return 1
-  eci_runtime_sync_validate_root "$provider" "$source_root" || return 1
+  source_root="$(eci_runtime_sync_provider_home "$provider" "$source_root")" || return 1
+  eci_runtime_sync_validate_source_root "$provider" "$source_root" || return 1
   tmp_root="$(eci_runtime_sync_tmp_root)" || {
-    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TMP_INVALID "provider=$provider requires a canonical user-scoped temporary directory at ${HOME:-<missing>}/tmp"
+    eci_runtime_sync_fail ECI_RUNTIME_SYNC_TMP_INVALID "provider=$provider requires a usable temporary staging directory at ${HOME:-<missing>}/tmp"
     return 1
   }
   stage_root="$(mktemp -d "$tmp_root/eci-runtime-sync.XXXXXX")" || {

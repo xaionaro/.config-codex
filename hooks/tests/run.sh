@@ -876,7 +876,7 @@ test_side_session_start_is_silent_and_binds_stop_bypass() {
     json_field_contains "$stop_out" '.reason // empty' "$proof_root/t00-parent/eci_active"
 }
 
-test_eci_gate_blocks_code_apply_patch() {
+test_eci_gate_allows_code_apply_patch() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-code)"
   mkdir -p "$proof_root/t00-session"
@@ -886,7 +886,7 @@ test_eci_gate_blocks_code_apply_patch() {
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  is_edit_routing_deny "$out"
+  expect_no_output "$out"
 }
 
 test_eci_gate_skips_invalid_session_id() {
@@ -930,7 +930,7 @@ test_eci_gate_denies_malformed_identity_with_active_marker() {
   is_pretool_deny "$out"
 }
 
-test_eci_gate_message_routes_edits_without_stop_language() {
+test_eci_gate_allows_edits_without_routing_message() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-message)"
   mkdir -p "$proof_root/t00-session"
@@ -940,18 +940,7 @@ test_eci_gate_message_routes_edits_without_stop_language() {
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  is_pretool_deny "$out" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Delegate repository edits" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "direct main-thread edits are prohibited" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "This denial governs edit routing only" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Continue the ECI task" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "report a blocker" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Disengage" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "clean-pass" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "user-closed" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Never stop" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "stop" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "teardown"
+  expect_no_output "$out"
 }
 
 test_stop_gate_message_retains_stop_language() {
@@ -987,7 +976,7 @@ test_eci_gate_ignores_code_apply_patch_from_cwd_state() {
   expect_no_output "$out"
 }
 
-test_eci_gate_blocks_code_apply_patch_from_session_state() {
+test_eci_gate_allows_code_apply_patch_from_session_state() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-code-session)"
   out="$TMP_ROOT/eci-code-session-active.out"
@@ -999,10 +988,10 @@ test_eci_gate_blocks_code_apply_patch_from_session_state() {
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
-  is_edit_routing_deny "$out"
+  expect_no_output "$out"
 }
 
-test_eci_gate_blocks_codex_role_spoof() {
+test_eci_gate_ignores_codex_role_for_normal_edit() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-role-spoof)"
   mkdir -p "$proof_root/t00-session"
@@ -1012,7 +1001,7 @@ test_eci_gate_blocks_codex_role_spoof() {
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
     CODEX_PROOF_ROOT="$proof_root" CODEX_ROLE="eci-implementer" || return 1
 
-  is_edit_routing_deny "$out"
+  expect_no_output "$out"
 }
 
 write_subagent_transcript() {
@@ -4360,24 +4349,28 @@ test_eci_gate_denies_code_write_payload() {
   is_edit_routing_deny "$out"
 }
 
-test_eci_gate_protects_high_level_log_anchor() {
-  local proof_root input out anchor
+test_eci_gate_allows_current_session_high_level_log_and_anchor() {
+  local proof_root input out log anchor
   proof_root="$(fresh_proof_root eci-anchor-edit)"
   mkdir -p "$proof_root/t00-session"
+  log="$proof_root/t00-session/high_level_log.md"
   anchor="$proof_root/t00-session/high_level_log.anchor"
-  printf '%s\n' 'schema: eci-high-level-log-anchor/v1' >"$anchor"
+  printf '%s\n' 'coordinator ledger update' >"$log"
+  printf '%s\n' 'coordinator anchor update' >"$anchor"
   input="$TMP_ROOT/eci-anchor-edit.json"
-  jq -n --arg cwd "$ROOT" --arg path "$anchor" \
-    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"forged"}}' >"$input"
+  jq -n --arg cwd "$ROOT" --arg path "$log" \
+    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"coordinator ledger update"}}' >"$input"
   out="$TMP_ROOT/eci-anchor-edit.out"
 
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
     CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out" || return 1
 
-  is_pretool_deny "$out" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "high_level_log.anchor" &&
-    json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "ledger-append" &&
-    json_field_not_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "Never stop"
+  jq -n --arg cwd "$ROOT" --arg path "$anchor" \
+    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"coordinator anchor update"}}' >"$input"
+  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
+    CODEX_PROOF_ROOT="$proof_root" || return 1
+  expect_no_output "$out"
 }
 
 test_eci_gate_denies_code_notebookedit_payload() {
@@ -5038,20 +5031,20 @@ test_edit_write_hook_config_is_split_and_preserves_gates() {
   ' "$ROOT/hooks.json" >/dev/null
 }
 
-test_ate_gate_denies_markdown_edits_for_lead() {
+test_ate_gate_allows_markdown_edits_for_lead() {
   local out
   out="$TMP_ROOT/ate-markdown-lead.out"
   run_hook "$out" "$ROOT/hooks/ate-orchestrator-gate.sh" "$FIXTURES/eci-apply-patch-markdown.json" \
     CODEX_ROLE=lead || return 1
-  is_pretool_deny "$out"
+  expect_no_output "$out"
 }
 
-test_ate_gate_denies_markdown_edits_for_coordinator() {
+test_ate_gate_allows_markdown_edits_for_coordinator() {
   local out
   out="$TMP_ROOT/ate-markdown-coordinator.out"
   run_hook "$out" "$ROOT/hooks/ate-orchestrator-gate.sh" "$FIXTURES/eci-apply-patch-markdown.json" \
     CODEX_ROLE=coordinator || return 1
-  is_pretool_deny "$out"
+  expect_no_output "$out"
 }
 
 test_validate_apply_patch_blocks_local_gomod_replace_from_patch() {
@@ -5664,13 +5657,61 @@ test_validate_bash_allows_go_test_tee() {
   expect_no_output "$out"
 }
 
-test_security_reminder_sees_workflow_move_destination() {
+test_security_reminder_explicit_opt_in_sees_workflow_move_destination() {
   local proof_root out
   proof_root="$(fresh_proof_root security-workflow-move)"
   out="$TMP_ROOT/security-workflow-move.out"
-  env -u CODEX_ROLE CODEX_PROOF_ROOT="$proof_root" "$ROOT/hooks/security-reminder.py" \
+  env -u CODEX_ROLE ENABLE_SECURITY_REMINDER=1 CODEX_PROOF_ROOT="$proof_root" "$ROOT/hooks/security-reminder.py" \
     <"$FIXTURES/security-workflow-move.json" >"$out" 2>"$out.err" || return 1
-  json_field_contains "$out" '.systemMessage // empty' "GitHub Actions workflow"
+  expect_no_output "$out" &&
+    json_field_contains "$out.err" '.systemMessage // empty' "GitHub Actions workflow"
+}
+
+test_pretooluse_edit_dispatch_separates_advisory_and_envelope() {
+  local proof_root allowed_input denied_input allowed_out denied_out
+  proof_root="$(fresh_proof_root edit-dispatch-envelope)"
+  allowed_input="$TMP_ROOT/edit-dispatch-allowed.json"
+  denied_input="$TMP_ROOT/edit-dispatch-denied.json"
+  allowed_out="$TMP_ROOT/edit-dispatch-allowed.out"
+  denied_out="$TMP_ROOT/edit-dispatch-denied.out"
+  jq -cn --arg cwd "$ROOT" '{
+    session_id: "t00-session",
+    cwd: $cwd,
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "docs/notes/t00.md",
+      old_string: "old",
+      new_string: "child_process.exec(unsafe)"
+    }
+  }' >"$allowed_input" || return 1
+
+  run_hook "$allowed_out" "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$allowed_input" \
+    CODEX_PROOF_ROOT="$proof_root" ENABLE_SECURITY_REMINDER=1 || return 1
+  expect_no_output "$allowed_out" || return 1
+  json_field_contains "$allowed_out.err" '.systemMessage // empty' "shell exec with dynamic input" || return 1
+
+  jq -cn --arg cwd "$ROOT" '{
+    session_id: "t00-session",
+    cwd: $cwd,
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "docs/plans/t00.md",
+      old_string: "old",
+      new_string: "child_process.exec(unsafe)"
+    }
+  }' >"$denied_input" || return 1
+
+  run_hook "$denied_out" "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$denied_input" \
+    CODEX_PROOF_ROOT="$proof_root" ENABLE_SECURITY_REMINDER=1 || return 1
+  [ "$(wc -l <"$denied_out" | tr -d '[:space:]')" -eq 1 ] || return 1
+  jq -e '
+    type == "object" and
+    (keys | sort) == ["hookSpecificOutput"] and
+    .hookSpecificOutput.hookEventName == "PreToolUse" and
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("Do not edit plan files")) and
+    (has("systemMessage") | not)
+  ' "$denied_out" >/dev/null
 }
 
 test_stop_gate_blocks_missing_proof_sections() {
@@ -5701,7 +5742,7 @@ test_stop_gate_continues_clean_inactive_turn() {
     [ ! -e "$proof_root/t00-session/proof.md" ]
 }
 
-test_stop_gate_blocks_activity_marker() {
+test_stop_gate_continues_activity_marker() {
   local proof_root input out repo
   proof_root="$(fresh_proof_root stop-activity-marker)"
   repo="$(make_git_repo stop-activity-marker)" || return 1
@@ -5712,15 +5753,11 @@ test_stop_gate_blocks_activity_marker() {
   out="$TMP_ROOT/stop-activity-marker.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "Automated stop checks passed" &&
-    json_field_not_contains "$out" '.reason // empty' "write " &&
-    [ -s "$proof_root/t00-session/instructions.md" ] &&
-    grep -q "Git state: clean" "$proof_root/t00-session/instructions.md" &&
-    grep -q "Do not rerun automated git checks" "$proof_root/t00-session/instructions.md"
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/instructions.md" ]
 }
 
-test_stop_gate_blocks_parent_subagent_tool_call() {
+test_stop_gate_continues_parent_subagent_tool_call() {
   local proof_root input out transcript repo
   proof_root="$(fresh_proof_root stop-parent-subagent-tool)"
   repo="$(make_git_repo stop-parent-subagent-tool)" || return 1
@@ -5731,12 +5768,8 @@ test_stop_gate_blocks_parent_subagent_tool_call() {
   out="$TMP_ROOT/stop-parent-subagent-tool.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "Automated stop checks passed" &&
-    json_field_not_contains "$out" '.reason // empty' "write " &&
-    [ -s "$proof_root/t00-session/instructions.md" ] &&
-    grep -q "Git state: clean" "$proof_root/t00-session/instructions.md" &&
-    grep -q "Do not rerun automated git checks" "$proof_root/t00-session/instructions.md"
+  json_field_equals "$out" '.continue // false' "true" &&
+    [ ! -e "$proof_root/t00-session/instructions.md" ]
 }
 
 test_stop_gate_reports_automated_git_checks_for_dirty_state() {
@@ -5751,6 +5784,7 @@ test_stop_gate_reports_automated_git_checks_for_dirty_state() {
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_stop_block "$out" &&
     json_field_contains "$out" '.reason // empty' "Automated stop checks found changed git state" &&
+    json_field_contains "$out" '.reason // empty' 'env CODEX_SESSION_ID=t00-session "$HOME/.codex/bin/eci-active" off <disengage-report.md>' &&
     [ -s "$proof_root/t00-session/instructions.md" ] &&
     grep -q "Dirty worktree:  M file.txt" "$proof_root/t00-session/instructions.md" &&
     grep -q "HEAD: " "$proof_root/t00-session/instructions.md" &&
@@ -5896,7 +5930,7 @@ test_stop_gate_blocks_gitleaks_execution_failure() {
     grep -q "scanner exploded" "$proof_root/t00-session/gitleaks-findings.txt"
 }
 
-test_stop_gate_blocks_ate_active_state() {
+test_stop_gate_continues_ate_active_state() {
   local proof_root input out repo
   proof_root="$(fresh_proof_root stop-ate-active)"
   repo="$(make_git_repo stop-ate-active)" || return 1
@@ -5907,8 +5941,7 @@ test_stop_gate_blocks_ate_active_state() {
   out="$TMP_ROOT/stop-ate-active.out"
 
   run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "ATE is active"
+  json_field_equals "$out" '.continue // false' "true"
 }
 
 test_stop_gate_allows_ate_awaiting_user_without_other_activity() {
@@ -6197,27 +6230,32 @@ test_stop_gate_blocks_preexisting_commit_after_head_advance() {
     stop_reason_has_proof_recovery_paths "$out" "$proof_root"
 }
 
-test_stop_gate_adds_loop_reminder_after_five_blocks() {
-  local proof_root input out i
+test_stop_gate_continues_after_one_identical_reminder() {
+  local proof_root input first_out second_out third_out
   proof_root="$(fresh_proof_root stop-loop-reminder)"
   mkdir -p "$proof_root/activity/sessions/t00-session"
   printf 'created_utc: 2026-05-04T00:00:00Z\n' >"$proof_root/activity/sessions/t00-session/shell"
   input="$TMP_ROOT/stop-loop-reminder.json"
   with_cwd_fixture "$FIXTURES/stop-basic.json" "$input"
-  out="$TMP_ROOT/stop-loop-reminder.out"
+  first_out="$TMP_ROOT/stop-loop-reminder-first.out"
+  second_out="$TMP_ROOT/stop-loop-reminder-second.out"
+  third_out="$TMP_ROOT/stop-loop-reminder-third.out"
 
-  for i in 1 2 3 4 5; do
-    run_hook "$out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
-  done
+  run_hook "$first_out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  is_stop_block "$first_out" || return 1
+  ! json_field_contains "$first_out" '.reason // empty' "LOOP DETECTED" || return 1
+  grep -qx 'count: 1' "$proof_root/t00-session/stop_loop_state" || return 1
+  grep -qx 'loop_emitted: true' "$proof_root/t00-session/stop_loop_state" || return 1
+  cp -- "$proof_root/t00-session/stop_loop_state" "$TMP_ROOT/stop-loop-reminder-state.after-first"
 
-  is_stop_block "$out" &&
-    json_field_contains "$out" '.reason // empty' "LOOP DETECTED" &&
-    json_field_contains "$out" '.reason // empty' "read instructions or stop-checklist" &&
-    json_field_contains "$out" '.reason // empty' "unchanged control metadata" &&
-    json_field_contains "$out" '.reason // empty' "do not emit another final/status/question" &&
-    json_field_contains "$out" '.reason // empty' "one concrete user-owned blocker" &&
-    json_field_contains "$out" '.reason // empty' "wait for new external state" &&
-    ! json_field_contains "$out" '.reason // empty' "stop again"
+  run_hook "$second_out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  jq -e '.continue == true and (has("decision") | not)' "$second_out" >/dev/null || return 1
+  cmp -s "$TMP_ROOT/stop-loop-reminder-state.after-first" "$proof_root/t00-session/stop_loop_state" || return 1
+
+  run_hook "$third_out" "$ROOT/hooks/stop-gate.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  jq -e '.continue == true and (has("decision") | not)' "$third_out" >/dev/null &&
+    cmp -s "$second_out" "$third_out" &&
+    cmp -s "$TMP_ROOT/stop-loop-reminder-state.after-first" "$proof_root/t00-session/stop_loop_state"
 }
 
 test_stop_gate_ignores_cwd_eci_state() {
@@ -7303,6 +7341,10 @@ test_audit_sync_checker_fails_when_synced_file_missing() {
     grep -q "missing required file" "$out.err"
 }
 
+test_eci_wait_repair_cli_regression() {
+  bash "$ROOT/hooks/tests/test-eci-wait-repair.sh"
+}
+
 run_case "prompt state is silent and records HEAD" \
   test_prompt_state_is_silent_records_head_and_clears_bypass
 run_case "prompt state marks /side prompts" \
@@ -7399,6 +7441,42 @@ run_case "session snapshot preserves fresh markers in old state dirs" \
   test_session_snapshot_preserves_fresh_markers_in_old_state_dirs
 run_case "session snapshot refresh and active-marker cleanup safety" \
   "$ROOT/hooks/tests/test-session-snapshot-refresh.sh"
+run_case "Codex lifecycle source, receipt, and dispatcher authority" \
+  bash "$ROOT/hooks/tests/test-eci-active-help.sh"
+run_case "direct permissive lifecycle recovery" \
+  bash "$ROOT/hooks/tests/test-eci-session-permissive.sh"
+run_case "ordinary ledger state reconciles without record ceremony" \
+  bash "$ROOT/hooks/tests/test-eci-ledger-reconciliation.sh"
+run_case "direct current-session lifecycle ignores role labels" \
+  bash "$ROOT/hooks/tests/test-eci-role-neutral-lifecycle.sh"
+run_case "direct lifecycle visibility accepts semantic current markers" \
+  bash "$ROOT/hooks/tests/test-eci-lifecycle-visibility.sh"
+run_case "aggregate selection normalizes real current targets" \
+  bash "$ROOT/hooks/tests/test-eci-aggregate-selected-target-normalization.sh"
+run_case "ordinary off reconciles stale local history" \
+  bash "$ROOT/hooks/tests/test-eci-off-history-reconciliation.sh"
+run_case "ordinary wait normalizes local state without source ceremony" \
+  bash "$ROOT/hooks/tests/test-eci-wait-local-state-normalization.sh"
+run_case "R11 normal lifecycle recovery stays target-scoped" \
+  bash "$ROOT/hooks/tests/test-eci-lifecycle-normal-recovery.sh"
+run_case "Codex lifecycle source authority outside command validation" \
+  bash "$ROOT/hooks/tests/test-lifecycle-source-authority.sh"
+run_case "provider lifecycle dispatcher authority" \
+  bash "$ROOT/hooks/tests/test-eci-provider-dispatch.sh"
+run_case "planner-maintenance runtime receipt binding" \
+  bash "$ROOT/hooks/tests/test-eci-maintain-planner.sh"
+run_case "planner provenance uses a descriptor-pinned execution handoff" \
+  bash "$ROOT/hooks/tests/test-eci-planner-fd-handoff.sh"
+run_case "Codex runtime hooks use one canonical source root" \
+  bash "$ROOT/hooks/tests/test-codex-runtime-single-source.sh"
+run_case "Stop loop guidance deduplicates safely tracked repeated denials" \
+  bash "$ROOT/hooks/tests/test-stop-loop-guidance.sh"
+run_case "Stop ordinary callbacks continue without workflow ceremony" \
+  bash "$ROOT/hooks/tests/test-stop-ordinary-continuation.sh"
+run_case "Stop fast path deduplicates safely tracked repeated denials" \
+  bash "$ROOT/hooks/tests/test-eci-fast-path.sh"
+run_case "Stop marker scope deduplicates safely tracked repeated denials" \
+  bash "$ROOT/hooks/tests/test-eci-marker-scope.sh"
 run_case "PostCompact ECI refresh and policy contracts" \
   "$ROOT/hooks/tests/test-eci-post-compact-refresh.sh"
 run_case "PreToolUse configured-chain latency stays local and sub-second" \
@@ -7417,6 +7495,14 @@ run_case "ECI required-critic manifest gate contracts" \
   "$ROOT/hooks/tests/test-eci-review-gate.sh"
 run_case "validate-bash ECI classifier contracts" \
   bash "$ROOT/hooks/tests/test-validate-bash-classifier.sh"
+run_case "current-session ledger redirects retain concrete effects" \
+  bash "$ROOT/hooks/tests/test-current-session-ledger-append.sh"
+run_case "ECI aggregate command routing" \
+  bash "$ROOT/hooks/tests/test-eci-aggregate-command-routing.sh"
+run_case "ECI aggregate recovery" \
+  bash "$ROOT/hooks/tests/test-eci-aggregate-recovery.sh"
+run_case "ECI aggregate commit tree CAS" \
+  bash "$ROOT/hooks/tests/test-eci-aggregate-commit-tree-cas.sh"
 run_case "ECI finite command-plan parser contracts" \
   python3 "$ROOT/hooks/tests/test-eci-command-plan-parser.py"
 run_case "ECI command-gate mode contracts" \
@@ -7427,22 +7513,22 @@ run_case "ECI command syntax gating contracts" \
   bash "$ROOT/hooks/tests/test-eci-command-syntax-gating.sh"
 run_case "side session start is silent and binds stop bypass" \
   test_side_session_start_is_silent_and_binds_stop_bypass
-run_case "ECI gate blocks code apply_patch when marker exists" \
-  test_eci_gate_blocks_code_apply_patch
+run_case "ECI gate allows code apply_patch when marker exists" \
+  test_eci_gate_allows_code_apply_patch
 run_case "ECI gate skips invalid session id" \
   test_eci_gate_skips_invalid_session_id
 run_case "ECI gate denies malformed identity with active marker" \
   test_eci_gate_denies_malformed_identity_with_active_marker
-run_case "ECI gate routes edits without stop language" \
-  test_eci_gate_message_routes_edits_without_stop_language
+run_case "ECI gate allows edits without routing message" \
+  test_eci_gate_allows_edits_without_routing_message
 run_case "stop gate retains stop language" \
   test_stop_gate_message_retains_stop_language
 run_case "ECI gate ignores code apply_patch from cwd marker" \
   test_eci_gate_ignores_code_apply_patch_from_cwd_state
-run_case "ECI gate blocks code apply_patch from session marker" \
-  test_eci_gate_blocks_code_apply_patch_from_session_state
-run_case "ECI gate blocks CODEX_ROLE spoof through marker" \
-  test_eci_gate_blocks_codex_role_spoof
+run_case "ECI gate allows code apply_patch from session marker" \
+  test_eci_gate_allows_code_apply_patch_from_session_state
+run_case "ECI gate ignores CODEX_ROLE for a normal edit" \
+  test_eci_gate_ignores_codex_role_for_normal_edit
 run_case "subagent helper reads oversize metadata prefix" \
   test_subagent_helper_reads_oversize_metadata_prefix
 run_case "parent helper reads oversize metadata prefix" \
@@ -7669,8 +7755,8 @@ run_case "ECI gate allows markdown-only Write payload" \
   test_eci_gate_allows_markdown_only_write_payload
 run_case "ECI gate denies code Write payload" \
   test_eci_gate_denies_code_write_payload
-run_case "ECI gate protects high-level log anchor" \
-  test_eci_gate_protects_high_level_log_anchor
+run_case "ECI gate allows current-session high-level log and anchor updates" \
+  test_eci_gate_allows_current_session_high_level_log_and_anchor
 run_case "ECI gate denies code NotebookEdit payload" \
   test_eci_gate_denies_code_notebookedit_payload
 run_case "ECI gate denies mixed markdown/code apply_patch" \
@@ -7683,10 +7769,10 @@ run_case "hooks.json edit matcher includes NotebookEdit" \
   test_notebookedit_hook_config_is_wired
 run_case "hooks.json splits apply_patch and direct edit validators while preserving gates" \
   test_edit_write_hook_config_is_split_and_preserves_gates
-run_case "ATE gate denies markdown edits for lead role" \
-  test_ate_gate_denies_markdown_edits_for_lead
-run_case "ATE gate denies markdown edits for coordinator role" \
-  test_ate_gate_denies_markdown_edits_for_coordinator
+run_case "ATE gate allows markdown edits for lead role" \
+  test_ate_gate_allows_markdown_edits_for_lead
+run_case "ATE gate allows markdown edits for coordinator role" \
+  test_ate_gate_allows_markdown_edits_for_coordinator
 run_case "validate-apply-patch parses tool_input.input plan paths" \
   test_validate_apply_patch_blocks_plan_paths_from_input
 run_case "validate-apply-patch blocks Move to plan paths" \
@@ -7871,16 +7957,20 @@ run_case "validate-bash allows redirected go test" \
   test_validate_bash_allows_redirected_go_test
 run_case "validate-bash allows go test piped to tee" \
   test_validate_bash_allows_go_test_tee
-run_case "security reminder sees workflow Move to destination" \
-  test_security_reminder_sees_workflow_move_destination
+run_case "explicit security reminder sees workflow Move to destination" \
+  test_security_reminder_explicit_opt_in_sees_workflow_move_destination
+run_case "security reminder is explicit opt-in" \
+  bash "$ROOT/hooks/tests/test-security-reminder-opt-in.sh"
+run_case "edit dispatch keeps advisory output outside the provider envelope" \
+  test_pretooluse_edit_dispatch_separates_advisory_and_envelope
 run_case "stop gate blocks proof missing required sections" \
   test_stop_gate_blocks_missing_proof_sections
 run_case "stop gate continues clean inactive turn" \
   test_stop_gate_continues_clean_inactive_turn
-run_case "stop gate blocks activity marker" \
-  test_stop_gate_blocks_activity_marker
-run_case "stop gate blocks parent subagent tool call" \
-  test_stop_gate_blocks_parent_subagent_tool_call
+run_case "stop gate continues activity marker" \
+  test_stop_gate_continues_activity_marker
+run_case "stop gate continues parent subagent tool call" \
+  test_stop_gate_continues_parent_subagent_tool_call
 run_case "stop gate reports automated git checks for dirty state" \
   test_stop_gate_reports_automated_git_checks_for_dirty_state
 run_case "stop gate reports automated git checks for committed state" \
@@ -7897,8 +7987,8 @@ run_case "stop gate blocks gitleaks findings from committed state" \
   test_stop_gate_blocks_gitleaks_findings_from_committed_state
 run_case "stop gate blocks gitleaks execution failure" \
   test_stop_gate_blocks_gitleaks_execution_failure
-run_case "stop gate blocks ATE active state" \
-  test_stop_gate_blocks_ate_active_state
+run_case "stop gate continues ATE active state" \
+  test_stop_gate_continues_ate_active_state
 run_case "stop gate allows ATE awaiting user without other activity" \
   test_stop_gate_allows_ate_awaiting_user_without_other_activity
 run_case "stop gate accepts complete proof fixture" \
@@ -7933,8 +8023,8 @@ run_case "stop gate scopes freshness history across repos" \
   test_stop_gate_allows_same_session_history_across_repos
 run_case "stop gate blocks pre-existing commit after HEAD advance" \
   test_stop_gate_blocks_preexisting_commit_after_head_advance
-run_case "stop gate adds loop reminder after five blocks" \
-  test_stop_gate_adds_loop_reminder_after_five_blocks
+run_case "stop gate gives one reminder then continues identical callbacks" \
+  test_stop_gate_continues_after_one_identical_reminder
 run_case "stop gate ignores cwd-scoped ECI marker" \
   test_stop_gate_ignores_cwd_eci_state
 run_case "stop gate ignores cwd-scoped ECI marker without cwd field" \
@@ -8011,6 +8101,8 @@ run_case "eci-active resume rejects tampered report" \
   test_eci_active_resume_rejects_tampered_report
 run_case "stop gate rejects invalid user-owned wait state" \
   test_stop_gate_rejects_invalid_user_owned_wait_state
+run_case "eci-active repairs malformed user-owned wait state with exact authorization" \
+  test_eci_wait_repair_cli_regression
 run_case "eci-active status uses legacy reserved marker for same cwd" \
   test_eci_active_status_uses_legacy_reserved_marker_same_cwd
 run_case "eci-active off requires manifest for legacy marker" \

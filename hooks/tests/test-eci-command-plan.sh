@@ -133,21 +133,54 @@ assert_denied() {
   }
 }
 
-assert_worker_compound_denied() {
+assert_gate_denied() {
   local provider="$1" role="$2" active="$3" command="$4" output
   output="$TMP_ROOT/output.json"
   run_hook "$provider" "$role" "$active" "$command" "$output"
   jq -e '
     .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COMMAND_NONLITERAL_DENIED]")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operation=direct-argv")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operator/token=&&")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("rejected command=")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: split at the reported operator/token"))
+    (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("phase=PreToolUse")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null || {
-    printf 'expected worker compound nonliteral denial: provider=%s role=%s active=%s command=%q\n' \
+    printf 'expected gate denial: provider=%s role=%s active=%s command=%q\n' \
       "$provider" "$role" "$active" "$command" >&2
     cat "$output" >&2
+    return 1
+  }
+}
+
+# assert_compound_keeps_direct_denial proves that a parser-attested compound
+# cannot skip the named route selected by one of its direct segments.
+#
+# Example: `printf ok; rm -f target` must retain rm's direct-route denial,
+# rather than inheriting printf's generic allow.
+assert_compound_keeps_direct_denial() {
+  local provider="$1" role="$2" active="$3" prefix="$4" segment="$5"
+  local direct_output compound_output direct_code
+  direct_output="$TMP_ROOT/direct-segment-output.json"
+  compound_output="$TMP_ROOT/compound-segment-output.json"
+  run_hook "$provider" "$role" "$active" "$segment" "$direct_output"
+  if ! direct_code="$(jq -r '
+    .hookSpecificOutput.permissionDecisionReason |
+    capture("\\[(?<code>ECI_[A-Z0-9_]+)\\]").code
+  ' "$direct_output" 2>/dev/null)" || [ -z "$direct_code" ]; then
+    printf 'expected direct named-route denial: provider=%s role=%s active=%s command=%q\n' \
+      "$provider" "$role" "$active" "$segment" >&2
+    cat "$direct_output" >&2
+    return 1
+  fi
+  run_hook "$provider" "$role" "$active" "$prefix; $segment" "$compound_output"
+  jq -e --arg code "[$direct_code]" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains($code)) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COMMAND_NONLITERAL_DENIED]") | not)
+  ' "$compound_output" >/dev/null || {
+    printf 'expected compound to retain direct %s denial: provider=%s role=%s active=%s command=%q\n' \
+      "$direct_code" "$provider" "$role" "$active" "$prefix; $segment" >&2
+    cat "$compound_output" >&2
     return 1
   }
 }
@@ -383,13 +416,8 @@ for provider in codex kimi; do
       assert_allowed "$provider" "$role" "$active" 'adb devices -l'
       assert_allowed "$provider" "$role" "$active" 'printf "quoted && | ;"'
       assert_allowed "$provider" "$role" "$active" 'printf ""'
-      if [ "$role" = worker ] && [ "$active" = active ]; then
-        assert_worker_compound_denied "$provider" "$role" "$active" \
-          'printf one && printf two || printf three; printf four | sha256sum'
-      else
-        assert_allowed "$provider" "$role" "$active" \
-          'printf one && printf two || printf three; printf four | sha256sum'
-      fi
+      assert_allowed "$provider" "$role" "$active" \
+        'printf one && printf two || printf three; printf four | sha256sum'
       assert_allowed "$provider" "$role" "$active" \
         'printf 1; printf 2; printf 3; printf 4; printf 5; printf 6; printf 7; printf 8'
       assert_denied "$provider" "$role" "$active" 'env | sort' \
@@ -471,20 +499,21 @@ for provider in codex kimi; do
     "cat $CODEX_ROOT/hooks/lib/eci-environment-command.sh"
   assert_allowed "$provider" worker active \
     "git diff --binary -- hooks/validate-bash.sh | sha256sum"
-  assert_worker_compound_denied "$provider" worker active \
+  assert_allowed "$provider" worker active \
     "git rev-parse HEAD && git -C $CODEX_ROOT rev-parse HEAD && git status --short --untracked-files=all"
   assert_allowed "$provider" worker active \
     "ps -eo pid,ppid,etimes,stat,args | rg validate-bash"
-  assert_allowed "$provider" worker active 'git archive HEAD'
+  assert_gate_denied "$provider" worker active 'git archive HEAD'
   for git_mutation in \
     'git commit -m nope' \
-    'git reset --hard HEAD' \
     'git worktree add /tmp/eci-worker-tree HEAD' \
     'git branch feature' \
     'git remote set-url origin https://example.invalid/repo.git'; do
     assert_denied "$provider" worker active "$git_mutation" \
       ECI_WORKER_GIT_OWNERSHIP_DENIED
   done
+  assert_denied "$provider" worker active 'git reset --hard HEAD' \
+    ECI_BROAD_DESTRUCTIVE_DENIED
 
   proof_root="$TMP_ROOT/$provider-worker-active-proof"
   if [ "$provider" = kimi ]; then
@@ -517,5 +546,16 @@ for provider in codex kimi; do
   assert_allowed "$provider" worker active \
     "cat $HELPER_HARDLINK"
 done
+
+assert_allowed codex coordinator active 'go test ./pkg/chathandler/platform/youtube -count=1'
+assert_allowed codex coordinator active 'id'
+assert_allowed codex coordinator active 'go test ./pkg/chathandler/platform/youtube -count=1; id'
+assert_allowed codex coordinator active \
+  "sed -n '1p' hooks/validate-bash.sh && printf ok && sed -n '1p' hooks/validate-bash.sh"
+assert_plan_denied codex coordinator active 'printf ok; env' ECI_ENVIRONMENT_ENUMERATION_DENIED
+assert_plan_denied codex worker active 'printf ok; env' ECI_ENVIRONMENT_ENUMERATION_DENIED
+assert_denied codex coordinator active 'printf ok; rm -f /tmp/x' ECI_TMPDIR_SYSTEM_ROOT
+assert_compound_keeps_direct_denial codex coordinator active 'printf ok' \
+  "rm -f $TMP_ROOT/not-a-generated-cleanup-target"
 
 printf 'ECI command-plan tests passed\n'

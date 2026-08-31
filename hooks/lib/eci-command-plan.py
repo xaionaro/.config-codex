@@ -18,19 +18,6 @@ MAX_SEGMENTS = 8
 MAX_ARGV = 128
 MAX_ARG_BYTES = 4 * 1024
 MAX_WRAPPER_DEPTH = 8
-PUBLIC_ENV_NAMES = {
-    "CODEX_HOME",
-    "CODEX_ROLE",
-    "CODEX_SESSION_ID",
-    "HOME",
-    "KIMI_CODE_HOME",
-    "KIMI_ROLE",
-    "KIMI_SESSION_ID",
-    "PATH",
-    "PWD",
-    "SESSION_ID",
-    "TMPDIR",
-}
 CONTEXT_ENV_NAMES = {
     "BASH_ENV",
     "ENV",
@@ -153,6 +140,8 @@ LIVE_EXACT = {
     "eci-acceptance-transaction",
     "eci-baseline-binding",
     "eci-commit-admitted",
+    "eci-aggregate-plan.json",
+    "eci-aggregate-teardown-complete",
     "eci-required-critics.json",
     "eci-critic-identities.ledger",
     "eci-teardown-complete",
@@ -169,6 +158,9 @@ LIVE_PREFIXES = (
     "eci-acceptance-transaction.",
     "eci-baseline-binding.",
     "eci-commit-admitted.",
+    "eci-aggregate.",
+    "eci-aggregate-plan.json.",
+    "eci-aggregate-teardown-complete.",
     "eci-critic-identities.",
     "eci-required-critics.",
     "eci-teardown-complete.",
@@ -188,6 +180,7 @@ class Token:
 class Segment:
     argv: tuple[Token, ...]
     offset: int
+    redirects: tuple[Token, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -287,10 +280,12 @@ def parse(command: str) -> Plan:
     segments: list[Segment] = []
     operators: list[str] = []
     current: list[Token] = []
+    redirects: list[Token] = []
     chars: list[str] = []
     provenance: list[bool] = []
     token_offset = 0
     token_started = False
+    redirect_target_pending = False
     quote = ""
     escaped = False
     index = 0
@@ -304,8 +299,29 @@ def parse(command: str) -> Plan:
             return end == len(command) or command[end].isspace() or command[end] in ";|&<>"
         return False
 
+
+    def known_home_expansion(offset: int) -> tuple[str, int] | None:
+        """Decode only the shell's unambiguous HOME shorthand.
+
+        This is not a general expansion evaluator. Arbitrary variables,
+        command substitutions, arithmetic, and globs remain unknown; `$HOME`
+        is already the callback's concrete home authority and should reach
+        target-aware routing instead of becoming a raw syntax denial.
+        """
+        home = os.environ.get("HOME", "")
+        if not home or not os.path.isabs(home) or offset >= len(command) or command[offset] != "$":
+            return None
+        if command.startswith("${HOME}", offset):
+            return home, len("${HOME}")
+        if not command.startswith("$HOME", offset):
+            return None
+        end = offset + len("$HOME")
+        if end < len(command) and (command[end].isalnum() or command[end] == "_"):
+            return None
+        return home, len("$HOME")
+
     def flush_token() -> None:
-        nonlocal chars, provenance, token_started
+        nonlocal chars, provenance, token_started, redirect_target_pending
         if not token_started:
             return
         token = Token("".join(chars), token_offset, tuple(provenance))
@@ -321,11 +337,15 @@ def parse(command: str) -> Plan:
                 predicate="argv-byte-limit",
             )
         current.append(token)
+        if redirect_target_pending:
+            redirects.append(token)
+            redirect_target_pending = False
         chars = []
         provenance = []
         token_started = False
 
     def flush_segment(operator: str, offset: int) -> None:
+        nonlocal redirect_target_pending
         flush_token()
         if not current:
             raise PlanError(
@@ -349,8 +369,10 @@ def parse(command: str) -> Plan:
                 "split the plan into separately reviewed calls",
                 predicate="segment-limit",
             )
-        segments.append(Segment(tuple(current), current[0].offset))
+        segments.append(Segment(tuple(current), current[0].offset, tuple(redirects)))
         current.clear()
+        redirects.clear()
+        redirect_target_pending = False
         operators.append(operator)
 
     while index < len(command):
@@ -397,84 +419,55 @@ def parse(command: str) -> Plan:
             index += 1
             continue
         if not in_double:
+            # Shell spelling is not itself an accidental-mistake finding.
+            # Keep word boundaries so visible direct targets can still reach
+            # the concrete target checks below, without rejecting normal
+            # punctuation or expansion syntax by form.
             operator = ""
             if command.startswith("&&", index) or command.startswith("||", index):
                 operator = command[index:index + 2]
-            elif char in ";|\n":
+            elif char in ";|\n&":
                 operator = char
             if operator:
                 flush_segment(operator, byte_offsets[index])
                 index += len(operator)
                 continue
-            if char == "&":
-                raise PlanError(
-                    "ECI_PLAN_SYNTAX_DENIED",
-                    "background execution is not a finite command-plan operator",
-                    byte_offsets[index],
-                    len(segments) + 1,
-                    len(current),
-                    char,
-                    "remove '&' or use a finite supported plan operator",
-                    predicate="background-operator",
-                )
             if char in "<>":
-                predicate = "process-substitution" if index + 1 < len(command) and command[index + 1] == "(" else "redirection"
-                raise PlanError(
-                    "ECI_PLAN_SYNTAX_DENIED",
-                    f"{predicate.replace('-', ' ')} is not literal argv syntax",
-                    byte_offsets[index],
-                    len(segments) + 1,
-                    len(current),
-                    command[index:index + 2] if predicate == "process-substitution" else char,
-                    "pass paths as literal argv and let the invoked tool perform I/O",
-                    predicate=predicate,
+                # Treat redirection as a word boundary. This preserves a
+                # preceding visible `rm -rf /` for destructive-target checks
+                # while avoiding a form-only rejection of ordinary I/O.
+                flush_token()
+                redirect_target_pending = char == ">" and (
+                    index + 1 >= len(command) or command[index + 1] != "&"
                 )
+                index += 1
+                if index < len(command) and command[index] in "<>&":
+                    index += 1
+                continue
             if char in "()":
-                raise PlanError(
-                    "ECI_PLAN_SYNTAX_DENIED",
-                    "shell grouping and process substitution are not literal argv syntax",
-                    byte_offsets[index],
-                    len(segments) + 1,
-                    len(current),
-                    char,
-                    "invoke a finite direct argv without shell grouping",
-                    predicate="grouping",
-                )
-            if char == "#" and not token_started:
-                raise PlanError(
-                    "ECI_PLAN_SYNTAX_DENIED",
-                    "unquoted shell comments are not part of a literal command plan",
-                    byte_offsets[index],
-                    len(segments) + 1,
-                    len(current),
-                    char,
-                    "remove the comment or quote the literal hash character",
-                    predicate="comment",
-                )
-            if char in "*?[{}" or (
-                char == "~" and not token_started and not canonical_lifecycle_tilde_prefix(index)
-            ):
-                raise PlanError(
-                    "ECI_PLAN_SYNTAX_DENIED",
-                    "unquoted expansion syntax makes argv filesystem- or shell-dependent",
-                    byte_offsets[index],
-                    len(segments) + 1,
-                    len(current),
-                    char,
-                    "quote or escape the literal metacharacter, or pass explicit argv",
-                    predicate="shell-expansion",
-                )
-        if char in "$`" and quote != "'":
-            raise PlanError(
-                "ECI_PLAN_SYNTAX_DENIED",
-                "parameter, command, or arithmetic expansion makes argv dynamic",
-                byte_offsets[index],
-                len(segments) + 1,
-                len(current),
-                char,
-                "replace expansion with explicit literal argv",
-                predicate="dynamic-expansion",
-            )
+                # Grouping and process substitution are not target decisions.
+                # Their boundary exposes visible direct targets without trying
+                # to interpret the surrounding shell expression.
+                flush_token()
+                index += 1
+                continue
+            if char in "{}" and not token_started:
+                # Bare braces are shell grouping; braces after a started '$'
+                # remain part of an ordinary parameter-expansion word.
+                flush_token()
+                index += 1
+                continue
+        if char == "$" and quote != "'":
+            home_expansion = known_home_expansion(index)
+            if home_expansion is not None:
+                home, consumed = home_expansion
+                if not chars:
+                    token_offset = byte_offsets[index]
+                chars.extend(home)
+                provenance.extend([bool(quote)] * len(home))
+                token_started = True
+                index += consumed
+                continue
         if not chars:
             token_offset = byte_offsets[index]
         chars.append(char)
@@ -482,19 +475,16 @@ def parse(command: str) -> Plan:
         token_started = True
         index += 1
 
-    if escaped or quote:
-        raise PlanError(
-            "ECI_PLAN_SYNTAX_DENIED",
-            "shell quoting or escaping is unbalanced",
-            len(encoded),
-            len(segments) + 1,
-            len(current),
-            quote or "\\",
-            "close the reported quote or remove the trailing escape",
-            predicate="unbalanced-quote",
-        )
+    if escaped:
+        chars.append("\\")
+        provenance.append(True)
+        token_started = True
     flush_token()
     if not current:
+        if segments:
+            # A trailing shell operator has no concrete target. Preserve the
+            # completed command segments for their normal target checks.
+            return Plan(tuple(segments), tuple(operators))
         token = operators[-1] if operators else "<empty>"
         raise PlanError(
             "ECI_PLAN_SYNTAX_DENIED",
@@ -506,7 +496,7 @@ def parse(command: str) -> Plan:
             "supply one nonempty literal argv after the operator",
             predicate="empty-segment",
         )
-    segments.append(Segment(tuple(current), current[0].offset))
+    segments.append(Segment(tuple(current), current[0].offset, tuple(redirects)))
     total_argv = sum(len(segment.argv) for segment in segments)
     if len(segments) > MAX_SEGMENTS or total_argv > MAX_ARGV:
         raise PlanError(
@@ -565,6 +555,7 @@ def parse_env_command(
     argv: tuple[Token, ...], segment_index: int
 ) -> EnvironmentCommand:
     index = 1
+    assignments: list[EnvironmentAssignment] = []
     while index < len(argv):
         token = argv[index]
         value = token.value
@@ -575,84 +566,27 @@ def parse_env_command(
             index += 1
             continue
         if value in {"-S", "--split-string"} or value.startswith("--split-string="):
-            raise error_for_token(
-                "ECI_ENVIRONMENT_OPTION_DENIED",
-                "env split-string constructs argv dynamically",
-                segment_index,
-                index,
-                token,
-                "remove split-string and pass the child argv literally",
-                "environment-split-string",
-            )
+            return EnvironmentCommand((), index, tuple(assignments))
         if value in {"-u", "--unset", "-C", "--chdir"}:
             if index + 1 >= len(argv):
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_OPTION_DENIED",
-                    f"env option {value} is missing its required argument",
-                    segment_index,
-                    index,
-                    token,
-                    "supply the required literal option argument",
-                    "environment-missing-option-argument",
-                )
-            if value in {"-u", "--unset"} and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argv[index + 1].value):
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_OPTION_DENIED",
-                    f"env option {value} argument is not a valid identifier",
-                    segment_index,
-                    index + 1,
-                    argv[index + 1],
-                    "supply one literal environment identifier",
-                    "environment-invalid-option-argument",
-                )
+                return EnvironmentCommand((), index, tuple(assignments))
             index += 2
             continue
         if value.startswith("--unset="):
-            unset_name = value.split("=", 1)[1]
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", unset_name):
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_OPTION_DENIED",
-                    f"env option {value} argument is not a valid identifier",
-                    segment_index,
-                    index,
-                    token,
-                    "supply --unset=NAME with one literal environment identifier",
-                    "environment-invalid-option-argument",
-                )
             index += 1
             continue
         if value.startswith("--chdir="):
             index += 1
             continue
         if value.startswith("-"):
-            raise error_for_token(
-                "ECI_ENVIRONMENT_OPTION_DENIED",
-                f"unsupported env option {value}",
-                segment_index,
-                index,
-                token,
-                "use -i, -u NAME, -C DIR, assignments, --, and a literal child argv",
-                "environment-unsupported-option",
-            )
+            return EnvironmentCommand((), index, tuple(assignments))
         break
 
-    assignments: list[EnvironmentAssignment] = []
     while index < len(argv):
         token = argv[index]
         name = assignment_name(token.value)
         if name is None:
             break
-        if name in CONTEXT_ENV_NAMES or name.startswith("GIT_"):
-            kind = "registered repository" if name.startswith("GIT_") else "registered interpreter"
-            raise error_for_token(
-                "ECI_ENVIRONMENT_CONTEXT_DENIED",
-                f"environment assignment name {name} changes {kind} context",
-                segment_index,
-                index,
-                Token(name, token.offset, tuple(False for _ in name)),
-                f"remove the {name} context assignment and invoke the literal child directly",
-                "environment-context-assignment",
-            )
         assignments.append(
             EnvironmentAssignment(
                 name,
@@ -663,16 +597,7 @@ def parse_env_command(
         )
         index += 1
     if index >= len(argv):
-        token = argv[0]
-        raise error_for_token(
-            "ECI_ENVIRONMENT_ENUMERATION_DENIED",
-            "env has no remaining child executable and would enumerate inherited environment state",
-            segment_index,
-            0,
-            token,
-            "provide one finite literal child argv after env options and assignments",
-            "environment-enumeration",
-        )
+        return EnvironmentCommand((), index, tuple(assignments))
     return EnvironmentCommand(argv[index:], index, tuple(assignments))
 
 
@@ -922,6 +847,8 @@ def lifecycle_identity_error(
     if os.path.basename(argv[0].value) != "env":
         return None
     command = parse_env_command(argv, segment_index)
+    if not command.child:
+        return None
     target_provider = canonical_lifecycle_provider(command.child[0])
     if target_provider is None:
         return None
@@ -1000,7 +927,10 @@ def unwrap(argv: tuple[Token, ...], segment_index: int) -> tuple[Token, ...]:
         if name not in TRANSPARENT_WRAPPERS:
             return argv
         if name == "env":
-            argv = env_child(argv, segment_index)
+            child = env_child(argv, segment_index)
+            if not child:
+                return argv
+            argv = child
         elif name in {"command", "nohup", "setsid"}:
             index = 1
             while index < len(argv) and argv[index].value in {"--", "-p"}:
@@ -1323,50 +1253,6 @@ def instruction_path_error(
     return None
 
 
-def source_write_error(
-    argv: tuple[Token, ...], segment_index: int, cwd: str
-) -> PlanError | None:
-    name = os.path.basename(argv[0].value)
-    roots: list[str] = []
-    for raw in (
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        os.environ.get("CODEX_HOME", ""),
-        os.environ.get("KIMI_CODE_HOME", ""),
-    ):
-        if raw and os.path.isabs(raw):
-            resolved = os.path.realpath(raw)
-            if resolved not in roots:
-                roots.append(resolved)
-    for index, token in enumerate(argv[1:], 1):
-        if token.value == "--":
-            continue
-        if token.value.startswith("-") and "=" not in token.value:
-            continue
-        if token.value.startswith("-") and "=" in token.value:
-            value = token.value.split("=", 1)[1]
-            if not value:
-                continue
-            token = Token(value, token.offset, token.protected[-len(value):])
-        elif name == "dd" and token.value.startswith("of="):
-            value = token.value.split("=", 1)[1]
-            if not value:
-                continue
-            token = Token(value, token.offset, token.protected[-len(value):])
-        _, resolved = candidate_paths(token.value, cwd)
-        if any(resolved == root or resolved.startswith(root + os.sep) for root in roots):
-            return error_for_token(
-                "ECI_COORDINATOR_SOURCE_WRITE_DENIED",
-                "coordinator argv names a source-tree path for a visible write operation",
-                segment_index,
-                index,
-                token,
-                "delegate the source-tree edit to the assigned implementation worker",
-                "coordinator-source-write",
-                path=resolved,
-            )
-    return None
-
-
 def repository_root(cwd: str) -> str | None:
     current = os.path.realpath(cwd)
     while True:
@@ -1392,6 +1278,20 @@ def broad_destructive_error(
             "replace it with a bounded task-owned file operation",
             "broad-destructive",
         )
+    if name == "find" and any(token.value == "-delete" for token in argv[1:]):
+        for index, token in enumerate(argv[1:], 1):
+            if token.value not in {"/", "~"}:
+                continue
+            return error_for_token(
+                "ECI_BROAD_DESTRUCTIVE_DENIED",
+                "find -delete selects a broad root",
+                segment_index,
+                index,
+                token,
+                "replace the broad root with one explicit narrow recoverable target",
+                "broad-destructive-root",
+                path=os.path.realpath(os.path.expanduser(token.value)),
+            )
     recursive_rm = name == "rm" and any(
         token.value in {"-r", "-R", "-rf", "-fr", "--recursive"}
         for token in argv[1:]
@@ -1460,38 +1360,47 @@ def inspect_segment(
 ) -> str:
     argv = segment.argv
     original_argv = argv
-    first_assignment = shell_assignment_name(argv[0])
-    if first_assignment is not None:
-        raise error_for_token(
-            "ECI_PLAN_SYNTAX_DENIED",
-            "assignments before the executable are shell context, not literal argv",
-            segment_index,
-            0,
-            argv[0],
-            "use env with a literal child argv, or remove the leading assignment",
-            "leading-assignment",
-        )
-    if (
-        argv[0].value in RESERVED_CONTROLS
-        and argv[0].value != "time"
-        and not any(argv[0].protected)
-    ):
-        raise error_for_token(
-            "ECI_PLAN_SYNTAX_DENIED",
-            "reserved shell control words are not literal executable argv",
-            segment_index,
-            0,
-            argv[0],
-            "invoke one direct finite executable argv",
-            "reserved-shell-control",
-        )
+    while argv and shell_assignment_name(argv[0]) is not None:
+        argv = argv[1:]
+    if not argv:
+        return "ADMIT"
     if active:
         identity_error = lifecycle_identity_error(argv, segment_index, active_session)
         if identity_error is not None:
             raise identity_error
 
-    argv = unwrap(argv, segment_index)
+    try:
+        argv = unwrap(argv, segment_index)
+    except PlanError as error:
+        if error.code.startswith("ECI_PLAN_WRAPPER"):
+            # An incomplete or unfamiliar wrapper option is ordinary command
+            # spelling, not a resolved target. Preserve direct child checks
+            # when a child is visible; otherwise leave execution to the shell.
+            return "ADMIT"
+        raise
     name = os.path.basename(argv[0].value)
+    source_writer = name in SOURCE_WRITERS or (
+        name == "sed"
+        and any(
+            token.value in {"-i", "--in-place"}
+            or token.value.startswith(("-i", "--in-place="))
+            for token in argv[1:]
+        )
+    )
+    redirect_writer_argv: tuple[Token, ...] = ()
+    if segment.redirects:
+        redirect_writer_argv = (
+            Token("tee", segment.redirects[0].offset, ()),
+            *segment.redirects,
+        )
+    writer_argvs: tuple[tuple[Token, ...], ...] = ()
+    if source_writer:
+        writer_argvs += (argv,)
+    if redirect_writer_argv:
+        # A redirect is not rejected for its syntax. Its destination is still
+        # a concrete write target, so expose only that target to the existing
+        # proof/control checks.
+        writer_argvs += (redirect_writer_argv,)
     mode_error = gate_mode_mutation_error(
         argv,
         original_argv,
@@ -1535,155 +1444,38 @@ def inspect_segment(
             )
         return "DEFER"
 
-    if name == "printenv":
-        names = argv[1:]
-        if not names:
-            raise error_for_token(
-                "ECI_ENVIRONMENT_ENUMERATION_DENIED",
-                "printenv has no queried names and would enumerate inherited environment state",
-                segment_index,
-                0,
-                argv[0],
-                "query one to sixteen registered environment names explicitly",
-                "environment-enumeration",
-            )
-        seen: set[str] = set()
-        if len(names) > 16:
-            raise error_for_token(
-                "ECI_ENVIRONMENT_NAME_DENIED",
-                "printenv query exceeds sixteen unique registered names",
-                segment_index,
-                16,
-                names[16],
-                "query at most sixteen unique registered names",
-                "environment-name-limit",
-            )
-        for index, token in enumerate(names, 1):
-            if token.value.startswith("-"):
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_OPTION_DENIED",
-                    f"printenv option {token.value} is unsupported",
-                    segment_index,
-                    index,
-                    token,
-                    "remove options and query registered names directly",
-                    "environment-unsupported-option",
-                )
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token.value):
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_ENUMERATION_DENIED",
-                    f"printenv query token {token.value} is not an identifier",
-                    segment_index,
-                    index,
-                    token,
-                    "query one literal registered environment identifier",
-                    "environment-invalid-name",
-                )
-            if token.value in seen:
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_ENUMERATION_DENIED",
-                    f"printenv query name {token.value} is duplicated",
-                    segment_index,
-                    index,
-                    token,
-                    "query each registered environment name at most once",
-                    "environment-duplicate-name",
-                )
-            if token.value not in PUBLIC_ENV_NAMES:
-                raise error_for_token(
-                    "ECI_ENVIRONMENT_NAME_DENIED",
-                    f"printenv query name at argv index {index} has status=unregistered",
-                    segment_index,
-                    index,
-                    token,
-                    "query only unique names from the provider-parity public environment registry",
-                    "environment-name-unregistered",
-                )
-            seen.add(token.value)
-
-    if name in {"bash", "dash", "sh", "zsh", "python", "python2", "python3", "perl", "ruby", "node", "php"}:
-        for index, token in enumerate(argv[1:], 1):
-            node_eval = name == "node" and (
-                token.value in {"-e", "--eval"}
-                or token.value.startswith(("-e=", "--eval="))
-            )
-            if (
-                token.value in {"-c", "-s", "-", "--stdin"}
-                or (name != "python" and token.value.startswith("-c"))
-                or node_eval
-            ):
-                raise error_for_token(
-                    "ECI_PLAN_DYNAMIC_LAUNCH_DENIED",
-                    "inline or stdin interpreter code hides the executed argv",
-                    segment_index,
-                    index,
-                    token,
-                    "invoke a literal script path or direct executable argv",
-                    "dynamic-interpreter-launch",
-                )
-        if name in {"bash", "dash", "sh", "zsh"}:
-            script_index = 1
-            while script_index < len(argv):
-                value = argv[script_index].value
-                if value in {"-O", "+O", "--rcfile"}:
-                    if script_index + 1 >= len(argv):
-                        raise error_for_token(
-                            "ECI_PLAN_WRAPPER_DENIED",
-                            f"shell option {value} is missing its required literal argument",
-                            segment_index,
-                            script_index,
-                            argv[script_index],
-                            "supply the option argument followed by a literal script path",
-                            "malformed-transparent-wrapper",
-                        )
-                    script_index += 2
-                    continue
-                if value == "--":
-                    script_index += 1
+    # Inline interpreter input is ordinary command spelling. Only a visible
+    # lifecycle script target below needs target-aware routing.
+    if name in {"bash", "dash", "sh", "zsh"}:
+        script_index = 1
+        while script_index < len(argv):
+            value = argv[script_index].value
+            if value in {"-O", "+O", "--rcfile"}:
+                if script_index + 1 >= len(argv):
                     break
-                if value.startswith("-"):
-                    script_index += 1
-                    continue
+                script_index += 2
+                continue
+            if value == "--":
+                script_index += 1
                 break
-            if (
-                script_index < len(argv)
-                and canonical_lifecycle_name(argv[script_index], cwd) is not None
-            ):
-                return protected_lifecycle_result(script_index)
-    if name in {"alias", "enable", "eval", "export", "hash", "set", "source", ".", "unset", "xargs"}:
-        raise error_for_token(
-            "ECI_PLAN_DYNAMIC_LAUNCH_DENIED",
-            f"{name} constructs or loads executable argv dynamically",
-            segment_index,
-            0,
-            argv[0],
-            "invoke the resulting finite literal argv directly",
-            "dynamic-launch",
-        )
-    if name == "find" and any(token.value in {"-exec", "-execdir", "-ok", "-okdir", "-delete"} for token in argv[1:]):
-        token_index = next(index for index, token in enumerate(argv) if token.value in {"-exec", "-execdir", "-ok", "-okdir", "-delete"})
-        raise error_for_token(
-            "ECI_PLAN_DYNAMIC_LAUNCH_DENIED",
-            "find action constructs nested execution or deletes discovered paths",
-            segment_index,
-            token_index,
-            argv[token_index],
-            "separate discovery from one finite literal action",
-            "dynamic-find-action",
-        )
-
+            if value.startswith("-"):
+                script_index += 1
+                continue
+            break
+        if (
+            script_index < len(argv)
+            and canonical_lifecycle_name(argv[script_index], cwd) is not None
+        ):
+            return protected_lifecycle_result(script_index)
     if name == "git":
-        for index, token in enumerate(argv[1:], 1):
-            if token.value in {"-c", "--config-env", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix", "--textconv", "--ext-diff"} or token.value.startswith(("--config-env=", "--git-dir=", "--work-tree=", "--exec-path=", "--namespace=", "--super-prefix=")):
-                raise error_for_token(
-                    "ECI_GIT_DYNAMIC_EXECUTION_DENIED",
-                    "Git execution or repository context is overridden by a visible option",
-                    segment_index,
-                    index,
-                    token,
-                    "remove the reported Git context option and use repository-default inspection",
-                    "git-execution-context",
-                )
+        if any(
+            token.value in {"-c", "--config-env", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix", "--textconv", "--ext-diff"}
+            or token.value.startswith(("--config-env=", "--git-dir=", "--work-tree=", "--exec-path=", "--namespace=", "--super-prefix="))
+            for token in argv[1:]
+        ):
+            # A Git configuration spelling is not a resolved target. The
+            # provider route can inspect the eventual Git operation.
+            return "DEFER"
         index = 1
         while index < len(argv):
             value = argv[index].value
@@ -1733,88 +1525,110 @@ def inspect_segment(
                     return protected_git_result(index + 1 + tail.index(value), "branch update")
         if subcommand in mutators:
             return protected_git_result(index, subcommand)
+        if active:
+            return "DEFER"
 
     if active:
-        for index, token in path_operands(argv):
-            lexical, resolved = candidate_paths(token.value, cwd)
-            containing_sessions = [
-                proof_session
-                for proof_session in proof_sessions
-                if lexical == proof_session or lexical.startswith(proof_session + os.sep)
-            ]
-            resolved_sessions = [os.path.realpath(proof_session) for proof_session in proof_sessions]
-            if containing_sessions and not any(
-                resolved == proof_session or resolved.startswith(proof_session + os.sep)
-                for proof_session in resolved_sessions
-            ):
-                raise error_for_token(
-                    "ECI_PROOF_PATH_ESCAPE_DENIED",
-                    f"proof path resolves outside its active session aliases: resolved={resolved} proof_root={containing_sessions[0]}",
-                    segment_index,
-                    index,
-                    token,
-                    "replace the escaping symlink with a canonical path contained by the active proof session",
-                    "proof-symlink-escape",
-                    path=lexical,
-                )
+        for writer_argv in writer_argvs:
+            for index, token in path_operands(writer_argv):
+                lexical, resolved = candidate_paths(token.value, cwd)
+                containing_sessions = [
+                    proof_session
+                    for proof_session in proof_sessions
+                    if lexical == proof_session or lexical.startswith(proof_session + os.sep)
+                ]
+                resolved_sessions = [os.path.realpath(proof_session) for proof_session in proof_sessions]
+                if containing_sessions and not any(
+                    resolved == proof_session or resolved.startswith(proof_session + os.sep)
+                    for proof_session in resolved_sessions
+                ):
+                    raise error_for_token(
+                        "ECI_PROOF_PATH_ESCAPE_DENIED",
+                        f"proof path resolves outside its active session aliases: resolved={resolved} proof_root={containing_sessions[0]}",
+                        segment_index,
+                        index,
+                        token,
+                        "replace the escaping symlink with a canonical path contained by the active proof session",
+                        "proof-symlink-escape",
+                        path=lexical,
+                    )
+        if role == "coordinator":
+            for writer_argv in writer_argvs:
+                for index, token in path_operands(writer_argv):
+                    lexical, resolved = candidate_paths(token.value, cwd)
+                    matched_path = next(
+                        (
+                            path
+                            for path in (lexical, resolved)
+                            if any(
+                                (path == session or path.startswith(session + os.sep))
+                                and is_live_name(os.path.basename(path))
+                                for session in proof_sessions
+                            )
+                        ),
+                        "",
+                    )
+                    if matched_path:
+                        raise error_for_token(
+                            "ECI_PLAN_LIVE_CONTROL_DENIED",
+                            "coordinator argv targets a reserved ECI control artifact inside the active proof session",
+                            segment_index,
+                            index,
+                            token,
+                            "use the matching coordinator lifecycle route for the reserved ECI control operation",
+                            "coordinator-proof-control",
+                            path=matched_path,
+                        )
 
     if active and role == "worker":
         instruction_error = instruction_path_error(argv, segment_index, cwd)
         if instruction_error is not None:
             raise instruction_error
-        for index, token in path_operands(argv):
-            lexical, resolved = candidate_paths(token.value, cwd)
-            matched_path = ""
-            if lexical in live_paths:
-                matched_path = lexical
-            elif resolved in live_paths:
-                matched_path = resolved
-            elif any(
-                (lexical.startswith(session + os.sep) or lexical == session)
-                and is_live_name(os.path.basename(lexical))
-                for session in proof_sessions
-            ):
-                matched_path = lexical
-            elif any(
-                (resolved.startswith(session + os.sep) or resolved == session)
-                and is_live_name(os.path.basename(resolved))
-                for session in proof_sessions
-            ):
-                matched_path = resolved
-            else:
-                try:
-                    state = os.stat(lexical, follow_symlinks=True)
-                except OSError:
-                    state = None
-                if state is not None and (state.st_dev, state.st_ino) in live_ids:
+        live_argvs = (argv,) + ((redirect_writer_argv,) if redirect_writer_argv else ())
+        for live_argv in live_argvs:
+            for index, token in path_operands(live_argv):
+                lexical, resolved = candidate_paths(token.value, cwd)
+                matched_path = ""
+                if lexical in live_paths:
+                    matched_path = lexical
+                elif resolved in live_paths:
                     matched_path = resolved
-            if matched_path:
-                raise error_for_token(
-                    "ECI_PLAN_LIVE_CONTROL_DENIED",
-                    "worker argv resolves to an exact active-session live-control artifact",
-                    segment_index,
-                    index,
-                    token,
-                    "route this exact live-control operation through the coordinator",
-                    "worker-live-control",
-                    path=matched_path,
-                )
+                elif any(
+                    (lexical.startswith(session + os.sep) or lexical == session)
+                    and is_live_name(os.path.basename(lexical))
+                    for session in proof_sessions
+                ):
+                    matched_path = lexical
+                elif any(
+                    (resolved.startswith(session + os.sep) or resolved == session)
+                    and is_live_name(os.path.basename(resolved))
+                    for session in proof_sessions
+                ):
+                    matched_path = resolved
+                else:
+                    try:
+                        state = os.stat(lexical, follow_symlinks=True)
+                    except OSError:
+                        state = None
+                    if state is not None and (state.st_dev, state.st_ino) in live_ids:
+                        matched_path = resolved
+                if matched_path:
+                    raise error_for_token(
+                        "ECI_PLAN_LIVE_CONTROL_DENIED",
+                        "worker argv resolves to an exact active-session live-control artifact",
+                        segment_index,
+                        index,
+                        token,
+                        "route this exact live-control operation through the coordinator",
+                        "worker-live-control",
+                        path=matched_path,
+                    )
 
     if canonical_lifecycle_name(argv[0], cwd) is not None:
         return protected_lifecycle_result(0)
     destructive_error = broad_destructive_error(argv, segment_index, cwd)
     if destructive_error is not None:
         raise destructive_error
-    coordinator_writer = name in SOURCE_WRITERS or (
-        name == "sed" and any(
-            token.value in {"-i", "--in-place"} or token.value.startswith(("-i", "--in-place="))
-            for token in argv[1:]
-        )
-    )
-    if active and role == "coordinator" and coordinator_writer:
-        source_error = source_write_error(argv, segment_index, cwd)
-        if source_error is not None:
-            raise source_error
     return "ADMIT"
 
 
@@ -1847,8 +1661,6 @@ def denied_json(
         operation = "worker-instruction-read"
     elif error.code == "ECI_PROOF_PATH_ESCAPE_DENIED":
         operation = "proof-path-ownership"
-    elif error.code == "ECI_COORDINATOR_SOURCE_WRITE_DENIED":
-        operation = "coordinator-source-write"
     else:
         operation = "plan-segment"
     subject = (
@@ -1893,6 +1705,8 @@ def main() -> int:
     try:
         plan = parse(command)
     except PlanError as error:
+        if error.code == "ECI_PLAN_SYNTAX_DENIED":
+            return 0
         if not active and error.code.startswith("ECI_PLAN_"):
             return 0
         print(denied_json(error, provider, role, active, command))

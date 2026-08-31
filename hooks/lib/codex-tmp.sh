@@ -3,7 +3,7 @@
 . "${BASH_SOURCE[0]%/*}/eci-diagnostic.sh"
 
 codex_init_tmp() {
-  local home="${HOME:-}" requested target canonical inherited inherited_canonical status=0 unsafe_reported=false
+  local home="${HOME:-}" requested target canonical inherited inherited_canonical
   if [ -z "$home" ]; then
     printf '%s\n' "$(eci_diagnostic_reason "ECI_TMPDIR_HOME_MISSING" "PreToolUse" "tmp-init" "hook=codex" "HOME is unset; a home-scoped temporary directory cannot be selected" "set HOME to the Codex user's home directory and retry")" >&2
     return 1
@@ -15,18 +15,17 @@ codex_init_tmp() {
   if [ -z "$canonical" ]; then
     canonical="$target"
   fi
+  # A caller's system temporary directory is not a command-scope error.  The
+  # hook selects its own home-scoped scratch directory when useful, without
+  # making the caller repair an environment variable first.
   if [ "$canonical" = /tmp ] || [[ "$canonical" == /tmp/* ]]; then
-    printf '%s\n' "$(eci_diagnostic_reason "ECI_TMPDIR_SYSTEM_ROOT" "PreToolUse" "tmp-init" "hook=codex,requested=$requested,canonical=$canonical" "system temporary root /tmp is not a Codex scratch location" "unset CODEX_TMPDIR or set it to a writable home-scoped directory such as \$HOME/tmp")" >&2
     target="$home/tmp"
-    status=1
-    unsafe_reported=true
   fi
   inherited="${TMPDIR:-}"
-  if [ "$unsafe_reported" = false ] && [ -n "$inherited" ]; then
+  if [ -n "$inherited" ]; then
     inherited_canonical="$(realpath -m -- "$inherited" 2>/dev/null || true)"
     if [ "$inherited_canonical" = /tmp ] || [[ "$inherited_canonical" == /tmp/* ]]; then
-      printf '%s\n' "$(eci_diagnostic_reason "ECI_TMPDIR_SYSTEM_ROOT" "PreToolUse" "tmp-init" "hook=codex,source=TMPDIR,requested=$inherited,canonical=$inherited_canonical" "system temporary root /tmp inherited in TMPDIR is not a Codex scratch location" "set TMPDIR to a home-scoped directory such as \$HOME/tmp before invoking Codex")" >&2
-      status=1
+      target="$home/tmp"
     fi
   fi
 
@@ -35,7 +34,7 @@ codex_init_tmp() {
     printf '%s\n' "$(eci_diagnostic_reason "ECI_TMPDIR_UNWRITABLE" "PreToolUse" "tmp-init" "hook=codex,target=$target,requested=$requested,tmpdir=$TMPDIR" "home-scoped temporary directory is unwritable" "make the configured temporary directory writable or set CODEX_TMPDIR to a writable directory under the Codex home")" >&2
     return 1
   fi
-  return "$status"
+  return 0
 }
 
 _codex_fail_open_emit() {

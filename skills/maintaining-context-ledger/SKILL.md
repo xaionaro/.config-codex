@@ -21,7 +21,7 @@ A fresh agent reading only the ledger, without transcript or memory, must reach 
 
 Err on exhaustive useful detail for current state. Do not omit a detail because it seems obvious from transcript, local state, prior agent memory, or project familiarity. Equally, do not retain a detail because it was true earlier. Exhaustive on current state; zero on superseded state.
 
-For ECI lane tracking, every lane, assignment, and current ledger state records exactly one `Stage: normal` or `Stage: emergency`. An emergency state names the [Emergency Unblock](../explore-critique-implement/references/emergency-unblock.md) protocol and records `provisional Emergency Unblock — unchecked`; before resuming normal work, record the `emergency→normal ECI Step 1` transition in the ledger and its same-turn high-level log entry.
+For ECI lane tracking, record `Stage: normal` or `Stage: emergency` as useful current-state context. Missing, stale, or unknown stage metadata is reconciled while safe bounded work continues; it is never a permission prerequisite. An emergency state may name the [Emergency Unblock](../explore-critique-implement/references/emergency-unblock.md) recovery aid and record its transition, but neither record gates a return to normal work.
 
 ## Storage
 
@@ -54,9 +54,10 @@ Append-only history. Every material change recorded in the ledger gets a corresp
 present when the session log is established as the immutable prefix: a later
 update may publish only an EOF append to the same canonical regular file. Do
 not rewrite, truncate, insert in the middle, delete, replace, or follow a
-symlink alias. Edit/Write/apply-patch routes are not append proofs; use the
-bounded direct EOF-append route and fail closed when the canonical target is
-missing, non-regular, or symlinked.
+symlink alias. Use the bounded direct EOF-append route for an established log.
+If the current session's log or anchor is absent or malformed, reconcile or
+bootstrap that current-session pair automatically and continue normal work;
+only a resolved foreign-session/control target is a reason to stop an action.
 
 Suggested entry shape:
 
@@ -112,6 +113,34 @@ A given fact lives in one file, not both. Route by edit mode:
 
 Per-ledger-line test: true and load-bearing right now? No -> drop from ledger; if it captures something material that happened, append to the log instead.
 
+### Lane forecasts
+
+Under `Progress`, record these labels for every active lane. Progress is the
+source of truth; `latest-status-report.md` projects these fields using
+`writing-status-reports`.
+
+| Field | Current ledger entry |
+| --- | --- |
+| Next milestone | `Next milestone: <named outcome>` |
+| Remaining forecast | `Remaining forecast: <current honest time estimate/range>` |
+| Forecast recalibration | `Forecast recalibration: increased | decreased | unchanged — <why; evidence>` |
+| Dependencies / overlap | `Dependencies / overlap: <none, named dependency + owner/resume, or overlap/critical-path treatment>` |
+
+Every non-`CLOSED` lane names its next milestone and remaining range. A
+`CLOSED` lane records `Remaining forecast: 0 h`. For an initial forecast,
+write `unchanged — baseline from <evidence>; no prior forecast`.
+
+State dependencies and parallel overlap. Never add overlapping child estimates
+into a parent or mission forecast; name the non-overlapping sequence or
+critical path.
+
+Forecasts are coordination aids for catching stale planning assumptions under
+the non-malicious-bot principle. They never authorize or deny work, create a
+user blocker, promise completion, require a receipt or artifact, or require
+per-command updates. Missing or stale forecasts are planning-quality defects.
+Reconcile them alongside safe work; they never gate work, authorization, or
+status reporting.
+
 ## Structure
 
 The ledger is always structured. Free-form prose, wall-of-text, and chat-style narration are rejected. Every fact lives under a heading whose subject covers it. Every section is scannable: table, bullet list, or short labeled lines (`Owner: ...`, `Status: ...`, `Evidence: ...`). No multi-paragraph essays. No long one-liners: split multi-clause bullets, semicolon chains, and "and"-joined run-ons into sub-bullets, labeled lines, or table rows. One fact per line. Prefer tables for more than two parallel items.
@@ -135,6 +164,9 @@ Use `### <subject>` subsections when a section grows large enough that a fresh a
 ## Update Points
 
 Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
+
+Every material ledger refresh recalibrates each affected lane and records its
+delta, why, and evidence.
 
 When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
 
@@ -169,4 +201,5 @@ Reject the ledger if any holds:
 - Headings no longer fit the content.
 - The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
 - The latest status report is missing, lacks a UTC timestamp, predates the last ledger update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
+- An active lane lacks its Lane forecasts fields, a material refresh lacks recalibration, or a `CLOSED` lane is not `0 h`. This is a planning-quality defect: reconcile it alongside safe work; never gate work, authorization, or status reporting.
 - Secrets, credentials, or unnecessary personal data are recorded.

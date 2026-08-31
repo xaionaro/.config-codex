@@ -31,8 +31,10 @@ func Run(input io.Reader, output io.Writer) int {
 		return writeInternalResult(output, "read-request")
 	}
 
+	// Decode the stable routing fields and ignore additive callback metadata.
+	// A newer hook can include observability or scheduling data without making
+	// an ordinary command depend on a synchronized planner protocol.
 	decoder := json.NewDecoder(bytes.NewReader(requestBytes))
-	decoder.DisallowUnknownFields()
 	var request Request
 	if err := decoder.Decode(&request); err != nil {
 		return writeInternalResult(output, "decode-request")

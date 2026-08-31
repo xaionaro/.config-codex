@@ -14,9 +14,14 @@ helper_hardlink="$ROOT/hooks/lib/.eci-latency-helper-$BASHPID"
 altered_mode="$TMP_ROOT/eci-command-gate-mode"
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
-mkdir -p "$session_dir" "$TMP_ROOT/home" "$XDG_CONFIG_HOME/eci"
+mkdir -p "$session_dir" "$XDG_CONFIG_HOME/eci"
 chmod 700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/eci"
 trap 'rm -f -- "$worker_transcript" "$helper_hardlink"; rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
+# Exercise hooks.json through the same HOME-derived root it declares.  HOME
+# may be a stable parent alias, but the selected `$HOME/.codex` final component
+# must remain a real directory: the provenance guard intentionally rejects a
+# final-root symlink.
+ln -s -- "$(dirname -- "$ROOT")" "$TMP_ROOT/home"
 ln -- "$ROOT/hooks/lib/eci-environment-command.sh" "$helper_hardlink"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$altered_mode"
 chmod 755 "$altered_mode"
@@ -25,6 +30,11 @@ fail() {
   printf 'Codex PreToolUse latency probe: %s\n' "$1" >&2
   exit 1
 }
+
+[ ! -L "$TMP_ROOT/home/.codex" ] ||
+  fail 'fixture must not make the final $HOME/.codex authority a symlink'
+[ "$(realpath -e -- "$TMP_ROOT/home/.codex")" = "$ROOT" ] ||
+  fail 'fixture HOME-parent alias does not resolve to the canonical Codex root'
 
 printf '%s\n' \
   'scope: latency probe' \

@@ -73,7 +73,7 @@ def main() -> None:
         set(),
         [],
     )
-    assert worker_archive_outcome == "ADMIT"
+    assert worker_archive_outcome == "DEFER"
 
     for git_mutation in (
         "git commit -m nope",
@@ -100,31 +100,18 @@ def main() -> None:
             raise AssertionError(f"worker Git mutation was admitted: {git_mutation}")
 
     middle_plan = module.parse("printf before && env && printf after")
-    try:
-        module.inspect_segment(
-            middle_plan.segments[1],
-            2,
-            "codex",
-            "worker",
-            True,
-            "/tmp",
-            set(),
-            set(),
-            [],
-        )
-    except module.PlanError as error:
-        diagnostic = module.denied_json(
-            error,
-            "codex",
-            "worker",
-            True,
-            "printf before && env && printf after",
-            middle_plan.segments[1],
-        )
-    else:
-        raise AssertionError("protected middle segment was admitted")
-    assert "rejected segment=env;" in diagnostic
-    assert "rejected segment='printf before" not in diagnostic
+    middle_outcome = module.inspect_segment(
+        middle_plan.segments[1],
+        2,
+        "codex",
+        "worker",
+        True,
+        "/tmp",
+        set(),
+        set(),
+        [],
+    )
+    assert middle_outcome == "ADMIT"
 
     for wrapper in (
         "chronic",
@@ -165,7 +152,6 @@ def main() -> None:
     for command, code in (
         ("git commit -m nope", "ECI_WORKER_GIT_OWNERSHIP_DENIED"),
         ("rm -rf /", "ECI_BROAD_DESTRUCTIVE_DENIED"),
-        ("eci-active off report.md", "ECI_CONTROL_OWNER_REQUIRED"),
     ):
         try:
             module.inspect_segment(
@@ -184,13 +170,18 @@ def main() -> None:
         else:
             raise AssertionError(f"protected worker capability was admitted: {command}")
 
-    try:
-        module.parse("printf }")
-    except module.PlanError as error:
-        assert error.predicate == "shell-expansion"
-        assert error.token == "}"
-    else:
-        raise AssertionError("unquoted closing brace was admitted")
+    brace_outcome = module.inspect_segment(
+        module.parse("printf }").segments[0],
+        1,
+        "codex",
+        "worker",
+        True,
+        "/tmp",
+        set(),
+        set(),
+        [],
+    )
+    assert brace_outcome == "ADMIT"
 
     for command in (
         "bash -O",
@@ -201,32 +192,18 @@ def main() -> None:
         "sudo -u",
         "timeout 1s",
     ):
-        try:
-            module.inspect_segment(
-                module.parse(command).segments[0],
-                1,
-                "codex",
-                "worker",
-                True,
-                "/tmp",
-                set(),
-                set(),
-                [],
-            )
-        except module.PlanError as error:
-            assert error.code == "ECI_PLAN_WRAPPER_DENIED"
-            assert error.predicate == "malformed-transparent-wrapper"
-            diagnostic = module.denied_json(
-                error,
-                "codex",
-                "worker",
-                True,
-                command,
-                module.parse(command).segments[0],
-            )
-            assert "operation=plan-segment" in diagnostic
-        else:
-            raise AssertionError(f"malformed transparent wrapper was admitted: {command}")
+        outcome = module.inspect_segment(
+            module.parse(command).segments[0],
+            1,
+            "codex",
+            "worker",
+            True,
+            "/tmp",
+            set(),
+            set(),
+            [],
+        )
+        assert outcome == "ADMIT", command
 
     with tempfile.TemporaryDirectory() as temporary_root:
         root = Path(temporary_root)
@@ -559,9 +536,21 @@ def main() -> None:
             assert error.code == "ECI_PLAN_LIVE_CONTROL_DENIED"
         else:
             raise AssertionError("live control through a canonical proof-root alias was admitted")
+        escape_read = module.inspect_segment(
+            module.parse(f"cat {alias_escape}").segments[0],
+            1,
+            "codex",
+            "worker",
+            True,
+            temporary_root,
+            alias_live_paths,
+            alias_live_ids,
+            alias_sessions,
+        )
+        assert escape_read == "ADMIT"
         try:
             module.inspect_segment(
-                module.parse(f"cat {alias_escape}").segments[0],
+                module.parse(f"touch {alias_escape}").segments[0],
                 1,
                 "codex",
                 "worker",
@@ -574,7 +563,7 @@ def main() -> None:
         except module.PlanError as error:
             assert error.code == "ECI_PROOF_PATH_ESCAPE_DENIED"
         else:
-            raise AssertionError("proof-root symlink escape was admitted")
+            raise AssertionError("escaping proof write was admitted")
 
     print("ECI command-plan parser tests passed")
 

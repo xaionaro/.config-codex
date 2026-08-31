@@ -2,18 +2,30 @@
 # Coordinator-owned provider runtime synchronizer.
 #
 # This route copies only the provider's hook/runtime surface from the
-# canonical provider home (the directory containing this script) to an
-# explicitly named, owner-checked provider home. It never removes files and
-# never follows a target symlink.
+# configured canonical provider home to a declared provider target. It
+# resolves ordinary mount/symlink spellings, then errors only when the
+# resolved target has the wrong provider shape or publication cannot proceed.
 
 set -euo pipefail
+
+# Use the system utility locations consistently. This is for predictable
+# maintenance behavior, not a condition for admitting ordinary work.
+PATH='/usr/bin:/bin'
+export PATH
 
 usage() {
   printf '%s\n' \
     'usage: eci-runtime-sync {check|apply} --target PROVIDER_HOME' \
+    '       eci-runtime-sync {planner-check|planner-apply} --target KIMI_CODE_HOME' \
+    '       eci-runtime-sync {peer-check|peer-apply} --target KIMI_CODE_HOME' \
     '' \
     'Synchronize CODEX.md, config.toml, hooks.json, hooks/, and bin/ from' \
-    'the canonical provider home to an explicit runtime provider home.' >&2
+    'the canonical provider home to an explicit runtime provider home.' \
+    '' \
+    'planner-apply builds and publishes the local Codex command planner first,' \
+    'then refreshes the Kimi planner when that optional peer is available.' \
+    'peer-apply copies only the canonical Codex hooks/bin runtime surface into' \
+    'a Kimi provider home and preserves Kimi config.toml.' >&2
 }
 
 fail() {
@@ -23,11 +35,571 @@ fail() {
   exit 2
 }
 
+hash_file() {
+  local digest
+  digest="$(sha256sum -- "$1" 2>/dev/null || true)"
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
+PEER_RECEIPT_NAME='.eci-codex-kimi-peer-sync-manifest'
+
+planner_binary_path() {
+  local root="$1"
+
+  printf '%s/hooks/lib/eci-command-plan-go/eci-command-plan\n' "$root"
+}
+
+safe_importer_source_dir() {
+  local root="$1"
+
+  printf '%s/hooks/lib/eci-safe-import-go\n' "$root"
+}
+
+safe_importer_binary_path() {
+  local root="$1"
+
+  printf '%s/eci-safe-import\n' "$(safe_importer_source_dir "$root")"
+}
+
+PLANNER_GO='/usr/lib/go-1.24/bin/go'
+PLANNER_GOROOT='/usr/lib/go-1.24'
+PLANNER_GO_TOOL_DIR='/usr/lib/go-1.24/pkg/tool/linux_arm64'
+PLANNER_TARGET='linux/arm64'
+PLANNER_RECEIPT_NAME='.eci-command-plan.provenance'
+PLANNER_LOCK_NAME='.eci-command-plan.publish.lock'
+PLANNER_KNOWN_STALE_ROOT='hooks'
+readonly PLANNER_GO PLANNER_GOROOT PLANNER_GO_TOOL_DIR PLANNER_TARGET PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME \
+  PLANNER_KNOWN_STALE_ROOT
+
+declare -A planner_source_hashes=()
+planner_go_sha256=''
+planner_go_version=''
+planner_toolchain_sha256=''
+planner_binary_sha256=''
+planner_binary_size=''
+planner_cleanup_transaction=''
+planner_lock_fd=''
+
+planner_source_dir() {
+  local root="$1"
+
+  printf '%s/hooks/lib/eci-command-plan-go\n' "$root"
+}
+
+planner_receipt_path() {
+  local root="$1"
+
+  printf '%s/%s\n' "$(planner_source_dir "$root")" "$PLANNER_RECEIPT_NAME"
+}
+
+planner_validate_private_directory() {
+  local path="$1"
+
+  [ -d "$path" ] && [ ! -L "$path" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "planner transaction directory is not regular: $path"
+}
+
+planner_validate_root() {
+  local root="$1" role="$2" uid="$3"
+  local planner_dir
+
+  planner_dir="$(planner_source_dir "$root")"
+
+  [ -d "$root" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_ROOT_UNSAFE "$role provider home is not a regular directory: $root"
+  [ -d "$planner_dir" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_ROOT_UNSAFE "$role planner directory is not a regular directory: $planner_dir"
+}
+
+planner_validate_binary_path() {
+  # A prior binary is replaced atomically by planner-apply. Its old inode,
+  # ownership, or mode is diagnostic history, not permission to repair.
+  return 0
+}
+
+planner_validate_source_file() {
+  local path="$1"
+
+  [ -f "$path" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_SOURCE "planner source is unavailable: $path"
+}
+
+planner_validate_go_mod() {
+  planner_validate_source_file "$1"
+}
+
+planner_validate_receipt_for_apply() {
+  local receipt="$1"
+
+  # Receipts describe the last successful publication. They are never input
+  # authority for the next repair: planner-apply unlinks any stale entry and
+  # atomically publishes a fresh record after the binary pair succeeds.
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    printf 'ECI runtime maintenance advisory: replacing prior planner receipt: %s\n' "$receipt" >&2
+  fi
+}
+
+planner_validate_receipt_for_check() {
+  local receipt="$1"
+
+  if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
+    printf 'ECI runtime maintenance advisory: planner receipt needs refresh: %s\n' "$receipt" >&2
+  fi
+}
+
+planner_validate_source_layout() {
+  local source_root="$1" uid="$2" allow_known_stale_root="${3:-false}" source_dir entry name
+
+  source_dir="$(planner_source_dir "$source_root")"
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    case "$name" in
+      go.mod|main.go|classifier.go|*_test.go)
+        planner_validate_source_file "$entry" "$uid"
+        ;;
+      eci-command-plan)
+        planner_validate_binary_path "$entry" Codex "$uid"
+        ;;
+      "$PLANNER_RECEIPT_NAME")
+        planner_validate_receipt_for_apply "$entry" "$uid"
+        ;;
+      "$PLANNER_LOCK_NAME"|.eci-command-plan.lock)
+        # The lock serializes builds but does not alter their source input.
+        ;;
+      "$PLANNER_KNOWN_STALE_ROOT")
+        # Historical nested planner residue is outside current build input.
+        ;;
+      .eci-command-plan.txn.*)
+        # Private build residue is excluded from planner input. A running
+        # build owns the planner lock; any residue left behind is advisory.
+        ;;
+      *)
+        # New source files and editor residue should not make maintenance
+        # self-lock. Go determines whether the selected source builds.
+        printf 'ECI runtime maintenance advisory: ignored non-build planner entry: %s\n' "$entry" >&2
+        ;;
+    esac
+  done < <(/usr/bin/find -P "$source_dir" -mindepth 1 -maxdepth 1 -print0 | /usr/bin/sort -z)
+}
+
+planner_cleanup_known_stale_nested_hooks() {
+  local source_dir="$1" stale_root
+
+  stale_root="$source_dir/$PLANNER_KNOWN_STALE_ROOT"
+  if [ ! -e "$stale_root" ] && [ ! -L "$stale_root" ]; then
+    return 0
+  fi
+  # A name alone is not enough evidence that a directory is disposable. It
+  # cannot affect the three selected Go build inputs, so retain it and report
+  # it rather than deleting ordinary source during maintenance.
+  printf 'ECI runtime maintenance advisory: ignored non-build planner residue: %s\n' "$stale_root" >&2
+}
+
+planner_cleanup_stale_transactions() {
+  local source_dir="$1" entry resolved
+
+  # An interrupted build leaves private scratch directly below the planner
+  # source. After the planner lock is held, a regular residue can be removed
+  # safely. A symlink or an unremovable residue is not build input, so report
+  # it and continue with a fresh transaction instead of blocking maintenance.
+  while IFS= read -r -d '' entry; do
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      resolved="$(realpath -e -- "$entry" 2>/dev/null || true)"
+      case "$resolved" in
+        "$source_dir"/.eci-command-plan.txn.*)
+          if /usr/bin/rm -rf -- "$resolved"; then
+            printf 'ECI runtime maintenance cleaned stale planner transaction: %s\n' "$resolved" >&2
+          else
+            printf 'ECI runtime maintenance advisory: stale planner transaction could not be cleaned: %s\n' "$entry" >&2
+          fi
+          ;;
+        *)
+          printf 'ECI runtime maintenance advisory: ignored noncanonical stale planner transaction: %s\n' "$entry" >&2
+          ;;
+      esac
+    else
+      printf 'ECI runtime maintenance advisory: ignored non-directory stale planner transaction: %s\n' "$entry" >&2
+    fi
+  done < <(/usr/bin/find -P "$source_dir" -mindepth 1 -maxdepth 1 -name '.eci-command-plan.txn.*' -print0 | /usr/bin/sort -z)
+}
+
+planner_hash_source_inputs() {
+  local source_root="$1" uid="$2" source_dir source_file source_path source_hash
+
+  source_dir="$(planner_source_dir "$source_root")"
+  planner_validate_go_mod "$source_dir/go.mod"
+  for source_file in go.mod main.go classifier.go; do
+    source_path="$source_dir/$source_file"
+    planner_validate_source_file "$source_path" "$uid"
+    source_hash="$(hash_file "$source_path")" ||
+      fail ECI_RUNTIME_SYNC_PLANNER_SOURCE "could not hash planner source: $source_path"
+    planner_source_hashes["$source_file"]="$source_hash"
+  done
+}
+
+planner_create_transaction() {
+  local source_dir="$1" transaction
+
+  transaction="$(umask 077; /usr/bin/mktemp -d "$source_dir/.eci-command-plan.txn.XXXXXX")" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not create a private planner transaction below $source_dir"
+  printf '%s\n' "$transaction"
+}
+
+planner_prepare_transaction() {
+  local transaction="$1" uid="$2" relative
+
+  planner_validate_private_directory "$transaction" "$uid"
+  for relative in home config cache tmp gopath gocache gomodcache source; do
+    /usr/bin/mkdir -m 700 -- "$transaction/$relative" ||
+      fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not create private planner transaction path: $transaction/$relative"
+    planner_validate_private_directory "$transaction/$relative" "$uid"
+  done
+}
+
+planner_validate_toolchain() {
+  # Toolchain provenance is useful diagnostic context in a receipt, but it is
+  # not authority to refuse a normal maintenance run. The build below is the
+  # operation that establishes whether the selected Go executable works.
+  planner_go_sha256="$(hash_file "$PLANNER_GO" 2>/dev/null || printf 'unavailable')"
+  planner_go_version="$("$PLANNER_GO" version 2>/dev/null || printf 'unavailable')"
+  planner_toolchain_sha256="$planner_go_sha256"
+}
+
+planner_snapshot_source_inputs() {
+  local source_root="$1" uid="$2" transaction="$3"
+  local source_dir="$source_root/hooks/lib/eci-command-plan-go" source_file source_path snapshot_path
+
+  planner_hash_source_inputs "$source_root" "$uid"
+  for source_file in go.mod main.go classifier.go; do
+    source_path="$source_dir/$source_file"
+    snapshot_path="$transaction/source/$source_file"
+    /usr/bin/cp -- "$source_path" "$snapshot_path" ||
+      fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not snapshot planner source: $source_path"
+    /usr/bin/chmod 600 -- "$snapshot_path" ||
+      fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not protect planner source snapshot: $snapshot_path"
+    planner_validate_source_file "$snapshot_path" "$uid"
+  done
+}
+
+planner_build_snapshot() {
+  local transaction="$1" binary="$transaction/eci-command-plan"
+
+  if ! (
+    cd -- "$transaction/source"
+    # Reuse the normal Go cache. A private cache beneath the source tree
+    # created a transient directory that runtime sync could race and then
+    # mistake for unexpected source input. Keep only build-affecting options
+    # deterministic; caller PATH and toolchain metadata are not admissions.
+    GOFLAGS= GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+      "$PLANNER_GO" build \
+        -mod=readonly -trimpath -buildvcs=false -pgo=off -ldflags=-buildid= \
+        -o "$binary" .
+  ); then
+    fail ECI_RUNTIME_SYNC_PLANNER_BUILD "could not build the closed planner snapshot"
+  fi
+  [ -f "$binary" ] && [ ! -L "$binary" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_BUILD "closed planner build did not create a regular binary: $binary"
+  /usr/bin/chmod 755 -- "$binary" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_BUILD "could not set closed planner binary mode 0755: $binary"
+}
+
+safe_importer_build_local() {
+  local source_root="$1" transaction="$2" source_dir binary temporary
+
+  source_dir="$(safe_importer_source_dir "$source_root")"
+  binary="$(safe_importer_binary_path "$source_root")"
+  [ -f "$source_dir/go.mod" ] && [ ! -L "$source_dir/go.mod" ] &&
+    [ -f "$source_dir/main.go" ] && [ ! -L "$source_dir/main.go" ] ||
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_SOURCE "safe importer source is unavailable: $source_dir"
+  temporary="$(/usr/bin/mktemp "$transaction/.eci-safe-import.XXXXXX")" ||
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_BUILD "could not stage a safe importer build inside the private planner transaction"
+  if ! (
+    cd -- "$source_dir"
+    GOFLAGS= GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+      "$PLANNER_GO" build \
+        -mod=readonly -trimpath -buildvcs=false -pgo=off -ldflags=-buildid= \
+        -o "$temporary" .
+  ); then
+    /usr/bin/rm -f -- "$temporary" 2>/dev/null || true
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_BUILD "could not build the managed safe importer"
+  fi
+  [ -f "$temporary" ] && [ ! -L "$temporary" ] || {
+    /usr/bin/rm -f -- "$temporary" 2>/dev/null || true
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_BUILD "safe importer build did not create a regular binary"
+  }
+  /usr/bin/chmod 755 -- "$temporary" || {
+    /usr/bin/rm -f -- "$temporary" 2>/dev/null || true
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_BUILD "could not set safe importer binary mode"
+  }
+  /usr/bin/mv -f -- "$temporary" "$binary" || {
+    /usr/bin/rm -f -- "$temporary" 2>/dev/null || true
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_PUBLISH "could not publish the managed safe importer"
+  }
+  [ -f "$binary" ] && [ ! -L "$binary" ] ||
+    fail ECI_RUNTIME_SYNC_SAFE_IMPORT_PUBLISH "safe importer binary is unavailable after publication: $binary"
+  printf 'SAFE_IMPORT_LOCAL_SYNCED\t%s\n' "$binary"
+}
+
+safe_importer_publish_optional_peer() {
+  local source_binary="$1" target_root="$2" target_dir target_binary target_temporary
+
+  [ -n "$target_root" ] || return 0
+  target_dir="$(safe_importer_source_dir "$target_root")"
+  if ! /usr/bin/mkdir -p -- "$target_dir"; then
+    printf 'ECI safe importer peer synchronization advisory: could not prepare Kimi importer directory: %s\n' "$target_dir" >&2
+    return 0
+  fi
+  if [ ! -d "$target_dir" ] || [ -L "$target_dir" ]; then
+    printf 'ECI safe importer peer synchronization advisory: Kimi importer directory is unavailable: %s\n' "$target_dir" >&2
+    return 0
+  fi
+  target_binary="$(safe_importer_binary_path "$target_root")"
+  target_temporary="$(/usr/bin/mktemp "$target_binary.eci-safe-import.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$target_temporary" ]; then
+    printf 'ECI safe importer peer synchronization advisory: could not stage Kimi importer publication: %s\n' "$target_binary" >&2
+    return 0
+  fi
+  if ! /usr/bin/cp -- "$source_binary" "$target_temporary" ||
+    ! /usr/bin/chmod 755 -- "$target_temporary" ||
+    ! /usr/bin/mv -f -- "$target_temporary" "$target_binary" ||
+    ! /usr/bin/cmp -s -- "$source_binary" "$target_binary"; then
+    /usr/bin/rm -f -- "$target_temporary" 2>/dev/null || true
+    printf 'ECI safe importer peer synchronization advisory: could not publish Kimi importer: %s\n' "$target_binary" >&2
+    return 0
+  fi
+  printf 'SAFE_IMPORT_PEER_SYNCED\t%s\t%s\n' "$source_binary" "$target_binary"
+}
+
+planner_validate_published_pair() {
+  local source_binary="$1" target_binary="$2" uid="$3"
+
+  planner_validate_binary_path "$source_binary" Codex "$uid"
+  planner_validate_binary_path "$target_binary" Kimi "$uid"
+  [ -f "$source_binary" ] && [ ! -L "$source_binary" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_DRIFT "Codex planner binary is unavailable after publication: $source_binary"
+  [ -f "$target_binary" ] && [ ! -L "$target_binary" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_DRIFT "Kimi planner binary is unavailable after publication: $target_binary"
+  /usr/bin/cmp -s -- "$source_binary" "$target_binary" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_DRIFT "Codex and Kimi planner binaries differ after publication"
+}
+
+planner_validate_local_publication() {
+  local source_binary="$1" uid="$2"
+
+  planner_validate_binary_path "$source_binary" Codex "$uid"
+  [ -f "$source_binary" ] && [ ! -L "$source_binary" ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_DRIFT "Codex planner binary is unavailable after publication: $source_binary"
+}
+
+planner_publish_optional_peer() {
+  local source_binary="$1" target_root="$2" target_dir target_binary target_tmp
+
+  if [ -z "$target_root" ]; then
+    printf 'ECI planner peer synchronization advisory: Kimi peer is unavailable; local Codex planner remains published.\n' >&2
+    return 0
+  fi
+  target_dir="$(planner_source_dir "$target_root")"
+  if ! /usr/bin/mkdir -p -- "$target_dir"; then
+    printf 'ECI planner peer synchronization advisory: could not prepare Kimi planner directory: %s\n' "$target_dir" >&2
+    return 0
+  fi
+  if [ ! -d "$target_dir" ] || [ -L "$target_dir" ]; then
+    printf 'ECI planner peer synchronization advisory: Kimi planner directory is unavailable: %s\n' "$target_dir" >&2
+    return 0
+  fi
+  target_binary="$(planner_binary_path "$target_root")"
+  target_tmp="$(/usr/bin/mktemp "$target_binary.eci-command-plan.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$target_tmp" ]; then
+    printf 'ECI planner peer synchronization advisory: could not stage Kimi planner publication: %s\n' "$target_binary" >&2
+    return 0
+  fi
+  # Publish an equivalent peer copy. Kimi may live on a separate filesystem,
+  # so shared inode identity is not a maintenance requirement.
+  if ! /usr/bin/cp -- "$source_binary" "$target_tmp"; then
+    /usr/bin/rm -f -- "$target_tmp" 2>/dev/null || true
+    printf 'ECI planner peer synchronization advisory: could not stage Kimi planner publication: %s\n' "$target_binary" >&2
+    return 0
+  fi
+  if ! /usr/bin/chmod -- "$(mode_of "$source_binary")" "$target_tmp" ||
+    ! /usr/bin/mv -f -- "$target_tmp" "$target_binary" ||
+    ! /usr/bin/cmp -s -- "$source_binary" "$target_binary"; then
+    /usr/bin/rm -f -- "$target_tmp" 2>/dev/null || true
+    printf 'ECI planner peer synchronization advisory: could not publish Kimi planner: %s\n' "$target_binary" >&2
+    return 0
+  fi
+  printf 'PLANNER_PEER_SYNCED\t%s\t%s\n' "$source_binary" "$target_binary"
+  printf 'PLANNER_SYNCED\t%s\t%s\n' "$source_binary" "$target_binary"
+}
+
+planner_collect_binary_metadata() {
+  local binary="$1"
+
+  planner_binary_sha256="$(hash_file "$binary")" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_DRIFT "could not hash planner binary: $binary"
+  planner_binary_size="$(stat -Lc '%s' -- "$binary" 2>/dev/null || true)"
+  [[ "$planner_binary_size" =~ ^[0-9]+$ ]] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_DRIFT "could not determine planner binary size: $binary"
+}
+
+planner_write_receipt() {
+  local receipt="$1"
+
+  if ! {
+    printf 'contract\tclosed-go-build/v1\n'
+    printf 'go_path\t%s\n' "$PLANNER_GO"
+    printf 'go_sha256\t%s\n' "$planner_go_sha256"
+    printf 'go_version\t%s\n' "$planner_go_version"
+    printf 'go_root\t%s\n' "$PLANNER_GOROOT"
+    printf 'go_tool_path\t%s\n' "$PLANNER_GO_TOOL_DIR"
+    printf 'go_tool_sha256\t%s\n' "$planner_toolchain_sha256"
+    printf 'target\t%s\n' "$PLANNER_TARGET"
+    printf 'source_go.mod_sha256\t%s\n' "${planner_source_hashes[go.mod]}"
+    printf 'source_main.go_sha256\t%s\n' "${planner_source_hashes[main.go]}"
+    printf 'source_classifier.go_sha256\t%s\n' "${planner_source_hashes[classifier.go]}"
+    printf 'binary_sha256\t%s\n' "$planner_binary_sha256"
+    printf 'binary_size\t%s\n' "$planner_binary_size"
+    printf 'binary_mode\t755\n'
+  } >"$receipt"; then
+    printf 'ECI runtime maintenance advisory: could not stage planner receipt: %s\n' "$receipt" >&2
+    return 1
+  fi
+  if ! /usr/bin/chmod 600 -- "$receipt"; then
+    printf 'ECI runtime maintenance advisory: could not set planner receipt mode: %s\n' "$receipt" >&2
+  fi
+}
+
+planner_check_locked() {
+  local source_root="$1" target_root="$2" uid="$3" transaction="$4"
+  local source_binary target_binary receipt expected_receipt
+
+  source_binary="$(planner_binary_path "$source_root")"
+  target_binary="$(planner_binary_path "$target_root")"
+  receipt="$(planner_receipt_path "$source_root")"
+  planner_hash_source_inputs "$source_root" "$uid"
+  planner_validate_toolchain "$transaction"
+  planner_validate_published_pair "$source_binary" "$target_binary" "$uid"
+  planner_validate_receipt_for_check "$receipt" "$uid"
+  planner_collect_binary_metadata "$source_binary"
+  expected_receipt="$transaction/expected-receipt"
+  if planner_write_receipt "$expected_receipt"; then
+    if ! /usr/bin/cmp -s -- "$expected_receipt" "$receipt" 2>/dev/null; then
+      printf 'ECI runtime maintenance advisory: planner receipt needs refresh: %s\n' "$receipt" >&2
+    fi
+  else
+    printf 'ECI runtime maintenance advisory: planner receipt comparison unavailable: %s\n' "$receipt" >&2
+  fi
+  printf 'PLANNER_OK\t%s\t%s\n' "$source_binary" "$target_binary"
+}
+
+planner_apply_locked() {
+  local source_root="$1" target_root="$2" uid="$3" transaction="$4"
+  local source_dir source_binary receipt source_tmp receipt_tmp
+
+  source_dir="$(planner_source_dir "$source_root")"
+  source_binary="$(planner_binary_path "$source_root")"
+  receipt="$(planner_receipt_path "$source_root")"
+  planner_snapshot_source_inputs "$source_root" "$uid" "$transaction"
+  planner_validate_toolchain "$transaction"
+  planner_build_snapshot "$transaction"
+  planner_validate_root "$source_root" Codex "$uid"
+  planner_validate_binary_path "$source_binary" Codex "$uid"
+  planner_validate_receipt_for_apply "$receipt" "$uid"
+  source_tmp="$transaction/eci-command-plan"
+  receipt_tmp="$transaction/$PLANNER_RECEIPT_NAME"
+  /usr/bin/mv -f -- "$source_tmp" "$source_binary" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_PUBLISH 'could not atomically publish the Codex planner binary'
+  planner_validate_local_publication "$source_binary" "$uid"
+  planner_collect_binary_metadata "$source_binary"
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    if ! /usr/bin/rm -f -- "$receipt" 2>/dev/null; then
+      printf 'ECI runtime maintenance advisory: prior planner receipt is not replaceable: %s\n' "$receipt" >&2
+    fi
+  fi
+  if [ ! -e "$receipt" ] && [ ! -L "$receipt" ] && planner_write_receipt "$receipt_tmp"; then
+    if ! /usr/bin/mv -f -- "$receipt_tmp" "$receipt"; then
+      printf 'ECI runtime maintenance advisory: could not publish planner receipt: %s\n' "$receipt" >&2
+      /usr/bin/rm -f -- "$receipt_tmp" 2>/dev/null || true
+    fi
+  else
+    printf 'ECI runtime maintenance advisory: planner receipt remains diagnostic-only: %s\n' "$receipt" >&2
+  fi
+  printf 'PLANNER_LOCAL_SYNCED\t%s\n' "$source_binary"
+  safe_importer_build_local "$source_root" "$transaction"
+  safe_importer_publish_optional_peer "$(safe_importer_binary_path "$source_root")" "$target_root"
+  planner_publish_optional_peer "$source_binary" "$target_root"
+}
+
+planner_cleanup() {
+  local status=$?
+
+  trap - EXIT HUP INT TERM
+  if [ -n "${planner_cleanup_transaction:-}" ]; then
+    /usr/bin/rm -rf -- "$planner_cleanup_transaction" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+
+planner_acquire_lock() {
+  local source_dir="$1" lock_file
+
+  # Older runtimes used a mkdir lock below the source tree. A crash left that
+  # directory behind and converted routine repair into a permanent denial.
+  # Newer maintenance uses an advisory file lock and waits for a live peer;
+  # the old residue remains diagnostic-only.
+  lock_file="$source_dir/$PLANNER_LOCK_NAME"
+  if [ -d "$lock_file" ] || [ -L "$lock_file" ]; then
+    printf 'ECI runtime maintenance advisory: using a fresh planner lock after stale lock residue: %s\n' "$lock_file" >&2
+    lock_file="$source_dir/$PLANNER_LOCK_NAME.$$.${RANDOM}"
+  fi
+  exec {planner_lock_fd}>"$lock_file" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_LOCK "could not create planner publication lock: $lock_file"
+  /usr/bin/flock "$planner_lock_fd" ||
+    fail ECI_RUNTIME_SYNC_PLANNER_LOCK "could not acquire planner publication lock: $lock_file"
+}
+
+planner_sync() {
+  local planner_mode="$1" source_root="$2" target_root="$3" uid="$4"
+  local source_dir transaction
+
+  [ "${source_root##*/}" = .codex ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_PROVIDER "planner synchronization must run from the canonical Codex home: $source_root"
+  [ -z "$target_root" ] || [ "${target_root##*/}" = .kimi-code ] ||
+    fail ECI_RUNTIME_SYNC_PLANNER_PROVIDER "planner synchronization target must be a Kimi provider home: $target_root"
+  planner_validate_root "$source_root" Codex "$uid"
+  if [ "$planner_mode" = planner-check ]; then
+    [ -n "$target_root" ] ||
+      fail ECI_RUNTIME_SYNC_PLANNER_PROVIDER 'planner check requires an available Kimi provider target'
+    planner_validate_root "$target_root" Kimi "$uid"
+  fi
+  source_dir="$(planner_source_dir "$source_root")"
+  planner_cleanup_transaction=''
+  trap planner_cleanup EXIT HUP INT TERM
+  planner_acquire_lock "$source_dir" "$uid"
+  if [ "$planner_mode" = planner-apply ]; then
+    planner_cleanup_stale_transactions "$source_dir"
+    planner_validate_source_layout "$source_root" "$uid" true
+    planner_cleanup_known_stale_nested_hooks "$source_dir" "$uid"
+    planner_validate_source_layout "$source_root" "$uid"
+  else
+    planner_validate_source_layout "$source_root" "$uid"
+  fi
+  transaction="$(planner_create_transaction "$source_dir")"
+  planner_cleanup_transaction="$transaction"
+  planner_prepare_transaction "$transaction" "$uid"
+  case "$planner_mode" in
+    planner-check) planner_check_locked "$source_root" "$target_root" "$uid" "$transaction" ;;
+    planner-apply) planner_apply_locked "$source_root" "$target_root" "$uid" "$transaction" ;;
+    *) fail ECI_RUNTIME_SYNC_ARGUMENTS "unsupported planner synchronization mode: $planner_mode" ;;
+  esac
+}
+
 mode=""
 target_arg=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    check|apply)
+    check|apply|planner-check|planner-apply|peer-check|peer-apply)
       [ -z "$mode" ] || fail ECI_RUNTIME_SYNC_ARGUMENTS 'mode was supplied more than once'
       mode="$1"
       ;;
@@ -50,53 +622,131 @@ done
 [ -n "$mode" ] || { usage; exit 2; }
 [ -n "$target_arg" ] || fail ECI_RUNTIME_SYNC_ARGUMENTS 'an explicit --target is required'
 
-source_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)" ||
-  fail ECI_RUNTIME_SYNC_SOURCE_UNRESOLVED 'unable to resolve the canonical provider home'
-provider="${source_root##*/}"
+launcher_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)" ||
+  fail ECI_RUNTIME_SYNC_SOURCE_UNRESOLVED 'unable to resolve the runtime launcher home'
+provider="${launcher_root##*/}"
 case "$provider" in
   .codex|.kimi-code) ;;
-  *) fail ECI_RUNTIME_SYNC_PROVIDER "canonical home basename is not .codex or .kimi-code: $source_root" ;;
+  *) fail ECI_RUNTIME_SYNC_PROVIDER "runtime launcher home is not a provider directory: $launcher_root" ;;
 esac
 
-case "$target_arg" in
-  /*) ;;
-  *) fail ECI_RUNTIME_SYNC_TARGET 'target must be an absolute provider-home path' ;;
+# A deployed launcher is deliberately allowed to be stale or mounted under a
+# different provider root.  Maintenance always repairs from the user's
+# selected provider source; launcher spelling is diagnostic context only.
+case "$provider" in
+  .codex) canonical_source_root="${HOME:?HOME must be set}/.codex" ;;
+  .kimi-code) canonical_source_root="${KIMI_CODE_HOME:-${HOME:?HOME must be set}/.kimi-code}" ;;
 esac
-# Validate the caller-supplied final component before canonicalization.
-# Parent symlinks are allowed when their resolved target passes the ownership
-# and containment checks below; this supports the user's home-scoped mounted
-# tmp directory without permitting a symlinked provider-home itself.
-[ ! -L "$target_arg" ] || fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target provider home is a symlink: $target_arg"
-target_root="$(realpath -m -- "$target_arg" 2>/dev/null || true)"
-[ -n "$target_root" ] || fail ECI_RUNTIME_SYNC_TARGET 'unable to canonicalize the target path'
-[ "$target_root" != "$source_root" ] || fail ECI_RUNTIME_SYNC_TARGET 'target resolves to the canonical provider home'
-[ "${target_root##*/}" = "$provider" ] ||
-  fail ECI_RUNTIME_SYNC_PROVIDER "target basename must be $provider: $target_root"
+canonical_source_root_real="$(realpath -e -- "$canonical_source_root" 2>/dev/null || true)"
+[ -n "$canonical_source_root_real" ] && [ -d "$canonical_source_root_real" ] ||
+  fail ECI_RUNTIME_SYNC_SOURCE_UNRESOLVED "provider=$provider selected source is unavailable: $canonical_source_root"
+source_root="$canonical_source_root_real"
 
 owner_uid="${EUID:-$(id -u 2>/dev/null || printf '%s' -1)}"
 owner_of() { stat -Lc '%u' -- "$1" 2>/dev/null || true; }
 mode_of() { stat -Lc '%a' -- "$1" 2>/dev/null || true; }
 
-[ -d "$source_root" ] && [ ! -L "$source_root" ] ||
+write_peer_receipt() {
+  local peer_source_root="$1" peer_target_root="$2"
+  local receipt receipt_tmp relative source_path source_hash source_mode
+
+  receipt="$peer_target_root/$PEER_RECEIPT_NAME"
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    # A receipt is status from an earlier run. Refresh it when it is a
+    # replaceable leaf; otherwise keep the metadata residue and let the
+    # already-published runtime files stand.
+    if [ -f "$receipt" ] || [ -L "$receipt" ]; then
+      if ! rm -f -- "$receipt"; then
+        printf 'ECI runtime maintenance advisory: could not replace peer receipt: %s\n' "$receipt" >&2
+        return 0
+      fi
+    else
+      printf 'ECI runtime maintenance advisory: peer receipt is not a replaceable file: %s\n' "$receipt" >&2
+      return 0
+    fi
+  fi
+  receipt_tmp="$receipt.eci-runtime-sync.$$"
+  if [ -e "$receipt_tmp" ] || [ -L "$receipt_tmp" ]; then
+    printf 'ECI runtime maintenance advisory: peer receipt temporary path already exists: %s\n' "$receipt_tmp" >&2
+    return 0
+  fi
+  if ! (
+    for relative in "${manifest[@]}"; do
+      source_path="$peer_source_root/$relative"
+      source_hash="$(hash_file "$source_path")" ||
+        exit 1
+      source_mode="$(mode_of "$source_path")"
+      printf '%s\t%s\t%s\n' "$relative" "$source_hash" "$source_mode"
+    done
+  ) >"$receipt_tmp"; then
+    printf 'ECI runtime maintenance advisory: could not stage peer receipt: %s\n' "$receipt_tmp" >&2
+    rm -f -- "$receipt_tmp" 2>/dev/null || true
+    return 0
+  fi
+  if ! chmod 600 -- "$receipt_tmp"; then
+    printf 'ECI runtime maintenance advisory: could not set peer receipt mode: %s\n' "$receipt_tmp" >&2
+  fi
+  if ! mv -f -- "$receipt_tmp" "$receipt"; then
+    printf 'ECI runtime maintenance advisory: could not publish peer receipt: %s\n' "$receipt" >&2
+    rm -f -- "$receipt_tmp" 2>/dev/null || true
+  fi
+}
+
+[ -d "$source_root" ] ||
   fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical provider home is not a regular directory: $source_root"
-[ "$(owner_of "$source_root")" = "$owner_uid" ] ||
-  fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical provider home is not owned by uid $owner_uid: $source_root"
-[ -d "$target_root" ] && [ ! -L "$target_root" ] ||
+if [[ "$mode" == planner-* ]]; then
+  # Planner maintenance has a local Codex publication that is useful on its
+  # own. A nonexistent peer is not a target failure until a peer operation is
+  # actually attempted; an existing wrong-provider target remains concrete.
+  target_root="$(realpath -e -- "$target_arg" 2>/dev/null || true)"
+  if [ -n "$target_root" ] && [ -d "$target_root" ]; then
+    [ "$target_root" != "$source_root" ] ||
+      fail ECI_RUNTIME_SYNC_TARGET 'target resolves to the canonical provider home'
+  else
+    target_root=''
+  fi
+  planner_sync "$mode" "$source_root" "$target_root" "$owner_uid"
+  exit 0
+fi
+case "$target_arg" in
+  /*) ;;
+  *) fail ECI_RUNTIME_SYNC_TARGET 'target must be an absolute provider-home path' ;;
+esac
+# Declared provider targets may be mounted or symlinked. Resolve the actual
+# directory and validate its provider basename below; the caller's spelling
+# is diagnostic only.
+target_root="$(realpath -e -- "$target_arg" 2>/dev/null || true)"
+[ -n "$target_root" ] && [ -d "$target_root" ] ||
+  fail ECI_RUNTIME_SYNC_TARGET 'target provider home is unavailable'
+[ "$target_root" != "$source_root" ] || fail ECI_RUNTIME_SYNC_TARGET 'target resolves to the canonical provider home'
+case "$mode" in
+  peer-check|peer-apply)
+    [ "$provider" = .codex ] ||
+      fail ECI_RUNTIME_SYNC_PROVIDER "peer synchronization must run from the canonical Codex home: $source_root"
+    [ "${target_root##*/}" = .kimi-code ] ||
+      fail ECI_RUNTIME_SYNC_PROVIDER "peer synchronization target basename must be .kimi-code: $target_root"
+    ;;
+  *)
+    [ "${target_root##*/}" = "$provider" ] ||
+      fail ECI_RUNTIME_SYNC_PROVIDER "target basename must be $provider: $target_root"
+    ;;
+esac
+[ -d "$target_root" ] ||
   fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target provider home is not a regular directory: $target_root"
-[ "$(owner_of "$target_root")" = "$owner_uid" ] ||
-  fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target provider home is not owned by uid $owner_uid: $target_root"
 
 manifest=()
 fixed_files=()
-case "$provider" in
-  .codex) fixed_files=(CODEX.md config.toml hooks.json) ;;
-  # Kimi has no Codex hooks.json/CODEX.md; its runtime configuration is the
-  # provider-owned config.toml plus the shared hook/bin surface.
-  .kimi-code) fixed_files=(config.toml) ;;
-esac
+if [[ "$mode" != peer-* ]]; then
+  case "$provider" in
+    .codex) fixed_files=(CODEX.md config.toml hooks.json) ;;
+    # Kimi has no Codex hooks.json/CODEX.md; its runtime configuration is the
+    # provider-owned config.toml plus the shared hook/bin surface.
+    .kimi-code) fixed_files=(config.toml) ;;
+  esac
+fi
 for fixed in "${fixed_files[@]}"; do
   [ -f "$source_root/$fixed" ] && [ ! -L "$source_root/$fixed" ] ||
-    fail ECI_RUNTIME_SYNC_SOURCE_MISSING "canonical managed file is missing or unsafe: $source_root/$fixed"
+    fail ECI_RUNTIME_SYNC_SOURCE_MISSING "canonical managed file is unavailable: $source_root/$fixed"
   manifest+=("$fixed")
 done
 # Tests, compiler-only source, bytecode caches, and editor backups are not
@@ -105,9 +755,22 @@ done
 while IFS= read -r -d '' source_path; do
   [ -f "$source_path" ] && [ ! -L "$source_path" ] ||
     fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical managed path is not a regular file: $source_path"
-  manifest+=("${source_path#"$source_root/"}")
+  relative="${source_path#"$source_root/"}"
+  if [[ "$mode" == peer-* ]]; then
+    # Planner publication atomically installs this hard-linked binary and its
+    # Codex-only provenance receipt. Peer runtime sync must not replace either
+    # artifact: maintain-planner remains the sole publication authority.
+    case "$relative" in
+      hooks/lib/eci-command-plan-go/eci-command-plan|hooks/lib/eci-command-plan-go/"$PLANNER_RECEIPT_NAME")
+        continue
+        ;;
+    esac
+  fi
+  manifest+=("$relative")
 done < <(find "$source_root/hooks" "$source_root/bin" \
   \( -path "$source_root/hooks/tests" -o -path "$source_root/hooks/tests/*" \
+     -o -type d -name '.eci-command-plan.txn.*' \
+     -o -name '.eci-command-plan.lock' -o -name '.eci-command-plan.publish.lock' \
      -o -name '__pycache__' -o -name '*.pyc' -o -name '*.go' -o -name '*.bak*' \) -prune \
   -o -type f -print0 2>/dev/null | sort -z)
 [ "${#manifest[@]}" -gt 3 ] || fail ECI_RUNTIME_SYNC_SOURCE_MISSING 'canonical hooks/bin surface is empty'
@@ -122,14 +785,6 @@ path_parent_is_safe() {
   [ "$parent" = "$target_root" ]
 }
 
-hash_file() {
-  local digest
-  digest="$(sha256sum -- "$1" 2>/dev/null || true)"
-  digest="${digest%% *}"
-  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
-  printf '%s' "$digest"
-}
-
 drift=0
 declare -A needs_sync=()
 for relative in "${manifest[@]}"; do
@@ -137,9 +792,17 @@ for relative in "${manifest[@]}"; do
   target_path="$target_root/$relative"
   path_parent_is_safe "$target_path" ||
     fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target parent contains a symlink: $target_path"
-  if [ -e "$target_path" ] || [ -L "$target_path" ]; then
-    [ -f "$target_path" ] && [ ! -L "$target_path" ] ||
-      fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target is not a regular file: $target_path"
+  if [ -L "$target_path" ]; then
+    # `mv` below replaces a stale leaf link; do not follow it or treat it as
+    # authority over the next synchronization.
+    drift=1
+    needs_sync["$relative"]=1
+    printf 'DRIFT\t%s\tstale-target-link\n' "$relative"
+    continue
+  fi
+  if [ -e "$target_path" ]; then
+    [ -f "$target_path" ] ||
+      fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target is not a replaceable file: $target_path"
     source_hash="$(hash_file "$source_path")" || fail ECI_RUNTIME_SYNC_HASH "cannot hash source: $source_path"
     target_hash="$(hash_file "$target_path")" || fail ECI_RUNTIME_SYNC_HASH "cannot hash target: $target_path"
     source_mode="$(mode_of "$source_path")"
@@ -159,12 +822,16 @@ for relative in "${manifest[@]}"; do
   fi
 done
 
-[ "$mode" = check ] && exit "$drift"
+case "$mode" in
+  check|peer-check) exit "$drift" ;;
+esac
 
-lock_dir="${HOME:?HOME must be set}/tmp/eci-runtime-sync-$provider.lock"
-if ! mkdir -- "$lock_dir" 2>/dev/null; then
-  fail ECI_RUNTIME_SYNC_BUSY "another $provider synchronization route owns $lock_dir"
+lock_name="$provider"
+if [[ "$mode" == peer-* ]]; then
+  lock_name='codex-kimi-peer'
 fi
+lock_dir="$(mktemp -d "${HOME:?HOME must be set}/tmp/eci-runtime-sync-$lock_name.XXXXXX")" ||
+  fail ECI_RUNTIME_SYNC_BUSY "could not create a temporary $lock_name synchronization workspace"
 trap 'rmdir -- "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
 
 for relative in "${manifest[@]}"; do
@@ -176,9 +843,8 @@ for relative in "${manifest[@]}"; do
   target_parent="${target_path%/*}"
   mkdir -p -- "$target_parent"
   [ ! -L "$target_parent" ] || fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target parent is a symlink: $target_parent"
-  target_tmp="$target_path.eci-runtime-sync.$$"
-  [ ! -e "$target_tmp" ] && [ ! -L "$target_tmp" ] ||
-    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "temporary target path already exists: $target_tmp"
+  target_tmp="$(mktemp -- "$target_path.eci-runtime-sync.XXXXXX")" ||
+    fail ECI_RUNTIME_SYNC_WRITE "unable to stage a temporary target for $relative"
   cp -- "$source_path" "$target_tmp" || fail ECI_RUNTIME_SYNC_WRITE "unable to stage $relative"
   chmod -- "$(mode_of "$source_path")" "$target_tmp" || fail ECI_RUNTIME_SYNC_WRITE "unable to preserve mode for $relative"
   mv -- "$target_tmp" "$target_path" || fail ECI_RUNTIME_SYNC_WRITE "unable to publish $relative"
@@ -187,5 +853,9 @@ for relative in "${manifest[@]}"; do
   [ "$source_hash" = "$target_hash" ] || fail ECI_RUNTIME_SYNC_VERIFY "published digest differs for $relative"
   printf 'SYNCED\t%s\t%s\n' "$relative" "$target_hash"
 done
+
+if [ "$mode" = peer-apply ]; then
+  write_peer_receipt "$source_root" "$target_root"
+fi
 
 exit 0

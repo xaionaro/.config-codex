@@ -87,8 +87,13 @@ class CommandGateModeTest(unittest.TestCase):
         *,
         role: str = "coordinator",
         active: bool = True,
+        hook_root: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        provider_root = CODEX_ROOT if provider == "codex" else KIMI_ROOT
+        provider_root = (
+            hook_root
+            if hook_root is not None
+            else CODEX_ROOT if provider == "codex" else KIMI_ROOT
+        )
         session_id = (
             "codex-command-gate-mode"
             if provider == "codex"
@@ -106,6 +111,8 @@ class CommandGateModeTest(unittest.TestCase):
                 "created_utc: 2026-08-21T00:00:00Z\n",
                 encoding="utf-8",
             )
+        else:
+            (marker_dir / "eci_active").unlink(missing_ok=True)
         payload = json.dumps(
             {
                 "session_id": session_id,
@@ -178,6 +185,26 @@ class CommandGateModeTest(unittest.TestCase):
         log_directory = eci_directory / "command-gate"
         log_directory.mkdir(mode=0o700, exist_ok=True)
         return log_directory
+
+    def _planner_fixture(self) -> tuple[Path, Path]:
+        hook_root = self.root / "planner-fixture-root"
+        shutil.copytree(CODEX_ROOT / "hooks", hook_root / "hooks")
+        mode_binary = hook_root / "bin" / "eci-command-gate-mode"
+        mode_binary.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(MODE_BIN, mode_binary)
+        mode_binary.chmod(mode_binary.stat().st_mode | stat.S_IXUSR)
+        planner = hook_root / "hooks" / "lib" / "eci-command-plan-go" / "eci-command-plan"
+        return hook_root, planner
+
+    @staticmethod
+    def _write_planner_outputs(planner: Path, outputs: tuple[str, ...]) -> None:
+        lines = ["#!/usr/bin/env bash"]
+        for output in outputs:
+            shell_literal = output.replace("'", "'\"'\"'")
+            lines.append(f"printf '%s\\n' '{shell_literal}'")
+        lines.append("exit 2")
+        planner.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        planner.chmod(0o700)
 
     def _load_mode_module(self) -> object:
         module_name = f"eci_command_gate_mode_{time.time_ns()}"
@@ -283,6 +310,33 @@ class CommandGateModeTest(unittest.TestCase):
             "(phase=PreToolUse, operation=sample-boundary, token="
             f"{secret}); reason: sample; remediation: retry"
         )
+
+    @staticmethod
+    def _planner_denial_result(reason: str) -> str:
+        return json.dumps(
+            {
+                "decision": "deny",
+                "diagnostic": {
+                    "code": "ECI_SAMPLE_DENIED",
+                    "operation": "sample-boundary",
+                    "segment": 1,
+                    "argv_index": 0,
+                    "byte_offset": 0,
+                    "token": "sample",
+                    "path": "n/a",
+                    "predicate": "sample",
+                    "reason": reason,
+                    "remediation": "retry",
+                    "rejected_segment": "sample",
+                },
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"[ECI_SAMPLE_DENIED] {reason}",
+                },
+            },
+            separators=(",", ":"),
+        )
         return (
             json.dumps(
                 {
@@ -297,18 +351,94 @@ class CommandGateModeTest(unittest.TestCase):
             + b"\n"
         )
 
-    def test_missing_config_allows_parser_denial_and_logs_once(self) -> None:
-        for provider in ("codex", "kimi"):
-            with self.subTest(provider=provider):
-                result = self._run_hook(provider, "env")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, "")
-        events = self._events()
-        self.assertEqual(len(events), 2)
-        self.assertEqual([event["provider"] for event in events], ["codex", "kimi"])
-        self.assertTrue(
-            all(event["code"] == "ECI_ENVIRONMENT_ENUMERATION_DENIED" for event in events)
+    def _assert_exact_pretooluse_denial(
+        self,
+        stdout: str,
+        *,
+        denial_code: str,
+    ) -> None:
+        payload = json.loads(stdout)
+        self.assertEqual(set(payload), {"hookSpecificOutput"})
+        hook_specific_output = payload["hookSpecificOutput"]
+        self.assertIsInstance(hook_specific_output, dict)
+        self.assertEqual(
+            set(hook_specific_output),
+            {
+                "hookEventName",
+                "permissionDecision",
+                "permissionDecisionReason",
+            },
         )
+        self.assertEqual(hook_specific_output["hookEventName"], "PreToolUse")
+        self.assertEqual(hook_specific_output["permissionDecision"], "deny")
+        self.assertIn(denial_code, hook_specific_output["permissionDecisionReason"])
+
+    def test_missing_config_allows_parser_denial_and_logs_once(self) -> None:
+        result = self._run_hook("codex", "env")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self._assert_exact_pretooluse_denial(
+            result.stdout,
+            denial_code="ECI_ENVIRONMENT_ENUMERATION_DENIED",
+        )
+        self.assertEqual(self._event_count(), 0)
+
+    def test_malformed_planner_output_fails_closed_with_exact_envelope(self) -> None:
+        hook_root, planner = self._planner_fixture()
+        for malformed_output in (
+            "planner-internal-stdout",
+            (
+                '{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
+                '"permissionDecision":"allow",'
+                '"permissionDecisionReason":"planner-internal-json"}}'
+            ),
+        ):
+            with self.subTest(malformed_output=malformed_output):
+                self._write_planner_outputs(planner, (malformed_output,))
+                result = self._run_hook(
+                    "codex",
+                    "env",
+                    active=True,
+                    hook_root=hook_root,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self._assert_exact_pretooluse_denial(
+                    result.stdout,
+                    denial_code="ECI_PLAN_INTERNAL_DENIED",
+                )
+                self.assertNotIn(malformed_output, result.stdout)
+
+    def test_duplicate_valid_planner_results_fail_closed_with_exact_envelope(
+        self,
+    ) -> None:
+        hook_root, planner = self._planner_fixture()
+        duplicated_reason = "planner-duplicate-valid-result"
+        planner_result = self._planner_denial_result(duplicated_reason)
+        self._write_planner_outputs(planner, (planner_result, planner_result))
+
+        result = self._run_hook("codex", "env", active=True, hook_root=hook_root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self._assert_exact_pretooluse_denial(
+            result.stdout,
+            denial_code="ECI_PLAN_INTERNAL_DENIED",
+        )
+        self.assertNotIn(duplicated_reason, result.stdout)
+
+    def test_malformed_planner_output_is_silent_and_logged_in_inactive_permissive_mode(
+        self,
+    ) -> None:
+        hook_root, planner = self._planner_fixture()
+        self._write_planner_outputs(planner, ("planner-internal-stdout",))
+        self.assertEqual(self._set_mode("permissive").returncode, 0)
+
+        result = self._run_hook("codex", "env", active=False, hook_root=hook_root)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        events = self._events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["code"], "ECI_PLAN_INTERNAL_DENIED")
+        self.assertEqual(events[0]["source"], "legacy")
 
     def test_missing_config_allows_legacy_denial_and_logs_once(self) -> None:
         commands = {
@@ -364,7 +494,7 @@ class CommandGateModeTest(unittest.TestCase):
                 )
         self.assertEqual(self._set_mode("invalid").returncode, 2)
 
-    def test_invalid_config_states_fail_to_enforcing(self) -> None:
+    def test_invalid_config_states_fall_back_to_permissive(self) -> None:
         config_dir = self.config_home / "eci"
         config_dir.mkdir(parents=True, mode=0o700)
         config = config_dir / "command-gate-mode"
@@ -387,7 +517,7 @@ class CommandGateModeTest(unittest.TestCase):
                     env=self._environment(),
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout)["mode"], "enforcing")
+                self.assertEqual(json.loads(result.stdout)["mode"], "permissive")
         config.unlink()
         config.mkdir()
         result = subprocess.run(
@@ -397,7 +527,10 @@ class CommandGateModeTest(unittest.TestCase):
             check=False,
             env=self._environment(),
         )
-        self.assertEqual(json.loads(result.stdout)["config_state"], "invalid-metadata")
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"mode": "permissive", "config_state": "invalid-metadata"},
+        )
         config.rmdir()
         outside = self.root / "outside-mode"
         outside.write_text("permissive\n", encoding="utf-8")
@@ -409,7 +542,10 @@ class CommandGateModeTest(unittest.TestCase):
             check=False,
             env=self._environment(),
         )
-        self.assertEqual(json.loads(result.stdout)["config_state"], "invalid-path")
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"mode": "permissive", "config_state": "invalid-path"},
+        )
 
     def test_finalize_enforces_byte_exact_and_permissive_redacts(self) -> None:
         secret = "OPENAI_API_KEY=do-not-record"
@@ -618,7 +754,7 @@ class CommandGateModeTest(unittest.TestCase):
         self.assertEqual(observed.returncode, 0, observed.stderr)
         self.assertEqual(
             json.loads(observed.stdout),
-            {"mode": "enforcing", "config_state": "invalid-metadata"},
+            {"mode": "permissive", "config_state": "invalid-metadata"},
         )
         self.assertEqual(outside.read_bytes(), b"permissive\n")
 
@@ -677,7 +813,7 @@ class CommandGateModeTest(unittest.TestCase):
             b"eci-command-gate-mode: telemetry unavailable\n",
         )
 
-    def test_public_foreign_config_ancestor_fails_enforcing(self) -> None:
+    def test_public_foreign_config_ancestor_falls_back_to_permissive(self) -> None:
         foreign_config = Path("/root/.config")
         self.assertNotEqual(Path("/root").stat().st_uid, os.getuid())
         environment = self._environment()
@@ -691,9 +827,9 @@ class CommandGateModeTest(unittest.TestCase):
             timeout=2,
         )
         self.assertEqual(observed.returncode, 0, observed.stderr)
-        self.assertEqual(json.loads(observed.stdout)["mode"], "enforcing")
+        self.assertEqual(json.loads(observed.stdout)["mode"], "permissive")
 
-    def test_config_nonregular_and_wrong_mode_files_fail_enforcing(self) -> None:
+    def test_config_nonregular_and_wrong_mode_files_fall_back_to_permissive(self) -> None:
         for kind in ("symlink", "hardlink", "directory", "fifo", "socket", "wrong-mode"):
             with self.subTest(kind=kind):
                 shutil.rmtree(self.config_home, ignore_errors=True)
@@ -715,7 +851,7 @@ class CommandGateModeTest(unittest.TestCase):
                         bound_socket.close()
                 self.assertEqual(observed.returncode, 0, observed.stderr)
                 state = json.loads(observed.stdout)
-                self.assertEqual(state["mode"], "enforcing")
+                self.assertEqual(state["mode"], "permissive")
                 self.assertIn(state["config_state"], ("invalid-path", "invalid-metadata"))
                 if outside is not None:
                     self.assertEqual(outside.read_bytes(), b"unchanged\n")
@@ -1095,8 +1231,17 @@ class CommandGateModeTest(unittest.TestCase):
                                 provider, "env", role=role, active=active
                             )
                             self.assertEqual(result.returncode, 0, result.stderr)
-                            if mode == "enforcing":
-                                self.assertIn("ECI_ENVIRONMENT_ENUMERATION_DENIED", result.stdout)
+                            if provider == "codex" and (mode == "enforcing" or active):
+                                self._assert_exact_pretooluse_denial(
+                                    result.stdout,
+                                    denial_code="ECI_ENVIRONMENT_ENUMERATION_DENIED",
+                                )
+                                self.assertEqual(self._event_count(), before)
+                            elif mode == "enforcing":
+                                self.assertIn(
+                                    "ECI_ENVIRONMENT_ENUMERATION_DENIED",
+                                    result.stdout,
+                                )
                             else:
                                 self.assertEqual(result.stdout, "")
                                 self.assertEqual(len(self._events()), before + 1)
@@ -1129,19 +1274,23 @@ class CommandGateModeTest(unittest.TestCase):
             self.assertEqual(result.stdout, "")
         self.assertFalse((self.state_home / "eci" / "command-gate" / "would-deny.jsonl").exists())
 
-    def test_invalid_config_enforces_without_reducing_denial(self) -> None:
+    def test_invalid_config_does_not_forward_would_deny(self) -> None:
         config_dir = self.config_home / "eci"
         config_dir.mkdir(parents=True, mode=0o700)
         config = config_dir / "command-gate-mode"
         config.write_text("permissive\r\n", encoding="utf-8")
         config.chmod(0o600)
-        denial = self._sample_denial("raw-value-must-not-appear")
+        denial = (
+            b'{"hookSpecificOutput":{"permissionDecision":"deny",'
+            b'"permissionDecisionReason":"[ECI_SAMPLE_DENIED] ECI gate denied '
+            b'(phase=PreToolUse, operation=sample-boundary)"}}'
+        )
         result = self._finalize(denial)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, denial)
-        self.assertFalse(
-            (self.state_home / "eci" / "command-gate" / "would-deny.jsonl").exists()
-        )
+        self.assertEqual(result.stdout, b"")
+        event = self._events()[0]
+        self.assertEqual(event["config_state"], "invalid-bytes")
+        self.assertNotIn("permissionDecisionReason", json.dumps(event))
 
     def test_permissive_protected_corpus_allows_and_logs(self) -> None:
         self.assertEqual(self._set_mode("permissive").returncode, 0)
@@ -1173,12 +1322,21 @@ class CommandGateModeTest(unittest.TestCase):
                     self.assertEqual(result.stdout, "")
                     self.assertEqual(self._event_count(), before + 1)
 
-    def test_wrappers_have_one_finalizer_for_parser_and_legacy_denials(self) -> None:
-        for root in (CODEX_ROOT, KIMI_ROOT):
-            source = (root / "hooks" / "validate-bash.sh").read_text(encoding="utf-8")
-            self.assertIn("finalize_command_gate_denial parser \"$plan_output\"", source)
-            self.assertIn("finalize_command_gate_denial legacy \"$denial\"", source)
-            self.assertNotIn("printf '%s\\n' \"$plan_output\"\n    exit 0", source)
+    def test_codex_wrapper_normalizes_parser_denial_before_finalization(self) -> None:
+        source = (CODEX_ROOT / "hooks" / "validate-bash.sh").read_text(encoding="utf-8")
+        self.assertIn("printf '%s' \"$plan_result\" | jq -cser", source)
+        self.assertIn(
+            "if (length == 1 and (.[0] | valid_planner_denial)) then",
+            source,
+        )
+        self.assertIn(
+            "plan_denial=\"$(command_plan_pretooluse_denial \"$plan_output\")\"",
+            source,
+        )
+        self.assertIn("finalize_command_gate_denial parser \"$plan_denial\"", source)
+        self.assertNotIn("finalize_command_gate_denial parser \"$plan_output\"", source)
+        self.assertIn("finalize_command_gate_denial legacy \"$denial\"", source)
+        self.assertNotIn("printf '%s\\n' \"$plan_output\"\n    exit 0", source)
 
     def test_enforcing_worker_mode_set_is_owned_by_coordinator(self) -> None:
         self.assertEqual(self._set_mode("enforcing").returncode, 0)

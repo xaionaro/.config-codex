@@ -27,7 +27,7 @@ Coordinator/lead routes begin with [coordinator runtime](../references/workflow-
 | Snitch | [snitch](references/snitch.md) | — |
 | Explorer/researcher | [research](references/research.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned source discovery |
 | Designer, Design Reviewer, FDR | [design](references/design.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for design/admission scope |
-| `Executor` | [execution](references/execution.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
+| `Executor` | [execution](references/execution.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned bug, build-failure, flake, or performance-regression work; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
 | Execution Reviewer A/B/C | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E only for code |
 | Test Designer/Executor/Reviewer, Verifier, QA | [testing and QA](references/testing-and-qa.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for governed test/non-code scope |
 

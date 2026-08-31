@@ -41,9 +41,41 @@ Progress reports changed state and completed outcomes, not files read, commands 
 - For blockers/risks, state impact, owner, and exact unblock action; user blockers must name the user's action and target artifact/path when applicable, e.g. `review docs/design.md`.
 - Preserve parent/child work: use a tree, or include `Task ID` and `Parent ID` columns; do not flatten children into peer lanes.
 - If task IDs exist, make them hierarchical, e.g. `1`, `1.3`, `1.3.2`, and sort children under their parent.
-- In an active ECI/ATE workflow, explicitly read `$CODEX_HOME/skills/references/requirement-lineage.md` when resolving refs; it is not auto-loaded. Every reported lane includes non-empty refs and a nearby redacted-verbatim `Requirements` registry with wording and source. Use compact `R<n>` aliases only when that registry binds them to canonical `{register_root_id,requirement_id}` tuples; standalone reports carry the tuple or alias map. Keep the full chain in the current project-understanding ledger; refs are not graph edges.
-- In a direct workflow with inactive ECI/ATE lineage, preserve direct-workflow behavior exactly: do not fabricate refs or a registry.
-- Lineage-admission failures leave lane/task statuses unchanged. Report them as routing risks and next actions, never as `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase.
+- Use readable requirement context when it is available in active ECI/ATE. Keep the fuller requirement-to-lane explanation in `project-understanding.md`.
+- When requirement context is missing or stale, write `lineage unavailable—reconcile` beside the lane and continue the status report and safe bounded work. Do not invent a registry or turn missing context into a blocker.
+- In direct work, include requirement context only when it helps the reader.
+
+## Lane forecasts
+
+Use these labels in every multi-lane row and single-lane report.
+
+| Field | Record |
+| --- | --- |
+| Next milestone | `Next milestone: <named outcome>` |
+| Remaining forecast | `Remaining forecast: <current honest time estimate/range>` |
+| Forecast recalibration | `Forecast recalibration: increased | decreased | unchanged — <why; evidence>` |
+| Dependencies / overlap | `Dependencies / overlap: <none, named dependency + owner/resume, or overlap/critical-path treatment>` |
+
+Every non-`CLOSED` lane names its next milestone and remaining range. A
+`CLOSED` lane records `Remaining forecast: 0 h`. For an initial forecast,
+write `unchanged — baseline from <evidence>; no prior forecast`.
+
+Every material status report recalibrates each affected lane and records its
+delta, why, and evidence. State dependencies and parallel overlap. Never add
+overlapping child estimates into a parent or mission forecast; name the
+non-overlapping sequence or critical path.
+
+Forecasts are coordination aids for catching stale planning assumptions under
+the non-malicious-bot principle. They never authorize or deny work, create a
+user blocker, promise completion, require a receipt or artifact, or require
+per-command updates. Correct missing or stale forecasts alongside safe work.
+
+| Pressure | Correct report |
+| --- | --- |
+| Active lane lacks a milestone or range | An active lane missing a named milestone or range is corrected alongside safe work. |
+| Estimate was copied without current evidence | A copied estimate without `increased`, `decreased`, or `unchanged` plus why/evidence is stale. |
+| Parallel children | Show overlap or critical path; do not add their estimates to the parent. |
+| Dependency is paused | A paused dependency names its owner and resume condition; it is not a user blocker. |
 
 ## Multi-Lane Mission Status
 
@@ -51,55 +83,28 @@ For “where are we on each lane?” or “who works on each lane?”, report ev
 
 Use three separate status columns so source readiness cannot be mistaken for E2E completion.
 
-When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. In active ECI/ATE, keep `Lane` followed immediately by `Lane requirement refs` (compact aliases resolve through the nearby registry); in direct workflows, omit that lineage column and registry.
+When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. Keep `Lane` followed by `Lane requirement context` when that context would help the reader. Use a known readable reference or `lineage unavailable—reconcile`.
 
-| Task ID | Parent ID | Lane | Lane requirement refs | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next proof/action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `R1, R3` (registry-bound) | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `<next evidence/action>` |
+| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Remaining forecast / recalibration | Dependencies / overlap | Next proof/action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Remaining forecast: <current honest time estimate/range>`<br>`Forecast recalibration: increased | decreased | unchanged — <why; evidence>` | `Dependencies / overlap: <none, named dependency + owner/resume, or overlap/critical-path treatment>` | `<next evidence/action>` |
 
-Every lane records `Stage: normal` or `Stage: emergency`. `Stage: emergency` is
-the Emergency Unblock protocol: load and follow
-`skills/explore-critique-implement/references/emergency-unblock.md`, make only
-its single bounded provisional repair, report exactly
-`provisional Emergency Unblock — unchecked`, and immediately return to normal
-ECI Step 1. Emergency stage does not authorize a second unchecked repair or
-change the implementation/test/production status meanings below.
+Every lane may record `Stage: normal` or `Stage: emergency` as current-state
+context. Missing, stale, or unknown stage metadata is reported and reconciled
+without pausing harmless work. `Stage: emergency` may use
+`skills/explore-critique-implement/references/emergency-unblock.md` as a
+recovery aid, but stage grammar and its records never authorize or deny normal
+work or change the implementation/test/production status meanings below.
 
-Place the redacted-verbatim `Requirements` registry and its immutable,
-register-scoped alias map near the active ECI/ATE table. Each alias resolves to
-one canonical `{register_root_id,requirement_id}` declaration, wording, and
-source. This example is a ledger-derived, non-authoritative read-only
-projection: the coordinator supplies the current `<register_root_id>` and
-state/event evidence from the snapshot; historical rows carry an immutable
-`state_event_ref`. The table and registry never create, modify, supersede, or
-retire requirements/lanes; only coordinator transitions and
-`high_level_log.md` history do. The current project-understanding snapshot
-records, for each lane, `requirement → decision/reasoning step → parent/derived
-lane → executed assignment` with evidence for every edge; do not duplicate the
-graph in status columns.
-
-### Redacted-verbatim Requirements registry
-
-Example alias map: `{register_root_id:<register_root_id>,aliases:[{alias:R1,requirement_ref:{register_root_id:<register_root_id>,requirement_id:R1}},{alias:R3,requirement_ref:{register_root_id:<register_root_id>,requirement_id:R3}}]}`.
-Illustrative placeholders only: shown R1/R3 rows must be replaced by the
-current coordinator ledger projection; never hand-author them or treat them as
-active requirements.
-
-| Display alias | Canonical tuple | State/event evidence | Redacted-verbatim user wording | Source |
-| --- | --- | --- | --- | --- |
-| `R1` | `{register_root_id: <register_root_id>, requirement_id: R1}` | `active; state_version:<version>` | “In ECI and ATE skills it is required to keep track of which exactly requirement led to a specific lane that we execute.” | ledger-captured direct user message |
-| `R3` | `{register_root_id: <register_root_id>, requirement_id: R3}` | `active; state_version:<version>` | “Also make sure a lane requirement is reflected in writing-status-reports.” | ledger-captured direct user message |
-
-For historical/provenance rows, replace `active` with
-`superseded|retired; state_event_ref:<state_event_ref>`; such rows are read-only evidence and
-never active-admission refs.
-Protocol constraints such as D1 are separate non-authorizing constraints; they
-are never active register requirements or lane refs.
+Use a short `Requirements` list near the table only when it makes the report
+clearer. It is a readable projection of the ledger, not an admission artifact.
+Never delay a report to construct aliases, hashes, receipts, or verbatim
+registries.
 
 | Rule | Behavior |
 | --- | --- |
 | Status vocabulary | In each status column, use only `NEW`, `IN PROGRESS`, `PAUSED`, `BLOCKED`, `CLOSED`. |
-| Stage vocabulary | Every lane must record `normal` or `emergency`; `emergency` requires the Emergency Unblock protocol and its immediate return to normal ECI Step 1 described above. |
+| Stage vocabulary | `normal` or `emergency` describes known lane state. Missing/stale stage metadata is a report-quality issue to reconcile, never a work gate. |
 | Implementation Status | Covers exploration, RCA, design, code changes, code review, build checks, unit/component/integration auto-tests, and source-level readiness. `CLOSED` means source-level work is accepted with relevant automated checks. |
 | Test Status | Covers E2E validation in the non-production test environment, including real devices, test services, UI manipulation, and mission/test-plan helpers. `CLOSED` means test-environment E2E passed or was explicitly waived. |
 | Prod Status | Covers E2E validation in production, including deploy provenance, real production services/devices, UI manipulation where relevant, and user-visible behavior. `CLOSED` means production E2E passed or was explicitly waived. |
@@ -110,12 +115,11 @@ are never active register requirements or lane refs.
 | `PAUSED` | Use only when this lane's next required action is progress from another in-scope lane. No user input or decision is pending for this lane's next action. Name the dependency lane, impact, owner, and resume condition in `Blocker` or `Next proof/action`. If the dependency lane is `BLOCKED`, keep this lane `PAUSED` and mark the dependency lane `BLOCKED`. |
 | `BLOCKED` | Use only when this lane cannot make any more progress until the user provides a named input or decision. Name the exact user input/decision, impact, owner (`user`), exact unblock action, and target artifact/path. Do not use `BLOCKED` for another lane's progress. |
 | Coverage | Do not omit lanes because they are idle, waiting, paused, under review, deployment-only, or proof-only. |
-| Lane requirement refs | In active ECI/ATE, every reported lane has non-empty refs that resolve through the nearby registry to canonical tuples; active-admission rows resolve to active state, while historical/provenance rows carry immutable `state_event_ref` and never authorize work. Unresolved or empty refs fail the report. Direct workflows do not fabricate refs or a registry. |
-| Lineage admission | A failed admission is a routing risk/next action with unchanged statuses, never `PAUSED`, `BLOCKED`, BRP, or a lifecycle phase. |
+| Lane requirement context | Use known readable context when available. Otherwise state `lineage unavailable—reconcile`; missing context never fails or delays the report. |
 
 ## Pressure Scenario
 
-Under time pressure, classify by the lane's next required action. In active ECI/ATE, use: "PAUSED on API-contract lane [Lane requirement refs: R1]; impact: checkout validation cannot make progress; owner: API-contract lane; resume: lane 2 publishes docs/api-contract.md." Use `BLOCKED` only for user input: "BLOCKED on user decision [Lane requirement refs: R1]: choose required API fields; impact: checkout validation cannot make further progress; owner: user; unblock: record the choice in docs/api-contract.md." In a direct workflow, omit the refs and registry.
+Under time pressure, classify by the lane's next required action. For example: "PAUSED on API-contract lane [requirement context: checkout contract]; impact: checkout validation cannot make progress; owner: API-contract lane; resume: lane 2 publishes docs/api-contract.md." Use `BLOCKED` only for a real user input: "BLOCKED on user decision: choose required API fields; impact: checkout validation cannot make further progress; owner: user; unblock: record the choice in docs/api-contract.md." If context is not yet known, say `lineage unavailable—reconcile` and report the next safe action.
 
 ## Common Failures
 
@@ -142,10 +146,10 @@ Under time pressure, classify by the lane's next required action. In active ECI/
 | Hierarchy | Parent/child work is shown as a tree or with `Task ID` + `Parent ID`; nested work is not flattened. |
 | Task IDs | Existing task IDs use hierarchical form such as `1.3.2`. |
 | Multi-lane coverage | Every in-scope lane is listed, including idle/waiting/review/deploy/proof/paused lanes. |
-| Requirement traceability | Active ECI/ATE lane rows have non-empty refs, and the nearby redacted-verbatim registry resolves every alias to a canonical tuple with wording and source; direct workflows have neither fabricated refs nor a registry. |
-| Lineage failure semantics | Admission failures leave statuses unchanged and are reported as routing risks/next actions, not `PAUSED`, `BLOCKED`, BRP, or lifecycle phases. |
+| Requirement context | Known context is readable and accurate. Missing context is labeled `lineage unavailable—reconcile`; it never fails or delays the report. |
 | Lane statuses | Each Implementation/Test/Prod status is exactly `NEW`, `IN PROGRESS`, `PAUSED`, `BLOCKED`, or `CLOSED`. |
 | PAUSED semantics | A lane waiting for progress from another in-scope lane, with no user input/decision pending, is labeled `PAUSED`, not `BLOCKED`. |
 | BLOCKED semantics | A lane unable to make more progress until the user supplies a named input/decision is labeled `BLOCKED` with `owner=user` and an exact unblock action; dependency-only waiting is not `BLOCKED`. |
 | Dependency propagation | If a dependency lane is `BLOCKED` on user input, the dependent lane remains `PAUSED` until its own next required action needs user input. |
 | Status separation | Source-level completion, test E2E, and production E2E are never merged into one status. |
+| Lane forecasts | Every active lane names a milestone, remaining range, recalibration, and dependency/overlap treatment. Closed lanes are `0 h`; overlapping estimates stay non-additive. |

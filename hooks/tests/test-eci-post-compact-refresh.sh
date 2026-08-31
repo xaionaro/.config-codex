@@ -6,6 +6,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-post-compact-refresh.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
+install_configured_home_fixture() {
+  # hooks.json deliberately resolves its hook target from HOME.  Give the
+  # configured-command tests one canonical HOME/.codex view of this source
+  # tree, rather than smuggling the source root back in through CODEX_HOME.
+  mkdir -p "$TMP_ROOT/home"
+  if [ -e "$TMP_ROOT/home/.codex" ] || [ -L "$TMP_ROOT/home/.codex" ]; then
+    [ -L "$TMP_ROOT/home/.codex" ] && [ "$(readlink -- "$TMP_ROOT/home/.codex")" = "$ROOT" ]
+  else
+    ln -s "$ROOT" "$TMP_ROOT/home/.codex"
+  fi
+}
+
 run_post_compact() {
   local proof_root="$1"
   local out="$2"
@@ -108,6 +120,7 @@ test_post_compact_rejects_invalid_json_and_never_leaks_noise() {
   # The configured command uses non-login bash, so an accidental .bashrc
   # print cannot prefix the one JSON object emitted by an active refresh.
   printf '%s\n' 'printf startup-noise >&2' 'printf stdout-noise' >"$TMP_ROOT/home/.bashrc"
+  install_configured_home_fixture
   command="$(jq -r '.hooks.PostCompact[0].hooks[0].command' "$ROOT/hooks.json")"
   out="$TMP_ROOT/configured.out"
   jq -cn --arg cwd "$ROOT" \
@@ -128,6 +141,7 @@ test_post_compact_full_lifecycle_payload_has_exact_provider_output() {
   printf '{}\n' >"$expected"
   out="$TMP_ROOT/full-lifecycle.out"
   err="$TMP_ROOT/full-lifecycle.err"
+  install_configured_home_fixture
   command="$(jq -r '.hooks.PostCompact[0].hooks[0].command' "$ROOT/hooks.json")"
 
   jq -cn --arg cwd "$ROOT" --arg transcript "$transcript" \
@@ -187,29 +201,17 @@ test_post_compact_nested_marker_is_explicit_and_bounded() {
 }
 
 test_post_compact_hook_is_registered_and_session_start_is_restricted() {
-  local postcompact_trusted_hash
+  local postcompact_hook_state
   jq -e '
     (.hooks.SessionStart | all(.matcher == "startup|resume|clear")) and
     ([.hooks.PostCompact[]?.hooks[]?.command]
       | any(contains("/hooks/eci-post-compact-refresh.sh")))
   ' "$ROOT/hooks.json" >/dev/null
-  grep -Fq '[hooks.state."/home/pheona/.codex/hooks.json:post_compact:0:0"]' "$ROOT/config.toml"
-  postcompact_trusted_hash="$(awk '
-    $0 == "[hooks.state.\"/home/pheona/.codex/hooks.json:post_compact:0:0\"]" {
-      in_postcompact = 1
-      next
-    }
-    in_postcompact && /^\[/ { exit }
-    in_postcompact && /^trusted_hash = "/ {
-      value = $0
-      sub(/^trusted_hash = "/, "", value)
-      sub(/"$/, "", value)
-      print value
-      exit
-    }
-  ' "$ROOT/config.toml")"
-  [ "$postcompact_trusted_hash" = \
-    'sha256:1a9ead109faf0250cdb2bc861fe69273d1176499a275176af0d9f1d3892806c1' ]
+  postcompact_hook_state="[hooks.state.\"$ROOT/hooks.json:post_compact:0:0\"]"
+  # This is only the existing user-owned trust-state key. The test exercises
+  # source command shape directly and must not claim that the changed command
+  # has already been trusted by a fresh Codex launch.
+  grep -Fq "$postcompact_hook_state" "$ROOT/config.toml"
 }
 
 test_policy_names_post_compact_authority_and_exact_manifest_schema() {
