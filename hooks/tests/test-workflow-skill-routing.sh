@@ -804,6 +804,13 @@ require_forecast_source_pattern() {
     fail "$source is missing forecast source contract: $description"
 }
 
+require_forecast_source_multiline_pattern() {
+  local source="$1" description="$2" pattern="$3" input="$4"
+
+  [[ "$input" =~ $pattern ]] ||
+    fail "$source is missing forecast source contract: $description"
+}
+
 forbid_forecast_source_pattern() {
   local source="$1" description="$2" pattern="$3" input="$4" text
 
@@ -822,27 +829,41 @@ forbid_forecast_source_line_pattern() {
 assert_forecast_source_contract() {
   local source="$1" input="$2"
   local canonical_lane_code canonical_root_code canonical_lane_raw canonical_root_raw
-  local lane_disclaimer root_disclaimer actor_or_stage additive_root
+  local lane_post_period_addition root_post_period_addition
+  local lane_actor_or_stage_code lane_actor_or_stage_directive
+  local additive_root_code additive_root_directive
 
   canonical_lane_code='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
   canonical_root_code='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
   canonical_lane_raw='(^|[^`])Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.'
   canonical_root_raw='(^|[^`])Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.'
-  lane_disclaimer='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
-  root_disclaimer='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
-  actor_or_stage='`?[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+(critic|reviewer|actor|stage)([[:space:]:]|$)'
-  additive_root='Root[[:space:]]+completion[^.]*[[:space:]](is|means)[[:space:]][^.]*((sum|summed)[^.]*(child|children))'
+  lane_post_period_addition='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
+  root_post_period_addition='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
+  lane_actor_or_stage_code='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+(critic|reviewer|actor|stage)([[:space:]:]|$)[^`]*`'
+  lane_actor_or_stage_directive='^[[:space:]]*([-*+][[:space:]]+|[0-9]+[.)][[:space:]]+|\|[[:space:]]*)?Forecast[[:space:]]+deadline:[[:space:]]+(critic|reviewer|actor|stage)([[:space:]:]|$)'
+  additive_root_code='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[^`]*(is|means)[^`]*((sum|summed)[^`]*(child|children))[^`]*`'
+  additive_root_directive='^[[:space:]]*([-*+][[:space:]]+|[0-9]+[.)][[:space:]]+|\|[[:space:]]*)?Root[[:space:]]+completion[[:space:]]+forecast:.*[[:space:]](is|means)[[:space:]].*((sum|summed).*(child|children))'
 
   require_forecast_source_pattern "$source" 'standalone named-outcome lane deadline template' "$canonical_lane_code" "$input"
   require_forecast_source_pattern "$source" 'standalone active-root deadline template' "$canonical_root_code" "$input"
   forbid_forecast_source_pattern "$source" 'unquoted lane deadline template' "$canonical_lane_raw" "$input"
   forbid_forecast_source_pattern "$source" 'unquoted root deadline template' "$canonical_root_raw" "$input"
-  forbid_forecast_source_pattern "$source" 'post-period lane deadline disclaimer' "$lane_disclaimer" "$input"
-  forbid_forecast_source_pattern "$source" 'post-period root deadline disclaimer' "$root_disclaimer" "$input"
-  forbid_forecast_source_line_pattern "$source" 'same-line lane deadline disclaimer' "${canonical_lane_code}[[:space:]]*[^[:space:]|<]" "$input"
-  forbid_forecast_source_line_pattern "$source" 'same-line root deadline disclaimer' "${canonical_root_code}[[:space:]]*[^[:space:]|<]" "$input"
-  forbid_forecast_source_pattern "$source" 'actor or stage used as a lane outcome' "$actor_or_stage" "$input"
-  forbid_forecast_source_pattern "$source" 'root completion derived from child forecasts' "$additive_root" "$input"
+  forbid_forecast_source_pattern "$source" 'post-period lane deadline addition' "$lane_post_period_addition" "$input"
+  forbid_forecast_source_pattern "$source" 'post-period root deadline addition' "$root_post_period_addition" "$input"
+  forbid_forecast_source_line_pattern "$source" 'same-line lane deadline addition' "${canonical_lane_code}[[:space:]]*[^[:space:]|<]" "$input"
+  forbid_forecast_source_line_pattern "$source" 'same-line root deadline addition' "${canonical_root_code}[[:space:]]*[^[:space:]|<]" "$input"
+  forbid_forecast_source_pattern "$source" 'actor or stage in an inline lane deadline template' "$lane_actor_or_stage_code" "$input"
+  forbid_forecast_source_line_pattern "$source" 'actor or stage in a direct lane deadline directive' "$lane_actor_or_stage_directive" "$input"
+  forbid_forecast_source_pattern "$source" 'additive root completion in an inline root deadline template' "$additive_root_code" "$input"
+  forbid_forecast_source_line_pattern "$source" 'additive root completion in a direct root deadline directive' "$additive_root_directive" "$input"
+}
+
+assert_coordinator_progress_forecast_contract() {
+  local source="$1" input="$2" attached_lane_template
+
+  attached_lane_template='For[[:space:]]+every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line[[:space:]]+for[[:space:]]+each[[:space:]]+executing[[:space:]]+lane:[[:blank:]]*'$'\n''[[:blank:]]*[-*][[:blank:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+
+  require_forecast_source_multiline_pattern "$source" 'every relevant coordinator progress update binds each executing lane to the immediately following standalone lane deadline template' "$attached_lane_template" "$input"
 }
 
 assert_forecast_source_mutation_is_rejected() {
@@ -855,29 +876,65 @@ assert_forecast_source_mutation_is_rejected() {
     fail "forecast source mutation was rejected for an unexpected reason: $source: $description"
 }
 
+assert_coordinator_progress_forecast_mutation_is_rejected() {
+  local source="$1" description="$2" input="$3" output
+
+  if output="$(assert_coordinator_progress_forecast_contract "$source" "$input" 2>&1)"; then
+    fail "coordinator progress forecast mutation was admitted: $source: $description"
+  fi
+  grep -Fq -- 'forecast source contract' <<<"$output" ||
+    fail "coordinator progress forecast mutation was rejected for an unexpected reason: $source: $description"
+}
+
 assert_forecast_source_contract_fixtures() {
-  local soft_wrapped separate_advisory
+  local soft_wrapped separate_advisory ordinary_explanation inline_malformed output
 
   soft_wrapped=$'`Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n`Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
   separate_advisory="$soft_wrapped"$'\n\nForecasts are advisory and do not gate work.'
+  ordinary_explanation="$soft_wrapped"$'\n\nOrdinary explanatory prose may mention Forecast deadline: Critic B will be finished by <UTC ISO8601>. and Root completion forecast: an outcome is the sum of child forecasts as invalid examples.'
+  inline_malformed="$soft_wrapped"$'\n\n`Forecast deadline: Critic B will be finished by <UTC ISO8601>.`'
 
   assert_forecast_source_contract 'soft-wrap fixture' "$soft_wrapped"
   assert_forecast_source_contract 'separate-advisory fixture' "$separate_advisory"
+  if output="$(assert_forecast_source_contract 'ordinary explanatory-prose fixture' "$ordinary_explanation" 2>&1)"; then
+    :
+  else
+    fail "ordinary explanatory-prose fixture was rejected: $output"
+  fi
+  assert_forecast_source_mutation_is_rejected 'inline malformed deadline fixture' 'actor lane outcome' "$inline_malformed"
+}
+
+assert_coordinator_progress_forecast_contract_fixtures() {
+  local source source_attached attached detached soft_wrapped rehomed
+
+  source="$(<"$COORDINATOR")"
+  source_attached=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`'
+  attached=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`'
+  detached=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - The canonical line appears in a detached appendix.'
+  soft_wrapped="${source/"$source_attached"/"$attached"}"
+  [ "$soft_wrapped" != "$source" ] || fail 'coordinator soft-wrap fixture did not replace the attached lane template'
+  assert_coordinator_progress_forecast_contract 'soft-wrapped coordinator lane binding fixture' "$soft_wrapped"
+
+  rehomed="${source/"$source_attached"/"$detached"}"
+  rehomed+=$'\n\n- `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`'
+  [ "$rehomed" != "$source" ] || fail 'coordinator rehome fixture did not replace the attached lane template'
+  assert_forecast_source_contract 'rehomed coordinator lane template generic fixture' "$rehomed"
+  assert_coordinator_progress_forecast_mutation_is_rejected "$COORDINATOR" 'rehomed coordinator lane template' "$rehomed"
 }
 
 assert_source_forecast_mutations_are_rejected() {
-  local file source lane_disclaimer root_disclaimer actor stage additive
+  local file source lane_post_period_addition root_post_period_addition actor stage additive
 
   for file in "$COORDINATOR" "$LEDGER" "$STATUS_REPORT"; do
     source="$(<"$file")"
-    lane_disclaimer="$source"$'\n\n`Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>. — advisory only.`'
-    root_disclaimer="$source"$'\n\n`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>. — advisory only.`'
+    lane_post_period_addition="$source"$'\n\n`Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>. Additional detail.`'
+    root_post_period_addition="$source"$'\n\n`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>. Additional detail.`'
     actor="$source"$'\n\n`Forecast deadline: Critic B will be finished by <UTC ISO8601>.`'
     stage="$source"$'\n\n`Forecast deadline: Stage: normal will be finished by <UTC ISO8601>.`'
-    additive="$source"$'\n\nRoot completion is the sum of child forecast deadlines.'
+    additive="$source"$'\n\n`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>. It is the sum of child forecasts.`'
 
-    assert_forecast_source_mutation_is_rejected "$file" 'post-period lane disclaimer' "$lane_disclaimer"
-    assert_forecast_source_mutation_is_rejected "$file" 'post-period root disclaimer' "$root_disclaimer"
+    assert_forecast_source_mutation_is_rejected "$file" 'post-period lane deadline addition' "$lane_post_period_addition"
+    assert_forecast_source_mutation_is_rejected "$file" 'post-period root deadline addition' "$root_post_period_addition"
     assert_forecast_source_mutation_is_rejected "$file" 'actor lane outcome' "$actor"
     assert_forecast_source_mutation_is_rejected "$file" 'stage lane outcome' "$stage"
     assert_forecast_source_mutation_is_rejected "$file" 'additive root completion' "$additive"
@@ -918,7 +975,7 @@ assert_lane_forecast_contract() {
   require_pattern "$ECI" 'lanes independently advance' "$lane_workstream_pattern"
   require_pattern "$ECI" 'serial implementation and review stay one lane' "$serial_lane_pattern"
   require_pattern "$ECI" 'only independently advancing work becomes a new lane' "$distinct_lane_pattern"
-  require_pattern "$COORDINATOR" 'coordinator progress-update coverage' 'every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update'
+  assert_coordinator_progress_forecast_contract "$COORDINATOR" "$(<"$COORDINATOR")"
   require_pattern "$COORDINATOR" 'coordinator missing/stale forecasts do not delay updates' "$missing_stale_pattern"
 
   require_line "$STATUS_REPORT" '## Lane forecasts'
@@ -1134,6 +1191,7 @@ assert_emergency_and_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture
 assert_forecast_source_contract_fixtures
+assert_coordinator_progress_forecast_contract_fixtures
 assert_lane_forecast_contract
 assert_source_forecast_mutations_are_rejected
 assert_lineage_context_contract
