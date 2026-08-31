@@ -13,6 +13,7 @@ HOME_ROOT="$TMP_ROOT/home"
 RUNTIME_ROOT="$HOME_ROOT/.codex"
 mkdir -p -- "$RUNTIME_ROOT" "$TMP_ROOT/config/eci" "$TMP_ROOT/state"
 cp -a -- "$SOURCE_ROOT/hooks" "$RUNTIME_ROOT"
+cp -- "$SOURCE_ROOT/hooks.json" "$RUNTIME_ROOT/hooks.json"
 mkdir -p -- "$RUNTIME_ROOT/bin"
 cp -a -- "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
 [ "$(sed -n '2p' -- "$RUNTIME_ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
@@ -20,6 +21,11 @@ cp -a -- "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
   exit 1
 }
 sed -i '2d' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
+BASH_LAUNCHER="$(jq -er '.hooks.PreToolUse[] | select(.matcher == "^Bash$") | .hooks[] | select(.type == "command") | .command' "$RUNTIME_ROOT/hooks.json")"
+[ "$BASH_LAUNCHER" = 'bash "$HOME/.codex/hooks/validate-bash.sh"' ] || {
+  printf 'unexpected copied Bash launcher: %s\n' "$BASH_LAUNCHER" >&2
+  exit 1
+}
 
 # Refresh only this private fixture's planner receipt. This keeps the test on
 # the real hook path while avoiding a source build for every Git probe.
@@ -98,7 +104,7 @@ run_hook() {
       CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$subagent" \
       XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" \
       PATH="$RUNTIME_ROOT/bin:$PATH" \
-      "${runner[@]}" "$RUNTIME_ROOT/hooks/validate-bash.sh" >"$output" 2>>"$stderr"
+      "${runner[@]}" -c "$BASH_LAUNCHER" >"$output" 2>>"$stderr"
   printf '%s\n' "$output"
 }
 
@@ -160,6 +166,16 @@ assert_allowed "timeout -p 5 git add -- hooks.json" worker
 assert_allowed "timeout -f 5 git add -- hooks.json" worker
 assert_allowed "timeout --preserve-status 5 git add -- hooks.json" worker
 assert_allowed "timeout --foreground 5 git add -- hooks.json" worker
+# A statically valid signal preserves the launched Git child. Exercise the
+# separated, attached, and short forms through local, foreign, and broad
+# targets for both roles.
+for role in coordinator worker; do
+  assert_allowed "timeout --signal term 5 git add -- hooks.json" "$role"
+  assert_denied_code "timeout --signal=SIGterm 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED "$role" \
+    "active_repo=$REPO target_repo=$FOREIGN_REPO"
+  assert_denied_code "timeout -s RTMIN+1 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=."
+done
 assert_denied_code "timeout 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker \
   "active_repo=$REPO target_repo=$FOREIGN_REPO"
 assert_denied_code "timeout -f 5 git -C $FOREIGN_REPO add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker \
@@ -192,6 +208,15 @@ assert_denied_code "timeout 5 git commit --allow-empty -m 'worker commit'" ECI_W
 assert_allowed "timeout not-a-duration git add ." worker
 assert_allowed "timeout --not-a-timeout-option 5 git add ." worker
 assert_allowed "chronic git add ." worker
+# Invalid and literal-dynamic signal operands do not prove a launchable child.
+# They must remain ordinary timeout runtime behavior in both roles.
+for role in coordinator worker; do
+  assert_allowed "timeout --signal unknown-signal 5 git add ." "$role"
+  assert_allowed "timeout --signal=unknown-signal 5 git add ." "$role"
+  assert_allowed "timeout -s unknown-signal 5 git add ." "$role"
+  assert_allowed "timeout --signal '\$TIMEOUT_SIGNAL' 5 git add ." "$role"
+  assert_allowed "timeout --signal='\$TIMEOUT_SIGNAL' 5 git add ." "$role"
+done
 
 # Preserve only resolved accidental-risk boundaries.
 assert_denied_code "git -C $REPO reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED

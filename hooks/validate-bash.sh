@@ -7725,6 +7725,31 @@ def transparent_timeout_command_index(tokens, index):
     duration = re.compile(r"\+?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?[smhd]?")
     def valid_duration(value):
         return duration.fullmatch(value) is not None
+    def valid_signal_number(value):
+        if not value:
+            return False
+        number = 0
+        for character in value:
+            if character < "0" or character > "9":
+                return False
+            number = number * 10 + ord(character) - ord("0")
+            if number > 64:
+                return False
+        return number > 0
+    def valid_signal(value):
+        if not value:
+            return False
+        signal = value.upper()
+        if signal.startswith("SIG"):
+            signal = signal[3:]
+        if valid_signal_number(signal):
+            return True
+        if signal in {"ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "EMT", "FPE", "HUP", "ILL", "INFO", "INT", "IO", "IOT", "KILL", "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP", "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ"}:
+            return True
+        for prefix in {"RTMIN+", "RTMAX-"}:
+            if signal.startswith(prefix):
+                return valid_signal_number(signal[len(prefix):])
+        return False
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
@@ -7738,7 +7763,7 @@ def transparent_timeout_command_index(tokens, index):
                 return None
             if token == "--kill-after" and not valid_duration(tokens[index + 1]):
                 return None
-            if token == "--signal" and not tokens[index + 1]:
+            if token == "--signal" and not valid_signal(tokens[index + 1]):
                 return None
             index += 2
             continue
@@ -7748,7 +7773,7 @@ def transparent_timeout_command_index(tokens, index):
             index += 1
             continue
         if token.startswith("--signal="):
-            if not token.split("=", 1)[1]:
+            if not valid_signal(token.split("=", 1)[1]):
                 return None
             index += 1
             continue
@@ -7770,7 +7795,7 @@ def transparent_timeout_command_index(tokens, index):
                     argument = tokens[index]
                 if option == "k" and not valid_duration(argument):
                     return None
-                if option == "s" and not argument:
+                if option == "s" and not valid_signal(argument):
                     return None
                 options = ""
             index += 1
@@ -7990,6 +8015,31 @@ def transparent_timeout_command_index(tokens, index):
     duration = re.compile(r"\+?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?[smhd]?")
     def valid_duration(value):
         return duration.fullmatch(value) is not None
+    def valid_signal_number(value):
+        if not value:
+            return False
+        number = 0
+        for character in value:
+            if character < "0" or character > "9":
+                return False
+            number = number * 10 + ord(character) - ord("0")
+            if number > 64:
+                return False
+        return number > 0
+    def valid_signal(value):
+        if not value:
+            return False
+        signal = value.upper()
+        if signal.startswith("SIG"):
+            signal = signal[3:]
+        if valid_signal_number(signal):
+            return True
+        if signal in {"ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "EMT", "FPE", "HUP", "ILL", "INFO", "INT", "IO", "IOT", "KILL", "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP", "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ"}:
+            return True
+        for prefix in {"RTMIN+", "RTMAX-"}:
+            if signal.startswith(prefix):
+                return valid_signal_number(signal[len(prefix):])
+        return False
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
@@ -8003,7 +8053,7 @@ def transparent_timeout_command_index(tokens, index):
                 return None
             if token == "--kill-after" and not valid_duration(tokens[index + 1]):
                 return None
-            if token == "--signal" and not tokens[index + 1]:
+            if token == "--signal" and not valid_signal(tokens[index + 1]):
                 return None
             index += 2
             continue
@@ -8013,7 +8063,7 @@ def transparent_timeout_command_index(tokens, index):
             index += 1
             continue
         if token.startswith("--signal="):
-            if not token.split("=", 1)[1]:
+            if not valid_signal(token.split("=", 1)[1]):
                 return None
             index += 1
             continue
@@ -8035,7 +8085,7 @@ def transparent_timeout_command_index(tokens, index):
                     argument = tokens[index]
                 if option == "k" and not valid_duration(argument):
                     return None
-                if option == "s" and not argument:
+                if option == "s" and not valid_signal(argument):
                     return None
                 options = ""
             index += 1
