@@ -14,13 +14,13 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 ## Step 4 — Review coordination
 
-Before reviewer dispatch, independently verify the implementer handoff's exact scoped diff and create the named narrow coordinator-owned checkpoint commit required by `CODEX.md`. The review packet gives each reviewer the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions. A `pre-existing baseline` is context outside the iteration range. Neither is acceptance.
+After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The named checkpoint, its parent-to-checkpoint diff, and explicit exclusions define the review packet. A `pre-existing baseline` is context outside the iteration range. Neither is acceptance.
 
 After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
 
 E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
-Each reviewer is independent of producers and receives original requirements, named checkpoint, its parent-to-checkpoint diff, explicit exclusions, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules. Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.
+Each reviewer is independent of producers and receives original requirements, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules. Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.
 
 Before dispatch, verify the assignment still names the right work, current requirements, named review range and exclusions, and supplied evidence. Missing or stale coordination evidence prompts refresh, reassignment, or an additional review; it does not stop ordinary exploration, implementation, or harmless verification.
 

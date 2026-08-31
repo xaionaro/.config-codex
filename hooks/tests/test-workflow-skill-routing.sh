@@ -60,25 +60,6 @@ require_order() {
   [ "${#before_first}" -lt "${#before_second}" ]
 }
 
-contains_checkpoint_baseline_contract() {
-  local input="$1" baseline="$2" exclusions="$3" ambiguity="$4"
-
-  [[ "$input" == *"$baseline"* &&
-     "$input" == *"$exclusions"* &&
-     "$input" == *"$ambiguity"* ]]
-}
-
-contains_checkpoint_review_packet() {
-  local input="$1" bridge="$2" packet="$3" range="$4" exclusions="$5" scope="$6"
-
-  [[ "$input" == *"$bridge"* &&
-     "$input" == *"$packet"* &&
-     "$input" == *"$range"* &&
-     "$input" == *"$exclusions"* &&
-     "$input" == *"$scope"* ]] &&
-    require_order "$input" "$bridge" "$packet"
-}
-
 forbid_text() {
   local file="$1" text="$2"
   ! grep -Fq -- "$text" "$file" || fail "$file retains an ordinary-work gate: $text"
@@ -892,16 +873,14 @@ assert_pause_resume_closure_contract() {
 
 assert_implementer_iteration_checkpoint_contract() {
   local baseline_contract baseline_exclusions ambiguity_contract
-  local step4_bridge coordinator_checkpoint coordinator_packet
+  local step4_bridge coordinator_sequence
   local review_range scope_exclusions scope_not_admission policy_checkpoint_packet
-  local baseline_fixture review_fixture reversed_fixture clause
 
   baseline_contract='If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit a separately named `pre-existing baseline` containing only independently verified, already-completed predecessor content currently coordinator-owned for the same lane.'
   baseline_exclusions='Exclude user-owned, another worker/lane, and in-flight content.'
   ambiguity_contract='If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.'
   step4_bridge='After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule. Step 4 receives the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions; a `pre-existing baseline` remains context outside the iteration range.'
-  coordinator_checkpoint='Before reviewer dispatch, independently verify the implementer handoff'"'"'s exact scoped diff and create the named narrow coordinator-owned checkpoint commit required by `CODEX.md`.'
-  coordinator_packet='The review packet gives each reviewer the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions. A `pre-existing baseline` is context outside the iteration range. Neither is acceptance.'
+  coordinator_sequence='After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The named checkpoint, its parent-to-checkpoint diff, and explicit exclusions define the review packet. A `pre-existing baseline` is context outside the iteration range. Neither is acceptance.'
   review_range='The checkpointed `current diff` is the named parent-to-checkpoint range.'
   scope_exclusions='Respect explicit exclusions and exclude later ambient worktree changes.'
   scope_not_admission='This is review scope, not admission proof.'
@@ -914,6 +893,9 @@ assert_implementer_iteration_checkpoint_contract() {
   require_text "$CODEX" "$baseline_contract"
   require_text "$CODEX" "$baseline_exclusions"
   require_text "$CODEX" "$ambiguity_contract"
+  forbid_text "$CODEX" 'A pre-existing baseline may include user-owned content.'
+  forbid_text "$CODEX" 'A pre-existing baseline may include another worker/lane content.'
+  forbid_text "$CODEX" 'A pre-existing baseline may include in-flight content.'
   require_text "$CODEX" 'A later repair is a separate iteration and commit. Do not amend or delay the prior checkpoint.'
   require_text "$CODEX" 'Normal targeted Git coordination needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
   forbid_text "$CODEX" 'Hold commits until stable.'
@@ -923,11 +905,12 @@ assert_implementer_iteration_checkpoint_contract() {
   require_text "$ECI" "$step4_bridge"
   require_order "$(<"$ECI")" "$step4_bridge" '4. Fresh A/B/C critics review in parallel;' ||
     fail 'ECI Step 3-to-4 checkpoint bridge must precede reviewer dispatch'
-  require_text "$COORDINATOR" "$coordinator_checkpoint"
-  require_text "$COORDINATOR" "$coordinator_packet"
-  require_order "$(<"$COORDINATOR")" "$coordinator_packet" 'After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C.' ||
+  require_text "$COORDINATOR" "$coordinator_sequence"
+  require_order "$(<"$COORDINATOR")" "$coordinator_sequence" 'After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C.' ||
     fail 'coordinator checkpoint packet must precede reviewer dispatch'
-  require_text "$COORDINATOR" 'Each reviewer is independent of producers and receives original requirements, named checkpoint, its parent-to-checkpoint diff, explicit exclusions, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules.'
+  forbid_text "$COORDINATOR" 'Another implementation iteration may begin before the checkpoint.'
+  require_text "$COORDINATOR" 'Each reviewer is independent of producers and receives original requirements, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules.'
+  forbid_text "$COORDINATOR" 'Each reviewer is independent of producers and receives original requirements, named checkpoint, its parent-to-checkpoint diff, explicit exclusions,'
   require_text "$COORDINATOR_RUNTIME" 'After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration.'
   for clause in "$review_range" "$scope_exclusions" "$scope_not_admission"; do
     require_text "$REVIEW" "$clause"
@@ -936,29 +919,9 @@ assert_implementer_iteration_checkpoint_contract() {
   done
   require_text "$REVIEW_POLICY" 'Normal reviewer packets contain original user requirements, exact target/diff, `loop-id`, applicable `decision-id`, objective/criteria, general pre-routing record, admitted style record/deltas/tool evidence, full applicable lineage/binding, and all scrutiny rules.'
   require_text "$REVIEW_POLICY" "$policy_checkpoint_packet"
+  require_text "$COORDINATOR_RUNTIME" 'This reference routes work and review; it is not a permission system.'
   require_text "$COORDINATOR_RUNTIME" 'Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
-
-  baseline_fixture="$baseline_contract"$'\n'"$baseline_exclusions"$'\n'"$ambiguity_contract"
-  contains_checkpoint_baseline_contract "$baseline_fixture" "$baseline_contract" "$baseline_exclusions" "$ambiguity_contract" ||
-    fail 'baseline scope fixture is incomplete'
-  for clause in "$baseline_contract" "$baseline_exclusions"; do
-    if contains_checkpoint_baseline_contract "${baseline_fixture/"$clause"/}" "$baseline_contract" "$baseline_exclusions" "$ambiguity_contract"; then
-      fail "baseline scope mutation retained required clause: $clause"
-    fi
-  done
-
-  review_fixture="$step4_bridge"$'\n'"$coordinator_packet"$'\n'"$review_range"$'\n'"$scope_exclusions"$'\n'"$scope_not_admission"
-  contains_checkpoint_review_packet "$review_fixture" "$step4_bridge" "$coordinator_packet" "$review_range" "$scope_exclusions" "$scope_not_admission" ||
-    fail 'review scope fixture must keep bridge before reviewer packet'
-  reversed_fixture="$coordinator_packet"$'\n'"$step4_bridge"$'\n'"$review_range"$'\n'"$scope_exclusions"$'\n'"$scope_not_admission"
-  if contains_checkpoint_review_packet "$reversed_fixture" "$step4_bridge" "$coordinator_packet" "$review_range" "$scope_exclusions" "$scope_not_admission"; then
-    fail 'reversed checkpoint bridge/reviewer packet order was accepted'
-  fi
-  for clause in "$step4_bridge" "$coordinator_packet" "$review_range" "$scope_exclusions" "$scope_not_admission"; do
-    if contains_checkpoint_review_packet "${review_fixture/"$clause"/}" "$step4_bridge" "$coordinator_packet" "$review_range" "$scope_exclusions" "$scope_not_admission"; then
-      fail "review scope mutation retained required clause: $clause"
-    fi
-  done
+  forbid_text "$COORDINATOR_RUNTIME" 'A checkpoint requires a new receipt, permission, or Git prerequisite.'
 }
 
 assert_local_links_resolve
