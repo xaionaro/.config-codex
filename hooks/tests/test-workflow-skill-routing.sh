@@ -796,110 +796,130 @@ assert_status_lane_stage_transition_fixture() {
   forbid_pattern "$STATUS_REPORT" 'stage.*(must|shall|needs? to).*(record|transition|authorize).*(work|report)'
 }
 
-assert_static_forecast_contract_fragment() {
-  local input="$1" text
+require_forecast_source_pattern() {
+  local source="$1" description="$2" pattern="$3" input="$4" text
 
   text="$(tr '\n' ' ' <<<"$input")"
-  ! grep -Eiq -- '(Forecast[[:space:]]+deadline|Root[[:space:]]+completion[[:space:]]+forecast):[^.]*—[[:space:]]+forecast,[[:space:]]+not[[:space:]]+a[[:space:]]+promise' <<<"$text" ||
-    fail 'forecast fixture retains the legacy promise suffix'
-  ! grep -Eiq -- 'Forecast[[:space:]]+deadline:[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>' <<<"$text" ||
-    fail 'forecast fixture retains a split/bare lane forecast'
-  ! grep -Eiq -- 'Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>' <<<"$text" ||
-    fail 'forecast fixture retains a split/bare root forecast'
-  ! grep -Eiq -- 'Forecast[[:space:]]+deadline:[[:space:]]+(critic|reviewer|actor|stage)([[:space:]:]|$)' <<<"$text" ||
-    fail 'forecast fixture uses an actor or stage as the lane outcome'
-  ! grep -Eiq -- 'Root[[:space:]]+completion[[:space:]]+(is|means)[^.]*((sum|summed)[^.]*(child|children))' <<<"$text" ||
-    fail 'forecast fixture derives root completion from child forecasts'
-  grep -Eiq -- 'Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.' <<<"$text" ||
-    fail 'forecast fixture lacks the canonical named-outcome lane forecast'
-  grep -Eiq -- 'Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.' <<<"$text" ||
-    fail 'forecast fixture lacks the canonical root completion forecast'
-  grep -Eiq -- 'For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+state' <<<"$text" ||
-    fail 'forecast fixture lacks the unrepresented active-root rule'
-  grep -Eiq -- 'Root[[:space:]]+completion[[:space:]]+is[[:space:]]+full[[:space:]]+root[[:space:]]+completion,[[:space:]]+not[[:space:]]+a[[:space:]]+child[[:space:]]+sum[[:space:]]+or[[:space:]]+stage\.' <<<"$text" ||
-    fail 'forecast fixture lacks the non-additive full-root rule'
-  grep -Eiq -- 'For[[:space:]]+a[[:space:]]+changed[[:space:]]+lane[[:space:]]+or[[:space:]]+root[[:space:]]+forecast,[[:space:]]+restate[[:space:]]+its[[:space:]]+current[[:space:]]+canonical[[:space:]]+line[[:space:]]+in[[:space:]]+the[[:space:]]+same[[:space:]]+update,[[:space:]]+then[[:space:]]+state[[:space:]]+Forecast[[:space:]]+recalibration:[[:space:]]+<prior[[:space:]]+UTC[[:space:]]+ISO8601>[[:space:]]+→[[:space:]]+<current[[:space:]]+UTC[[:space:]]+ISO8601>;[[:space:]]+why[[:space:]]+moved:[[:space:]]+<why>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.' <<<"$text" ||
-    fail 'forecast fixture lacks same-update shifted-forecast proof'
-  grep -Eiq -- 'If[[:space:]]+any[[:space:]]+forecast[[:space:]]+is[[:space:]]+missing[[:space:]]+or[[:space:]]+stale,[[:space:]]+say[[:space:]]+so[[:space:]]+and[[:space:]]+reconcile[[:space:]]+it[[:space:]]+alongside[[:space:]]+safe[[:space:]]+work[[:space:]]+without[[:space:]]+delaying[[:space:]]+the[[:space:]]+update\.' <<<"$text" ||
-    fail 'forecast fixture lacks missing/stale no-delay treatment'
-  grep -Eiq -- 'Forecasts[[:space:]]+are[[:space:]]+advisory\.[[:space:]]+They[[:space:]]+never[[:space:]]+gate[[:space:]]+work,[[:space:]]+grant[[:space:]]+or[[:space:]]+deny[[:space:]]+permissions,[[:space:]]+require[[:space:]]+artifacts[[:space:]]+or[[:space:]]+receipts,[[:space:]]+create[[:space:]]+blockers,[[:space:]]+require[[:space:]]+parsers,[[:space:]]+or[[:space:]]+require[[:space:]]+per-command[[:space:]]+ceremony\.' <<<"$text" ||
-    fail 'forecast fixture lacks advisory non-gate boundary'
+  grep -Eiq -- "$pattern" <<<"$text" ||
+    fail "$source is missing forecast source contract: $description"
 }
 
-assert_static_forecast_mutation_is_rejected() {
-  local description="$1" input="$2" output
+forbid_forecast_source_pattern() {
+  local source="$1" description="$2" pattern="$3" input="$4" text
 
-  if output="$(assert_static_forecast_contract_fragment "$input" 2>&1)"; then
-    fail "forecast fixture accepted mutation: $description"
+  text="$(tr '\n' ' ' <<<"$input")"
+  ! grep -Eiq -- "$pattern" <<<"$text" ||
+    fail "$source violates forecast source contract: $description"
+}
+
+forbid_forecast_source_line_pattern() {
+  local source="$1" description="$2" pattern="$3" input="$4"
+
+  ! grep -Eiq -- "$pattern" <<<"$input" ||
+    fail "$source violates forecast source contract: $description"
+}
+
+assert_forecast_source_contract() {
+  local source="$1" input="$2"
+  local canonical_lane_code canonical_root_code canonical_lane_raw canonical_root_raw
+  local lane_disclaimer root_disclaimer actor_or_stage additive_root
+
+  canonical_lane_code='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+  canonical_root_code='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+  canonical_lane_raw='(^|[^`])Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.'
+  canonical_root_raw='(^|[^`])Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.'
+  lane_disclaimer='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
+  root_disclaimer='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
+  actor_or_stage='`?[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+(critic|reviewer|actor|stage)([[:space:]:]|$)'
+  additive_root='Root[[:space:]]+completion[^.]*[[:space:]](is|means)[[:space:]][^.]*((sum|summed)[^.]*(child|children))'
+
+  require_forecast_source_pattern "$source" 'standalone named-outcome lane deadline template' "$canonical_lane_code" "$input"
+  require_forecast_source_pattern "$source" 'standalone active-root deadline template' "$canonical_root_code" "$input"
+  forbid_forecast_source_pattern "$source" 'unquoted lane deadline template' "$canonical_lane_raw" "$input"
+  forbid_forecast_source_pattern "$source" 'unquoted root deadline template' "$canonical_root_raw" "$input"
+  forbid_forecast_source_pattern "$source" 'post-period lane deadline disclaimer' "$lane_disclaimer" "$input"
+  forbid_forecast_source_pattern "$source" 'post-period root deadline disclaimer' "$root_disclaimer" "$input"
+  forbid_forecast_source_line_pattern "$source" 'same-line lane deadline disclaimer' "${canonical_lane_code}[[:space:]]*[^[:space:]|<]" "$input"
+  forbid_forecast_source_line_pattern "$source" 'same-line root deadline disclaimer' "${canonical_root_code}[[:space:]]*[^[:space:]|<]" "$input"
+  forbid_forecast_source_pattern "$source" 'actor or stage used as a lane outcome' "$actor_or_stage" "$input"
+  forbid_forecast_source_pattern "$source" 'root completion derived from child forecasts' "$additive_root" "$input"
+}
+
+assert_forecast_source_mutation_is_rejected() {
+  local source="$1" description="$2" input="$3" output
+
+  if output="$(assert_forecast_source_contract "$source" "$input" 2>&1)"; then
+    fail "forecast source mutation was admitted: $source: $description"
   fi
-  grep -Fq -- 'forecast fixture' <<<"$output" ||
-    fail "forecast fixture was rejected for an unexpected reason: $description"
+  grep -Fq -- 'forecast source contract' <<<"$output" ||
+    fail "forecast source mutation was rejected for an unexpected reason: $source: $description"
 }
 
-assert_lane_forecast_contract_fixtures() {
-  local lane_forecast legacy_lane_forecast root_forecast root_rule root_completion shift_proof
-  local valid legacy_promise split_bare actor stage child_sum missing_root_rule missing_shift_proof
+assert_forecast_source_contract_fixtures() {
+  local soft_wrapped separate_advisory
 
-  lane_forecast=$'Forecast deadline:\n<named lane/task outcome> will be finished by <UTC ISO8601>.'
-  legacy_lane_forecast="${lane_forecast%.} — forecast, not a promise."
-  root_forecast=$'Root completion forecast:\n<named active root-task outcome> will be finished by <UTC ISO8601>.'
-  root_rule=$'For each unrepresented active root-task outcome omitted by lane reports, state\n'
-  root_completion='Root completion is full root completion, not a child sum or stage.'
-  shift_proof='For a changed lane or root forecast, restate its current canonical line in the same update, then state Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.'
-  valid=$'For every relevant coordinator-to-user ECI progress update, state\n'
-  valid+="$lane_forecast"
-  valid+=$' for each executing lane.\n'
-  valid+="$root_rule"
-  valid+="$root_forecast"
-  valid+=$'\nThe forecast line itself names the finished outcome; a separate Lane or Next milestone does not substitute, and it never names a critic, reviewer, actor, or stage.\n'
-  valid+="$root_completion"
-  valid+=$'\n'
-  valid+="$shift_proof"
-  valid+=$'\nIf any forecast is missing or stale, say so and reconcile it alongside safe work without delaying the update.\nForecasts are advisory. They never gate work, grant or deny permissions, require artifacts or receipts, create blockers, require parsers, or require per-command ceremony.'
+  soft_wrapped=$'`Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n`Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
+  separate_advisory="$soft_wrapped"$'\n\nForecasts are advisory and do not gate work.'
 
-  assert_static_forecast_contract_fragment "$valid"
+  assert_forecast_source_contract 'soft-wrap fixture' "$soft_wrapped"
+  assert_forecast_source_contract 'separate-advisory fixture' "$separate_advisory"
+}
 
-  legacy_promise="${valid/$lane_forecast/$legacy_lane_forecast}"
-  split_bare="${valid/$lane_forecast/$'Lane: <named lane/task outcome>\nForecast deadline: by <UTC ISO8601>.'}"
-  actor="${valid/$lane_forecast/'Forecast deadline: Critic B will be finished by <UTC ISO8601>.'}"
-  stage="${valid/$lane_forecast/'Forecast deadline: Stage: normal will be finished by <UTC ISO8601>.'}"
-  child_sum="${valid/$root_completion/'Root completion is the sum of child forecast deadlines.'}"
-  missing_root_rule="${valid/$root_rule/}"
-  missing_shift_proof="${valid/$shift_proof/}"
+assert_source_forecast_mutations_are_rejected() {
+  local file source lane_disclaimer root_disclaimer actor stage additive
 
-  assert_static_forecast_mutation_is_rejected 'legacy promise suffix' "$legacy_promise"
-  assert_static_forecast_mutation_is_rejected 'split/bare lane forecast' "$split_bare"
-  assert_static_forecast_mutation_is_rejected 'actor lane forecast' "$actor"
-  assert_static_forecast_mutation_is_rejected 'stage lane forecast' "$stage"
-  assert_static_forecast_mutation_is_rejected 'summed-child root forecast' "$child_sum"
-  assert_static_forecast_mutation_is_rejected 'missing unrepresented active-root rule' "$missing_root_rule"
-  assert_static_forecast_mutation_is_rejected 'missing same-update shifted-forecast proof' "$missing_shift_proof"
+  for file in "$COORDINATOR" "$LEDGER" "$STATUS_REPORT"; do
+    source="$(<"$file")"
+    lane_disclaimer="$source"$'\n\n`Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>. — advisory only.`'
+    root_disclaimer="$source"$'\n\n`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>. — advisory only.`'
+    actor="$source"$'\n\n`Forecast deadline: Critic B will be finished by <UTC ISO8601>.`'
+    stage="$source"$'\n\n`Forecast deadline: Stage: normal will be finished by <UTC ISO8601>.`'
+    additive="$source"$'\n\nRoot completion is the sum of child forecast deadlines.'
+
+    assert_forecast_source_mutation_is_rejected "$file" 'post-period lane disclaimer' "$lane_disclaimer"
+    assert_forecast_source_mutation_is_rejected "$file" 'post-period root disclaimer' "$root_disclaimer"
+    assert_forecast_source_mutation_is_rejected "$file" 'actor lane outcome' "$actor"
+    assert_forecast_source_mutation_is_rejected "$file" 'stage lane outcome' "$stage"
+    assert_forecast_source_mutation_is_rejected "$file" 'additive root completion' "$additive"
+  done
 }
 
 assert_lane_forecast_contract() {
   local file header completed
-  local lane_invariant_pattern canonical_lane_pattern canonical_root_pattern root_omission_pattern
-  local outcome_pattern root_completion_pattern same_update_pattern advisory_pattern
-  local coordinator_missing_stale_pattern reporting_missing_stale_pattern
-  local closed_lane_contract_pattern parallel_rule_pattern
+  local lane_workstream_pattern serial_lane_pattern distinct_lane_pattern root_omission_pattern
+  local outcome_pattern actor_stage_pattern root_full_pattern root_nonadditive_pattern
+  local changed_forecast_pattern recalibration_template_pattern initial_template_pattern
+  local missing_stale_pattern advisory_pattern advisory_no_gate_pattern advisory_no_permission_pattern
+  local advisory_no_blocker_pattern closed_lane_pattern closed_lane_no_forecast_pattern
+  local parallel_path_pattern parallel_nonadditive_pattern
 
   completed='`Completed: <UTC ISO8601>; no active forecast deadline.`'
-  lane_invariant_pattern='A[[:space:]]+lane[[:space:]]+is[[:space:]]+an[[:space:]]+independently[[:space:]]+advancing[[:space:]]+workstream,[[:space:]]+not[[:space:]]+an[[:space:]]+ECI[[:space:]]+step\.[[:space:]]+Serial[[:space:]]+implement→review→repair→review→implement[[:space:]]+stays[[:space:]]+one[[:space:]]+lane[[:space:]]+with[[:space:]]+one[[:space:]]+critical[[:space:]]+path\.[[:space:]]+Create[[:space:]]+distinct[[:space:]]+lanes[[:space:]]+only[[:space:]]+for[[:space:]]+independently[[:space:]]+advancing[[:space:]]+work[[:space:]]+with[[:space:]]+separate[[:space:]]+ownership[[:space:]]+or[[:space:]]+synchronization\.'
-  canonical_lane_pattern='Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.'
-  canonical_root_pattern='Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.'
+  lane_workstream_pattern='lane[[:space:]]+is[[:space:]]+an[[:space:]]+independently[[:space:]]+advancing[[:space:]]+workstream'
+  serial_lane_pattern='Serial[[:space:]]+implement→review→repair→review→implement.*one[[:space:]]+lane.*critical[[:space:]]+path'
+  distinct_lane_pattern='distinct[[:space:]]+lanes.*only.*independently[[:space:]]+advancing.*(ownership|synchronization)'
   root_omission_pattern='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+(state|record|include)'
-  outcome_pattern='The[[:space:]]+forecast[[:space:]]+line[[:space:]]+itself[[:space:]]+names[[:space:]]+the[[:space:]]+finished[[:space:]]+outcome;[[:space:]]+a[[:space:]]+separate[[:space:]]+Lane[[:space:]]+or[[:space:]]+Next[[:space:]]+milestone[[:space:]]+does[[:space:]]+not[[:space:]]+substitute,[[:space:]]+and[[:space:]]+it[[:space:]]+never[[:space:]]+names[[:space:]]+a[[:space:]]+critic,[[:space:]]+reviewer,[[:space:]]+actor,[[:space:]]+or[[:space:]]+stage\.'
-  root_completion_pattern='Root[[:space:]]+completion[[:space:]]+is[[:space:]]+full[[:space:]]+root[[:space:]]+completion,[[:space:]]+not[[:space:]]+a[[:space:]]+child[[:space:]]+sum[[:space:]]+or[[:space:]]+stage\.'
-  same_update_pattern='For[[:space:]]+a[[:space:]]+changed[[:space:]]+lane[[:space:]]+or[[:space:]]+root[[:space:]]+forecast,[[:space:]]+restate[[:space:]]+its[[:space:]]+current[[:space:]]+canonical[[:space:]]+line[[:space:]]+in[[:space:]]+the[[:space:]]+same[[:space:]]+update,[[:space:]]+then[[:space:]]+(state|record)[[:space:]]+Forecast[[:space:]]+recalibration:[[:space:]]+<prior[[:space:]]+UTC[[:space:]]+ISO8601>[[:space:]]+→[[:space:]]+<current[[:space:]]+UTC[[:space:]]+ISO8601>;[[:space:]]+why[[:space:]]+moved:[[:space:]]+<why>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
-  coordinator_missing_stale_pattern='If[[:space:]]+any[[:space:]]+forecast[[:space:]]+is[[:space:]]+missing[[:space:]]+or[[:space:]]+stale,[[:space:]]+say[[:space:]]+so[[:space:]]+and[[:space:]]+reconcile[[:space:]]+it[[:space:]]+alongside[[:space:]]+safe[[:space:]]+work[[:space:]]+without[[:space:]]+delaying[[:space:]]+the[[:space:]]+update\.'
-  reporting_missing_stale_pattern='Missing[[:space:]]+or[[:space:]]+stale[[:space:]]+forecasts[[:space:]]+are[[:space:]]+planning-quality[[:space:]]+defects\.[[:space:]]+Reconcile[[:space:]]+them[[:space:]]+alongside[[:space:]]+safe[[:space:]]+work[[:space:]]+without[[:space:]]+delaying[[:space:]]+the[[:space:]]+update\.'
-  advisory_pattern='Forecasts[[:space:]]+are[[:space:]]+advisory\.[[:space:]]+They[[:space:]]+never[[:space:]]+gate[[:space:]]+work,[[:space:]]+grant[[:space:]]+or[[:space:]]+deny[[:space:]]+permissions,[[:space:]]+require[[:space:]]+artifacts[[:space:]]+or[[:space:]]+receipts,[[:space:]]+create[[:space:]]+blockers,[[:space:]]+require[[:space:]]+parsers,[[:space:]]+or[[:space:]]+require[[:space:]]+per-command[[:space:]]+ceremony\.'
-  closed_lane_contract_pattern='A[[:space:]]+`CLOSED`[[:space:]]+lane[[:space:]]+records[[:space:]]+completion;[[:space:]]+do[[:space:]]+not[[:space:]]+invent[[:space:]]+or[[:space:]]+revive[[:space:]]+a[[:space:]]+forecast[[:space:]]+deadline[[:space:]]+or[[:space:]]+recalibration\.'
-  parallel_rule_pattern='For[[:space:]]+parallel[[:space:]]+children,[[:space:]]+report[[:space:]]+the[[:space:]]+single[[:space:]]+critical-path[[:space:]]+deadline;[[:space:]]+child[[:space:]]+deadlines[[:space:]]+remain[[:space:]]+parallel;[[:space:]]+never[[:space:]]+add[[:space:]]+or[[:space:]]+sum[[:space:]]+parallel[[:space:]]+child[[:space:]]+deadlines[[:space:]]+into[[:space:]]+a[[:space:]]+parent,[[:space:]]+root,[[:space:]]+or[[:space:]]+mission[[:space:]]+deadline\.'
+  outcome_pattern='forecast[[:space:]]+line.*finished[[:space:]]+outcome'
+  actor_stage_pattern='(never[[:space:]]+names|does[[:space:]]+not[[:space:]]+name).*(critic|reviewer|actor|stage)'
+  root_full_pattern='Root[[:space:]]+completion.*full[[:space:]]+root[[:space:]]+completion'
+  root_nonadditive_pattern='Root[[:space:]]+completion.*not.*child[[:space:]]+sum.*stage'
+  changed_forecast_pattern='changed.*forecast.*restate.*current.*canonical[[:space:]]+line.*same[[:space:]]+update'
+  recalibration_template_pattern='Forecast[[:space:]]+recalibration:[[:space:]]+<prior[[:space:]]+UTC[[:space:]]+ISO8601>[[:space:]]+→[[:space:]]+<current[[:space:]]+UTC[[:space:]]+ISO8601>;[[:space:]]+why[[:space:]]+moved:[[:space:]]+<why>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
+  initial_template_pattern='Forecast[[:space:]]+recalibration:[[:space:]]+unchanged[[:space:]]+—[[:space:]]+baseline[[:space:]]+<UTC[[:space:]]+ISO8601>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
+  missing_stale_pattern='(forecast.*(missing|stale)|(missing|stale).*forecast).*reconcile.*safe[[:space:]]+work.*without[[:space:]]+delaying.*update'
+  advisory_pattern='Forecasts[[:space:]]+are[[:space:]]+advisory\.'
+  advisory_no_gate_pattern='never[[:space:]]+gate[[:space:]]+work'
+  advisory_no_permission_pattern='grant.*deny[[:space:]]+permissions'
+  advisory_no_blocker_pattern='never.*create[[:space:]]+blockers'
+  closed_lane_pattern='`CLOSED`[[:space:]]+lane.*records[[:space:]]+completion'
+  closed_lane_no_forecast_pattern='do[[:space:]]+not.*(invent|revive).*forecast[[:space:]]+deadline.*recalibration'
+  parallel_path_pattern='parallel[[:space:]]+children.*single[[:space:]]+critical-path[[:space:]]+deadline'
+  parallel_nonadditive_pattern='never.*(add|sum).*parallel[[:space:]]+child[[:space:]]+deadlines.*(parent|root|mission)'
 
-  require_pattern "$ECI" 'ECI lane identity invariant' "$lane_invariant_pattern"
-  require_pattern "$COORDINATOR" 'each executing lane uses the named-outcome forecast line' "For[[:space:]]+every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update,[[:space:]]+include[[:space:]]+this[[:space:]]+line[[:space:]]+for[[:space:]]+each[[:space:]]+executing[[:space:]]+lane:[[:space:]]+${canonical_lane_pattern}"
-  require_pattern "$COORDINATOR" 'coordinator missing/stale forecasts do not delay updates' "$coordinator_missing_stale_pattern"
+  require_pattern "$ECI" 'lanes independently advance' "$lane_workstream_pattern"
+  require_pattern "$ECI" 'serial implementation and review stay one lane' "$serial_lane_pattern"
+  require_pattern "$ECI" 'only independently advancing work becomes a new lane' "$distinct_lane_pattern"
+  require_pattern "$COORDINATOR" 'coordinator progress-update coverage' 'every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update'
+  require_pattern "$COORDINATOR" 'coordinator missing/stale forecasts do not delay updates' "$missing_stale_pattern"
 
   require_line "$STATUS_REPORT" '## Lane forecasts'
   header="$(grep -F -- '| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner |' "$STATUS_REPORT" || true)"
@@ -910,29 +930,33 @@ assert_lane_forecast_contract() {
     fail 'status report lane table lacks forecast columns before Next proof/action'
 
   for file in "$COORDINATOR" "$STATUS_REPORT" "$LEDGER"; do
-    require_pattern "$file" 'canonical named-outcome lane forecast' "$canonical_lane_pattern"
-    require_pattern "$file" 'canonical active-root completion forecast' "$canonical_root_pattern"
+    assert_forecast_source_contract "$file" "$(<"$file")"
     require_pattern "$file" 'unrepresented active-root reporting rule' "$root_omission_pattern"
-    require_pattern "$file" 'forecast outcome is never supplied by actor/stage metadata' "$outcome_pattern"
-    require_pattern "$file" 'root completion is full and non-additive' "$root_completion_pattern"
-    require_pattern "$file" 'changed lane/root forecasts carry same-update proof' "$same_update_pattern"
+    require_pattern "$file" 'forecast line names a finished outcome' "$outcome_pattern"
+    require_pattern "$file" 'forecast line excludes actor and stage metadata' "$actor_stage_pattern"
+    require_pattern "$file" 'root completion is full' "$root_full_pattern"
+    require_pattern "$file" 'root completion is non-additive' "$root_nonadditive_pattern"
+    require_pattern "$file" 'changed forecasts restate their canonical line' "$changed_forecast_pattern"
+    require_pattern "$file" 'changed forecast recalibration template' "$recalibration_template_pattern"
     require_pattern "$file" 'forecast advisory boundary' "$advisory_pattern"
-    forbid_flattened_pattern "$file" 'legacy forecast-not-a-promise suffix' '(Forecast[[:space:]]+deadline|Root[[:space:]]+completion[[:space:]]+forecast):[^.]*—[[:space:]]+forecast,[[:space:]]+not[[:space:]]+a[[:space:]]+promise'
+    require_pattern "$file" 'advisory forecasts do not gate work' "$advisory_no_gate_pattern"
+    require_pattern "$file" 'advisory forecasts do not grant or deny permissions' "$advisory_no_permission_pattern"
+    require_pattern "$file" 'advisory forecasts do not create blockers' "$advisory_no_blocker_pattern"
     forbid_flattened_pattern "$file" 'bare Forecast deadline: by <UTC ISO8601>' 'Forecast[[:space:]]+deadline:[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>'
     forbid_flattened_pattern "$file" 'bare Root completion forecast: by <UTC ISO8601>' 'Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>'
   done
 
   for file in "$STATUS_REPORT" "$LEDGER"; do
-    require_pattern "$file" 'lane identity mirrors ECI' "$lane_invariant_pattern"
-    require_pattern "$file" 'canonical lane forecast template' "$canonical_lane_pattern"
-    require_pattern "$file" 'canonical root forecast template' "$canonical_root_pattern"
-    require_pattern "$file" 'changed forecast recalibration template' 'Forecast[[:space:]]+recalibration:[[:space:]]+<prior[[:space:]]+UTC[[:space:]]+ISO8601>[[:space:]]+→[[:space:]]+<current[[:space:]]+UTC[[:space:]]+ISO8601>;[[:space:]]+why[[:space:]]+moved:[[:space:]]+<why>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
-    require_pattern "$file" 'initial forecast evidence template' 'Forecast[[:space:]]+recalibration:[[:space:]]+unchanged[[:space:]]+—[[:space:]]+baseline[[:space:]]+<UTC[[:space:]]+ISO8601>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
-    require_pattern "$file" 'missing/stale forecasts do not delay updates' "$reporting_missing_stale_pattern"
+    require_pattern "$file" 'lanes independently advance' "$lane_workstream_pattern"
+    require_pattern "$file" 'serial implementation and review stay one lane' "$serial_lane_pattern"
+    require_pattern "$file" 'only independently advancing work becomes a new lane' "$distinct_lane_pattern"
+    require_pattern "$file" 'initial forecast evidence template' "$initial_template_pattern"
+    require_pattern "$file" 'missing/stale forecasts do not delay updates' "$missing_stale_pattern"
     require_text "$file" "$completed"
     forbid_generic_forecast_recalibration_placeholder "$file" '<prior deadline>'
     forbid_generic_forecast_recalibration_placeholder "$file" '<current deadline>'
-    require_pattern "$file" 'closed lanes record completion without reviving forecasts' "$closed_lane_contract_pattern"
+    require_pattern "$file" 'closed lanes record completion' "$closed_lane_pattern"
+    require_pattern "$file" 'closed lanes do not revive forecasts' "$closed_lane_no_forecast_pattern"
     forbid_legacy_duration_forecast_form "$file" 'Remaining forecast'
     forbid_legacy_duration_forecast_form "$file" 'remaining range'
     forbid_legacy_duration_forecast_form "$file" 'increased | decreased | unchanged'
@@ -947,7 +971,8 @@ assert_lane_forecast_contract() {
     forbid_forecast_advisory_contradiction "$file" 'A forecast may authorize work.'
     forbid_forecast_advisory_contradiction "$file" 'A forecast may require a receipt or artifact.'
     forbid_forecast_advisory_contradiction "$file" 'A forecast promises completion.'
-    require_pattern "$file" 'parallel deadlines use one non-additive critical path' "$parallel_rule_pattern"
+    require_pattern "$file" 'parallel deadlines use one critical path' "$parallel_path_pattern"
+    require_pattern "$file" 'parallel deadlines remain non-additive' "$parallel_nonadditive_pattern"
   done
 
   require_line "$LEDGER" '### Lane forecasts'
@@ -957,7 +982,10 @@ assert_lane_forecast_contract() {
   require_pattern "$LEDGER" 'Progress source and status projection' 'Progress[[:space:]]+is[[:space:]]+the[[:space:]]+source[[:space:]]+of[[:space:]]+truth;[[:space:]]+`latest-status-report\.md`[[:space:]]+projects[[:space:]]+these[[:space:]]+fields[[:space:]]+using[[:space:]]+`writing-status-reports`\.'
   require_pattern "$LEDGER" 'invalid-ledger rule covers unrepresented active roots' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
   require_pattern "$STATUS_REPORT" 'status forecast checklist' 'Lane[[:space:]]+forecasts[[:space:]]*\|[[:space:]]+Every[[:space:]]+active[[:space:]]+lane[[:space:]]+names[[:space:]]+a[[:space:]]+milestone,[[:space:]]+named-outcome[[:space:]]+forecast'
-  require_pattern "$LEDGER" 'ledger active-only recalibration and closed-lane completion rule' 'An[[:space:]]+active[[:space:]]+lane[[:space:]]+lacks[[:space:]]+its[[:space:]]+Lane[[:space:]]+forecasts[[:space:]]+fields[[:space:]]+or[[:space:]]+an[[:space:]]+affected[[:space:]]+active[[:space:]]+lane[[:space:]]+lacks[[:space:]]+recalibration;[[:space:]]+an[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports[[:space:]]+lacks[[:space:]]+its[[:space:]]+Root[[:space:]]+completion[[:space:]]+forecast;[[:space:]]+a[[:space:]]+changed[[:space:]]+lane/root[[:space:]]+lacks[[:space:]]+its[[:space:]]+restated[[:space:]]+current[[:space:]]+canonical[[:space:]]+line[[:space:]]+plus[[:space:]]+recalibration;[[:space:]]+a[[:space:]]+`CLOSED`[[:space:]]+lane[[:space:]]+lacks[[:space:]]+`Completed:[[:space:]]+<UTC[[:space:]]+ISO8601>;[[:space:]]+no[[:space:]]+active[[:space:]]+forecast[[:space:]]+deadline\.`[[:space:]]+or[[:space:]]+retains[[:space:]]+a[[:space:]]+forecast[[:space:]]+deadline/recalibration\.'
+  require_pattern "$LEDGER" 'invalid ledger detects missing active-lane forecasts' 'active[[:space:]]+lane[[:space:]]+lacks.*Lane[[:space:]]+forecasts'
+  require_pattern "$LEDGER" 'invalid ledger detects missing active-root forecasts' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome.*lacks.*Root[[:space:]]+completion[[:space:]]+forecast'
+  require_pattern "$LEDGER" 'invalid ledger detects stale changed forecasts' 'changed[[:space:]]+lane/root.*current[[:space:]]+canonical[[:space:]]+line.*recalibration'
+  require_pattern "$LEDGER" 'invalid ledger detects closed forecasts' '`CLOSED`[[:space:]]+lane.*retains.*forecast[[:space:]]+deadline/recalibration'
 }
 
 assert_lineage_context_contract() {
@@ -1105,8 +1133,9 @@ assert_emergency_qualification_source
 assert_emergency_and_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture
-assert_lane_forecast_contract_fixtures
+assert_forecast_source_contract_fixtures
 assert_lane_forecast_contract
+assert_source_forecast_mutations_are_rejected
 assert_lineage_context_contract
 assert_pause_resume_closure_contract
 assert_eci_ordinary_role_split

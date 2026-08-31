@@ -132,8 +132,11 @@ source of truth; `latest-status-report.md` projects these fields using
 
 Every non-`CLOSED` lane names its next milestone and canonical forecast line.
 For each unrepresented active root-task outcome omitted by lane reports, record
-Root completion forecast: <named active root-task outcome> will be finished by
-<UTC ISO8601>. The forecast line itself names the finished outcome; a separate
+this standalone line:
+
+`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
+
+The forecast line itself names the finished outcome; a separate
 Lane or Next milestone does not substitute, and it never names a critic,
 reviewer, actor, or stage. Root completion is full root completion, not a child
 sum or stage. For a changed lane or root forecast, restate its current canonical
