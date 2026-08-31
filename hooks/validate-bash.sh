@@ -16,7 +16,13 @@ set -euo pipefail
 
 unset ECI_READ_ONLY_PIPELINE
 
-HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Determine the hook directory without a PATH lookup: callback PATH may be
+# empty or relative until the original value is captured below.
+case "${BASH_SOURCE[0]}" in
+  */*) hook_source_dir="${BASH_SOURCE[0]%/*}" ;;
+  *) hook_source_dir=. ;;
+esac
+HOOK_DIR="$(cd "$hook_source_dir" && pwd)"
 . "$HOOK_DIR/lib/codex-proof-state.sh"
 . "$HOOK_DIR/lib/codex-tmp.sh"
 . "$HOOK_DIR/lib/eci-diagnostic.sh"
@@ -43,7 +49,11 @@ codex_canonicalize_configured_proof_root_alias() {
 }
 codex_canonicalize_configured_proof_root_alias
 
-CODEX_COMMAND_PATH="${PATH:-}"
+CODEX_COMMAND_PATH_SET=false
+if [[ -v PATH ]]; then
+  CODEX_COMMAND_PATH_SET=true
+fi
+CODEX_COMMAND_PATH="${PATH-}"
 export CODEX_COMMAND_PATH
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEX_COMMAND_PATH}"
 export PATH
@@ -1029,11 +1039,12 @@ plan_input="$(
     --arg active_session "$session_id" \
     --arg command "$command" \
     --arg command_path "$CODEX_COMMAND_PATH" \
+    --argjson command_path_set "$CODEX_COMMAND_PATH_SET" \
     --arg approved_root_1 "$CODEX_APPROVED_REPO_ROOT_1" \
     --arg approved_root_2 "$CODEX_APPROVED_REPO_ROOT_2" \
     --arg approved_root_3 "$CODEX_APPROVED_REPO_ROOT_3" \
     --args \
-    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
+    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,command_path_set:$command_path_set,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
     "${syntax_eci_markers[@]}"
 )"
 if [ "$CODEX_PLAN_CURRENT_SOURCE" = true ]; then

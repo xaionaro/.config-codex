@@ -96,9 +96,10 @@ CALLBACK_PATH="$BASE_CALLBACK_PATH"
 FAKE_TIMEOUT_LAUNCH_DIR="$TMP_ROOT/fake-timeout-launch"
 FAKE_TIMEOUT_ACCEPT_DIR="$TMP_ROOT/fake-timeout-accept"
 FAKE_TIMEOUT_INVALID_DIR="$TMP_ROOT/fake-timeout-invalid"
-mkdir -p -- "$FAKE_TIMEOUT_LAUNCH_DIR" "$FAKE_TIMEOUT_ACCEPT_DIR" "$FAKE_TIMEOUT_INVALID_DIR"
+FAKE_TIMEOUT_REQUIRED_DIR="$TMP_ROOT/fake-timeout-required"
+mkdir -p -- "$FAKE_TIMEOUT_LAUNCH_DIR" "$FAKE_TIMEOUT_ACCEPT_DIR" "$FAKE_TIMEOUT_INVALID_DIR" "$FAKE_TIMEOUT_REQUIRED_DIR"
 printf '%s\n' \
-  '#!/usr/bin/env bash' \
+  '#!/bin/bash' \
   'set -euo pipefail' \
   'signal=""' \
   'while (($#)); do' \
@@ -118,34 +119,77 @@ printf '%s\n' \
   'esac' \
   'exec "$@"' \
   >"$FAKE_TIMEOUT_LAUNCH_DIR/timeout"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$FAKE_TIMEOUT_ACCEPT_DIR/timeout"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 125' >"$FAKE_TIMEOUT_INVALID_DIR/timeout"
-chmod 755 -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FAKE_TIMEOUT_ACCEPT_DIR/timeout" "$FAKE_TIMEOUT_INVALID_DIR/timeout"
+printf '%s\n' '#!/bin/bash' 'exit 0' >"$FAKE_TIMEOUT_ACCEPT_DIR/timeout"
+printf '%s\n' '#!/bin/bash' 'exit 125' >"$FAKE_TIMEOUT_INVALID_DIR/timeout"
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -euo pipefail' \
+  '[ "${PROBE_REQUIRED-}" = present ] || exit 125' \
+  'signal=""' \
+  'while (($#)); do' \
+  '  case "$1" in' \
+  '    --signal) signal="${2:-}"; shift 2 ;;' \
+  '    --signal=*) signal="${1#--signal=}"; shift ;;' \
+  '    -s) signal="${2:-}"; shift 2 ;;' \
+  '    -s*) signal="${1#-s}"; shift ;;' \
+  '    --preserve-status|--foreground|--verbose|-p|-f|-v) shift ;;' \
+  '    --) shift; break ;;' \
+  '    -*) exit 125 ;;' \
+  '    *) shift; break ;;' \
+  '  esac' \
+  'done' \
+  'case "$signal" in' \
+  '  0|invalid-signal) exit 125 ;;' \
+  'esac' \
+  'exec "$@"' \
+  >"$FAKE_TIMEOUT_REQUIRED_DIR/timeout"
+chmod 755 -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FAKE_TIMEOUT_ACCEPT_DIR/timeout" "$FAKE_TIMEOUT_INVALID_DIR/timeout" "$FAKE_TIMEOUT_REQUIRED_DIR/timeout"
 
 run_hook() {
-  local command="$1" role="${2:-coordinator}" output="$TMP_ROOT/output.json" stderr=/dev/null
+  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" output="$TMP_ROOT/output.json" stderr=/dev/null
   local subagent=false
   if [ "$role" = worker ]; then
     subagent=true
   fi
-  local -a runner=(bash)
+  local -a runner=(/bin/bash)
   if [ "${DEBUG_GIT_HOOK:-false}" = true ]; then
-    runner=(bash -x)
+    runner=(/bin/bash -x)
     stderr="$TMP_ROOT/hook-xtrace.log"
   fi
   jq -cn --arg session "$SESSION" --arg cwd "$REPO" --arg command "$command" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' |
-    HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
-      CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$subagent" \
-      XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" \
-      PATH="$CALLBACK_PATH" \
-      "${runner[@]}" -c "$BASH_LAUNCHER" >"$output" 2>>"$stderr"
+    (
+      export HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT"
+      export CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$subagent"
+      export XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state"
+      case "$probe_required" in
+        present) export PROBE_REQUIRED=present ;;
+        absent) unset PROBE_REQUIRED ;;
+        wrong) export PROBE_REQUIRED=wrong ;;
+        *) printf 'unknown probe-required mode: %s\n' "$probe_required" >&2; exit 64 ;;
+      esac
+      case "$path_mode" in
+        configured)
+          PATH="$CALLBACK_PATH" "${runner[@]}" -c "$BASH_LAUNCHER"
+          ;;
+        raw)
+          PATH="$CALLBACK_PATH" "${runner[@]}" "$RUNTIME_ROOT/hooks/validate-bash.sh"
+          ;;
+        empty)
+          PATH="" "${runner[@]}" "$RUNTIME_ROOT/hooks/validate-bash.sh"
+          ;;
+        unset)
+          /bin/bash -c 'unset PATH; source "$1"' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
+          ;;
+        *) printf 'unknown callback PATH mode: %s\n' "$path_mode" >&2; exit 64 ;;
+      esac
+    ) >"$output" 2>>"$stderr"
   printf '%s\n' "$output"
 }
 
 assert_allowed() {
-  local command="$1" role="${2:-coordinator}" output
-  output="$(run_hook "$command" "$role")"
+  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" output
+  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required")"
   if [ -s "$output" ]; then
     printf 'ordinary Git command was denied: %q\n' "$command" >&2
     cat -- "$output" >&2
@@ -154,8 +198,8 @@ assert_allowed() {
 }
 
 assert_denied_code() {
-  local command="$1" code="$2" role="${3:-coordinator}" detail="${4:-}" output
-  output="$(run_hook "$command" "$role")"
+  local command="$1" code="$2" role="${3:-coordinator}" detail="${4:-}" path_mode="${5:-configured}" probe_required="${6:-absent}" output
+  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required")"
   jq -e --arg code "[$code]" --arg detail "$detail" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains($code)) and
@@ -216,6 +260,40 @@ assert_denied_code "printf prepare && timeout --signal TERM 5 git add ." ECI_BRO
 # positive launch observation.
 assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
   "token=commit"
+
+# The probe keeps inherited callback variables other than its explicitly bound
+# PWD and PATH. A fake timeout requiring this variable distinguishes an actual
+# child launch from an executable that merely accepts the timeout prefix.
+CALLBACK_PATH="$FAKE_TIMEOUT_REQUIRED_DIR:$BASE_CALLBACK_PATH"
+assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=commit" configured present
+assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker configured absent
+
+# Shell PATH lookup retains callback-CWD empty and relative components. The
+# test invokes the copied hook through /bin/bash so the raw callback PATH is
+# not consumed by the harness before the hook captures it.
+mkdir -p -- "$REPO/bin"
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$REPO/timeout"
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$REPO/bin/timeout"
+chmod 755 -- "$REPO/timeout" "$REPO/bin/timeout"
+for CALLBACK_PATH in "$TMP_ROOT/missing:bin" : . bin; do
+  assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+    "token=commit" raw
+done
+
+# Explicitly empty PATH differs from an empty component: bare timeout remains
+# opaque when PATH is empty or unset, while a direct absolute or ./timeout
+# spelling launches because the replacement child is an absolute executable.
+assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker empty
+assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker unset
+assert_denied_code "$FAKE_TIMEOUT_LAUNCH_DIR/timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=commit" empty
+assert_denied_code "$FAKE_TIMEOUT_LAUNCH_DIR/timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=commit" unset
+assert_denied_code "./timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=commit" empty
+assert_denied_code "./timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=commit" unset
 
 # An executable that accepts the same prefix but does not start its child must
 # leave foreign and broad Git forms ordinary. This is an E2E A/B check against

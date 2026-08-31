@@ -203,15 +203,16 @@ const (
 
 // Request is the bounded JSON request consumed by the compiled planner.
 type Request struct {
-	Provider      Provider `json:"provider"`
-	Role          Role     `json:"role"`
-	CWD           string   `json:"cwd"`
-	CommandPath   string   `json:"command_path,omitempty"`
-	Marker        Marker   `json:"marker"`
-	ActiveSession string   `json:"active_session"`
-	Command       string   `json:"command"`
-	ActiveMarkers []string `json:"active_markers"`
-	ApprovedRoots []string `json:"approved_roots"`
+	Provider       Provider `json:"provider"`
+	Role           Role     `json:"role"`
+	CWD            string   `json:"cwd"`
+	CommandPath    string   `json:"command_path,omitempty"`
+	CommandPathSet bool     `json:"command_path_set"`
+	Marker         Marker   `json:"marker"`
+	ActiveSession  string   `json:"active_session"`
+	Command        string   `json:"command"`
+	ActiveMarkers  []string `json:"active_markers"`
+	ApprovedRoots  []string `json:"approved_roots"`
 }
 
 // TimeoutLaunch records the callback-selected timeout prefix whose harmless
@@ -1463,12 +1464,23 @@ func timeoutLaunchForSegment(
 	if !ok {
 		return TimeoutLaunch{}, false
 	}
-	callbackCWD, callbackPath, ok := timeoutProbeContext(request)
+	callbackCWD, ok := timeoutProbeContext(request)
 	if !ok {
 		return TimeoutLaunch{}, false
 	}
-	executable, ok := resolveTimeoutExecutable(current.argv[0].value, callbackCWD, callbackPath)
-	if !ok || !timeoutExecutableLaunchesProbeChild(executable, prefix, callbackCWD, callbackPath) {
+	executable, ok := resolveTimeoutExecutable(
+		current.argv[0].value,
+		callbackCWD,
+		request.CommandPath,
+		request.CommandPathSet,
+	)
+	if !ok || !timeoutExecutableLaunchesProbeChild(
+		executable,
+		prefix,
+		callbackCWD,
+		request.CommandPath,
+		request.CommandPathSet,
+	) {
 		return TimeoutLaunch{}, false
 	}
 
@@ -1488,50 +1500,45 @@ func timeoutSegmentIsLiteral(command string) bool {
 	return !strings.ContainsAny(command, "$`\\*?[]{}~")
 }
 
-// timeoutProbeContext returns the verified callback working directory and PATH
-// used to run an observed timeout probe.
+// timeoutProbeContext returns the verified callback working directory used to
+// run an observed timeout probe.
 //
-// Example: an absolute existing callback directory and PATH entries allow a
-// probe, while a missing directory leaves timeout opaque.
-func timeoutProbeContext(request Request) (string, string, bool) {
-	if !filepath.IsAbs(request.CWD) || request.CommandPath == "" {
-		return "", "", false
+// Example: an absolute existing callback directory permits a direct timeout
+// literal even when callback PATH is unset.
+func timeoutProbeContext(request Request) (string, bool) {
+	if !filepath.IsAbs(request.CWD) {
+		return "", false
 	}
 	info, err := os.Stat(request.CWD)
 	if err != nil || !info.IsDir() {
-		return "", "", false
+		return "", false
 	}
-	for _, entry := range strings.Split(request.CommandPath, ":") {
-		if !filepath.IsAbs(entry) {
-			return "", "", false
-		}
-		info, err := os.Stat(entry)
-		if err != nil || !info.IsDir() {
-			return "", "", false
-		}
-	}
-	return request.CWD, request.CommandPath, true
+	return request.CWD, true
 }
 
 // resolveTimeoutExecutable resolves a direct timeout literal from the original
-// callback path or from the callback cwd without consulting the hook-mutated
-// process PATH.
+// callback PATH or from the callback cwd without consulting the hook-mutated
+// process PATH. Bare timeout retains shell PATH order: empty and relative
+// components resolve from the verified callback cwd.
 //
 // Example: bare `timeout` uses Request.CommandPath, while `./timeout` resolves
 // under Request.CWD.
-func resolveTimeoutExecutable(literal, cwd, commandPath string) (string, bool) {
+func resolveTimeoutExecutable(
+	literal string,
+	cwd string,
+	commandPath string,
+	commandPathSet bool,
+) (string, bool) {
 	switch {
 	case literal == "timeout":
-		if commandPath == "" {
+		if !commandPathSet || commandPath == "" {
 			return "", false
 		}
 		entries := strings.Split(commandPath, ":")
 		for _, entry := range entries {
-			if !filepath.IsAbs(entry) {
-				return "", false
+			if entry == "" || !filepath.IsAbs(entry) {
+				entry = filepath.Join(cwd, entry)
 			}
-		}
-		for _, entry := range entries {
 			if executable, ok := resolvedExecutable(filepath.Join(entry, literal)); ok {
 				return executable, true
 			}
@@ -1566,8 +1573,9 @@ func resolvedExecutable(path string) (string, bool) {
 }
 
 // timeoutExecutableLaunchesProbeChild runs a short bounded replacement-child
-// probe in the verified callback CWD and PATH, and reports whether the child,
-// rather than the timeout executable's exit status, acknowledged its launch.
+// probe with the verified callback PWD and captured PATH state, and reports
+// whether the child, rather than the timeout executable's exit status,
+// acknowledged its launch.
 //
 // Example: a timeout implementation that exits zero without invoking its child
 // returns false.
@@ -1576,6 +1584,7 @@ func timeoutExecutableLaunchesProbeChild(
 	prefix []token,
 	callbackCWD string,
 	callbackPath string,
+	callbackPathSet bool,
 ) bool {
 	probeChild, ok := resolvedExecutable(timeoutProbeChild)
 	if !ok || len(prefix) < 2 {
@@ -1597,7 +1606,18 @@ func timeoutExecutableLaunchesProbeChild(
 	arguments = append(arguments, probeChild, "%s", timeoutProbeAcknowledgement)
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = callbackCWD
-	command.Env = []string{"PATH=" + callbackPath, "PWD=" + callbackCWD}
+	environment := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "PATH=") || strings.HasPrefix(entry, "PWD=") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	environment = append(environment, "PWD="+callbackCWD)
+	if callbackPathSet {
+		environment = append(environment, "PATH="+callbackPath)
+	}
+	command.Env = environment
 	command.Stdout = writer
 	command.Stderr = io.Discard
 	command.WaitDelay = timeoutProbeWaitDelay

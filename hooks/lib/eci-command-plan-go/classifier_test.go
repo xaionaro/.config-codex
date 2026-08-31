@@ -525,9 +525,9 @@ esac
 			}},
 		},
 		{
-			name:        "relative callback path stays opaque",
+			name:        "unresolved relative callback path stays opaque",
 			command:     "timeout --signal TERM 5 git commit -m note",
-			commandPath: "relative:" + timeoutDirectory,
+			commandPath: "relative",
 			decision:    DecisionAllow,
 		},
 		{
@@ -700,6 +700,166 @@ func TestTimeoutProbeUsesVerifiedCallbackContext(t *testing.T) {
 	}
 }
 
+// TestTimeoutProbePreservesInheritedEnvironment verifies that the harmless
+// timeout probe preserves inherited callback variables other than PATH and
+// PWD.
+//
+// Example: a timeout implementation requiring PROBE_REQUIRED=present exposes
+// its worker Git child only when that inherited variable reaches the probe.
+func TestTimeoutProbePreservesInheritedEnvironment(t *testing.T) {
+	callbackCWD := t.TempDir()
+	timeoutDirectory := t.TempDir()
+	timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+	timeoutScript := `#!/bin/sh
+[ "${PROBE_REQUIRED-}" = present ] || exit 125
+[ "${1-}" = 5 ] || exit 125
+shift
+exec "$@"
+`
+	if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+		t.Fatalf("write required-environment timeout: %v", err)
+	}
+
+	t.Setenv("PROBE_REQUIRED", "present")
+	result := classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git commit -m note")
+	if result.Decision != DecisionDeny || result.Diagnostic == nil ||
+		result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
+		t.Fatalf("present inherited variable result=%#v, want observed worker Git denial", result)
+	}
+
+	t.Setenv("PROBE_REQUIRED", "wrong")
+	result = classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git commit -m note")
+	if result.Decision != DecisionAllow || result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
+		t.Fatalf("wrong inherited variable result=%#v, want ordinary opaque timeout", result)
+	}
+
+	if err := os.Unsetenv("PROBE_REQUIRED"); err != nil {
+		t.Fatalf("unset required environment: %v", err)
+	}
+	result = classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git commit -m note")
+	if result.Decision != DecisionAllow || result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
+		t.Fatalf("absent inherited variable result=%#v, want ordinary opaque timeout", result)
+	}
+}
+
+// TestTimeoutResolvesRawCallbackPathEntries verifies that bare timeout follows
+// the captured shell PATH order, including callback-CWD empty and relative
+// entries.
+//
+// Example: PATH=/missing:bin reaches ./bin/timeout after the missing absolute
+// candidate is skipped, while a first non-launching executable remains first.
+func TestTimeoutResolvesRawCallbackPathEntries(t *testing.T) {
+	t.Parallel()
+
+	callbackCWD := t.TempDir()
+	launchingTimeout := `#!/bin/sh
+[ "${1-}" = 5 ] || exit 125
+shift
+exec "$@"
+`
+	for _, path := range []string{
+		filepath.Join(callbackCWD, "timeout"),
+		filepath.Join(callbackCWD, "bin", "timeout"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create timeout directory %q: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(launchingTimeout), 0o700); err != nil {
+			t.Fatalf("write launching timeout %q: %v", path, err)
+		}
+	}
+	firstDirectory := filepath.Join(callbackCWD, "first")
+	if err := os.MkdirAll(firstDirectory, 0o700); err != nil {
+		t.Fatalf("create first timeout directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(firstDirectory, "timeout"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write non-launching first timeout: %v", err)
+	}
+
+	for _, testCase := range []struct {
+		name     string
+		path     string
+		decision DecisionKind
+	}{
+		{name: "empty component resolves callback CWD", path: ":", decision: DecisionDeny},
+		{name: "dot component resolves callback CWD", path: ".", decision: DecisionDeny},
+		{name: "relative bin resolves callback CWD", path: "bin", decision: DecisionDeny},
+		{name: "missing absolute prefix skips to relative bin", path: "/missing:bin", decision: DecisionDeny},
+		{name: "first executable remains first", path: "first:bin", decision: DecisionAllow},
+		{name: "unresolved absolute candidate stays opaque", path: "/missing", decision: DecisionAllow},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			result := classifyTimeoutJSONRequest(t, callbackCWD, testCase.path, true, "timeout 5 git commit -m note")
+			if result.Decision != testCase.decision {
+				t.Fatalf("PATH=%q decision=%q diagnostic=%#v, want %q", testCase.path, result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.decision == DecisionDeny {
+				if result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
+					t.Fatalf("PATH=%q result=%#v, want observed worker Git denial", testCase.path, result)
+				}
+				return
+			}
+			if result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
+				t.Fatalf("PATH=%q result=%#v, want ordinary opaque timeout", testCase.path, result)
+			}
+		})
+	}
+}
+
+// TestTimeoutDirectLiteralsIgnoreEmptyOrUnsetCallbackPath verifies that direct
+// absolute and slash-qualified timeout literals need only a valid callback
+// CWD, while a bare timeout remains opaque for empty or unset PATH.
+//
+// Example: ./timeout 5 git commit can launch with PATH unset, but bare timeout
+// 5 git commit cannot select a callback executable without a nonempty PATH.
+func TestTimeoutDirectLiteralsIgnoreEmptyOrUnsetCallbackPath(t *testing.T) {
+	t.Parallel()
+
+	callbackCWD := t.TempDir()
+	timeoutPath := filepath.Join(callbackCWD, "timeout")
+	timeoutScript := `#!/bin/sh
+[ "${1-}" = 5 ] || exit 125
+shift
+exec "$@"
+`
+	if err := os.WriteFile(timeoutPath, []byte(timeoutScript), 0o700); err != nil {
+		t.Fatalf("write direct timeout: %v", err)
+	}
+
+	for _, testCase := range []struct {
+		name           string
+		command        string
+		commandPath    string
+		commandPathSet bool
+		decision       DecisionKind
+	}{
+		{name: "absolute explicit empty PATH", command: timeoutPath + " 5 git commit -m note", commandPathSet: true, decision: DecisionDeny},
+		{name: "absolute unset PATH", command: timeoutPath + " 5 git commit -m note", decision: DecisionDeny},
+		{name: "slash explicit empty PATH", command: "./timeout 5 git commit -m note", commandPathSet: true, decision: DecisionDeny},
+		{name: "slash unset PATH", command: "./timeout 5 git commit -m note", decision: DecisionDeny},
+		{name: "bare explicit empty PATH", command: "timeout 5 git commit -m note", commandPathSet: true, decision: DecisionAllow},
+		{name: "bare unset PATH", command: "timeout 5 git commit -m note", decision: DecisionAllow},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			result := classifyTimeoutJSONRequest(t, callbackCWD, testCase.commandPath, testCase.commandPathSet, testCase.command)
+			if result.Decision != testCase.decision {
+				t.Fatalf("PATH set=%t value=%q decision=%q diagnostic=%#v, want %q", testCase.commandPathSet, testCase.commandPath, result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.decision == DecisionDeny {
+				if result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
+					t.Fatalf("PATH set=%t value=%q result=%#v, want observed worker Git denial", testCase.commandPathSet, testCase.commandPath, result)
+				}
+				return
+			}
+			if result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
+				t.Fatalf("PATH set=%t value=%q result=%#v, want ordinary opaque timeout", testCase.commandPathSet, testCase.commandPath, result)
+			}
+		})
+	}
+}
+
 // TestTimeoutProbeRejectsInvalidCallbackContext verifies that a malformed
 // callback CWD or PATH leaves timeout opaque without launching its executable.
 //
@@ -723,12 +883,12 @@ func TestTimeoutProbeRejectsInvalidCallbackContext(t *testing.T) {
 			},
 		},
 		{
-			name: "missing callback PATH entry",
+			name: "unresolved callback PATH entry",
 			callbackCWD: func(t *testing.T) string {
 				return t.TempDir()
 			},
-			commandPath: func(t *testing.T, timeoutDirectory string) string {
-				return timeoutDirectory + ":" + filepath.Join(t.TempDir(), "missing")
+			commandPath: func(t *testing.T, _ string) string {
+				return filepath.Join(t.TempDir(), "missing")
 			},
 		},
 	} {
@@ -756,6 +916,50 @@ func TestTimeoutProbeRejectsInvalidCallbackContext(t *testing.T) {
 			}
 		})
 	}
+}
+
+// classifyTimeoutJSONRequest decodes one timeout request through the planner's
+// JSON boundary so tests can distinguish an explicitly empty callback PATH
+// from an unset callback PATH.
+//
+// Example: command_path_set=false with an empty command_path represents an
+// unset PATH, while true with the same value represents an explicitly empty one.
+func classifyTimeoutJSONRequest(
+	t *testing.T,
+	cwd string,
+	commandPath string,
+	commandPathSet bool,
+	command string,
+) Result {
+	t.Helper()
+
+	payload, err := json.Marshal(struct {
+		Provider       Provider `json:"provider"`
+		Role           Role     `json:"role"`
+		CWD            string   `json:"cwd"`
+		CommandPath    string   `json:"command_path"`
+		CommandPathSet bool     `json:"command_path_set"`
+		Marker         Marker   `json:"marker"`
+		ActiveSession  string   `json:"active_session"`
+		Command        string   `json:"command"`
+	}{
+		Provider:       ProviderCodex,
+		Role:           RoleWorker,
+		CWD:            cwd,
+		CommandPath:    commandPath,
+		CommandPathSet: commandPathSet,
+		Marker:         MarkerActive,
+		ActiveSession:  "test-session",
+		Command:        command,
+	})
+	if err != nil {
+		t.Fatalf("encode timeout request: %v", err)
+	}
+	var request Request
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatalf("decode timeout request: %v", err)
+	}
+	return Classify(request)
 }
 
 // TestTimeoutProbeStopsAfterEarlierConcreteDenial verifies that ordered
@@ -2803,13 +3007,14 @@ func TestActiveGitDefersToProviderAdapters(t *testing.T) {
 						testCase := testCase
 						t.Run(testCase.name, func(t *testing.T) {
 							result := Classify(Request{
-								Provider:      provider,
-								Role:          role,
-								CWD:           "/tmp",
-								CommandPath:   callbackPathForTimeoutTests(),
-								Marker:        MarkerActive,
-								ActiveSession: "test-session",
-								Command:       testCase.command,
+								Provider:       provider,
+								Role:           role,
+								CWD:            "/tmp",
+								CommandPath:    callbackPathForTimeoutTests(),
+								CommandPathSet: true,
+								Marker:         MarkerActive,
+								ActiveSession:  "test-session",
+								Command:        testCase.command,
 							})
 							if result.Decision != DecisionDefer || result.Diagnostic != nil {
 								t.Fatalf("%q: decision=%q diagnostic=%#v, want defer without diagnostic", testCase.command, result.Decision, result.Diagnostic)
@@ -5620,13 +5825,14 @@ func TestEnvironmentUnsetOptions(t *testing.T) {
 
 func activeWorker(command string) Request {
 	return Request{
-		Provider:      ProviderCodex,
-		Role:          RoleWorker,
-		CWD:           "/tmp",
-		CommandPath:   callbackPathForTimeoutTests(),
-		Marker:        MarkerActive,
-		ActiveSession: "test-session",
-		Command:       command,
+		Provider:       ProviderCodex,
+		Role:           RoleWorker,
+		CWD:            "/tmp",
+		CommandPath:    callbackPathForTimeoutTests(),
+		CommandPathSet: true,
+		Marker:         MarkerActive,
+		ActiveSession:  "test-session",
+		Command:        command,
 	}
 }
 
