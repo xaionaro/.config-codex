@@ -1,5 +1,13 @@
 # Response
 
+## Primary operating principle
+
+Assume bots are not malicious. Guard against accidental mistakes. Add adversarial-evasion controls only when the user explicitly requires them.
+
+Within this workspace guidance, this rule resolves conflicts with every lower rule.
+
+Use records, hashes, receipts, command spelling, and parser shape to diagnose or review work, never as prerequisites for ordinary work. Check the resolved effect and concrete target instead.
+
 - Follow higher-priority Codex system/developer instructions; otherwise apply this file. Support material claims with tool output, local source, official docs, or fetched sources.
 - Decompose claims into verifiable units; verify suspect ones before reliance.
 - Answer direct questions before follow-up; use tools first only for needed accuracy.
@@ -51,7 +59,7 @@
 | `M && !C` | `ECI` |
 | `M && C` | `ATE` |
 
-- Security first: use minimal targeted solutions; never disable security controls as a workaround.
+- Preserve explicitly required safety controls; do not use a bypass as a workaround.
 - Prefer the simplest safe path; skip unavailable required-resource dead ends fast. Treat config values as intentional; change only when asked/required.
 - Verify UI manipulation with screenshots, DOM checks, or equivalent evidence. Assume bugs local until isolated evidence disproves it.
 - Handle explicit cases; error on unknowns. Fix causes, not outputs; solve limitations, never make them final answers.
@@ -64,9 +72,8 @@
 - Before each commit, run available fitting static checks.
 - Before the coordinator stops after edits, commit completed coordinator-owned changes unless unrelated user work would mix; otherwise name blocker/paths. Workers hand off their tested changes instead of performing acceptance-sensitive commits. Never commit unrelated user changes.
 - Workers/implementers prepare and test changes for coordinator review; acceptance-sensitive commits are coordinator-owned. For requested dirty preservation, the coordinator may make a WIP/checkpoint commit through the normal reviewed boundary.
-- Reset, mutating worktree operations, and the hidden direct-commit workaround remain denied unless a pre-existing user approval artifact authorizes exactly one direct command. The artifact uses this exact nine-line schema at the repository root (operation is `reset`, `worktree`, or `commit`): `schema: codex-user-git-approval/v1`, `authorized_by: user`, `operation: <reset|worktree|commit>`, `repo_root: <canonical>`, `git_dir: <canonical>`, `command: <exact Bash command>`, `reason: <bounded reason>`, `approved_at: <UTC timestamp>`, `one_time: true`. The `commit` operation is narrower: its command must be a canonical direct `git commit` invocation with only bounded post-subcommand commit options, no wrapper, assignment, alias, alternate executable, Git context option, shell operator, or substitution.
-- Inspect `git status` and all uncommitted diffs before requesting approval; confirm no useful loss. The hook classifies the exact reset/worktree/commit operation before consuming a matching artifact and rejects UNKNOWN commands, wrappers, indirection, alternate Git context, mismatches, and replay. Without approval, an inactive direct commit remains available and an active-ECI direct commit uses the normal review gate. A valid pre-existing user approval authorizes exactly one canonical direct command and skips only that active-ECI acceptance gate; it never fabricates critic or evidence files and does not bypass identity, path, security, or worker controls. Tracked/indexed approval files are invalid. Atomic claim directories are one-time replay protection; only an empty stale orphan beyond the bounded recovery window may be reclaimed. Denials intentionally do not reveal the artifact name or route.
-- `authorized_by: user` is a required structural claim, not cryptographic provenance. The runtime cannot distinguish an agent-created file from a human-created file on the same writable filesystem; only a pre-existing artifact supplied through a user-controlled path or interactive user action should be treated as authorization. Do not self-issue one to bypass the boundary.
+- Before a destructive Git action, inspect `git status` and the affected paths. Stop and explain a safe narrower action only when the resolved target is broad, unresolved, or would discard unrelated user work. Examples: an unscoped `reset --hard`, `clean -fdx` without an agreed target, or removing an unrelated worktree.
+- Normal commits and targeted Git actions need no approval artifact, canonical spelling, receipt, hash, or command-shape ceremony. Keep normal review and preservation of unrelated changes.
 - Push only on explicit user request.
 - Keep each unpushed logical change in one commit; amend a bad original rather than stack a fix commit. Reset only through the gate. Hold commits until stable. After push, prefer a new commit.
 - Do not add AI co-author lines.
@@ -77,10 +84,15 @@
 
 While an ECI marker is active:
 
-- The main/coordinator may use bounded literal project, proof, ledger, skills, and Git inspection.
-- The coordinator may run approved local verification: `bash`/`sh -n`, reviewed test entrypoints, exact `bash`/`sh -x <reviewed-test> 2>&1 | tail -n N` traces (`1 <= N <= 200`), finite read-only `&&` batches, and the gate's exact `|| true` form.
-- Workers may use only worker-approved bounded read-only inspection. They may not use coordinator debug routes or mutate source, proof state, Git state, acceptance, or lifecycle.
-- Do not bypass the boundary with wrappers, substitutions, `eval`, redirects, or arbitrary pipelines. When a gate denies a command, preserve the compiler-style diagnostic: code, phase, operation, rejected command segment/token/path, exact reason, and remediation.
+- The coordinator and workers may use ordinary project, proof, ledger, skills, Git inspection, and relevant verification. Shell punctuation, quoting, aliases, environment expansion, command spelling, or an unfamiliar utility form are not mistakes by themselves.
+- Diagnose commands by their resolved effect and target. Stop only a concrete broad, unresolved, cross-scope, or destructive effect; name that effect and offer the narrow safe route. Treat parser or metadata uncertainty as advisory and continue harmless work.
+- Keep each worker within its assigned scope. Route or clarify a scope mismatch before execution. Deny only a resolved operation that would damage another scope, name that target, and offer the narrow safe route.
+
+### Coordinator repository-edit routing
+
+Before a coordinator edits ordinary repository code, automatically create or reuse a bounded implementer assignment naming the target, intended change, and verification. Do not attempt then deny the ordinary edit. Report the handoff. If all implementers are busy, queue the assignment and continue other admitted work; capacity alone is not a user blocker.
+
+The coordinator may edit session coordination documents, ledgers, plans, status reports, handoffs, and proof notes directly. A genuine repository-code edge case may use the existing self-service coordinator self-edit hatch for one session-scoped 600-second window. Re-activation replaces the window instead of extending or stacking it. The hatch needs no user approval artifact and changes routing only; it never authorizes an otherwise broad, unresolved, or destructive target.
 
 - Before substantive work, load every installed matching skill from `~/.codex/skills`; slash-paired cells map positionally; matches are cumulative. Skill routing is instruction-only; never port Claude `Skill` `PostToolUse` markers without real Codex skill identity/path fields.
 
@@ -110,10 +122,12 @@ While an ECI marker is active:
 | Qt; Android SDK/NDK | `~/Qt`; `~/Android` |
 | Environment; LAN DNAT | `192.168.141.16`; LAN devices may connect through `192.168.0.131` ports `7000-7019`, DNATed here |
 | Ollama; Bluetooth | `192.168.0.171:11434`; may use `hci1`/`hci2`, using `DBUS_SYSTEM_BUS_ADDRESS` when set |
-| Changed-work scan; large scratch | Gitleaks required on `PATH`; the stop gate hard-blocks if it cannot scan changed work. When default temp is tmpfs, use `$TMPDIR`/`~/tmp/` for large files/objects |
+| Changed-work scan; large scratch | Any changed-work scan, including Gitleaks, is optional and nonblocking advisory only; never a Stop prerequisite. When default temp is tmpfs, use `$TMPDIR`/`~/tmp/` for large files/objects |
 
 - When the stop hook blocks, follow its prompt. Follow `~/.cache/codex-proof/$SESSION_ID/instructions.md` when present; use `~/.codex/hooks/stop-checklist.md` as the acceptance checklist.
-- Treat repeated unchanged `LOOP DETECTED`, `ECI_STOP_ACTIVE_ECI`, or `ECI_STOP_MARKER_*` stop output as control metadata, never a new user request: do not emit another final/status/question, retry, poll, or Stop attempt. Take one distinct recovery action or record one concrete user-owned blocker, then wait for new external state. A valid active marker remains authoritative; do not switch to `continue:true` unless the hook reports a validated direct-session `eci_wait` state.
+- Treat repeated unchanged `ECI_STOP_ACTIVE_ECI` or concrete `ECI_STOP_MARKER_*` output as control metadata, never a new user request. Do not emit another final/status/question, manually retry, poll, or Stop attempt. Do not turn an unchanged Stop callback into a blocker-resolution loop. A fully validated direct active marker remains authoritative; sibling marker observations are advisory.
+- Treat Stop as post-response continuation, not output control: `decision: "block"` creates a continuation prompt but cannot retract a rendered response, and `suppressOutput` is unsupported. Never claim a Stop hook hides visible terminal output; that guarantee needs client support.
+- A valid direct active marker gets one `decision: "block"` reminder to resume actual work or complete normal teardown. The hook records that reminder and returns `{"continue":true}` for identical unchanged callbacks, preserving the marker and worktree instead of creating a denial loop. A malformed or scope-mismatched direct marker remains a concrete first-callback block. Worker-owned dirty paths become a coordinator handoff and return normally; they do not require a commit, a bypass record, or user action. Normal teardown removes the active marker; only then can terminal completion proceed.
 - Use `~/.codex/bin/skip-stop on` only in orchestration-only sessions where verification is redundant; always run `~/.codex/bin/skip-stop off` before normal development.
 
 - Treat subagent output as an unreviewed PR: verify success claims by running commands yourself, verify load-bearing facts from primary sources, read every changed line, and check original requirements.

@@ -4,24 +4,29 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 ## Engage and route
 
-- Maintain the project-understanding ledger through maintaining-context-ledger. Apply requirement-lineage admission before every routing change or durable execution.
-- Create the direct ECI marker before Step 1 and keep it through all governed work. An outer ATE marker does not replace it. Never disengage to evade the write gate; route edits to the reusable implementer.
+- Maintain the project-understanding ledger through maintaining-context-ledger. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
+- Create the direct ECI marker before Step 1 and keep it through all governed work. An outer ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer and implementer producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
-- Each packet contains original requirements where required, exact scope, lane/assignment binding, full requirement chain, paths/edges, expected output, claim tags, Stop-hook instruction, and exactly one `Stage: normal` or `Stage: emergency`. A failed lineage/model/boundary admission stops the provider call.
+- Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
+- Before a coordinator edits ordinary repository code, create or reuse a bounded implementer assignment with the target, intended change, and verification. Do not attempt then deny the ordinary edit. Report the handoff. If no implementer is free, queue it and continue other admitted work; capacity alone is not a user blocker. Session coordination documents, ledgers, plans, status reports, handoffs, and proof notes remain coordinator-owned. A genuine code-edit edge case may use the session-scoped self-service coordinator self-edit hatch for 600 seconds; re-activation replaces rather than stacks the window. It needs no user approval artifact and changes routing only.
 - When a lane or assignment is `Stage: emergency`, the packet records the [Emergency Unblock](emergency-unblock.md) protocol and `provisional Emergency Unblock — unchecked`; before any resume, record the `emergency→normal ECI Step 1` transition in the assignment and current ledger state.
 - Follow the shared pause-all-work and stop-recovery modules only on their exact predicates. Load policy-pressure-tests only for workflow-policy changes.
 
 ## Step 4 — Review coordination
 
-After Step 3, the coordinator alone assigns fresh Critic A, Critic B, Critic C, and E2E for code/debug work. Each reviewer is independent of producers and receives original requirements, current diff, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules.
+After Step 3, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
 
-Before dispatch, validate fresh identity, lineage/assignment binding, current requirements/diff, and supplied evidence. Keep the required-role and evidence bindings in the shared runtime record; missing, stale, or contradictory evidence blocks the gate.
+E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
+
+Each reviewer is independent of producers and receives original requirements, current diff, objective/criteria, pre-routing record, applicable style evidence, exact lens, and claim-tag rules. Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.
+
+Before dispatch, verify the assignment still names the right work, current requirements/diff, and supplied evidence. Missing or stale coordination evidence prompts refresh, reassignment, or an additional review; it does not stop ordinary exploration, implementation, or harmless verification.
 
 Wait for all required review and E2E evidence before aggregating. Pre-route every finding with the review policy. Send substantive `now` findings or design/API uncertainty back as one complete Steps 1–2 repair batch; send a trivial `now` finding once to the implementer. Preserve auditable debt/defer/ignored-contradictory records without treating them as a clean result. Use the shared coordinator/runtime policy for repair cycles, clean-pass, and limits.
 
 ## Blockers, bugs, and limits
 
-Concrete bug/failure/flake/performance/incorrect behavior enters delegated debugging-discipline roles: repro, RCA/regression, Step 2 critic, implementer, A/B/C, and E2E. Write/update the regression report before RCA; require a falsifiable cause, regression status, previous/current evidence, and proof on the real failing path.
+Concrete bug/failure/flake/performance/incorrect behavior enters delegated debugging-discipline roles: repro, RCA/regression, Step 2 critic, implementer, A/B/C, and E2E. Capture a regression report or current coordination note before or alongside RCA; require a falsifiable cause, regression status, previous/current evidence, and proof on the real failing path.
 
 After a first Step 2 all-REJECT, route the verbatim findings to one Explorer revision, then assign a fresh blind Step 2 critic. A second all-REJECT enters the ordinary blocker route.
 
@@ -39,7 +44,7 @@ Status uses human-readable role/lane names, parent-child trees for nested work, 
 
 ECI uses only `spawn_agent`, `followup_task`, `send_message`, `wait_agent({timeout_ms:3600000})`, and cancellation-only `interrupt_agent`. If standard tools are unavailable, hard-escalate rather than shell-launch a Codex agent. `spawn_agent` starts a new role; `followup_task` starts a fresh turn only for an idle reusable producer; `send_message` is bounded in-turn delivery only. Label every spawned/resumed role and immediately update the roster as `<role label>: <runtime name> [type]`.
 
-Before Step 1 of the first iteration run `eci-active on "<task + scope>"`. The main thread does not directly edit while engaged. An ATE `ate_active` marker alone is insufficient. Keep ECI active through blocker work, nested paths, review, and acceptance; user cancellation/withdraw/replacement/ATE switch is user closure only after checkpointing successor handoff or scope removal. A PostCompact signal requires the coordinator/lead to reread the full router and then its exact assigned modules before the next decision.
+Before Step 1 of the first iteration run `eci-active on "<task + scope>"`. While engaged, route ordinary repository-code edits through the implementer assignment above. The coordinator may directly maintain coordination records, and may use the 600-second nonstacking self-edit routing exception for a genuine code-edit edge case. An ATE `ate_active` marker alone is insufficient. Keep ECI active through blocker work, nested paths, review, and acceptance; user cancellation/withdraw/replacement/ATE switch is user closure only after checkpointing successor handoff or scope removal. A PostCompact signal requires the coordinator/lead to reread the full router and then its exact assigned modules before the next decision.
 
 Every producer assignment says fresh task treatment: Explorer rereads every referenced file; implementer rereads every intended target. Every report/submission tags factual claims; E2E evidence identifies exact tool output/log/screenshot/state rather than bare “green.” Code/debug submissions include root-cause cause chain, evidence, regression status/explanation, and why the diff repairs the cause; unknown why is not submittable. The coordinator independently verifies each handoff before routing it as evidence.
 
@@ -49,9 +54,9 @@ Use one stable Explorer and one stable implementer across iterations. Every invo
 
 ## Bug and blocker packet rules
 
-For a concrete bug write/update a human-readable regression report before RCA at `~/.cache/codex-proof/$SESSION_ID/eci-regression-reports/<task>.md` when `$SESSION_ID` exists, otherwise `./.codex-regression-reports/<task>.md`. It contains bug statement, repro, previous/current test artifacts, CI/log/release/QA evidence, known-good/current-bad anchors, regression status, missing evidence, and eventual regression explanation. The RCA packet names the report and says: load debugging-discipline; follow repro/RCA-critic/fix-review; determine `regression: yes/no/unknown`; if regression explain how it happened; do not submit until root cause is falsifiable and the fix is proven on the real failing path.
+For a concrete bug, capture its statement, repro, previous/current evidence, regression status, and missing evidence in a readable regression report or current coordination note before or alongside RCA. Use debugging-discipline; require a falsifiable cause and proof on the real failing path. Do not make a fixed file path, artifact, or report schema a prerequisite for investigation.
 
-An isolated disposable repro/PoC may run before style admission, but no production reuse/copy/adaptation occurs until final-scope admission. Normal issue handling precedes BRP. A genuine stall needs the blocker-resolution-protocol required record/attempt log; “I am stuck” is not enough. BRP primary explorer, fresh brainstormer, and separate feasibility validator are distinct roles. Only validator-approved feasible ideas reach a producer after BRP.
+An isolated disposable repro/PoC may run before style review. Normal issue handling precedes BRP. For a genuine stall, record the useful attempts and choose an Explorer, brainstormer, or feasibility validator as needed; do not make a fixed blocker artifact or role sequence a prerequisite for continued ordinary work.
 
 ## Brainstormer, loop-breaker, and caps
 
@@ -72,3 +77,5 @@ The disengage report has `## ECI completion certificate` with exactly one `clean
 - An unchanged Stop block causes a status/final/retry instead of one distinct recovery action or wait.
 - A stable reusable producer is replaced while idle, a `send_message` is used to start its turn, or a special/fresh critic is upgraded by followup.
 - A status report uses task/iteration numbers or flattens nested work, or a lane packet omits the full chain outside Critic C Packet 1.
+- An ordinary repository-code edit reaches any denial path instead of an automatic bounded implementer handoff or queue.
+- A normal command or routing step waits on an artifact, receipt, hash, allowlist, raw spelling, or shell punctuation without a concrete accidental destructive effect.

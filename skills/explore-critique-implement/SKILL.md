@@ -12,11 +12,21 @@ Separate exploration, authoritative critique, implementation, and independent re
 Start only when CODEX selects ECI or active ATE explicitly routes bounded work through it. Loading this router alone does not start ECI. Use ECI for non-mechanical work with uncertainty, future behavior/routing/protocol risk, or two plausible approaches; classify by decision complexity and risk, not diff size. A one-line/local change is still non-trivial when it changes instructions, prompts, routing, protocols, public contracts, security, persistence, concurrency, architecture, or reviewer/agent behavior. Skip only a mechanical answer whose consequences are obvious, directly verifiable, and carry no future behavior or routing risk.
 
 - Maintain requirement lineage and a project-understanding ledger. The active outer owns lifecycle; nested ECI remains inside ATE.
-- Authoritative lane tracking records exactly one `Stage: normal` or `Stage: emergency` on every ECI lane, assignment, and current ledger state. `Stage: emergency` requires the [Emergency Unblock](references/emergency-unblock.md) protocol, the `provisional Emergency Unblock — unchecked` record, and a recorded `emergency→normal ECI Step 1` transition before work resumes.
-- Every ordinary worker reads this router plus only the exact module(s) in its assignment. Unknown role, predicate, or link returns to coordinator before work.
+- Keep one `Stage: normal` or `Stage: emergency` in every ECI lane, assignment, and current ledger state. A missing, stale, or unknown stage is reconciled as part of work; it is not a prerequisite for harmless bounded progress. An `emergency` stage uses [Emergency Unblock](references/emergency-unblock.md) as a recovery aid, not as a permission ceremony.
+- Every ordinary worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.
 - Coordinator/lead alone load lifecycle, blocker, pause, stop, required-critic, teardown, and pressure-policy modules. Workers never infer those duties.
 - Each normal iteration is Explore → Critique → Implement → parallel Review. A producer never acts as critic.
 - A hard/uncertain bug uses debugging-discipline. The only unchecked exception is the one-shot conditional Emergency Unblock route.
+
+## Configuration E2E contract
+
+Every configuration change, including configuration-only work, requires E2E. The implementer runs that E2E before Step 4.
+
+Step 4 independently repeats or extends the implementer's E2E. This Configuration E2E requirement may not be waived.
+
+## Runtime E2E policy
+
+Code/debug work affecting runtime behavior reachable through a UI, API, device, or CLI requires E2E. The implementer runs it before Step 4. Step 4 independently repeats or extends it. E2E builds and runs the full suite where applicable, exercises the affected real UI/API/device/CLI path, and cites output, state, or screenshot. Docs, prompts, design-only changes, tests-only changes, and pure refactors do not require E2E under this policy.
 
 ## Module routing
 
@@ -25,10 +35,10 @@ Coordinator routes begin with [coordinator runtime](../references/workflow-runti
 | Role | Required module | Conditional module/predicate |
 | --- | --- | --- |
 | coordinator | [coordinator](references/coordinator.md), [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md), [review policy](../references/workflow-runtime/review-policy.md) | [pause-all-work](../references/workflow-runtime/pause-all-work.md), [stop recovery](../references/workflow-runtime/stop-recovery.md), and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only by their predicates; [Emergency Unblock](references/emergency-unblock.md) to assess a potential case |
-| `explorer` | [explore](references/explore.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned governed source discovery |
+| `explorer` | [explore](references/explore.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned bug investigation; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned governed source discovery |
 | `critic-step2` | [critique](references/critique.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for independent admission |
-| `implementer` | [implement](references/implement.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
-| Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E only for code/debug work |
+| `implementer` | [implement](references/implement.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned code/debug work; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
+| Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E as required by the [Configuration E2E contract](#configuration-e2e-contract) or [Runtime E2E policy](#runtime-e2e-policy). |
 | emergency implementer | [Emergency Unblock](references/emergency-unblock.md) | only after coordinator qualification; immediately rejoin normal Step 1 |
 
 Potential Emergency Unblock cases load [Emergency Unblock](references/emergency-unblock.md) to determine qualification. That reference is the single normative qualification source.
@@ -38,7 +48,7 @@ Potential Emergency Unblock cases load [Emergency Unblock](references/emergency-
 1. Explorer ranks tagged, evidence-backed options and required PoC/style-source proposal.
 2. Fresh special Step 2 critic independently baselines, admits scope, rejects bad options, and selects concrete winner text or returns bounded re-exploration.
 3. Reusable implementer applies only the winner and `treatment: now` corrections with causal/proof evidence.
-4. Fresh A/B/C critics review in parallel; E2E joins when code applies. Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
+4. Fresh A/B/C critics review in parallel; E2E joins as required by the [Configuration E2E contract](#configuration-e2e-contract) or [Runtime E2E policy](#runtime-e2e-policy). Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
 
 ## Relationship to other skills
 
