@@ -123,14 +123,14 @@ source of truth; `latest-status-report.md` projects these fields using
 | --- | --- |
 | Next milestone | `Next milestone: <named outcome>` |
 | Forecast deadline | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.` |
-| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>` |
+| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior UTC ISO8601> → <current UTC ISO8601>; <why>; <evidence>` |
 | Dependencies / critical path | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` |
 
 Every non-`CLOSED` lane names its next milestone and forecast deadline. A
 `CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
 A `CLOSED` lane records completion; do not invent or revive a forecast deadline
 or recalibration.
-For an initial forecast, write `Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`.
+For an initial forecast, write `Forecast recalibration: unchanged — baseline <current UTC ISO8601>; <why>; <evidence>`.
 
 State dependencies and parallel work. For parallel children, report the single
 critical-path deadline; child deadlines remain parallel; never add or sum

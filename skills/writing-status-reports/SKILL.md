@@ -53,14 +53,14 @@ Use these labels in every multi-lane row and single-lane report.
 | --- | --- |
 | Next milestone | `Next milestone: <named outcome>` |
 | Forecast deadline | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.` |
-| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>` |
+| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior UTC ISO8601> → <current UTC ISO8601>; <why>; <evidence>` |
 | Dependencies / critical path | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` |
 
 Every non-`CLOSED` lane names its next milestone and forecast deadline. A
 `CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
 A `CLOSED` lane records completion; do not invent or revive a forecast deadline
 or recalibration.
-For an initial forecast, write `Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`.
+For an initial forecast, write `Forecast recalibration: unchanged — baseline <current UTC ISO8601>; <why>; <evidence>`.
 
 Every material status report recalibrates each affected active lane with its
 prior and current deadline, why, and evidence. State dependencies and parallel
@@ -91,7 +91,7 @@ When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. Keep `Lan
 
 | Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.`<br>`Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.`<br>`Forecast recalibration: moved earlier | moved later | unchanged — <prior UTC ISO8601> → <current UTC ISO8601>; <why>; <evidence>` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
 
 Every lane may record `Stage: normal` or `Stage: emergency` as current-state
 context. Missing, stale, or unknown stage metadata is reported and reconciled

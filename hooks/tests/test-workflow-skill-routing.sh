@@ -786,8 +786,8 @@ assert_lane_forecast_contract() {
   local file header active_deadline recalibration baseline completed closed_lane_contract_pattern parallel_rule_pattern
 
   active_deadline='`Forecast deadline: by <UTC ISO8601> — forecast, not a promise.`'
-  recalibration='`Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>`'
-  baseline='`Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`'
+  recalibration='`Forecast recalibration: moved earlier | moved later | unchanged — <prior UTC ISO8601> → <current UTC ISO8601>; <why>; <evidence>`'
+  baseline='`Forecast recalibration: unchanged — baseline <current UTC ISO8601>; <why>; <evidence>`'
   completed='`Completed: <UTC ISO8601>; no active forecast deadline.`'
   closed_lane_contract_pattern='A[[:space:]]+`CLOSED`[[:space:]]+lane[[:space:]]+records[[:space:]]+completion;[[:space:]]+do[[:space:]]+not[[:space:]]+invent[[:space:]]+or[[:space:]]+revive[[:space:]]+a[[:space:]]+forecast[[:space:]]+deadline[[:space:]]+or[[:space:]]+recalibration\.'
   parallel_rule_pattern='For[[:space:]]+parallel[[:space:]]+children,[[:space:]]+report[[:space:]]+the[[:space:]]+single[[:space:]]+critical-path[[:space:]]+deadline;[[:space:]]+child[[:space:]]+deadlines[[:space:]]+remain[[:space:]]+parallel;[[:space:]]+never[[:space:]]+add[[:space:]]+or[[:space:]]+sum[[:space:]]+parallel[[:space:]]+child[[:space:]]+deadlines[[:space:]]+into[[:space:]]+a[[:space:]]+parent,[[:space:]]+root,[[:space:]]+or[[:space:]]+mission[[:space:]]+deadline\.'
