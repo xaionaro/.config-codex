@@ -122,24 +122,22 @@ source of truth; `latest-status-report.md` projects these fields using
 | Field | Current ledger entry |
 | --- | --- |
 | Next milestone | `Next milestone: <named outcome>` |
-| Remaining forecast | `Remaining forecast: <current honest time estimate/range>` |
-| Forecast recalibration | `Forecast recalibration: increased | decreased | unchanged — <why; evidence>` |
-| Dependencies / overlap | `Dependencies / overlap: <none, named dependency + owner/resume, or overlap/critical-path treatment>` |
+| Forecast deadline | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.` |
+| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>` |
+| Dependencies / critical path | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` |
 
-Every non-`CLOSED` lane names its next milestone and remaining range. A
-`CLOSED` lane records `Remaining forecast: 0 h`. For an initial forecast,
-write `unchanged — baseline from <evidence>; no prior forecast`.
+Every non-`CLOSED` lane names its next milestone and forecast deadline. A
+`CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
+For an initial forecast, write `Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`.
 
-State dependencies and parallel overlap. Never add overlapping child estimates
-into a parent or mission forecast; name the non-overlapping sequence or
-critical path.
+State dependencies and parallel work. For parallel children, report the single critical-path deadline; child deadlines remain parallel.
 
-Forecasts are coordination aids for catching stale planning assumptions under
-the non-malicious-bot principle. They never authorize or deny work, create a
-user blocker, promise completion, require a receipt or artifact, or require
-per-command updates. Missing or stale forecasts are planning-quality defects.
-Reconcile them alongside safe work; they never gate work, authorization, or
-status reporting.
+Forecast deadlines are forecasts, not promises. They are coordination aids for
+catching stale planning assumptions under the non-malicious-bot principle. They
+never gate work, authorize or deny work, create a blocker, require a receipt or
+artifact, or require per-command updates. Missing or stale forecast deadlines
+are planning-quality defects. Reconcile them alongside safe work; they never
+gate work, authorization, blockers, or status reporting.
 
 ## Structure
 
@@ -165,8 +163,8 @@ Use `### <subject>` subsections when a section grows large enough that a fresh a
 
 Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
 
-Every material ledger refresh recalibrates each affected lane and records its
-delta, why, and evidence.
+Every material ledger refresh recalibrates each affected lane with its prior
+and current deadline, why, and evidence.
 
 When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
 
@@ -201,5 +199,5 @@ Reject the ledger if any holds:
 - Headings no longer fit the content.
 - The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
 - The latest status report is missing, lacks a UTC timestamp, predates the last ledger update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
-- An active lane lacks its Lane forecasts fields, a material refresh lacks recalibration, or a `CLOSED` lane is not `0 h`. This is a planning-quality defect: reconcile it alongside safe work; never gate work, authorization, or status reporting.
+- An active lane lacks its Lane forecasts fields, a material refresh lacks recalibration, or a `CLOSED` lane lacks `Completed: <UTC ISO8601>; no active forecast deadline.` This is a planning-quality defect: reconcile it alongside safe work; never gate work, authorization, blockers, or status reporting.
 - Secrets, credentials, or unnecessary personal data are recorded.

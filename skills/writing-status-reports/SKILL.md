@@ -52,29 +52,29 @@ Use these labels in every multi-lane row and single-lane report.
 | Field | Record |
 | --- | --- |
 | Next milestone | `Next milestone: <named outcome>` |
-| Remaining forecast | `Remaining forecast: <current honest time estimate/range>` |
-| Forecast recalibration | `Forecast recalibration: increased | decreased | unchanged — <why; evidence>` |
-| Dependencies / overlap | `Dependencies / overlap: <none, named dependency + owner/resume, or overlap/critical-path treatment>` |
+| Forecast deadline | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.` |
+| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>` |
+| Dependencies / critical path | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` |
 
-Every non-`CLOSED` lane names its next milestone and remaining range. A
-`CLOSED` lane records `Remaining forecast: 0 h`. For an initial forecast,
-write `unchanged — baseline from <evidence>; no prior forecast`.
+Every non-`CLOSED` lane names its next milestone and forecast deadline. A
+`CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
+For an initial forecast, write `Forecast recalibration: unchanged — baseline <current deadline>; <why>; <evidence>`.
 
-Every material status report recalibrates each affected lane and records its
-delta, why, and evidence. State dependencies and parallel overlap. Never add
-overlapping child estimates into a parent or mission forecast; name the
-non-overlapping sequence or critical path.
+Every material status report recalibrates each affected lane with its prior and
+current deadline, why, and evidence. State dependencies and parallel work.
+For parallel children, report the single critical-path deadline; child deadlines remain parallel.
 
-Forecasts are coordination aids for catching stale planning assumptions under
-the non-malicious-bot principle. They never authorize or deny work, create a
-user blocker, promise completion, require a receipt or artifact, or require
-per-command updates. Correct missing or stale forecasts alongside safe work.
+Forecast deadlines are forecasts, not promises. They are coordination aids for
+catching stale planning assumptions under the non-malicious-bot principle. They
+never gate work, authorize or deny work, create a blocker, require a receipt or
+artifact, or require per-command updates. Correct missing or stale forecast
+deadlines alongside safe work.
 
 | Pressure | Correct report |
 | --- | --- |
-| Active lane lacks a milestone or range | An active lane missing a named milestone or range is corrected alongside safe work. |
-| Estimate was copied without current evidence | A copied estimate without `increased`, `decreased`, or `unchanged` plus why/evidence is stale. |
-| Parallel children | Show overlap or critical path; do not add their estimates to the parent. |
+| Active lane lacks a milestone or deadline | An active lane missing a named milestone or forecast deadline is corrected alongside safe work. |
+| Forecast deadline was copied without current evidence | A forecast deadline copied without prior/current deadlines, why, and evidence is stale. |
+| Parallel children | For parallel children, report the single critical-path deadline; child deadlines remain parallel. |
 | Dependency is paused | A paused dependency names its owner and resume condition; it is not a user blocker. |
 
 ## Multi-Lane Mission Status
@@ -85,9 +85,9 @@ Use three separate status columns so source readiness cannot be mistaken for E2E
 
 When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. Keep `Lane` followed by `Lane requirement context` when that context would help the reader. Use a known readable reference or `lineage unavailable—reconcile`.
 
-| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Remaining forecast / recalibration | Dependencies / overlap | Next proof/action |
+| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Remaining forecast: <current honest time estimate/range>`<br>`Forecast recalibration: increased | decreased | unchanged — <why; evidence>` | `Dependencies / overlap: <none, named dependency + owner/resume, or overlap/critical-path treatment>` | `<next evidence/action>` |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.`<br>`Forecast recalibration: moved earlier | moved later | unchanged — <prior deadline> → <current deadline>; <why>; <evidence>` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
 
 Every lane may record `Stage: normal` or `Stage: emergency` as current-state
 context. Missing, stale, or unknown stage metadata is reported and reconciled
@@ -152,4 +152,4 @@ Under time pressure, classify by the lane's next required action. For example: "
 | BLOCKED semantics | A lane unable to make more progress until the user supplies a named input/decision is labeled `BLOCKED` with `owner=user` and an exact unblock action; dependency-only waiting is not `BLOCKED`. |
 | Dependency propagation | If a dependency lane is `BLOCKED` on user input, the dependent lane remains `PAUSED` until its own next required action needs user input. |
 | Status separation | Source-level completion, test E2E, and production E2E are never merged into one status. |
-| Lane forecasts | Every active lane names a milestone, remaining range, recalibration, and dependency/overlap treatment. Closed lanes are `0 h`; overlapping estimates stay non-additive. |
+| Lane forecasts | Every active lane names a milestone, forecast deadline, recalibration, and critical-path treatment. Closed lanes record a completion timestamp and no active forecast deadline. Parallel child deadlines remain parallel under one critical-path deadline. |
