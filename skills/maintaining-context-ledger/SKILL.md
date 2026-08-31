@@ -115,6 +115,8 @@ Per-ledger-line test: true and load-bearing right now? No -> drop from ledger; i
 
 ### Lane forecasts
 
+A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
+
 Under `Progress`, record these labels for every active lane. Progress is the
 source of truth; `latest-status-report.md` projects these fields using
 `writing-status-reports`.
@@ -122,26 +124,34 @@ source of truth; `latest-status-report.md` projects these fields using
 | Field | Current ledger entry |
 | --- | --- |
 | Next milestone | `Next milestone: <named outcome>` |
-| Forecast deadline | `Forecast deadline: by <UTC ISO8601> — forecast, not a promise.` |
-| Forecast recalibration | `Forecast recalibration: moved earlier | moved later | unchanged — <prior UTC ISO8601> → <current UTC ISO8601>; <why>; <evidence>` |
+| Forecast deadline | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.` |
+| Root completion forecast | `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.` |
+| Forecast recalibration | `Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` |
+| Initial forecast evidence | `Forecast recalibration: unchanged — baseline <UTC ISO8601>; supporting evidence: <evidence>.` |
 | Dependencies / critical path | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` |
 
-Every non-`CLOSED` lane names its next milestone and forecast deadline. A
-`CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
+Every non-`CLOSED` lane names its next milestone and canonical forecast line.
+For each unrepresented active root-task outcome omitted by lane reports, record
+Root completion forecast: <named active root-task outcome> will be finished by
+<UTC ISO8601>. The forecast line itself names the finished outcome; a separate
+Lane or Next milestone does not substitute, and it never names a critic,
+reviewer, actor, or stage. Root completion is full root completion, not a child
+sum or stage. For a changed lane or root forecast, restate its current canonical
+line in the same update, then record Forecast recalibration: <prior UTC ISO8601>
+→ <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.
+A `CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
 A `CLOSED` lane records completion; do not invent or revive a forecast deadline
-or recalibration.
-For an initial forecast, write `Forecast recalibration: unchanged — baseline <current UTC ISO8601>; <why>; <evidence>`.
+or recalibration. For an initial forecast, write `Forecast recalibration:
+unchanged — baseline <UTC ISO8601>; supporting evidence: <evidence>.`
 
 State dependencies and parallel work. For parallel children, report the single
 critical-path deadline; child deadlines remain parallel; never add or sum
 parallel child deadlines into a parent, root, or mission deadline.
 
-Forecast deadlines are forecasts, not promises. They are coordination aids for
-catching stale planning assumptions under the non-malicious-bot principle. They
-never gate work, authorize or deny work, create a blocker, require a receipt or
-artifact, or require per-command updates. Missing or stale forecast deadlines
-are planning-quality defects. Reconcile them alongside safe work; they never
-gate work, authorization, blockers, or status reporting.
+Forecasts are advisory. They never gate work, grant or deny permissions, require
+artifacts or receipts, create blockers, require parsers, or require per-command
+ceremony. Missing or stale forecasts are planning-quality defects. Reconcile
+them alongside safe work without delaying the update.
 
 ## Structure
 
@@ -167,8 +177,8 @@ Use `### <subject>` subsections when a section grows large enough that a fresh a
 
 Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
 
-Every material ledger refresh recalibrates each affected active lane with its
-prior and current deadline, why, and evidence.
+Every material ledger refresh applies the same-update recalibration rule to
+each affected changed lane or root forecast.
 
 When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
 
@@ -204,8 +214,10 @@ Reject the ledger if any holds:
 - The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
 - The latest status report is missing, lacks a UTC timestamp, predates the last ledger update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
 - An active lane lacks its Lane forecasts fields or an affected active lane lacks
-  recalibration; a `CLOSED` lane lacks `Completed: <UTC ISO8601>; no active
-  forecast deadline.` or retains a forecast deadline/recalibration. This is a
-  planning-quality defect: reconcile it alongside safe work; never gate work,
-  authorization, blockers, or status reporting.
+  recalibration; an unrepresented active root-task outcome omitted by lane
+  reports lacks its Root completion forecast; a changed lane/root lacks its
+  restated current canonical line plus recalibration; a `CLOSED` lane lacks
+  `Completed: <UTC ISO8601>; no active forecast deadline.` or retains a forecast
+  deadline/recalibration. This is a planning-quality defect: reconcile it
+  alongside safe work without delaying the update.
 - Secrets, credentials, or unnecessary personal data are recorded.

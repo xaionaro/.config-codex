@@ -13,6 +13,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 
 - Maintain requirement lineage and a project-understanding ledger. The active outer owns lifecycle; nested ECI remains inside ATE.
 - Keep one `Stage: normal` or `Stage: emergency` in every ECI lane, assignment, and current ledger state. A missing, stale, or unknown stage is reconciled as part of work; it is not a prerequisite for harmless bounded progress. An `emergency` stage uses [Emergency Unblock](references/emergency-unblock.md) as a recovery aid, not as a permission ceremony.
+- A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 - Every ordinary worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.
 - Coordinator/lead alone load lifecycle, blocker, pause, stop, required-critic, teardown, and pressure-policy modules. Workers never infer those duties.
 - Each normal iteration is Explore → Critique → Implement → parallel Review. A producer never acts as critic.
