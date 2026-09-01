@@ -10,7 +10,7 @@ Check applicable style skills, formatter/linter/config anchors, actual scope, ad
 
 ## Critic B — correctness and fidelity
 
-Check correctness, safety, concrete requirements, interfaces, non-style boundaries, and root-cause/regression rationale. Verify that named functions, types, and interfaces actually provide their claimed behavior.
+Check correctness, safety, concrete requirements, interfaces, non-style boundaries, and root-cause/regression rationale. Check scope fidelity and least restriction against `exact user source → faithful requested outcome → bounded scope`. Distinguish a repair needed to meet or prove that outcome from an invented separate outcome; report the latter as `REJECT` without treating stale lineage as a work gate. Verify that named functions, types, and interfaces actually provide their claimed behavior.
 
 ## Critic C — long-term health
 

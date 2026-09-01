@@ -4,6 +4,8 @@ Fresh special `ECI critic-step2` only. It is authoritative for choosing an explo
 
 Read the target state, original requirements, full lineage packet, candidate options, and style-source proposal. Independently re-resolve coding-style admission. Audit citations, claim tags, duplication, PoCs, scope, mechanism wording, and boundary counterexamples. Fetch and quote load-bearing T1/T2 sources where available; flag unverified load-bearing material.
 
+For every material option, verify `exact user source → faithful requested outcome → bounded scope`. Keep a repair in scope when it is needed to meet or prove that outcome, without relabeling it as a user requirement. REJECT a discovered concern whose remedy serves a separate outcome when presented as current scope, and report it only as an observation or follow-up suggestion. Stale lineage does not reject known in-scope work.
+
 Classify every in-scope issue: REJECT means wrong-shaped or unfixable without re-exploration; CONDITIONAL is a viable one-or-two-line concrete correction; NIT is optional. Do not rewrite options. Report scope impact, debt/defer candidates, and acceptance concerns to coordinator; coordinator owns their disposition and application.
 
 If one option has zero remaining material REJECTs, select the highest-ranked survivor and emit its concrete text, necessary corrections, admitted style record, and NITs. If all options reject, return verbatim issues with `reroute: explorer-revision`. Stop after the recommendation. Untagged factual claims and missing required PoCs reject dependent options.

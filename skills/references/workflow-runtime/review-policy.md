@@ -16,7 +16,7 @@ Review every applicable root-cause rationale and regression explanation. Unknown
 
 ## Impact-proportional routing
 
-Screen scope before severity. A remedy necessary for the original objective, acceptance criteria, security, correctness, specification, contract/interface, persistence, concurrency, admission, TDD, proof, regression, verification, or required test is `now`. A wholly separable new outcome is scope-creep debt; queue it with the shared record and never use it to waive original work. Split mixed remedies.
+Screen scope before severity. A remedy is `now` only when it is necessary to meet or prove the original user outcome; labels such as acceptance criteria, security, correctness, specification, contract/interface, persistence, concurrency, admission, TDD, proof, regression, verification, or required test do not independently make it current work. A repair with a recorded link to meeting or proving that outcome is a current-lane repair, not a substitute requirement. A discovered concern whose remedy serves a separate outcome is only a post-ECI observation or follow-up suggestion; it never creates current lane, assignment, code, review, deadline, forecast, or proof work. Split mixed remedies.
 
 Only an in-scope, non-hard, impact-trivial, isolated finding may defer. Its one append-only record starts before research/discussion and is sealed by `started + 2 minutes` with `{elapsed, sealed-at, treatment, evidence/result}`. Missing/late/new/shared evidence makes it `now`. Deadline, fatigue, sunk cost, authority, completed work, and calendar date never qualify. Mutually exclusive remedies for the same criterion from different decisions are `ignored-contradictory`: record them without pretending the unmet criterion is resolved.
 
@@ -44,7 +44,7 @@ Required E2E builds and runs the full suite where applicable, exercises the affe
 
 ## Gate evaluation
 
-After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean gate has no remaining `now` issue and all required same-run proof, including required E2E. Scope-creep debt, valid defer, and ignored contradiction are recorded future work, not clean-pass defects.
+After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean gate has no remaining `now` issue and all required same-run proof, including required E2E. A post-ECI observation/follow-up for a separate outcome, valid defer, and ignored contradiction are not clean-pass defects.
 
 The design-revision batch groups all remaining issues by affected artifact/API/contract and includes source reviewer, severity, impact, evidence location, exact issue text, relevant debt/defer reference, and acceptance criteria. Never patch substantive gate issues one by one without the design loop. Review caps and loop-breaker/BRP escalation remain owned by the outer workflow.
 

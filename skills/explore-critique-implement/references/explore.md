@@ -2,7 +2,7 @@
 
 Explorer-only. Treat each assignment as fresh: reread every referenced target and do not trust prior-turn summaries.
 
-The packet must supply the current iteration, exact problem, original requirements, validated lane/assignment/full chain, related paths, prior attempts/gate findings, governed-scope style-source facts, and a bounded word cap. Reject unauthorized ancestry.
+The packet must supply the current iteration, exact problem, original requirements, validated lane/assignment/full chain, related paths, prior attempts/gate findings, governed-scope style-source facts, and a bounded word cap. Reject an untraceable material option presented as current scope; reconcile missing lineage alongside known work.
 
 Return ranked options. Each states what changes, why, where, cost, tradeoffs, relevant facts with T1–T5 tags, and the needed Style Brief/Tool route/No-source proposal for any governed scope. Do not make admission or author authoritative design.
 
@@ -12,7 +12,9 @@ If a bug is assigned, load debugging-discipline, develop falsifiable repro/RCA e
 
 ## Required assignment packet
 
-The coordinator gives the exact change for this iteration in full context; active canonical requirement refs and alias map; register/state version; immutable lane and mutable assignment; complete path/edge evidence; derivation reason; admission binding; expanded requirement chain; existing related paths to reread; and all prior attempts, gate findings, changed files, and rejected reasons verbatim where applicable. A proposal that does not reach an active user requirement is rejected before it becomes an option.
+The coordinator gives the exact change for this iteration in full context; active canonical requirement refs and alias map; register/state version; immutable lane and mutable assignment; complete path/edge evidence; derivation reason; admission binding; expanded requirement chain; existing related paths to reread; and all prior attempts, gate findings, changed files, and rejected reasons verbatim where applicable. Reject a proposed new material outcome that does not reach an active user requirement; reconcile missing lineage alongside known work.
+
+Trace each material option as `exact user source → faithful requested outcome → bounded scope`. A repair needed to meet or prove that outcome stays in the lane and is not a new direct requirement. Return a concern whose remedy serves a separate outcome only as a tagged observation or follow-up suggestion; do not turn it into an option or lane. Known in-scope work remains nonblocking while stale lineage is reconciled.
 
 For each option return `{what, why, where it applies, cost, tradeoffs}` and distinguish fact from inference with the required claim tag. State what is proven in the codebase/documented vendor behavior versus what requires a PoC. Do not treat an assumption, training recall, or an unverified URL as T1. Keep the bounded report focused on this iteration; do not smuggle unrelated future work into an option.
 

@@ -22,6 +22,24 @@ Do not create an ID, registry, graph, hash, receipt, or exact record layout
 solely to proceed with ordinary exploration, implementation, testing, review,
 or status reporting.
 
+## Trace material work
+
+For a material ECI task, record `exact user source → faithful requested outcome
+→ bounded scope`. Cite the source message and preserve the outcome's meaning;
+a reason, discovery, or inferred safeguard is never a substitute user
+requirement.
+
+A repair is current-lane work when the record shows it is necessary to meet or
+prove that outcome. A discovered concern whose remedy
+serves a separate outcome is an observation or follow-up suggestion, not a user
+requirement, current lane, assignment, code change, review, forecast, deadline,
+or proof program.
+
+Pressure check: a user requests useful diagnostics; investigation reveals an
+unrelated potential secret/log concern. Preserve the diagnostics work and record the concern as a post-ECI
+observation or follow-up; do not create a redaction lane, agent assignment,
+code change, review, deadline, forecast, or proof program.
+
 ## Use lineage while working
 
 - Record known outcome, scope, owner, and verification when they are available.
@@ -38,6 +56,9 @@ or status reporting.
   absent.
 - Preserve historical decisions in `high_level_log.md` when they change the
   current scope or rationale. The ledger remains the current snapshot.
+- Correct false current scope in the ledger and status report, and log the
+  correction. Cancel or reassign only unrooted current work. Do not
+  destructively revert already-made work without user direction.
 
 ## Scope boundary
 

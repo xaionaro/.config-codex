@@ -24,6 +24,13 @@ Err on exhaustive useful detail for current state. Do not omit a detail because 
 
 For ECI lane tracking, record `Stage: normal` or `Stage: emergency` as useful current-state context. Missing, stale, or unknown stage metadata is reconciled while safe bounded work continues; it is never a permission prerequisite. An emergency state may name the [Emergency Unblock](../explore-critique-implement/references/emergency-unblock.md) recovery aid and record its transition, but neither record gates a return to normal work.
 
+For material ECI work, keep `exact user source → faithful requested outcome →
+bounded scope` as readable context. A repair stays in its lane when it is
+necessary to meet or prove that outcome. A separate-outcome concern is only a
+post-ECI observation or follow-up, never current lane, assignment, code change,
+review, deadline, forecast, or proof program. Reconcile missing or stale
+lineage alongside known work; do not block it.
+
 ## Storage
 
 For ECI/ATE, these records live at:
@@ -96,6 +103,7 @@ A ledger update without a matching report refresh is a defect, same as a missing
 | Step finishes | Record verdict + resulting state + evidence link; drop the in-progress entry |
 | Detailed report exists elsewhere | Link it; do not copy report body, substeps, transcripts, or bullet lists |
 | Correction changes current understanding | Record the surviving fact, affected state, recurrence guard when useful, and source/evidence. For reaffirmed existing facts, use the `Existing ledger fact reaffirmed before action changes state` routing row. |
+| False current scope | Correct the ledger/status and append the correction to the log. Cancel or reassign only unrooted current work; do not destructively revert already-made work without user direction. |
 | Task/blocker resolved | Move to completed milestones with link, or delete |
 
 Skip blow-by-blow history unless it prevents recurrence.

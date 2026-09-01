@@ -769,7 +769,7 @@ assert_status_lane_stage_contract() {
   require_text "$STATUS_REPORT" 'Missing, stale, or unknown stage metadata is reported and reconciled'
   require_text "$STATUS_REPORT" 'without pausing harmless work.'
   require_text "$STATUS_REPORT" 'lineage unavailable—reconcile'
-  require_text "$STATUS_REPORT" 'Use readable requirement context when it is available in active ECI/ATE.'
+  require_text "$STATUS_REPORT" 'In material ECI status, show `exact user source → faithful requested outcome → bounded scope` in readable form.'
   require_text "$STATUS_REPORT" 'Never delay a report to construct aliases, hashes, receipts, or verbatim'
   require_text "$STATUS_REPORT" 'registries.'
   forbid_text "$STATUS_REPORT" 'Unresolved or empty refs fail the report.'
@@ -880,7 +880,7 @@ assert_forecast_source_contract() {
 assert_coordinator_progress_forecast_contract() {
   local source="$1" input="$2" section attached_lane_template attached_root_template
 
-  attached_lane_template='Every[[:space:]]+material[[:space:]]+coordinator-to-user[[:space:]]+status/progress[[:space:]]+update[[:space:]]+has[[:space:]]+exactly[[:space:]]+one[[:space:]]+`Forecast[[:space:]]+targets`[[:space:]]+block\.[[:space:]]+Place[[:space:]]+it[[:space:]]+after[[:space:]]+changed[[:space:]]+state[[:space:]]+and[[:space:]]+before[[:space:]]+Verification/Next[[:space:]]+focus\.[[:space:]]+[-*][[:space:]]+For[[:space:]]+each[[:space:]]+executing[[:space:]]+lane,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:space:]]+[-*][[:space:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+  attached_lane_template='Every[[:space:]]+material[[:space:]]+coordinator-to-user[[:space:]]+status/progress[[:space:]]+update[[:space:]]+for[[:space:]]+a[[:space:]]+user-rooted[[:space:]]+outcome[[:space:]]+has[[:space:]]+exactly[[:space:]]+one[[:space:]]+`Forecast[[:space:]]+targets`[[:space:]]+block\.[[:space:]]+Place[[:space:]]+it[[:space:]]+after[[:space:]]+changed[[:space:]]+state[[:space:]]+and[[:space:]]+before[[:space:]]+Verification/Next[[:space:]]+focus\.[[:space:]]+[-*][[:space:]]+For[[:space:]]+each[[:space:]]+executing[[:space:]]+lane,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:space:]]+[-*][[:space:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
   attached_root_template='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+include[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:space:]]+[-*][[:space:]]*`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
 
   section="$(extract_h2_section <(printf '%s\n' "$input") '## Engage and route')" ||
@@ -977,9 +977,9 @@ assert_coordinator_progress_forecast_contract_fixtures() {
   local source source_pair soft_wrapped_pair detached_pair history_rehomed soft_wrapped
 
   source="$(<"$COORDINATOR")"
-  source_pair=$'- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`'
-  soft_wrapped_pair=$'- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - `Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
-  detached_pair=$'- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - See the historical appendix.\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - See the historical appendix.'
+  source_pair=$'- Every material coordinator-to-user status/progress update for a user-rooted outcome has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`'
+  soft_wrapped_pair=$'- Every material coordinator-to-user status/progress update for a user-rooted outcome has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - `Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
+  detached_pair=$'- Every material coordinator-to-user status/progress update for a user-rooted outcome has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - See the historical appendix.\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - See the historical appendix.'
   soft_wrapped="${source/"$source_pair"/"$soft_wrapped_pair"}"
   [ "$soft_wrapped" != "$source" ] || fail 'coordinator soft-wrap fixture did not replace the attached lane template'
   assert_coordinator_progress_forecast_contract 'soft-wrapped coordinator lane binding fixture' "$soft_wrapped"
@@ -1052,7 +1052,7 @@ assert_forecast_target_history_ledger_contract() {
 assert_forecast_target_history_coordinator_contract() {
   local source="$1" input="$2" preamble
 
-  preamble='- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.'
+  preamble='- Every material coordinator-to-user status/progress update for a user-rooted outcome has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.'
   require_forecast_target_history_text "$source" 'ledger audit-contract pointer' \
     'Use the [`forecast-target-history.tsv` audit contract](../../maintaining-context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.' "$input"
   require_forecast_target_history_text "$source" 'material target-block preamble' "$preamble" "$input"
@@ -1062,7 +1062,9 @@ assert_forecast_target_history_coordinator_contract() {
   require_forecast_target_history_text "$source" 'non-material output omission' \
     '- Preparatory, pure explanatory, and pure timeline output omit the block. If it materially changes state, use the one material-update block.' "$input"
   require_forecast_target_history_text "$source" 'requested-outcome repair stays in lane' \
-    '- Keep a finding that repairs or proves the requested outcome in its current lane. Use a follow-up only when the remedy creates a separate outcome.' "$input"
+    '- A repair needed to meet or prove that outcome stays in its current lane; a' "$input"
+  require_forecast_target_history_text "$source" 'separate outcome remains post-ECI' \
+    'separate-outcome concern is only a post-ECI observation or follow-up, never' "$input"
 }
 
 assert_forecast_target_history_mutation_is_rejected() {
@@ -1086,7 +1088,7 @@ assert_forecast_target_history_contract_mutations() {
   ledger="$(<"$LEDGER")"
   coordinator="$(<"$COORDINATOR")"
   header=$'added_utc\troot_task_id\tnew_target_utc'
-  preamble='- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.'
+  preamble='- Every material coordinator-to-user status/progress update for a user-rooted outcome has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.'
 
   mutation="${ledger/"$header"/$'added_utc\troot_task_id\ttarget_utc'}"
   [ "$mutation" != "$ledger" ] || fail 'forecast target-history schema mutation did not alter its fixture'
@@ -1108,7 +1110,7 @@ assert_forecast_target_history_contract_mutations() {
   [ "$mutation" != "$coordinator" ] || fail 'forecast target-block placement mutation did not alter its fixture'
   assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_coordinator_contract "$COORDINATOR" 'reporting placement' "$mutation"
 
-  mutation="${coordinator/'- Keep a finding that repairs or proves the requested outcome in its current lane. Use a follow-up only when the remedy creates a separate outcome.'/'- Route every finding to a follow-up.'}"
+  mutation="${coordinator/'post-ECI observation or follow-up'/'current lane work'}"
   [ "$mutation" != "$coordinator" ] || fail 'forecast target-block scope mutation did not alter its fixture'
   assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_coordinator_contract "$COORDINATOR" 'requested-outcome repair stays in lane' "$mutation"
 
@@ -1130,12 +1132,12 @@ assert_lane_forecast_contract() {
   lane_workstream_pattern='lane[[:space:]]+is[[:space:]]+an[[:space:]]+independently[[:space:]]+advancing[[:space:]]+workstream'
   serial_lane_pattern='Serial[[:space:]]+implement→review→repair→review→implement.*one[[:space:]]+lane.*critical[[:space:]]+path'
   distinct_lane_pattern='distinct[[:space:]]+lanes.*only.*independently[[:space:]]+advancing.*(ownership|synchronization)'
-  root_omission_pattern='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+(state|record|include)'
+  root_omission_pattern='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+(its[[:space:]]+)?lane[[:space:]]+reports.*(state|record|include)'
   outcome_pattern='forecast[[:space:]]+line.*finished[[:space:]]+outcome'
   actor_stage_pattern='(never[[:space:]]+names|does[[:space:]]+not[[:space:]]+name).*(critic|reviewer|actor|stage)'
   root_full_pattern='Root[[:space:]]+completion.*full[[:space:]]+root[[:space:]]+completion'
   root_nonadditive_pattern='Root[[:space:]]+completion.*not.*child[[:space:]]+sum.*stage'
-  changed_forecast_pattern='changed.*forecast.*restate.*current.*canonical[[:space:]]+line.*same[[:space:]]+update'
+  changed_forecast_pattern='changed.*forecast.*restate.*current.*canonical[[:space:]]+line'
   recalibration_template_pattern='Forecast[[:space:]]+recalibration:[[:space:]]+<prior[[:space:]]+UTC[[:space:]]+ISO8601>[[:space:]]+→[[:space:]]+<current[[:space:]]+UTC[[:space:]]+ISO8601>;[[:space:]]+why[[:space:]]+moved:[[:space:]]+<why>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
   initial_template_pattern='Forecast[[:space:]]+recalibration:[[:space:]]+unchanged[[:space:]]+—[[:space:]]+baseline[[:space:]]+<UTC[[:space:]]+ISO8601>;[[:space:]]+supporting[[:space:]]+evidence:[[:space:]]+<evidence>\.'
   missing_stale_pattern='(forecast.*(missing|stale)|(missing|stale).*forecast).*reconcile.*safe[[:space:]]+work.*without[[:space:]]+delaying.*update'
@@ -1211,11 +1213,11 @@ assert_lane_forecast_contract() {
 
   require_line "$LEDGER" '### Lane forecasts'
   require_pattern "$STATUS_REPORT" 'review, deploy, and proof remain within a lane' 'Review,[[:space:]]+deploy,[[:space:]]+and[[:space:]]+proof[[:space:]]+are[[:space:]]+current[[:space:]]+work[[:space:]]+within[[:space:]]+a[[:space:]]+lane,[[:space:]]+not[[:space:]]+automatically[[:space:]]+separate[[:space:]]+lanes\.'
-  require_pattern "$STATUS_REPORT" 'status requirement covers unrepresented active roots' 'For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
-  require_pattern "$STATUS_REPORT" 'status checklist covers unrepresented active roots' 'Root[[:space:]]+coverage[[:space:]]*\|[[:space:]]+Each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
+  require_pattern "$STATUS_REPORT" 'status requirement covers unrepresented active roots' 'For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+(its[[:space:]]+)?lane[[:space:]]+reports'
+  require_pattern "$STATUS_REPORT" 'status checklist covers unrepresented active roots' 'Root[[:space:]]+coverage[[:space:]]*\|[[:space:]]+In[[:space:]]+a[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update,[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
   require_pattern "$LEDGER" 'Progress source and status projection' 'Progress[[:space:]]+is[[:space:]]+the[[:space:]]+source[[:space:]]+of[[:space:]]+truth;[[:space:]]+`latest-status-report\.md`[[:space:]]+projects[[:space:]]+these[[:space:]]+fields[[:space:]]+using[[:space:]]+`writing-status-reports`\.'
   require_pattern "$LEDGER" 'invalid-ledger rule covers unrepresented active roots' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
-  require_pattern "$STATUS_REPORT" 'status forecast checklist' 'Lane[[:space:]]+forecasts[[:space:]]*\|[[:space:]]+Every[[:space:]]+active[[:space:]]+lane[[:space:]]+names[[:space:]]+a[[:space:]]+milestone,[[:space:]]+named-outcome[[:space:]]+forecast'
+  require_pattern "$STATUS_REPORT" 'status forecast checklist' 'Lane[[:space:]]+forecasts[[:space:]]*\|[[:space:]]+A[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update[[:space:]]+names[[:space:]]+each[[:space:]]+active[[:space:]]+lane.?s[[:space:]]+milestone[[:space:]]+and[[:space:]]+one[[:space:]]+named-outcome[[:space:]]+forecast'
   require_pattern "$LEDGER" 'invalid ledger detects missing active-lane forecasts' 'active[[:space:]]+lane[[:space:]]+lacks.*Lane[[:space:]]+forecasts'
   require_pattern "$LEDGER" 'invalid ledger detects missing active-root forecasts' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome.*lacks.*Root[[:space:]]+completion[[:space:]]+forecast'
   require_pattern "$LEDGER" 'invalid ledger detects stale changed forecasts' 'changed[[:space:]]+lane/root.*current[[:space:]]+canonical[[:space:]]+line.*recalibration'
@@ -1236,6 +1238,187 @@ assert_lineage_context_contract() {
   forbid_text "$LINEAGE" 'any missing/stale pair/hash fails closed.'
   forbid_pattern "$LINEAGE" 'lineage.*(must|shall|needs? to).*(resolve|validate|admit).*(work|status|report|assignment)'
   forbid_pattern "$LINEAGE" '(hash|receipt|registry).*(must|shall|needs? to).*(work|status|report|assignment)'
+}
+
+# Static source contract only: these fixed clauses exercise scope pressure without
+# parsing runtime messages or making lineage an admission mechanism.
+require_scope_fidelity_text() {
+  local source="$1" description="$2" expected="$3" input="$4"
+
+  [[ "$input" == *"$expected"* ]] ||
+    fail "$source is missing scope fidelity contract: $description"
+}
+
+assert_scope_fidelity_ledger_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'readable source-outcome-scope chain' \
+    'For material ECI work, keep `exact user source → faithful requested outcome' "$input"
+  require_scope_fidelity_text "$source" 'bounded scope in source-outcome chain' \
+    'bounded scope` as readable context.' "$input"
+  require_scope_fidelity_text "$source" 'necessary repair remains current-lane work' \
+    'A repair stays in its lane when it is' "$input"
+  require_scope_fidelity_text "$source" 'necessary repair proves the requested outcome' \
+    'necessary to meet or prove that outcome.' "$input"
+  require_scope_fidelity_text "$source" 'separate outcome is post-ECI only' \
+    'post-ECI observation or follow-up, never current lane, assignment,' "$input"
+  require_scope_fidelity_text "$source" 'separate outcome cannot create work or forecasts' \
+    'code change,' "$input"
+  require_scope_fidelity_text "$source" 'separate outcome cannot create review, deadline, forecast, or proof' \
+    'review, deadline, forecast, or proof program.' "$input"
+  require_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
+    'Reconcile missing or stale' "$input"
+  require_scope_fidelity_text "$source" 'stale lineage continues known work' \
+    'lineage alongside known work; do not block it.' "$input"
+}
+
+assert_scope_fidelity_coordinator_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'material source-outcome-scope chain' \
+    '- For material ECI work, retain `exact user source → faithful requested outcome → bounded scope`.' "$input"
+  require_scope_fidelity_text "$source" 'necessary repair stays current lane' \
+    'A repair needed to meet or prove that outcome stays in its current lane;' "$input"
+  require_scope_fidelity_text "$source" 'separate outcome remains post-ECI' \
+    'separate-outcome concern is only a post-ECI observation or follow-up, never' "$input"
+  require_scope_fidelity_text "$source" 'separate outcome cannot create current work or forecasts' \
+    'current work or a forecast.' "$input"
+  require_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
+    'Reconcile missing or stale lineage alongside known work; it does not block progress.' "$input"
+  require_scope_fidelity_text "$source" 'false current scope correction avoids destructive reversion' \
+    'Cancel or reassign only unrooted current work; do not destructively revert already-made work without user direction.' "$input"
+}
+
+assert_scope_fidelity_lineage_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'exact source-outcome-scope chain' \
+    'For a material ECI task, record `exact user source → faithful requested outcome' "$input"
+  require_scope_fidelity_text "$source" 'no inferred direct requirement' \
+    'a reason, discovery, or inferred safeguard is never a substitute user' "$input"
+  require_scope_fidelity_text "$source" 'separate concern cannot activate work' \
+    'requirement, current lane, assignment, code change, review, forecast, deadline,' "$input"
+  require_scope_fidelity_text "$source" 'separate concern cannot create proof' \
+    'or proof program.' "$input"
+  require_scope_fidelity_text "$source" 'known work remains nonblocking' \
+    'does not stop bounded work, status reporting, or a safe assignment.' "$input"
+  require_scope_fidelity_text "$source" 'false scope correction preserves completed work' \
+    'Cancel or reassign only unrooted current work. Do not' "$input"
+  require_scope_fidelity_text "$source" 'diagnostics pressure fixture' \
+    'Pressure check: a user requests useful diagnostics; investigation reveals an' "$input"
+  require_scope_fidelity_text "$source" 'diagnostics pressure fixture names secret/log concern' \
+    'unrelated potential secret/log concern.' "$input"
+  require_scope_fidelity_text "$source" 'secret/log discovery stays an observation' \
+    'observation or follow-up; do not create a redaction lane, agent assignment,' "$input"
+  require_scope_fidelity_text "$source" 'secret/log discovery cannot activate code or review' \
+    'code change, review, deadline, forecast, or proof program.' "$input"
+}
+
+assert_scope_fidelity_critic_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'Critic B checks scope fidelity and least restriction' \
+    'Check scope fidelity and least restriction against `exact user source → faithful requested outcome → bounded scope`.' "$input"
+  require_scope_fidelity_text "$source" 'Critic B distinguishes needed repair from invented outcome' \
+    'Distinguish a repair needed to meet or prove that outcome from an invented separate outcome;' "$input"
+}
+
+assert_scope_fidelity_status_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'material status shows faithful source-outcome-scope lineage' \
+    'In material ECI status, show `exact user source → faithful requested outcome → bounded scope` in readable form.' "$input"
+  require_scope_fidelity_text "$source" 'workflow activity is overhead' \
+    'Workflow activity is overhead, not progress.' "$input"
+  require_scope_fidelity_text "$source" 'forecasts only accompany material changed state' \
+    'Only a material changed-state ECI update emits forecast lines. In one such response, emit each canonical forecast once.' "$input"
+  require_scope_fidelity_text "$source" 'preparation and timeline omit forecasts' \
+    'Preparation-only commentary, pure explanation, roster/wait, and timeline output omit forecast lines unless they also report a material change.' "$input"
+}
+
+assert_scope_fidelity_policy_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'broad defect labels are subordinate to user outcome' \
+    'A remedy is `now` only when it is necessary to meet or prove the original user outcome;' "$input"
+  require_scope_fidelity_text "$source" 'labels do not independently create current work' \
+    'do not independently make it current work.' "$input"
+}
+
+assert_scope_fidelity_critique_contract() {
+  local source="$1" input="$2"
+
+  require_scope_fidelity_text "$source" 'Step 2 rejects separate outcome presented as current scope' \
+    'REJECT a discovered concern whose remedy serves a separate outcome when presented as current scope,' "$input"
+  require_scope_fidelity_text "$source" 'stale lineage is not a rejection gate' \
+    'Stale lineage does not reject known in-scope work.' "$input"
+}
+
+assert_scope_fidelity_pressure_fixtures() {
+  assert_scope_fidelity_ledger_contract "$LEDGER" "$(<"$LEDGER")"
+  assert_scope_fidelity_coordinator_contract "$COORDINATOR" "$(<"$COORDINATOR")"
+  assert_scope_fidelity_lineage_contract "$LINEAGE" "$(<"$LINEAGE")"
+  assert_scope_fidelity_critic_contract "$REVIEW" "$(<"$REVIEW")"
+  assert_scope_fidelity_status_contract "$STATUS_REPORT" "$(<"$STATUS_REPORT")"
+  assert_scope_fidelity_policy_contract "$REVIEW_POLICY" "$(<"$REVIEW_POLICY")"
+  assert_scope_fidelity_critique_contract "$ECI_CRITIQUE" "$(<"$ECI_CRITIQUE")"
+}
+
+assert_scope_fidelity_mutation_is_rejected() {
+  local checker="$1" source="$2" description="$3" input="$4" output
+
+  if output="$("$checker" "$source" "$input" 2>&1)"; then
+    fail "scope fidelity mutation was admitted: $source: $description"
+  fi
+  grep -Fq -- 'scope fidelity contract' <<<"$output" ||
+    fail "scope fidelity mutation was rejected for an unexpected reason: $source: $description"
+}
+
+assert_scope_fidelity_pressure_mutations_are_rejected() {
+  local ledger coordinator lineage review status policy mutation
+
+  ledger="$(<"$LEDGER")"
+  coordinator="$(<"$COORDINATOR")"
+  lineage="$(<"$LINEAGE")"
+  review="$(<"$REVIEW")"
+  status="$(<"$STATUS_REPORT")"
+  policy="$(<"$REVIEW_POLICY")"
+
+  mutation="${ledger/'necessary to meet or prove that outcome.'/'merely convenient.'}"
+  [ "$mutation" != "$ledger" ] || fail 'needed-repair mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_ledger_contract "$LEDGER" 'needed repair becomes unrelated work' "$mutation"
+
+  mutation="${coordinator/'post-ECI observation or follow-up'/'current lane assignment'}"
+  [ "$mutation" != "$coordinator" ] || fail 'separate-outcome coordinator mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_coordinator_contract "$COORDINATOR" 'separate outcome becomes current work' "$mutation"
+
+  mutation="${lineage/'a reason, discovery, or inferred safeguard is never a substitute user'/'a reason, discovery, or inferred safeguard is a substitute user'}"
+  [ "$mutation" != "$lineage" ] || fail 'false-direct-requirement mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_lineage_contract "$LINEAGE" 'discovery becomes direct user requirement' "$mutation"
+
+  mutation="${lineage/'does not stop bounded work, status reporting, or a safe assignment.'/'stops bounded work until lineage is repaired.'}"
+  [ "$mutation" != "$lineage" ] || fail 'stale-lineage mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_lineage_contract "$LINEAGE" 'stale lineage blocks known work' "$mutation"
+
+  mutation="${lineage/'do not create a redaction lane, agent assignment,'/'create a redaction lane and agent assignment,'}"
+  [ "$mutation" != "$lineage" ] || fail 'secret/log pressure mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_lineage_contract "$LINEAGE" 'secret/log discovery creates lane or agent work' "$mutation"
+
+  mutation="${review/'Check scope fidelity and least restriction'/'Check only style preference'}"
+  [ "$mutation" != "$review" ] || fail 'Critic B scope mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_critic_contract "$REVIEW" 'Critic B omits scope fidelity' "$mutation"
+
+  mutation="${status/'Workflow activity is overhead, not progress.'/'Workflow activity is progress.'}"
+  [ "$mutation" != "$status" ] || fail 'overhead mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_status_contract "$STATUS_REPORT" 'workflow activity becomes progress' "$mutation"
+
+  mutation="${status/'Preparation-only commentary, pure explanation, roster/wait, and timeline output omit forecast lines unless they also report a material change.'/'Preparation-only commentary, pure explanation, roster/wait, and timeline output emit forecast lines.'}"
+  [ "$mutation" != "$status" ] || fail 'forecast placement mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_status_contract "$STATUS_REPORT" 'preparation duplicates forecast' "$mutation"
+
+  mutation="${policy/'A remedy is `now` only when it is necessary to meet or prove the original user outcome;'/'Any security concern is `now` work.'}"
+  [ "$mutation" != "$policy" ] || fail 'broad-label mutation did not alter its fixture'
+  assert_scope_fidelity_mutation_is_rejected assert_scope_fidelity_policy_contract "$REVIEW_POLICY" 'broad label independently creates work' "$mutation"
 }
 
 assert_pause_resume_closure_contract() {
@@ -1371,6 +1554,8 @@ assert_forecast_target_history_contract
 assert_forecast_target_history_contract_mutations
 assert_forecast_source_contract_fixtures
 assert_coordinator_progress_forecast_contract_fixtures
+assert_scope_fidelity_pressure_fixtures
+assert_scope_fidelity_pressure_mutations_are_rejected
 assert_lane_forecast_contract
 assert_source_forecast_mutations_are_rejected
 assert_lineage_context_contract

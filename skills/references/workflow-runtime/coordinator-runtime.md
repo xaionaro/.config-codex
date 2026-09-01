@@ -5,7 +5,9 @@ Coordinator/lead only. Ordinary workers load only the local module named in thei
 ## Admission and agent lifecycle
 
 - Start an outer workflow only when CODEX selects it. A nested ECI remains owned by outer ATE.
-- Before a durable spawn, followup, lane-changing message, or write, identify task, scope, owner, and enough target detail to avoid an accidental cross-scope change. Use [requirement lineage](../requirement-lineage.md) when it helps explain the handoff. Missing lineage or a stale label calls for a concise clarification, reassignment, or queue; it does not block harmless work.
+- Before a durable spawn, followup, lane-changing message, or write, identify task, scope, owner, and enough target detail to avoid an accidental cross-scope change. For material ECI work, carry `exact user source → faithful requested outcome → bounded scope`. Missing lineage or a stale label calls for a concise clarification or reassignment; it does not block harmless work.
+- Keep a repair in its current lane when the record shows it is necessary to meet or prove the requested outcome. Do not relabel that repair as a substitute user requirement.
+- Record a discovered concern whose remedy serves a separate outcome as an observation or follow-up suggestion after current ECI. It does not create current lane, assignment, code change, review, deadline, forecast, or proof work.
 - Keep prompts and handoffs as readable coordination records. They may support review, but no proof-directory artifact, hash, receipt, ledger prefix, or serialized field list is a prerequisite for normal spawn, followup, exploration, implementation, or verification.
 - `spawn_agent` creates a role; `followup_task` starts a new turn only for an idle reusable role; `send_message` supplies bounded information to a running turn; `interrupt_agent` cancels exact active work only. Never shell-launch agents or close terminal agents.
 - Name reusable ordinary producers by stable semantic role. Every blind critic and every special role uses a fresh `spawn_agent({fork_turns:"none"})` with a unique transport name. A `followup_task` never upgrades an ordinary role to special.
@@ -61,7 +63,10 @@ After ECI `off`, record a concise teardown summary and the actual current reposi
 
 ## Shared records
 
-Use the shared scope-creep-debt record: `loop-id`, `decision-id`, checked original objective/criteria and required quality evidence, added outcome/problem/interface/criterion, source, `owner`, `primary-owner: none`, `primary-capacity: none`, `tracker-ref`, `bounded-risk`, `revisit-trigger`, `replay-trigger`, and `replay-state: queued|pending|replayed|closed`. It never waives an original criterion.
+Use readable current-state records for current requested work. A concern whose
+remedy serves a separate outcome is only a post-ECI observation or follow-up
+suggestion, never a current queue or replay record. It never waives an original
+criterion.
 
 ## Routing packet guidance
 
