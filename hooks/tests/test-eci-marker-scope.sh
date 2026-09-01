@@ -59,19 +59,18 @@ printf '%s\n' \
   "cwd: $ROOT" \
   'session_id: wrong-owner' \
   >"$proof_root/$current_session/eci_active"
+malformed_current_marker="$proof_root/$current_session/eci_active"
+cp -- "$malformed_current_marker" "$TMP_ROOT/malformed-current-marker.before"
+
+# Malformed marker metadata is advisory for ordinary commands and ordinary
+# repository edits. It remains available for refresh/recovery, but does not
+# create a permission ceremony without a concrete wrong target.
 output="$(run_validate "$proof_root" "$current_session" "$ROOT" 'git status')"
-jq -e --arg marker "$proof_root/$current_session/eci_active" '
-  .hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("ECI_MARKER_OWNERSHIP_INVALID")) and
-  (.hookSpecificOutput.permissionDecisionReason | contains($marker)) and
-  (.hookSpecificOutput.permissionDecisionReason | contains("scope: malformed-current") | not)
-' <<<"$output" >/dev/null
+[ -z "$output" ]
+cmp -s "$TMP_ROOT/malformed-current-marker.before" "$malformed_current_marker"
 output="$(run_edit_gate "$proof_root" "$current_session" "$ROOT" "$ROOT/hooks/stop-gate.sh")"
-jq -e '
-  .hookSpecificOutput.permissionDecision == "deny" and
-  (.hookSpecificOutput.permissionDecisionReason | contains("ECI_MARKER_OWNERSHIP_INVALID")) and
-  (.hookSpecificOutput.permissionDecisionReason | contains("scope: malformed-current") | not)
-' <<<"$output" >/dev/null
+[ -z "$output" ]
+cmp -s "$TMP_ROOT/malformed-current-marker.before" "$malformed_current_marker"
 
 # A valid current marker remains the diagnostic owner when a bounded scan also
 # encounters an unrelated malformed marker and a fully valid different-cwd
@@ -281,6 +280,7 @@ duplicate_result="$TMP_ROOT/duplicate-marker-result"
   sed -n '/^stop_marker_cache_load() {/,/^}/p' "$ROOT/hooks/stop-gate.sh"
   sed -n '/^stop_marker_candidate_matches_current() {/,/^}/p' "$ROOT/hooks/stop-gate.sh"
   sed -n '/^stop_direct_marker_is_valid_fast() {/,/^}/p' "$ROOT/hooks/stop-gate.sh"
+  sed -n '/^stop_note_direct_marker_siblings() {/,/^}/p' "$ROOT/hooks/stop-gate.sh"
   sed -n '/^stop_emit_selected_marker() {/,/^}/p' "$ROOT/hooks/stop-gate.sh"
   sed -n '/^active_eci_marker_for_stop() {/,/^}/p' "$ROOT/hooks/stop-gate.sh"
   cat <<EOF
@@ -305,7 +305,7 @@ printf 'status=%s cache_status=%s cache_count=%s\\n' \$marker_status \$stop_mark
 EOF
 } >"$duplicate_harness"
 bash "$duplicate_harness" >"$TMP_ROOT/duplicate-marker-summary"
-grep -Fx 'status=0 cache_status=0 cache_count=2' "$TMP_ROOT/duplicate-marker-summary" >/dev/null || {
+grep -Fx 'status=0 cache_status=0 cache_count=0' "$TMP_ROOT/duplicate-marker-summary" >/dev/null || {
   cat "$TMP_ROOT/duplicate-marker-summary" >&2
   exit 1
 }
@@ -385,9 +385,8 @@ cmp -s "$TMP_ROOT/duplicate-loop-state.after-first" "$duplicate_loop_state"
 cmp -s "$TMP_ROOT/duplicate-current-marker.before" "$proof_root/$duplicate_current/eci_active"
 cmp -s "$TMP_ROOT/duplicate-peer-marker.before" "$proof_root/$duplicate_peer/eci_active"
 
-# A nonempty syntactically invalid callback session has no safe loop-state
-# owner. Even three identical callbacks must remain blocked and must not
-# create a session directory merely because no path can equal the invalid ID.
+# A malformed callback session has no safe loop-state owner. It continues
+# without creating a session directory or mutating a foreign marker.
 proof_root="$TMP_ROOT/proof-stop-invalid-session"
 foreign_session=foreign-session
 mkdir -p "$proof_root/$foreign_session"
@@ -410,24 +409,15 @@ for output in "$invalid_session_first_output" "$invalid_session_second_output" "
   CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
     bash "$ROOT/hooks/stop-gate.sh" <"$invalid_session_input" >"$output"
 done
-jq -e --arg marker "$foreign_marker" --arg foreign_session "$foreign_session" '
-  .decision == "block" and
-  (keys | sort) == ["decision", "reason"] and
-  (.reason | contains("ECI_STOP_IDENTITY_MALFORMED")) and
-  (.reason | contains("ECI_STOP_LOOP_CONTRACT_DEFECT") | not) and
-  (.reason | contains("ECI_MARKER_SCOPE_MISMATCH") | not) and
-  (.reason | contains($marker) | not) and
-  (.reason | contains($foreign_session) | not)
-' "$invalid_session_first_output" >/dev/null
+jq -e '.continue == true and (keys | sort) == ["continue"]' "$invalid_session_first_output" >/dev/null
 cmp -s "$invalid_session_first_output" "$invalid_session_second_output"
 cmp -s "$invalid_session_first_output" "$invalid_session_third_output"
 cmp -s "$TMP_ROOT/stop-invalid-session-foreign-marker.before" "$foreign_marker"
 [ ! -e "$proof_root/invalid!/stop_loop_state" ] && [ ! -L "$proof_root/invalid!/stop_loop_state" ]
 [ ! -e "$proof_root/$foreign_session/stop_loop_state" ] && [ ! -L "$proof_root/$foreign_session/stop_loop_state" ]
 
-# An empty callback session has no owner to select.  With a healthy bounded
-# scan, it must fail statelessly as a malformed identity without disclosing or
-# mutating the foreign owner.
+# An empty callback session has no owner to select. It continues without
+# disclosing or mutating the foreign owner.
 proof_root="$TMP_ROOT/proof-stop-empty-session"
 mkdir -p "$proof_root/$foreign_session"
 printf '%s\n' \
@@ -449,25 +439,15 @@ for output in "$empty_session_first_output" "$empty_session_second_output" "$emp
   CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
     bash "$ROOT/hooks/stop-gate.sh" <"$empty_session_input" >"$output"
 done
-jq -e --arg marker "$empty_session_foreign_marker" --arg foreign_session "$foreign_session" '
-  .decision == "block" and
-  (keys | sort) == ["decision", "reason"] and
-  (.reason | contains("ECI_STOP_IDENTITY_MALFORMED")) and
-  (.reason | contains("ECI_STOP_MARKER_SCAN_UNSAFE") | not) and
-  (.reason | contains("ECI_MARKER_SCOPE_MISMATCH") | not) and
-  (.reason | contains("ECI_STOP_LOOP_CONTRACT_DEFECT") | not) and
-  (.reason | contains($marker) | not) and
-  (.reason | contains($foreign_session) | not)
-' "$empty_session_first_output" >/dev/null
+jq -e '.continue == true and (keys | sort) == ["continue"]' "$empty_session_first_output" >/dev/null
 cmp -s "$empty_session_first_output" "$empty_session_second_output"
 cmp -s "$empty_session_first_output" "$empty_session_third_output"
 cmp -s "$TMP_ROOT/stop-empty-session-foreign-marker.before" "$empty_session_foreign_marker"
 [ ! -e "$proof_root/stop_loop_state" ] && [ ! -L "$proof_root/stop_loop_state" ]
 [ ! -e "$proof_root/$foreign_session/stop_loop_state" ] && [ ! -L "$proof_root/$foreign_session/stop_loop_state" ]
 
-# A valid session with a malformed cwd field is still not a license to select
-# a foreign marker.  With a healthy bounded scan, the malformed identity must
-# be a stateless identity block without foreign ownership disclosure.
+# A malformed cwd field is not a license to select a foreign marker. It
+# continues without foreign ownership disclosure or loop-state mutation.
 proof_root="$TMP_ROOT/proof-stop-malformed-cwd"
 mkdir -p "$proof_root/$foreign_session"
 printf '%s\n' \
@@ -489,26 +469,17 @@ for output in "$malformed_cwd_first_output" "$malformed_cwd_second_output" "$mal
   CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
     bash "$ROOT/hooks/stop-gate.sh" <"$malformed_cwd_input" >"$output"
 done
-jq -e --arg marker "$malformed_cwd_foreign_marker" --arg foreign_session "$foreign_session" '
-  .decision == "block" and
-  (keys | sort) == ["decision", "reason"] and
-  (.reason | contains("ECI_STOP_IDENTITY_MALFORMED")) and
-  (.reason | contains("ECI_STOP_MARKER_SCAN_UNSAFE") | not) and
-  (.reason | contains("ECI_MARKER_SCOPE_MISMATCH") | not) and
-  (.reason | contains("ECI_STOP_LOOP_CONTRACT_DEFECT") | not) and
-  (.reason | contains($marker) | not) and
-  (.reason | contains($foreign_session) | not)
-' "$malformed_cwd_first_output" >/dev/null
+jq -e '.continue == true and (keys | sort) == ["continue"]' "$malformed_cwd_first_output" >/dev/null
 cmp -s "$malformed_cwd_first_output" "$malformed_cwd_second_output"
 cmp -s "$malformed_cwd_first_output" "$malformed_cwd_third_output"
 cmp -s "$TMP_ROOT/stop-malformed-cwd-foreign-marker.before" "$malformed_cwd_foreign_marker"
 [ ! -e "$proof_root/valid-session/stop_loop_state" ] && [ ! -L "$proof_root/valid-session/stop_loop_state" ]
 [ ! -e "$proof_root/$foreign_session/stop_loop_state" ] && [ ! -L "$proof_root/$foreign_session/stop_loop_state" ]
 
-# An overflowed cache is only a partial observation.  Even a nonempty invalid
-# session must retain the scan-unsafe diagnostic rather than selecting the
-# first arbitrary complete-looking marker from the partial cache.
+# An overflowed scan is only a partial observation. Without a direct marker,
+# it continues without selecting or mutating an arbitrary peer marker.
 proof_root="$TMP_ROOT/proof-stop-invalid-session-overflow"
+overflow_callback_session=overflow-callback-session
 for i in $(seq 1 65); do
   overflow_session="overflow-session-$i"
   mkdir -p "$proof_root/$overflow_session"
@@ -521,17 +492,11 @@ for i in $(seq 1 65); do
   cp -- "$proof_root/$overflow_session/eci_active" "$TMP_ROOT/$overflow_session.eci_active.before"
 done
 output="$TMP_ROOT/stop-invalid-session-overflow-output"
-jq -cn --arg cwd "$ROOT" \
-  '{session_id:"invalid!",cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
+jq -cn --arg session_id "$overflow_callback_session" --arg cwd "$ROOT" \
+  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
   CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
     bash "$ROOT/hooks/stop-gate.sh" >"$output"
-jq -e '
-  .decision == "block" and
-  (keys | sort) == ["decision", "reason"] and
-  (.reason | contains("ECI_STOP_MARKER_SCAN_UNSAFE")) and
-  (.reason | contains("ECI_MARKER_SCOPE_MISMATCH") | not) and
-  (.reason | contains("ECI_STOP_LOOP_CONTRACT_DEFECT") | not)
-' "$output" >/dev/null
+jq -e '.continue == true and (keys | sort) == ["continue"]' "$output" >/dev/null
 for i in $(seq 1 65); do
   overflow_session="overflow-session-$i"
   overflow_marker="$proof_root/$overflow_session/eci_active"
@@ -540,6 +505,29 @@ for i in $(seq 1 65); do
   cmp -s "$TMP_ROOT/$overflow_session.eci_active.before" "$overflow_marker"
   [ ! -e "$proof_root/$overflow_session/stop_loop_state" ] && [ ! -L "$proof_root/$overflow_session/stop_loop_state" ]
 done
-[ ! -e "$proof_root/invalid!/stop_loop_state" ] && [ ! -L "$proof_root/invalid!/stop_loop_state" ]
+[ ! -e "$proof_root/$overflow_callback_session/stop_loop_state" ] && [ ! -L "$proof_root/$overflow_callback_session/stop_loop_state" ]
+
+# A well-formed direct marker remains authoritative even when the sibling scan
+# overflows; overflow metadata cannot weaken a concrete current-session target.
+mkdir -p "$proof_root/$overflow_callback_session"
+overflow_direct_marker="$proof_root/$overflow_callback_session/eci_active"
+printf '%s\n' \
+  'scope: overflow direct owner' \
+  "cwd: $ROOT" \
+  "session_id: $overflow_callback_session" \
+  'created_utc: 2026-08-17T00:00:00Z' \
+  >"$overflow_direct_marker"
+cp -- "$overflow_direct_marker" "$TMP_ROOT/overflow-direct-marker.before"
+CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
+  bash "$ROOT/hooks/stop-gate.sh" < <(
+    jq -cn --arg session_id "$overflow_callback_session" --arg cwd "$ROOT" \
+      '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:false}'
+  ) >"$TMP_ROOT/stop-overflow-direct-output"
+jq -e --arg marker "$overflow_direct_marker" '
+  .decision == "block" and
+  (.reason | contains("ECI_STOP_ACTIVE_ECI")) and
+  (.reason | contains($marker))
+' "$TMP_ROOT/stop-overflow-direct-output" >/dev/null
+cmp -s "$TMP_ROOT/overflow-direct-marker.before" "$overflow_direct_marker"
 
 printf '%s\n' 'eci marker scope assertions: PASS'

@@ -248,8 +248,8 @@ if [ "$aggregate_plan_present" != true ] && baseline_context_is_valid; then
     baseline_binding_file_is_valid || binding_present=false
   fi
 
-  # A valid lone file is the recoverable half-publication case.  Never replace
-  # an unsafe or malformed file; leave it for the gate to fail closed.
+  # A valid lone file is the recoverable half-publication case. Preserve unsafe
+  # or malformed partial state for refresh/recovery; it never blocks ordinary work.
   if [ "$baseline_present" = true ] && [ "$binding_present" = false ] &&
     [ ! -e "$baseline_binding" ] && [ ! -L "$baseline_binding" ]; then
     publish_baseline_binding || true
