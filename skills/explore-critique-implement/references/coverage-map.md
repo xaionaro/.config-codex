@@ -1,6 +1,6 @@
 ## Workflow coverage map
 
-This map is an audit index, not an admission inventory. Use it to find the right guidance; never require a source version, hash, record, or route before ordinary bounded work.
+This map is an audit index, not an admission inventory. Source versions, hashes, records, and coverage-map entries are audit metadata, never ordinary-work admission prerequisites. The role-table routing responsibilities remain required workflow guidance.
 
 | Concern | Destination | Verification |
 | --- | --- | --- |

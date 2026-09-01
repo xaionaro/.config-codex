@@ -123,8 +123,13 @@ assert_coverage_map_non_gate_contract() {
   require_coverage_map_text "$source" "$label" 'the workflow coverage heading' '## Workflow coverage map'
   require_coverage_map_text "$source" "$label" 'the audit-index introduction' \
     'This map is an audit index, not an admission inventory.'
+  require_coverage_map_text "$source" "$label" 'the audit-metadata boundary' \
+    'Source versions, hashes, records, and coverage-map entries are audit metadata, never ordinary-work admission prerequisites.'
+  require_coverage_map_text "$source" "$label" 'the role-table routing responsibility' \
+    'The role-table routing responsibilities remain required workflow guidance.'
   forbid_coverage_map_text "$source" "$label" 'Baseline source SHA-256:'
   forbid_coverage_map_text "$source" "$label" 'exact pause transaction'
+  forbid_coverage_map_text "$source" "$label" 'route before ordinary bounded work'
   forbid_coverage_map_pattern "$source" "$label" \
     '(record|receipt|hash|source[[:space:]-]+version|coverage-map[[:space:]-]+entr(y|ies)).*(must|required).*(before|for|to).*(ordinary|bounded|normal).*(work|write)'
 }
@@ -295,7 +300,11 @@ assert_compaction_provenance() {
 
   mutation="$eci_source"$'\n\nReceipt required to execute bounded work.'
   assert_coverage_map_non_gate_mutation_is_rejected "$eci_source" 'ECI coverage map' "$mutation"
+  mutation="$eci_source"$'\n\nNever require a route before ordinary bounded work.'
+  assert_coverage_map_non_gate_mutation_is_rejected "$eci_source" 'ECI coverage map' "$mutation"
   mutation="$ate_source"$'\n\nReceipt required to execute bounded work.'
+  assert_coverage_map_non_gate_mutation_is_rejected "$ate_source" 'ATE coverage map' "$mutation"
+  mutation="$ate_source"$'\n\nNever require a route before ordinary bounded work.'
   assert_coverage_map_non_gate_mutation_is_rejected "$ate_source" 'ATE coverage map' "$mutation"
 }
 
