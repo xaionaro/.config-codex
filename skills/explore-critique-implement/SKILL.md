@@ -17,7 +17,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
   A concern serving a separate outcome is only a post-ECI user follow-up, never current work.
   Missing or stale lineage never blocks known in-scope work.
 - Every normal ECI lane, assignment, and current ledger state records `Stage: normal`. Emergency Unblock has no stage, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff; it is an ECI-defined pre-normal branch, not a separate workflow or nested normal ECI.
-- An active ECI/ATE marker remains unchanged during Emergency Unblock but does not authorize its repair. Only after the repair and its required E2E does fresh normal ECI begin at Step 1 from dirty/untrusted state.
+- An active ECI/ATE marker remains unchanged during Emergency Unblock but does not authorize its repair. Only after the repair and its required E2E does fresh normal ECI begin at Step 1 for that dirty/untrusted repaired state; unrelated normal work remains active.
 - A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 - Every normal ECI worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.
 - Coordinator/lead alone load lifecycle, blocker, pause, stop, required-critic, teardown, and pressure-policy modules. Workers never infer those duties.
