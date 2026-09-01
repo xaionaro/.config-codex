@@ -168,21 +168,21 @@ them alongside safe work without delaying the update.
 
 ### Forecast target history
 
-`forecast-target-history.tsv` is the canonical audit-only history for root-task forecast targets. It starts with exactly:
+`forecast-target-history.tsv` is the canonical audit-only history for root-task forecast targets. It has exactly four columns:
 
 ```text
-added_utc	root_task_id	new_target_utc
+added_utc	root_task_id	new_target_utc	reason
 ```
 
-Every row records the UTC addition time, root task ID, and new UTC target. Append only: never edit, delete, reorder, or reuse a row.
+Every row records the UTC addition time, root task ID, new UTC target, and a concise human-readable reason for setting or changing the target. Append only: never edit, delete, reorder, or reuse a row.
 
 | Target transition | `high_level_log.md` | `forecast-target-history.tsv` |
 | --- | --- | --- |
-| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row. |
-| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row. |
+| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row with reason. |
+| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row with reason. |
 | A → A | No high-level-log entry or history row for mere reaffirmation. | No row. |
 | close | Record material completion normally. | No date row. |
-| correction | Append a correction naming the prior entry and corrected target. | Append the corrected-target row; never rewrite earlier rows. |
+| correction | Append a correction naming the prior entry and corrected target. | Append the corrected-target row with reason; never rewrite earlier rows. |
 
 This history is audit-only. It never gates work, grants or denies permission, creates a blocker, or delays ordinary work. It is not a required session record or work prerequisite. Reconcile a missing, stale, or malformed history alongside ordinary work.
 

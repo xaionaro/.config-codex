@@ -8,13 +8,10 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An outer ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer and implementer producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
-- Every material coordinator-to-user status/progress update for a user-rooted outcome has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.
-  - For each executing lane, report this standalone line:
-    - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
-  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:
-    - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
-- Do not repeat that block's preamble or canonical target line elsewhere in the update.
-- Preparatory, pure explanatory, and pure timeline output omit the block. If it materially changes state, use the one material-update block.
+- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:
+  - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
+- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:
+  - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
 - For material ECI work, retain `exact user source → faithful requested outcome → bounded scope`.
 - A repair needed to meet or prove that outcome stays in its current lane; a
   separate-outcome concern is only a post-ECI observation or follow-up, never
