@@ -252,14 +252,57 @@ for role in coordinator worker; do
     "effect=whole-worktree-staging target=$REPO selector=."
   assert_allowed "timeout --signal '\$TIMEOUT_SIGNAL' 5 git add ." "$role"
 done
-# The fact coordinates include the planner segment, so a preceding ordinary
-# segment cannot lend its observation to this Git child.
-assert_denied_code "printf prepare && timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
-  "effect=whole-worktree-staging target=$REPO selector=."
+# Conditional prefixes poison replay state: the direct timeout remains
+# ordinary instead of borrowing an observation from the callback context.
+assert_allowed "printf prepare && timeout --signal TERM 5 git add ." worker
 # Timeout does not turn history acceptance into local index work after a
 # positive launch observation.
 assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
   "token=commit"
+
+# State-only semicolon prefixes carry the actual shell CWD and PATH into the
+# observed timeout record. The copied launcher must preserve the outer callback
+# CWD for active-scope checks while Git resolves its child from this state.
+STATE_CHILD="$REPO/timeout-state-child"
+mkdir -p -- "$STATE_CHILD"
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$STATE_CHILD/timeout"
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FOREIGN_REPO/timeout"
+chmod 755 -- "$STATE_CHILD/timeout" "$FOREIGN_REPO/timeout"
+CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+for role in coordinator worker; do
+  assert_denied_code "cd $STATE_CHILD; ./timeout --signal TERM 5 git add :/" ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=:/"
+  assert_denied_code "cd $STATE_CHILD; cd $FOREIGN_REPO; ./timeout --signal TERM 5 git add ." ECI_GIT_CROSS_SCOPE_DENIED "$role" \
+    "active_repo=$REPO target_repo=$FOREIGN_REPO"
+done
+# A later absolute cd back to the outer repository is also modeled, not a
+# stale reuse of the first transition's directory.
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$REPO/timeout"
+chmod 755 -- "$REPO/timeout"
+for role in coordinator worker; do
+  assert_denied_code "cd $STATE_CHILD; cd $REPO; ./timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=."
+done
+
+# PATH state is likewise literal and ordered: assignments, export changes,
+# set-empty, unset, and a known nonlaunch cannot borrow the callback PATH.
+for role in coordinator worker; do
+  CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+  assert_denied_code "PATH=$FAKE_TIMEOUT_LAUNCH_DIR; timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=."
+  assert_denied_code "export PATH=$FAKE_TIMEOUT_LAUNCH_DIR; timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=."
+  assert_denied_code "PATH=$FAKE_TIMEOUT_LAUNCH_DIR; export -n PATH; timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
+    "effect=whole-worktree-staging target=$REPO selector=."
+  CALLBACK_PATH="$FAKE_TIMEOUT_LAUNCH_DIR:$BASE_CALLBACK_PATH"
+  assert_allowed "PATH=; timeout --signal TERM 5 git add ." "$role"
+  assert_allowed "unset PATH; timeout --signal TERM 5 git add ." "$role"
+  assert_allowed "PATH=$FAKE_TIMEOUT_ACCEPT_DIR; timeout --signal TERM 5 git add ." "$role"
+  assert_allowed "PATH=$FAKE_TIMEOUT_ACCEPT_DIR && timeout --signal TERM 5 git add ." "$role"
+  assert_allowed 'PATH=$TIMEOUT_PATH; timeout --signal TERM 5 git add .' "$role"
+  assert_allowed "printf harmless; timeout --signal TERM 5 git add ." "$role"
+done
+CALLBACK_PATH="$FAKE_TIMEOUT_LAUNCH_DIR:$BASE_CALLBACK_PATH"
 
 # The probe keeps inherited callback variables other than its explicitly bound
 # PWD and PATH. A fake timeout requiring this variable distinguishes an actual

@@ -932,25 +932,44 @@ func classifyTimeoutJSONRequest(
 	command string,
 ) Result {
 	t.Helper()
+	return classifyTimeoutReplayJSONRequest(t, cwd, commandPath, commandPathSet, commandPathSet, command)
+}
+
+// classifyTimeoutReplayJSONRequest decodes one timeout request with an explicit
+// PATH export attribute through the planner JSON boundary.
+//
+// Example: a set-but-unexported PATH can still find timeout while the probe
+// child receives no PATH environment entry.
+func classifyTimeoutReplayJSONRequest(
+	t *testing.T,
+	cwd string,
+	commandPath string,
+	commandPathSet bool,
+	commandPathExported bool,
+	command string,
+) Result {
+	t.Helper()
 
 	payload, err := json.Marshal(struct {
-		Provider       Provider `json:"provider"`
-		Role           Role     `json:"role"`
-		CWD            string   `json:"cwd"`
-		CommandPath    string   `json:"command_path"`
-		CommandPathSet bool     `json:"command_path_set"`
-		Marker         Marker   `json:"marker"`
-		ActiveSession  string   `json:"active_session"`
-		Command        string   `json:"command"`
+		Provider            Provider `json:"provider"`
+		Role                Role     `json:"role"`
+		CWD                 string   `json:"cwd"`
+		CommandPath         string   `json:"command_path"`
+		CommandPathSet      bool     `json:"command_path_set"`
+		CommandPathExported bool     `json:"command_path_exported"`
+		Marker              Marker   `json:"marker"`
+		ActiveSession       string   `json:"active_session"`
+		Command             string   `json:"command"`
 	}{
-		Provider:       ProviderCodex,
-		Role:           RoleWorker,
-		CWD:            cwd,
-		CommandPath:    commandPath,
-		CommandPathSet: commandPathSet,
-		Marker:         MarkerActive,
-		ActiveSession:  "test-session",
-		Command:        command,
+		Provider:            ProviderCodex,
+		Role:                RoleWorker,
+		CWD:                 cwd,
+		CommandPath:         commandPath,
+		CommandPathSet:      commandPathSet,
+		CommandPathExported: commandPathExported,
+		Marker:              MarkerActive,
+		ActiveSession:       "test-session",
+		Command:             command,
 	})
 	if err != nil {
 		t.Fatalf("encode timeout request: %v", err)
@@ -960,6 +979,376 @@ func classifyTimeoutJSONRequest(
 		t.Fatalf("decode timeout request: %v", err)
 	}
 	return Classify(request)
+}
+
+// TestTimeoutCompoundReplayUsesLiteralShellState verifies that one observed
+// direct timeout child is classified from the literal CWD and PATH state
+// reached through semicolon-only state prefixes.
+//
+// Example: cd /work/subdir; ./timeout 5 git commit uses /work/subdir rather
+// than the callback's outer working directory.
+func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	downParent := filepath.Join(root, "down-parent")
+	downChild := filepath.Join(downParent, "child")
+	upParent := filepath.Join(root, "up-parent")
+	upChild := filepath.Join(upParent, "child")
+	launchDirectory := filepath.Join(root, "launch")
+	nonLaunchingDirectory := filepath.Join(root, "nonlaunch")
+	unexportedDirectory := filepath.Join(root, "unexported")
+	for _, directory := range []string{
+		downParent,
+		downChild,
+		upParent,
+		upChild,
+		launchDirectory,
+		nonLaunchingDirectory,
+		unexportedDirectory,
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatalf("create %q: %v", directory, err)
+		}
+	}
+
+	launchingTimeout := "#!/bin/sh\n[ \"${1-}\" = 5 ] || exit 125\nshift\nexec \"$@\"\n"
+	unexportedTimeout := "#!/bin/sh\n/usr/bin/env | /usr/bin/grep -q '^PATH=' && exit 125\n[ \"${1-}\" = 5 ] || exit 125\nshift\nexec \"$@\"\n"
+	for _, timeoutPath := range []string{
+		filepath.Join(downChild, "timeout"),
+		filepath.Join(upParent, "timeout"),
+		filepath.Join(launchDirectory, "timeout"),
+	} {
+		if err := os.WriteFile(timeoutPath, []byte(launchingTimeout), 0o700); err != nil {
+			t.Fatalf("write launching timeout %q: %v", timeoutPath, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(nonLaunchingDirectory, "timeout"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write nonlaunching timeout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unexportedDirectory, "timeout"), []byte(unexportedTimeout), 0o700); err != nil {
+		t.Fatalf("write unexported-PATH timeout: %v", err)
+	}
+
+	type timeoutReplayFact struct {
+		Segment             int      `json:"segment"`
+		ParentSegment       int      `json:"parent_segment"`
+		Prefix              []string `json:"prefix"`
+		CWD                 string   `json:"cwd"`
+		CommandPath         string   `json:"command_path"`
+		CommandPathSet      bool     `json:"command_path_set"`
+		CommandPathExported bool     `json:"command_path_exported"`
+		Disposition         string   `json:"disposition"`
+	}
+
+	for _, testCase := range []struct {
+		name                string
+		cwd                 string
+		commandPath         string
+		commandPathSet      bool
+		commandPathExported bool
+		command             string
+		decision            DecisionKind
+		wantReplay          *timeoutReplayFact
+	}{
+		{
+			name:     "cd into child resolves dot timeout from child",
+			cwd:      downParent,
+			command:  "cd " + downChild + "; ./timeout 5 git commit -m note",
+			decision: DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"./timeout", "5"}, CWD: downChild,
+				Disposition: "observed",
+			},
+		},
+		{
+			name:     "cd back to parent resolves dot timeout from parent",
+			cwd:      upChild,
+			command:  "cd " + upParent + "; ./timeout 5 git commit -m note",
+			decision: DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"./timeout", "5"}, CWD: upParent,
+				Disposition: "observed",
+			},
+		},
+		{
+			name:                "literal PATH assignment retains exported state",
+			cwd:                 downParent,
+			commandPath:         nonLaunchingDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=" + launchDirectory + "; timeout 5 git commit -m note",
+			decision:            DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
+			},
+		},
+		{
+			name:                "literal PATH assignment records known nonlaunch",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=" + nonLaunchingDirectory + "; timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: nonLaunchingDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "opaque",
+			},
+		},
+		{
+			name:                "newline carries literal PATH assignment",
+			cwd:                 downParent,
+			commandPath:         nonLaunchingDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=" + launchDirectory + "\ntimeout 5 git commit -m note",
+			decision:            DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
+			},
+		},
+		{
+			name:     "export assignment creates exported PATH",
+			cwd:      downParent,
+			command:  "export PATH=" + launchDirectory + "; timeout 5 git commit -m note",
+			decision: DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
+			},
+		},
+		{
+			name:                "unexported PATH still resolves lookup without reaching child",
+			cwd:                 downParent,
+			commandPath:         nonLaunchingDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=" + unexportedDirectory + "; export -n PATH; timeout 5 git commit -m note",
+			decision:            DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 3, ParentSegment: 3, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: unexportedDirectory, CommandPathSet: true, CommandPathExported: false, Disposition: "observed",
+			},
+		},
+		{
+			name:                "export PATH restores child environment",
+			cwd:                 downParent,
+			commandPath:         nonLaunchingDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=" + launchDirectory + "; export -n PATH; export PATH; timeout 5 git commit -m note",
+			decision:            DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 4, ParentSegment: 4, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
+			},
+		},
+		{
+			name:                "set empty PATH differs from unset",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=; timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: "", CommandPathSet: true, CommandPathExported: true, Disposition: "opaque",
+			},
+		},
+		{
+			name:                "unset PATH is separate from set empty",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "unset PATH; timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: "", CommandPathSet: false, CommandPathExported: false, Disposition: "opaque",
+			},
+		},
+		{
+			name:                "conditional state change stays ordinary",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=" + nonLaunchingDirectory + " && timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+		},
+		{
+			name:                "dynamic state change stays ordinary",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "PATH=$TIMEOUT_PATH; timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+		},
+		{
+			name:                "relative cd stays ordinary",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "cd child; timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+		},
+		{
+			name:                "unmodelled prefix stays ordinary",
+			cwd:                 downParent,
+			commandPath:         launchDirectory,
+			commandPathSet:      true,
+			commandPathExported: true,
+			command:             "printf harmless; timeout 5 git commit -m note",
+			decision:            DecisionAllow,
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			result := classifyTimeoutReplayJSONRequest(
+				t,
+				testCase.cwd,
+				testCase.commandPath,
+				testCase.commandPathSet,
+				testCase.commandPathExported,
+				testCase.command,
+			)
+			if result.Decision != testCase.decision {
+				t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.decision == DecisionDeny &&
+				(result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied) {
+				t.Fatalf("result=%#v, want observed worker Git denial", result)
+			}
+			if testCase.decision == DecisionAllow && result.Diagnostic != nil {
+				t.Fatalf("result=%#v, want ordinary opaque timeout", result)
+			}
+
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			var output struct {
+				TimeoutReplays []timeoutReplayFact `json:"timeout_replays"`
+			}
+			if err := json.Unmarshal(encoded, &output); err != nil {
+				t.Fatalf("decode result: %v", err)
+			}
+			if testCase.wantReplay == nil {
+				if len(output.TimeoutReplays) != 0 {
+					t.Fatalf("timeout replays=%#v, want none", output.TimeoutReplays)
+				}
+				return
+			}
+			if len(output.TimeoutReplays) != 1 {
+				t.Fatalf("timeout replays=%#v, want one", output.TimeoutReplays)
+			}
+			got := output.TimeoutReplays[0]
+			want := *testCase.wantReplay
+			if got.Segment != want.Segment || got.ParentSegment != want.ParentSegment ||
+				strings.Join(got.Prefix, "\x00") != strings.Join(want.Prefix, "\x00") ||
+				got.CWD != want.CWD || got.CommandPath != want.CommandPath ||
+				got.CommandPathSet != want.CommandPathSet ||
+				got.CommandPathExported != want.CommandPathExported || got.Disposition != want.Disposition {
+				t.Fatalf("timeout replay=%#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+// TestTimeoutReplayMissingOrMalformedDataStaysOrdinary verifies that recursive
+// validation never falls back to a stale callback probe. Only one valid,
+// observed parent record can expose timeout's Git child.
+//
+// Example: an absent replay remains ordinary even when the callback PATH would
+// otherwise resolve a timeout executable that launches the harmless child.
+func TestTimeoutReplayMissingOrMalformedDataStaysOrdinary(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	timeoutDirectory := filepath.Join(cwd, "bin")
+	if err := os.MkdirAll(timeoutDirectory, 0o700); err != nil {
+		t.Fatalf("create timeout directory: %v", err)
+	}
+	timeoutPath := filepath.Join(timeoutDirectory, "timeout")
+	if err := os.WriteFile(timeoutPath, []byte("#!/bin/sh\n[ \"${1-}\" = 5 ] || exit 125\nshift\nexec \"$@\"\n"), 0o700); err != nil {
+		t.Fatalf("write launching timeout: %v", err)
+	}
+
+	observed := TimeoutReplay{
+		Segment:             1,
+		ParentSegment:       2,
+		Prefix:              []string{"timeout", "5"},
+		CWD:                 cwd,
+		CommandPath:         timeoutDirectory,
+		CommandPathSet:      true,
+		CommandPathExported: true,
+		Disposition:         TimeoutReplayObserved,
+	}
+	malformed := observed
+	malformed.CWD = "relative"
+	opaque := observed
+	opaque.Disposition = TimeoutReplayOpaque
+
+	for _, testCase := range []struct {
+		name        string
+		replays     []TimeoutReplay
+		decision    DecisionKind
+		code        DiagnosticCode
+		wantRecords int
+	}{
+		{
+			name:     "missing replay suppresses stale probe",
+			decision: DecisionAllow,
+		},
+		{
+			name:     "malformed replay suppresses stale probe",
+			replays:  []TimeoutReplay{malformed},
+			decision: DecisionAllow,
+		},
+		{
+			name:        "known nonlaunch replay stays opaque",
+			replays:     []TimeoutReplay{opaque},
+			decision:    DecisionAllow,
+			wantRecords: 1,
+		},
+		{
+			name:        "observed replay reaches Git child",
+			replays:     []TimeoutReplay{observed},
+			decision:    DecisionDeny,
+			code:        CodeWorkerGitOwnershipDenied,
+			wantRecords: 1,
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker("timeout 5 git commit -m note")
+			request.CWD = cwd
+			request.CommandPath = timeoutDirectory
+			request.TimeoutReplay = true
+			request.TimeoutReplays = testCase.replays
+
+			result := Classify(request)
+			if result.Decision != testCase.decision {
+				t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.code != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.code) {
+				t.Fatalf("diagnostic=%#v, want code %q", result.Diagnostic, testCase.code)
+			}
+			if testCase.code == "" && result.Diagnostic != nil {
+				t.Fatalf("diagnostic=%#v, want none", result.Diagnostic)
+			}
+			if len(result.TimeoutReplays) != testCase.wantRecords {
+				t.Fatalf("timeout replays=%#v, want %d records", result.TimeoutReplays, testCase.wantRecords)
+			}
+		})
+	}
 }
 
 // TestTimeoutProbeStopsAfterEarlierConcreteDenial verifies that ordered

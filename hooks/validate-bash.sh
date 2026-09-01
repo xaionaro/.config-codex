@@ -50,11 +50,13 @@ codex_canonicalize_configured_proof_root_alias() {
 codex_canonicalize_configured_proof_root_alias
 
 CODEX_COMMAND_PATH_SET=false
+CODEX_COMMAND_PATH_EXPORTED=false
 if [[ -v PATH ]]; then
   CODEX_COMMAND_PATH_SET=true
+  CODEX_COMMAND_PATH_EXPORTED=true
 fi
 CODEX_COMMAND_PATH="${PATH-}"
-export CODEX_COMMAND_PATH
+export CODEX_COMMAND_PATH CODEX_COMMAND_PATH_EXPORTED
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEX_COMMAND_PATH}"
 export PATH
 codex_init_tmp || true
@@ -361,11 +363,23 @@ case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}" in
 esac
 CODEX_HOOK_PARENT_SESSION_ID=""
 CODEX_HOOK_CONTEXT_METADATA=""
+CODEX_TIMEOUT_REPLAY=false
+CODEX_TIMEOUT_REPLAYS='[]'
 
 if [ "$typed_input" != true ]; then
   # Callback shape is context, not an effect. A malformed callback cannot be
   # safely attributed to a resolved target, so make no hook decision.
   exit 0
+fi
+
+# Recursive compound validation receives only planner-produced timeout replay
+# records. Missing or malformed metadata deliberately selects an empty replay
+# mode so a child cannot re-probe using this hook's stale outer callback state.
+if [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" = true ]; then
+  CODEX_TIMEOUT_REPLAY=true
+  CODEX_TIMEOUT_REPLAYS="$(jq -c '
+    if (.timeout_replays? | type) == "array" then .timeout_replays else [] end
+  ' <<<"$input" 2>/dev/null || printf '[]')"
 fi
 
 # Help, short help, and status expose lifecycle state only. Let the invoked
@@ -1040,11 +1054,14 @@ plan_input="$(
     --arg command "$command" \
     --arg command_path "$CODEX_COMMAND_PATH" \
     --argjson command_path_set "$CODEX_COMMAND_PATH_SET" \
+    --argjson command_path_exported "$CODEX_COMMAND_PATH_EXPORTED" \
+    --argjson timeout_replay "$CODEX_TIMEOUT_REPLAY" \
+    --argjson timeout_replays "$CODEX_TIMEOUT_REPLAYS" \
     --arg approved_root_1 "$CODEX_APPROVED_REPO_ROOT_1" \
     --arg approved_root_2 "$CODEX_APPROVED_REPO_ROOT_2" \
     --arg approved_root_3 "$CODEX_APPROVED_REPO_ROOT_3" \
     --args \
-    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,command_path_set:$command_path_set,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
+    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,command_path_set:$command_path_set,command_path_exported:$command_path_exported,timeout_replay:$timeout_replay,timeout_replays:$timeout_replays,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
     "${syntax_eci_markers[@]}"
 )"
 if [ "$CODEX_PLAN_CURRENT_SOURCE" = true ]; then
@@ -1222,30 +1239,37 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   PLAN_GIT_CLONE_ENV_EXECUTABLE="$(jq -r '.git_clone_launch.env_executable // ""' <<<"${plan_output:-}")"
 fi
 
-# planner_timeout_launches_shape accepts only the planner's observed timeout
-# child-launch facts. Bash uses these facts as coordinates; it does not rebuild
-# timeout's option or signal behavior from a local compatibility table.
-planner_timeout_launches_shape() {
+# planner_timeout_replays_shape accepts complete planner-owned timeout state.
+# Bash uses an observed replay only as a coordinate for existing Git target
+# resolution; it never reconstructs timeout option or signal behavior.
+planner_timeout_replays_shape() {
   [ "${plan_status:-64}" -eq 0 ] || [ "${plan_status:-64}" -eq 3 ] || return 1
   jq -e '
     def exact_keys($expected): (keys | sort) == $expected;
     def positive_integer: type == "number" and floor == . and . >= 1 and . <= 8;
     def bounded_string: type == "string" and length > 0 and length <= 4096;
-    def launch_fact:
+    def replay_fact:
       type == "object" and
-      exact_keys(["prefix", "segment"]) and
+      exact_keys(["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) and
       (.segment | positive_integer) and
-      (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; bounded_string));
+      (.parent_segment | positive_integer) and
+      (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; bounded_string)) and
+      (.cwd | type == "string" and test("^/")) and
+      (.command_path | type == "string") and
+      (.command_path_set | type == "boolean") and
+      (.command_path_exported | type == "boolean") and
+      (.disposition == "observed" or .disposition == "opaque") and
+      (if .command_path_set then true else (.command_path == "" and .command_path_exported == false) end);
     type == "object" and
     (.decision == "allow" or .decision == "defer") and
     (.diagnostic == null) and
-    ((.timeout_launches // []) | type == "array" and all(.[]; launch_fact))
+    ((.timeout_replays // []) | type == "array" and all(.[]; replay_fact))
   ' <<<"${plan_output:-}" >/dev/null 2>&1
 }
 
-PLAN_TIMEOUT_LAUNCHES='[]'
-if [ "${#syntax_eci_markers[@]}" -gt 0 ] && planner_timeout_launches_shape; then
-  PLAN_TIMEOUT_LAUNCHES="$(jq -c '.timeout_launches // []' <<<"${plan_output:-}")"
+PLAN_TIMEOUT_REPLAYS='[]'
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && planner_timeout_replays_shape; then
+  PLAN_TIMEOUT_REPLAYS="$(jq -c '.timeout_replays // []' <<<"${plan_output:-}")"
 fi
 
 # planner_current_ledger_append_shape accepts the planner's concrete resolved
@@ -1357,14 +1381,31 @@ compound_segment_pretooluse_denial() {
 # validates only JSON; it never executes a user command.
 PLANNER_COMPOUND_SEGMENT_DENIAL=""
 validate_planner_compound_segments() {
-  local segment child_input child_output child_denial child_status self_hook
+  local segment child_input child_output child_denial child_status self_hook parent_segment replay_records
   local -a segments=()
   PLANNER_COMPOUND_SEGMENT_DENIAL=""
   self_hook="${BASH_SOURCE[0]}"
   mapfile -t segments < <(jq -r '.plan.segments[].command' <<<"${plan_output:-}")
   [ "${#segments[@]}" -ge 2 ] || return 2
-  for segment in "${segments[@]}"; do
-    if ! child_input="$(printf '%s' "$input" | jq -c --arg command "$segment" '.tool_input.command = $command' 2>/dev/null)"; then
+  for parent_segment in "${!segments[@]}"; do
+    segment="${segments[parent_segment]}"
+    parent_segment=$((parent_segment + 1))
+    if ! replay_records="$(jq -c --argjson parent_segment "$parent_segment" '
+      if (.timeout_replays? | type) == "array" then
+        [.timeout_replays[] |
+          select(.segment == $parent_segment and .parent_segment == $parent_segment) |
+          .segment = 1]
+      else
+        []
+      end
+    ' <<<"${plan_output:-}" 2>/dev/null)"; then
+      return 2
+    fi
+    if ! child_input="$(printf '%s' "$input" | jq -c --arg command "$segment" --argjson replay_records "$replay_records" '
+      .tool_input.command = $command |
+      .timeout_replay = true |
+      .timeout_replays = $replay_records
+    ' 2>/dev/null)"; then
       return 2
     fi
     if child_output="$(
@@ -7732,8 +7773,8 @@ git_mutation_specs() {
   # This resolver enriches known Git targets. It is not a permission parser:
   # unfamiliar spelling or shell topology is advisory and must not turn
   # ordinary repository work into a denial.
-  local command_text="${1:-$command}" timeout_launches="${PLAN_TIMEOUT_LAUNCHES:-[]}"
-  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_launches" <<'PY'
+  local command_text="${1:-$command}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
+  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" <<'PY'
 import json
 import os
 import re
@@ -7743,7 +7784,7 @@ import sys
 command = sys.argv[1]
 cwd = sys.argv[2] or os.getcwd()
 try:
-    timeout_launches = json.loads(sys.argv[3])
+    timeout_replays = json.loads(sys.argv[3])
 except (IndexError, TypeError, ValueError):
     raise SystemExit(0)
 MUTATING_WORKTREE = {"add", "remove", "move", "prune", "lock", "unlock", "repair"}
@@ -7759,20 +7800,25 @@ def resolve(path, base):
     return os.path.normpath(os.path.join(base, path))
 
 
-def transparent_timeout_command_index(tokens, index, segment_index):
+def observed_timeout_command_index(tokens, index, segment_index):
     if index >= len(tokens) or os.path.basename(tokens[index]) != "timeout":
-        return index
-    for launch in timeout_launches:
-        if not isinstance(launch, dict) or launch.get("segment") != segment_index:
+        return index, None
+    matches = []
+    for replay in timeout_replays:
+        if not isinstance(replay, dict) or replay.get("segment") != segment_index:
             continue
-        prefix = launch.get("prefix")
+        if replay.get("disposition") != "observed":
+            continue
+        if not isinstance(replay.get("cwd"), str) or not replay["cwd"].startswith("/"):
+            continue
+        prefix = replay.get("prefix")
         if not isinstance(prefix, list) or not all(isinstance(value, str) for value in prefix):
             continue
         if len(prefix) < 2 or index + len(prefix) >= len(tokens):
             continue
         if tokens[index:index + len(prefix)] == prefix:
-            return index + len(prefix)
-    return None
+            matches.append((index + len(prefix), replay))
+    return matches[0] if len(matches) == 1 else (None, None)
 
 
 def segment_spec(tokens, segment_index):
@@ -7789,7 +7835,7 @@ def segment_spec(tokens, segment_index):
         environment[name] = value
         index += 1
 
-    index = transparent_timeout_command_index(tokens, index, segment_index)
+    index, timeout_replay = observed_timeout_command_index(tokens, index, segment_index)
     if index is None:
         return None
 
@@ -7816,7 +7862,7 @@ def segment_spec(tokens, segment_index):
         return None
     index += 1
 
-    repo_dir = cwd
+    repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
     git_dir = environment.get("GIT_DIR")
     work_tree = environment.get("GIT_WORK_TREE")
     value_options = {
@@ -7935,9 +7981,9 @@ git_mutation_cross_scope_detail() {
 }
 
 git_mutation_broad_effect_detail() {
-  local target_repo="$1" command_text="${2:-$command}" command_cwd="${3:-$cwd}" timeout_launches="${PLAN_TIMEOUT_LAUNCHES:-[]}"
+  local target_repo="$1" command_text="${2:-$command}" command_cwd="${3:-$cwd}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
 
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_launches" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_replays" <<'PY'
 import json
 import os
 import re
@@ -7946,7 +7992,7 @@ import sys
 
 command, repo, cwd = sys.argv[1:4]
 try:
-    timeout_launches = json.loads(sys.argv[4])
+    timeout_replays = json.loads(sys.argv[4])
 except (IndexError, TypeError, ValueError):
     raise SystemExit(1)
 try:
@@ -7981,27 +8027,32 @@ def resolve(path, base):
     return os.path.normpath(os.path.join(base, path))
 
 
-def transparent_timeout_command_index(tokens, index, segment_index):
+def observed_timeout_command_index(tokens, index, segment_index):
     if index >= len(tokens) or os.path.basename(tokens[index]) != "timeout":
-        return index
-    for launch in timeout_launches:
-        if not isinstance(launch, dict) or launch.get("segment") != segment_index:
+        return index, None
+    matches = []
+    for replay in timeout_replays:
+        if not isinstance(replay, dict) or replay.get("segment") != segment_index:
             continue
-        prefix = launch.get("prefix")
+        if replay.get("disposition") != "observed":
+            continue
+        if not isinstance(replay.get("cwd"), str) or not replay["cwd"].startswith("/"):
+            continue
+        prefix = replay.get("prefix")
         if not isinstance(prefix, list) or not all(isinstance(value, str) for value in prefix):
             continue
         if len(prefix) < 2 or index + len(prefix) >= len(tokens):
             continue
         if tokens[index:index + len(prefix)] == prefix:
-            return index + len(prefix)
-    return None
+            matches.append((index + len(prefix), replay))
+    return matches[0] if len(matches) == 1 else (None, None)
 
 
 def git_add_whole_worktree_selector(segment, segment_index):
     index = 0
     while index < len(segment) and assignment.match(segment[index]):
         index += 1
-    index = transparent_timeout_command_index(segment, index, segment_index)
+    index, timeout_replay = observed_timeout_command_index(segment, index, segment_index)
     if index is None:
         return None
     if index < len(segment) and os.path.basename(segment[index]) == "env":
@@ -8019,7 +8070,7 @@ def git_add_whole_worktree_selector(segment, segment_index):
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
         return None
     index += 1
-    repo_dir = cwd
+    repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
     value_options = {"-C", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--git-dir", "--work-tree"}
     while index < len(segment):
         token = segment[index]
@@ -8080,7 +8131,7 @@ def broad_reset(segment, segment_index):
     index = 0
     while index < len(segment) and assignment.match(segment[index]):
         index += 1
-    index = transparent_timeout_command_index(segment, index, segment_index)
+    index, _ = observed_timeout_command_index(segment, index, segment_index)
     if index is None:
         return False
     if index < len(segment) and os.path.basename(segment[index]) == "env":

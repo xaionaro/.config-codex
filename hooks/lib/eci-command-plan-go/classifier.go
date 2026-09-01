@@ -203,16 +203,58 @@ const (
 
 // Request is the bounded JSON request consumed by the compiled planner.
 type Request struct {
-	Provider       Provider `json:"provider"`
-	Role           Role     `json:"role"`
-	CWD            string   `json:"cwd"`
-	CommandPath    string   `json:"command_path,omitempty"`
-	CommandPathSet bool     `json:"command_path_set"`
-	Marker         Marker   `json:"marker"`
-	ActiveSession  string   `json:"active_session"`
-	Command        string   `json:"command"`
-	ActiveMarkers  []string `json:"active_markers"`
-	ApprovedRoots  []string `json:"approved_roots"`
+	Provider            Provider        `json:"provider"`
+	Role                Role            `json:"role"`
+	CWD                 string          `json:"cwd"`
+	CommandPath         string          `json:"command_path,omitempty"`
+	CommandPathSet      bool            `json:"command_path_set"`
+	CommandPathExported *bool           `json:"command_path_exported,omitempty"`
+	TimeoutReplay       bool            `json:"timeout_replay,omitempty"`
+	TimeoutReplays      []TimeoutReplay `json:"timeout_replays,omitempty"`
+	Marker              Marker          `json:"marker"`
+	ActiveSession       string          `json:"active_session"`
+	Command             string          `json:"command"`
+	ActiveMarkers       []string        `json:"active_markers"`
+	ApprovedRoots       []string        `json:"approved_roots"`
+}
+
+// TimeoutReplayDisposition describes whether a direct timeout prefix was
+// observed launching the harmless probe child or remains opaque.
+//
+// Example: a timeout executable that exits before running its child has the
+// opaque disposition.
+type TimeoutReplayDisposition string
+
+const (
+	// TimeoutReplayObserved marks a timeout prefix whose probe child launched.
+	//
+	// Example: timeout 5 git status records observed when its replacement
+	// printf child acknowledges execution.
+	TimeoutReplayObserved TimeoutReplayDisposition = "observed"
+	// TimeoutReplayOpaque marks a known timeout nonlaunch with a complete
+	// literal execution context.
+	//
+	// Example: PATH=; timeout 5 git status records opaque because bare timeout
+	// cannot resolve from the explicitly empty PATH.
+	TimeoutReplayOpaque TimeoutReplayDisposition = "opaque"
+)
+
+// TimeoutReplay records the direct literal timeout prefix, its modeled shell
+// execution state, and whether the harmless replacement child was observed.
+// Segment is local to the request plan while ParentSegment preserves the
+// original compound-plan coordinate during recursive direct-route replay.
+//
+// Example: a top-level segment two record becomes segment one with
+// ParentSegment two when the Bash adapter validates that segment recursively.
+type TimeoutReplay struct {
+	Segment             int                      `json:"segment"`
+	ParentSegment       int                      `json:"parent_segment"`
+	Prefix              []string                 `json:"prefix"`
+	CWD                 string                   `json:"cwd"`
+	CommandPath         string                   `json:"command_path"`
+	CommandPathSet      bool                     `json:"command_path_set"`
+	CommandPathExported bool                     `json:"command_path_exported"`
+	Disposition         TimeoutReplayDisposition `json:"disposition"`
 }
 
 // TimeoutLaunch records the callback-selected timeout prefix whose harmless
@@ -297,6 +339,7 @@ type Result struct {
 	HookSpecificOutput   *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 	LedgerRedirectAppend bool                `json:"ledger_redirect_append,omitempty"`
 	TimeoutLaunches      []TimeoutLaunch     `json:"timeout_launches,omitempty"`
+	TimeoutReplays       []TimeoutReplay     `json:"timeout_replays,omitempty"`
 	Plan                 *PlanTopology       `json:"plan,omitempty"`
 }
 
@@ -745,15 +788,23 @@ func Classify(request Request) Result {
 
 	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
 	var timeoutLaunches []TimeoutLaunch
+	var timeoutReplays []TimeoutReplay
+	timeoutState := timeoutReplayStateForRequest(request)
 	decision := DecisionAllow
 	ledgerRedirectAppend := false
 	for index, current := range parsed.segments {
 		if request.Marker == MarkerActive {
 			// Observe this segment only after all earlier segments have had a
 			// chance to return their concrete diagnostic.
-			launch, observed := timeoutLaunchForSegment(request, current, index+1)
-			if observed {
-				timeoutLaunches = append(timeoutLaunches, launch)
+			replay, recorded := timeoutReplayForSegment(request, current, index+1, timeoutState)
+			if recorded {
+				timeoutReplays = append(timeoutReplays, replay)
+				if replay.Disposition == TimeoutReplayObserved {
+					timeoutLaunches = append(timeoutLaunches, TimeoutLaunch{
+						Segment: index + 1,
+						Prefix:  append([]string(nil), replay.Prefix...),
+					})
+				}
 			}
 		}
 		segmentDecision, diagnostic := inspectSegment(
@@ -777,10 +828,14 @@ func Classify(request Request) Result {
 			}
 			result := withCompoundPlan(deniedResult(request, *diagnostic), parsed)
 			result.TimeoutLaunches = timeoutLaunches
+			result.TimeoutReplays = timeoutReplays
 			return result
 		}
 		if segmentDecision == DecisionDefer {
 			decision = DecisionDefer
+		}
+		if index < len(parsed.operators) {
+			timeoutState = advanceTimeoutReplayState(timeoutState, current, parsed.operators[index])
 		}
 	}
 	if request.Marker == MarkerActive && request.Role == RoleCoordinator &&
@@ -798,6 +853,7 @@ func Classify(request Request) Result {
 		DeferredRoute:        deferredRouteForPlan(request, parsed, decision, capabilities),
 		LedgerRedirectAppend: ledgerRedirectAppend,
 		TimeoutLaunches:      timeoutLaunches,
+		TimeoutReplays:       timeoutReplays,
 		Plan:                 compoundPlanTopology(parsed),
 	}
 }
@@ -1445,50 +1501,265 @@ func isFileDescriptorDuplicationTarget(value string) bool {
 	return value == "-" || isDecimalFileDescriptor(value)
 }
 
-// timeoutLaunchForSegment records one direct timeout prefix only after the
-// callback-selected executable runs the harmless probe child.
+// timeoutReplayState is the deliberately narrow literal shell state that can
+// influence a later direct timeout lookup or probe environment.
 //
-// Example: `timeout --signal TERM 5 git status` can record its prefix, while a
-// leading assignment or an env wrapper remains an ordinary opaque command.
-func timeoutLaunchForSegment(
+// Example: PATH=/tools; export -n PATH retains a set PATH for lookup while
+// marking that PATH must be absent from the probe child environment.
+type timeoutReplayState struct {
+	cwd          string
+	commandPath  string
+	pathSet      bool
+	pathExported bool
+	known        bool
+}
+
+// timeoutReplayStateForRequest returns the callback's initial state when its
+// CWD is verified. Older callers that do not send an export attribute retain
+// the historical environment-derived behavior for a set PATH.
+//
+// Example: a callback with command_path_set=false starts with an unset PATH.
+func timeoutReplayStateForRequest(request Request) timeoutReplayState {
+	cwd, ok := timeoutProbeContext(request)
+	if !ok {
+		return timeoutReplayState{}
+	}
+	pathExported := request.CommandPathSet
+	if request.CommandPathExported != nil {
+		pathExported = request.CommandPathSet && *request.CommandPathExported
+	}
+	return timeoutReplayState{
+		cwd:          cwd,
+		commandPath:  request.CommandPath,
+		pathSet:      request.CommandPathSet,
+		pathExported: pathExported,
+		known:        true,
+	}
+}
+
+// advanceTimeoutReplayState advances only an unconditional direct state-only
+// segment. Every other prefix is intentionally opaque so an uncertain shell
+// effect cannot manufacture a timeout observation.
+//
+// Example: cd /tmp; PATH=/tools advances state, while cd /tmp && timeout
+// poisons the state because the conditional may not run.
+func advanceTimeoutReplayState(
+	state timeoutReplayState,
+	current segment,
+	operator string,
+) timeoutReplayState {
+	if !state.known || operator != ";" && operator != "\n" {
+		return timeoutReplayState{}
+	}
+	if !timeoutSegmentIsLiteral(current.command) || len(current.redirects) != 0 {
+		return timeoutReplayState{}
+	}
+	if len(current.argv) == 1 && assignmentName(current.argv[0]) == "PATH" {
+		return timeoutReplayState{
+			cwd:          state.cwd,
+			commandPath:  strings.TrimPrefix(current.argv[0].value, "PATH="),
+			pathSet:      true,
+			pathExported: state.pathExported,
+			known:        true,
+		}
+	}
+	if len(current.argv) == 2 && current.argv[0].value == "cd" &&
+		!current.argv[0].quoted && !current.argv[1].quoted &&
+		isVerifiedAbsoluteTimeoutCWD(current.argv[1].value) {
+		return timeoutReplayState{
+			cwd:          current.argv[1].value,
+			commandPath:  state.commandPath,
+			pathSet:      state.pathSet,
+			pathExported: state.pathExported,
+			known:        true,
+		}
+	}
+	if len(current.argv) == 2 && current.argv[0].value == "export" &&
+		!current.argv[0].quoted && !current.argv[1].quoted {
+		switch {
+		case current.argv[1].value == "PATH":
+			return timeoutReplayState{
+				cwd:          state.cwd,
+				commandPath:  state.commandPath,
+				pathSet:      state.pathSet,
+				pathExported: state.pathSet,
+				known:        true,
+			}
+		case assignmentName(current.argv[1]) == "PATH":
+			return timeoutReplayState{
+				cwd:          state.cwd,
+				commandPath:  strings.TrimPrefix(current.argv[1].value, "PATH="),
+				pathSet:      true,
+				pathExported: true,
+				known:        true,
+			}
+		}
+	}
+	if len(current.argv) == 3 && current.argv[0].value == "export" &&
+		current.argv[1].value == "-n" && current.argv[2].value == "PATH" &&
+		!current.argv[0].quoted && !current.argv[1].quoted && !current.argv[2].quoted {
+		return timeoutReplayState{
+			cwd:          state.cwd,
+			commandPath:  state.commandPath,
+			pathSet:      state.pathSet,
+			pathExported: false,
+			known:        true,
+		}
+	}
+	if len(current.argv) == 2 && current.argv[0].value == "unset" &&
+		current.argv[1].value == "PATH" && !current.argv[0].quoted && !current.argv[1].quoted {
+		return timeoutReplayState{
+			cwd:   state.cwd,
+			known: true,
+		}
+	}
+	return timeoutReplayState{}
+}
+
+// timeoutReplayForSegment records a direct literal timeout from the modeled
+// shell state, or consumes an already-observed recursive replay without
+// probing the outer callback context again.
+//
+// Example: a recursive segment with timeout_replay=true and an opaque record
+// stays opaque even when the outer callback PATH names a launching timeout.
+func timeoutReplayForSegment(
 	request Request,
 	current segment,
 	segmentIndex int,
-) (TimeoutLaunch, bool) {
-	if len(current.argv) == 0 || assignmentName(current.argv[0]) != "" ||
-		filepath.Base(current.argv[0].value) != "timeout" ||
-		!timeoutSegmentIsLiteral(current.command) {
-		return TimeoutLaunch{}, false
+	state timeoutReplayState,
+) (TimeoutReplay, bool) {
+	if request.TimeoutReplay {
+		return suppliedTimeoutReplayForSegment(request, current, segmentIndex)
 	}
-	prefix, _, ok := timeoutPrefix(current.argv)
-	if !ok {
-		return TimeoutLaunch{}, false
+	prefix, ok := directLiteralTimeoutPrefix(current)
+	if !ok || !state.known {
+		return TimeoutReplay{}, false
 	}
-	callbackCWD, ok := timeoutProbeContext(request)
-	if !ok {
-		return TimeoutLaunch{}, false
+	replay := TimeoutReplay{
+		Segment:             segmentIndex,
+		ParentSegment:       segmentIndex,
+		Prefix:              timeoutPrefixValues(prefix),
+		CWD:                 state.cwd,
+		CommandPath:         state.commandPath,
+		CommandPathSet:      state.pathSet,
+		CommandPathExported: state.pathExported,
+		Disposition:         TimeoutReplayOpaque,
 	}
 	executable, ok := resolveTimeoutExecutable(
 		current.argv[0].value,
-		callbackCWD,
-		request.CommandPath,
-		request.CommandPathSet,
+		state.cwd,
+		state.commandPath,
+		state.pathSet,
 	)
 	if !ok || !timeoutExecutableLaunchesProbeChild(
 		executable,
 		prefix,
-		callbackCWD,
-		request.CommandPath,
-		request.CommandPathSet,
+		state.cwd,
+		state.commandPath,
+		state.pathSet,
+		state.pathExported,
 	) {
-		return TimeoutLaunch{}, false
+		return replay, true
 	}
+	replay.Disposition = TimeoutReplayObserved
+	return replay, true
+}
 
+// suppliedTimeoutReplayForSegment validates one recursive record against the
+// direct timeout spelling before it can expose the child argv. Invalid or
+// absent data remains advisory and deliberately suppresses a stale reprobe.
+//
+// Example: a parent segment two record is valid only after Bash maps it to
+// local child segment one with the identical literal prefix.
+func suppliedTimeoutReplayForSegment(
+	request Request,
+	current segment,
+	segmentIndex int,
+) (TimeoutReplay, bool) {
+	prefix, ok := directLiteralTimeoutPrefix(current)
+	if !ok || segmentIndex != 1 || len(request.TimeoutReplays) != 1 {
+		return TimeoutReplay{}, false
+	}
+	replay := request.TimeoutReplays[0]
+	if !validTimeoutReplay(replay) || replay.Segment != segmentIndex ||
+		!sameTimeoutPrefix(replay.Prefix, prefix) {
+		return TimeoutReplay{}, false
+	}
+	return replay, true
+}
+
+// directLiteralTimeoutPrefix returns timeout's prefix only for a direct
+// literal command segment without assignments, wrappers, or shell expansion
+// syntax. Redirects are intentionally excluded from the probe argv.
+//
+// Example: timeout 5 git status is direct, while env timeout 5 git status is
+// opaque because env controls the child launch.
+func directLiteralTimeoutPrefix(current segment) ([]token, bool) {
+	if len(current.argv) == 0 || assignmentName(current.argv[0]) != "" || current.argv[0].quoted ||
+		filepath.Base(current.argv[0].value) != "timeout" ||
+		!timeoutSegmentIsLiteral(current.command) {
+		return nil, false
+	}
+	prefix, _, ok := timeoutPrefix(current.argv)
+	if !ok {
+		return nil, false
+	}
+	return prefix, true
+}
+
+// validTimeoutReplay reports whether replay carries one bounded, internally
+// coherent execution context. It never turns malformed metadata into a
+// planner diagnostic.
+//
+// Example: an unset PATH record must carry an empty value and no export bit.
+func validTimeoutReplay(replay TimeoutReplay) bool {
+	if replay.Segment < 1 || replay.Segment > maxSegments ||
+		replay.ParentSegment < 1 || replay.ParentSegment > maxSegments ||
+		!isVerifiedAbsoluteTimeoutCWD(replay.CWD) || len(replay.Prefix) < 2 ||
+		len(replay.Prefix) > maxArguments {
+		return false
+	}
+	for _, value := range replay.Prefix {
+		if value == "" || len(value) > maxArgumentBytes {
+			return false
+		}
+	}
+	if !replay.CommandPathSet && (replay.CommandPath != "" || replay.CommandPathExported) {
+		return false
+	}
+	switch replay.Disposition {
+	case TimeoutReplayObserved, TimeoutReplayOpaque:
+		return true
+	default:
+		return false
+	}
+}
+
+// sameTimeoutPrefix reports whether replay's encoded prefix is byte-for-byte
+// identical to the literal prefix parsed from the current segment.
+//
+// Example: timeout 5 and timeout 6 cannot share one observation.
+func sameTimeoutPrefix(values []string, prefix []token) bool {
+	if len(values) != len(prefix) {
+		return false
+	}
+	for index, argument := range prefix {
+		if values[index] != argument.value {
+			return false
+		}
+	}
+	return true
+}
+
+// timeoutPrefixValues copies prefix values into JSON-safe replay metadata.
+//
+// Example: timeout --signal TERM 5 yields ["timeout", "--signal", "TERM", "5"].
+func timeoutPrefixValues(prefix []token) []string {
 	values := make([]string, len(prefix))
 	for index, argument := range prefix {
 		values[index] = argument.value
 	}
-	return TimeoutLaunch{Segment: segmentIndex, Prefix: values}, true
+	return values
 }
 
 // timeoutSegmentIsLiteral conservatively rejects shell forms whose values can
@@ -1506,14 +1777,23 @@ func timeoutSegmentIsLiteral(command string) bool {
 // Example: an absolute existing callback directory permits a direct timeout
 // literal even when callback PATH is unset.
 func timeoutProbeContext(request Request) (string, bool) {
-	if !filepath.IsAbs(request.CWD) {
-		return "", false
-	}
-	info, err := os.Stat(request.CWD)
-	if err != nil || !info.IsDir() {
+	if !isVerifiedAbsoluteTimeoutCWD(request.CWD) {
 		return "", false
 	}
 	return request.CWD, true
+}
+
+// isVerifiedAbsoluteTimeoutCWD reports whether path is an existing absolute
+// directory suitable for direct timeout lookup and child execution.
+//
+// Example: /work/project is valid when it is a directory, while relative is
+// not a replayable callback CWD.
+func isVerifiedAbsoluteTimeoutCWD(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // resolveTimeoutExecutable resolves a direct timeout literal from the original
@@ -1585,6 +1865,7 @@ func timeoutExecutableLaunchesProbeChild(
 	callbackCWD string,
 	callbackPath string,
 	callbackPathSet bool,
+	callbackPathExported bool,
 ) bool {
 	probeChild, ok := resolvedExecutable(timeoutProbeChild)
 	if !ok || len(prefix) < 2 {
@@ -1614,7 +1895,7 @@ func timeoutExecutableLaunchesProbeChild(
 		environment = append(environment, entry)
 	}
 	environment = append(environment, "PWD="+callbackCWD)
-	if callbackPathSet {
+	if callbackPathSet && callbackPathExported {
 		environment = append(environment, "PATH="+callbackPath)
 	}
 	command.Env = environment
