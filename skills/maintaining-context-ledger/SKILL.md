@@ -5,13 +5,14 @@ description: Use when writing or verifying project-understanding ledgers, contex
 
 # Maintaining Context Ledgers
 
-Three files, side by side, all required:
+Three required records and one audit-only history, side by side:
 
 | File | Role | Edit mode |
 |------|------|-----------|
 | `project-understanding.md` (the ledger) | Current-state snapshot | Rewrite in place; stale entries deleted |
 | `high_level_log.md` (the log) | Append-only history of every material change | Append only; never edit, never delete past entries |
 | `latest-status-report.md` (the report) | Latest status report per `writing-status-reports` | Overwrite in place each refresh |
+| `forecast-target-history.tsv` | Audit-only root-task forecast-target history | Append only; corrections add a new target row |
 
 The ledger answers what is true now. The log answers what happened, in order, and why we believe what is now in the ledger. The report answers the most recent status update, ready to relay to the user without recomputation. They are not redundant: the ledger has no history; the log has no synthesis; the report has no detail beyond the status-report categories.
 
@@ -25,17 +26,18 @@ For ECI lane tracking, record `Stage: normal` or `Stage: emergency` as useful cu
 
 ## Storage
 
-For ECI/ATE, all three files live at:
+For ECI/ATE, these records live at:
 
 ```text
 ~/.cache/codex-proof/$SESSION_ID/project-understanding.md   # the ledger
 ~/.cache/codex-proof/$SESSION_ID/high_level_log.md          # the log
 ~/.cache/codex-proof/$SESSION_ID/latest-status-report.md    # the report
+~/.cache/codex-proof/$SESSION_ID/forecast-target-history.tsv # target history
 ```
 
-Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. Both the ledger and the report survive across stops by construction; do not place them under any other name.
+Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. The ledger, report, and target history survive across stops by construction; do not place them under any other name.
 
-Create each file once; then update in place. Never delete/recreate.
+Create the three required files once. Create `forecast-target-history.tsv` with its header at the first `none → A` transition. Then update in place. Never delete/recreate.
 
 ## High-Level Log
 
@@ -155,6 +157,26 @@ Forecasts are advisory. They never gate work, grant or deny permissions, require
 artifacts or receipts, create blockers, require parsers, or require per-command
 ceremony. Missing or stale forecasts are planning-quality defects. Reconcile
 them alongside safe work without delaying the update.
+
+### Forecast target history
+
+`forecast-target-history.tsv` is the canonical audit-only history for root-task forecast targets. It starts with exactly:
+
+```text
+added_utc	root_task_id	new_target_utc
+```
+
+Every row records the UTC addition time, root task ID, and new UTC target. Append only: never edit, delete, reorder, or reuse a row.
+
+| Target transition | `high_level_log.md` | `forecast-target-history.tsv` |
+| --- | --- | --- |
+| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row. |
+| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row. |
+| A → A | No high-level-log entry or history row for mere reaffirmation. | No row. |
+| close | Record material completion normally. | No date row. |
+| correction | Append a correction naming the prior entry and corrected target. | Append the corrected-target row; never rewrite earlier rows. |
+
+This history is audit-only. It never gates work, grants or denies permission, creates a blocker, or delays ordinary work. It is not a required session record or work prerequisite. Reconcile a missing, stale, or malformed history alongside ordinary work.
 
 ## Structure
 

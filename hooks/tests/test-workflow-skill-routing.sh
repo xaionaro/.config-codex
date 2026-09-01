@@ -880,8 +880,8 @@ assert_forecast_source_contract() {
 assert_coordinator_progress_forecast_contract() {
   local source="$1" input="$2" section attached_lane_template attached_root_template
 
-  attached_lane_template='For[[:space:]]+every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line[[:space:]]+for[[:space:]]+each[[:space:]]+executing[[:space:]]+lane:[[:blank:]]*'$'\n''[[:blank:]]*[-*][[:blank:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
-  attached_root_template='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+include[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:blank:]]*'$'\n''[[:blank:]]*[-*][[:blank:]]*`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+  attached_lane_template='Every[[:space:]]+material[[:space:]]+coordinator-to-user[[:space:]]+status/progress[[:space:]]+update[[:space:]]+has[[:space:]]+exactly[[:space:]]+one[[:space:]]+`Forecast[[:space:]]+targets`[[:space:]]+block\.[[:space:]]+Place[[:space:]]+it[[:space:]]+after[[:space:]]+changed[[:space:]]+state[[:space:]]+and[[:space:]]+before[[:space:]]+Verification/Next[[:space:]]+focus\.[[:space:]]+[-*][[:space:]]+For[[:space:]]+each[[:space:]]+executing[[:space:]]+lane,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:space:]]+[-*][[:space:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+  attached_root_template='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+include[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:space:]]+[-*][[:space:]]*`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
 
   section="$(extract_h2_section <(printf '%s\n' "$input") '## Engage and route')" ||
     fail "$source is missing forecast source contract: bounded Engage and route policy block"
@@ -977,9 +977,9 @@ assert_coordinator_progress_forecast_contract_fixtures() {
   local source source_pair soft_wrapped_pair detached_pair history_rehomed soft_wrapped
 
   source="$(<"$COORDINATOR")"
-  source_pair=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`'
-  soft_wrapped_pair=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - `Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
-  detached_pair=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - See the historical appendix.\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - See the historical appendix.'
+  source_pair=$'- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`'
+  soft_wrapped_pair=$'- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - `Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
+  detached_pair=$'- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.\n  - For each executing lane, report this standalone line:\n    - See the historical appendix.\n  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n    - See the historical appendix.'
   soft_wrapped="${source/"$source_pair"/"$soft_wrapped_pair"}"
   [ "$soft_wrapped" != "$source" ] || fail 'coordinator soft-wrap fixture did not replace the attached lane template'
   assert_coordinator_progress_forecast_contract 'soft-wrapped coordinator lane binding fixture' "$soft_wrapped"
@@ -1007,6 +1007,114 @@ assert_source_forecast_mutations_are_rejected() {
     assert_forecast_source_mutation_is_rejected "$file" 'stage lane outcome' "$stage"
     assert_forecast_source_mutation_is_rejected "$file" 'additive root completion' "$additive"
   done
+}
+
+require_forecast_target_history_text() {
+  local source="$1" description="$2" expected="$3" input="$4"
+
+  [[ "$input" == *"$expected"* ]] ||
+    fail "$source is missing forecast target history contract: $description"
+}
+
+require_forecast_target_history_occurrences() {
+  local source="$1" description="$2" expected="$3" input="$4" count
+
+  count="$(grep -Fc -- "$expected" <<<"$input" || true)"
+  [ "$count" -eq 1 ] ||
+    fail "$source violates forecast target history contract: $description"
+}
+
+assert_forecast_target_history_ledger_contract() {
+  local source="$1" input="$2" header
+
+  header=$'added_utc\troot_task_id\tnew_target_utc'
+  require_forecast_target_history_text "$source" 'canonical history name' \
+    '`forecast-target-history.tsv` is the canonical audit-only history for root-task forecast targets.' "$input"
+  require_forecast_target_history_text "$source" 'exact TSV header' "$header" "$input"
+  require_forecast_target_history_text "$source" 'append-only rows' \
+    'Append only: never edit, delete, reorder, or reuse a row.' "$input"
+  require_forecast_target_history_text "$source" 'none-to-A transition' \
+    '| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row. |' "$input"
+  require_forecast_target_history_text "$source" 'A-to-B transition' \
+    '| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row. |' "$input"
+  require_forecast_target_history_text "$source" 'A-to-A reaffirmation rule' \
+    '| A → A | No high-level-log entry or history row for mere reaffirmation. | No row. |' "$input"
+  require_forecast_target_history_text "$source" 'close row rule' \
+    '| close | Record material completion normally. | No date row. |' "$input"
+  require_forecast_target_history_text "$source" 'append-only correction rule' \
+    '| correction | Append a correction naming the prior entry and corrected target. | Append the corrected-target row; never rewrite earlier rows. |' "$input"
+  require_forecast_target_history_text "$source" 'audit-only non-gate boundary' \
+    'This history is audit-only. It never gates work, grants or denies permission, creates a blocker, or delays ordinary work.' "$input"
+  require_forecast_target_history_text "$source" 'not a required session record' \
+    'It is not a required session record or work prerequisite.' "$input"
+}
+
+assert_forecast_target_history_coordinator_contract() {
+  local source="$1" input="$2" preamble
+
+  preamble='- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.'
+  require_forecast_target_history_text "$source" 'ledger audit-contract pointer' \
+    'Use the [`forecast-target-history.tsv` audit contract](../../maintaining-context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.' "$input"
+  require_forecast_target_history_text "$source" 'material target-block preamble' "$preamble" "$input"
+  require_forecast_target_history_occurrences "$source" 'target-block preamble is duplicated or absent' "$preamble" "$input"
+  require_forecast_target_history_text "$source" 'no duplicate target lines' \
+    "- Do not repeat that block's preamble or canonical target line elsewhere in the update." "$input"
+  require_forecast_target_history_text "$source" 'non-material output omission' \
+    '- Preparatory, pure explanatory, and pure timeline output omit the block. If it materially changes state, use the one material-update block.' "$input"
+  require_forecast_target_history_text "$source" 'requested-outcome repair stays in lane' \
+    '- Keep a finding that repairs or proves the requested outcome in its current lane. Use a follow-up only when the remedy creates a separate outcome.' "$input"
+}
+
+assert_forecast_target_history_mutation_is_rejected() {
+  local checker="$1" source="$2" description="$3" input="$4" output
+
+  if output="$("$checker" "$source" "$input" 2>&1)"; then
+    fail "forecast target history mutation was admitted: $source: $description"
+  fi
+  grep -Fq -- 'forecast target history contract' <<<"$output" ||
+    fail "forecast target history mutation was rejected for an unexpected reason: $source: $description"
+}
+
+assert_forecast_target_history_contract() {
+  assert_forecast_target_history_ledger_contract "$LEDGER" "$(<"$LEDGER")"
+  assert_forecast_target_history_coordinator_contract "$COORDINATOR" "$(<"$COORDINATOR")"
+}
+
+assert_forecast_target_history_contract_mutations() {
+  local ledger coordinator header preamble mutation
+
+  ledger="$(<"$LEDGER")"
+  coordinator="$(<"$COORDINATOR")"
+  header=$'added_utc\troot_task_id\tnew_target_utc'
+  preamble='- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.'
+
+  mutation="${ledger/"$header"/$'added_utc\troot_task_id\ttarget_utc'}"
+  [ "$mutation" != "$ledger" ] || fail 'forecast target-history schema mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'schema' "$mutation"
+
+  mutation="${ledger/'| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row. |'/'| A → B | Append a material entry naming new B. | Append B row. |'}"
+  [ "$mutation" != "$ledger" ] || fail 'forecast target-history transition mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'A-to-B transition evidence' "$mutation"
+
+  mutation="${ledger/'This history is audit-only. It never gates work, grants or denies permission, creates a blocker, or delays ordinary work.'/'This history gates work.'}"
+  [ "$mutation" != "$ledger" ] || fail 'forecast target-history audit-only mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'audit-only non-gate boundary' "$mutation"
+
+  mutation="${ledger/'Append the corrected-target row; never rewrite earlier rows.'/'Rewrite the prior row with the corrected target.'}"
+  [ "$mutation" != "$ledger" ] || fail 'forecast target-history correction mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'append-only correction' "$mutation"
+
+  mutation="${coordinator/'- Preparatory, pure explanatory, and pure timeline output omit the block. If it materially changes state, use the one material-update block.'/'- Preparatory, pure explanatory, and pure timeline output include the block.'}"
+  [ "$mutation" != "$coordinator" ] || fail 'forecast target-block placement mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_coordinator_contract "$COORDINATOR" 'reporting placement' "$mutation"
+
+  mutation="${coordinator/'- Keep a finding that repairs or proves the requested outcome in its current lane. Use a follow-up only when the remedy creates a separate outcome.'/'- Route every finding to a follow-up.'}"
+  [ "$mutation" != "$coordinator" ] || fail 'forecast target-block scope mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_coordinator_contract "$COORDINATOR" 'requested-outcome repair stays in lane' "$mutation"
+
+  mutation="${coordinator/"$preamble"/"$preamble"$'\n'"$preamble"}"
+  [ "$mutation" != "$coordinator" ] || fail 'forecast target-block duplicate-preamble mutation did not alter its fixture'
+  assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_coordinator_contract "$COORDINATOR" 'duplicate preamble' "$mutation"
 }
 
 assert_lane_forecast_contract() {
@@ -1259,6 +1367,8 @@ assert_emergency_qualification_source
 assert_emergency_and_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture
+assert_forecast_target_history_contract
+assert_forecast_target_history_contract_mutations
 assert_forecast_source_contract_fixtures
 assert_coordinator_progress_forecast_contract_fixtures
 assert_lane_forecast_contract

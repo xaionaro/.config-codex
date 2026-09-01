@@ -8,15 +8,20 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An outer ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer and implementer producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
-- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:
-  - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
-- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:
-  - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
+- Every material coordinator-to-user status/progress update has exactly one `Forecast targets` block. Place it after changed state and before Verification/Next focus.
+  - For each executing lane, report this standalone line:
+    - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
+  - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:
+    - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
+- Do not repeat that block's preamble or canonical target line elsewhere in the update.
+- Preparatory, pure explanatory, and pure timeline output omit the block. If it materially changes state, use the one material-update block.
+- Keep a finding that repairs or proves the requested outcome in its current lane. Use a follow-up only when the remedy creates a separate outcome.
 - The forecast line itself names the finished outcome; a separate Lane or Next milestone does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
 - Use the two templates above exactly: named lane/task or root outcome and UTC deadline only. Do not append text.
 - For a changed lane or root forecast, restate its current canonical line in the same update, then state Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.
 - If any forecast is missing or stale, say so and reconcile it alongside safe work without delaying the update.
 - Forecasts are advisory. They never gate work, grant or deny permissions, require artifacts or receipts, create blockers, require parsers, or require per-command ceremony.
+- Use the [`forecast-target-history.tsv` audit contract](../../maintaining-context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.
 - Before a coordinator edits ordinary repository code, create or reuse a bounded implementer assignment with the target, intended change, and verification. Do not attempt then deny the ordinary edit. Report the handoff. If no implementer is free, queue it and continue other admitted work; capacity alone is not a user blocker. Session coordination documents, ledgers, plans, status reports, handoffs, and proof notes remain coordinator-owned. A genuine code-edit edge case may use the session-scoped self-service coordinator self-edit hatch for 600 seconds; re-activation replaces rather than stacks the window. It needs no user approval artifact and changes routing only.
 - When a lane or assignment is `Stage: emergency`, the packet records the [Emergency Unblock](emergency-unblock.md) protocol and `provisional Emergency Unblock — unchecked`; before any resume, record the `emergency→normal ECI Step 1` transition in the assignment and current ledger state.
 - Follow the shared pause-all-work and stop-recovery modules only on their exact predicates. Load policy-pressure-tests only for workflow-policy changes.
