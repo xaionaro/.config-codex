@@ -1,16 +1,16 @@
-## Pre-split coverage map
+## Workflow coverage map
 
-Baseline source SHA-256: `9d9d990b4c65c2175bd10d87949512293fc64704aeb4672a868702aa0bcd6623`.
+This map is an audit index, not an admission inventory. Use it to find the right guidance; never require a source version, hash, record, or route before ordinary bounded work.
 
-| Source family | Invariant | Destination | Verification |
-| --- | --- | --- | --- |
-| `ATE :1-109,177-245,290-397,427-526,542-704,830-1008` | outer lifecycle/roles/lineage | ATE router + orchestration + coordinator-runtime | routing-test |
-| `ATE :110-176` | exact pause transaction | pause-all-work | routing-test |
-| `ATE :246-289,705-797` | acceptance/review runtime | coordinator-runtime + review-policy + ATE review | routing-test |
-| `ATE :398-426` | independent style admission | coding-style-admission | routing-test |
-| `ATE :512-526,726-759` | architecture/PoC/design review | ATE design | routing-test |
-| `ATE research` | fact discovery | ATE research | routing-test |
-| `ATE execution+debug` | owned implementation/RCA | ATE execution + debugging-discipline | routing-test |
-| `ATE :798-829` | test design/QA | ATE testing-and-qa | routing-test |
-| `ATE :1009-1051` | policy scenarios | policy-pressure-tests | routing-test |
-| `ATE :1052-1122` | red flags/cross-skill limits | owners + ATE router | routing-test |
+| Concern | Destination | Verification |
+| --- | --- | --- |
+| outer lifecycle, role routing, and lineage | ATE router + orchestration + coordinator runtime | routing test |
+| direct-user pause behavior | pause-all-work | routing test |
+| independent review and acceptance | coordinator runtime + review policy + ATE review | fresh A/B/C and required E2E |
+| style guidance | coding-style-admission | review + formatter/linter where applicable |
+| architecture, PoC, and design choice | ATE design | independent review |
+| fact discovery | ATE research | source checks |
+| owned implementation and debugging | ATE execution + debugging-discipline | target-appropriate checks |
+| test design and QA | ATE testing-and-qa | required E2E and tests |
+| workflow-policy pressure cases | policy-pressure-tests | routing test |
+| cross-skill red flags | owning module + ATE router | focused review |

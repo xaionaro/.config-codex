@@ -96,6 +96,49 @@ forbid_pattern() {
   ! grep -Eiq -- "$pattern" "$file" || fail "$file retains an ordinary-work gate matching: $pattern"
 }
 
+require_coverage_map_text() {
+  local source="$1" label="$2" description="$3" expected="$4"
+
+  grep -Fq -- "$expected" <<<"$source" ||
+    fail "coverage map non-gate contract failed: $label is missing $description"
+}
+
+forbid_coverage_map_text() {
+  local source="$1" label="$2" forbidden="$3"
+
+  ! grep -Fq -- "$forbidden" <<<"$source" ||
+    fail "coverage map non-gate contract failed: $label retains $forbidden"
+}
+
+forbid_coverage_map_pattern() {
+  local source="$1" label="$2" pattern="$3"
+
+  ! grep -Eiq -- "$pattern" <<<"$source" ||
+    fail "coverage map non-gate contract failed: $label retains an ordinary-work gate"
+}
+
+assert_coverage_map_non_gate_contract() {
+  local source="$1" label="$2"
+
+  require_coverage_map_text "$source" "$label" 'the workflow coverage heading' '## Workflow coverage map'
+  require_coverage_map_text "$source" "$label" 'the audit-index introduction' \
+    'This map is an audit index, not an admission inventory.'
+  forbid_coverage_map_text "$source" "$label" 'Baseline source SHA-256:'
+  forbid_coverage_map_text "$source" "$label" 'exact pause transaction'
+  forbid_coverage_map_pattern "$source" "$label" \
+    '(record|receipt|hash|source[[:space:]-]+version|coverage-map[[:space:]-]+entr(y|ies)).*(must|required).*(before|for|to).*(ordinary|bounded|normal).*(work|write)'
+}
+
+assert_coverage_map_non_gate_mutation_is_rejected() {
+  local source="$1" label="$2" mutation="$3" output
+
+  if output="$(assert_coverage_map_non_gate_contract "$mutation" "$label" 2>&1)"; then
+    fail "coverage map non-gate mutation was admitted: $label"
+  fi
+  grep -Fq -- 'coverage map non-gate contract failed' <<<"$output" ||
+    fail "coverage map non-gate mutation was rejected for an unexpected reason: $label"
+}
+
 forbid_flattened_pattern() {
   local file="$1" description="$2" pattern="$3" text
 
@@ -241,12 +284,19 @@ assert_eci_relationships() {
 }
 
 assert_compaction_provenance() {
+  local eci_source ate_source mutation
+
   require_text "$ECI" 'Maintenance provenance: [coverage map](references/coverage-map.md).'
   require_text "$ATE" 'Maintenance provenance: [coverage map](references/coverage-map.md).'
-  require_text "$ECI_COVERAGE" '## Workflow coverage map'
-  require_text "$ECI_COVERAGE" 'This map is an audit index, not an admission inventory.'
-  require_text "$ATE_COVERAGE" '## Pre-split coverage map'
-  require_text "$ATE_COVERAGE" 'Baseline source SHA-256: `9d9d990b4c65c2175bd10d87949512293fc64704aeb4672a868702aa0bcd6623`.'
+  eci_source="$(<"$ECI_COVERAGE")"
+  ate_source="$(<"$ATE_COVERAGE")"
+  assert_coverage_map_non_gate_contract "$eci_source" 'ECI coverage map'
+  assert_coverage_map_non_gate_contract "$ate_source" 'ATE coverage map'
+
+  mutation="$eci_source"$'\n\nReceipt required to execute bounded work.'
+  assert_coverage_map_non_gate_mutation_is_rejected "$eci_source" 'ECI coverage map' "$mutation"
+  mutation="$ate_source"$'\n\nReceipt required to execute bounded work.'
+  assert_coverage_map_non_gate_mutation_is_rejected "$ate_source" 'ATE coverage map' "$mutation"
 }
 
 assert_reviewer_role_split() {
