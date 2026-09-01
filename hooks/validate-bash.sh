@@ -378,7 +378,26 @@ fi
 if [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" = true ]; then
   CODEX_TIMEOUT_REPLAY=true
   CODEX_TIMEOUT_REPLAYS="$(jq -c '
-    if (.timeout_replays? | type) == "array" then .timeout_replays else [] end
+    def exact_keys($expected): (keys | sort) == $expected;
+    def positive_integer: type == "number" and floor == . and . >= 1 and . <= 8;
+    def bounded_string: type == "string" and length > 0 and length <= 4096;
+    def replay_fact:
+      type == "object" and
+      exact_keys(["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) and
+      (.segment | positive_integer) and
+      (.parent_segment | positive_integer) and
+      (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; bounded_string)) and
+      (.cwd | type == "string" and test("^/")) and
+      (.command_path | type == "string") and
+      (.command_path_set | type == "boolean") and
+      (.command_path_exported | type == "boolean") and
+      (.disposition == "observed" or .disposition == "opaque") and
+      (if .command_path_set then true else (.command_path == "" and .command_path_exported == false) end);
+    if (.timeout_replays? | type) == "array" then
+      [.timeout_replays[] | select(replay_fact)]
+    else
+      []
+    end
   ' <<<"$input" 2>/dev/null || printf '[]')"
 fi
 
@@ -1391,14 +1410,15 @@ validate_planner_compound_segments() {
     segment="${segments[parent_segment]}"
     parent_segment=$((parent_segment + 1))
     if ! replay_records="$(jq -c --argjson parent_segment "$parent_segment" '
-      if (.timeout_replays? | type) == "array" then
-        [.timeout_replays[] |
+      if type == "array" then
+        [.[] |
+          select(type == "object") |
           select(.segment == $parent_segment and .parent_segment == $parent_segment) |
           .segment = 1]
       else
         []
       end
-    ' <<<"${plan_output:-}" 2>/dev/null)"; then
+    ' <<<"${PLAN_TIMEOUT_REPLAYS:-[]}" 2>/dev/null)"; then
       return 2
     fi
     if ! child_input="$(printf '%s' "$input" | jq -c --arg command "$segment" --argjson replay_records "$replay_records" '

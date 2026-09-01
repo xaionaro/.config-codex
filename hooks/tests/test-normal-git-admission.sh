@@ -146,7 +146,7 @@ printf '%s\n' \
 chmod 755 -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FAKE_TIMEOUT_ACCEPT_DIR/timeout" "$FAKE_TIMEOUT_INVALID_DIR/timeout" "$FAKE_TIMEOUT_REQUIRED_DIR/timeout"
 
 run_hook() {
-  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" output="$TMP_ROOT/output.json" stderr=/dev/null
+  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" callback_cwd="${5:-$REPO}" timeout_replays="${6:-[]}" compound_replay="${7:-false}" output="$TMP_ROOT/output.json" stderr=/dev/null
   local subagent=false
   if [ "$role" = worker ]; then
     subagent=true
@@ -156,12 +156,13 @@ run_hook() {
     runner=(/bin/bash -x)
     stderr="$TMP_ROOT/hook-xtrace.log"
   fi
-  jq -cn --arg session "$SESSION" --arg cwd "$REPO" --arg command "$command" \
-    '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' |
+  jq -cn --arg session "$SESSION" --arg cwd "$callback_cwd" --arg command "$command" --argjson timeout_replays "$timeout_replays" \
+    '{session_id:$session,cwd:$cwd,timeout_replays:$timeout_replays,tool_input:{command:$command}}' |
     (
       export HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT"
       export CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$subagent"
       export XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state"
+      export ECI_COMPOUND_SEGMENT_VALIDATION="$compound_replay"
       case "$probe_required" in
         present) export PROBE_REQUIRED=present ;;
         absent) unset PROBE_REQUIRED ;;
@@ -188,8 +189,8 @@ run_hook() {
 }
 
 assert_allowed() {
-  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" output
-  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required")"
+  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" callback_cwd="${5:-$REPO}" timeout_replays="${6:-[]}" compound_replay="${7:-false}" output
+  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required" "$callback_cwd" "$timeout_replays" "$compound_replay")"
   if [ -s "$output" ]; then
     printf 'ordinary Git command was denied: %q\n' "$command" >&2
     cat -- "$output" >&2
@@ -198,8 +199,8 @@ assert_allowed() {
 }
 
 assert_denied_code() {
-  local command="$1" code="$2" role="${3:-coordinator}" detail="${4:-}" path_mode="${5:-configured}" probe_required="${6:-absent}" output
-  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required")"
+  local command="$1" code="$2" role="${3:-coordinator}" detail="${4:-}" path_mode="${5:-configured}" probe_required="${6:-absent}" callback_cwd="${7:-$REPO}" timeout_replays="${8:-[]}" compound_replay="${9:-false}" output
+  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required" "$callback_cwd" "$timeout_replays" "$compound_replay")"
   jq -e --arg code "[$code]" --arg detail "$detail" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains($code)) and
@@ -283,6 +284,31 @@ for role in coordinator worker; do
   assert_denied_code "cd $STATE_CHILD; cd $REPO; ./timeout --signal TERM 5 git add ." ECI_BROAD_DESTRUCTIVE_DENIED "$role" \
     "effect=whole-worktree-staging target=$REPO selector=."
 done
+
+# An observed timeout child resolves its relative writer target from the
+# semicolon-modeled CWD. The real inner control file remains denied, while an
+# outer hardlink to that control file does not falsely deny an inner ordinary
+# eci_active name during recursive segment validation.
+TIMEOUT_CONTROL_INNER="$PROOF_ROOT/$SESSION"
+TIMEOUT_ORDINARY_INNER="$TMP_ROOT/timeout-ordinary-inner"
+OUTER_CONTROL_ALIAS="$REPO/eci_active"
+mkdir -p -- "$TIMEOUT_ORDINARY_INNER"
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$TIMEOUT_CONTROL_INNER/timeout"
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$TIMEOUT_ORDINARY_INNER/timeout"
+printf '%s\n' ordinary >"$TIMEOUT_ORDINARY_INNER/eci_active"
+chmod 755 -- "$TIMEOUT_CONTROL_INNER/timeout" "$TIMEOUT_ORDINARY_INNER/timeout"
+TIMEOUT_CONTROL_MARKER="$(realpath -e -- "$TIMEOUT_CONTROL_INNER/eci_active")"
+CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+assert_denied_code "cd $TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" ECI_PLAN_LIVE_CONTROL_DENIED worker \
+  "path=$TIMEOUT_CONTROL_MARKER"
+ln -- "$TIMEOUT_CONTROL_INNER/eci_active" "$OUTER_CONTROL_ALIAS"
+assert_allowed "cd $TIMEOUT_ORDINARY_INNER; ./timeout 5 rm eci_active" worker configured absent "$REPO"
+rm -- "$OUTER_CONTROL_ALIAS"
+
+# A recursive callback consumes only planner-shaped replay records. A scalar
+# replay entry is advisory metadata, so an otherwise ordinary compound stays
+# ordinary instead of becoming an internal planner denial.
+assert_allowed 'printf ordinary; printf still-ordinary' coordinator configured absent "$REPO" '[1]' true
 
 # PATH state is likewise literal and ordered: assignments, export changes,
 # set-empty, unset, and a known nonlaunch cannot borrow the callback PATH.

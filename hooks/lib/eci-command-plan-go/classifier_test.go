@@ -1351,6 +1351,118 @@ func TestTimeoutReplayMissingOrMalformedDataStaysOrdinary(t *testing.T) {
 	}
 }
 
+// TestObservedTimeoutReplayUsesEffectiveCWDForLiveControl verifies that an
+// observed timeout child resolves a relative writer target from its modeled
+// execution CWD without moving the callback's outer scope anchor.
+//
+// Example: cd /inner; ./timeout 5 rm eci_active checks /inner/eci_active.
+func TestObservedTimeoutReplayUsesEffectiveCWDForLiveControl(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outerDirectory := filepath.Join(root, "outer")
+	actualControlDirectory := filepath.Join(root, "actual-control")
+	ordinaryDirectory := filepath.Join(root, "ordinary")
+	for _, directory := range []string{outerDirectory, actualControlDirectory, ordinaryDirectory} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatalf("create directory %q: %v", directory, err)
+		}
+	}
+
+	launchingTimeout := "#!/bin/sh\n[ \"${1-}\" = 5 ] || exit 125\nshift\nexec \"$@\"\n"
+	for _, directory := range []string{actualControlDirectory, ordinaryDirectory} {
+		if err := os.WriteFile(filepath.Join(directory, "timeout"), []byte(launchingTimeout), 0o700); err != nil {
+			t.Fatalf("write timeout %q: %v", directory, err)
+		}
+	}
+
+	actualMarker := filepath.Join(actualControlDirectory, "eci_active")
+	outerMarker := filepath.Join(outerDirectory, "eci_active")
+	ordinaryMarker := filepath.Join(ordinaryDirectory, "eci_active")
+	for _, marker := range []string{actualMarker, outerMarker, ordinaryMarker} {
+		if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
+			t.Fatalf("write marker %q: %v", marker, err)
+		}
+	}
+
+	for _, testCase := range []struct {
+		name         string
+		outerCWD     string
+		innerCWD     string
+		activeMarker string
+		decision     DecisionKind
+		code         DiagnosticCode
+	}{
+		{
+			name:         "inner actual control stays denied",
+			outerCWD:     outerDirectory,
+			innerCWD:     actualControlDirectory,
+			activeMarker: actualMarker,
+			decision:     DecisionDeny,
+			code:         CodePlanLiveControlDenied,
+		},
+		{
+			name:         "outer control does not falsely deny inner ordinary file",
+			outerCWD:     outerDirectory,
+			innerCWD:     ordinaryDirectory,
+			activeMarker: outerMarker,
+			decision:     DecisionAllow,
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			command := "cd " + testCase.innerCWD + "; ./timeout 5 rm eci_active"
+			direct := activeWorker(command)
+			direct.CWD = testCase.outerCWD
+			direct.ActiveMarkers = []string{testCase.activeMarker}
+
+			assertTimeoutControlDecision(t, Classify(direct), testCase.decision, testCase.code, testCase.activeMarker)
+
+			recursive := activeWorker("./timeout 5 rm eci_active")
+			recursive.CWD = testCase.outerCWD
+			recursive.TimeoutReplay = true
+			recursive.TimeoutReplays = []TimeoutReplay{{
+				Segment:             1,
+				ParentSegment:       2,
+				Prefix:              []string{"./timeout", "5"},
+				CWD:                 testCase.innerCWD,
+				CommandPathSet:      false,
+				CommandPathExported: false,
+				Disposition:         TimeoutReplayObserved,
+			}}
+			recursive.ActiveMarkers = []string{testCase.activeMarker}
+
+			assertTimeoutControlDecision(t, Classify(recursive), testCase.decision, testCase.code, testCase.activeMarker)
+		})
+	}
+}
+
+// assertTimeoutControlDecision verifies the concrete live-control outcome for
+// both an outer compound command and its recursively replayed timeout child.
+//
+// Example: an inner eci_active marker produces CodePlanLiveControlDenied.
+func assertTimeoutControlDecision(
+	t *testing.T,
+	result Result,
+	decision DecisionKind,
+	code DiagnosticCode,
+	marker string,
+) {
+	t.Helper()
+	if result.Decision != decision {
+		t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, decision)
+	}
+	if code == "" {
+		if result.Diagnostic != nil {
+			t.Fatalf("diagnostic=%#v, want none", result.Diagnostic)
+		}
+		return
+	}
+	if result.Diagnostic == nil || result.Diagnostic.Code != code || result.Diagnostic.Path != marker {
+		t.Fatalf("diagnostic=%#v, want code=%q path=%q", result.Diagnostic, code, marker)
+	}
+}
+
 // TestTimeoutProbeStopsAfterEarlierConcreteDenial verifies that ordered
 // inspection returns before probing a later timeout after a concrete denial.
 //

@@ -793,6 +793,7 @@ func Classify(request Request) Result {
 	decision := DecisionAllow
 	ledgerRedirectAppend := false
 	for index, current := range parsed.segments {
+		segmentRequest := request
 		if request.Marker == MarkerActive {
 			// Observe this segment only after all earlier segments have had a
 			// chance to return their concrete diagnostic.
@@ -800,6 +801,9 @@ func Classify(request Request) Result {
 			if recorded {
 				timeoutReplays = append(timeoutReplays, replay)
 				if replay.Disposition == TimeoutReplayObserved {
+					// Preserve the callback request as the outer scope anchor while
+					// resolving this observed child from timeout's effective CWD.
+					segmentRequest.CWD = replay.CWD
 					timeoutLaunches = append(timeoutLaunches, TimeoutLaunch{
 						Segment: index + 1,
 						Prefix:  append([]string(nil), replay.Prefix...),
@@ -808,7 +812,7 @@ func Classify(request Request) Result {
 			}
 		}
 		segmentDecision, diagnostic := inspectSegment(
-			request,
+			segmentRequest,
 			current,
 			index+1,
 			wholeSingleSegmentPlan,
