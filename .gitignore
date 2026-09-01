@@ -12,6 +12,7 @@
 !hooks/**
 !proofs/**
 !skills/**
+!tools/**
 
 # Sensitive or machine/session-local material.
 worktrees/
