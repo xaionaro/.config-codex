@@ -5,11 +5,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -39,11 +39,17 @@ const (
 	// Example: 2026-09-01T07:44Z uses this layout.
 	minuteUTCLayout = "2006-01-02T15:04Z"
 
-	// trendEpsilon classifies only numerically negligible regression slopes or
-	// horizon changes as stable.
+	// trendSlopeEpsilon classifies only numerically negligible regression slopes
+	// as stable in seconds of horizon per elapsed hour.
 	//
-	// Example: a slope whose absolute value is at most trendEpsilon is stable.
-	trendEpsilon = 1e-9
+	// Example: a slope whose absolute value is at most trendSlopeEpsilon is stable.
+	trendSlopeEpsilon = 1e-9
+
+	// rSquaredRoundingEpsilon bounds only floating-point overshoot while
+	// normalizing R² to its mathematical interval from zero through one.
+	//
+	// Example: an R² of 1+1e-12 rounds back to 1.
+	rSquaredRoundingEpsilon = 1e-9
 
 	// secondsPerHour converts regression elapsed-hour units to horizon seconds.
 	//
@@ -205,23 +211,20 @@ func writeHelp(stdout io.Writer) error {
 	return nil
 }
 
-// readHistory reads the exact TSV schema with a CSV parser so quoted fields
-// retain their content before any report is emitted.
+// readHistory validates physical blank records, then reads the exact TSV
+// schema with a CSV parser so quoted fields retain their content.
 //
 // Example: a valid header with zero body rows returns an empty observation list.
 func readHistory(path string) (observations []historyObservation, err error) {
-	file, err := os.Open(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open history %q: %w", path, err)
 	}
-	// Preserve a close failure only after all parsing otherwise succeeds.
-	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("close history %q: %w", path, closeErr)
-		}
-	}()
+	if err := validateNoBlankPhysicalRecords(contents); err != nil {
+		return nil, err
+	}
 
-	reader := csv.NewReader(file)
+	reader := csv.NewReader(bytes.NewReader(contents))
 	reader.Comma = '\t'
 	reader.FieldsPerRecord = 4
 
@@ -250,6 +253,69 @@ func readHistory(path string) (observations []historyObservation, err error) {
 			observations = append(observations, observation)
 		}
 	}
+}
+
+// validateNoBlankPhysicalRecords rejects empty source lines that csv.Reader
+// intentionally skips, without interpreting the TSV fields itself.
+//
+// Example: a blank line between two records is rejected, while one inside a
+// quoted multiline reason remains valid content for csv.Reader to parse.
+func validateNoBlankPhysicalRecords(contents []byte) error {
+	lineNumber := 1
+	lineHasContent := false
+	inQuotedField := false
+	fieldStart := true
+
+	for index := 0; index < len(contents); {
+		current := contents[index]
+		switch {
+		case current == '\r' && index+1 < len(contents) && contents[index+1] == '\n':
+			if !inQuotedField && !lineHasContent {
+				return fmt.Errorf("line %d: blank TSV record is not permitted", lineNumber)
+			}
+			lineNumber++
+			lineHasContent = false
+			if !inQuotedField {
+				fieldStart = true
+			}
+			index += 2
+		case current == '\n':
+			if !inQuotedField && !lineHasContent {
+				return fmt.Errorf("line %d: blank TSV record is not permitted", lineNumber)
+			}
+			lineNumber++
+			lineHasContent = false
+			if !inQuotedField {
+				fieldStart = true
+			}
+			index++
+		case inQuotedField:
+			lineHasContent = true
+			if current == '"' {
+				if index+1 < len(contents) && contents[index+1] == '"' {
+					index += 2
+					continue
+				}
+				inQuotedField = false
+			}
+			index++
+		case current == '\t':
+			lineHasContent = true
+			fieldStart = true
+			index++
+		case current == '"' && fieldStart:
+			lineHasContent = true
+			fieldStart = false
+			inQuotedField = true
+			index++
+		default:
+			lineHasContent = true
+			fieldStart = false
+			index++
+		}
+	}
+
+	return nil
 }
 
 // formatHistoryReadError adds the source record line to a CSV reader failure
@@ -327,8 +393,19 @@ func parseHistoryRecord(lineNumber int, fields []string) (historyObservation, er
 		sourceLine:     lineNumber,
 		addedUTC:       addedUTC,
 		rootTaskID:     fields[1],
-		horizonSeconds: newTargetUTC.Sub(addedUTC).Seconds(),
+		horizonSeconds: secondsBetween(newTargetUTC, addedUTC),
 	}, nil
+}
+
+// secondsBetween calculates a UTC timestamp difference without converting it
+// to time.Duration, whose representable range is much shorter than RFC3339.
+//
+// Example: year 9999 minus year 0001 remains roughly ten thousand years.
+func secondsBetween(later time.Time, earlier time.Time) float64 {
+	seconds := later.Unix() - earlier.Unix()
+	nanoseconds := later.Nanosecond() - earlier.Nanosecond()
+
+	return float64(seconds) + float64(nanoseconds)/float64(time.Second)
 }
 
 // parseUTCTimestamp accepts the documented minute, RFC3339, and RFC3339Nano
@@ -407,7 +484,7 @@ func analyzeRoot(observations []historyObservation) rootReport {
 	firstObservation := observations[0]
 	samples := make([]regressionSample, 0, len(observations))
 	for _, observation := range observations {
-		elapsedHours := observation.addedUTC.Sub(firstObservation.addedUTC).Seconds() / secondsPerHour
+		elapsedHours := secondsBetween(observation.addedUTC, firstObservation.addedUTC) / secondsPerHour
 		samples = append(samples, regressionSample{
 			elapsedHours:   elapsedHours,
 			horizonSeconds: observation.horizonSeconds,
@@ -482,7 +559,7 @@ func calculateLinearFit(samples []regressionSample, distinctObservationTimes int
 		sumXX += deltaX * deltaX
 		sumXY += deltaX * deltaY
 	}
-	if math.Abs(sumXX) <= trendEpsilon {
+	if sumXX == 0 {
 		return linearFit{}
 	}
 
@@ -498,13 +575,13 @@ func calculateLinearFit(samples []regressionSample, distinctObservationTimes int
 	}
 
 	rSquared := 1.0
-	if sumSquaredTotal > trendEpsilon {
+	if sumSquaredTotal != 0 {
 		rSquared = 1 - sumSquaredError/sumSquaredTotal
 	}
 	switch {
-	case rSquared < 0 && rSquared > -trendEpsilon:
+	case rSquared < 0 && rSquared > -rSquaredRoundingEpsilon:
 		rSquared = 0
-	case rSquared > 1 && rSquared < 1+trendEpsilon:
+	case rSquared > 1 && rSquared < 1+rSquaredRoundingEpsilon:
 		rSquared = 1
 	}
 
@@ -525,9 +602,9 @@ func classifyTrend(fit linearFit) trendName {
 	}
 
 	switch {
-	case fit.slope > trendEpsilon:
+	case fit.slope > trendSlopeEpsilon:
 		return trendDivergent
-	case fit.slope < -trendEpsilon:
+	case fit.slope < -trendSlopeEpsilon:
 		return trendConvergent
 	default:
 		return trendStable
@@ -556,15 +633,15 @@ func calculateDirectionalAgreement(observations []historyObservation, trend tren
 		deltaHorizon := current.horizonSeconds - previous.horizonSeconds
 		switch trend {
 		case trendDivergent:
-			if deltaHorizon > trendEpsilon {
+			if deltaHorizon > 0 {
 				agreeingPairs++
 			}
 		case trendConvergent:
-			if deltaHorizon < -trendEpsilon {
+			if deltaHorizon < 0 {
 				agreeingPairs++
 			}
 		case trendStable:
-			if math.Abs(deltaHorizon) <= trendEpsilon {
+			if deltaHorizon == 0 {
 				agreeingPairs++
 			}
 		}
@@ -658,11 +735,11 @@ func (report rootReport) outputFields() []string {
 }
 
 // formatNumber produces compact, deterministic non-exponent decimal output
-// and normalizes tiny signed-zero artifacts to zero.
+// and normalizes only signed-zero artifacts to zero.
 //
-// Example: 7200.0 renders as 7200 and -0.0 renders as 0.
+// Example: 7200.0 renders as 7200, -0.0 renders as 0, and 1e-9 is retained.
 func formatNumber(value float64) string {
-	if math.Abs(value) <= trendEpsilon {
+	if value == 0 {
 		value = 0
 	}
 

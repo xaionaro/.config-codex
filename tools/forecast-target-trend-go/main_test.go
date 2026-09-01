@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRunFourObservationRootOneReportsDivergence verifies the live four-point
@@ -81,7 +82,7 @@ func TestRunAcceptsQuotedReasonWithTab(t *testing.T) {
 	t.Parallel()
 
 	rows := outputDataRows(t, runHistory(t, "added_utc\troot_task_id\tnew_target_utc\treason\n"+
-		"2026-09-01T07:44Z\tquoted\t2026-09-01T11:15Z\t\"review\tneeds more time\"\n"))
+		"2026-09-01T07:44Z\tquoted\t2026-09-01T11:15Z\t\"review\tneeds more time\n\nwith context\"\n"))
 	if got, want := len(rows), 1; got != want {
 		t.Fatalf("row count = %d, want %d", got, want)
 	}
@@ -174,6 +175,101 @@ func TestRunReportsLineSpecificInputDiagnostics(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+// TestRunRejectsPhysicalBlankRecord verifies a physical empty TSV record is
+// reported instead of being silently discarded by the CSV reader.
+//
+// Example: a blank line between two otherwise valid target records is invalid.
+func TestRunRejectsPhysicalBlankRecord(t *testing.T) {
+	t.Parallel()
+
+	path := writeHistory(t, "added_utc\troot_task_id\tnew_target_utc\treason\n"+
+		"2026-09-01T07:44Z\troot\t2026-09-01T11:15Z\tfirst\n\n"+
+		"2026-09-01T08:44Z\troot\t2026-09-01T12:15Z\tsecond\n")
+	var stdout bytes.Buffer
+	err := run([]string{path}, &stdout)
+	if err == nil {
+		t.Fatal("run() error = nil, want blank-record error")
+	}
+	if got, want := err.Error(), "line 3: blank TSV record is not permitted"; !strings.Contains(got, want) {
+		t.Fatalf("run() error = %q, want substring %q", got, want)
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want no partial analysis", got)
+	}
+}
+
+// TestRunRecognizesNanosecondSeparatedObservations verifies distinct
+// observation instants remain a defined regression even at nanosecond scale.
+//
+// Example: one nanosecond between updates can still show a larger horizon.
+func TestRunRecognizesNanosecondSeparatedObservations(t *testing.T) {
+	t.Parallel()
+
+	rows := outputDataRows(t, runHistory(t, "added_utc\troot_task_id\tnew_target_utc\treason\n"+
+		"2026-09-01T00:00:00Z\tnanosecond\t2026-09-01T00:00:01Z\tfirst\n"+
+		"2026-09-01T00:00:00.000000001Z\tnanosecond\t2026-09-01T00:00:02.000000001Z\tsecond\n"))
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("row count = %d, want %d", got, want)
+	}
+	want := []string{"nanosecond", "2", "2", "divergent", "insufficient", "1", "2", "1"}
+	if got := rows[0][0:8]; !sameFields(got, want) {
+		t.Fatalf("nanosecond row prefix = %q, want %q", got, want)
+	}
+	if got, want := rows[0][8], "NA"; got == want {
+		t.Fatalf("slope = %q, want defined regression", got)
+	}
+}
+
+// TestCalculateLinearFitPreservesTinyNonconstantVariance verifies R² uses an
+// exact zero-variance condition rather than a threshold in unrelated units.
+//
+// Example: a small middle peak has R² 0 for its flat intercept regression.
+func TestCalculateLinearFitPreservesTinyNonconstantVariance(t *testing.T) {
+	t.Parallel()
+
+	fit := calculateLinearFit([]regressionSample{
+		{elapsedHours: 0, horizonSeconds: 0},
+		{elapsedHours: 1, horizonSeconds: 0.000001},
+		{elapsedHours: 2, horizonSeconds: 0},
+	}, 3)
+	if !fit.defined {
+		t.Fatal("fit is undefined, want defined")
+	}
+	if got, want := fit.rSquared, 0.0; math.Abs(got-want) > 1e-12 {
+		t.Fatalf("R² = %v, want %v", got, want)
+	}
+}
+
+// TestRunReportsFullDateRangeHorizon verifies accepted RFC3339 dates do not
+// collapse to the limited range of time.Duration subtraction.
+//
+// Example: a year-0001 observation can retain a year-9999 target horizon.
+func TestRunReportsFullDateRangeHorizon(t *testing.T) {
+	t.Parallel()
+
+	start, err := time.Parse(time.RFC3339, "0001-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+	target, err := time.Parse(time.RFC3339, "9999-12-31T23:59:59Z")
+	if err != nil {
+		t.Fatalf("parse target: %v", err)
+	}
+	wantHorizon := strconv.FormatInt(target.Unix()-start.Unix(), 10)
+
+	rows := outputDataRows(t, runHistory(t, "added_utc\troot_task_id\tnew_target_utc\treason\n"+
+		"0001-01-01T00:00:00Z\tlong\t9999-12-31T23:59:59Z\tfull range\n"))
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("row count = %d, want %d", got, want)
+	}
+	if got := rows[0][5]; got != wantHorizon {
+		t.Fatalf("first horizon = %q, want %q", got, wantHorizon)
+	}
+	if got := rows[0][6]; got != wantHorizon {
+		t.Fatalf("last horizon = %q, want %q", got, wantHorizon)
 	}
 }
 
