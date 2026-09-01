@@ -12,6 +12,10 @@ Separate exploration, authoritative critique, implementation, and independent re
 Start only when CODEX selects ECI or active ATE explicitly routes bounded work through it. Loading this router alone does not start ECI. Use ECI for non-mechanical work with uncertainty, future behavior/routing/protocol risk, or two plausible approaches; classify by decision complexity and risk, not diff size. A one-line/local change is still non-trivial when it changes instructions, prompts, routing, protocols, public contracts, security, persistence, concurrency, architecture, or reviewer/agent behavior. Skip only a mechanical answer whose consequences are obvious, directly verifiable, and carry no future behavior or routing risk.
 
 - Maintain requirement lineage and a project-understanding ledger. The active outer owns lifecycle; nested ECI remains inside ATE.
+- For material ECI work, keep `exact user source → faithful requested outcome →
+  bounded scope`. A repair necessary to meet or prove that outcome stays current-lane work.
+  A concern serving a separate outcome is only a post-ECI user follow-up, never current work.
+  Missing or stale lineage never blocks known in-scope work.
 - Keep one `Stage: normal` or `Stage: emergency` in every ECI lane, assignment, and current ledger state. A missing, stale, or unknown stage is reconciled as part of work; it is not a prerequisite for harmless bounded progress. An `emergency` stage uses [Emergency Unblock](references/emergency-unblock.md) as a recovery aid, not as a permission ceremony.
 - A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 - Every ordinary worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.

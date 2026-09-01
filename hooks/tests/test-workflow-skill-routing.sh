@@ -1240,6 +1240,60 @@ assert_lineage_context_contract() {
   forbid_pattern "$LINEAGE" '(hash|receipt|registry).*(must|shall|needs? to).*(work|status|report|assignment)'
 }
 
+require_primary_scope_fidelity_text() {
+  local source="$1" description="$2" expected="$3" input="$4"
+
+  [[ "$input" == *"$expected"* ]] ||
+    fail "$source is missing primary scope fidelity contract: $description"
+}
+
+assert_primary_scope_fidelity_contract() {
+  local source="$1" input="$2"
+
+  require_primary_scope_fidelity_text "$source" 'material source-outcome-scope chain' \
+    '- For material ECI work, keep `exact user source → faithful requested outcome' "$input"
+  require_primary_scope_fidelity_text "$source" 'bounded scope in primary chain' \
+    'bounded scope`.' "$input"
+  require_primary_scope_fidelity_text "$source" 'necessary repair remains current-lane work' \
+    'A repair necessary to meet or prove that outcome stays current-lane work.' "$input"
+  require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
+    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$input"
+  require_primary_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
+    'Missing or stale lineage never blocks known in-scope work.' "$input"
+}
+
+assert_primary_scope_fidelity_mutation_is_rejected() {
+  local source="$1" description="$2" input="$3" output
+
+  if output="$(assert_primary_scope_fidelity_contract "$source" "$input" 2>&1)"; then
+    fail "primary scope fidelity mutation was admitted: $source: $description"
+  fi
+  grep -Fq -- 'primary scope fidelity contract' <<<"$output" ||
+    fail "primary scope fidelity mutation was rejected for an unexpected reason: $source: $description"
+}
+
+assert_primary_scope_fidelity_contract_mutations() {
+  local primary mutation
+
+  primary="$(<"$ECI")"
+
+  mutation="${primary/'exact user source → faithful requested outcome'/'generic context'}"
+  [ "$mutation" != "$primary" ] || fail 'primary source-outcome mutation did not alter its fixture'
+  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'source-outcome chain removed' "$mutation"
+
+  mutation="${primary/'A repair necessary to meet or prove that outcome stays current-lane work.'/'Every repair creates a new current lane.'}"
+  [ "$mutation" != "$primary" ] || fail 'primary repair mutation did not alter its fixture'
+  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'necessary repair becomes a separate lane' "$mutation"
+
+  mutation="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/'A concern serving a separate outcome is current work.'}"
+  [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
+  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
+
+  mutation="${primary/'Missing or stale lineage never blocks known in-scope work.'/'Missing or stale lineage blocks known in-scope work.'}"
+  [ "$mutation" != "$primary" ] || fail 'primary stale-lineage mutation did not alter its fixture'
+  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'stale lineage blocks known work' "$mutation"
+}
+
 # Static source contract only: these fixed clauses exercise scope pressure without
 # parsing runtime messages or making lineage an admission mechanism.
 require_scope_fidelity_text() {
@@ -1554,6 +1608,8 @@ assert_forecast_target_history_contract
 assert_forecast_target_history_contract_mutations
 assert_forecast_source_contract_fixtures
 assert_coordinator_progress_forecast_contract_fixtures
+assert_primary_scope_fidelity_contract "$ECI" "$(<"$ECI")"
+assert_primary_scope_fidelity_contract_mutations
 assert_scope_fidelity_pressure_fixtures
 assert_scope_fidelity_pressure_mutations_are_rejected
 assert_lane_forecast_contract
