@@ -1,21 +1,22 @@
 ---
 name: agent-teams-execution
-description: Use when CODEX selects ATE as the outer workflow
+description: Use when CODEX selects ATE as the active workflow
 ---
 
 # Agent Teams Execution
 
-ATE is the outer workflow for coordinated multi-workstream work: research, design, disjoint execution, integrated review, proof, and QA. Coordinator and lead route/enforce; they never implement.
+ATE is the active workflow for coordinated multi-workstream work: research, design, disjoint execution, integrated review, proof, and QA. Coordinator and lead route/enforce; they never implement.
 
 ## Activation and invariants
 
-Start only when CODEX selects ATE. Loading this router alone does not start the team. Maintain active lineage and a project-understanding ledger; every durable route has an admitted lane, assignment, ownership, and full requirement chain.
+Start only when CODEX selects ATE. Loading this router alone does not start the team. Maintain active lineage and a project-understanding ledger; every durable normal route has an admitted lane, assignment, ownership, and full requirement chain.
 
 - Every worker reads this router plus only its exact role module and named conditional modules. Unknown role, predicate, or link returns to coordinator before work.
 - Coordinator/lead alone load lifecycle, prompt/model admission, blocker, pause, stop, required-critic, shutdown, and pressure-policy modules.
 - Use provider-native agents, stable reusable producer roles, fresh blind reviewers, disjoint write ownership, and one event-driven wait per expected completion.
 - Every root follows research → design → execution → root proof → aggregate review → post-review proof → QA. Do not collapse phases because a request looks small.
-- ATE may nest ECI for bounded uncertain work; ATE remains outer and owns status/lifecycle.
+- Emergency Unblock is an ECI-defined pre-normal branch, not an ATE workflow, role, or nested normal ECI. It preserves any active ATE marker unchanged but non-authorizing for its repair; it creates no ATE lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff.
+- ATE may contain normal ECI for bounded uncertain work and owns its normal status/lifecycle. Emergency Unblock is not that nesting; after its one repair and required E2E, fresh normal ECI begins at Step 1 from dirty/untrusted state.
 
 ## Module routing
 

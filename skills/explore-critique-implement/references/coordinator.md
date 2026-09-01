@@ -5,7 +5,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 ## Engage and route
 
 - Maintain the project-understanding ledger through maintaining-context-ledger. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
-- Create the direct ECI marker before Step 1 and keep it through all governed work. An outer ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
+- Create the direct ECI marker before Step 1 and keep it through all governed work. An active ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer and implementer producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
 - Treat records, hashes, receipts, packet shape, and marker spelling as context or audit, never as permission checks. Route only a concrete accidental wrong-target, cross-scope, or destructive effect.
@@ -26,7 +26,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - Forecasts are advisory. They never gate work, grant or deny permissions, require artifacts or receipts, create blockers, require parsers, or require per-command ceremony.
 - Use the [`forecast-target-history.tsv` audit contract](../../maintaining-context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.
 - Before a coordinator edits ordinary repository code, create or reuse a bounded implementer assignment with the target, intended change, and verification. Do not attempt then deny the ordinary edit. Report the handoff. If no implementer is free, queue it and continue other admitted work; capacity alone is not a user blocker. Session coordination documents, ledgers, plans, status reports, handoffs, and proof notes remain coordinator-owned. A genuine code-edit edge case may use the session-scoped self-service coordinator self-edit hatch for 600 seconds; re-activation replaces rather than stacks the window. It needs no user approval artifact and changes routing only.
-- Emergency Unblock has no coordinator qualification, emergency packet, or transition record before the emergency fixer completes its one repair and any required E2E. After the repair ends, hand the dirty/untrusted changed state into fresh normal ECI Step 1; normal ECI coordination and recording begin there.
+- Emergency Unblock is outside coordinator lifecycle: no coordinator participation or qualification, workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, handoff, or normal lifecycle action occurs. It preserves any active ECI/ATE marker unchanged, but that marker does not authorize the repair. Only after the fixer's one repair and required E2E does fresh normal ECI begin at Step 1 from dirty/untrusted state; normal coordination and recording begin there.
 - Follow the shared pause-all-work and stop-recovery modules only on their exact predicates. Load policy-pressure-tests only for workflow-policy changes.
 
 ## Step 4 — Review coordination
@@ -57,7 +57,7 @@ An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step
 
 On clean pass or user closure: write the disengage report; request/observe final implementer confirmation; record role state without closing terminal agents; then run `eci-active off <report>` last. The report contains exactly one `clean-pass:` or `user-closed:` certificate, Stop-checklist walkthrough, and incomplete-compliance analysis. Teardown failure keeps the marker armed.
 
-Status uses human-readable role/lane names, parent-child trees for nested work, and a nearby redacted-verbatim requirements registry for every non-empty canonical `Lane requirement refs`; every lane row, assignment state, and current ledger state records exactly one `Stage: normal` or `Stage: emergency`; the ledger carries the full edge chain. Direct work with inactive lineage does not fabricate refs. Use `<role label> (<runtime name>)` in every status, wait, or close update. Lineage failures are routing risks, never fake `PAUSED`/`BLOCKED` states.
+Status uses human-readable role/lane names, parent-child trees for nested work, and a nearby redacted-verbatim requirements registry for every non-empty canonical `Lane requirement refs`; every normal ECI lane row, assignment state, and current ledger state records exactly `Stage: normal`. Emergency Unblock has no stage, lane, ledger/status entry, or role. The ledger carries the full edge chain. Direct work with inactive lineage does not fabricate refs. Use `<role label> (<runtime name>)` in every status, wait, or close update. Lineage failures are routing risks, never fake `PAUSED`/`BLOCKED` states.
 
 ## Provider adapter and marker
 
