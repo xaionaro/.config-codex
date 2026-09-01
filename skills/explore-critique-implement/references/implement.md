@@ -2,19 +2,21 @@
 
 Implementer-only. Treat every message as fresh, reread each intended target, and change one approved iteration/diff at a time.
 
-Receive the Step 2 concrete winner verbatim, only `treatment: now` fixes, admitted style record, full lane/assignment binding, changed-file context, and prior gate findings. Do not implement scope-creep debt, a deadline-qualified defer, or `ignored-contradictory` directives. An affected source for queued future work gets its exact searchable `tech-debt(<tracker-ref>): <debt>; risk: <bounded risk>; revisit: <technical trigger>` comment; otherwise preserve the specific tracker record. Report any style-scope/source/conflict/deviation drift before the next affected write; local/tool-covered drift returns to Step 2 and substantive drift re-enters Steps 1–2.
+Receive the Step 2 concrete winner, only `treatment: now` fixes, changed-file context, and prior findings. Do not implement a separate-outcome concern, deadline-driven cleanup, or `ignored-contradictory` directive. Put a genuine unrelated concern in a concise post-ECI suggestion; do not edit it in this lane. Report a material scope or style conflict before the next affected write; keep unaffected bounded work moving.
+
+A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write. Reconcile useful context alongside the work. Stop or reroute only a concrete wrong target, destructive effect, or separate requested outcome.
 
 For code/debug work, load test-driven-development, debugging-discipline, and every matching coding-style skill. Repair the causal mechanism, not timing/visibility/blast radius unless containment was requested. Include a falsifiable root-cause rationale, `regression: yes|no|unknown`, evidence, and why the diff repairs the cause. Every factual submission claim has a T1–T5 tag.
 
-Before submit, perform required unit/proof checks. When E2E is required, build and run the full suite where applicable, exercise the affected actual consumer path, and cite output/state/screenshot as appropriate; proxy evidence alone is insufficient. The implementer owns this E2E. If required E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; missing E2E/rationale bounces before Step 4.
+Before submit, perform required unit/proof checks. When E2E is required, build and run the full suite where applicable, exercise the affected actual consumer path, and cite output/state/screenshot as appropriate; proxy evidence alone is insufficient. The implementer owns this E2E. If required E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; do not claim equivalent proof.
 
 E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
 ## Write boundary and submission
 
-Revalidate immutable lane graph and mutable assignment binding before each durable write. The assignment contains canonical refs, state version, derivation reason, complete path/edge evidence, binding, and expanded chain. Discovered work without authorized ancestry is scope-creep debt, not an edit. One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.
+Before each durable write, reread the intended target, requested outcome, approved winner, and changed-file context. Route a concrete wrong target or separate outcome before writing. One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.
 
-The submission includes current files changed, concrete winner/fix text applied, exact admitted style record/deltas, command/proof artifacts, root-cause rationale where applicable, regression explanation, and T1–T5 tag on every factual claim. If a governed scope changes, report it before the next affected write. Continue unaffected work only; local/tool-covered delta returns to Step 2, substantive drift returns to Explore/Step 2. A missing tag, unknown causal link, missing required E2E, missing style admission, or symptom-only fix is bounced before reviewers spawn.
+The submission names changed files, the applied winner/fix, checks run, root-cause rationale where applicable, regression explanation, and factual evidence. If a governed scope changes, report it before the next affected write. Continue unaffected work only; a local correction returns to Step 2 and substantive drift returns to Explore/Step 2. An unsupported load-bearing claim, missing required E2E, unknown causal link, or symptom-only fix needs correction before acceptance; labels and coordination notes alone never decide it.
 
 ## Test and debugging discipline
 

@@ -8,6 +8,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An outer ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer and implementer producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
+- Treat records, hashes, receipts, packet shape, and marker spelling as context or audit, never as permission checks. Route only a concrete accidental wrong-target, cross-scope, or destructive effect.
 - For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:
   - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
 - For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:
@@ -68,7 +69,7 @@ Every producer assignment says fresh task treatment: Explorer rereads every refe
 
 ## Exact team separation
 
-Use one stable Explorer and one stable implementer across iterations. Every invocation of Step 2 critic, Critic A, Critic B, Critic C, E2E, brainstormer, BRP feasibility validator, and loop-breaker is a distinct blind identity; no producer acts as critic. A blind critic receives a self-contained prompt with role, original requirements, files/scope, sources to reread, expected output, and all review rules. Critic C code Packet 1 remains the shared runtime’s narrow diff-only exception, never an omission of admission checks. Reuse does not imply trust: a reusable producer still treats every turn as fresh.
+Use one stable Explorer and one stable implementer across iterations. Every invocation of Step 2 critic, Critic A, Critic B, Critic C, E2E, brainstormer, BRP feasibility validator, and loop-breaker is a distinct blind identity; no producer acts as critic. A blind critic receives a self-contained prompt with role, original requirements, files/scope, sources to reread, expected output, and all review rules. Critic C code Packet 1 remains the shared runtime’s narrow diff-only exception, never an omission of quality checks. Reuse does not imply trust: a reusable producer still treats every turn as fresh.
 
 ## Bug and blocker packet rules
 

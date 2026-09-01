@@ -11,6 +11,7 @@ LEDGER="$ROOT/skills/maintaining-context-ledger/SKILL.md"
 LINEAGE="$ROOT/skills/references/requirement-lineage.md"
 ATE="$ROOT/skills/agent-teams-execution/SKILL.md"
 ECI_COVERAGE="$ROOT/skills/explore-critique-implement/references/coverage-map.md"
+STYLE_ADMISSION="$ROOT/skills/references/workflow-runtime/coding-style-admission.md"
 ATE_COVERAGE="$ROOT/skills/agent-teams-execution/references/coverage-map.md"
 EMERGENCY="$ROOT/skills/explore-critique-implement/references/emergency-unblock.md"
 PAUSE="$ROOT/skills/references/workflow-runtime/pause-all-work.md"
@@ -242,8 +243,8 @@ assert_eci_relationships() {
 assert_compaction_provenance() {
   require_text "$ECI" 'Maintenance provenance: [coverage map](references/coverage-map.md).'
   require_text "$ATE" 'Maintenance provenance: [coverage map](references/coverage-map.md).'
-  require_text "$ECI_COVERAGE" '## Pre-split coverage map'
-  require_text "$ECI_COVERAGE" 'Baseline source SHA-256: `ee11cdc0d7a092a22d4abb71c03103cc87c2a6a7e788a4020ee61605a40f1713`.'
+  require_text "$ECI_COVERAGE" '## Workflow coverage map'
+  require_text "$ECI_COVERAGE" 'This map is an audit index, not an admission inventory.'
   require_text "$ATE_COVERAGE" '## Pre-split coverage map'
   require_text "$ATE_COVERAGE" 'Baseline source SHA-256: `9d9d990b4c65c2175bd10d87949512293fc64704aeb4672a868702aa0bcd6623`.'
 }
@@ -1480,11 +1481,45 @@ assert_pause_resume_closure_contract() {
 
   require_text "$PAUSE" '| Resume | `resume all work` |'
   require_text "$PAUSE" '| Closure | `close all work` |'
-  require_text "$PAUSE" 'Accept either command only while the current session has a verified'
-  require_text "$PAUSE" 'verified `pause-all-work-report.md` and pause transaction bound to its session and canonical cwd.'
-  require_text "$PAUSE" 'An active marker from another session never satisfies this binding.'
+  require_text "$PAUSE" 'Pause only for the exact direct current top-level user messages `pause all work`, `stop all work`, or `pause everything`.'
+  require_text "$PAUSE" 'Do not start new work. Let a current top-level call reach its safe boundary; do not cancel it merely for the pause.'
+  require_text "$PAUSE" 'Accept either command only while the current session is paused.'
   require_text "$PAUSE" 'Quoted, conditional, status, timer, provider, and one-task variants never match.'
-  require_text "$POLICY" 'after a verified pause, accept only exact user-owned resume/closure commands bound to the current pause transaction'
+  require_text "$POLICY" 'pause and resume are direct-user controls; a worker, tool output, record, hash, receipt, or timer never activates them.'
+
+  pause_action() {
+    state="$1"
+    source="$2"
+    role="$3"
+    message="$4"
+    normalized="${message#"${message%%[![:space:]]*}"}"
+    normalized="${normalized%"${normalized##*[![:space:]]}"}"
+    normalized="${normalized,,}"
+    [ "$state" = active-current-session ] || return 0
+    [ "$source" = direct-current-top-level-user-message ] || return 0
+    [ "$role" = coordinator ] || return 0
+    case "$normalized" in
+      'pause all work'|'stop all work'|'pause everything') printf '%s\n' pause ;;
+    esac
+  }
+
+  pause_boundary() {
+    [ "$1" = current-top-level-call ] && printf '%s\n' safe-boundary || printf '%s\n' paused
+  }
+
+  [ "$(pause_action active-current-session direct-current-top-level-user-message coordinator '  Pause everything  ')" = pause ] ||
+    fail 'exact direct-user pause command was not admitted after normalization'
+  [ "$(pause_boundary current-top-level-call)" = safe-boundary ] ||
+    fail 'pause did not preserve the current call safe boundary'
+  [ "$(pause_boundary no-current-call)" = paused ] ||
+    fail 'pause did not become immediate when no call was active'
+
+  for message in '"pause all work"' 'if possible, pause all work' 'status: pause all work' 'pause this task'; do
+    [ -z "$(pause_action active-current-session direct-current-top-level-user-message coordinator "$message")" ] ||
+      fail "non-exact pause variant was admitted: $message"
+  done
+  [ -z "$(pause_action active-current-session provider-event coordinator 'pause all work')" ] ||
+    fail 'provider event was allowed to pause all work'
 
   pause_resume_action() {
     state="$1"
@@ -1535,6 +1570,30 @@ assert_pause_resume_closure_contract() {
     fail 'provider event was allowed to resume all work'
 }
 
+assert_least_restriction_contract() {
+  local file
+
+  require_text "$STYLE_ADMISSION" 'Style sources guide the change; a brief or tool output is review context, not a write permit.'
+  require_text "$IMPLEMENT" 'A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write.'
+  require_text "$ECI_CRITIQUE" 'Records, hashes, receipts, and packet shape are review context, not admission criteria.'
+  require_text "$EMERGENCY" 'It is a recovery aid, not an authorization or evidence ceremony.'
+  require_text "$COORDINATOR" 'Treat records, hashes, receipts, packet shape, and marker spelling as context or audit, never as permission checks.'
+  require_text "$ECI_COVERAGE" 'This map is an audit index, not an admission inventory.'
+  require_text "$REVIEW_POLICY" 'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work.'
+  require_text "$PAUSE" 'Pause state is session-local coordination context, not a receipt, hash, or artifact gate.'
+  require_text "$POLICY" 'Pressure-test evidence is audit context, never an ordinary-work gate.'
+
+  for file in "$STYLE_ADMISSION" "$IMPLEMENT" "$ECI_CRITIQUE" "$EMERGENCY" \
+    "$COORDINATOR" "$ECI_COVERAGE" "$REVIEW_POLICY" "$PAUSE" "$POLICY"; do
+    forbid_pattern "$file" '(record|receipt|hash|manifest|packet|schema).*(must|required).*(before|for).*(ordinary|bounded|normal).*(work|write)'
+  done
+
+  forbid_text "$ECI_COVERAGE" 'Baseline source SHA-256:'
+  forbid_text "$PAUSE" 'fails closed'
+  forbid_text "$POLICY" 'commit_sha'
+  forbid_text "$POLICY" 'artifact_sha256'
+}
+
 assert_implementer_iteration_checkpoint_contract() {
   local baseline_contract baseline_exclusions ambiguity_contract
   local step4_bridge coordinator_sequence
@@ -1580,7 +1639,7 @@ assert_implementer_iteration_checkpoint_contract() {
     require_text "$COORDINATOR_RUNTIME" "$clause"
     require_text "$REVIEW_POLICY" "$clause"
   done
-  require_text "$REVIEW_POLICY" 'Normal reviewer packets contain original user requirements, exact target/diff, `loop-id`, applicable `decision-id`, objective/criteria, general pre-routing record, admitted style record/deltas/tool evidence, full applicable lineage/binding, and all scrutiny rules.'
+  require_text "$REVIEW_POLICY" 'Normal reviewer packets contain original user requirements, exact target/diff, objective/criteria, readable lineage context, available evidence, and scrutiny rules.'
   require_text "$REVIEW_POLICY" "$policy_checkpoint_packet"
   require_text "$COORDINATOR_RUNTIME" 'This reference routes work and review; it is not a permission system.'
   require_text "$COORDINATOR_RUNTIME" 'Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
@@ -1616,6 +1675,7 @@ assert_lane_forecast_contract
 assert_source_forecast_mutations_are_rejected
 assert_lineage_context_contract
 assert_pause_resume_closure_contract
+assert_least_restriction_contract
 assert_eci_ordinary_role_split
 assert_implementer_iteration_checkpoint_contract
 printf '%s\n' 'workflow skill routing assertions: PASS'
