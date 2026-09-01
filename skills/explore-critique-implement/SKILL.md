@@ -21,7 +21,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 - Every ordinary worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.
 - Coordinator/lead alone load lifecycle, blocker, pause, stop, required-critic, teardown, and pressure-policy modules. Workers never infer those duties.
 - Each normal iteration is Explore → Critique → Implement → parallel Review. A producer never acts as critic.
-- A hard/uncertain bug uses debugging-discipline. The only unchecked exception is the one-shot conditional Emergency Unblock route.
+- A bug with hard uncertainty or a material competing diagnosis/approach uses `debugging-discipline`. The only pre-normal-ECI exception is the one-shot, single-owner Emergency Unblock route.
 
 ## Configuration E2E contract
 
@@ -39,14 +39,14 @@ Coordinator routes begin with [coordinator runtime](../references/workflow-runti
 
 | Role | Required module | Conditional module/predicate |
 | --- | --- | --- |
-| coordinator | [coordinator](references/coordinator.md), [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md), [review policy](../references/workflow-runtime/review-policy.md) | [pause-all-work](../references/workflow-runtime/pause-all-work.md), [stop recovery](../references/workflow-runtime/stop-recovery.md), and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only by their predicates; [Emergency Unblock](references/emergency-unblock.md) to assess a potential case |
+| coordinator | [coordinator](references/coordinator.md), [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md), [review policy](../references/workflow-runtime/review-policy.md) | [pause-all-work](../references/workflow-runtime/pause-all-work.md), [stop recovery](../references/workflow-runtime/stop-recovery.md), and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only by their predicates |
 | `explorer` | [explore](references/explore.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned bug investigation; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned governed source discovery |
 | `critic-step2` | [critique](references/critique.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for independent admission |
 | `implementer` | [implement](references/implement.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned code/debug work; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
 | Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E as required by the [Configuration E2E contract](#configuration-e2e-contract) or [Runtime E2E policy](#runtime-e2e-policy). |
-| emergency implementer | [Emergency Unblock](references/emergency-unblock.md) | only after coordinator qualification; immediately rejoin normal Step 1 |
+| emergency fixer | [Emergency Unblock](references/emergency-unblock.md) | self-assesses eligibility; alone performs the minimum diagnosis, one repair, and any required E2E; then hands the dirty/untrusted state into fresh normal ECI Step 1 |
 
-Potential Emergency Unblock cases load [Emergency Unblock](references/emergency-unblock.md) to determine qualification. That reference is the single normative qualification source.
+Potential Emergency Unblock cases are self-assessed by the emergency fixer under [Emergency Unblock](references/emergency-unblock.md). That reference is the single normative eligibility source.
 
 ## Step handoffs
 
@@ -70,7 +70,7 @@ Maintenance provenance: [coverage map](references/coverage-map.md).
 ## Red flags
 
 - A worker loads coordinator/blocker/pause/stop/teardown/review-runtime/pressure policy without explicit assignment.
-- Emergency Unblock is used for diagnosis, non-reversible change, a second unchecked attempt, or is called accepted/fixed.
+- Emergency Unblock omits required E2E, exceeds the minimum diagnosis needed for its one repair, uses a non-reversible or broader change, makes a second repair, or treats the dirty/untrusted state as accepted.
 - A producer reviews itself, a blind critic reuses context, or review critics run sequentially.
 - A substantive gate finding is patched directly instead of returning through Explore/Critique.
 - A marker is removed to bypass routing or acceptance.
