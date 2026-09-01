@@ -1,6 +1,6 @@
 # Emergency Unblock
 
-Emergency Unblock is an ECI-defined pre-normal branch, not a separate workflow or nested normal ECI. It has exactly one direct owner: the emergency fixer. The fixer self-assesses this module’s eligibility and owns one bounded reversible repair. It creates no workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff. No coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, or normal lifecycle action participates. Any active ECI/ATE marker stays unchanged but does not authorize this repair.
+Emergency Unblock is an ECI-defined pre-normal branch, not a separate workflow or nested normal ECI. It has exactly one direct owner: the emergency fixer. The fixer self-assesses this module’s eligibility and owns one bounded reversible repair. It creates no workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff. No coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, or normal lifecycle action participates in that repair; unrelated normal work remains active. Any active ECI/ATE marker stays unchanged but does not authorize this repair.
 
 It is a recovery aid, not an authorization or evidence ceremony.
 
@@ -20,7 +20,7 @@ It is a recovery aid, not an authorization or evidence ceremony.
 
 ## Provisional action
 
-> The emergency fixer alone performs the permitted diagnosis, the one repair, and any required repair E2E. Do not add a coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, normal lifecycle action, or handoff while Emergency Unblock is active.
+> The emergency fixer alone performs the permitted diagnosis, the one repair, and any required repair E2E. Do not add a coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, normal lifecycle action, or handoff to that repair while Emergency Unblock is active.
 >
 > Treat the resulting changed state as dirty and untrusted. Required E2E is repair evidence, not acceptance. Do not call the result accepted, complete, reviewed, proven, or ready to commit.
 >

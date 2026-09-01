@@ -37,20 +37,20 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 
 - **Substantive** work changes durable behavior/risk or has multiple plausible actions; it triggers only planning/skill lookup, never workflow selection.
 - For every substantive request and every discovered issue, call `update_plan` immediately; keep `pending`, `in-progress`, and `completed` visible until work completes or the user changes scope.
-- Select exactly one workflow: `direct`, `ECI`, or `ATE`; only ECI/ATE have active lifecycles, never two. While one is active, apply its lifecycle instead of rerouting. Emergency Unblock is an ECI-defined pre-normal branch, not a workflow or nested normal ECI.
+- Select exactly one root workflow: `direct`, `ECI`, or `ATE`; only ECI/ATE are lifecycle-active roots, never two. While one is active, apply its lifecycle instead of rerouting. Emergency Unblock is an ECI-defined pre-normal branch, not a workflow or nested normal ECI.
 
 | Active event | Rule |
 |---|---|
-| Additive follow-up | An additive follow-up extends only an active ECI/ATE root; that lifecycle owns root/additive work until `clean-pass`, `user-closed`, or `ATE-shutdown` completes; growth alone never reselects. |
-| Unrelated request | Queue a separate root until the active lifecycle closes unless the user explicitly replaces it. |
+| Additive follow-up | An additive follow-up extends only an active ECI/ATE root; that root owns root/additive work until `clean-pass`, `user-closed`, or `ATE-shutdown` completes; growth alone never reselects. |
+| Unrelated request | Queue a separate root until the active root closes unless the user explicitly replaces it. |
 | `ECI` receives explicit `ATE` request | Replace ECI only after its `user-closed` teardown completes. |
-| `ATE` receives bounded `ECI` | Nest normal ECI; replace ATE only on an explicit switch, replacement, or ATE stop. |
-| Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current lifecycle active. |
+| `ATE` receives bounded `ECI` | Nest normal ECI; replace the ATE root only on an explicit switch, replacement, or ATE stop. |
+| Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current root active. |
 
-- A qualifying Emergency Unblock has exactly one direct fixer that self-assesses under its ECI module and owns one bounded reversible repair. It creates no workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff; no coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, or normal lifecycle action participates. It preserves any active ECI/ATE marker unchanged, but that marker does not authorize that repair.
+- A qualifying Emergency Unblock has exactly one direct fixer that self-assesses under its ECI module and owns one bounded reversible repair. It creates no workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff; no coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, or normal lifecycle action participates in that repair; unrelated normal work remains active. It preserves any active ECI/ATE marker unchanged, but that marker does not authorize that repair.
 - Only after the repair and any required E2E does fresh normal ECI begin at Step 1 from the dirty/untrusted state.
-- Without an active ECI/ATE lifecycle, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
-- Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Without an active ECI/ATE lifecycle, select the new root's workflow immediately afterward and before planning, solution framing, implementation-skill lookup, or solution-oriented tools. Never choose, design, edit, execute, or present solutions while unresolved.
+- Without an active ECI/ATE root, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
+- Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Without an active ECI/ATE root, select the new root's workflow immediately afterward and before planning, solution framing, implementation-skill lookup, or solution-oriented tools. Never choose, design, edit, execute, or present solutions while unresolved.
 - Derive `M` and `C` only from task-intrinsic requirements; workflow selection and protocol-created choices/workstreams/coordination/review do not count.
 - `M` is task-intrinsic decision uncertainty: at least two reasonable resolutions of a choice left open by the task materially change required work, outcome, consequential risk, or acceptance. Treat assumptions as candidate resolutions; silently choosing one does not make `M` false.
 - `C` means task-intrinsic substantial independent workstreams needing coordinated ownership, synchronization, or integrated review; it matters only under `M`.
@@ -117,7 +117,7 @@ The coordinator may edit session coordination documents, ledgers, plans, status 
 | Handover or resume notes / status, sitrep, progress, checkpoint | `writing-handovers` / `writing-status-reports` |
 | Project, context, `ECI`, or `ATE` ledgers | `maintaining-context-ledger` |
 
-- Selecting `ECI`/`ATE` activates its full normal protocol and required spawned agents, never local-only. Emergency Unblock is neither a selected workflow nor a normal lifecycle action, so its direct fixer is neither dispatched nor rostered. Use `spawn_agent` for normal ECI/ATE roles, never shell-wrapped Codex agents.
+- Selecting `ECI`/`ATE` activates its full normal protocol and required spawned agents, never local-only. Emergency Unblock is neither a selected workflow nor a normal lifecycle action for that repair, so its direct fixer is neither dispatched nor rostered. Use `spawn_agent` for normal ECI/ATE roles, never shell-wrapped Codex agents.
 - Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.
 - Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
 - If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services.
