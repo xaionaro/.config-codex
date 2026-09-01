@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"sort"
 	"strconv"
@@ -39,12 +40,6 @@ const (
 	// Example: 2026-09-01T07:44Z uses this layout.
 	minuteUTCLayout = "2006-01-02T15:04Z"
 
-	// trendSlopeEpsilon classifies only numerically negligible regression slopes
-	// as stable in seconds of horizon per elapsed hour.
-	//
-	// Example: a slope whose absolute value is at most trendSlopeEpsilon is stable.
-	trendSlopeEpsilon = 1e-9
-
 	// rSquaredRoundingEpsilon bounds only floating-point overshoot while
 	// normalizing R² to its mathematical interval from zero through one.
 	//
@@ -55,6 +50,12 @@ const (
 	//
 	// Example: one hour is 3600 horizon seconds.
 	secondsPerHour = 60 * 60
+
+	// nanosecondsPerSecond preserves the accepted RFC3339Nano precision in
+	// exact horizon spans.
+	//
+	// Example: a two-nanosecond target extension has nanoseconds equal to 2.
+	nanosecondsPerSecond = int64(time.Second)
 )
 
 // trendName is the direction of the observed remaining-horizon regression.
@@ -119,14 +120,24 @@ const (
 //
 // Example: target 14:00 observed at 09:48 has a 15120-second horizon.
 type historyObservation struct {
-	sourceLine     int
-	addedUTC       time.Time
-	rootTaskID     string
-	horizonSeconds float64
+	sourceLine int
+	addedUTC   time.Time
+	rootTaskID string
+	horizon    exactSpan
+}
+
+// exactSpan stores a signed duration as whole seconds and a same-sign
+// fractional nanosecond component without time.Duration's range limit.
+//
+// Example: negative two nanoseconds is seconds 0 and nanoseconds -2.
+type exactSpan struct {
+	seconds     int64
+	nanoseconds int32
 }
 
 // regressionSample is one root-local point whose x coordinate is elapsed
-// hours since the root's first observation and y is remaining horizon seconds.
+// hours since the root's first observation and y is its horizon offset in
+// seconds from that first observation.
 //
 // Example: a one-hour-later record has x equal to 1.
 type regressionSample struct {
@@ -134,14 +145,24 @@ type regressionSample struct {
 	horizonSeconds float64
 }
 
+// exactRegressionSample retains the same x/y sample in exact nanosecond
+// spans for direction classification independent of float64 precision.
+//
+// Example: a two-nanosecond horizon increase remains positive at any date.
+type exactRegressionSample struct {
+	elapsedSpan exactSpan
+	horizonSpan exactSpan
+}
+
 // linearFit is the ordinary least-squares intercept model for one root's
-// remaining-horizon history.
+// remaining-horizon-offset history.
 //
 // Example: a constant horizon has slope 0 and R² 1.
 type linearFit struct {
-	defined  bool
-	slope    float64
-	rSquared float64
+	defined   bool
+	slope     float64
+	slopeSign int
+	rSquared  float64
 }
 
 // rootReport is the complete descriptive summary emitted for one root task.
@@ -153,9 +174,9 @@ type rootReport struct {
 	distinctObservationTimes int
 	trend                    trendName
 	consistency              consistencyName
-	firstHorizonSeconds      float64
-	lastHorizonSeconds       float64
-	changeHorizonSeconds     float64
+	firstHorizon             exactSpan
+	lastHorizon              exactSpan
+	changeHorizon            exactSpan
 	fit                      linearFit
 	directionalAgreement     float64
 	agreementDefined         bool
@@ -390,22 +411,106 @@ func parseHistoryRecord(lineNumber int, fields []string) (historyObservation, er
 	}
 
 	return historyObservation{
-		sourceLine:     lineNumber,
-		addedUTC:       addedUTC,
-		rootTaskID:     fields[1],
-		horizonSeconds: secondsBetween(newTargetUTC, addedUTC),
+		sourceLine: lineNumber,
+		addedUTC:   addedUTC,
+		rootTaskID: fields[1],
+		horizon:    spanBetween(newTargetUTC, addedUTC),
 	}, nil
 }
 
-// secondsBetween calculates a UTC timestamp difference without converting it
-// to time.Duration, whose representable range is much shorter than RFC3339.
+// spanBetween calculates a UTC timestamp difference without converting it to
+// time.Duration, whose representable range is much shorter than RFC3339.
 //
 // Example: year 9999 minus year 0001 remains roughly ten thousand years.
-func secondsBetween(later time.Time, earlier time.Time) float64 {
+func spanBetween(later time.Time, earlier time.Time) exactSpan {
 	seconds := later.Unix() - earlier.Unix()
-	nanoseconds := later.Nanosecond() - earlier.Nanosecond()
+	nanoseconds := int64(later.Nanosecond() - earlier.Nanosecond())
 
-	return float64(seconds) + float64(nanoseconds)/float64(time.Second)
+	return newExactSpan(seconds, nanoseconds)
+}
+
+// newExactSpan normalizes a signed seconds-plus-nanoseconds duration so both
+// nonzero components carry the same sign.
+//
+// Example: one second minus 800 million nanoseconds becomes 0.2 seconds.
+func newExactSpan(seconds int64, nanoseconds int64) exactSpan {
+	seconds += nanoseconds / nanosecondsPerSecond
+	nanoseconds %= nanosecondsPerSecond
+	switch {
+	case seconds > 0 && nanoseconds < 0:
+		seconds--
+		nanoseconds += nanosecondsPerSecond
+	case seconds < 0 && nanoseconds > 0:
+		seconds++
+		nanoseconds -= nanosecondsPerSecond
+	}
+
+	return exactSpan{seconds: seconds, nanoseconds: int32(nanoseconds)}
+}
+
+// subtract returns the exact signed difference between two spans.
+//
+// Example: 2 nanoseconds minus 1 nanosecond returns 1 nanosecond.
+func (span exactSpan) subtract(other exactSpan) exactSpan {
+	return newExactSpan(span.seconds-other.seconds, int64(span.nanoseconds)-int64(other.nanoseconds))
+}
+
+// sign reports whether a span is negative, zero, or positive.
+//
+// Example: a two-nanosecond extension has a positive sign.
+func (span exactSpan) sign() int {
+	switch {
+	case span.seconds > 0 || span.nanoseconds > 0:
+		return 1
+	case span.seconds < 0 || span.nanoseconds < 0:
+		return -1
+	default:
+		return 0
+	}
+}
+
+// float64Seconds converts a span to a floating approximation only after
+// callers have first reduced it relative to a nearby exact baseline.
+//
+// Example: a two-nanosecond offset converts to 0.000000002.
+func (span exactSpan) float64Seconds() float64 {
+	return float64(span.seconds) + float64(span.nanoseconds)/float64(nanosecondsPerSecond)
+}
+
+// nanosecondsBig returns the exact signed span as a multi-precision count of
+// nanoseconds for OLS direction calculations.
+//
+// Example: one whole second becomes 1000000000.
+func (span exactSpan) nanosecondsBig() *big.Int {
+	seconds := big.NewInt(span.seconds)
+	seconds.Mul(seconds, big.NewInt(nanosecondsPerSecond))
+
+	return seconds.Add(seconds, big.NewInt(int64(span.nanoseconds)))
+}
+
+// String renders a span in canonical decimal seconds without losing accepted
+// RFC3339Nano precision.
+//
+// Example: negative two nanoseconds renders as -0.000000002.
+func (span exactSpan) String() string {
+	if span.nanoseconds == 0 {
+		return strconv.FormatInt(span.seconds, 10)
+	}
+
+	negative := span.sign() < 0
+	seconds := span.seconds
+	nanoseconds := span.nanoseconds
+	if negative {
+		seconds = -seconds
+		nanoseconds = -nanoseconds
+	}
+	fraction := strings.TrimRight(fmt.Sprintf("%09d", nanoseconds), "0")
+	value := strconv.FormatInt(seconds, 10) + "." + fraction
+	if negative {
+		return "-" + value
+	}
+
+	return value
 }
 
 // parseUTCTimestamp accepts the documented minute, RFC3339, and RFC3339Nano
@@ -483,16 +588,27 @@ func sortHistoryObservations(observations []historyObservation) {
 func analyzeRoot(observations []historyObservation) rootReport {
 	firstObservation := observations[0]
 	samples := make([]regressionSample, 0, len(observations))
+	exactSamples := make([]exactRegressionSample, 0, len(observations))
 	for _, observation := range observations {
-		elapsedHours := secondsBetween(observation.addedUTC, firstObservation.addedUTC) / secondsPerHour
+		elapsedSpan := spanBetween(observation.addedUTC, firstObservation.addedUTC)
+		horizonSpan := observation.horizon.subtract(firstObservation.horizon)
 		samples = append(samples, regressionSample{
-			elapsedHours:   elapsedHours,
-			horizonSeconds: observation.horizonSeconds,
+			elapsedHours:   elapsedSpan.float64Seconds() / secondsPerHour,
+			horizonSeconds: horizonSpan.float64Seconds(),
+		})
+		exactSamples = append(exactSamples, exactRegressionSample{
+			elapsedSpan: elapsedSpan,
+			horizonSpan: horizonSpan,
 		})
 	}
 
 	distinctObservationTimes := countDistinctObservationTimes(observations)
 	fit := calculateLinearFit(samples, distinctObservationTimes)
+	if slope, slopeSign, defined := calculateExactSlope(exactSamples, distinctObservationTimes); defined {
+		fit.defined = true
+		fit.slope = slope
+		fit.slopeSign = slopeSign
+	}
 	trend := classifyTrend(fit)
 	agreement, agreementDefined := calculateDirectionalAgreement(observations, trend)
 
@@ -502,9 +618,9 @@ func analyzeRoot(observations []historyObservation) rootReport {
 		distinctObservationTimes: distinctObservationTimes,
 		trend:                    trend,
 		consistency:              classifyConsistency(distinctObservationTimes, trend, fit, agreement, agreementDefined),
-		firstHorizonSeconds:      firstObservation.horizonSeconds,
-		lastHorizonSeconds:       observations[len(observations)-1].horizonSeconds,
-		changeHorizonSeconds:     observations[len(observations)-1].horizonSeconds - firstObservation.horizonSeconds,
+		firstHorizon:             firstObservation.horizon,
+		lastHorizon:              observations[len(observations)-1].horizon,
+		changeHorizon:            observations[len(observations)-1].horizon.subtract(firstObservation.horizon),
 		fit:                      fit,
 		directionalAgreement:     agreement,
 		agreementDefined:         agreementDefined,
@@ -585,15 +701,64 @@ func calculateLinearFit(samples []regressionSample, distinctObservationTimes int
 		rSquared = 1
 	}
 
-	return linearFit{
-		defined:  true,
-		slope:    slope,
-		rSquared: rSquared,
+	return linearFit{defined: true, slope: slope, slopeSign: floatSign(slope), rSquared: rSquared}
+}
+
+// calculateExactSlope returns the exact OLS slope direction and its floating
+// presentation value by evaluating covariance and variance in nanoseconds
+// with multi-precision integers.
+//
+// Example: a two-nanosecond later horizon over a later observation is positive.
+func calculateExactSlope(samples []exactRegressionSample, distinctObservationTimes int) (float64, int, bool) {
+	if distinctObservationTimes < 2 {
+		return 0, 0, false
+	}
+
+	count := big.NewInt(int64(len(samples)))
+	sumX := new(big.Int)
+	sumY := new(big.Int)
+	sumXY := new(big.Int)
+	sumXX := new(big.Int)
+	for _, sample := range samples {
+		x := sample.elapsedSpan.nanosecondsBig()
+		y := sample.horizonSpan.nanosecondsBig()
+		sumX.Add(sumX, x)
+		sumY.Add(sumY, y)
+		sumXY.Add(sumXY, new(big.Int).Mul(x, y))
+		sumXX.Add(sumXX, new(big.Int).Mul(x, x))
+	}
+
+	numerator := new(big.Int).Mul(count, sumXY)
+	numerator.Sub(numerator, new(big.Int).Mul(sumX, sumY))
+	denominator := new(big.Int).Mul(count, sumXX)
+	denominator.Sub(denominator, new(big.Int).Mul(sumX, sumX))
+	if denominator.Sign() == 0 {
+		return 0, 0, false
+	}
+
+	slope := new(big.Rat).SetFrac(numerator, denominator)
+	slope.Mul(slope, big.NewRat(secondsPerHour, 1))
+	slopeValue, _ := slope.Float64()
+
+	return slopeValue, numerator.Sign(), true
+}
+
+// floatSign returns the sign of a finite floating-point measurement.
+//
+// Example: a positive slope has sign 1.
+func floatSign(value float64) int {
+	switch {
+	case value > 0:
+		return 1
+	case value < 0:
+		return -1
+	default:
+		return 0
 	}
 }
 
-// classifyTrend maps a defined regression slope to its remaining-horizon
-// direction using a small numerical-stability threshold.
+// classifyTrend maps the exact regression-slope sign to its remaining-horizon
+// direction without discarding an observed nonzero nanosecond-scale change.
 //
 // Example: a positive slope means divergence even when dates themselves move forward.
 func classifyTrend(fit linearFit) trendName {
@@ -601,10 +766,10 @@ func classifyTrend(fit linearFit) trendName {
 		return trendIndeterminate
 	}
 
-	switch {
-	case fit.slope > trendSlopeEpsilon:
+	switch fit.slopeSign {
+	case 1:
 		return trendDivergent
-	case fit.slope < -trendSlopeEpsilon:
+	case -1:
 		return trendConvergent
 	default:
 		return trendStable
@@ -630,18 +795,18 @@ func calculateDirectionalAgreement(observations []historyObservation, trend tren
 		}
 
 		consideredPairs++
-		deltaHorizon := current.horizonSeconds - previous.horizonSeconds
+		deltaHorizonSign := current.horizon.subtract(previous.horizon).sign()
 		switch trend {
 		case trendDivergent:
-			if deltaHorizon > 0 {
+			if deltaHorizonSign > 0 {
 				agreeingPairs++
 			}
 		case trendConvergent:
-			if deltaHorizon < 0 {
+			if deltaHorizonSign < 0 {
 				agreeingPairs++
 			}
 		case trendStable:
-			if deltaHorizon == 0 {
+			if deltaHorizonSign == 0 {
 				agreeingPairs++
 			}
 		}
@@ -725,9 +890,9 @@ func (report rootReport) outputFields() []string {
 		strconv.Itoa(report.distinctObservationTimes),
 		string(report.trend),
 		string(report.consistency),
-		formatNumber(report.firstHorizonSeconds),
-		formatNumber(report.lastHorizonSeconds),
-		formatNumber(report.changeHorizonSeconds),
+		report.firstHorizon.String(),
+		report.lastHorizon.String(),
+		report.changeHorizon.String(),
 		slope,
 		rSquared,
 		agreement,

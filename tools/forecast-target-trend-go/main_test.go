@@ -273,6 +273,43 @@ func TestRunReportsFullDateRangeHorizon(t *testing.T) {
 	}
 }
 
+// TestRunPreservesNanosecondDeltaAcrossFullDateRange verifies a tiny exact
+// remaining-horizon change survives when both horizons are nearly ten thousand
+// years long.
+//
+// Example: advancing a target by three nanoseconds while observation time
+// advances by one nanosecond is a divergent two-nanosecond change.
+func TestRunPreservesNanosecondDeltaAcrossFullDateRange(t *testing.T) {
+	t.Parallel()
+
+	rows := outputDataRows(t, runHistory(t, "added_utc\troot_task_id\tnew_target_utc\treason\n"+
+		"0001-01-01T00:00:00Z\tfull-nano\t9999-12-31T23:59:59Z\tfirst\n"+
+		"0001-01-01T00:00:00.000000001Z\tfull-nano\t9999-12-31T23:59:59.000000003Z\tsecond\n"))
+	if got, want := len(rows), 1; got != want {
+		t.Fatalf("row count = %d, want %d", got, want)
+	}
+	want := []string{
+		"full-nano",
+		"2",
+		"2",
+		"divergent",
+		"insufficient",
+		"315537897599",
+		"315537897599.000000002",
+		"0.000000002",
+	}
+	if got := rows[0][0:8]; !sameFields(got, want) {
+		t.Fatalf("full-range nanosecond row prefix = %q, want %q", got, want)
+	}
+	slope, err := strconv.ParseFloat(rows[0][8], 64)
+	if err != nil {
+		t.Fatalf("slope %q is not numeric: %v", rows[0][8], err)
+	}
+	if slope <= 0 {
+		t.Fatalf("slope = %v, want positive divergent fit", slope)
+	}
+}
+
 // TestRunReportsIndeterminateForOneObservationTime verifies repeated source
 // timestamps do not invent a slope or a confidence level.
 //
