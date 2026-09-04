@@ -99,6 +99,21 @@ printf '%s\n' \
   'created_utc: 2026-08-28T00:00:00Z' \
   >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
 
+# Leading punctuation is valid in a proof-session identity.  Keep concrete
+# foreign markers for the timeout replay boundary instead of re-validating
+# their spelling in the consumer under test.
+FOREIGN_UNDERSCORE_SESSION='_foreign-timeout-session'
+FOREIGN_DASH_SESSION='-foreign-timeout-session'
+for foreign_session in "$FOREIGN_UNDERSCORE_SESSION" "$FOREIGN_DASH_SESSION"; do
+  mkdir -p -- "$PROOF_ROOT/$foreign_session"
+  printf '%s\n' \
+    'scope: foreign timeout marker regression' \
+    "cwd: $FOREIGN_REPO" \
+    "session_id: $foreign_session" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$PROOF_ROOT/$foreign_session/eci_active"
+done
+
 # The callback PATH is deliberately deterministic because the planner must
 # resolve a bare timeout from the callback's original PATH, before the hook
 # prepends its own trusted utility directories.
@@ -225,6 +240,43 @@ assert_denied_code() {
   }
 }
 
+foreign_timeout_observed_replays() {
+  jq -cn --arg cwd "$1" '
+    [{segment:1,parent_segment:2,prefix:["./timeout","5"],cwd:$cwd,command_path:"",command_path_set:false,command_path_exported:false,disposition:"observed"}]
+  '
+}
+
+# Exercise each timeout-child meaning through both sources of evidence: a
+# real launching child and the exact synthetic observed replay consumed during
+# compound recursion.  Keep both coordinator and worker roles in the helper
+# so a new semantic case cannot accidentally cover just one admission path.
+assert_foreign_timeout_pair() {
+  local expectation="$1" tail="$2" child_cwd="${3:-$FOREIGN_TIMEOUT_CONTROL_INNER}" foreign_session="${4:-$FOREIGN_SESSION}"
+  local actual_command synthetic_command observed_replays role
+
+  actual_command="cd $child_cwd; ./timeout 5 $tail"
+  synthetic_command="./timeout 5 $tail"
+  observed_replays="$(foreign_timeout_observed_replays "$child_cwd")"
+  for role in coordinator worker; do
+    case "$expectation" in
+      deny)
+        assert_denied_code "$actual_command" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+          "foreign_session=$foreign_session"
+        assert_denied_code "$synthetic_command" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+          "foreign_session=$foreign_session" configured absent "$REPO" "$observed_replays" true
+        ;;
+      allow)
+        assert_allowed "$actual_command" "$role"
+        assert_allowed "$synthetic_command" "$role" configured absent "$REPO" "$observed_replays" true
+        ;;
+      *)
+        printf 'unknown foreign timeout expectation: %s\n' "$expectation" >&2
+        return 64
+        ;;
+    esac
+  done
+}
+
 # This bounded target exercises the copied real hook's timeout replay path
 # without requiring the broad normal-Git matrix to finish. The default matrix
 # below remains its established entrypoint and coverage surface.
@@ -237,11 +289,89 @@ run_foreign_timeout_marker_target() {
   missing_first_marker='../foreign-timeout-missing-first/eci_active'
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$current_timeout_inner/timeout"
+  cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$PROOF_ROOT/timeout"
   mkdir -p -- "$outside_timeout_inner"
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$outside_timeout_inner/timeout"
   printf '%s\n' ordinary >"$outside_timeout_inner/eci_active"
-  chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout" "$current_timeout_inner/timeout" "$outside_timeout_inner/timeout"
+  chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout" "$current_timeout_inner/timeout" "$PROOF_ROOT/timeout" "$outside_timeout_inner/timeout"
   CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+
+  # Every direct finite writer position must agree between a real observed
+  # timeout child and its synthetic replay.  Inputs, modes, and ordinary
+  # command spellings are deliberately kept in the allow cases below.
+  for tail in \
+    'rm -f eci_active' \
+    'rm eci_active' \
+    'shred eci_active' \
+    'srm eci_active' \
+    'touch eci_active' \
+    'unlink eci_active' \
+    'chmod 600 eci_active' \
+    'chown root eci_active' \
+    'tee eci_active' \
+    'dd if=/dev/zero of=eci_active' \
+    'cp ordinary-copy eci_active' \
+    'install ordinary-copy eci_active' \
+    'mv eci_active ordinary-copy' \
+    'mv ordinary-copy eci_active' \
+    'ln -f ordinary-copy eci_active' \
+    'rm --force eci_active' \
+    'cp -f ordinary-copy eci_active' \
+    'cp --force ordinary-copy eci_active' \
+    'tee -a eci_active' \
+    'tee --append eci_active' \
+    'ln --force ordinary-copy eci_active' \
+    'rm -- eci_active' \
+    'rm eci_active -- ordinary-copy' \
+    'cp -- ordinary-copy eci_active' \
+    'tee -- eci_active' \
+    'ln -f -- ordinary-copy eci_active' \
+    "printf '%s' marker > eci_active" \
+    "printf '%s' marker >> eci_active" \
+    "printf '%s' marker >| eci_active" \
+    "printf '%s' marker >& eci_active" \
+    "printf '%s' marker &> eci_active" \
+    "printf '%s' marker &>> eci_active" \
+    'rm "eci_active"' \
+    'FOREIGN_ASSIGNMENT=present rm eci_active' \
+    'env rm eci_active' \
+    'command rm eci_active' \
+    'builtin rm eci_active' \
+    'exec rm eci_active'; do
+    assert_foreign_timeout_pair deny "$tail"
+  done
+
+  # `--` makes the leading dash an operand instead of an option.  Session
+  # identity validation is shared with proof state, so both valid spellings
+  # must resolve without a local first-character rule.
+  assert_foreign_timeout_pair deny "rm -- $FOREIGN_UNDERSCORE_SESSION/eci_active" "$PROOF_ROOT" "$FOREIGN_UNDERSCORE_SESSION"
+  assert_foreign_timeout_pair deny "rm -- $FOREIGN_DASH_SESSION/eci_active" "$PROOF_ROOT" "$FOREIGN_DASH_SESSION"
+
+  # Read/source operands, quoted or escaped operator punctuation, dynamic
+  # operands, unsupported nesting, and unknown writer/wrapper grammar are
+  # ordinary execution.  A quoted literal pathname remains a concrete target
+  # above; only the syntax characters themselves are data here.
+  for tail in \
+    'cat eci_active' \
+    "printf '%s' eci_active" \
+    'cp eci_active ordinary-copy' \
+    'rmdir eci_active' \
+    'chmod eci_active ordinary-copy' \
+    'ln eci_active ordinary-link' \
+    "printf '%s' marker '>' eci_active" \
+    "printf '%s' marker \\> eci_active" \
+    "printf '%s' marker '&>' eci_active" \
+    "printf '%s' marker \\&\\> eci_active" \
+    'rm "$TARGET"' \
+    'rm $(printf eci_active)' \
+    "bash -c 'rm eci_active'" \
+    'rm -r eci_active' \
+    'cp -r ordinary-copy eci_active' \
+    'tee -i eci_active' \
+    'ln -s ordinary-copy eci_active' \
+    'unknown-wrapper rm eci_active'; do
+    assert_foreign_timeout_pair allow "$tail"
+  done
 
   # An actual observed timeout child may not mutate a valid foreign marker.
   for role in coordinator worker; do

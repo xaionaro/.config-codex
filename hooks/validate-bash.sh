@@ -2032,10 +2032,15 @@ direct_ledger_direct_shell_c_payload() {
 DIRECT_LEDGER_TEE_INPUT_DEV_NULL_TOKEN=$'\036eci-tee-input-dev-null\036'
 
 direct_ledger_static_records() {
-  local raw="$1" length index=0 character next_character state=unquoted word="" word_started=false
+  local raw="$1" record_mode="${2:-ledger}" length index=0 character next_character state=unquoted word="" word_started=false
   local token_index segment_start segment_end prefix quoted_word effect target nested_text input_index input_end
-  local -a token_kinds=() token_values=() records=() stripped=()
+  local foreign_source_start=0 foreign_source_index=0 foreign_segment_index=0
+  local -a token_kinds=() token_values=() records=() stripped=() foreign_sources=() foreign_redirect_targets=()
 
+  case "$record_mode" in
+    ledger|foreign-marker) ;;
+    *) return 1 ;;
+  esac
   [ -n "$raw" ] || return 1
   case "$raw" in
     *$'\n'*|*$'\r'*) return 1 ;;
@@ -2059,11 +2064,13 @@ direct_ledger_static_records() {
         if direct_ledger_command_substitution_payload "$raw" "$index"; then
           nested_text="${raw:index:$((DIRECT_LEDGER_NESTED_END - index + 1))}"
           word+="$nested_text"
+          [ "$record_mode" != foreign-marker ] || return 1
           if direct_ledger_nested_payload_is_static "$DIRECT_LEDGER_NESTED_PAYLOAD"; then
             records+=(nested "$DIRECT_LEDGER_NESTED_PAYLOAD")
           fi
           index=$((DIRECT_LEDGER_NESTED_END + 1))
         else
+          [ "$record_mode" != foreign-marker ] || return 1
           word+='$('
           index=$((index + 2))
         fi
@@ -2073,11 +2080,13 @@ direct_ledger_static_records() {
         if direct_ledger_backtick_payload "$raw" "$index"; then
           nested_text="${raw:index:$((DIRECT_LEDGER_NESTED_END - index + 1))}"
           word+="$nested_text"
+          [ "$record_mode" != foreign-marker ] || return 1
           if direct_ledger_nested_payload_is_static "$DIRECT_LEDGER_NESTED_PAYLOAD"; then
             records+=(nested "$DIRECT_LEDGER_NESTED_PAYLOAD")
           fi
           index=$((DIRECT_LEDGER_NESTED_END + 1))
         else
+          [ "$record_mode" != foreign-marker ] || return 1
           word+='`'
           index=$((index + 1))
         fi
@@ -2088,7 +2097,7 @@ direct_ledger_static_records() {
         index=$((index + 1))
         continue
       fi
-      if [ "$character" = '\\' ]; then
+      if [ "$character" = '\' ]; then
         [ $((index + 1)) -lt "$length" ] || return 1
         next_character="${raw:$((index + 1)):1}"
         case "$next_character" in
@@ -2128,7 +2137,7 @@ direct_ledger_static_records() {
       index=$((index + 1))
       continue
     fi
-    if [ "$character" = '\\' ]; then
+    if [ "$character" = '\' ]; then
       [ $((index + 1)) -lt "$length" ] || return 1
       word_started=true
       word+="${raw:$((index + 1)):1}"
@@ -2140,11 +2149,13 @@ direct_ledger_static_records() {
       if direct_ledger_command_substitution_payload "$raw" "$index"; then
         nested_text="${raw:index:$((DIRECT_LEDGER_NESTED_END - index + 1))}"
         word+="$nested_text"
+        [ "$record_mode" != foreign-marker ] || return 1
         if direct_ledger_nested_payload_is_static "$DIRECT_LEDGER_NESTED_PAYLOAD"; then
           records+=(nested "$DIRECT_LEDGER_NESTED_PAYLOAD")
         fi
         index=$((DIRECT_LEDGER_NESTED_END + 1))
       else
+        [ "$record_mode" != foreign-marker ] || return 1
         word+='$('
         index=$((index + 2))
       fi
@@ -2155,11 +2166,13 @@ direct_ledger_static_records() {
       if direct_ledger_backtick_payload "$raw" "$index"; then
         nested_text="${raw:index:$((DIRECT_LEDGER_NESTED_END - index + 1))}"
         word+="$nested_text"
+        [ "$record_mode" != foreign-marker ] || return 1
         if direct_ledger_nested_payload_is_static "$DIRECT_LEDGER_NESTED_PAYLOAD"; then
           records+=(nested "$DIRECT_LEDGER_NESTED_PAYLOAD")
         fi
         index=$((DIRECT_LEDGER_NESTED_END + 1))
       else
+        [ "$record_mode" != foreign-marker ] || return 1
         word+='`'
         index=$((index + 1))
       fi
@@ -2174,6 +2187,10 @@ direct_ledger_static_records() {
       fi
       token_kinds+=(delimiter)
       token_values+=("")
+      if [ "$record_mode" = foreign-marker ]; then
+        foreign_sources+=("${raw:foreign_source_start:$((index - foreign_source_start))}")
+        foreign_source_start=$((index + 1))
+      fi
       index=$((index + 1))
       continue
     fi
@@ -2199,6 +2216,12 @@ direct_ledger_static_records() {
         word=""
         word_started=false
       fi
+      if [ "$record_mode" = foreign-marker ]; then
+        case "${raw:index:3}" in
+          '&>>'|'&>'*) ;;
+          *) return 1 ;;
+        esac
+      fi
       case "${raw:index:3}" in
         '&>>') token_kinds+=(operator); token_values+=('&>>'); index=$((index + 3)) ;;
         '&>'*) token_kinds+=(operator); token_values+=('&>'); index=$((index + 2)) ;;
@@ -2214,6 +2237,7 @@ direct_ledger_static_records() {
         word=""
         word_started=false
       fi
+      [ "$record_mode" != foreign-marker ] || return 1
       token_kinds+=(delimiter)
       token_values+=("")
       if [ "${raw:$((index + 1)):1}" = '|' ]; then
@@ -2233,6 +2257,7 @@ direct_ledger_static_records() {
         word=""
         word_started=false
       fi
+      [ "$record_mode" != foreign-marker ] || return 1
       input_index="$index"
       if [ "${raw:index:10}" = '</dev/null' ]; then
         input_end=$((index + 10))
@@ -2268,6 +2293,9 @@ direct_ledger_static_records() {
     token_kinds+=(word)
     token_values+=("$word")
   fi
+  if [ "$record_mode" = foreign-marker ]; then
+    foreign_sources+=("${raw:foreign_source_start}")
+  fi
 
   segment_start=0
   for ((segment_end = 0; segment_end <= ${#token_kinds[@]}; segment_end++)); do
@@ -2276,6 +2304,7 @@ direct_ledger_static_records() {
     fi
     if [ "$segment_start" -lt "$segment_end" ]; then
       stripped=()
+      foreign_redirect_targets=()
       token_index="$segment_start"
       while [ "$token_index" -lt "$segment_end" ]; do
         if [ "${token_kinds[$token_index]}" = word ]; then
@@ -2305,29 +2334,46 @@ direct_ledger_static_records() {
           *) return 1 ;;
         esac
         if [ -n "$effect" ]; then
-          records+=(redirect "$effect" "$target")
+          if [ "$record_mode" = foreign-marker ]; then
+            foreign_redirect_targets+=("$target")
+          else
+            records+=(redirect "$effect" "$target")
+          fi
         fi
         token_index=$((token_index + 2))
       done
       if [ "${#stripped[@]}" -gt 0 ]; then
-        prefix=""
-        for word in "${stripped[@]}"; do
-          printf -v quoted_word '%q' "$word"
-          if [ -n "$prefix" ]; then
-            prefix+=" "
+        if [ "$record_mode" = foreign-marker ]; then
+          DIRECT_LEDGER_FOREIGN_SOURCE_SEGMENT="${foreign_sources[$foreign_source_index]:-}"
+          DIRECT_LEDGER_FOREIGN_WORDS=("${stripped[@]}")
+          DIRECT_LEDGER_FOREIGN_REDIRECT_TARGETS=("${foreign_redirect_targets[@]}")
+          foreign_segment_index=$((foreign_segment_index + 1))
+          foreign_active_marker_consume_ledger_segment "$foreign_segment_index" "$DIRECT_LEDGER_FOREIGN_SOURCE_SEGMENT" || true
+          [ -z "${FOREIGN_ACTIVE_MARKER_DETAIL:-}" ] || return 0
+        else
+          prefix=""
+          for word in "${stripped[@]}"; do
+            printf -v quoted_word '%q' "$word"
+            if [ -n "$prefix" ]; then
+              prefix+=" "
+            fi
+            prefix+="$quoted_word"
+          done
+          records+=(segment "$prefix")
+          records+=(words "${#stripped[@]}" "${stripped[@]}")
+          if direct_ledger_direct_shell_c_payload "${stripped[@]}"; then
+            records+=(nested "$DIRECT_LEDGER_NESTED_PAYLOAD")
           fi
-          prefix+="$quoted_word"
-        done
-        records+=(segment "$prefix")
-        records+=(words "${#stripped[@]}" "${stripped[@]}")
-        if direct_ledger_direct_shell_c_payload "${stripped[@]}"; then
-          records+=(nested "$DIRECT_LEDGER_NESTED_PAYLOAD")
         fi
       fi
     fi
     segment_start=$((segment_end + 1))
+    foreign_source_index=$((foreign_source_index + 1))
   done
-  printf '%s\0' "${records[@]}" complete
+  if [ "$record_mode" = ledger ]; then
+    printf '%s\0' "${records[@]}" complete
+  fi
+  return 0
 }
 
 # direct_ledger_redirect_effect_check preserves the existing ledger-specific
@@ -3190,192 +3236,275 @@ fi
 # harmless command from becoming a denial because a parser build is stale or
 # does not understand its spelling.
 
+foreign_active_marker_static_assignment() {
+  [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]
+}
+
+# Resolve a literal candidate before deriving its owner.  The proof-state
+# validators own the session grammar and direct marker/CWD binding, including
+# valid leading '_' and '-' identities.
+foreign_active_marker_candidate_detail() {
+  local raw="$1" base="$2" current_session="$3" candidate proof_root foreign_session
+
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    *'$'*|*'`'*|*'~'*|*'?'|*'['*|*']'*|*'*'*|*'{'*|*'}'*) return 1 ;;
+  esac
+  if [[ "$raw" = /* ]]; then
+    candidate="$raw"
+  else
+    candidate="$base/$raw"
+  fi
+  candidate="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+  [ -n "$candidate" ] || return 1
+  proof_root="$(realpath -e -- "$(codex_proof_root)" 2>/dev/null || true)"
+  [ -n "$proof_root" ] || return 1
+  case "$candidate" in
+    "$proof_root"/*/eci_active) ;;
+    *) return 1 ;;
+  esac
+  foreign_session="${candidate#"$proof_root"/}"
+  foreign_session="${foreign_session%/eci_active}"
+  [ "$foreign_session" != "$current_session" ] || return 1
+  codex_eci_marker_metadata_is_valid "$candidate" || return 1
+  codex_eci_direct_marker_cwd "$candidate" "$foreign_session" >/dev/null || return 1
+  printf 'target=%s foreign_session=%s\n' "$candidate" "$foreign_session"
+}
+
+FOREIGN_ACTIVE_MARKER_WRITER_FORCE=false
+FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS=()
+
+# Decode only finite zero-arity flags.  `--` is a terminator, not an operand
+# filter: literal paths before and after it remain visible to the extractor.
+foreign_active_marker_writer_operands() {
+  local flag_mode="$1" token options_ended=false
+  shift
+
+  FOREIGN_ACTIVE_MARKER_WRITER_FORCE=false
+  FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS=()
+  for token in "$@"; do
+    if [ "$options_ended" = false ]; then
+      if [ "$token" = -- ]; then
+        options_ended=true
+        continue
+      fi
+      case "$flag_mode:$token" in
+        force:-f|force:--force)
+          FOREIGN_ACTIVE_MARKER_WRITER_FORCE=true
+          continue
+          ;;
+        append:-a|append:--append)
+          FOREIGN_ACTIVE_MARKER_WRITER_FORCE=true
+          continue
+          ;;
+      esac
+      case "$token" in
+        -*) return 1 ;;
+      esac
+    fi
+    FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS+=("$token")
+  done
+}
+
+foreign_active_marker_writer_targets() {
+  local command_name="$1" target index if_seen=false of_seen=false dd_output=""
+  shift
+
+  case "$command_name" in
+    rm)
+      foreign_active_marker_writer_operands force "$@" || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
+    shred|srm|touch|unlink)
+      foreign_active_marker_writer_operands none "$@" || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
+    chmod|chown)
+      foreign_active_marker_writer_operands none "$@" || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -ge 2 ] || return 0
+      for ((index = 1; index < ${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}; index++)); do
+        printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[$index]}"
+      done
+      ;;
+    tee)
+      foreign_active_marker_writer_operands append "$@" || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
+    dd)
+      foreign_active_marker_writer_operands none "$@" || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        case "$target" in
+          if=?*)
+            [ "$if_seen" = false ] || return 0
+            if_seen=true
+            ;;
+          of=?*)
+            [ "$of_seen" = false ] || return 0
+            of_seen=true
+            dd_output="${target#of=}"
+            ;;
+          *) return 0 ;;
+        esac
+      done
+      [ "$if_seen" = true ] && [ "$of_seen" = true ] && [ -n "$dd_output" ] || return 0
+      printf '%s\n' "$dd_output"
+      ;;
+    cp)
+      foreign_active_marker_writer_operands force "$@" || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
+      printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[1]}"
+      ;;
+    install)
+      foreign_active_marker_writer_operands none "$@" || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
+      printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[1]}"
+      ;;
+    mv)
+      foreign_active_marker_writer_operands none "$@" || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
+    ln)
+      foreign_active_marker_writer_operands force "$@" || return 0
+      [ "$FOREIGN_ACTIVE_MARKER_WRITER_FORCE" = true ] || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
+      printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[1]}"
+      ;;
+  esac
+  return 0
+}
+
+FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD=""
+FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS=()
+
+foreign_active_marker_observed_timeout_child() {
+  local segment_index="$1" source_segment="$2" timeout_index="$3" record replay_cwd index
+  shift 3
+  local -a segment_words=("$@") replay_values=() replay_prefix=()
+
+  [ "$timeout_index" -lt "${#segment_words[@]}" ] || return 1
+  [ "${segment_words[$timeout_index]##*/}" = timeout ] || return 1
+  # This recognizes only a literal timeout command after simple literal
+  # assignments; quoted, escaped, dynamic, and wrapper spellings stay opaque.
+  [[ "$source_segment" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:=+%-]*[[:space:]]+)*([A-Za-z0-9_./-]*/)?timeout([[:space:]]|$) ]] || return 1
+  record="$(jq -cer --argjson segment "$segment_index" '
+    def bounded_integer: type == "number" and floor == . and . >= 1 and . <= 8;
+    def valid_record:
+      if type != "object" then false else
+        (keys | sort == ["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) and
+        (.segment | bounded_integer) and
+        (.parent_segment | bounded_integer) and
+        (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; type == "string" and length > 0 and length <= 4096)) and
+        (.cwd | type == "string" and startswith("/")) and
+        (.command_path | type == "string") and
+        (.command_path_set | type == "boolean") and
+        (.command_path_exported | type == "boolean") and
+        (if .command_path_set then true else (.command_path == "" and .command_path_exported == false) end)
+      end;
+    if type == "array" then
+      [.[] | select(if valid_record then (.segment == $segment and .disposition == "observed") else false end)] |
+      if length == 1 then .[0] else empty end
+    else empty end
+  ' <<<"$FOREIGN_ACTIVE_MARKER_TIMEOUT_REPLAYS" 2>/dev/null)" || return 1
+  mapfile -t replay_values < <(jq -r '.cwd, .prefix[]' <<<"$record" 2>/dev/null)
+  replay_cwd="${replay_values[0]:-}"
+  replay_prefix=("${replay_values[@]:1}")
+  [ "${#replay_prefix[@]}" -ge 2 ] && [ "${#replay_prefix[@]}" -lt "${#segment_words[@]}" ] || return 1
+  for index in "${!replay_prefix[@]}"; do
+    [ "${replay_prefix[$index]}" = "${segment_words[$index]}" ] || return 1
+  done
+  [ -n "$replay_cwd" ] || return 1
+  FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD="$replay_cwd"
+  FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS=("${segment_words[@]:${#replay_prefix[@]}}")
+}
+
+FOREIGN_ACTIVE_MARKER_CURRENT_SESSION=""
+FOREIGN_ACTIVE_MARKER_TIMEOUT_REPLAYS='[]'
+FOREIGN_ACTIVE_MARKER_DETAIL=""
+
+# `direct_ledger_static_records ... foreign-marker` calls this private
+# consumer in-process with the raw source segment and its static lexical data.
+# It deliberately has no independent record grammar.
+foreign_active_marker_consume_ledger_segment() {
+  local segment_index="$1" source_segment="$2"
+  local base="$cwd" token_index=0 command_name timeout_opaque=false target detail
+  local -a words=("${DIRECT_LEDGER_FOREIGN_WORDS[@]}") writer_targets=()
+
+  [ "${#words[@]}" -gt 0 ] || return 0
+  while [ "$token_index" -lt "${#words[@]}" ] &&
+    foreign_active_marker_static_assignment "${words[$token_index]}"; do
+    token_index=$((token_index + 1))
+  done
+  if [ "$token_index" -lt "${#words[@]}" ] && [ "${words[$token_index]##*/}" = timeout ]; then
+    if foreign_active_marker_observed_timeout_child "$segment_index" "$source_segment" "$token_index" "${words[@]}"; then
+      words=("${FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS[@]}")
+      base="$FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD"
+      token_index=0
+    else
+      timeout_opaque=true
+    fi
+  fi
+
+  if [ "$timeout_opaque" = false ]; then
+    while [ "$token_index" -lt "${#words[@]}" ] &&
+      foreign_active_marker_static_assignment "${words[$token_index]}"; do
+      token_index=$((token_index + 1))
+    done
+    if [ "$token_index" -lt "${#words[@]}" ]; then
+      command_name="${words[$token_index]##*/}"
+      case "$command_name" in
+        env|command|builtin|exec)
+          token_index=$((token_index + 1))
+          while [ "$token_index" -lt "${#words[@]}" ] &&
+            { foreign_active_marker_static_assignment "${words[$token_index]}" || [[ "${words[$token_index]}" = -* ]]; }; do
+            token_index=$((token_index + 1))
+          done
+          [ "$token_index" -lt "${#words[@]}" ] || command_name=""
+          [ -z "$command_name" ] || command_name="${words[$token_index]##*/}"
+          ;;
+      esac
+      if [ -n "$command_name" ]; then
+        mapfile -t writer_targets < <(foreign_active_marker_writer_targets "$command_name" "${words[@]:$((token_index + 1))}")
+        for target in "${writer_targets[@]}"; do
+          if detail="$(foreign_active_marker_candidate_detail "$target" "$base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
+            FOREIGN_ACTIVE_MARKER_DETAIL="$detail"
+            return 0
+          fi
+        done
+      fi
+    fi
+  fi
+
+  for target in "${DIRECT_LEDGER_FOREIGN_REDIRECT_TARGETS[@]}"; do
+    if detail="$(foreign_active_marker_candidate_detail "$target" "$base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
+      FOREIGN_ACTIVE_MARKER_DETAIL="$detail"
+      return 0
+    fi
+  done
+  return 0
+}
+
 # Detect the one proof mutation that can accidentally disrupt another active
 # session. This stays target-specific: ordinary source files and current
 # session coordination notes do not match it.
 foreign_active_marker_mutation_detail() {
-  local candidate foreign_session
-
-  # Python emits every resolved pathname candidate in source order. Marker
-  # liveness and ownership stay with the shared bounded validators below.
-  while IFS= read -r candidate; do
-    [ -n "$candidate" ] || continue
-    foreign_session="${candidate%/eci_active}"
-    foreign_session="${foreign_session##*/}"
-    codex_eci_marker_metadata_is_valid "$candidate" || continue
-    codex_eci_direct_marker_cwd "$candidate" "$foreign_session" >/dev/null || continue
-    printf 'target=%s foreign_session=%s\n' "$candidate" "$foreign_session"
-    return 0
-  done < <(python3 - "$1" "$2" "${3:-[]}" <<'PY'
-import json
-import os
-import re
-import shlex
-import sys
-
-text, current_session, timeout_replays_json = sys.argv[1:]
-root = os.path.realpath(os.path.abspath(
-    os.environ.get("CODEX_PROOF_ROOT") or
-    os.path.join(os.environ.get("HOME", ""), ".cache", "codex-proof")
-))
-cwd = os.environ.get("CODEX_VALIDATE_CWD", os.getcwd())
-separators = {";", "&", "&&", "|", "||", "(", ")"}
-output_redirects = {">", ">>", ">|", ">&"}
-
-try:
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-except ValueError:
-    raise SystemExit(1)
-
-try:
-    timeout_replays = json.loads(timeout_replays_json)
-except (TypeError, ValueError):
-    timeout_replays = []
-if not isinstance(timeout_replays, list):
-    timeout_replays = []
-
-def valid_observed_timeout_replay(replay):
-    expected_keys = {
-        "command_path", "command_path_exported", "command_path_set", "cwd",
-        "disposition", "parent_segment", "prefix", "segment",
-    }
-    if not isinstance(replay, dict) or set(replay) != expected_keys:
-        return False
-    if type(replay["segment"]) is not int or not 1 <= replay["segment"] <= 8:
-        return False
-    if type(replay["parent_segment"]) is not int or not 1 <= replay["parent_segment"] <= 8:
-        return False
-    if (not isinstance(replay["prefix"], list) or not 2 <= len(replay["prefix"]) <= 128 or
-            not all(type(value) is str and 0 < len(value) <= 4096 for value in replay["prefix"])):
-        return False
-    if not isinstance(replay["cwd"], str) or not replay["cwd"].startswith("/"):
-        return False
-    if not isinstance(replay["command_path"], str):
-        return False
-    if type(replay["command_path_set"]) is not bool or type(replay["command_path_exported"]) is not bool:
-        return False
-    if not replay["command_path_set"] and (replay["command_path"] or replay["command_path_exported"]):
-        return False
-    return replay["disposition"] == "observed"
-
-def observed_timeout_child(segment, segment_index):
-    matches = []
-    for replay in timeout_replays:
-        if not valid_observed_timeout_replay(replay) or replay["segment"] != segment_index:
-            continue
-        prefix = replay["prefix"]
-        if len(prefix) < len(segment) and segment[:len(prefix)] == prefix:
-            matches.append(replay)
-    if len(matches) != 1:
-        return segment, cwd
-    replay = matches[0]
-    return segment[len(replay["prefix"]):], replay["cwd"]
-
-def path_candidate(raw, base):
-    if not raw or raw.startswith("-"):
-        return None
-    expanded = os.path.expanduser(raw)
-    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(os.path.join(base, expanded))
-    candidate = os.path.realpath(os.path.normpath(candidate))
-    try:
-        relative = os.path.relpath(candidate, root)
-    except ValueError:
-        return None
-    parts = relative.split(os.sep)
-    if (relative == os.pardir or relative.startswith(os.pardir + os.sep) or
-            len(parts) != 2 or parts[1] != "eci_active" or
-            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", parts[0]) or
-            parts[0] == current_session):
-        return None
-    return candidate
-
-def simple_path_operands(args):
-    # Recognize only a literal no-option form, plus a conventional option
-    # terminator. Unknown option grammar is ordinary input, not a reason to
-    # guess that an operand is a write target.
-    if "--" in args:
-        delimiter = args.index("--")
-        if any(not value.startswith("-") for value in args[:delimiter]):
-            return []
-        return args[delimiter + 1:]
-    if any(value.startswith("-") for value in args):
-        return []
-    return args
-
-def actual_write_targets(name, args):
-    # This is deliberately a finite destination extractor, not a list of
-    # writer-like command names. A foreign marker used as input must stay
-    # ordinary; only a command position with a concrete marker mutation is
-    # relevant to this narrow cross-session boundary.
-    operands = simple_path_operands(args)
-    if name in {"rm", "shred", "srm", "touch", "unlink"}:
-        return operands
-    if name in {"chmod", "chown"}:
-        # The first positional is a mode/owner, not a file target.
-        return operands[1:] if len(operands) >= 2 else []
-    if name == "tee":
-        return operands
-    if name == "dd":
-        return [operand[3:] for operand in args
-                if operand.startswith("of=") and len(operand) > 3]
-    if name in {"cp", "install"}:
-        return operands[-1:] if len(operands) == 2 else []
-    if name == "mv":
-        return operands if len(operands) == 2 else []
-    if name == "ln":
-        force = False
-        positionals = []
-        for operand in args:
-            if operand in {"-f", "--force"}:
-                force = True
-            elif operand.startswith("-"):
-                return []
-            else:
-                positionals.append(operand)
-        return positionals[-1:] if force and len(positionals) == 2 else []
-    return []
-
-segments, current = [], []
-for token in tokens + [";"]:
-    if token in separators:
-        if current:
-            segments.append(current)
-        current = []
-    else:
-        current.append(token)
-
-for segment_index, raw_segment in enumerate(segments, start=1):
-    segment, segment_cwd = observed_timeout_child(raw_segment, segment_index)
-    index = 0
-    while index < len(segment) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[index]):
-        index += 1
-    if index >= len(segment):
-        continue
-    name = os.path.basename(segment[index])
-    if name in {"env", "command", "builtin", "exec"}:
-        index += 1
-        while index < len(segment) and (segment[index].startswith("-") or
-                                        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[index])):
-            index += 1
-        if index >= len(segment):
-            continue
-        name = os.path.basename(segment[index])
-    operands = segment[index + 1:]
-    for operand in actual_write_targets(name, operands):
-        candidate = path_candidate(operand, segment_cwd)
-        if candidate:
-            print(candidate)
-    for offset, operand in enumerate(segment[:-1]):
-        if operand in output_redirects:
-            candidate = path_candidate(segment[offset + 1], segment_cwd)
-            if candidate:
-                print(candidate)
-raise SystemExit(0)
-PY
-  )
-  return 1
+  FOREIGN_ACTIVE_MARKER_CURRENT_SESSION="$2"
+  FOREIGN_ACTIVE_MARKER_TIMEOUT_REPLAYS="${3:-[]}"
+  FOREIGN_ACTIVE_MARKER_DETAIL=""
+  if ! direct_ledger_static_records "$1" foreign-marker >/dev/null; then
+    return 1
+  fi
+  [ -n "$FOREIGN_ACTIVE_MARKER_DETAIL" ] || return 1
+  printf '%s\n' "$FOREIGN_ACTIVE_MARKER_DETAIL"
 }
 
 # enforce_foreign_active_marker_mutation_boundary stops only a resolved write
