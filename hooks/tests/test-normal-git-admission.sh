@@ -229,11 +229,12 @@ assert_denied_code() {
 # without requiring the broad normal-Git matrix to finish. The default matrix
 # below remains its established entrypoint and coverage surface.
 run_foreign_timeout_marker_target() {
-  local role current_timeout_inner outside_timeout_inner
+  local role current_timeout_inner outside_timeout_inner missing_first_marker stale_foreign_cwd target_failures=0
   local observed_replays opaque_replays duplicate_replays malformed_replays prefix_mismatch_replays
 
   current_timeout_inner="$PROOF_ROOT/$SESSION"
   outside_timeout_inner="$TMP_ROOT/timeout-outside-proof"
+  missing_first_marker='../foreign-timeout-missing-first/eci_active'
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$current_timeout_inner/timeout"
   mkdir -p -- "$outside_timeout_inner"
@@ -247,6 +248,35 @@ run_foreign_timeout_marker_target() {
     assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
       "foreign_session=$FOREIGN_SESSION"
   done
+
+  # An invalid first marker-shaped operand is advisory; the later valid
+  # foreign marker is the concrete target that must still be found.
+  for role in coordinator worker; do
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm $missing_first_marker eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" || target_failures=1
+  done
+
+  # A structurally valid record is not live after its declared CWD disappears.
+  # Keep collecting both expected RED controls before returning their failure.
+  stale_foreign_cwd="$TMP_ROOT/stale-foreign-timeout-cwd"
+  mkdir -p -- "$stale_foreign_cwd"
+  printf '%s\n' \
+    'scope: foreign timeout marker regression' \
+    "cwd: $stale_foreign_cwd" \
+    "session_id: $FOREIGN_SESSION" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  rmdir -- "$stale_foreign_cwd"
+  for role in coordinator worker; do
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" "$role" || target_failures=1
+  done
+  printf '%s\n' \
+    'scope: foreign timeout marker regression' \
+    "cwd: $FOREIGN_REPO" \
+    "session_id: $FOREIGN_SESSION" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  [ "$target_failures" -eq 0 ] || return 1
 
   # The current marker remains covered by its existing direct-control route.
   assert_denied_code "cd $current_timeout_inner; ./timeout 5 rm eci_active" ECI_PLAN_LIVE_CONTROL_DENIED worker \
@@ -295,6 +325,10 @@ run_foreign_timeout_marker_target() {
   prefix_mismatch_replays="$(jq -c '.[0].prefix = ["./timeout", "6"] | .' <<<"$observed_replays")"
   for role in coordinator worker; do
     assert_denied_code "./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    # A synthetic observed replay must also scan beyond an invalid first
+    # marker-shaped operand to the later live foreign marker.
+    assert_denied_code "./timeout 5 rm $missing_first_marker eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
       "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
     assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" '[]' true
     assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$opaque_replays" true

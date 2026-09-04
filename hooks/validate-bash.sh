@@ -3196,9 +3196,17 @@ fi
 foreign_active_marker_mutation_detail() {
   local candidate foreign_session
 
-  # Python only identifies a resolved pathname candidate. Marker liveness and
-  # ownership stay with the shared bounded metadata validator below.
-  candidate="$(python3 - "$1" "$2" "${3:-[]}" <<'PY'
+  # Python emits every resolved pathname candidate in source order. Marker
+  # liveness and ownership stay with the shared bounded validators below.
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    foreign_session="${candidate%/eci_active}"
+    foreign_session="${foreign_session##*/}"
+    codex_eci_marker_metadata_is_valid "$candidate" || continue
+    codex_eci_direct_marker_cwd "$candidate" "$foreign_session" >/dev/null || continue
+    printf 'target=%s foreign_session=%s\n' "$candidate" "$foreign_session"
+    return 0
+  done < <(python3 - "$1" "$2" "${3:-[]}" <<'PY'
 import json
 import os
 import re
@@ -3320,22 +3328,15 @@ for segment_index, raw_segment in enumerate(segments, start=1):
             candidate = path_candidate(operand, segment_cwd)
             if candidate:
                 print(candidate)
-                raise SystemExit(0)
     for offset, operand in enumerate(segment[:-1]):
         if operand in output_redirects:
             candidate = path_candidate(segment[offset + 1], segment_cwd)
             if candidate:
                 print(candidate)
-                raise SystemExit(0)
-raise SystemExit(1)
+raise SystemExit(0)
 PY
-  )" || return 1
-
-  [ -n "$candidate" ] || return 1
-  codex_eci_marker_metadata_is_valid "$candidate" || return 1
-  foreign_session="${candidate%/eci_active}"
-  foreign_session="${foreign_session##*/}"
-  printf 'target=%s foreign_session=%s\n' "$candidate" "$foreign_session"
+  )
+  return 1
 }
 
 # enforce_foreign_active_marker_mutation_boundary stops only a resolved write
