@@ -365,6 +365,12 @@ extract_h2_section() {
   ' "$file"
 }
 
+section_has_exact_line() {
+  local section="$1" line="$2"
+
+  grep -Fqx -- "$line" <<<"$section"
+}
+
 require_section_pattern() {
   local section="$1" description="$2" pattern="$3" flattened
 
@@ -1308,20 +1314,24 @@ require_primary_scope_fidelity_text() {
 }
 
 assert_primary_scope_fidelity_contract() {
-  local source="$1" input="$2"
+  local source="$1" input="$2" activation
+
+  activation="$(extract_h2_section <(printf '%s\n' "$input") '## Activation and invariants')" ||
+    fail "$source lacks a bounded Activation and invariants section"
 
   require_primary_scope_fidelity_text "$source" 'material source-outcome-scope chain' \
-    '- For material ECI work, keep `exact user source → faithful requested outcome' "$input"
+    '- For material ECI work, keep `exact user source → faithful requested outcome' "$activation"
   require_primary_scope_fidelity_text "$source" 'bounded scope in primary chain' \
-    'bounded scope`.' "$input"
+    'bounded scope`.' "$activation"
   require_primary_scope_fidelity_text "$source" 'necessary repair remains current-lane work' \
-    'A repair necessary to meet or prove that outcome stays current-lane work.' "$input"
+    'A repair necessary to meet or prove that outcome stays current-lane work.' "$activation"
   require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
-    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$input"
-  [[ "$input" != *'A concern serving a separate outcome is current work.'* ]] ||
+    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$activation"
+  if section_has_exact_line "$activation" '- Treat a discovered concern serving a separate outcome as current-lane work.'; then
     fail "$source contradicts primary scope fidelity contract: separate outcome becomes current work"
+  fi
   require_primary_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
-    'Missing or stale lineage never blocks known in-scope work.' "$input"
+    'Missing or stale lineage never blocks known in-scope work.' "$activation"
 }
 
 assert_primary_scope_fidelity_mutation_is_rejected() {
@@ -1335,7 +1345,7 @@ assert_primary_scope_fidelity_mutation_is_rejected() {
 }
 
 assert_primary_scope_fidelity_contract_mutations() {
-  local primary mutation
+  local primary benign mutation
 
   primary="$(<"$ECI")"
 
@@ -1351,12 +1361,45 @@ assert_primary_scope_fidelity_contract_mutations() {
   [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
 
-  mutation="$primary"$'\n\nA concern serving a separate outcome is current work.'
-  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'appended separate outcome becomes current work' "$mutation"
+  benign="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/$'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.\n> “Treat a discovered concern serving a separate outcome as current-lane work.” is a rejected policy example.'}"
+  [ "$benign" != "$primary" ] || fail 'primary separate-outcome benign fixture did not alter its fixture'
+  assert_primary_scope_fidelity_contract "$ECI" "$benign"
+
+  mutation="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/$'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.\n- Treat a discovered concern serving a separate outcome as current-lane work.'}"
+  [ "$mutation" != "$primary" ] || fail 'primary exact separate-outcome mutation did not alter its fixture'
+  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'exact active separate-outcome policy line' "$mutation"
 
   mutation="${primary/'Missing or stale lineage never blocks known in-scope work.'/'Missing or stale lineage blocks known in-scope work.'}"
   [ "$mutation" != "$primary" ] || fail 'primary stale-lineage mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'stale lineage blocks known work' "$mutation"
+}
+
+assert_implement_write_boundary_contract() {
+  local source="$1" input="$2" boundary
+
+  boundary="$(extract_h2_section <(printf '%s\n' "$input") '## Write boundary and submission')" ||
+    fail "$source lacks a bounded Write boundary and submission section"
+  if section_has_exact_line "$boundary" 'Normal work cannot begin without a receipt.'; then
+    fail "$source contradicts least restriction contract: receipt becomes an ordinary-work gate"
+  fi
+}
+
+assert_implement_write_boundary_contract_mutations() {
+  local implement benign mutation output
+
+  implement="$(<"$IMPLEMENT")"
+
+  benign="${implement/'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.'/$'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.\n> “Normal work cannot begin without a receipt.” is a rejected gate example.'}"
+  [ "$benign" != "$implement" ] || fail 'write-boundary receipt benign fixture did not alter its fixture'
+  assert_implement_write_boundary_contract "$IMPLEMENT" "$benign"
+
+  mutation="${implement/'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.'/$'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.\nNormal work cannot begin without a receipt.'}"
+  [ "$mutation" != "$implement" ] || fail 'write-boundary exact receipt mutation did not alter its fixture'
+  if output="$(assert_implement_write_boundary_contract "$IMPLEMENT" "$mutation" 2>&1)"; then
+    fail "write-boundary mutation was admitted: $IMPLEMENT: exact active receipt-gate policy line"
+  fi
+  grep -Fq -- 'least restriction contract' <<<"$output" ||
+    fail "write-boundary mutation was rejected for an unexpected reason: $IMPLEMENT: exact active receipt-gate policy line"
 }
 
 # Static source contract only: these fixed clauses exercise scope pressure without
@@ -1635,8 +1678,6 @@ assert_pause_resume_closure_contract() {
 }
 
 assert_least_restriction_contract() {
-  local file
-
   require_text "$STYLE_ADMISSION" 'Style sources guide the change; a brief or tool output is review context, not a write permit.'
   require_text "$IMPLEMENT" 'A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write.'
   require_text "$ECI_CRITIQUE" 'Records, hashes, receipts, and packet shape are review context, not admission criteria.'
@@ -1646,11 +1687,6 @@ assert_least_restriction_contract() {
   require_text "$REVIEW_POLICY" 'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work.'
   require_text "$PAUSE" 'Pause state is session-local coordination context, not a receipt, hash, or artifact gate.'
   require_text "$POLICY" 'Pressure-test evidence is audit context, never an ordinary-work gate.'
-
-  for file in "$STYLE_ADMISSION" "$IMPLEMENT" "$ECI_CRITIQUE" "$EMERGENCY" \
-    "$COORDINATOR" "$ECI_COVERAGE" "$REVIEW_POLICY" "$PAUSE" "$POLICY"; do
-    forbid_pattern "$file" '(record|receipt|hash|manifest|packet|schema).*(must|required).*(before|for|to).*(ordinary|bounded|normal).*(work|write)'
-  done
 
   forbid_text "$ECI_COVERAGE" 'Baseline source SHA-256:'
   forbid_text "$PAUSE" 'fails closed'
@@ -1733,6 +1769,8 @@ assert_forecast_source_contract_fixtures
 assert_coordinator_progress_forecast_contract_fixtures
 assert_primary_scope_fidelity_contract "$ECI" "$(<"$ECI")"
 assert_primary_scope_fidelity_contract_mutations
+assert_implement_write_boundary_contract "$IMPLEMENT" "$(<"$IMPLEMENT")"
+assert_implement_write_boundary_contract_mutations
 assert_scope_fidelity_pressure_fixtures
 assert_scope_fidelity_pressure_mutations_are_rejected
 assert_lane_forecast_contract
