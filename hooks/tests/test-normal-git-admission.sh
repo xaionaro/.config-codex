@@ -225,6 +225,98 @@ assert_denied_code() {
   }
 }
 
+# This bounded target exercises the copied real hook's timeout replay path
+# without requiring the broad normal-Git matrix to finish. The default matrix
+# below remains its established entrypoint and coverage surface.
+run_foreign_timeout_marker_target() {
+  local role current_timeout_inner outside_timeout_inner
+  local observed_replays opaque_replays duplicate_replays malformed_replays prefix_mismatch_replays
+
+  current_timeout_inner="$PROOF_ROOT/$SESSION"
+  outside_timeout_inner="$TMP_ROOT/timeout-outside-proof"
+  cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
+  cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$current_timeout_inner/timeout"
+  mkdir -p -- "$outside_timeout_inner"
+  cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$outside_timeout_inner/timeout"
+  printf '%s\n' ordinary >"$outside_timeout_inner/eci_active"
+  chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout" "$current_timeout_inner/timeout" "$outside_timeout_inner/timeout"
+  CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+
+  # An actual observed timeout child may not mutate a valid foreign marker.
+  for role in coordinator worker; do
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+  done
+
+  # The current marker remains covered by its existing direct-control route.
+  assert_denied_code "cd $current_timeout_inner; ./timeout 5 rm eci_active" ECI_PLAN_LIVE_CONTROL_DENIED worker \
+    "path=$(realpath -e -- "$current_timeout_inner/eci_active")"
+
+  # A pathname observation alone is advisory. Missing, malformed, and
+  # path/session-owner-mismatched candidates must not become foreign-marker
+  # denials for either role.
+  rm -- "$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  for role in coordinator worker; do
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" "$role"
+  done
+  printf '%s\n' 'scope: malformed timeout marker' >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  for role in coordinator worker; do
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" "$role"
+  done
+  printf '%s\n' \
+    'scope: foreign timeout marker regression' \
+    "cwd: $FOREIGN_REPO" \
+    'session_id: mismatched-timeout-owner' \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  for role in coordinator worker; do
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" "$role"
+  done
+
+  # A same-named ordinary file outside the proof root is not an ECI marker.
+  for role in coordinator worker; do
+    assert_allowed "cd $outside_timeout_inner; ./timeout 5 rm eci_active" "$role"
+  done
+
+  # Restore the valid foreign marker to distinguish a valid observed replay
+  # from absent, opaque, duplicate, malformed, and prefix-mismatched facts.
+  printf '%s\n' \
+    'scope: foreign timeout marker regression' \
+    "cwd: $FOREIGN_REPO" \
+    "session_id: $FOREIGN_SESSION" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  observed_replays="$(jq -cn --arg cwd "$FOREIGN_TIMEOUT_CONTROL_INNER" '
+    [{segment:1,parent_segment:2,prefix:["./timeout","5"],cwd:$cwd,command_path:"",command_path_set:false,command_path_exported:false,disposition:"observed"}]
+  ')"
+  opaque_replays="$(jq -c '.[0].disposition = "opaque" | .' <<<"$observed_replays")"
+  duplicate_replays="$(jq -c '[.[0], .[0]]' <<<"$observed_replays")"
+  malformed_replays='[{"segment":1}]'
+  prefix_mismatch_replays="$(jq -c '.[0].prefix = ["./timeout", "6"] | .' <<<"$observed_replays")"
+  for role in coordinator worker; do
+    assert_denied_code "./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" '[]' true
+    assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$opaque_replays" true
+    assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$duplicate_replays" true
+    assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$malformed_replays" true
+    assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$prefix_mismatch_replays" true
+  done
+}
+
+case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
+  full) ;;
+  foreign-timeout-marker)
+    run_foreign_timeout_marker_target
+    printf '%s\n' 'normal Git admission foreign-timeout-marker target: PASS'
+    exit 0
+    ;;
+  *)
+    printf 'unknown normal Git admission target: %s\n' "${NORMAL_GIT_ADMISSION_TARGET}" >&2
+    exit 64
+    ;;
+esac
+
 # Normal commits must not need an approval artifact or a review receipt.
 assert_allowed "git commit -m 'ordinary commit'"
 
