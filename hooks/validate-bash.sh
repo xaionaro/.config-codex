@@ -2034,8 +2034,8 @@ DIRECT_LEDGER_TEE_INPUT_DEV_NULL_TOKEN=$'\036eci-tee-input-dev-null\036'
 direct_ledger_static_records() {
   local raw="$1" record_mode="${2:-ledger}" length index=0 character next_character state=unquoted word="" word_started=false
   local token_index segment_start segment_end prefix quoted_word effect target nested_text input_index input_end
-  local foreign_source_start=0 foreign_source_index=0 foreign_segment_index=0
-  local -a token_kinds=() token_values=() records=() stripped=() foreign_sources=() foreign_redirect_targets=()
+  local foreign_segment_index=0
+  local -a token_kinds=() token_values=() records=() stripped=() foreign_redirect_targets=()
 
   case "$record_mode" in
     ledger|foreign-marker) ;;
@@ -2187,10 +2187,6 @@ direct_ledger_static_records() {
       fi
       token_kinds+=(delimiter)
       token_values+=("")
-      if [ "$record_mode" = foreign-marker ]; then
-        foreign_sources+=("${raw:foreign_source_start:$((index - foreign_source_start))}")
-        foreign_source_start=$((index + 1))
-      fi
       index=$((index + 1))
       continue
     fi
@@ -2293,10 +2289,6 @@ direct_ledger_static_records() {
     token_kinds+=(word)
     token_values+=("$word")
   fi
-  if [ "$record_mode" = foreign-marker ]; then
-    foreign_sources+=("${raw:foreign_source_start}")
-  fi
-
   segment_start=0
   for ((segment_end = 0; segment_end <= ${#token_kinds[@]}; segment_end++)); do
     if [ "$segment_end" -lt "${#token_kinds[@]}" ] && [ "${token_kinds[$segment_end]}" != delimiter ]; then
@@ -2344,11 +2336,10 @@ direct_ledger_static_records() {
       done
       if [ "${#stripped[@]}" -gt 0 ]; then
         if [ "$record_mode" = foreign-marker ]; then
-          DIRECT_LEDGER_FOREIGN_SOURCE_SEGMENT="${foreign_sources[$foreign_source_index]:-}"
           DIRECT_LEDGER_FOREIGN_WORDS=("${stripped[@]}")
           DIRECT_LEDGER_FOREIGN_REDIRECT_TARGETS=("${foreign_redirect_targets[@]}")
           foreign_segment_index=$((foreign_segment_index + 1))
-          foreign_active_marker_consume_ledger_segment "$foreign_segment_index" "$DIRECT_LEDGER_FOREIGN_SOURCE_SEGMENT" || true
+          foreign_active_marker_consume_ledger_segment "$foreign_segment_index" || true
           [ -z "${FOREIGN_ACTIVE_MARKER_DETAIL:-}" ] || return 0
         else
           prefix=""
@@ -2368,7 +2359,6 @@ direct_ledger_static_records() {
       fi
     fi
     segment_start=$((segment_end + 1))
-    foreign_source_index=$((foreign_source_index + 1))
   done
   if [ "$record_mode" = ledger ]; then
     printf '%s\0' "${records[@]}" complete
@@ -3240,6 +3230,23 @@ foreign_active_marker_static_assignment() {
   [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]
 }
 
+foreign_active_marker_dynamic_text() {
+  case "${1:-}" in
+    *'$'*|*'`'*|*'~'*|*'?'|*'['*|*']'*|*'*'*|*'{'*|*'}'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+foreign_active_marker_literal_env_name() {
+  [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+foreign_active_marker_literal_env_assignment() {
+  foreign_active_marker_static_assignment "$1" || return 1
+  foreign_active_marker_dynamic_text "$1" && return 1
+  return 0
+}
+
 # Resolve a literal candidate before deriving its owner.  The proof-state
 # validators own the session grammar and direct marker/CWD binding, including
 # valid leading '_' and '-' identities.
@@ -3247,9 +3254,7 @@ foreign_active_marker_candidate_detail() {
   local raw="$1" base="$2" current_session="$3" candidate proof_root foreign_session
 
   [ -n "$raw" ] || return 1
-  case "$raw" in
-    *'$'*|*'`'*|*'~'*|*'?'|*'['*|*']'*|*'*'*|*'{'*|*'}'*) return 1 ;;
-  esac
+  foreign_active_marker_dynamic_text "$raw" && return 1
   if [[ "$raw" = /* ]]; then
     candidate="$raw"
   else
@@ -3274,8 +3279,9 @@ foreign_active_marker_candidate_detail() {
 FOREIGN_ACTIVE_MARKER_WRITER_FORCE=false
 FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS=()
 
-# Decode only finite zero-arity flags.  `--` is a terminator, not an operand
-# filter: literal paths before and after it remain visible to the extractor.
+# Decode only the finite zero-arity flags whose target positions are known.
+# `--` is a terminator, not an operand filter: literal paths on either side
+# remain visible to the extractor.
 foreign_active_marker_writer_operands() {
   local flag_mode="$1" token options_ended=false
   shift
@@ -3288,14 +3294,30 @@ foreign_active_marker_writer_operands() {
         options_ended=true
         continue
       fi
-      case "$flag_mode:$token" in
-        force:-f|force:--force)
-          FOREIGN_ACTIVE_MARKER_WRITER_FORCE=true
-          continue
+      case "$flag_mode" in
+        rm-cp)
+          case "$token" in
+            -f|-r|-R|--force|--recursive) continue ;;
+          esac
+          if [[ "$token" =~ ^-[frR]+$ ]]; then
+            continue
+          fi
           ;;
-        append:-a|append:--append)
-          FOREIGN_ACTIVE_MARKER_WRITER_FORCE=true
-          continue
+        tee)
+          case "$token" in
+            -a|-i|--append|--ignore-interrupts) continue ;;
+          esac
+          if [[ "$token" =~ ^-[ai]+$ ]]; then
+            continue
+          fi
+          ;;
+        force)
+          case "$token" in
+            -f|--force)
+              FOREIGN_ACTIVE_MARKER_WRITER_FORCE=true
+              continue
+              ;;
+          esac
           ;;
       esac
       case "$token" in
@@ -3306,22 +3328,56 @@ foreign_active_marker_writer_operands() {
   done
 }
 
+foreign_active_marker_dd_target() {
+  local operand key value seen_keys=" " output=""
+
+  foreign_active_marker_writer_operands none "$@" || return 1
+  for operand in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+    case "$operand" in
+      *=*) ;;
+      *) return 1 ;;
+    esac
+    key="${operand%%=*}"
+    value="${operand#*=}"
+    [ -n "$value" ] || return 1
+    foreign_active_marker_dynamic_text "$value" && return 1
+    case "$key" in
+      of|if|bs|cbs|conv|count|ibs|iflag|skip|iseek|obs|oflag|seek|oseek|status) ;;
+      *) return 1 ;;
+    esac
+    case " $seen_keys " in
+      *" $key "*) return 1 ;;
+    esac
+    seen_keys+="$key "
+    if [ "$key" = of ]; then
+      output="$value"
+    fi
+  done
+  [ -n "$output" ] || return 1
+  printf '%s\n' "$output"
+}
+
 foreign_active_marker_writer_targets() {
-  local command_name="$1" target index if_seen=false of_seen=false dd_output=""
+  local command_name="$1" target index
   shift
 
   case "$command_name" in
     rm)
-      foreign_active_marker_writer_operands force "$@" || return 0
+      foreign_active_marker_writer_operands rm-cp "$@" || return 0
       for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
         printf '%s\n' "$target"
       done
       ;;
-    shred|srm|touch|unlink)
+    shred|touch)
       foreign_active_marker_writer_operands none "$@" || return 0
       for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
         printf '%s\n' "$target"
       done
+      ;;
+    unlink)
+      foreign_active_marker_writer_operands none "$@" || return 0
+      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 1 ] || return 0
+      printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[0]}"
       ;;
     chmod|chown)
       foreign_active_marker_writer_operands none "$@" || return 0
@@ -3331,33 +3387,16 @@ foreign_active_marker_writer_targets() {
       done
       ;;
     tee)
-      foreign_active_marker_writer_operands append "$@" || return 0
+      foreign_active_marker_writer_operands tee "$@" || return 0
       for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
         printf '%s\n' "$target"
       done
       ;;
     dd)
-      foreign_active_marker_writer_operands none "$@" || return 0
-      [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
-      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
-        case "$target" in
-          if=?*)
-            [ "$if_seen" = false ] || return 0
-            if_seen=true
-            ;;
-          of=?*)
-            [ "$of_seen" = false ] || return 0
-            of_seen=true
-            dd_output="${target#of=}"
-            ;;
-          *) return 0 ;;
-        esac
-      done
-      [ "$if_seen" = true ] && [ "$of_seen" = true ] && [ -n "$dd_output" ] || return 0
-      printf '%s\n' "$dd_output"
+      foreign_active_marker_dd_target "$@" || return 0
       ;;
     cp)
-      foreign_active_marker_writer_operands force "$@" || return 0
+      foreign_active_marker_writer_operands rm-cp "$@" || return 0
       [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
       printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[1]}"
       ;;
@@ -3385,17 +3424,15 @@ foreign_active_marker_writer_targets() {
 
 FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD=""
 FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS=()
+FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX=-1
 
 foreign_active_marker_observed_timeout_child() {
-  local segment_index="$1" source_segment="$2" timeout_index="$3" record replay_cwd index
-  shift 3
+  local segment_index="$1" timeout_index="$2" record replay_cwd index
+  shift 2
   local -a segment_words=("$@") replay_values=() replay_prefix=()
 
   [ "$timeout_index" -lt "${#segment_words[@]}" ] || return 1
   [ "${segment_words[$timeout_index]##*/}" = timeout ] || return 1
-  # This recognizes only a literal timeout command after simple literal
-  # assignments; quoted, escaped, dynamic, and wrapper spellings stay opaque.
-  [[ "$source_segment" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:=+%-]*[[:space:]]+)*([A-Za-z0-9_./-]*/)?timeout([[:space:]]|$) ]] || return 1
   record="$(jq -cer --argjson segment "$segment_index" '
     def bounded_integer: type == "number" and floor == . and . >= 1 and . <= 8;
     def valid_record:
@@ -3427,16 +3464,66 @@ foreign_active_marker_observed_timeout_child() {
   FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS=("${segment_words[@]:${#replay_prefix[@]}}")
 }
 
+# A timeout child is argv, not a shell fragment. Only literal `env` has a
+# bounded launcher grammar here; the child executable starts at the first
+# word it cannot consume itself.
+foreign_active_marker_env_child_index() {
+  local token name index=1 options_ended=false
+  local -a words=("$@")
+
+  FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX=-1
+  while [ "$index" -lt "${#words[@]}" ]; do
+    token="${words[$index]}"
+    if [ "$options_ended" = false ]; then
+      case "$token" in
+        --)
+          options_ended=true
+          index=$((index + 1))
+          continue
+          ;;
+        -i|--ignore-environment)
+          index=$((index + 1))
+          continue
+          ;;
+        -u|--unset)
+          index=$((index + 1))
+          [ "$index" -lt "${#words[@]}" ] || return 0
+          name="${words[$index]}"
+          foreign_active_marker_literal_env_name "$name" || return 0
+          index=$((index + 1))
+          continue
+          ;;
+        --unset=*)
+          name="${token#--unset=}"
+          foreign_active_marker_literal_env_name "$name" || return 0
+          index=$((index + 1))
+          continue
+          ;;
+        -*) return 0 ;;
+      esac
+    fi
+    if foreign_active_marker_literal_env_assignment "$token"; then
+      options_ended=true
+      index=$((index + 1))
+      continue
+    fi
+    foreign_active_marker_static_assignment "$token" && return 0
+    FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX="$index"
+    return 0
+  done
+  return 0
+}
+
 FOREIGN_ACTIVE_MARKER_CURRENT_SESSION=""
 FOREIGN_ACTIVE_MARKER_TIMEOUT_REPLAYS='[]'
 FOREIGN_ACTIVE_MARKER_DETAIL=""
 
 # `direct_ledger_static_records ... foreign-marker` calls this private
-# consumer in-process with the raw source segment and its static lexical data.
-# It deliberately has no independent record grammar.
+# consumer in-process with its static lexical data. It deliberately has no
+# independent record grammar.
 foreign_active_marker_consume_ledger_segment() {
-  local segment_index="$1" source_segment="$2"
-  local base="$cwd" token_index=0 command_name timeout_opaque=false target detail
+  local segment_index="$1"
+  local base="$cwd" token_index=0 command_name="" timeout_opaque=false child_mode=false target detail
   local -a words=("${DIRECT_LEDGER_FOREIGN_WORDS[@]}") writer_targets=()
 
   [ "${#words[@]}" -gt 0 ] || return 0
@@ -3445,42 +3532,55 @@ foreign_active_marker_consume_ledger_segment() {
     token_index=$((token_index + 1))
   done
   if [ "$token_index" -lt "${#words[@]}" ] && [ "${words[$token_index]##*/}" = timeout ]; then
-    if foreign_active_marker_observed_timeout_child "$segment_index" "$source_segment" "$token_index" "${words[@]}"; then
+    if foreign_active_marker_observed_timeout_child "$segment_index" "$token_index" "${words[@]}"; then
       words=("${FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS[@]}")
       base="$FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD"
       token_index=0
+      child_mode=true
     else
       timeout_opaque=true
     fi
   fi
 
   if [ "$timeout_opaque" = false ]; then
-    while [ "$token_index" -lt "${#words[@]}" ] &&
-      foreign_active_marker_static_assignment "${words[$token_index]}"; do
-      token_index=$((token_index + 1))
-    done
-    if [ "$token_index" -lt "${#words[@]}" ]; then
-      command_name="${words[$token_index]##*/}"
-      case "$command_name" in
-        env|command|builtin|exec)
-          token_index=$((token_index + 1))
-          while [ "$token_index" -lt "${#words[@]}" ] &&
-            { foreign_active_marker_static_assignment "${words[$token_index]}" || [[ "${words[$token_index]}" = -* ]]; }; do
-            token_index=$((token_index + 1))
-          done
-          [ "$token_index" -lt "${#words[@]}" ] || command_name=""
-          [ -z "$command_name" ] || command_name="${words[$token_index]##*/}"
-          ;;
-      esac
-      if [ -n "$command_name" ]; then
-        mapfile -t writer_targets < <(foreign_active_marker_writer_targets "$command_name" "${words[@]:$((token_index + 1))}")
-        for target in "${writer_targets[@]}"; do
-          if detail="$(foreign_active_marker_candidate_detail "$target" "$base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
-            FOREIGN_ACTIVE_MARKER_DETAIL="$detail"
-            return 0
-          fi
-        done
+    if [ "$child_mode" = true ]; then
+      if [ "${words[0]:-}" = env ]; then
+        foreign_active_marker_env_child_index "${words[@]}"
+        if [ "$FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX" -ge 0 ]; then
+          token_index="$FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX"
+          command_name="${words[$token_index]##*/}"
+        fi
+      elif [ "${#words[@]}" -gt 0 ]; then
+        command_name="${words[0]##*/}"
       fi
+    else
+      while [ "$token_index" -lt "${#words[@]}" ] &&
+        foreign_active_marker_static_assignment "${words[$token_index]}"; do
+        token_index=$((token_index + 1))
+      done
+      if [ "$token_index" -lt "${#words[@]}" ]; then
+        command_name="${words[$token_index]##*/}"
+        case "$command_name" in
+          env|command|builtin|exec)
+            token_index=$((token_index + 1))
+            while [ "$token_index" -lt "${#words[@]}" ] &&
+              { foreign_active_marker_static_assignment "${words[$token_index]}" || [[ "${words[$token_index]}" = -* ]]; }; do
+              token_index=$((token_index + 1))
+            done
+            [ "$token_index" -lt "${#words[@]}" ] || command_name=""
+            [ -z "$command_name" ] || command_name="${words[$token_index]##*/}"
+            ;;
+        esac
+      fi
+    fi
+    if [ -n "$command_name" ]; then
+      mapfile -t writer_targets < <(foreign_active_marker_writer_targets "$command_name" "${words[@]:$((token_index + 1))}")
+      for target in "${writer_targets[@]}"; do
+        if detail="$(foreign_active_marker_candidate_detail "$target" "$base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
+          FOREIGN_ACTIVE_MARKER_DETAIL="$detail"
+          return 0
+        fi
+      done
     fi
   fi
 

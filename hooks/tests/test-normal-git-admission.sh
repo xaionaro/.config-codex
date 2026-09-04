@@ -241,8 +241,10 @@ assert_denied_code() {
 }
 
 foreign_timeout_observed_replays() {
-  jq -cn --arg cwd "$1" '
-    [{segment:1,parent_segment:2,prefix:["./timeout","5"],cwd:$cwd,command_path:"",command_path_set:false,command_path_exported:false,disposition:"observed"}]
+  local timeout_token="$1" child_cwd="$2"
+
+  jq -cn --arg timeout_token "$timeout_token" --arg cwd "$child_cwd" '
+    [{segment:1,parent_segment:2,prefix:[$timeout_token,"5"],cwd:$cwd,command_path:"",command_path_set:false,command_path_exported:false,disposition:"observed"}]
   '
 }
 
@@ -251,12 +253,12 @@ foreign_timeout_observed_replays() {
 # compound recursion.  Keep both coordinator and worker roles in the helper
 # so a new semantic case cannot accidentally cover just one admission path.
 assert_foreign_timeout_pair() {
-  local expectation="$1" tail="$2" child_cwd="${3:-$FOREIGN_TIMEOUT_CONTROL_INNER}" foreign_session="${4:-$FOREIGN_SESSION}"
+  local expectation="$1" tail="$2" child_cwd="${3:-$FOREIGN_TIMEOUT_CONTROL_INNER}" foreign_session="${4:-$FOREIGN_SESSION}" timeout_token="${5:-./timeout}"
   local actual_command synthetic_command observed_replays role
 
-  actual_command="cd $child_cwd; ./timeout 5 $tail"
-  synthetic_command="./timeout 5 $tail"
-  observed_replays="$(foreign_timeout_observed_replays "$child_cwd")"
+  actual_command="cd $child_cwd; $timeout_token 5 $tail"
+  synthetic_command="$timeout_token 5 $tail"
+  observed_replays="$(foreign_timeout_observed_replays "$timeout_token" "$child_cwd")"
   for role in coordinator worker; do
     case "$expectation" in
       deny)
@@ -281,20 +283,96 @@ assert_foreign_timeout_pair() {
 # without requiring the broad normal-Git matrix to finish. The default matrix
 # below remains its established entrypoint and coverage surface.
 run_foreign_timeout_marker_target() {
-  local role current_timeout_inner outside_timeout_inner missing_first_marker stale_foreign_cwd target_failures=0
+  local role current_timeout_inner outside_timeout_inner literal_timeout_dir literal_timeout_token missing_first_marker stale_foreign_cwd target_failures=0
   local observed_replays opaque_replays duplicate_replays malformed_replays prefix_mismatch_replays
 
   current_timeout_inner="$PROOF_ROOT/$SESSION"
   outside_timeout_inner="$TMP_ROOT/timeout-outside-proof"
+  literal_timeout_dir="$TMP_ROOT/literal+timeout"
+  literal_timeout_token="$literal_timeout_dir/timeout"
   missing_first_marker='../foreign-timeout-missing-first/eci_active'
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$current_timeout_inner/timeout"
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$PROOF_ROOT/timeout"
+  mkdir -p -- "$literal_timeout_dir"
+  cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$literal_timeout_token"
   mkdir -p -- "$outside_timeout_inner"
   cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$outside_timeout_inner/timeout"
   printf '%s\n' ordinary >"$outside_timeout_inner/eci_active"
-  chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout" "$current_timeout_inner/timeout" "$PROOF_ROOT/timeout" "$outside_timeout_inner/timeout"
+  chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout" "$current_timeout_inner/timeout" "$PROOF_ROOT/timeout" "$literal_timeout_token" "$outside_timeout_inner/timeout"
   CALLBACK_PATH="$FAKE_TIMEOUT_ACCEPT_DIR:$BASE_CALLBACK_PATH"
+
+  # A valid observed replay, rather than a narrow raw-source spelling, owns
+  # child mode.  The literal '+' path is deliberately outside the old source
+  # regex while remaining an executable timeout pathname.
+  for tail in \
+    'rm eci_active' \
+    'env rm eci_active' \
+    'env -- rm eci_active' \
+    'env -i rm eci_active' \
+    'env --ignore-environment rm eci_active' \
+    'env -u NAME rm eci_active' \
+    'env --unset NAME rm eci_active' \
+    'env --unset=NAME rm eci_active' \
+    'env FOREIGN_ASSIGNMENT=present rm eci_active' \
+    'rm -- eci_active' \
+    'rm --force eci_active' \
+    'rm -r eci_active' \
+    'rm -R eci_active' \
+    'rm -rf eci_active' \
+    'rm -fr eci_active' \
+    'rm --recursive eci_active' \
+    'cp -r ordinary-copy eci_active' \
+    'cp -R ordinary-copy eci_active' \
+    'cp -rf ordinary-copy eci_active' \
+    'cp -fr ordinary-copy eci_active' \
+    'cp --recursive ordinary-copy eci_active' \
+    'cp -- ordinary-copy eci_active' \
+    'cp --force ordinary-copy eci_active' \
+    'tee -- eci_active' \
+    'tee --append eci_active' \
+    'tee -i eci_active' \
+    'tee --ignore-interrupts eci_active' \
+    'tee -ai eci_active' \
+    'tee -ia eci_active' \
+    'tee --append --ignore-interrupts eci_active' \
+    'dd of=eci_active' \
+    'dd -- of=eci_active' \
+    'dd of=eci_active bs=1 count=1' \
+    'dd if=/dev/zero of=eci_active' \
+    'unlink eci_active' \
+    'unlink -- eci_active'; do
+    assert_foreign_timeout_pair deny "$tail" "$FOREIGN_TIMEOUT_CONTROL_INNER" "$FOREIGN_SESSION" "$literal_timeout_token"
+  done
+
+  # The timeout child is argv, not a second shell.  Unknown/malformed env
+  # grammar remains ordinary, while a recognized `-u NAME` retains rm as the
+  # direct child.  These use the same literal timeout path and replay shape.
+  for tail in \
+    'builtin rm eci_active' \
+    'command rm eci_active' \
+    'command -v rm eci_active' \
+    'exec rm eci_active' \
+    'FOREIGN_ASSIGNMENT=present rm eci_active' \
+    '"FOREIGN_ASSIGNMENT=present" rm eci_active' \
+    'env -u rm eci_active' \
+    'env -u' \
+    'env --unset' \
+    'env -C /tmp rm eci_active' \
+    'env -S rm eci_active' \
+    'env --unknown rm eci_active' \
+    'env FOREIGN_ASSIGNMENT=$TARGET rm eci_active' \
+    'env FOREIGN_ASSIGNMENT=present' \
+    './env rm eci_active' \
+    'rm --unknown eci_active' \
+    'cp --unknown ordinary-copy eci_active' \
+    'tee --unknown eci_active' \
+    'dd --unknown of=eci_active' \
+    'unlink eci_active ordinary' \
+    'srm eci_active' \
+    'dd if=eci_active'; do
+    assert_foreign_timeout_pair allow "$tail" "$FOREIGN_TIMEOUT_CONTROL_INNER" "$FOREIGN_SESSION" "$literal_timeout_token"
+  done
 
   # Every direct finite writer position must agree between a real observed
   # timeout child and its synthetic replay.  Inputs, modes, and ordinary
@@ -303,7 +381,6 @@ run_foreign_timeout_marker_target() {
     'rm -f eci_active' \
     'rm eci_active' \
     'shred eci_active' \
-    'srm eci_active' \
     'touch eci_active' \
     'unlink eci_active' \
     'chmod 600 eci_active' \
@@ -333,11 +410,7 @@ run_foreign_timeout_marker_target() {
     "printf '%s' marker &> eci_active" \
     "printf '%s' marker &>> eci_active" \
     'rm "eci_active"' \
-    'FOREIGN_ASSIGNMENT=present rm eci_active' \
-    'env rm eci_active' \
-    'command rm eci_active' \
-    'builtin rm eci_active' \
-    'exec rm eci_active'; do
+    'env rm eci_active'; do
     assert_foreign_timeout_pair deny "$tail"
   done
 
@@ -365,9 +438,6 @@ run_foreign_timeout_marker_target() {
     'rm "$TARGET"' \
     'rm $(printf eci_active)' \
     "bash -c 'rm eci_active'" \
-    'rm -r eci_active' \
-    'cp -r ordinary-copy eci_active' \
-    'tee -i eci_active' \
     'ln -s ordinary-copy eci_active' \
     'unknown-wrapper rm eci_active'; do
     assert_foreign_timeout_pair allow "$tail"
