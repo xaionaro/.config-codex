@@ -3194,13 +3194,14 @@ fi
 # session. This stays target-specific: ordinary source files and current
 # session coordination notes do not match it.
 foreign_active_marker_mutation_detail() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "${3:-[]}" <<'PY'
+import json
 import os
 import re
 import shlex
 import sys
 
-text, current_session = sys.argv[1:]
+text, current_session, timeout_replays_json = sys.argv[1:]
 root = os.path.realpath(os.path.abspath(
     os.environ.get("CODEX_PROOF_ROOT") or
     os.path.join(os.environ.get("HOME", ""), ".cache", "codex-proof")
@@ -3222,11 +3223,55 @@ try:
 except ValueError:
     raise SystemExit(1)
 
-def path_detail(raw):
+try:
+    timeout_replays = json.loads(timeout_replays_json)
+except (TypeError, ValueError):
+    timeout_replays = []
+if not isinstance(timeout_replays, list):
+    timeout_replays = []
+
+def valid_observed_timeout_replay(replay):
+    expected_keys = {
+        "command_path", "command_path_exported", "command_path_set", "cwd",
+        "disposition", "parent_segment", "prefix", "segment",
+    }
+    if not isinstance(replay, dict) or set(replay) != expected_keys:
+        return False
+    if type(replay["segment"]) is not int or not 1 <= replay["segment"] <= 8:
+        return False
+    if type(replay["parent_segment"]) is not int or not 1 <= replay["parent_segment"] <= 8:
+        return False
+    if (not isinstance(replay["prefix"], list) or not 2 <= len(replay["prefix"]) <= 128 or
+            not all(type(value) is str and 0 < len(value) <= 4096 for value in replay["prefix"])):
+        return False
+    if not isinstance(replay["cwd"], str) or not replay["cwd"].startswith("/"):
+        return False
+    if not isinstance(replay["command_path"], str):
+        return False
+    if type(replay["command_path_set"]) is not bool or type(replay["command_path_exported"]) is not bool:
+        return False
+    if not replay["command_path_set"] and (replay["command_path"] or replay["command_path_exported"]):
+        return False
+    return replay["disposition"] == "observed"
+
+def observed_timeout_child(segment, segment_index):
+    matches = []
+    for replay in timeout_replays:
+        if not valid_observed_timeout_replay(replay) or replay["segment"] != segment_index:
+            continue
+        prefix = replay["prefix"]
+        if len(prefix) < len(segment) and segment[:len(prefix)] == prefix:
+            matches.append(replay)
+    if len(matches) != 1:
+        return segment, cwd
+    replay = matches[0]
+    return segment[len(replay["prefix"]):], replay["cwd"]
+
+def path_detail(raw, base):
     if not raw or raw.startswith("-"):
         return None
     expanded = os.path.expanduser(raw)
-    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(os.path.join(cwd, expanded))
+    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(os.path.join(base, expanded))
     candidate = os.path.realpath(os.path.normpath(candidate))
     try:
         relative = os.path.relpath(candidate, root)
@@ -3249,7 +3294,8 @@ for token in tokens + [";"]:
     else:
         current.append(token)
 
-for segment in segments:
+for segment_index, raw_segment in enumerate(segments, start=1):
+    segment, segment_cwd = observed_timeout_child(raw_segment, segment_index)
     index = 0
     while index < len(segment) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[index]):
         index += 1
@@ -3267,13 +3313,13 @@ for segment in segments:
     operands = segment[index + 1:]
     if name in mutators:
         for operand in operands:
-            detail = path_detail(operand)
+            detail = path_detail(operand, segment_cwd)
             if detail:
                 print(detail)
                 raise SystemExit(0)
     for offset, operand in enumerate(segment[:-1]):
         if operand in output_redirects:
-            detail = path_detail(segment[offset + 1])
+            detail = path_detail(segment[offset + 1], segment_cwd)
             if detail:
                 print(detail)
                 raise SystemExit(0)
@@ -3289,7 +3335,7 @@ enforce_foreign_active_marker_mutation_boundary() {
   local detail
 
   [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 0
-  detail="$(foreign_active_marker_mutation_detail "$command" "$session_id" 2>/dev/null || true)"
+  detail="$(foreign_active_marker_mutation_detail "$command" "$session_id" "$PLAN_TIMEOUT_REPLAYS" 2>/dev/null || true)"
   [ -z "$detail" ] ||
     deny_eci "ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED" "eci-control" \
       "ECI control boundary denied mutation of another session's active marker: ${detail}" \

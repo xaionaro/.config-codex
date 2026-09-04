@@ -87,6 +87,18 @@ printf '%s\n' \
   'created_utc: 2026-08-28T00:00:00Z' \
   >"$PROOF_ROOT/$SESSION/eci_active"
 
+# A second valid marker gives timeout replay tests a concrete foreign control
+# target without changing the callback's current-session binding.
+FOREIGN_SESSION='foreign-timeout-session'
+FOREIGN_TIMEOUT_CONTROL_INNER="$PROOF_ROOT/$FOREIGN_SESSION"
+mkdir -p -- "$FOREIGN_TIMEOUT_CONTROL_INNER"
+printf '%s\n' \
+  'scope: foreign timeout marker regression' \
+  "cwd: $FOREIGN_REPO" \
+  "session_id: $FOREIGN_SESSION" \
+  'created_utc: 2026-08-28T00:00:00Z' \
+  >"$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+
 # The callback PATH is deliberately deterministic because the planner must
 # resolve a bare timeout from the callback's original PATH, before the hook
 # prepends its own trusted utility directories.
@@ -304,6 +316,38 @@ assert_denied_code "cd $TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" ECI_PL
 ln -- "$TIMEOUT_CONTROL_INNER/eci_active" "$OUTER_CONTROL_ALIAS"
 assert_allowed "cd $TIMEOUT_ORDINARY_INNER; ./timeout 5 rm eci_active" worker configured absent "$REPO"
 rm -- "$OUTER_CONTROL_ALIAS"
+
+# A planner-observed timeout child runs from its replay CWD.  That must catch
+# a foreign active marker for either role without changing the outer callback
+# scope anchor.  A nonlaunching timeout and invalid replay facts remain
+# ordinary because they do not establish a child write.
+cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
+chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
+for role in coordinator worker; do
+  assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+    "foreign_session=$FOREIGN_SESSION"
+done
+cp -- "$FAKE_TIMEOUT_ACCEPT_DIR/timeout" "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
+chmod 755 -- "$FOREIGN_TIMEOUT_CONTROL_INNER/timeout"
+for role in coordinator worker; do
+  assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" "$role"
+done
+
+FOREIGN_TIMEOUT_OBSERVED_REPLAYS="$(jq -cn --arg cwd "$FOREIGN_TIMEOUT_CONTROL_INNER" '
+  [{segment:1,parent_segment:2,prefix:["./timeout","5"],cwd:$cwd,command_path:"",command_path_set:false,command_path_exported:false,disposition:"observed"}]
+')"
+FOREIGN_TIMEOUT_OPAQUE_REPLAYS="$(jq -c '.[0].disposition = "opaque" | .' <<<"$FOREIGN_TIMEOUT_OBSERVED_REPLAYS")"
+FOREIGN_TIMEOUT_DUPLICATE_REPLAYS="$(jq -c '[.[0], .[0]]' <<<"$FOREIGN_TIMEOUT_OBSERVED_REPLAYS")"
+FOREIGN_TIMEOUT_PREFIX_MISMATCH_REPLAYS="$(jq -c '.[0].prefix = ["./timeout", "6"] | .' <<<"$FOREIGN_TIMEOUT_OBSERVED_REPLAYS")"
+for role in coordinator worker; do
+  assert_denied_code "./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+    "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$FOREIGN_TIMEOUT_OBSERVED_REPLAYS" true
+  assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" '[]' true
+  assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$FOREIGN_TIMEOUT_OPAQUE_REPLAYS" true
+  assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$FOREIGN_TIMEOUT_DUPLICATE_REPLAYS" true
+  assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" '[{"segment":1}]' true
+  assert_allowed "./timeout 5 rm eci_active" "$role" configured absent "$REPO" "$FOREIGN_TIMEOUT_PREFIX_MISMATCH_REPLAYS" true
+done
 
 # A recursive callback consumes only planner-shaped replay records. A scalar
 # replay entry is advisory metadata, so an otherwise ordinary compound stays
