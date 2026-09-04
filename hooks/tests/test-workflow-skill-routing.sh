@@ -1318,6 +1318,8 @@ assert_primary_scope_fidelity_contract() {
     'A repair necessary to meet or prove that outcome stays current-lane work.' "$input"
   require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
     'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$input"
+  [[ "$input" != *'A concern serving a separate outcome is current work.'* ]] ||
+    fail "$source contradicts primary scope fidelity contract: separate outcome becomes current work"
   require_primary_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
     'Missing or stale lineage never blocks known in-scope work.' "$input"
 }
@@ -1348,6 +1350,9 @@ assert_primary_scope_fidelity_contract_mutations() {
   mutation="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/'A concern serving a separate outcome is current work.'}"
   [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
+
+  mutation="$primary"$'\n\nA concern serving a separate outcome is current work.'
+  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'appended separate outcome becomes current work' "$mutation"
 
   mutation="${primary/'Missing or stale lineage never blocks known in-scope work.'/'Missing or stale lineage blocks known in-scope work.'}"
   [ "$mutation" != "$primary" ] || fail 'primary stale-lineage mutation did not alter its fixture'
@@ -1644,7 +1649,7 @@ assert_least_restriction_contract() {
 
   for file in "$STYLE_ADMISSION" "$IMPLEMENT" "$ECI_CRITIQUE" "$EMERGENCY" \
     "$COORDINATOR" "$ECI_COVERAGE" "$REVIEW_POLICY" "$PAUSE" "$POLICY"; do
-    forbid_pattern "$file" '(record|receipt|hash|manifest|packet|schema).*(must|required).*(before|for).*(ordinary|bounded|normal).*(work|write)'
+    forbid_pattern "$file" '(record|receipt|hash|manifest|packet|schema).*(must|required).*(before|for|to).*(ordinary|bounded|normal).*(work|write)'
   done
 
   forbid_text "$ECI_COVERAGE" 'Baseline source SHA-256:'
