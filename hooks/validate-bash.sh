@@ -3221,12 +3221,6 @@ root = os.path.realpath(os.path.abspath(
 cwd = os.environ.get("CODEX_VALIDATE_CWD", os.getcwd())
 separators = {";", "&", "&&", "|", "||", "(", ")"}
 output_redirects = {">", ">>", ">|", ">&"}
-mutators = {
-    "cat", "chmod", "chown", "cp", "dd", "echo", "install", "ln",
-    "mv", "perl", "printf", "python", "python2", "python3", "rm",
-    "ruby", "sed", "tee", "touch", "truncate", "awk", "node", "unlink",
-    "shred", "srm", "rmdir", "tar", "unzip", "rsync", "cpio", "zip", "7z",
-}
 
 try:
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
@@ -3297,6 +3291,52 @@ def path_candidate(raw, base):
         return None
     return candidate
 
+def simple_path_operands(args):
+    # Recognize only a literal no-option form, plus a conventional option
+    # terminator. Unknown option grammar is ordinary input, not a reason to
+    # guess that an operand is a write target.
+    if "--" in args:
+        delimiter = args.index("--")
+        if any(not value.startswith("-") for value in args[:delimiter]):
+            return []
+        return args[delimiter + 1:]
+    if any(value.startswith("-") for value in args):
+        return []
+    return args
+
+def actual_write_targets(name, args):
+    # This is deliberately a finite destination extractor, not a list of
+    # writer-like command names. A foreign marker used as input must stay
+    # ordinary; only a command position with a concrete marker mutation is
+    # relevant to this narrow cross-session boundary.
+    operands = simple_path_operands(args)
+    if name in {"rm", "shred", "srm", "touch", "unlink"}:
+        return operands
+    if name in {"chmod", "chown"}:
+        # The first positional is a mode/owner, not a file target.
+        return operands[1:] if len(operands) >= 2 else []
+    if name == "tee":
+        return operands
+    if name == "dd":
+        return [operand[3:] for operand in args
+                if operand.startswith("of=") and len(operand) > 3]
+    if name in {"cp", "install"}:
+        return operands[-1:] if len(operands) == 2 else []
+    if name == "mv":
+        return operands if len(operands) == 2 else []
+    if name == "ln":
+        force = False
+        positionals = []
+        for operand in args:
+            if operand in {"-f", "--force"}:
+                force = True
+            elif operand.startswith("-"):
+                return []
+            else:
+                positionals.append(operand)
+        return positionals[-1:] if force and len(positionals) == 2 else []
+    return []
+
 segments, current = [], []
 for token in tokens + [";"]:
     if token in separators:
@@ -3323,11 +3363,10 @@ for segment_index, raw_segment in enumerate(segments, start=1):
             continue
         name = os.path.basename(segment[index])
     operands = segment[index + 1:]
-    if name in mutators:
-        for operand in operands:
-            candidate = path_candidate(operand, segment_cwd)
-            if candidate:
-                print(candidate)
+    for operand in actual_write_targets(name, operands):
+        candidate = path_candidate(operand, segment_cwd)
+        if candidate:
+            print(candidate)
     for offset, operand in enumerate(segment[:-1]):
         if operand in output_redirects:
             candidate = path_candidate(segment[offset + 1], segment_cwd)

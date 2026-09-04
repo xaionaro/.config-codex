@@ -249,6 +249,39 @@ run_foreign_timeout_marker_target() {
       "foreign_session=$FOREIGN_SESSION"
   done
 
+  # A marker pathname used as command input is not a foreign-marker mutation.
+  # Keep both a pure reader and a writer with that marker only as its source.
+  # A redirect to the marker itself remains the concrete effect to deny.
+  for role in coordinator worker; do
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 cat eci_active" "$role"
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 printf '%s' eci_active" "$role"
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 cp eci_active ordinary-copy" "$role"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 printf '%s' marker > eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+  done
+
+  # Command positions matter: input, mode, and impossible-directory operands
+  # stay ordinary; direct destinations and forced replacement targets do not.
+  for role in coordinator worker; do
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 rmdir eci_active" "$role"
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 chmod eci_active ordinary-copy" "$role"
+    assert_allowed "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 ln eci_active ordinary-link" "$role"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 dd if=/dev/zero of=eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 cp ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 install ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 mv eci_active ordinary-copy" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 mv ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 ln -f ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+    assert_denied_code "cd $FOREIGN_TIMEOUT_CONTROL_INNER; ./timeout 5 chmod 600 eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION"
+  done
+
   # An invalid first marker-shaped operand is advisory; the later valid
   # foreign marker is the concrete target that must still be found.
   for role in coordinator worker; do
@@ -325,6 +358,30 @@ run_foreign_timeout_marker_target() {
   prefix_mismatch_replays="$(jq -c '.[0].prefix = ["./timeout", "6"] | .' <<<"$observed_replays")"
   for role in coordinator worker; do
     assert_denied_code "./timeout 5 rm eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    # The observed replay carries the child CWD, but input paths must still
+    # remain ordinary while a redirect to the live marker is denied.
+    assert_allowed "./timeout 5 cat eci_active" "$role" configured absent "$REPO" "$observed_replays" true
+    assert_allowed "./timeout 5 printf '%s' eci_active" "$role" configured absent "$REPO" "$observed_replays" true
+    assert_allowed "./timeout 5 cp eci_active ordinary-copy" "$role" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 printf '%s' marker > eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_allowed "./timeout 5 rmdir eci_active" "$role" configured absent "$REPO" "$observed_replays" true
+    assert_allowed "./timeout 5 chmod eci_active ordinary-copy" "$role" configured absent "$REPO" "$observed_replays" true
+    assert_allowed "./timeout 5 ln eci_active ordinary-link" "$role" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 dd if=/dev/zero of=eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 cp ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 install ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 mv eci_active ordinary-copy" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 mv ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 ln -f ordinary-copy eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
+      "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
+    assert_denied_code "./timeout 5 chmod 600 eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role" \
       "foreign_session=$FOREIGN_SESSION" configured absent "$REPO" "$observed_replays" true
     # A synthetic observed replay must also scan beyond an invalid first
     # marker-shaped operand to the later live foreign marker.
