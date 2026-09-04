@@ -365,10 +365,58 @@ extract_h2_section() {
   ' "$file"
 }
 
-section_has_exact_line() {
-  local section="$1" line="$2"
+section_has_active_literal_directive() {
+  local section="$1" directive="$2"
 
-  grep -Fqx -- "$line" <<<"$section"
+  # Blockquotes and fenced snippets are counterexamples, not active policy.
+  awk -v directive="$directive" '
+    /^[ ]{0,3}```/ {
+      if (fence == "") { fence = "`" } else if (fence == "`") { fence = "" }
+      next
+    }
+    /^[ ]{0,3}~~~/ {
+      if (fence == "") { fence = "~" } else if (fence == "~") { fence = "" }
+      next
+    }
+    fence != "" || /^[ ]{0,3}>/ { next }
+    $0 == directive || $0 == "- " directive { found = 1; exit }
+    END { exit !found }
+  ' <<<"$section"
+}
+
+insert_fixture_after() {
+  local input="$1" anchor="$2" fixture="$3" mutation
+
+  mutation="${input/"$anchor"/"$anchor"$'\n'"$fixture"}"
+  [ "$mutation" != "$input" ] || return 1
+  printf '%s\n' "$mutation"
+}
+
+assert_active_literal_directive_fixtures() {
+  local checker="$1" source="$2" input="$3" anchor="$4" directive="$5" failure="$6"
+  local fixture mutation output
+
+  for fixture in "$directive" "- $directive"; do
+    mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
+      fail "$source active directive fixture did not alter its section"
+    if output="$("$checker" "$source" "$mutation" 2>&1)"; then
+      fail "$source admitted active directive fixture: $fixture"
+    fi
+    grep -Fq -- "$failure" <<<"$output" ||
+      fail "$source rejected active directive fixture for an unexpected reason: $fixture"
+  done
+
+  for fixture in \
+    "> $directive" \
+    "\"$directive\"" \
+    $'```text\n'"$directive"$'\n```' \
+    $'~~~text\n'"$directive"$'\n~~~'; do
+    mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
+      fail "$source explanatory directive fixture did not alter its section"
+    if ! output="$("$checker" "$source" "$mutation" 2>&1)"; then
+      fail "$source rejected explanatory directive fixture: $fixture: $output"
+    fi
+  done
 }
 
 require_section_pattern() {
@@ -1327,7 +1375,7 @@ assert_primary_scope_fidelity_contract() {
     'A repair necessary to meet or prove that outcome stays current-lane work.' "$activation"
   require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
     'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$activation"
-  if section_has_exact_line "$activation" '- Treat a discovered concern serving a separate outcome as current-lane work.'; then
+  if section_has_active_literal_directive "$activation" 'Treat a discovered concern serving a separate outcome as current-lane work.'; then
     fail "$source contradicts primary scope fidelity contract: separate outcome becomes current work"
   fi
   require_primary_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
@@ -1345,7 +1393,7 @@ assert_primary_scope_fidelity_mutation_is_rejected() {
 }
 
 assert_primary_scope_fidelity_contract_mutations() {
-  local primary benign mutation
+  local primary mutation
 
   primary="$(<"$ECI")"
 
@@ -1361,13 +1409,11 @@ assert_primary_scope_fidelity_contract_mutations() {
   [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
 
-  benign="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/$'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.\n> “Treat a discovered concern serving a separate outcome as current-lane work.” is a rejected policy example.'}"
-  [ "$benign" != "$primary" ] || fail 'primary separate-outcome benign fixture did not alter its fixture'
-  assert_primary_scope_fidelity_contract "$ECI" "$benign"
-
-  mutation="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/$'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.\n- Treat a discovered concern serving a separate outcome as current-lane work.'}"
-  [ "$mutation" != "$primary" ] || fail 'primary exact separate-outcome mutation did not alter its fixture'
-  assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'exact active separate-outcome policy line' "$mutation"
+  assert_active_literal_directive_fixtures \
+    assert_primary_scope_fidelity_contract "$ECI" "$primary" \
+    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' \
+    'Treat a discovered concern serving a separate outcome as current-lane work.' \
+    'primary scope fidelity contract'
 
   mutation="${primary/'Missing or stale lineage never blocks known in-scope work.'/'Missing or stale lineage blocks known in-scope work.'}"
   [ "$mutation" != "$primary" ] || fail 'primary stale-lineage mutation did not alter its fixture'
@@ -1379,27 +1425,21 @@ assert_implement_write_boundary_contract() {
 
   boundary="$(extract_h2_section <(printf '%s\n' "$input") '## Write boundary and submission')" ||
     fail "$source lacks a bounded Write boundary and submission section"
-  if section_has_exact_line "$boundary" 'Normal work cannot begin without a receipt.'; then
+  if section_has_active_literal_directive "$boundary" 'Normal work cannot begin without a receipt.'; then
     fail "$source contradicts least restriction contract: receipt becomes an ordinary-work gate"
   fi
 }
 
 assert_implement_write_boundary_contract_mutations() {
-  local implement benign mutation output
+  local implement
 
   implement="$(<"$IMPLEMENT")"
 
-  benign="${implement/'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.'/$'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.\n> “Normal work cannot begin without a receipt.” is a rejected gate example.'}"
-  [ "$benign" != "$implement" ] || fail 'write-boundary receipt benign fixture did not alter its fixture'
-  assert_implement_write_boundary_contract "$IMPLEMENT" "$benign"
-
-  mutation="${implement/'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.'/$'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.\nNormal work cannot begin without a receipt.'}"
-  [ "$mutation" != "$implement" ] || fail 'write-boundary exact receipt mutation did not alter its fixture'
-  if output="$(assert_implement_write_boundary_contract "$IMPLEMENT" "$mutation" 2>&1)"; then
-    fail "write-boundary mutation was admitted: $IMPLEMENT: exact active receipt-gate policy line"
-  fi
-  grep -Fq -- 'least restriction contract' <<<"$output" ||
-    fail "write-boundary mutation was rejected for an unexpected reason: $IMPLEMENT: exact active receipt-gate policy line"
+  assert_active_literal_directive_fixtures \
+    assert_implement_write_boundary_contract "$IMPLEMENT" "$implement" \
+    'One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.' \
+    'Normal work cannot begin without a receipt.' \
+    'least restriction contract'
 }
 
 # Static source contract only: these fixed clauses exercise scope pressure without
