@@ -368,18 +368,73 @@ extract_h2_section() {
 section_has_active_literal_directive() {
   local section="$1" directive="$2"
 
-  # Blockquotes and fenced snippets are counterexamples, not active policy.
+  # This deliberately recognizes only the direct policy forms exercised below.
+  # Quoted and fenced counterexamples remain ordinary explanatory prose.
   awk -v directive="$directive" '
-    /^[ ]{0,3}```/ {
-      if (fence == "") { fence = "`" } else if (fence == "`") { fence = "" }
-      next
+    function direct_fence_run(line, delimiter) {
+      if (delimiter == "`" && match(line, /^```+/)) {
+        return RLENGTH
+      }
+      if (delimiter == "~" && match(line, /^~~~+/)) {
+        return RLENGTH
+      }
+      return 0
     }
-    /^[ ]{0,3}~~~/ {
-      if (fence == "") { fence = "~" } else if (fence == "~") { fence = "" }
-      next
+
+    function is_active_directive(line, expected) {
+      if (line == expected || line == "- " expected || line == "* " expected || line == "+ " expected) {
+        return 1
+      }
+      if (match(line, /^[0-9][0-9]*[.] /)) {
+        return substr(line, RLENGTH + 1) == expected
+      }
+      if (match(line, /^[0-9][0-9]*[)] /)) {
+        return substr(line, RLENGTH + 1) == expected
+      }
+      return 0
     }
-    fence != "" || /^[ ]{0,3}>/ { next }
-    $0 == directive || $0 == "- " directive { found = 1; exit }
+
+    {
+      if (fence_delimiter != "") {
+        fence_run = direct_fence_run($0, fence_delimiter)
+        if (fence_run >= fence_width && substr($0, fence_run + 1) ~ /^[ \t]*$/) {
+          fence_delimiter = ""
+          fence_width = 0
+        }
+        quoted_line = 0
+        next
+      }
+
+      if ($0 == "") {
+        quoted_line = 0
+        next
+      }
+      if ($0 ~ /^>/) {
+        quoted_line = 1
+        next
+      }
+      if (quoted_line && $0 == directive) {
+        quoted_line = 0
+        next
+      }
+      quoted_line = 0
+
+      fence_width = direct_fence_run($0, "`")
+      if (fence_width >= 3) {
+        fence_delimiter = "`"
+        next
+      }
+      fence_width = direct_fence_run($0, "~")
+      if (fence_width >= 3) {
+        fence_delimiter = "~"
+        next
+      }
+
+      if (is_active_directive($0, directive)) {
+        found = 1
+        exit
+      }
+    }
     END { exit !found }
   ' <<<"$section"
 }
@@ -396,7 +451,15 @@ assert_active_literal_directive_fixtures() {
   local checker="$1" source="$2" input="$3" anchor="$4" directive="$5" failure="$6"
   local fixture mutation output
 
-  for fixture in "$directive" "- $directive"; do
+  for fixture in \
+    "$directive" \
+    "- $directive" \
+    "* $directive" \
+    "+ $directive" \
+    "1. $directive" \
+    "1) $directive" \
+    $'> historical counterexample\n\n'"$directive" \
+    $'> historical counterexample\n- '"$directive"; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
       fail "$source active directive fixture did not alter its section"
     if output="$("$checker" "$source" "$mutation" 2>&1)"; then
@@ -408,9 +471,19 @@ assert_active_literal_directive_fixtures() {
 
   for fixture in \
     "> $directive" \
+    "> historical prose mentioning $directive" \
     "\"$directive\"" \
+    "$directive trailing explanatory text" \
+    "- $directive trailing explanatory text" \
+    "* $directive trailing explanatory text" \
+    "+ $directive trailing explanatory text" \
+    "1. $directive trailing explanatory text" \
+    "1) $directive trailing explanatory text" \
     $'```text\n'"$directive"$'\n```' \
-    $'~~~text\n'"$directive"$'\n~~~'; do
+    $'~~~text\n'"$directive"$'\n~~~' \
+    $'````text\n```\n'"$directive"$'\n```\n````' \
+    $'````text\n````not-a-close\n'"$directive"$'\n````' \
+    $'> historical counterexample\n'"$directive"; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
       fail "$source explanatory directive fixture did not alter its section"
     if ! output="$("$checker" "$source" "$mutation" 2>&1)"; then
