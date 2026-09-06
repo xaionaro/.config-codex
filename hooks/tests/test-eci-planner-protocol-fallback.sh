@@ -17,7 +17,7 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT
 FIXTURE_HOME="$TMP_ROOT/home"
 # FIXTURE_ROOT is the copied source tree selected through FIXTURE_HOME.
 FIXTURE_ROOT="$FIXTURE_HOME/.codex"
-# FIXTURE_HOOK is the private validating hook with only the user bypass removed.
+# FIXTURE_HOOK is the private validating hook with any line-2 bypass removed.
 FIXTURE_HOOK="$FIXTURE_ROOT/hooks/validate-bash.sh"
 # FIXTURE_PLANNER supplies deterministic malformed or compound responses.
 FIXTURE_PLANNER="$FIXTURE_ROOT/hooks/lib/eci-command-plan-go/eci-command-plan"
@@ -41,11 +41,8 @@ mkdir -p -- "$FIXTURE_ROOT" "$PROOF_ROOT/$SESSION" "$PROOF_ROOT/$FOREIGN_SESSION
 cp -a -- "$ROOT/bin" "$FIXTURE_ROOT/"
 cp -a -- "$ROOT/hooks" "$FIXTURE_ROOT/"
 
-[ "$(sed -n '2p' -- "$FIXTURE_HOOK")" = 'exit 0' ] || {
-  printf '%s\n' 'fixture expected the user-owned validate-bash bypass at line 2' >&2
-  exit 1
-}
-sed -i '2d' -- "$FIXTURE_HOOK"
+sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_HOOK"
+cmp -- "$FIXTURE_HOOK" <(sed '2{/^exit 0$/d;}' -- "$ROOT/hooks/validate-bash.sh")
 
 # This private-only seam selects deterministic planner responses after normal
 # hook setup. It does not alter the checked-in provenance path.

@@ -51,24 +51,21 @@ printf '%s\n' enforcing >"$TMP_ROOT/config/eci/command-gate-mode"
 printf '%s\n' outside >"$OUTSIDE_PROOF"
 ln -s -- "$OUTSIDE_PROOF" "$EVIDENCE_DIR/outside-link"
 
-# The live hook is deliberately disabled by the user while source repairs are
-# under review.  Test an isolated copy and prove the test did not alter live
-# hook behavior.
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live user-owned validate-bash bypass at line 2' >&2
-  exit 1
-}
+# Exercise the private hook bodies, removing a line-2 bypass if present.
+cp -- "$ROOT/hooks/validate-bash.sh" "$TMP_ROOT/validate-bash.before"
 TEST_HOOK_ROOT="$TMP_ROOT/private-hooks"
 NO_PLANNER_HOOK_ROOT="$TMP_ROOT/private-hooks-no-planner"
 cp -a -- "$ROOT/hooks" "$TEST_HOOK_ROOT"
 cp -a -- "$ROOT/hooks" "$NO_PLANNER_HOOK_ROOT"
-sed -i '2d' -- "$TEST_HOOK_ROOT/validate-bash.sh"
-sed -i '2d' -- "$NO_PLANNER_HOOK_ROOT/validate-bash.sh"
-mv -- "$NO_PLANNER_HOOK_ROOT/lib/eci-command-plan-go" "$TMP_ROOT/no-planner-command-plan"
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'test modified the live user-owned validate-bash bypass' >&2
+sed -i '2{/^exit 0$/d;}' -- "$TEST_HOOK_ROOT/validate-bash.sh"
+sed -i '2{/^exit 0$/d;}' -- "$NO_PLANNER_HOOK_ROOT/validate-bash.sh"
+cmp -- "$TMP_ROOT/validate-bash.before" "$ROOT/hooks/validate-bash.sh" || {
+  printf '%s\n' 'private hook setup modified the source' >&2
   exit 1
 }
+cmp -- "$TEST_HOOK_ROOT/validate-bash.sh" <(sed '2{/^exit 0$/d;}' -- "$TMP_ROOT/validate-bash.before")
+cmp -- "$NO_PLANNER_HOOK_ROOT/validate-bash.sh" <(sed '2{/^exit 0$/d;}' -- "$TMP_ROOT/validate-bash.before")
+mv -- "$NO_PLANNER_HOOK_ROOT/lib/eci-command-plan-go" "$TMP_ROOT/no-planner-command-plan"
 
 run_hook() {
   local command="$1" role="$2" planner_mode="${3:-available}" hook_root hook_status

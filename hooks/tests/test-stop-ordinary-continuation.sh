@@ -28,10 +28,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Smoke-test the copied PreToolUse hooks in their existing enabled or bypassed
-# state, with any callback state confined to the private fixture.
+# Smoke-test the copied PreToolUse hook bodies, removing a line-2 bypass if
+# present, with any callback state confined to the private fixture.
 mkdir -p -- "$FIXTURE_CODEX" "$FIXTURE_HOME/tmp" "$REPO"
 cp -a -- "$ROOT/hooks" "$FIXTURE_CODEX/hooks"
+sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_CODEX/hooks/validate-bash.sh"
+sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_CODEX/hooks/pretooluse-edit-dispatch.sh"
 (
   export HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_CODEX" CODEX_PROOF_ROOT="$TMP_ROOT/pretooluse-proof"
   export XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" XDG_CACHE_HOME="$TMP_ROOT/cache"
