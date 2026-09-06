@@ -308,13 +308,29 @@ run_foreign_timeout_marker_target() {
   for tail in \
     'rm eci_active' \
     'env rm eci_active' \
+    '/usr/bin/env rm eci_active' \
     'env -- rm eci_active' \
+    'env - rm eci_active' \
+    'env -v rm eci_active' \
+    'env --debug rm eci_active' \
+    'env -v - rm eci_active' \
+    'env --debug - rm eci_active' \
+    'env -v --debug rm eci_active' \
+    'env --debug -v rm eci_active' \
     'env -i rm eci_active' \
     'env --ignore-environment rm eci_active' \
     'env -u NAME rm eci_active' \
+    'env -uNAME rm eci_active' \
     'env --unset NAME rm eci_active' \
     'env --unset=NAME rm eci_active' \
+    'env -C . rm eci_active' \
+    'env -C. rm eci_active' \
+    'env --chdir . rm eci_active' \
+    'env --chdir=. rm eci_active' \
+    "env -C /tmp rm $FOREIGN_TIMEOUT_CONTROL_INNER/eci_active" \
     'env FOREIGN_ASSIGNMENT=present rm eci_active' \
+    'rm -v eci_active' \
+    'rm --verbose eci_active' \
     'rm -- eci_active' \
     'rm --force eci_active' \
     'rm -r eci_active' \
@@ -329,19 +345,43 @@ run_foreign_timeout_marker_target() {
     'cp --recursive ordinary-copy eci_active' \
     'cp -- ordinary-copy eci_active' \
     'cp --force ordinary-copy eci_active' \
+    'cp -v ordinary-copy eci_active' \
+    'cp --verbose ordinary-copy eci_active' \
     'tee -- eci_active' \
     'tee --append eci_active' \
     'tee -i eci_active' \
     'tee --ignore-interrupts eci_active' \
     'tee -ai eci_active' \
     'tee -ia eci_active' \
+    'tee -p eci_active' \
     'tee --append --ignore-interrupts eci_active' \
     'dd of=eci_active' \
     'dd -- of=eci_active' \
     'dd of=eci_active bs=1 count=1' \
     'dd if=/dev/zero of=eci_active' \
     'unlink eci_active' \
-    'unlink -- eci_active'; do
+    'unlink -- eci_active' \
+    "env -C /tmp printf '%s' marker > eci_active" \
+    "printf '%s' marker < eci_active > eci_active"; do
+    assert_foreign_timeout_pair deny "$tail" "$FOREIGN_TIMEOUT_CONTROL_INNER" "$FOREIGN_SESSION" "$literal_timeout_token"
+  done
+
+  # These literal launch forms have an established foreign-marker writer
+  # effect.  Keep the matrix finite: core input FDs and the exact GNU env
+  # debug/split combinations below, not a general shell or env grammar.
+  for tail in \
+    'cp ordinary-copy < eci_active eci_active' \
+    'cp ordinary-copy 0< eci_active eci_active' \
+    'cp ordinary-copy 1< eci_active eci_active' \
+    'cp ordinary-copy 2< eci_active eci_active' \
+    'cp ordinary-copy 2<&0 eci_active' \
+    'cp ordinary-copy 2<& 0 eci_active' \
+    'env -vv rm eci_active' \
+    'env -vvv rm eci_active' \
+    'env -vS rm eci_active' \
+    'env -vSrm eci_active' \
+    'env -vvSrm eci_active' \
+    'env --debug -vSrm eci_active'; do
     assert_foreign_timeout_pair deny "$tail" "$FOREIGN_TIMEOUT_CONTROL_INNER" "$FOREIGN_SESSION" "$literal_timeout_token"
   done
 
@@ -359,7 +399,9 @@ run_foreign_timeout_marker_target() {
     'env -u' \
     'env --unset' \
     'env -C /tmp rm eci_active' \
-    'env -S rm eci_active' \
+    "env -C $TMP_ROOT/nonexistent-env-chdir rm eci_active" \
+    'env -C . -C . rm eci_active' \
+    'env --chdir . --chdir . rm eci_active' \
     'env --unknown rm eci_active' \
     'env FOREIGN_ASSIGNMENT=$TARGET rm eci_active' \
     'env FOREIGN_ASSIGNMENT=present' \
@@ -370,7 +412,34 @@ run_foreign_timeout_marker_target() {
     'dd --unknown of=eci_active' \
     'unlink eci_active ordinary' \
     'srm eci_active' \
-    'dd if=eci_active'; do
+    'dd if=eci_active' \
+    'cat < eci_active'; do
+    assert_foreign_timeout_pair allow "$tail" "$FOREIGN_TIMEOUT_CONTROL_INNER" "$FOREIGN_SESSION" "$literal_timeout_token"
+  done
+
+  # Boundaries around the demonstrated spellings stay ordinary. In particular,
+  # do not turn quoted/escaped/non-core FD words, mixed env clusters, or
+  # equals split syntax into a broad parser-owned denial surface.
+  for tail in \
+    'cat 2< eci_active' \
+    'cp ordinary-copy 3< eci_active eci_active' \
+    "cp ordinary-copy '2'< eci_active eci_active" \
+    'cp ordinary-copy \2< eci_active eci_active' \
+    'cp ordinary-copy 2 < eci_active eci_active' \
+    'cp ordinary-copy 2<&1 eci_active' \
+    'cp ordinary-copy 2<& 1 eci_active' \
+    'env -iv rm eci_active' \
+    'env -vi rm eci_active' \
+    'env -S rm eci_active' \
+    'env --split-string rm eci_active' \
+    'env -Srm eci_active' \
+    'env -vS "rm eci_active"' \
+    'env --split-string=rm eci_active' \
+    "env -S 'rm eci_active'" \
+    'env -- -v eci_active' \
+    'env -- --debug eci_active' \
+    'env -- -u eci_active' \
+    'env -- -C eci_active'; do
     assert_foreign_timeout_pair allow "$tail" "$FOREIGN_TIMEOUT_CONTROL_INNER" "$FOREIGN_SESSION" "$literal_timeout_token"
   done
 

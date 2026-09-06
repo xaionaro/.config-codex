@@ -2032,7 +2032,7 @@ direct_ledger_direct_shell_c_payload() {
 DIRECT_LEDGER_TEE_INPUT_DEV_NULL_TOKEN=$'\036eci-tee-input-dev-null\036'
 
 direct_ledger_static_records() {
-  local raw="$1" record_mode="${2:-ledger}" length index=0 character next_character state=unquoted word="" word_started=false
+  local raw="$1" record_mode="${2:-ledger}" length index=0 character next_character state=unquoted word="" word_started=false word_plain=false
   local token_index segment_start segment_end prefix quoted_word effect target nested_text input_index input_end
   local foreign_segment_index=0
   local -a token_kinds=() token_values=() records=() stripped=() foreign_redirect_targets=()
@@ -2118,6 +2118,7 @@ direct_ledger_static_records() {
         token_values+=("$word")
         word=""
         word_started=false
+        word_plain=false
       fi
       index=$((index + 1))
       continue
@@ -2127,12 +2128,14 @@ direct_ledger_static_records() {
     fi
     if [ "$character" = "'" ]; then
       word_started=true
+      word_plain=false
       state=single
       index=$((index + 1))
       continue
     fi
     if [ "$character" = '"' ]; then
       word_started=true
+      word_plain=false
       state=double
       index=$((index + 1))
       continue
@@ -2140,12 +2143,14 @@ direct_ledger_static_records() {
     if [ "$character" = '\' ]; then
       [ $((index + 1)) -lt "$length" ] || return 1
       word_started=true
+      word_plain=false
       word+="${raw:$((index + 1)):1}"
       index=$((index + 2))
       continue
     fi
     if [ "$character" = '$' ] && [ "${raw:$((index + 1)):1}" = '(' ]; then
       word_started=true
+      word_plain=false
       if direct_ledger_command_substitution_payload "$raw" "$index"; then
         nested_text="${raw:index:$((DIRECT_LEDGER_NESTED_END - index + 1))}"
         word+="$nested_text"
@@ -2163,6 +2168,7 @@ direct_ledger_static_records() {
     fi
     if [ "$character" = '`' ]; then
       word_started=true
+      word_plain=false
       if direct_ledger_backtick_payload "$raw" "$index"; then
         nested_text="${raw:index:$((DIRECT_LEDGER_NESTED_END - index + 1))}"
         word+="$nested_text"
@@ -2184,6 +2190,7 @@ direct_ledger_static_records() {
         token_values+=("$word")
         word=""
         word_started=false
+        word_plain=false
       fi
       token_kinds+=(delimiter)
       token_values+=("")
@@ -2196,6 +2203,7 @@ direct_ledger_static_records() {
         token_values+=("$word")
         word=""
         word_started=false
+        word_plain=false
       fi
       case "${raw:index:2}" in
         '>>') token_kinds+=(operator); token_values+=('>>'); index=$((index + 2)) ;;
@@ -2211,6 +2219,7 @@ direct_ledger_static_records() {
         token_values+=("$word")
         word=""
         word_started=false
+        word_plain=false
       fi
       if [ "$record_mode" = foreign-marker ]; then
         case "${raw:index:3}" in
@@ -2232,6 +2241,7 @@ direct_ledger_static_records() {
         token_values+=("$word")
         word=""
         word_started=false
+        word_plain=false
       fi
       [ "$record_mode" != foreign-marker ] || return 1
       token_kinds+=(delimiter)
@@ -2244,6 +2254,43 @@ direct_ledger_static_records() {
       continue
     fi
     if [ "$character" = '<' ]; then
+      if [ "$record_mode" = foreign-marker ]; then
+        if [ "$word_started" = true ]; then
+          case "$word_plain:$word" in
+            true:0|true:1|true:2) ;;
+            *)
+              token_kinds+=(word)
+              token_values+=("$word")
+              ;;
+          esac
+          word=""
+          word_started=false
+          word_plain=false
+        fi
+        if [ "${raw:$((index + 1)):1}" = '&' ]; then
+          input_index=$((index + 2))
+          while [ "$input_index" -lt "$length" ] && [[ "${raw:input_index:1}" =~ [[:space:]] ]]; do
+            input_index=$((input_index + 1))
+          done
+          [ "${raw:input_index:1}" = 0 ] || return 1
+          next_character="${raw:$((input_index + 1)):1}"
+          case "$next_character" in
+            ''|[[:space:]]|';'|'&'|'|'|'<'|'>') ;;
+            *) return 1 ;;
+          esac
+          token_kinds+=(foreign-input-fd0)
+          token_values+=("")
+          index=$((input_index + 1))
+          continue
+        fi
+        case "${raw:$((index + 1)):1}" in
+          ''|'<'|'>'|'|'|';') return 1 ;;
+        esac
+        token_kinds+=(foreign-input)
+        token_values+=("")
+        index=$((index + 1))
+        continue
+      fi
       # The only input redirect this bounded static walk decodes is tee's
       # literal /dev/null suffix.  It is represented distinctly from a quoted
       # word so the finite tee extractor below cannot mistake data for syntax.
@@ -2252,6 +2299,7 @@ direct_ledger_static_records() {
         token_values+=("$word")
         word=""
         word_started=false
+        word_plain=false
       fi
       [ "$record_mode" != foreign-marker ] || return 1
       input_index="$index"
@@ -2280,6 +2328,9 @@ direct_ledger_static_records() {
     if [[ "$character" = '(' || "$character" = ')' ]]; then
       return 1
     fi
+    if [ "$word_started" = false ]; then
+      word_plain=true
+    fi
     word_started=true
     word+="$character"
     index=$((index + 1))
@@ -2306,6 +2357,19 @@ direct_ledger_static_records() {
         fi
         if [ "${token_kinds[$token_index]}" = tee-input-dev-null ]; then
           stripped+=("$DIRECT_LEDGER_TEE_INPUT_DEV_NULL_TOKEN")
+          token_index=$((token_index + 1))
+          continue
+        fi
+        if [ "${token_kinds[$token_index]}" = foreign-input ]; then
+          [ "$record_mode" = foreign-marker ] || return 1
+          [ $((token_index + 1)) -lt "$segment_end" ] || return 1
+          [ "${token_kinds[$((token_index + 1))]}" = word ] || return 1
+          foreign_active_marker_dynamic_text "${token_values[$((token_index + 1))]}" && return 1
+          token_index=$((token_index + 2))
+          continue
+        fi
+        if [ "${token_kinds[$token_index]}" = foreign-input-fd0 ]; then
+          [ "$record_mode" = foreign-marker ] || return 1
           token_index=$((token_index + 1))
           continue
         fi
@@ -3247,6 +3311,21 @@ foreign_active_marker_literal_env_assignment() {
   return 0
 }
 
+foreign_active_marker_literal_existing_directory() {
+  local raw="$1" base="$2" candidate resolved
+
+  [ -n "$raw" ] || return 1
+  foreign_active_marker_dynamic_text "$raw" && return 1
+  if [[ "$raw" = /* ]]; then
+    candidate="$raw"
+  else
+    candidate="$base/$raw"
+  fi
+  resolved="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+  [ -n "$resolved" ] && [ -d "$resolved" ] || return 1
+  printf '%s\n' "$resolved"
+}
+
 # Resolve a literal candidate before deriving its owner.  The proof-state
 # validators own the session grammar and direct marker/CWD binding, including
 # valid leading '_' and '-' identities.
@@ -3297,7 +3376,7 @@ foreign_active_marker_writer_operands() {
       case "$flag_mode" in
         rm-cp)
           case "$token" in
-            -f|-r|-R|--force|--recursive) continue ;;
+            -f|-r|-R|-v|--force|--recursive|--verbose) continue ;;
           esac
           if [[ "$token" =~ ^-[frR]+$ ]]; then
             continue
@@ -3305,7 +3384,7 @@ foreign_active_marker_writer_operands() {
           ;;
         tee)
           case "$token" in
-            -a|-i|--append|--ignore-interrupts) continue ;;
+            -a|-i|-p|--append|--ignore-interrupts) continue ;;
           esac
           if [[ "$token" =~ ^-[ai]+$ ]]; then
             continue
@@ -3424,7 +3503,9 @@ foreign_active_marker_writer_targets() {
 
 FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD=""
 FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS=()
-FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX=-1
+FOREIGN_ACTIVE_MARKER_ENV_CHILD_EXECUTABLE=""
+FOREIGN_ACTIVE_MARKER_ENV_CHILD_ARGS_INDEX=-1
+FOREIGN_ACTIVE_MARKER_ENV_CHILD_CWD=""
 
 foreign_active_marker_observed_timeout_child() {
   local segment_index="$1" timeout_index="$2" record replay_cwd index
@@ -3464,14 +3545,22 @@ foreign_active_marker_observed_timeout_child() {
   FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS=("${segment_words[@]:${#replay_prefix[@]}}")
 }
 
-# A timeout child is argv, not a shell fragment. Only literal `env` has a
-# bounded launcher grammar here; the child executable starts at the first
-# word it cannot consume itself.
-foreign_active_marker_env_child_index() {
-  local token name index=1 options_ended=false
+# A timeout child is argv, not a shell fragment. Decode only the demonstrated
+# standard env launch forms whose direct child and child CWD are finite.
+# Everything else remains ordinary execution.
+foreign_active_marker_env_child() {
+  local base="$1" token name child_cwd split_word index=1 options_ended=false chdir_seen=false
+  shift
   local -a words=("$@")
 
-  FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX=-1
+  FOREIGN_ACTIVE_MARKER_ENV_CHILD_EXECUTABLE=""
+  FOREIGN_ACTIVE_MARKER_ENV_CHILD_ARGS_INDEX=-1
+  FOREIGN_ACTIVE_MARKER_ENV_CHILD_CWD=""
+  case "${words[0]:-}" in
+    env|/usr/bin/env) ;;
+    *) return 1 ;;
+  esac
+  child_cwd="$base"
   while [ "$index" -lt "${#words[@]}" ]; do
     token="${words[$index]}"
     if [ "$options_ended" = false ]; then
@@ -3481,25 +3570,83 @@ foreign_active_marker_env_child_index() {
           index=$((index + 1))
           continue
           ;;
-        -i|--ignore-environment)
+        -|-v|--debug|-i|--ignore-environment)
           index=$((index + 1))
           continue
           ;;
         -u|--unset)
           index=$((index + 1))
-          [ "$index" -lt "${#words[@]}" ] || return 0
+          [ "$index" -lt "${#words[@]}" ] || return 1
           name="${words[$index]}"
-          foreign_active_marker_literal_env_name "$name" || return 0
+          foreign_active_marker_literal_env_name "$name" || return 1
+          index=$((index + 1))
+          continue
+          ;;
+        -u?*)
+          name="${token#-u}"
+          foreign_active_marker_literal_env_name "$name" || return 1
           index=$((index + 1))
           continue
           ;;
         --unset=*)
           name="${token#--unset=}"
-          foreign_active_marker_literal_env_name "$name" || return 0
+          foreign_active_marker_literal_env_name "$name" || return 1
           index=$((index + 1))
           continue
           ;;
-        -*) return 0 ;;
+        -C|--chdir)
+          [ "$chdir_seen" = false ] || return 1
+          index=$((index + 1))
+          [ "$index" -lt "${#words[@]}" ] || return 1
+          token="${words[$index]}"
+          child_cwd="$(foreign_active_marker_literal_existing_directory "$token" "$child_cwd")" || return 1
+          chdir_seen=true
+          index=$((index + 1))
+          continue
+          ;;
+        -C?*)
+          [ "$chdir_seen" = false ] || return 1
+          token="${token#-C}"
+          child_cwd="$(foreign_active_marker_literal_existing_directory "$token" "$child_cwd")" || return 1
+          chdir_seen=true
+          index=$((index + 1))
+          continue
+          ;;
+        --chdir=*)
+          [ "$chdir_seen" = false ] || return 1
+          token="${token#--chdir=}"
+          child_cwd="$(foreign_active_marker_literal_existing_directory "$token" "$child_cwd")" || return 1
+          chdir_seen=true
+          index=$((index + 1))
+          continue
+          ;;
+        # Plain split-string forms remain ordinary. The only split syntax
+        # modeled here is the separately demonstrated terminal-S v-family.
+        -S|--split-string|-S?*|--split-string=*) return 1 ;;
+        -*)
+          if [[ "$token" =~ ^-v+$ ]]; then
+            index=$((index + 1))
+            continue
+          fi
+          if [[ "$token" =~ ^-v+S$ ]]; then
+            index=$((index + 1))
+            [ "$index" -lt "${#words[@]}" ] || return 1
+            split_word="${words[$index]}"
+          elif [[ "$token" =~ ^-v+S.+$ ]]; then
+            split_word="${token#*-v}"
+            split_word="${split_word#*S}"
+          else
+            return 1
+          fi
+          foreign_active_marker_dynamic_text "$split_word" && return 1
+          [ -n "$split_word" ] && [[ "$split_word" != *[[:space:]]* ]] || return 1
+          FOREIGN_ACTIVE_MARKER_ENV_CHILD_EXECUTABLE="$split_word"
+          FOREIGN_ACTIVE_MARKER_ENV_CHILD_ARGS_INDEX=$((index + 1))
+          FOREIGN_ACTIVE_MARKER_ENV_CHILD_CWD="$child_cwd"
+          return 0
+          ;;
+        *)
+          ;;
       esac
     fi
     if foreign_active_marker_literal_env_assignment "$token"; then
@@ -3507,11 +3654,17 @@ foreign_active_marker_env_child_index() {
       index=$((index + 1))
       continue
     fi
-    foreign_active_marker_static_assignment "$token" && return 0
-    FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX="$index"
+    foreign_active_marker_static_assignment "$token" && return 1
+    if [ "$options_ended" = true ] && [ "$token" = - ]; then
+      index=$((index + 1))
+      continue
+    fi
+    FOREIGN_ACTIVE_MARKER_ENV_CHILD_EXECUTABLE="$token"
+    FOREIGN_ACTIVE_MARKER_ENV_CHILD_ARGS_INDEX=$((index + 1))
+    FOREIGN_ACTIVE_MARKER_ENV_CHILD_CWD="$child_cwd"
     return 0
   done
-  return 0
+  return 1
 }
 
 FOREIGN_ACTIVE_MARKER_CURRENT_SESSION=""
@@ -3523,7 +3676,7 @@ FOREIGN_ACTIVE_MARKER_DETAIL=""
 # independent record grammar.
 foreign_active_marker_consume_ledger_segment() {
   local segment_index="$1"
-  local base="$cwd" token_index=0 command_name="" timeout_opaque=false child_mode=false target detail
+  local writer_base="$cwd" redirect_base="$cwd" token_index=0 writer_args_index=-1 command_name="" timeout_opaque=false child_mode=false target detail
   local -a words=("${DIRECT_LEDGER_FOREIGN_WORDS[@]}") writer_targets=()
 
   [ "${#words[@]}" -gt 0 ] || return 0
@@ -3534,7 +3687,8 @@ foreign_active_marker_consume_ledger_segment() {
   if [ "$token_index" -lt "${#words[@]}" ] && [ "${words[$token_index]##*/}" = timeout ]; then
     if foreign_active_marker_observed_timeout_child "$segment_index" "$token_index" "${words[@]}"; then
       words=("${FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_WORDS[@]}")
-      base="$FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD"
+      writer_base="$FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD"
+      redirect_base="$FOREIGN_ACTIVE_MARKER_TIMEOUT_CHILD_CWD"
       token_index=0
       child_mode=true
     else
@@ -3544,15 +3698,20 @@ foreign_active_marker_consume_ledger_segment() {
 
   if [ "$timeout_opaque" = false ]; then
     if [ "$child_mode" = true ]; then
-      if [ "${words[0]:-}" = env ]; then
-        foreign_active_marker_env_child_index "${words[@]}"
-        if [ "$FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX" -ge 0 ]; then
-          token_index="$FOREIGN_ACTIVE_MARKER_ENV_CHILD_INDEX"
-          command_name="${words[$token_index]##*/}"
-        fi
-      elif [ "${#words[@]}" -gt 0 ]; then
-        command_name="${words[0]##*/}"
-      fi
+      case "${words[0]:-}" in
+        env|/usr/bin/env)
+          if foreign_active_marker_env_child "$writer_base" "${words[@]}"; then
+            writer_args_index="$FOREIGN_ACTIVE_MARKER_ENV_CHILD_ARGS_INDEX"
+            command_name="${FOREIGN_ACTIVE_MARKER_ENV_CHILD_EXECUTABLE##*/}"
+            writer_base="$FOREIGN_ACTIVE_MARKER_ENV_CHILD_CWD"
+          fi
+          ;;
+        *)
+          if [ "${#words[@]}" -gt 0 ]; then
+            command_name="${words[0]##*/}"
+          fi
+          ;;
+      esac
     else
       while [ "$token_index" -lt "${#words[@]}" ] &&
         foreign_active_marker_static_assignment "${words[$token_index]}"; do
@@ -3574,9 +3733,12 @@ foreign_active_marker_consume_ledger_segment() {
       fi
     fi
     if [ -n "$command_name" ]; then
-      mapfile -t writer_targets < <(foreign_active_marker_writer_targets "$command_name" "${words[@]:$((token_index + 1))}")
+      if [ "$writer_args_index" -lt 0 ]; then
+        writer_args_index=$((token_index + 1))
+      fi
+      mapfile -t writer_targets < <(foreign_active_marker_writer_targets "$command_name" "${words[@]:$writer_args_index}")
       for target in "${writer_targets[@]}"; do
-        if detail="$(foreign_active_marker_candidate_detail "$target" "$base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
+        if detail="$(foreign_active_marker_candidate_detail "$target" "$writer_base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
           FOREIGN_ACTIVE_MARKER_DETAIL="$detail"
           return 0
         fi
@@ -3585,7 +3747,7 @@ foreign_active_marker_consume_ledger_segment() {
   fi
 
   for target in "${DIRECT_LEDGER_FOREIGN_REDIRECT_TARGETS[@]}"; do
-    if detail="$(foreign_active_marker_candidate_detail "$target" "$base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
+    if detail="$(foreign_active_marker_candidate_detail "$target" "$redirect_base" "$FOREIGN_ACTIVE_MARKER_CURRENT_SESSION" 2>/dev/null)"; then
       FOREIGN_ACTIVE_MARKER_DETAIL="$detail"
       return 0
     fi
