@@ -12,7 +12,6 @@ import { constants as fsConstants } from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { homedir } from "node:os";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { inspect, promisify } from "node:util";
@@ -24,24 +23,6 @@ const OUTLINE_FILE_NAME = "codex-manual.outline.md";
 const HASH_HEADER = "x-content-sha256";
 const USER_AGENT = "codex-openai-docs";
 const execFileAsync = promisify(execFile);
-
-const homeTemporaryRoot = () => {
-  const configured = process.env.CODEX_TMPDIR;
-  const requested = configured || path.join(homedir(), "tmp");
-  const canonical = path.resolve(requested);
-  const systemTemporaryRoot = path.resolve("/tmp");
-  if (
-    process.platform !== "win32" &&
-    (canonical === systemTemporaryRoot ||
-      canonical.startsWith(`${systemTemporaryRoot}${path.sep}`))
-  ) {
-    throw new ManualFetchError(
-      "CODEX_TMPDIR must not resolve under the system temporary root; " +
-        "set it to a writable home-scoped directory such as $HOME/tmp."
-    );
-  }
-  return canonical;
-};
 
 class ManualFetchError extends Error {
   constructor(message, options) {
@@ -288,7 +269,16 @@ const defaultCacheDirCandidates = () => {
     candidates.push(candidate);
   };
 
-  pushCandidate(path.join(homeTemporaryRoot(), DEFAULT_CACHE_DIR_NAME));
+  [process.env.TMPDIR, process.env.TEMP, process.env.TMP].forEach((baseDir) => {
+    if (baseDir) {
+      pushCandidate(path.join(baseDir, DEFAULT_CACHE_DIR_NAME));
+    }
+  });
+
+  if (process.platform !== "win32") {
+    pushCandidate(`/private/tmp/${DEFAULT_CACHE_DIR_NAME}`);
+    pushCandidate(`/tmp/${DEFAULT_CACHE_DIR_NAME}`);
+  }
 
   return candidates;
 };
