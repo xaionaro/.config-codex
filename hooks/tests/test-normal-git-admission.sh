@@ -380,7 +380,6 @@ run_foreign_timeout_marker_target() {
     'cp ordinary-copy 2<&0 eci_active' \
     'cp ordinary-copy 2<& 0 eci_active' \
     "cp '3'< eci_active eci_active" \
-    'cp \3< eci_active eci_active' \
     'cp 3 < eci_active eci_active' \
     'env -vv rm eci_active' \
     'env -vvv rm eci_active' \
@@ -431,6 +430,7 @@ run_foreign_timeout_marker_target() {
     'cp ordinary-copy 3< eci_active eci_active' \
     'cp 3< eci_active eci_active' \
     'mv eci_active 3</dev/null' \
+    'cp \3< eci_active eci_active' \
     "cp ordinary-copy '2'< eci_active eci_active" \
     'cp ordinary-copy \2< eci_active eci_active' \
     'cp ordinary-copy 2 < eci_active eci_active' \
