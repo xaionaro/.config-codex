@@ -2635,20 +2635,21 @@ direct_ledger_static_segment_control_target_check() {
       return 0
       ;;
     git) ;; # Git archive retains its existing provider-owned output route.
-    *)
+    sort|gitleaks)
       # The words have already lost scalar input operands. Select only the
-      # existing finite output families; source-writer cases above own their
-      # operands, so cp pseudo-options cannot manufacture an output target.
+      # evidenced command/option output pairs; other option spellings remain
+      # data unless a separate writer or redirection selects a target.
       for ((token_index = token_index + 1; token_index < ${#tokens[@]}; token_index++)); do
+        [ "${tokens[$token_index]}" != -- ] || break
         target=""
-        case "${tokens[$token_index]}" in
-          --report-path|--output|-o)
+        case "$command_name:${tokens[$token_index]}" in
+          gitleaks:--report-path|sort:--output|sort:-o)
             token_index=$((token_index + 1))
             target="${tokens[$token_index]:-}"
             ;;
-          --report-path=*|--output=*) target="${tokens[$token_index]#*=}" ;;
-          -o=*) target="${tokens[$token_index]#-o=}" ;;
-          -o?*) target="${tokens[$token_index]#-o}" ;;
+          gitleaks:--report-path=*|sort:--output=*) target="${tokens[$token_index]#*=}" ;;
+          sort:-o=*) target="${tokens[$token_index]#-o=}" ;;
+          sort:-o?*) target="${tokens[$token_index]#-o}" ;;
         esac
         case "$target" in
           ''|-*) continue ;;
@@ -3814,14 +3815,14 @@ if not tokens or any(token in operators for token in tokens):
     raise SystemExit(1)
 
 assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
-def unwrap(values):
+def unwrap(values: list[str], operand_cwd: str) -> tuple[list[str], str]:
     values = list(values)
     depth = 0
     while values and depth < 8:
         while values and assignment.fullmatch(values[0]):
             values.pop(0)
         if not values:
-            return []
+            return [], operand_cwd
         name = os.path.basename(values[0])
         if name == "env":
             index = 1
@@ -3830,7 +3831,20 @@ def unwrap(values):
                 if assignment.fullmatch(token) or token in {"-i", "--ignore-environment"}:
                     index += 1
                     continue
-                if token in {"-u", "--unset", "-C", "--chdir"}:
+                if token in {"-C", "--chdir"} or token.startswith(("-C", "--chdir=")):
+                    if token in {"-C", "--chdir"}:
+                        if index + 1 >= len(values):
+                            return [], operand_cwd
+                        directory = values[index + 1]
+                        index += 2
+                    else:
+                        directory = token[2:] if token.startswith("-C") else token.split("=", 1)[1]
+                        index += 1
+                    operand_cwd = os.path.realpath(os.path.join(operand_cwd, directory))
+                    if not os.path.isdir(operand_cwd):
+                        return [], operand_cwd
+                    continue
+                if token in {"-u", "--unset"}:
                     index += 2
                     continue
                 if token == "--":
@@ -3844,7 +3858,7 @@ def unwrap(values):
             depth += 1
             continue
         if name == "timeout":
-            return values
+            return values, operand_cwd
         if name in {"nice", "time", "prlimit", "chronic", "systemd-run"}:
             index = 1
             value_options = {
@@ -3861,17 +3875,17 @@ def unwrap(values):
             depth += 1
             continue
         break
-    return values
+    return values, operand_cwd
 
-argv = unwrap(tokens)
+argv, operand_cwd = unwrap(tokens, hook_cwd)
 if not argv:
     raise SystemExit(1)
 name = os.path.basename(argv[0])
 args = argv[1:]
 
-def resolved(value):
+def resolved(value: str) -> str:
     expanded = os.path.expanduser(value)
-    candidate = expanded if os.path.isabs(expanded) else os.path.join(hook_cwd, expanded)
+    candidate = expanded if os.path.isabs(expanded) else os.path.join(operand_cwd, expanded)
     return os.path.realpath(os.path.normpath(candidate))
 
 broad_roots = {"/", os.path.realpath(hook_cwd), os.path.realpath(os.path.dirname(hook_dir))}
@@ -3891,16 +3905,33 @@ if name == "rm" and any(token == "--recursive" or (token.startswith("-") and "r"
         if target in broad_roots:
             print("class=broad executable=%s token=%s target=%s kind=recursive-root-delete" % (argv[0], token, target))
             raise SystemExit(0)
-if name in {"mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs", "wipefs"}:
+filesystem_destruction = name in {"mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs"}
+if filesystem_destruction or name == "wipefs":
+    options = args[:args.index("--")] if "--" in args else args
+    informational = "--help" in options or (name in {"mkfs", "wipefs"} and "--version" in options)
+    if name == "wipefs":
+        informational = informational or any(token in {"-h", "-V", "-n", "--no-act"} for token in options)
+        filesystem_destruction = any(
+            token in {"-a", "--all", "-o", "--offset"} or token.startswith("--offset=") or
+            (token.startswith("-o") and len(token) > 2)
+            for token in options
+        )
+    filesystem_destruction = filesystem_destruction and not informational
+if filesystem_destruction:
     target = next((token for token in reversed(args) if not token.startswith("-")), "<missing>")
     print("class=broad executable=%s token=%s target=%s kind=device-filesystem-destruction" %
           (argv[0], target, resolved(target) if target != "<missing>" else target))
     raise SystemExit(0)
 if name == "dd":
     for token in args:
-        if token.startswith("of=") and (token[3:].startswith("/dev/") or resolved(token[3:]) in broad_roots):
+        if not token.startswith("of="):
+            continue
+        target = resolved(token[3:])
+        if target == os.path.realpath("/dev/null"):
+            continue
+        if target.startswith("/dev/") or target in broad_roots:
             print("class=broad executable=%s token=%s target=%s kind=raw-output-overwrite" %
-                  (argv[0], token, resolved(token[3:])))
+                  (argv[0], token, target))
             raise SystemExit(0)
 if name == "find" and "-delete" in args:
     for token in args:
@@ -6180,9 +6211,11 @@ def emit(kind, token, resolved):
         print("write token=%s resolved=%s" % (token, resolved))
     raise SystemExit(0)
 
-output_path_options = {"--report-path", "--output", "-o"}
+output_path_options = {"sort": {"--output", "-o"}, "gitleaks": {"--report-path"}}.get(command_name, set())
 output_operands = set()
 for index, raw_token in enumerate(tokens[1:], 1):
+    if raw_token == "--":
+        break
     path_token = ""
     if raw_token in output_path_options and index + 1 < len(tokens):
         path_token = tokens[index + 1]
@@ -6192,6 +6225,8 @@ for index, raw_token in enumerate(tokens[1:], 1):
             if raw_token.startswith(prefix):
                 path_token = raw_token[len(prefix):]
                 break
+        if command_name == "sort" and raw_token.startswith("-o") and not raw_token.startswith("--"):
+            path_token = raw_token[2:].removeprefix("=")
     if not path_token:
         continue
     output_operands.add(path_token)
@@ -9816,6 +9851,7 @@ targets = {
 }
 index = 0
 invocation = "direct"
+syntax_only = False
 if os.path.basename(tokens[0]) in {"bash", "dash", "sh", "zsh"}:
     invocation = "shell-script"
     index = 1
@@ -9829,6 +9865,8 @@ if os.path.basename(tokens[0]) in {"bash", "dash", "sh", "zsh"}:
             index += 1
             break
         if option in no_argument:
+            if option in {"-n", "--noexec"}:
+                syntax_only = True
             index += 1
             continue
         if option == "-O" and index + 1 < len(tokens):
@@ -9837,7 +9875,7 @@ if os.path.basename(tokens[0]) in {"bash", "dash", "sh", "zsh"}:
         if option.startswith("-"):
             raise SystemExit(1)
         break
-if index >= len(tokens):
+if syntax_only or index >= len(tokens):
     raise SystemExit(1)
 candidate = tokens[index]
 expanded = os.path.expanduser(candidate)
@@ -12797,7 +12835,7 @@ PY
 
 coordinator_static_pipeline_route() {
   [ "$hook_is_subagent" != true ] || return 1
-  local segments segment detail review_detail control_detail git_detail protected_detail classification
+  local segments segment detail review_detail git_detail protected_detail classification
   segments="$(eci_static_pipeline_segments "$1" 2>/dev/null)" || return 1
   [ -n "$segments" ] || return 1
   while IFS= read -r segment; do
@@ -12811,11 +12849,10 @@ coordinator_static_pipeline_route() {
       return 1
     fi
     review_detail="$(review_gate_command_identity "$segment" 2>/dev/null || true)"
-    control_detail="$(protected_control_script_identity "$segment" 2>/dev/null || true)"
-    if [ -n "$review_detail" ] || [ -n "$control_detail" ] ||
+    if [ -n "$review_detail" ] ||
        command_invokes_eci_binary "$segment" || command_invokes_eci_control_mutation "$segment"; then
       deny_eci "ECI_COORDINATOR_CONTROL_PIPELINE_DENIED" "coordinator-static-pipeline" \
-        "ECI coordinator static pipeline denied coordinator-owned lifecycle/control segment=$(eci_command_identity_subject "$segment"); review_gate=${review_detail:-none}; control_script=${control_detail:-none}; reason=control and acceptance operations require their direct coordinator route" \
+        "ECI coordinator static pipeline denied coordinator-owned lifecycle/control segment=$(eci_command_identity_subject "$segment"); review_gate=${review_detail:-none}; reason=control and acceptance operations require their direct coordinator route" \
         "invoke the reported lifecycle/control operation through its direct coordinator entrypoint, outside a pipeline"
     fi
     git_detail="$(protected_pipeline_git_detail "$segment" 2>/dev/null || true)"

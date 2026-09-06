@@ -108,4 +108,63 @@ assert_ordinary_pipeline_allowed 'timeout 1 printf item | cat'
 assert_broad_pipeline_stays_denied worker true
 assert_broad_pipeline_stays_denied coordinator false
 
+# Compare command operand roles and child CWD without executing any described
+# writer. The same copied test is run with a rebuilt planner and without it.
+ordinary="$TMP_ROOT/ordinary"
+marker_alias="$TMP_ROOT/marker-alias"
+null_alias="$TMP_ROOT/null-alias"
+mkdir -p -- "$TMP_ROOT/narrow" "$proof_root/foreign"
+printf '%s\n' ordinary >"$ordinary"
+ln -s -- "$proof_root/$sid/eci_active" "$marker_alias"
+ln -s -- /dev/null "$null_alias"
+printf 'scope: foreign fixture\ncwd: %s\nsession_id: foreign\n' "$ROOT" >"$proof_root/foreign/eci_active"
+for role in coordinator worker; do
+  subagent=false
+  [ "$role" != worker ] || subagent=true
+  for command in \
+    "grep -o $marker_alias $ordinary" "rg -o $marker_alias $ordinary" \
+    "printf '%s\\n' --output $marker_alias" "unknown-tool --output $marker_alias" \
+    "sort -- -o $marker_alias" \
+    "sort --output=$TMP_ROOT/sorted < $ordinary" \
+    'wipefs --help' 'wipefs --version' 'wipefs /dev/example' 'wipefs --no-act --all /dev/example' \
+    'mkfs --help' 'mkfs --version' 'dd if=/dev/zero of=/dev/null count=1' \
+    "dd if=/dev/zero of=$null_alias count=1" \
+    "env -C $TMP_ROOT/narrow rm -rf ../repository" \
+    "env --chdir=$TMP_ROOT/narrow rm -rf ../repository" \
+    'bash -n hooks/stop-gate.sh | true' 'bash --noexec hooks/stop-gate.sh | true'; do
+    run_hook "$role" "$subagent" "$command"
+    if [ -s "$output" ] || [ -s "$stderr_output" ]; then
+      printf 'ordinary effect rejected: role=%s command=%q\n' "$role" "$command" >&2
+      cat -- "$output" "$stderr_output" >&2
+      exit 1
+    fi
+  done
+  for command in \
+    "sort -o $marker_alias < $ordinary" "sort -o $proof_root/foreign/eci_active < $ordinary" \
+    "grep -o $marker_alias $ordinary > $marker_alias" "wipefs --help > $marker_alias" \
+    "bash -n hooks/stop-gate.sh > $marker_alias | true" \
+    'bash -n hooks/stop-gate.sh | rm -rf /' \
+    "env -C .. rm -rf ${ROOT##*/}" "env -C.. rm -rf ${ROOT##*/}" \
+    "env --chdir .. rm -rf ${ROOT##*/}" "env --chdir=.. rm -rf ${ROOT##*/}" \
+    'wipefs --all /dev/example' 'wipefs --offset 0 /dev/example' \
+    'mkfs -V /dev/example' 'dd if=/dev/zero of=/dev/example count=1'; do
+    run_hook "$role" "$subagent" "$command"
+    jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null || {
+      printf 'concrete effect admitted: role=%s command=%q\n' "$role" "$command" >&2
+      cat -- "$output" "$stderr_output" >&2
+      exit 1
+    }
+  done
+  if [ "$role" = worker ]; then
+    run_hook "$role" "$subagent" 'bash hooks/stop-gate.sh'
+    jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null
+  else
+    run_hook "$role" "$subagent" 'bash hooks/stop-gate.sh | true'
+    [ ! -s "$output" ] || {
+      printf 'coordinator own control execution rejected: %s\n' "$(<"$output")" >&2
+      exit 1
+    }
+  fi
+done
+
 printf '%s\n' 'dynamic pipeline visibility assertions: PASS'

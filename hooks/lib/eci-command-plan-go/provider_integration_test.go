@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -129,14 +130,14 @@ func TestInstalledBinaryProviderParity(t *testing.T) {
 
 		var stdout bytes.Buffer
 		status := runBinary(t, binary, input, &stdout)
-		if status != StatusDeny {
-			t.Fatalf("%s status: got %d, want %d; output=%s", provider, status, StatusDeny, stdout.String())
+		if status != StatusAllow {
+			t.Fatalf("%s status: got %d, want %d; output=%s", provider, status, StatusAllow, stdout.String())
 		}
 		var result Result
 		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 			t.Fatalf("decode %s result: %v", provider, err)
 		}
-		if result.Diagnostic == nil || result.Diagnostic.Code != CodeEnvironmentEnumerationDenied {
+		if result.Diagnostic != nil {
 			t.Fatalf("%s diagnostic: %#v", provider, result.Diagnostic)
 		}
 	}
@@ -315,12 +316,14 @@ func TestInstalledBinaryRoutesActiveGitByRole(t *testing.T) {
 						testCase := testCase
 						t.Run(testCase.name, func(t *testing.T) {
 							status, result := runInstalled(t, Request{
-								Provider:      provider,
-								Role:          role,
-								CWD:           providerHome(provider),
-								Marker:        MarkerActive,
-								ActiveSession: "test-session",
-								Command:       testCase.command,
+								Provider:       provider,
+								Role:           role,
+								CWD:            providerHome(provider),
+								Marker:         MarkerActive,
+								ActiveSession:  "test-session",
+								Command:        testCase.command,
+								CommandPath:    os.Getenv("PATH"),
+								CommandPathSet: true,
 							})
 							if status != StatusDefer || result.Decision != DecisionDefer || result.Diagnostic != nil {
 								t.Fatalf("%q: status=%d decision=%q diagnostic=%#v, want status 3 defer without diagnostic", testCase.command, status, result.Decision, result.Diagnostic)
@@ -362,12 +365,11 @@ func TestInstalledBinaryRoutesActiveGitByRole(t *testing.T) {
 			allRoles: true,
 		},
 		{
-			name:     "Git environment context is denied",
+			name:     "Git environment context defers to Git",
 			marker:   MarkerActive,
 			command:  "env GIT_DIR=/tmp/git-dir git status",
-			status:   StatusDeny,
-			decision: DecisionDeny,
-			code:     CodeEnvironmentContextDenied,
+			status:   StatusDefer,
+			decision: DecisionDefer,
 			allRoles: true,
 		},
 		{
@@ -955,9 +957,8 @@ func TestInstalledBinaryDeniesActiveLedgerWritersForBothProviders(t *testing.T) 
 	}
 }
 
-// TestCodexCoordinatorStopGateSyntaxRoute verifies that exactly one
-// coordinator-owned syntax-only Stop-hook command bypasses the stale generic
-// reviewed-script digest without granting a shell execution route.
+// TestCodexCoordinatorStopGateSyntaxRoute verifies that syntax-only reads use
+// ordinary routing without executing the inspected control script.
 //
 // Example: a compound is admitted only when the syntax check and every other
 // parser-attested direct segment are admitted by their ordinary routes.
@@ -1063,7 +1064,7 @@ func TestCodexCoordinatorStopGateSyntaxRoute(t *testing.T) {
 			t.Fatalf("marshal hook request: %v", err)
 		}
 
-		hook := exec.Command("/usr/bin/bash", "hooks/validate-bash.sh")
+		hook := exec.Command("/usr/bin/bash", filepath.Join(canonicalRoot, "hooks", "validate-bash.sh"))
 		hook.Dir = cwd
 		hook.Env = baseEnvironment(worker, bashEnvironment, compoundSegment)
 		hook.Stdin = bytes.NewReader(request)
@@ -1106,15 +1107,9 @@ func TestCodexCoordinatorStopGateSyntaxRoute(t *testing.T) {
 	if err := os.WriteFile(recursiveFlagBashEnvironment, []byte("export ECI_COMPOUND_SEGMENT_VALIDATION=true\n"), 0o600); err != nil {
 		t.Fatalf("write Bash recursive-flag environment: %v", err)
 	}
-	assertDenied(
-		"BASH_ENV recursive flag",
-		canonicalRoot,
-		"bash -n hooks/stop-gate.sh ",
-		false,
-		recursiveFlagBashEnvironment,
-		false,
-		"BASH_ENV",
-	)
+	if output := runHook(canonicalRoot, "bash -n hooks/stop-gate.sh ", false, recursiveFlagBashEnvironment, false); strings.TrimSpace(output) != "" {
+		t.Fatalf("recursive flag alone changed a syntax-only effect: %s", output)
+	}
 
 	assertAllowed("bash -n hooks/stop-gate.sh")
 	for _, command := range []string{
@@ -1174,23 +1169,29 @@ func TestCodexCoordinatorStopGateSyntaxRoute(t *testing.T) {
 		{name: "parent path", cwd: canonicalRoot, command: "bash -n hooks/../hooks/stop-gate.sh"},
 		{name: "leading whitespace", cwd: canonicalRoot, command: " bash -n hooks/stop-gate.sh"},
 		{name: "trailing whitespace", cwd: canonicalRoot, command: "bash -n hooks/stop-gate.sh "},
-		{name: "foreign cwd", cwd: foreignCWD, command: "bash -n hooks/stop-gate.sh"},
-		{name: "poisoned CODEX_HOME cwd", cwd: poisonedCodexHome, command: "bash -n hooks/stop-gate.sh"},
+		{name: "foreign cwd", cwd: foreignCWD, command: "bash -n " + stopGate},
+		{name: "poisoned CODEX_HOME cwd", cwd: poisonedCodexHome, command: "bash -n " + stopGate},
 		{name: "compound direct execution", cwd: canonicalRoot, command: "bash -n hooks/stop-gate.sh; bash hooks/stop-gate.sh", reasonContains: "reviewed digest manifest"},
 		{name: "Bash function", cwd: canonicalRoot, command: "bash -n hooks/stop-gate.sh", bashEnvironment: functionBashEnvironment},
 		{name: "Bash alias", cwd: canonicalRoot, command: "bash -n hooks/stop-gate.sh", bashEnvironment: aliasBashEnvironment},
 		{name: "ordinary reviewed digest", cwd: canonicalRoot, command: "bash -n hooks/tests/test-validate-bash-classifier.sh", reasonContains: "reviewed digest manifest"},
 	} {
 		testCase := testCase
-		assertDenied(
-			testCase.name,
-			testCase.cwd,
-			testCase.command,
-			testCase.worker,
-			testCase.bashEnvironment,
-			testCase.compoundSegment,
-			testCase.reasonContains,
-		)
+		t.Run(testCase.name, func(t *testing.T) {
+			output := runHook(testCase.cwd, testCase.command, testCase.worker,
+				testCase.bashEnvironment, testCase.compoundSegment)
+			if strings.TrimSpace(output) != "" {
+				t.Fatalf("ordinary %q: hook output=%s, want admission", testCase.command, output)
+			}
+		})
+	}
+	assertDenied("worker control execution", canonicalRoot, "bash hooks/stop-gate.sh", true, "", false,
+		"ECI_WORKER_CONTROL_SCRIPT_DENIED")
+	for _, worker := range []bool{false, true} {
+		assertDenied(fmt.Sprintf("syntax with control redirect worker=%t", worker), canonicalRoot,
+			"bash -n hooks/stop-gate.sh > "+marker+" | true", worker, "", false, "eci_active")
+		assertDenied(fmt.Sprintf("syntax with broad segment worker=%t", worker), canonicalRoot,
+			"bash -n hooks/stop-gate.sh | rm -rf /", worker, "", false, "ECI_BROAD_DESTRUCTIVE_DENIED")
 	}
 }
 

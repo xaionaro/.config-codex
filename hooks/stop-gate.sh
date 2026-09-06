@@ -118,9 +118,10 @@ try:
         fields[key] = candidate
     session_status, session_value = field_status(fields.get("session_id", _MISSING), str)
     cwd_status, cwd_value = field_status(fields.get("cwd", _MISSING), str)
-    transcript_status, transcript_value = field_status(
-        fields.get("transcript_path", _MISSING), str
-    )
+    optional_transcript = fields.get("transcript_path", _MISSING)
+    if optional_transcript is None:
+        optional_transcript = _MISSING
+    transcript_status, transcript_value = field_status(optional_transcript, str)
     active_status, active_value = field_status(
         fields.get("stop_hook_active", _MISSING), bool
     )

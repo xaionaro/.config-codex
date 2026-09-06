@@ -173,4 +173,23 @@ run_stop "$shared_input" "$shared_second" "$shared_proof"
 assert_continue "$shared_second"
 cmp -- "$TMP_ROOT/shared-marker.before" "$shared_marker"
 
+for transcript_kind in absent null empty string; do
+  optional_session="optional-$transcript_kind"
+  optional_proof="$TMP_ROOT/$optional_session-proof"
+  optional_input="$TMP_ROOT/$optional_session-input.json"
+  write_marker "$optional_proof" "$optional_session" "$REPO"
+  cp -- "$optional_proof/$optional_session/eci_active" "$TMP_ROOT/$optional_session.before"
+  jq -cn --arg session_id "$optional_session" --arg cwd "$REPO" --arg kind "$transcript_kind" \
+    --arg transcript "$ordinary_transcript" '
+    {session_id:$session_id,cwd:$cwd,stop_hook_active:false} +
+    (if $kind == "absent" then {} elif $kind == "null" then {transcript_path:null}
+     elif $kind == "empty" then {transcript_path:""} else {transcript_path:$transcript} end)' >"$optional_input"
+  run_stop "$optional_input" "$direct_first" "$optional_proof"
+  jq -e '.decision == "block" and ((.reason // "") | contains("[ECI_STOP_ACTIVE_ECI]"))' \
+    "$direct_first" >/dev/null || { cat "$direct_first" >&2; exit 1; }
+  run_stop "$optional_input" "$direct_second" "$optional_proof"
+  assert_continue "$direct_second"
+  cmp -- "$TMP_ROOT/$optional_session.before" "$optional_proof/$optional_session/eci_active"
+done
+
 printf '%s\n' 'ordinary Stop continuation assertions: PASS'

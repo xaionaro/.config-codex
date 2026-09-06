@@ -344,8 +344,10 @@ type Result struct {
 }
 
 type token struct {
-	value               string
-	offset              int
+	value  string
+	offset int
+	// sourceOffsets maps decoded bytes to their original command-byte positions.
+	sourceOffsets       []int
 	quoted              bool
 	inputRedirectTarget bool
 }
@@ -1165,6 +1167,7 @@ func parsePlan(command string) (plan, *planError) {
 	var current []token
 	var redirects []outputRedirect
 	var value strings.Builder
+	var sourceOffsets []int
 	segmentStart := 0
 	tokenOffset := 0
 	tokenStarted := false
@@ -1191,7 +1194,7 @@ func parsePlan(command string) (plan, *planError) {
 				"argv-byte-limit",
 			)
 		}
-		parsedToken := token{value: argument, offset: tokenOffset, quoted: tokenQuoted}
+		parsedToken := token{value: argument, offset: tokenOffset, quoted: tokenQuoted, sourceOffsets: sourceOffsets}
 		if redirectTargetPending != nil {
 			redirect := *redirectTargetPending
 			redirect.target = parsedToken
@@ -1205,6 +1208,7 @@ func parsePlan(command string) (plan, *planError) {
 		}
 		inputRedirectTargetPending = false
 		value.Reset()
+		sourceOffsets = nil
 		tokenStarted = false
 		tokenQuoted = false
 		return nil
@@ -1258,6 +1262,7 @@ func parsePlan(command string) (plan, *planError) {
 		character := command[index]
 		if escaped {
 			value.WriteByte(character)
+			sourceOffsets = append(sourceOffsets, index)
 			tokenStarted = true
 			tokenQuoted = true
 			escaped = false
@@ -1269,6 +1274,7 @@ func parsePlan(command string) (plan, *planError) {
 				continue
 			}
 			value.WriteByte(character)
+			sourceOffsets = append(sourceOffsets, index)
 			tokenStarted = true
 			tokenQuoted = true
 			continue
@@ -1354,6 +1360,7 @@ func parsePlan(command string) (plan, *planError) {
 					tokenOffset+value.Len() == index && isDecimalFileDescriptor(value.String())
 				if fileDescriptor {
 					value.Reset()
+					sourceOffsets = nil
 					tokenStarted = false
 					tokenQuoted = false
 				} else if err := flushToken(); err != nil {
@@ -1418,6 +1425,9 @@ func parsePlan(command string) (plan, *planError) {
 					tokenOffset = index
 				}
 				value.WriteString(home)
+				for range []byte(home) {
+					sourceOffsets = append(sourceOffsets, index)
+				}
 				tokenStarted = true
 				index += consumed - 1
 				continue
@@ -1427,11 +1437,13 @@ func parsePlan(command string) (plan, *planError) {
 			tokenOffset = index
 		}
 		value.WriteByte(character)
+		sourceOffsets = append(sourceOffsets, index)
 		tokenStarted = true
 	}
 
 	if escaped {
 		value.WriteByte('\\')
+		sourceOffsets = append(sourceOffsets, len(command)-1)
 		tokenStarted = true
 		tokenQuoted = true
 	}
@@ -2773,22 +2785,20 @@ func inspectProofPathOwnership(
 					deferToProvider = true
 					continue
 				}
-				diagnostic := diagnosticForToken(
-					CodePlanLiveControlDenied,
-					"writer destination resolves to an active-session ECI control artifact",
-					segmentIndex, argumentIndex, pathArgument,
-					"route this exact control operation through the coordinator lifecycle route",
-					string(request.Role)+"-proof-control",
-				)
-				diagnostic.Path = controlPath
+				code := CodePlanLiveControlDenied
+				reason := "writer destination resolves to an active-session ECI control artifact"
+				predicate := string(request.Role) + "-proof-control"
+				remediation := "route this exact control operation through the coordinator lifecycle route"
 				// The inode index retains the marker's lexical directory spelling;
 				// do not pass that spelling as an already-resolved path.
 				if request.Role == RoleCoordinator && isAppendOnlyLedgerPath(controlPath, "", proofSessions) {
-					diagnostic.Code = CodeLedgerAppendOnly
-					diagnostic.Reason = "active-session high-level ledger files are append-only coordinator artifacts"
-					diagnostic.Predicate = "append-only-ledger"
-					diagnostic.Remediation = ledgerAppendRemediation(request.Provider)
+					code = CodeLedgerAppendOnly
+					reason = "active-session high-level ledger files are append-only coordinator artifacts"
+					predicate = "append-only-ledger"
+					remediation = ledgerAppendRemediation(request.Provider)
 				}
+				diagnostic := diagnosticForToken(code, reason, segmentIndex, argumentIndex, pathArgument, remediation, predicate)
+				diagnostic.Path = controlPath
 				return DecisionDeny, diagnostic
 			}
 		}
@@ -3194,11 +3204,25 @@ func outputDestinationOperand(
 		argv[argumentIndex].inputRedirectTarget || isGitArchiveCommand(argv) {
 		return token{}, argumentIndex, false
 	}
+	for _, previous := range argv[1:argumentIndex] {
+		if !previous.inputRedirectTarget && previous.value == "--" {
+			return token{}, argumentIndex, false
+		}
+	}
 	argument := argv[argumentIndex]
 	value := argument.value
+	var options []string
+	switch filepath.Base(argv[0].value) {
+	case "sort":
+		options = []string{"--output", "-o"}
+	case "gitleaks":
+		options = []string{"--report-path"}
+	default:
+		return token{}, argumentIndex, false
+	}
 	separateValue := false
 	suffixOffset := 0
-	for _, option := range [...]string{"--report-path", "--output", "-o"} {
+	for _, option := range options {
 		if value == option {
 			separateValue = true
 			break
@@ -3221,7 +3245,7 @@ func outputDestinationOperand(
 		}
 		return token{}, argumentIndex, false
 	}
-	if suffixOffset == 0 && strings.HasPrefix(value, "-o") &&
+	if filepath.Base(argv[0].value) == "sort" && suffixOffset == 0 && strings.HasPrefix(value, "-o") &&
 		len(value) > len("-o") && !strings.HasPrefix(value, "--") {
 		suffixOffset = len("-o")
 	}
@@ -3232,7 +3256,11 @@ func outputDestinationOperand(
 	if path == "" || strings.HasPrefix(path, "-") {
 		return token{}, argumentIndex, false
 	}
-	return token{value: path, offset: argument.offset + suffixOffset, quoted: argument.quoted}, argumentIndex, true
+	offset := argument.offset + suffixOffset
+	if suffixOffset < len(argument.sourceOffsets) {
+		offset = argument.sourceOffsets[suffixOffset]
+	}
+	return token{value: path, offset: offset, quoted: argument.quoted}, argumentIndex, true
 }
 
 func isGitArchiveCommand(argv []token) bool {
@@ -4747,9 +4775,46 @@ func approvedGitRepositoryContext(request Request, value string) bool {
 	return false
 }
 
-func inspectBroadDestruction(argv []token, segmentIndex int) *Diagnostic {
+// inspectBroadDestruction distinguishes utility modes before reporting a
+// concrete broad destructive command; redirects are classified independently.
+//
+// Example: wipefs --help is informational, while wipefs --all erases signatures.
+func inspectBroadDestruction(
+	argv []token,
+	segmentIndex int,
+) *Diagnostic {
 	name := filepath.Base(argv[0].value)
-	if strings.HasPrefix(name, "mkfs") {
+	filesystemDestruction := strings.HasPrefix(name, "mkfs")
+	if filesystemDestruction || name == "wipefs" {
+		for _, argument := range argv[1:] {
+			if argument.inputRedirectTarget {
+				continue
+			}
+			if argument.value == "--" {
+				break
+			}
+			switch argument.value {
+			case "--help":
+				return nil
+			case "--version":
+				if name == "mkfs" || name == "wipefs" {
+					return nil
+				}
+			case "-h", "-V", "-n", "--no-act":
+				if name == "wipefs" {
+					return nil
+				}
+			case "-a", "--all", "-o", "--offset":
+				filesystemDestruction = true
+			default:
+				if name == "wipefs" && (strings.HasPrefix(argument.value, "--offset=") ||
+					strings.HasPrefix(argument.value, "-o") && len(argument.value) > 2) {
+					filesystemDestruction = true
+				}
+			}
+		}
+	}
+	if filesystemDestruction {
 		return diagnosticForToken(
 			CodeBroadDestructiveDenied,
 			"filesystem formatting is a broad destructive operation",

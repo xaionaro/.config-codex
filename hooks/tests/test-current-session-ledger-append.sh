@@ -157,6 +157,7 @@ assert_output_target_pairs() {
     assert_allowed "$session" "touch $ordinary_alias" "$role"
     assert_allowed "$session" "sort -o $ordinary_alias < $marker" "$role"
     assert_allowed "$session" "sort < --output=$marker $ordinary" "$role"
+    assert_allowed "$session" "tool --output=$marker < $ordinary" "$role"
     assert_allowed "$session" "diff --to-file=$marker $ordinary" "$role"
     assert_allowed "$session" "diff --to-file $marker $ordinary" "$role"
     assert_allowed "$session" "cp $marker 0<$marker $ordinary" "$role"
@@ -167,7 +168,7 @@ assert_output_target_pairs() {
       commands=("touch $target" "sort -o $target < $ordinary")
       if [ "$target" != "$note_symlink" ] && [ "$target" != "$note_hardlink" ]; then
         commands+=("sort -o < $ordinary $target" "sort < $ordinary -o$target" \
-          "tool --output=$target < $ordinary" "diff --to-file=$ordinary $ordinary > $target")
+          "sort --output=$target < $ordinary" "diff --to-file=$ordinary $ordinary > $target")
       fi
       for command in "${commands[@]}"; do
         output="$(run_hook "$session" "$command" "$role")"

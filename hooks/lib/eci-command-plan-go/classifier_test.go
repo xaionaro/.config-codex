@@ -85,6 +85,9 @@ func TestClassifyLedgerAppendRemediationUsesCodexAuthority(t *testing.T) {
 			if result.Diagnostic.Code != CodeLedgerAppendOnly {
 				t.Fatalf("diagnostic code: got %q, want %q", result.Diagnostic.Code, CodeLedgerAppendOnly)
 			}
+			if result.Diagnostic.Operation != "ledger-append-only" {
+				t.Errorf("operation: got %q, want ledger-append-only", result.Diagnostic.Operation)
+			}
 			if result.Diagnostic.Remediation != testCase.wantRemediation {
 				t.Errorf("remediation: got %q, want %q", result.Diagnostic.Remediation, testCase.wantRemediation)
 			}
@@ -2746,9 +2749,9 @@ func TestInstalledBinaryStatMetadataGrammar(t *testing.T) {
 	}{
 		{name: "access time", command: "stat -c '%x' hooks/validate-bash.sh", status: StatusAllow},
 		{name: "name and size", command: "stat -c '%n %s' hooks/validate-bash.sh", status: StatusAllow},
-		{name: "unknown directive", command: "stat -c '%Q' hooks/validate-bash.sh", status: StatusDeny, code: CodePlanStatFormatDenied, predicate: "stat-format-directive"},
-		{name: "dynamic format", command: "stat -c '$(printf %s)' hooks/validate-bash.sh", status: StatusDeny, code: CodePlanStatFormatDenied, predicate: "stat-format-dynamic"},
-		{name: "context option", command: "stat --printf='%s' hooks/validate-bash.sh", status: StatusDeny, code: CodePlanStatFormatDenied, predicate: "stat-option"},
+		{name: "unknown directive", command: "stat -c '%Q' hooks/validate-bash.sh", status: StatusAllow},
+		{name: "dynamic format", command: "stat -c '$(printf %s)' hooks/validate-bash.sh", status: StatusAllow},
+		{name: "context option", command: "stat --printf='%s' hooks/validate-bash.sh", status: StatusAllow},
 	}
 	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
 		provider := provider
@@ -4707,7 +4710,7 @@ func TestCurrentControlCopyOperandRoles(t *testing.T) {
 				{name: "input reset by output redirect", command: "cp " + ordinary + " < > " + marker, target: marker, argvIndex: 1},
 				{name: "input reset by later segment", command: "cp " + ordinary + " <; cp " + ordinary + " " + marker, target: marker, segment: 2, argvIndex: 2},
 				{name: "later copy destination", command: "cp " + marker + " 0< " + ordinary + " " + ordinary + "-two; cp " + ordinary + " " + marker, target: marker, segment: 2, argvIndex: 2},
-				{name: "generic output retained", command: "novel-tool --output=" + marker, target: marker, argvIndex: 1},
+				{name: "evidenced output retained", command: "sort --output=" + marker, target: marker, argvIndex: 1},
 				{name: "touch marker redirect input", command: "touch < " + marker + " " + ordinary},
 				{name: "touch marker target after input", command: "touch < " + ordinary + " " + marker, target: marker, argvIndex: 2},
 				{name: "move still mutates source", command: "mv " + marker + " " + ordinary, target: marker, argvIndex: 1},
@@ -5118,8 +5121,14 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 						{"sort -o < " + ordinary + " " + target, 3},
 						{"sort < " + ordinary + " -o " + target, 3},
 						{"sort -o" + target + " < " + ordinary, 1},
-						{"tool --output=" + target + " < " + ordinary, 1},
-						{"tool --output " + filepath.Join(session, "ordinary-output") + " --report-path " + target, 4},
+						{"sort --output=" + target + " < " + ordinary, 1},
+						{"sort --output='" + target + "' < " + ordinary, 1},
+						{"sort \"--output=" + target + "\" < " + ordinary, 1},
+						{"sort --out'put='" + target + " < " + ordinary, 1},
+						{"sort --output=\\" + target + " < " + ordinary, 1},
+						{"sort 'é' --output='" + target + "' < " + ordinary, 2},
+						{"sort --output='" + target + "' | cat", 1},
+						{"gitleaks --report-path " + filepath.Join(session, "ordinary-output") + " --report-path " + target, 4},
 					} {
 						result := classify(form.command)
 						if result.Decision != DecisionDeny || result.Diagnostic == nil {
@@ -5142,9 +5151,16 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 					"touch " + ordinaryAlias,
 					"sort -o " + ordinaryAlias + " < " + marker,
 					"sort < --output=" + marker + " " + ordinary,
+					"sort -- -o " + controlAlias,
+					"sort < -- -o " + ordinaryAlias,
 					"diff --to-file=" + marker + " " + ordinary,
 					"diff --to-file " + marker + " " + ordinary,
 					"cp " + marker + " 0<" + marker + " " + ordinary,
+					"grep -o " + controlAlias + " " + ordinary,
+					"rg -o " + controlAlias + " " + ordinary,
+					"printf '%s\\n' --output " + controlAlias,
+					"tool --output " + controlAlias,
+					"wipefs --output " + controlAlias,
 				} {
 					result := classify(command)
 					if result.Decision != DecisionAllow || result.Diagnostic != nil {
@@ -5158,6 +5174,7 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 					{"sort -o " + filepath.Join(session, "high_level_log.md") + " < " + ordinary, CodeLedgerRewriteDenied},
 					{"sort -o " + filepath.Join(foreign, "high_level_log.md") + " < " + ordinary, CodeLedgerForeignSessionDenied},
 					{"diff --to-file=" + ordinary + " " + ordinary + " > " + marker, CodePlanLiveControlDenied},
+					{"grep -o " + ordinary + " " + ordinary + " > " + marker, CodePlanLiveControlDenied},
 					{"tool --output " + filepath.Join(session, "ordinary-output") + " > " + marker, CodePlanLiveControlDenied},
 					{"touch " + marker + " > " + filepath.Join(session, "high_level_log.anchor"), CodeLedgerAnchorWriteDenied},
 				} {
@@ -5168,6 +5185,27 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+// TestFilesystemInformationalModes verifies that documented non-writing modes
+// do not inherit the destructive effect of the utility's other operations.
+//
+// Example: mkfs --help is ordinary, but mkfs -V /dev/example still formats.
+func TestFilesystemInformationalModes(t *testing.T) {
+	for _, role := range []Role{RoleCoordinator, RoleWorker} {
+		for _, command := range []string{"mkfs --help", "mkfs --version", "wipefs --help", "wipefs -V", "wipefs /dev/example", "wipefs --no-act --all /dev/example"} {
+			result := Classify(Request{Provider: ProviderCodex, Role: role, CWD: t.TempDir(), Marker: MarkerActive, Command: command})
+			if result.Decision == DecisionDeny {
+				t.Errorf("%s %q: unexpected denial %#v", role, command, result.Diagnostic)
+			}
+		}
+		for _, command := range []string{"mkfs -V /dev/example", "wipefs --all /dev/example", "wipefs --offset 0 /dev/example"} {
+			result := Classify(Request{Provider: ProviderCodex, Role: role, CWD: t.TempDir(), Marker: MarkerActive, Command: command})
+			if result.Diagnostic == nil || result.Diagnostic.Code != CodeBroadDestructiveDenied {
+				t.Errorf("%s %q: want destructive effect, got %#v", role, command, result.Diagnostic)
+			}
+		}
 	}
 }
 
