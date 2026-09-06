@@ -371,13 +371,24 @@ section_has_active_literal_directive() {
   # This deliberately recognizes only the direct policy forms exercised below.
   # Quoted and fenced counterexamples remain ordinary explanatory prose.
   awk -v directive="$directive" '
-    function direct_fence_run(line, delimiter) {
-      if (delimiter == "`" && match(line, /^```+/)) {
-        return RLENGTH
+    function indented_fence_width(line, delimiter, matched, run_length) {
+      # This bounded lexer accepts only the Markdown fence indentation used by
+      # these policy documents; it deliberately does not parse arbitrary prose.
+      if (delimiter == "`" && match(line, /^[ ]{0,3}```+/)) {
+        matched = substr(line, 1, RLENGTH)
+        run_length = length(matched)
+        sub(/`+$/, "", matched)
+        fence_indent = length(matched)
+        return run_length - fence_indent
       }
-      if (delimiter == "~" && match(line, /^~~~+/)) {
-        return RLENGTH
+      if (delimiter == "~" && match(line, /^[ ]{0,3}~~~+/)) {
+        matched = substr(line, 1, RLENGTH)
+        run_length = length(matched)
+        sub(/~+$/, "", matched)
+        fence_indent = length(matched)
+        return run_length - fence_indent
       }
+      fence_indent = 0
       return 0
     }
 
@@ -396,8 +407,8 @@ section_has_active_literal_directive() {
 
     {
       if (fence_delimiter != "") {
-        fence_run = direct_fence_run($0, fence_delimiter)
-        if (fence_run >= fence_width && substr($0, fence_run + 1) ~ /^[ \t]*$/) {
+        fence_run = indented_fence_width($0, fence_delimiter)
+        if (fence_run >= fence_width && substr($0, fence_indent + fence_run + 1) ~ /^[ \t]*$/) {
           fence_delimiter = ""
           fence_width = 0
         }
@@ -419,12 +430,12 @@ section_has_active_literal_directive() {
       }
       quoted_line = 0
 
-      fence_width = direct_fence_run($0, "`")
+      fence_width = indented_fence_width($0, "`")
       if (fence_width >= 3) {
         fence_delimiter = "`"
         next
       }
-      fence_width = direct_fence_run($0, "~")
+      fence_width = indented_fence_width($0, "~")
       if (fence_width >= 3) {
         fence_delimiter = "~"
         next
@@ -459,7 +470,9 @@ assert_active_literal_directive_fixtures() {
     "1. $directive" \
     "1) $directive" \
     $'> historical counterexample\n\n'"$directive" \
-    $'> historical counterexample\n- '"$directive"; do
+    $'> historical counterexample\n- '"$directive" \
+    $'    ```text\n'"$directive"$'\n    ```' \
+    $'    ~~~text\n'"$directive"$'\n    ~~~'; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
       fail "$source active directive fixture did not alter its section"
     if output="$("$checker" "$source" "$mutation" 2>&1)"; then
@@ -481,6 +494,10 @@ assert_active_literal_directive_fixtures() {
     "1) $directive trailing explanatory text" \
     $'```text\n'"$directive"$'\n```' \
     $'~~~text\n'"$directive"$'\n~~~' \
+    $' ```text\n'"$directive"$'\n ```' \
+    $'   ```text\n'"$directive"$'\n   ```' \
+    $' ~~~text\n'"$directive"$'\n ~~~' \
+    $'   ~~~text\n'"$directive"$'\n   ~~~' \
     $'````text\n```\n'"$directive"$'\n```\n````' \
     $'````text\n````not-a-close\n'"$directive"$'\n````' \
     $'> historical counterexample\n'"$directive"; do
