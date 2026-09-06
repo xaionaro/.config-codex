@@ -2593,8 +2593,9 @@ direct_ledger_static_redirect_control_target_check() {
 direct_ledger_static_segment_control_target_check() {
   local selected_real="$1" token_index=0 target command_name output_start output_end output_count
   local dd_if_seen=false dd_of_seen=false dd_output=""
+  local cwd="$cwd"
   shift
-  local -a tokens=("$@")
+  local -a tokens=("$@") current_targets=()
 
   while [ "$token_index" -lt "${#tokens[@]}" ] &&
     [[ "${tokens[$token_index]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
@@ -2602,8 +2603,44 @@ direct_ledger_static_segment_control_target_check() {
   done
   [ "$token_index" -lt "${#tokens[@]}" ] || return 0
   command_name="${tokens[$token_index]##*/}"
+  if [ "$command_name" = env ]; then
+    foreign_active_marker_env_child "$cwd" "${tokens[@]:$token_index}" || return 0
+    cwd="$FOREIGN_ACTIVE_MARKER_ENV_CHILD_CWD"
+    tokens=("$FOREIGN_ACTIVE_MARKER_ENV_CHILD_EXECUTABLE" "${tokens[@]:$((token_index + FOREIGN_ACTIVE_MARKER_ENV_CHILD_ARGS_INDEX))}")
+    token_index=0
+    command_name="${tokens[0]##*/}"
+    # Unwrap only these current-effect families. Keep the existing bare
+    # tee/dd/install contracts and the foreign/timeout consumer unchanged.
+    case "$command_name" in
+      cp|rm|touch|sed) ;;
+      *) return 0 ;;
+    esac
+  fi
   case "$command_name" in
-    touch|rm|unlink|rmdir|truncate|shred|srm|chmod|chown)
+    cp|rm|touch)
+      # Reuse the finite option and destination roles without interpreting
+      # source operands as targets or reparsing the decoded argv values.
+      mapfile -t current_targets < <(foreign_active_marker_writer_targets \
+        "$command_name" "${tokens[@]:$((token_index + 1))}")
+      ;;
+    sed)
+      # Only bare -i SCRIPT FILE... is known here. The one script is data;
+      # suffixes, additional options and other sed forms remain ordinary.
+      [ "${tokens[$((token_index + 1))]:-}" = -i ] || return 0
+      [ "${#tokens[@]}" -ge $((token_index + 4)) ] || return 0
+      target="${tokens[$((token_index + 2))]}"
+      direct_ledger_static_target_is_dynamic "$target" && return 0
+      case "$target" in
+        -*) return 0 ;;
+      esac
+      current_targets=("${tokens[@]:$((token_index + 3))}")
+      for target in "${current_targets[@]}"; do
+        case "$target" in
+          ''|-*) return 0 ;;
+        esac
+      done
+      ;;
+    unlink|rmdir|truncate|shred|srm|chmod|chown)
       token_index=$((token_index + 1))
       [ "$token_index" -lt "${#tokens[@]}" ] || return 0
       # Options make operand roles command-specific. Do not guess: the normal
@@ -2708,6 +2745,15 @@ direct_ledger_static_segment_control_target_check() {
       return 0
       ;;
   esac
+  for target in "${current_targets[@]}"; do
+    if direct_ledger_static_target_is_dynamic "$target"; then
+      DIRECT_LEDGER_STATIC_DYNAMIC_TARGET=true
+      continue
+    fi
+    direct_ledger_resolved_current_control_target "$target" "$selected_real" || continue
+    direct_ledger_deny_current_control_target
+    return 0
+  done
 }
 
 direct_ledger_static_record_walk() {

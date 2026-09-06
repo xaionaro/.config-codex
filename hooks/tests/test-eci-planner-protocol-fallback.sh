@@ -126,6 +126,52 @@ assert_callbacks() {
   }
 }
 
+# Inspect real fallback effects after the first recursive callback fails.
+# Scripts, source operands and consumed env options are not write targets.
+assert_current_control_callback_operands() {
+  local command marker="$PROOF_ROOT/$SESSION/eci_active"
+
+  for command in \
+    "cp $INPUT $marker" \
+    "rm -f -- $marker" \
+    "touch -- $marker" \
+    "env -u CONTROL_NAME NAME=value touch $marker" \
+    "env -C ${marker%/*} touch eci_active" \
+    "sed -i 's/needle/replacement/' $marker"; do
+    run_hook "printf first; $command"
+    assert_callbacks 'printf first|'
+    jq -e --arg target "$marker" '
+      .hookSpecificOutput.permissionDecision == "deny" and
+      (.hookSpecificOutput.permissionDecisionReason |
+        contains("[ECI_CONTROL_OWNER_REQUIRED]") and
+        contains("resolved_control_target=" + $target))
+    ' "$OUTPUT" >/dev/null || {
+      printf '%s\n' "$ROLE/$CALLBACK_MODE: current-control writer escaped fallback: $command" >&2
+      cat -- "$OUTPUT" >&2
+      exit 1
+    }
+  done
+
+  for command in \
+    "cat $marker" \
+    "cp $marker $TMP_ROOT/ordinary-destination" \
+    "cp --output=$marker ordinary elsewhere" \
+    "printf '%s' $marker" \
+    "sed -n '1p' $marker" \
+    "sed -i '$marker' $TMP_ROOT/ordinary-destination" \
+    "rm --unknown $marker" \
+    "env -u touch $marker" \
+    "env - -v touch $marker"; do
+    run_hook "printf first; $command"
+    assert_callbacks 'printf first|'
+    [ ! -s "$OUTPUT" ] || {
+      printf '%s\n' "$ROLE/$CALLBACK_MODE: source/data operand blocked by fallback: $command" >&2
+      cat -- "$OUTPUT" >&2
+      exit 1
+    }
+  done
+}
+
 run_hook 'printf planner-response-fallback-benign'
 [ ! -s "$OUTPUT" ] || {
   printf '%s\n' 'malformed planner response blocked ordinary work:' >&2
@@ -161,7 +207,6 @@ for ROLE in coordinator worker; do
   MARKER_CODE=ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED
   if [ "$ROLE" = worker ]; then
     IS_WORKER=true
-    MARKER_CODE=ECI_CONTROL_OWNER_REQUIRED
   fi
 
   CALLBACK_MODE=normal
@@ -183,6 +228,7 @@ for ROLE in coordinator worker; do
   }
 
   for CALLBACK_MODE in malformed nonzero; do
+    assert_current_control_callback_operands
     run_hook 'printf first; printf second'
     assert_callbacks 'printf first|'
     [ ! -s "$OUTPUT" ] || {

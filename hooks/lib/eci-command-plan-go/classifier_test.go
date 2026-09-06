@@ -4643,6 +4643,97 @@ func TestProtectedOperationsRouteByRole(t *testing.T) {
 	}
 }
 
+// TestCurrentControlCopyOperandRoles distinguishes copy inputs from concrete
+// destinations in both proof-path and live-inode ownership checks.
+//
+// Example: copying out a marker hardlink is ordinary; copying onto it is not.
+func TestCurrentControlCopyOperandRoles(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	session := filepath.Join(directory, "proof", "session")
+	if err := os.MkdirAll(session, 0o700); err != nil {
+		t.Fatalf("create proof session: %v", err)
+	}
+	marker := filepath.Join(session, "eci_active")
+	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	alias := filepath.Join(directory, "marker-hardlink")
+	if err := os.Link(marker, alias); err != nil {
+		t.Fatalf("link marker: %v", err)
+	}
+	ordinary := filepath.Join(directory, "ordinary")
+
+	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
+		for _, role := range []Role{RoleCoordinator, RoleWorker} {
+			for _, testCase := range []struct {
+				name       string
+				command    string
+				target     string
+				argvIndex  int
+				workerOnly bool
+			}{
+				{name: "marker input", command: "cp " + marker + " " + ordinary},
+				{name: "flagged marker input", command: "cp -f -- " + marker + " " + ordinary},
+				{name: "quoted marker input", command: "cp '" + marker + "' " + ordinary},
+				{name: "marker destination", command: "cp " + ordinary + " " + marker, target: marker, argvIndex: 2},
+				{name: "flagged destination", command: "cp -f -- " + ordinary + " " + marker, target: marker, argvIndex: 4},
+				{name: "terminator after source", command: "cp " + ordinary + " -- " + marker, target: marker, argvIndex: 3},
+				{name: "finite flags destination", command: "cp -frR -v --force --recursive --verbose " + ordinary + " " + marker, target: marker, argvIndex: 7},
+				{name: "unknown option", command: "cp --unknown " + ordinary + " " + marker},
+				{name: "too many operands", command: "cp " + ordinary + " " + marker + " elsewhere"},
+				{name: "one operand", command: "cp " + marker},
+				{name: "invalid generic output assignment", command: "cp --output=" + marker + " ordinary elsewhere"},
+				{name: "invalid generic output pair", command: "cp --output " + marker + " ordinary elsewhere"},
+				{name: "invalid short output", command: "cp -o" + marker + " ordinary elsewhere"},
+				{name: "independent redirect", command: "cp --output=" + marker + " ordinary elsewhere > " + marker, target: marker, argvIndex: 1},
+				{name: "generic output retained", command: "novel-tool --output=" + marker, target: marker, argvIndex: 1},
+				{name: "move still mutates source", command: "mv " + marker + " " + ordinary, target: marker, argvIndex: 1},
+				{name: "alias input", command: "cp " + alias + " " + ordinary, workerOnly: true},
+				{name: "alias destination", command: "cp " + ordinary + " " + alias, target: alias, argvIndex: 2, workerOnly: true},
+				{name: "flagged alias destination", command: "cp -f -- " + ordinary + " " + alias, target: alias, argvIndex: 4, workerOnly: true},
+				{name: "invalid alias output", command: "cp --output=" + alias + " ordinary elsewhere", workerOnly: true},
+				{name: "move still mutates alias source", command: "mv " + alias + " " + ordinary, target: alias, argvIndex: 1, workerOnly: true},
+			} {
+				if testCase.workerOnly && role != RoleWorker {
+					continue
+				}
+				// Each case runs through Classify, including wrapper and ownership routing.
+				t.Run(string(provider)+"/"+string(role)+"/"+testCase.name, func(t *testing.T) {
+					result := Classify(Request{
+						Provider:      provider,
+						Role:          role,
+						CWD:           directory,
+						Marker:        MarkerActive,
+						ActiveSession: "session",
+						Command:       testCase.command,
+						ActiveMarkers: []string{marker},
+					})
+					if testCase.target == "" {
+						if result.Decision != DecisionAllow || result.Diagnostic != nil {
+							t.Fatalf("input/data command: decision=%s diagnostic=%#v, want allow", result.Decision, result.Diagnostic)
+						}
+						return
+					}
+					if result.Decision != DecisionDeny || result.Diagnostic == nil {
+						t.Fatalf("write command: decision=%s diagnostic=%#v, want deny", result.Decision, result.Diagnostic)
+					}
+					diagnostic := result.Diagnostic
+					if diagnostic.Code != CodePlanLiveControlDenied || diagnostic.Path != marker {
+						t.Errorf("write diagnostic=%#v, want live control path %s", diagnostic, marker)
+					}
+					if diagnostic.Token != testCase.target || diagnostic.ArgvIndex != testCase.argvIndex ||
+						diagnostic.ByteOffset != strings.LastIndex(testCase.command, testCase.target) {
+						t.Errorf("write coordinates=%#v, want token=%s argv_index=%d byte_offset=%d", diagnostic,
+							testCase.target, testCase.argvIndex, strings.LastIndex(testCase.command, testCase.target))
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestDDOutputDestinationsHonorControlOwnership(t *testing.T) {
 	t.Parallel()
 

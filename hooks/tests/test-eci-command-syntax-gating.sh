@@ -188,14 +188,14 @@ assert_broad_root_denied_without_planner() {
 }
 
 assert_current_marker_denied() {
-  local role predicate
+  local command="${1:-touch $MARKER | head -n 20}" role predicate
 
   for role in coordinator worker; do
     case "$role" in
     coordinator) predicate=coordinator-proof-control ;;
     worker) predicate=worker-proof-control ;;
     esac
-    run_hook "touch $MARKER | head -n 20" "$role"
+    run_hook "$command" "$role"
     jq -e --arg marker "$MARKER" --arg predicate "$predicate" '
       .hookSpecificOutput.permissionDecision == "deny" and
       (.hookSpecificOutput.permissionDecisionReason |
@@ -214,10 +214,10 @@ assert_current_marker_denied() {
 }
 
 assert_current_marker_denied_without_planner() {
-  local role
+  local command="${1:-touch $MARKER | head -n 20}" role
 
   for role in coordinator worker; do
-    run_hook "touch $MARKER | head -n 20" "$role" unavailable
+    run_hook "$command" "$role" unavailable
     jq -e --arg marker "$MARKER" '
       .hookSpecificOutput.permissionDecision == "deny" and
       (.hookSpecificOutput.permissionDecisionReason |
@@ -225,7 +225,7 @@ assert_current_marker_denied_without_planner() {
         contains("resolved_control_target=" + $marker)
       )
     ' "$OUTPUT" >/dev/null || {
-      printf 'no-planner current marker denial contract mismatch for role=%s\n' "$role" >&2
+      printf 'no-planner current marker denial contract mismatch for role=%s: %s\n' "$role" "$command" >&2
       cat -- "$OUTPUT" >&2
       exit 1
     }
@@ -301,9 +301,61 @@ assert_worker_fsck_lost_found_denied() {
   }
 }
 
+# Current-control effects depend on operand roles, not mentions of the marker
+# in source, script, option-value or ordinary data positions.
+assert_current_control_operand_boundaries() {
+  local command suffix
+
+  for suffix in '' ' | cat'; do
+    for command in \
+      "cp $OUTSIDE_PROOF $MARKER" \
+      "cp -frR -v --force --recursive --verbose -- $OUTSIDE_PROOF $MARKER" \
+      "rm -f -- $MARKER" \
+      "rm -frR -- $MARKER" \
+      "touch -- $MARKER" \
+      "env touch $MARKER" \
+      "env -u CONTROL_NAME NAME=value touch -- $MARKER" \
+      "env -C ${MARKER%/*} touch eci_active" \
+      "sed -i 's/needle/replacement/' $MARKER"; do
+      assert_current_marker_denied_without_planner "$command$suffix"
+    done
+    for command in \
+      "cat $MARKER" \
+      "cp $MARKER $TMP_ROOT/ordinary-destination" \
+      "printf '%s' $MARKER" \
+      "sed -n '1p' $MARKER" \
+      "sed -i '$MARKER' $TMP_ROOT/ordinary-destination" \
+      "sed -i.bak '1p' $MARKER" \
+      "sed -i -e '1p' $MARKER" \
+      "rm --unknown $MARKER" \
+      "cp --output=$MARKER $OUTSIDE_PROOF $TMP_ROOT/ordinary-destination" \
+      "cp $OUTSIDE_PROOF $MARKER $TMP_ROOT/ordinary-destination" \
+      "env -u touch $MARKER" \
+      "env - -v touch $MARKER" \
+      "env NAME=value -v touch $MARKER" \
+      "printf '%s' '|' touch $MARKER"; do
+      assert_allowed_without_planner "$command$suffix"
+    done
+  done
+
+  # The first child's CWD must not become the second segment's CWD.
+  assert_allowed_without_planner "env -C ${MARKER%/*} printf ordinary; touch eci_active"
+  assert_current_marker_denied_without_planner "cp --output=$MARKER ordinary elsewhere > $MARKER"
+
+  for command in \
+    "cp $MARKER $TMP_ROOT/ordinary-destination" \
+    "cp -f -- $MARKER $TMP_ROOT/ordinary-destination" \
+    "cp --output=$MARKER $OUTSIDE_PROOF $TMP_ROOT/ordinary-destination"; do
+    assert_allowed "$command"
+  done
+  assert_current_marker_denied "cp $OUTSIDE_PROOF $MARKER"
+  assert_current_marker_denied "cp --output=$MARKER ordinary elsewhere > $MARKER"
+}
+
 # These commands may fail when executed in a real shell (for example an
 # unfamiliar executable), but the admission hook must not deny them merely for
 # their form.  The test executes only the hook, never these commands.
+assert_current_control_operand_boundaries
 assert_allowed $'printf \'%s\\n\' first\nprintf \'%s\\n\' second'
 assert_allowed 'printf "%s\\n" "$(printf nested)"'
 assert_allowed 'novel-inspection-tool --format table'

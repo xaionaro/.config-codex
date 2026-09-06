@@ -2672,13 +2672,19 @@ func inspectProofPathOwnership(
 	for argumentIndex, argument := range argv {
 		pathArgument, pathLike := outputDestinationOperand(argv, argumentIndex)
 		outputWriter := pathLike
-		if !pathLike {
+		switch {
+		case filepath.Base(argv[0].value) == "cp":
+			// Copy operands are authoritative: a generic --output spelling
+			// cannot manufacture a destination for an unsupported cp form.
+			pathArgument, pathLike = argument, argumentIndex > 0
+			outputWriter = false
+		case !pathLike:
 			pathArgument, pathLike = commandPathOperand(argv[0].value, argument)
 		}
 		if !pathLike {
 			continue
 		}
-		writer := outputWriter || isSourceWriter(filepath.Base(argv[0].value), argv)
+		writer := outputWriter || isSourceWriterOperand(argv, argumentIndex)
 		lexical := pathArgument.value
 		if !filepath.IsAbs(lexical) {
 			lexical = filepath.Join(request.CWD, lexical)
@@ -4871,7 +4877,13 @@ func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagno
 	// block a visible concrete write target. Exact marker paths below remain
 	// independently checked.
 	for argumentIndex, argument := range argv[1:] {
+		if !isSourceWriterOperand(argv, argumentIndex+1) {
+			continue
+		}
 		pathArgument, pathLike := commandPathOperand(argv[0].value, argument)
+		if filepath.Base(argv[0].value) == "cp" {
+			pathArgument, pathLike = argument, true
+		}
 		if !pathLike {
 			continue
 		}
@@ -5682,6 +5694,49 @@ func isBranchMutationOption(value string) bool {
 	default:
 		return strings.HasPrefix(value, "--set-upstream-to=")
 	}
+}
+
+// isSourceWriterOperand identifies the mutated operand of a finite copy and
+// preserves whole-command write semantics for the other existing writers.
+// Unknown copy options or operand counts supply no inferred mutation.
+//
+// Example: cp -f -- SOURCE DEST writes only DEST; mv still mutates SOURCE.
+func isSourceWriterOperand(
+	argv []token,
+	argumentIndex int,
+) bool {
+	if len(argv) == 0 || argumentIndex <= 0 || argumentIndex >= len(argv) {
+		return false
+	}
+	name := filepath.Base(argv[0].value)
+	if name != "cp" {
+		return isSourceWriter(name, argv)
+	}
+
+	optionsEnded := false
+	operandCount := 0
+	destinationIndex := -1
+	for index := 1; index < len(argv); index++ {
+		value := argv[index].value
+		if !optionsEnded {
+			switch value {
+			case "--":
+				optionsEnded = true
+				continue
+			case "-f", "-r", "-R", "-v", "--force", "--recursive", "--verbose":
+				continue
+			}
+			if strings.HasPrefix(value, "-") {
+				if len(value) == 1 || strings.Trim(value[1:], "frR") != "" {
+					return false
+				}
+				continue
+			}
+		}
+		operandCount++
+		destinationIndex = index
+	}
+	return operandCount == 2 && argumentIndex == destinationIndex
 }
 
 func isSourceWriter(name string, argv []token) bool {
