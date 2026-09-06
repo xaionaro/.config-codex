@@ -51,8 +51,9 @@ Reproduce the issue before investigating. No reproduction = no understanding. Sl
 - Before testing a hypothesis, state at least one alternative explanation. If you can't, you don't understand the problem yet.
 - A hypothesis becomes "confirmed root cause" only when you have tested a prediction that would have DISPROVED it if wrong, and it survived.
 
-## Logging
+## Observability and error descriptions
 
-- When you can't diagnose → add logging + auto-tests to gather info/reproduce.
-- When unsure about log level, prefer more logging.
-- When logs lack relevant IDs or context, fix them immediately.
+- Fix concrete observability gaps and inadequate error descriptions found during debugging before closing the fix, even after the bug is understood or functionally fixed. Leave sufficient diagnostics unchanged.
+- Use the smallest lasting diagnostic improvement needed: logs, traces, metrics, or other instrumentation. Removing temporary probes must not reopen the gap; regression tests alone do not replace needed diagnostics.
+- Improve errors/logs with the failed operation, relevant context/IDs, and known cause; preserve causes when wrapping. Redact sensitive data while keeping useful detail.
+- When diagnosis lacks evidence, add targeted instrumentation and automated repro tests. Exercise the failure path to verify improved diagnostics.
