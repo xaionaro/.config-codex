@@ -149,9 +149,7 @@ trusted_literal_executable() {
 finalize_command_gate_denial() {
   local source="$1" denial="$2"
   local role="${plan_role:-coordinator}" marker="${plan_marker_state:-inactive}"
-  case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}:${hook_is_subagent:-false}" in
-    true:*:*|*:subagent:*|*:worker:*|*:*:true) role=worker ;;
-  esac
+  [ "${hook_is_subagent:-false}" != true ] || role=worker
   if declare -p syntax_eci_markers >/dev/null 2>&1 && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     marker=active
   fi
@@ -259,20 +257,11 @@ command_invokes_eci_control_mutation_if_defined() {
 deny_eci() {
   local code="$1" operation="$2" detail="$3" remediation="$4"
   local subject identity role="${plan_role:-coordinator}" marker="${plan_marker_state:-inactive}"
-  if [ "$code" != "ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED" ] &&
-    [ -n "${command:-}" ] && command_invokes_eci_control_mutation_if_defined "$command"; then
-    code="ECI_CONTROL_OWNER_REQUIRED"
-    operation="eci-control"
-    detail="ECI control-state mutation requires the coordinator lifecycle route"
-    remediation="use the provider-bound coordinator lifecycle entrypoint"
-  fi
   # A historical permissive record is diagnostic state, never command
   # authority.  Normal work must not need it, and malformed, expired, or
   # unreadable state must not change this callback's result.  The concrete
   # operation and target decide whether a denial is warranted.
-  case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}:${hook_is_subagent:-false}" in
-    true:*:*|*:subagent:*|*:worker:*|*:*:true) role=worker ;;
-  esac
+  [ "${hook_is_subagent:-false}" != true ] || role=worker
   if declare -p syntax_eci_markers >/dev/null 2>&1 && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     marker=active
   fi
@@ -354,8 +343,8 @@ command=$(printf '%s' "$input" | jq -r 'if (.tool_input?.command? | type) == "st
 # bounded transcript parser runs only for a typed payload that supplies a
 # transcript path; ordinary planner callbacks do not need transcript metadata.
 hook_is_subagent=false
-case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}" in
-  true:*|*:subagent|*:worker)
+case "${CODEX_HOOK_IS_SUBAGENT:-false}" in
+  true)
     hook_is_subagent=true
     ;;
   *)
@@ -778,10 +767,7 @@ ECI_ENVIRONMENT_COMMAND_REASON=""
 # executable allowlist and defers only visibly protected capabilities to the
 # established operation-specific gates below.
 plan_role=coordinator
-case "${CODEX_HOOK_IS_SUBAGENT:-false}:${CODEX_ROLE:-}" in
-  true:*|*:subagent|*:worker) plan_role=worker ;;
-  *) ;;
-esac
+[ "$hook_is_subagent" != true ] || plan_role=worker
 plan_marker_state=inactive
 [ "${#syntax_eci_markers[@]}" -eq 0 ] || plan_marker_state=active
 
@@ -1669,7 +1655,7 @@ aggregate_marker_context_for_callback() {
     return 1
   fi
   [ -f "$plan" ] && [ ! -L "$plan" ] || return 2
-  marker_outer_raw="$(codex_state_value "$marker" cwd 2>/dev/null || true)"
+  marker_outer_raw="$(codex_state_value "$marker" cwd false 2>/dev/null || true)"
   [ -n "$marker_outer_raw" ] || return 2
   marker_outer="$(codex_canonical_cwd "$marker_outer_raw")"
   codex_eci_aggregate_plan_is_valid "$plan" "$session_id" "$marker_outer" "$marker" || return 2
@@ -1708,93 +1694,6 @@ validate_active_marker_binding() {
   ECI_MARKER_VALIDATION_COMPLETE=true
 }
 
-# A lexical proof-root path that resolves outside the proof root is not unsafe
-# by itself: `cat evidence-link` is ordinary inspection. Check it only when a
-# direct writer has a resolved target that follows that path.
-proof_path_escape_mutation_detail() {
-  python3 - "$1" "$cwd" "$CODEX_PROOF_ROOT_CONFIGURED" "$CODEX_PROOF_ROOT_CANONICAL" "$CODEX_PROOF_ROOT_STABLE_ALIAS" <<'PY'
-import os
-import re
-import shlex
-import sys
-
-command, hook_cwd, configured, canonical, stable = sys.argv[1:]
-if not canonical or not os.path.isabs(canonical):
-    raise SystemExit(1)
-canonical = os.path.realpath(canonical)
-lexical_roots = []
-for value in (configured, canonical, stable):
-    if not value or not os.path.isabs(value):
-        continue
-    value = os.path.normpath(value)
-    if os.path.realpath(value) == canonical:
-        lexical_roots.append(value)
-try:
-    tokens = shlex.split(command, posix=True)
-except ValueError:
-    raise SystemExit(1)
-
-def escaped(token):
-    if not token or token.startswith("-") or any(char in token for char in ("\n", "\r", "\0")):
-        return None
-    candidate = token if os.path.isabs(token) else os.path.abspath(os.path.join(hook_cwd, token))
-    candidate = os.path.normpath(candidate)
-    for lexical_root in lexical_roots:
-        if candidate == lexical_root or candidate.startswith(lexical_root + os.sep):
-            resolved = os.path.realpath(candidate)
-            if resolved != canonical and not resolved.startswith(canonical + os.sep):
-                return "path=%s resolved=%s proof_root=%s reason=write target follows an escaping proof symlink" % (token, resolved, canonical)
-    return None
-
-for index, token in enumerate(tokens):
-    if token in {">", ">>", ">|", ">&"} and index + 1 < len(tokens):
-        detail = escaped(tokens[index + 1])
-        if detail:
-            print(detail)
-            raise SystemExit(0)
-    match = re.fullmatch(r"(?:[0-9]*)(>>?|>\||>&)(.+)", token)
-    if match and match.group(2):
-        detail = escaped(match.group(2))
-        if detail:
-            print(detail)
-            raise SystemExit(0)
-
-segments = []
-current = []
-for token in tokens + [";"]:
-    if token in {";", "&&", "||", "|"}:
-        if current:
-            segments.append(current)
-            current = []
-    else:
-        current.append(token)
-
-writer_names = {"touch", "tee", "truncate", "install", "dd", "chmod", "chown"}
-for segment in segments:
-    command_index = 0
-    while command_index < len(segment) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", segment[command_index]):
-        command_index += 1
-    if command_index >= len(segment):
-        continue
-    name = os.path.basename(segment[command_index])
-    if name not in writer_names:
-        continue
-    for token in segment[command_index + 1:]:
-        detail = escaped(token)
-        if detail:
-            print(detail)
-            raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
-
-# When the optional command planner is unavailable, resolve static ledger
-# redirects by their decoded effect and target. Everything dynamic or outside
-# this bounded extraction falls through to the existing target-aware routes.
-DIRECT_LEDGER_FALLBACK_DECISION=""
-DIRECT_LEDGER_FALLBACK_CODE=""
-DIRECT_LEDGER_FALLBACK_DETAIL=""
-DIRECT_LEDGER_FALLBACK_REMEDIATION=""
 
 direct_ledger_prefix_effect_check() {
   # A selected ledger append is safe only when this already parsed static
@@ -1821,13 +1720,6 @@ direct_ledger_prefix_effect_check() {
         "route the reported Git verb through the main/orchestrator coordinator; workers may use finite read-only Git inspection and history commands"
       ;;
   esac
-
-  prefix_detail="$(proof_path_escape_mutation_detail "$command" 2>/dev/null || true)"
-  if [ -n "$prefix_detail" ]; then
-    deny_eci "ECI_PROOF_PATH_ESCAPE_DENIED" "proof-path-ownership" \
-      "ECI proof-path boundary denied a write through an escaping proof symlink: ${prefix_detail}" \
-      "write only a proof target that resolves inside the current session, or use the resolved intended outside target through its owning task"
-  fi
 
   if command_invokes_eci_lifecycle "$command" || command_invokes_eci_binary "$command" ||
     [ -n "$(review_gate_command_identity "$command" 2>/dev/null || true)" ] ||
@@ -2268,79 +2160,44 @@ direct_ledger_static_records() {
       continue
     fi
     if [ "$character" = '<' ]; then
-      if [ "$record_mode" = foreign-marker ]; then
-        if [ "$word_started" = true ]; then
-          case "$word_plain:$word" in
-            true:0|true:1|true:2) ;;
-            *)
-              # Unsupported input FDs are syntax, not child operands.
-              if [ "$word_plain" = true ] && [[ "$word" =~ ^[0-9]+$ ]]; then
-                return 1
-              fi
-              token_kinds+=(word)
-              token_values+=("$word")
-              ;;
-          esac
-          word=""
-          word_started=false
-          word_plain=false
-        fi
-        if [ "${raw:$((index + 1)):1}" = '&' ]; then
-          input_index=$((index + 2))
-          while [ "$input_index" -lt "$length" ] && [[ "${raw:input_index:1}" =~ [[:space:]] ]]; do
-            input_index=$((input_index + 1))
-          done
-          [ "${raw:input_index:1}" = 0 ] || return 1
-          next_character="${raw:$((input_index + 1)):1}"
-          case "$next_character" in
-            ''|[[:space:]]|';'|'&'|'|'|'<'|'>') ;;
-            *) return 1 ;;
-          esac
-          token_kinds+=(foreign-input-fd0)
-          token_values+=("")
-          index=$((input_index + 1))
-          continue
-        fi
-        case "${raw:$((index + 1)):1}" in
-          ''|'<'|'>'|'|'|';') return 1 ;;
-        esac
-        token_kinds+=(foreign-input)
-        token_values+=("")
-        index=$((index + 1))
-        continue
-      fi
-      # The only input redirect this bounded static walk decodes is tee's
-      # literal /dev/null suffix.  It is represented distinctly from a quoted
-      # word so the finite tee extractor below cannot mistake data for syntax.
       if [ "$word_started" = true ]; then
-        token_kinds+=(word)
-        token_values+=("$word")
+        case "$word_plain:$word" in
+          true:0|true:1|true:2) ;;
+          *)
+            # Unsupported input FDs are syntax, not child operands.
+            if [ "$word_plain" = true ] && [[ "$word" =~ ^[0-9]+$ ]]; then
+              return 1
+            fi
+            token_kinds+=(word)
+            token_values+=("$word")
+            ;;
+        esac
         word=""
         word_started=false
         word_plain=false
       fi
-      [ "$record_mode" != foreign-marker ] || return 1
-      input_index="$index"
-      if [ "${raw:index:10}" = '</dev/null' ]; then
-        input_end=$((index + 10))
-      elif [[ "${raw:$((index + 1)):1}" =~ [[:space:]] ]]; then
-        input_index=$((index + 1))
+      if [ "${raw:$((index + 1)):1}" = '&' ]; then
+        input_index=$((index + 2))
         while [ "$input_index" -lt "$length" ] && [[ "${raw:input_index:1}" =~ [[:space:]] ]]; do
           input_index=$((input_index + 1))
         done
-        [ "${raw:input_index:9}" = /dev/null ] || return 1
-        input_end=$((input_index + 9))
-      else
-        return 1
+        [ "${raw:input_index:1}" = 0 ] || return 1
+        next_character="${raw:$((input_index + 1)):1}"
+        case "$next_character" in
+          ''|[[:space:]]|';'|'&'|'|'|'<'|'>') ;;
+          *) return 1 ;;
+        esac
+        token_kinds+=(foreign-input-fd0)
+        token_values+=("")
+        index=$((input_index + 1))
+        continue
       fi
-      next_character="${raw:input_end:1}"
-      case "$next_character" in
-        ''|[[:space:]]|';'|'&'|'|') ;;
-        *) return 1 ;;
+      case "${raw:$((index + 1)):1}" in
+        ''|'<'|'>'|'|'|';') return 1 ;;
       esac
-      token_kinds+=(tee-input-dev-null)
+      token_kinds+=(foreign-input)
       token_values+=("")
-      index="$input_end"
+      index=$((index + 1))
       continue
     fi
     if [[ "$character" = '(' || "$character" = ')' ]]; then
@@ -2379,15 +2236,18 @@ direct_ledger_static_records() {
           continue
         fi
         if [ "${token_kinds[$token_index]}" = foreign-input ]; then
-          [ "$record_mode" = foreign-marker ] || return 1
           [ $((token_index + 1)) -lt "$segment_end" ] || return 1
           [ "${token_kinds[$((token_index + 1))]}" = word ] || return 1
           foreign_active_marker_dynamic_text "${token_values[$((token_index + 1))]}" && return 1
+          if [ "$record_mode" = ledger ] && [ "${stripped[0]:-}" = tee ]; then
+            # Preserve the existing bare tee /dev/null suffix contract.
+            [ "${token_values[$((token_index + 1))]}" = /dev/null ] || return 1
+            stripped+=("$DIRECT_LEDGER_TEE_INPUT_DEV_NULL_TOKEN")
+          fi
           token_index=$((token_index + 2))
           continue
         fi
         if [ "${token_kinds[$token_index]}" = foreign-input-fd0 ]; then
-          [ "$record_mode" = foreign-marker ] || return 1
           token_index=$((token_index + 1))
           continue
         fi
@@ -2454,7 +2314,7 @@ direct_ledger_static_records() {
 # eligible for the fallback's final decision.
 direct_ledger_redirect_effect_check() {
   local effect="$1" target="$2" selected_dir="$3" selected_real="$4" proof_root="$5" selected_session="$6"
-  local target_path target_parent parent_real resolved target_identity target_session="" target_artifact=""
+  local target_path resolved target_identity target_session="" target_artifact=""
   local candidate_dir candidate_session candidate artifact candidate_identity link_count
 
   if [[ "$target" = /* ]]; then
@@ -2463,16 +2323,6 @@ direct_ledger_redirect_effect_check() {
     target_path="$cwd/$target"
   fi
   resolved="$(realpath -e -- "$target_path" 2>/dev/null || true)"
-  target_parent="${target_path%/*}"
-  parent_real="$(realpath -e -- "$target_parent" 2>/dev/null || true)"
-  if { [ "$parent_real" = "$selected_real" ] || [[ "$parent_real" = "$selected_real"/* ]]; } &&
-    [ -n "$resolved" ] && [[ "$resolved" != "$selected_real"/* ]]; then
-    DIRECT_LEDGER_FALLBACK_DECISION=deny
-    DIRECT_LEDGER_FALLBACK_CODE=ECI_PROOF_PATH_ESCAPE_DENIED
-    DIRECT_LEDGER_FALLBACK_DETAIL="predicate=proof-symlink-escape resolved=$resolved proof_root=$selected_dir"
-    DIRECT_LEDGER_FALLBACK_REMEDIATION="write only a proof target that resolves inside the selected session"
-    return 0
-  fi
   [ -n "$resolved" ] && [ -f "$resolved" ] || return 0
   target_identity="$(stat -Lc '%d:%i' -- "$resolved" 2>/dev/null || true)"
   [[ "$target_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 0
@@ -2538,11 +2388,10 @@ direct_ledger_redirect_effect_check() {
   DIRECT_LEDGER_FALLBACK_CURRENT_APPEND=true
 }
 
-# Resolve only a concrete, static target whose canonical direct parent is the
-# selected session directory. Dynamic operands remain ordinary input; this is
-# an accidental-target check, not a shell-shape admission boundary.
+# Resolve a concrete static target by canonical path or the existing device /
+# inode identity comparison. An ordinary alias never creates a control effect.
 direct_ledger_resolved_current_control_target() {
-  local target="$1" selected_real="$2" candidate resolved parent
+  local target="$1" selected_real="$2" candidate resolved parent target_identity candidate_identity
 
   DIRECT_LEDGER_RESOLVED_CONTROL_TARGET=""
   [ -n "$target" ] || return 1
@@ -2557,9 +2406,33 @@ direct_ledger_resolved_current_control_target() {
   resolved="$(realpath -m -- "$candidate" 2>/dev/null || true)"
   [ -n "$resolved" ] || return 1
   parent="${resolved%/*}"
-  [ "$parent" = "$selected_real" ] || return 1
-  codex_eci_control_basename "${resolved##*/}" || return 1
-  DIRECT_LEDGER_RESOLVED_CONTROL_TARGET="$resolved"
+  if [ "$parent" = "$selected_real" ]; then
+    case "${resolved##*/}" in
+      instructions.md|project-understanding.md|latest-status-report.md) ;;
+      *)
+        if codex_eci_control_basename "${resolved##*/}"; then
+          DIRECT_LEDGER_RESOLVED_CONTROL_TARGET="$resolved"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  [ -f "$resolved" ] || return 1
+  target_identity="$(stat -Lc '%d:%i' -- "$resolved" 2>/dev/null || true)"
+  [[ "$target_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  for candidate in "$selected_real"/*; do
+    [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+    case "${candidate##*/}" in
+      instructions.md|project-understanding.md|latest-status-report.md) continue ;;
+    esac
+    codex_eci_control_basename "${candidate##*/}" || continue
+    candidate_identity="$(stat -Lc '%d:%i' -- "$candidate" 2>/dev/null || true)"
+    if [ "$target_identity" = "$candidate_identity" ]; then
+      DIRECT_LEDGER_RESOLVED_CONTROL_TARGET="$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 direct_ledger_deny_current_control_target() {
@@ -2588,6 +2461,23 @@ direct_ledger_static_redirect_control_target_check() {
     return 0
   fi
   direct_ledger_deny_current_control_target
+}
+
+# Classify already selected output targets in effect order: ledger semantics,
+# current control identity, then a genuinely foreign active marker.
+direct_ledger_static_output_target_check() {
+  local effect="$1" target="$2" selected_real="$3" foreign_detail
+
+  direct_ledger_redirect_effect_check "$effect" "$target" "$selected_real" "$selected_real" "${selected_real%/*}" "${selected_real##*/}"
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
+  direct_ledger_static_redirect_control_target_check "$effect" "$target" "$selected_real"
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
+  foreign_detail="$(foreign_active_marker_candidate_detail "$target" "$cwd" "${selected_real##*/}" 2>/dev/null || true)"
+  [ -n "$foreign_detail" ] || return 0
+  DIRECT_LEDGER_FALLBACK_DECISION=deny
+  DIRECT_LEDGER_FALLBACK_CODE=ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED
+  DIRECT_LEDGER_FALLBACK_DETAIL="ECI control boundary denied mutation of another session's active marker: $foreign_detail"
+  DIRECT_LEDGER_FALLBACK_REMEDIATION="leave the other session marker unchanged; use its coordinator or the current session's normal routing path"
 }
 
 direct_ledger_static_segment_control_target_check() {
@@ -2744,6 +2634,30 @@ direct_ledger_static_segment_control_target_check() {
       direct_ledger_deny_current_control_target
       return 0
       ;;
+    git) ;; # Git archive retains its existing provider-owned output route.
+    *)
+      # The words have already lost scalar input operands. Select only the
+      # existing finite output families; source-writer cases above own their
+      # operands, so cp pseudo-options cannot manufacture an output target.
+      for ((token_index = token_index + 1; token_index < ${#tokens[@]}; token_index++)); do
+        target=""
+        case "${tokens[$token_index]}" in
+          --report-path|--output|-o)
+            token_index=$((token_index + 1))
+            target="${tokens[$token_index]:-}"
+            ;;
+          --report-path=*|--output=*) target="${tokens[$token_index]#*=}" ;;
+          -o=*) target="${tokens[$token_index]#-o=}" ;;
+          -o?*) target="${tokens[$token_index]#-o}" ;;
+        esac
+        case "$target" in
+          ''|-*) continue ;;
+        esac
+        direct_ledger_static_target_is_dynamic "$target" && continue
+        direct_ledger_static_output_target_check overwrite "$target" "$selected_real"
+        [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
+      done
+      ;;
   esac
   for target in "${current_targets[@]}"; do
     if direct_ledger_static_target_is_dynamic "$target"; then
@@ -2756,9 +2670,9 @@ direct_ledger_static_segment_control_target_check() {
   done
 }
 
-direct_ledger_static_record_walk() {
+direct_ledger_static_target_walk() {
   local raw="$1" selected_dir="$2" selected_real="$3" proof_root="$4" selected_session="$5"
-  local nested_context="${6:-false}" depth="${7:-0}" record_kind prefix effect target nested_payload record_index word_count word_index prefixes_complete=true
+  local nested_context="${6:-false}" depth="${7:-0}" record_kind prefix effect target nested_payload record_index word_count word_index
   local -a records=() prefixes=() effects=() targets=() nested_payloads=() word_counts=() word_values=() segment_words=()
 
   # A depth limit is an opaque ordinary nested payload, never a new syntax
@@ -2809,9 +2723,7 @@ direct_ledger_static_record_walk() {
   for record_index in "${!effects[@]}"; do
     effect="${effects[$record_index]}"
     target="${targets[$record_index]}"
-    direct_ledger_redirect_effect_check "$effect" "$target" "$selected_dir" "$selected_real" "$proof_root" "$selected_session"
-    [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
-    direct_ledger_static_redirect_control_target_check "$effect" "$target" "$selected_real"
+    direct_ledger_static_output_target_check "$effect" "$target" "$selected_real"
     [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
   done
   word_index=0
@@ -2822,10 +2734,19 @@ direct_ledger_static_record_walk() {
     [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
   done
   for nested_payload in "${nested_payloads[@]}"; do
-    direct_ledger_static_record_walk "$nested_payload" "$selected_dir" "$selected_real" "$proof_root" "$selected_session" true "$((depth + 1))" || return 1
+    direct_ledger_static_target_walk "$nested_payload" "$selected_dir" "$selected_real" "$proof_root" "$selected_session" true "$((depth + 1))" || return 1
     [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
   done
-  for prefix in "${prefixes[@]}"; do
+  DIRECT_LEDGER_STATIC_PREFIXES+=("${prefixes[@]}")
+}
+
+direct_ledger_static_record_walk() {
+  local prefix prefixes_complete=true
+
+  DIRECT_LEDGER_STATIC_PREFIXES=()
+  direct_ledger_static_target_walk "$@" || return 1
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
+  for prefix in "${DIRECT_LEDGER_STATIC_PREFIXES[@]}"; do
     # An incomplete prefix is advisory: later static prefixes can still name
     # a concrete broad, Git, proof, or control effect. Preserve incompleteness
     # for the caller so it cannot admit a ledger append unconditionally.
@@ -2837,9 +2758,10 @@ direct_ledger_static_record_walk() {
 DIRECT_LEDGER_STATIC_SCAN_COMPLETE=false
 DIRECT_LEDGER_STATIC_SCAN_COMMAND=""
 DIRECT_LEDGER_STATIC_DYNAMIC_TARGET=false
+DIRECT_LEDGER_STATIC_PREFIXES=()
 
 direct_ledger_static_control_target_pass() {
-  local raw="$1" selected_marker selected_dir selected_real proof_root selected_session
+  local raw="$1" target_only="${2:-false}" selected_marker selected_dir selected_real proof_root selected_session
 
   if [ "$DIRECT_LEDGER_STATIC_SCAN_COMPLETE" = true ] &&
     [ "$DIRECT_LEDGER_STATIC_SCAN_COMMAND" = "$raw" ]; then
@@ -2859,6 +2781,11 @@ direct_ledger_static_control_target_pass() {
   DIRECT_LEDGER_FALLBACK_REMEDIATION=""
   DIRECT_LEDGER_STATIC_DYNAMIC_TARGET=false
 
+  if [ "$target_only" = true ]; then
+    DIRECT_LEDGER_STATIC_PREFIXES=()
+    direct_ledger_static_target_walk "$raw" "$selected_dir" "$selected_real" "$proof_root" "$selected_session"
+    return $?
+  fi
   direct_ledger_static_record_walk "$raw" "$selected_dir" "$selected_real" "$proof_root" "$selected_session" || return 1
   DIRECT_LEDGER_STATIC_SCAN_COMPLETE=true
   DIRECT_LEDGER_STATIC_SCAN_COMMAND="$raw"
@@ -2876,9 +2803,12 @@ direct_ledger_redirect_fallback() {
 }
 
 direct_ledger_emit_fallback_denial() {
-  deny "$(eci_diagnostic_reason "$DIRECT_LEDGER_FALLBACK_CODE" "PreToolUse" "ledger-redirect" \
-    "session=$(eci_diagnostic_value "$session_id"),cwd=$(eci_diagnostic_value "$cwd"),command=$(eci_command_identity_subject "$command")" \
-    "$DIRECT_LEDGER_FALLBACK_DETAIL" "$DIRECT_LEDGER_FALLBACK_REMEDIATION")"
+  local operation=ledger-redirect
+  case "$DIRECT_LEDGER_FALLBACK_CODE" in
+    ECI_CONTROL_OWNER_REQUIRED|ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED) operation=eci-control ;;
+  esac
+  deny_eci "$DIRECT_LEDGER_FALLBACK_CODE" "$operation" \
+    "$DIRECT_LEDGER_FALLBACK_DETAIL" "$DIRECT_LEDGER_FALLBACK_REMEDIATION"
 }
 
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
@@ -3396,7 +3326,7 @@ foreign_active_marker_literal_existing_directory() {
 # validators own the session grammar and direct marker/CWD binding, including
 # valid leading '_' and '-' identities.
 foreign_active_marker_candidate_detail() {
-  local raw="$1" base="$2" current_session="$3" candidate proof_root foreign_session
+  local raw="$1" base="$2" current_session="$3" candidate proof_root foreign_session foreign_marker
 
   [ -n "$raw" ] || return 1
   foreign_active_marker_dynamic_text "$raw" && return 1
@@ -3411,7 +3341,22 @@ foreign_active_marker_candidate_detail() {
   [ -n "$proof_root" ] || return 1
   case "$candidate" in
     "$proof_root"/*/eci_active) ;;
-    *) return 1 ;;
+    *)
+      # A hardlink retains the marker's device/inode identity even when its
+      # ordinary pathname has no marker spelling. Reuse the bounded marker
+      # candidate list and Bash's native same-file identity comparison.
+      while IFS= read -r foreign_marker; do
+        [ -f "$foreign_marker" ] && [ ! -L "$foreign_marker" ] || continue
+        if [ "$candidate" -ef "$foreign_marker" ]; then
+          candidate="$foreign_marker"
+          break
+        fi
+      done < <(codex_eci_marker_candidates_bounded)
+      case "$candidate" in
+        "$proof_root"/*/eci_active) ;;
+        *) return 1 ;;
+      esac
+      ;;
   esac
   foreign_session="${candidate#"$proof_root"/}"
   foreign_session="${foreign_session%/eci_active}"
@@ -3849,6 +3794,261 @@ enforce_foreign_active_marker_mutation_boundary() {
       "ECI control boundary denied mutation of another session's active marker: ${detail}" \
       "leave the other session marker unchanged; use its coordinator or the current session's normal routing path"
 }
+
+protected_resolved_operation_detail() {
+  python3 - "$1" "$cwd" "$HOOK_DIR" "$2" "$3" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+text, hook_cwd, hook_dir, is_worker, effect_scope = sys.argv[1:]
+try:
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+operators = {";", "&", "&&", "|", "||", "(", ")", ">", ">>", "<", "<<", ">|", ">&", "<&"}
+if not tokens or any(token in operators for token in tokens):
+    raise SystemExit(1)
+
+assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+def unwrap(values):
+    values = list(values)
+    depth = 0
+    while values and depth < 8:
+        while values and assignment.fullmatch(values[0]):
+            values.pop(0)
+        if not values:
+            return []
+        name = os.path.basename(values[0])
+        if name == "env":
+            index = 1
+            while index < len(values):
+                token = values[index]
+                if assignment.fullmatch(token) or token in {"-i", "--ignore-environment"}:
+                    index += 1
+                    continue
+                if token in {"-u", "--unset", "-C", "--chdir"}:
+                    index += 2
+                    continue
+                if token == "--":
+                    index += 1
+                break
+            values = values[index:]
+            depth += 1
+            continue
+        if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
+            values = values[1:]
+            depth += 1
+            continue
+        if name == "timeout":
+            return values
+        if name in {"nice", "time", "prlimit", "chronic", "systemd-run"}:
+            index = 1
+            value_options = {
+                "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
+                "-p", "--pid", "--property", "--unit", "--setenv",
+                "--working-directory", "-C", "--chdir",
+            }
+            while index < len(values) and values[index].startswith("-"):
+                if values[index] == "--":
+                    index += 1
+                    break
+                index += 2 if values[index] in value_options else 1
+            values = values[index:]
+            depth += 1
+            continue
+        break
+    return values
+
+argv = unwrap(tokens)
+if not argv:
+    raise SystemExit(1)
+name = os.path.basename(argv[0])
+args = argv[1:]
+
+def resolved(value):
+    expanded = os.path.expanduser(value)
+    candidate = expanded if os.path.isabs(expanded) else os.path.join(hook_cwd, expanded)
+    return os.path.realpath(os.path.normpath(candidate))
+
+broad_roots = {"/", os.path.realpath(hook_cwd), os.path.realpath(os.path.dirname(hook_dir))}
+for value in (
+    os.environ.get("HOME", ""), os.environ["CODEX_CONFIGURED_HOME"],
+    os.environ.get("KIMI_CODE_HOME", ""), os.environ.get("CODEX_PROOF_ROOT", ""),
+    os.environ.get("KIMI_PROOF_ROOT", ""),
+):
+    if value and os.path.isabs(value):
+        broad_roots.add(os.path.realpath(value))
+
+if name == "rm" and any(token == "--recursive" or (token.startswith("-") and "r" in token[1:].lower()) for token in args):
+    for token in args:
+        if token == "--" or token.startswith("-"):
+            continue
+        target = resolved(token)
+        if target in broad_roots:
+            print("class=broad executable=%s token=%s target=%s kind=recursive-root-delete" % (argv[0], token, target))
+            raise SystemExit(0)
+if name in {"mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs", "wipefs"}:
+    target = next((token for token in reversed(args) if not token.startswith("-")), "<missing>")
+    print("class=broad executable=%s token=%s target=%s kind=device-filesystem-destruction" %
+          (argv[0], target, resolved(target) if target != "<missing>" else target))
+    raise SystemExit(0)
+if name == "dd":
+    for token in args:
+        if token.startswith("of=") and (token[3:].startswith("/dev/") or resolved(token[3:]) in broad_roots):
+            print("class=broad executable=%s token=%s target=%s kind=raw-output-overwrite" %
+                  (argv[0], token, resolved(token[3:])))
+            raise SystemExit(0)
+if name == "find" and "-delete" in args:
+    for token in args:
+        if token.startswith("-"):
+            break
+        target = resolved(token)
+        if target in broad_roots:
+            print("class=broad executable=%s token=%s target=%s kind=recursive-find-delete" %
+                  (argv[0], token, target))
+            raise SystemExit(0)
+
+if effect_scope == "broad":
+    raise SystemExit(1)
+
+if is_worker == "true" and name == "git":
+    index = 0
+    value_options = {"-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace"}
+    while index < len(args):
+        token = args[index]
+        if token in value_options:
+            index += 2
+            continue
+        if any(token.startswith(option + "=") for option in value_options if option.startswith("--")):
+            index += 1
+            continue
+        if token in {"--literal-pathspecs", "--no-optional-locks", "--no-pager"}:
+            index += 1
+            continue
+        if token.startswith("-"):
+            break
+        if token in {"commit", "config", "reset", "worktree"}:
+            print("class=worker-git executable=%s token=%s kind=acceptance-sensitive-git" %
+                  (argv[0], token))
+            raise SystemExit(0)
+        break
+
+if is_worker == "true":
+    if name == "chmod":
+        protected_roots = {
+            os.path.realpath(hook_cwd),
+            os.path.realpath(os.path.dirname(hook_dir)),
+        }
+        for value in (
+            os.environ["CODEX_CONFIGURED_HOME"],
+            os.environ.get("KIMI_CODE_HOME", ""),
+        ):
+            if value and os.path.isabs(value) and os.path.isdir(value) and not os.path.islink(value):
+                protected_roots.add(os.path.realpath(value))
+        protected_hooks = set()
+        for root in protected_roots:
+            protected_hooks.update({
+                os.path.join(root, "hooks", "validate-bash.sh"),
+                os.path.join(root, "hooks", "pre-commit-go-mod.sh"),
+                os.path.join(root, "hooks", "install-pre-commit-go-mod.sh"),
+                os.path.join(root, "hooks", "tests", "test-pre-commit-go-mod.sh"),
+            })
+
+        cursor = 0
+        reference_mode = False
+        while cursor < len(args) and args[cursor] != "--":
+            token = args[cursor]
+            if token == "--reference":
+                if cursor + 1 >= len(args):
+                    break
+                reference_mode = True
+                cursor += 2
+            elif token.startswith("--reference="):
+                reference_mode = True
+                cursor += 1
+            elif token.startswith("-"):
+                cursor += 1
+            else:
+                if not reference_mode:
+                    cursor += 1  # mode
+                break
+        if cursor < len(args) and args[cursor] == "--":
+            cursor += 1
+        for token in args[cursor:]:
+            if token == "--":
+                continue
+            target = resolved(token)
+            if target in protected_hooks:
+                print("class=worker-hook-mode executable=%s token=%s path=%s resolved=%s kind=protected-hook-mode-mutation" %
+                      (argv[0], token, target, target))
+                raise SystemExit(0)
+    raise SystemExit(1)
+
+source_roots = {os.path.realpath(hook_cwd), os.path.realpath(os.path.dirname(hook_dir))}
+for value in (
+    os.environ["CODEX_CONFIGURED_HOME"],
+    os.environ.get("KIMI_CODE_HOME", ""),
+):
+    if value and os.path.isabs(value) and os.path.isdir(value):
+        source_roots.add(os.path.realpath(value))
+def under_source(path):
+    return any(path == root or path.startswith(root + os.sep) for root in source_roots)
+
+targets = []
+plain = [token for token in args if token != "--" and not token.startswith("-")]
+if name in {"touch", "truncate", "mkdir", "rmdir", "rm", "shred", "srm", "tee", "patch", "ed", "ex"}:
+    targets = plain
+elif name == "chmod":
+    targets = plain[1:] if plain else []
+elif name in {"cp", "install", "ln"}:
+    targets = plain[-1:]
+elif name == "mv":
+    targets = plain
+elif name in {"sed", "perl"} and any(token == "-i" or token.startswith(("-i", "--in-place")) for token in args):
+    targets = plain[1:]
+elif name == "find" and "-delete" in args:
+    targets = [token for token in args if not token.startswith("-")][:1]
+elif name == "dd":
+    targets = [token[3:] for token in args if token.startswith("of=")]
+elif name == "apply_patch":
+    print("class=source executable=%s token=<patch-payload> path=<payload> resolved=<payload> kind=coordinator-source-write" % argv[0])
+    raise SystemExit(0)
+
+for token in targets:
+    target = resolved(token)
+    if under_source(target):
+        print("class=source executable=%s token=%s path=%s resolved=%s kind=coordinator-source-write" %
+              (argv[0], token, target, target))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+# Early admission checks only resolved broad effects, sharing root resolution
+# with the later worker Git and source-ownership policy.
+protected_broad_operation_detail() {
+  protected_resolved_operation_detail "$1" false broad
+}
+
+protected_literal_operation_detail() {
+  protected_resolved_operation_detail "$1" "$2" all
+}
+
+if [ "$plan_marker_state" = active ] && [ "$plan_status" -ne 2 ]; then
+  direct_ledger_static_control_target_pass "$command" true || true
+  if [ "$DIRECT_LEDGER_FALLBACK_DECISION" = deny ]; then
+    direct_ledger_emit_fallback_denial
+  fi
+  broad_effect_detail="$(protected_broad_operation_detail "$command" 2>/dev/null || true)"
+  if [ -n "$broad_effect_detail" ]; then
+    deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "broad-destructive" \
+      "$broad_effect_detail" "replace the broad root with one explicit narrow recoverable target"
+  fi
+fi
 
 worker_fast_path_candidate=false
 case "$plan_status" in
@@ -5022,7 +5222,7 @@ def inspect(segment, depth=0):
     ):
         return True
     if name == "diff" and any(
-        token in {"-o", "--output", "--to-file"} or token.startswith(("--output=", "--to-file="))
+        token in {"-o", "--output"} or token.startswith("--output=")
         for token in segment[index + 1:]
     ):
         return True
@@ -5497,7 +5697,7 @@ CONTEXT_OPTIONS = {
     "-c", "--config-env", "--exec-path", "--git-dir", "--namespace",
     "--super-prefix", "--work-tree", "--textconv", "--ext-diff",
 }
-OUTPUT_OPTIONS = {"-o", "--output", "--to-file", "--output-directory"}
+OUTPUT_OPTIONS = {"-o", "--output", "--output-directory"}
 PATH_MARKERS = ("$", "`", "\n", "\r", "*", "?", "[", "]", "(", ")")
 
 def reject(reason):
@@ -5548,7 +5748,7 @@ def safe_git_read_only(args):
             option + "=" for option in CONTEXT_OPTIONS if option.startswith("--")
     )) for value in values):
         return False
-    if any(value in OUTPUT_OPTIONS or value.startswith(("--output=", "--to-file=", "--output-directory="))
+    if any(value in OUTPUT_OPTIONS or value.startswith(("--output=", "--output-directory="))
            for value in values):
         return False
     if subcommand == "submodule":
@@ -5980,7 +6180,7 @@ def emit(kind, token, resolved):
         print("write token=%s resolved=%s" % (token, resolved))
     raise SystemExit(0)
 
-output_path_options = {"--report-path", "--to-file", "--output", "-o"}
+output_path_options = {"--report-path", "--output", "-o"}
 output_operands = set()
 for index, raw_token in enumerate(tokens[1:], 1):
     path_token = ""
@@ -7160,13 +7360,13 @@ def safe_read_only_args(args):
     """Reject options that turn a nominally read-only utility into a writer."""
     forbidden = {
         "-i", "--in-place", "--delete", "-delete", "-exec", "-execdir", "-ok", "-okdir",
-        "-o", "--output", "--to-file", "--textconv", "--ext-diff",
+        "-o", "--output", "--textconv", "--ext-diff",
         "-C", "-c", "--config-env", "--git-dir", "--work-tree", "--exec-path",
         "--namespace", "--super-prefix",
     }
     return not any(
         token in forbidden
-        or token.startswith(("-o", "--output=", "--to-file=", "--textconv=", "--ext-diff=",
+        or token.startswith(("-o", "--output=", "--textconv=", "--ext-diff=",
                              "--config-env=", "--git-dir=", "--work-tree=", "--exec-path=",
                              "--namespace=", "--super-prefix="))
         for token in args
@@ -7489,8 +7689,8 @@ def bounded_read_only_args(command, args):
     if command == "sort":
         return not args
     if command == "diff" and any(
-        token in {"-o", "--output", "--to-file"}
-        or token.startswith(("--output=", "--to-file="))
+        token in {"-o", "--output"}
+        or token.startswith("--output=")
         for token in args
     ):
         return False
@@ -9492,235 +9692,6 @@ protected_pipeline_git_detail() {
   git_mutation_broad_effect_detail "$repo_root" "$segment"
 }
 
-protected_literal_operation_detail() {
-  python3 - "$1" "$cwd" "$HOOK_DIR" "$2" <<'PY'
-import os
-import re
-import shlex
-import sys
-
-text, hook_cwd, hook_dir, is_worker = sys.argv[1:]
-try:
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-except ValueError:
-    raise SystemExit(1)
-operators = {";", "&", "&&", "|", "||", "(", ")", ">", ">>", "<", "<<", ">|", ">&", "<&"}
-if not tokens or any(token in operators for token in tokens):
-    raise SystemExit(1)
-
-assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
-def unwrap(values):
-    values = list(values)
-    depth = 0
-    while values and depth < 8:
-        while values and assignment.fullmatch(values[0]):
-            values.pop(0)
-        if not values:
-            return []
-        name = os.path.basename(values[0])
-        if name == "env":
-            index = 1
-            while index < len(values):
-                token = values[index]
-                if assignment.fullmatch(token) or token in {"-i", "--ignore-environment"}:
-                    index += 1
-                    continue
-                if token in {"-u", "--unset", "-C", "--chdir"}:
-                    index += 2
-                    continue
-                if token == "--":
-                    index += 1
-                break
-            values = values[index:]
-            depth += 1
-            continue
-        if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
-            values = values[1:]
-            depth += 1
-            continue
-        if name == "timeout":
-            return values
-        if name in {"nice", "time", "prlimit", "chronic", "systemd-run"}:
-            index = 1
-            value_options = {
-                "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
-                "-p", "--pid", "--property", "--unit", "--setenv",
-                "--working-directory", "-C", "--chdir",
-            }
-            while index < len(values) and values[index].startswith("-"):
-                if values[index] == "--":
-                    index += 1
-                    break
-                index += 2 if values[index] in value_options else 1
-            values = values[index:]
-            depth += 1
-            continue
-        break
-    return values
-
-argv = unwrap(tokens)
-if not argv:
-    raise SystemExit(1)
-name = os.path.basename(argv[0])
-args = argv[1:]
-
-def resolved(value):
-    expanded = os.path.expanduser(value)
-    candidate = expanded if os.path.isabs(expanded) else os.path.join(hook_cwd, expanded)
-    return os.path.realpath(os.path.normpath(candidate))
-
-broad_roots = {"/", os.path.realpath(hook_cwd), os.path.realpath(os.path.dirname(hook_dir))}
-for value in (
-    os.environ.get("HOME", ""), os.environ["CODEX_CONFIGURED_HOME"],
-    os.environ.get("KIMI_CODE_HOME", ""), os.environ.get("CODEX_PROOF_ROOT", ""),
-    os.environ.get("KIMI_PROOF_ROOT", ""),
-):
-    if value and os.path.isabs(value):
-        broad_roots.add(os.path.realpath(value))
-
-if name == "rm" and any(token == "--recursive" or (token.startswith("-") and "r" in token[1:].lower()) for token in args):
-    for token in args:
-        if token == "--" or token.startswith("-"):
-            continue
-        target = resolved(token)
-        if target in broad_roots:
-            print("class=broad executable=%s token=%s target=%s kind=recursive-root-delete" % (argv[0], token, target))
-            raise SystemExit(0)
-if name in {"mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs", "wipefs"}:
-    target = next((token for token in reversed(args) if not token.startswith("-")), "<missing>")
-    print("class=broad executable=%s token=%s target=%s kind=device-filesystem-destruction" %
-          (argv[0], target, resolved(target) if target != "<missing>" else target))
-    raise SystemExit(0)
-if name == "dd":
-    for token in args:
-        if token.startswith("of=") and (token[3:].startswith("/dev/") or resolved(token[3:]) in broad_roots):
-            print("class=broad executable=%s token=%s target=%s kind=raw-output-overwrite" %
-                  (argv[0], token, resolved(token[3:])))
-            raise SystemExit(0)
-if name == "find" and "-delete" in args:
-    for token in args:
-        if token.startswith("-"):
-            break
-        target = resolved(token)
-        if target in broad_roots:
-            print("class=broad executable=%s token=%s target=%s kind=recursive-find-delete" %
-                  (argv[0], token, target))
-            raise SystemExit(0)
-
-if is_worker == "true" and name == "git":
-    index = 0
-    value_options = {"-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace"}
-    while index < len(args):
-        token = args[index]
-        if token in value_options:
-            index += 2
-            continue
-        if any(token.startswith(option + "=") for option in value_options if option.startswith("--")):
-            index += 1
-            continue
-        if token in {"--literal-pathspecs", "--no-optional-locks", "--no-pager"}:
-            index += 1
-            continue
-        if token.startswith("-"):
-            break
-        if token in {"commit", "config", "reset", "worktree"}:
-            print("class=worker-git executable=%s token=%s kind=acceptance-sensitive-git" %
-                  (argv[0], token))
-            raise SystemExit(0)
-        break
-
-if is_worker == "true":
-    if name == "chmod":
-        protected_roots = {
-            os.path.realpath(hook_cwd),
-            os.path.realpath(os.path.dirname(hook_dir)),
-        }
-        for value in (
-            os.environ["CODEX_CONFIGURED_HOME"],
-            os.environ.get("KIMI_CODE_HOME", ""),
-        ):
-            if value and os.path.isabs(value) and os.path.isdir(value) and not os.path.islink(value):
-                protected_roots.add(os.path.realpath(value))
-        protected_hooks = set()
-        for root in protected_roots:
-            protected_hooks.update({
-                os.path.join(root, "hooks", "validate-bash.sh"),
-                os.path.join(root, "hooks", "pre-commit-go-mod.sh"),
-                os.path.join(root, "hooks", "install-pre-commit-go-mod.sh"),
-                os.path.join(root, "hooks", "tests", "test-pre-commit-go-mod.sh"),
-            })
-
-        cursor = 0
-        reference_mode = False
-        while cursor < len(args) and args[cursor] != "--":
-            token = args[cursor]
-            if token == "--reference":
-                if cursor + 1 >= len(args):
-                    break
-                reference_mode = True
-                cursor += 2
-            elif token.startswith("--reference="):
-                reference_mode = True
-                cursor += 1
-            elif token.startswith("-"):
-                cursor += 1
-            else:
-                if not reference_mode:
-                    cursor += 1  # mode
-                break
-        if cursor < len(args) and args[cursor] == "--":
-            cursor += 1
-        for token in args[cursor:]:
-            if token == "--":
-                continue
-            target = resolved(token)
-            if target in protected_hooks:
-                print("class=worker-hook-mode executable=%s token=%s path=%s resolved=%s kind=protected-hook-mode-mutation" %
-                      (argv[0], token, target, target))
-                raise SystemExit(0)
-    raise SystemExit(1)
-
-source_roots = {os.path.realpath(hook_cwd), os.path.realpath(os.path.dirname(hook_dir))}
-for value in (
-    os.environ["CODEX_CONFIGURED_HOME"],
-    os.environ.get("KIMI_CODE_HOME", ""),
-):
-    if value and os.path.isabs(value) and os.path.isdir(value):
-        source_roots.add(os.path.realpath(value))
-def under_source(path):
-    return any(path == root or path.startswith(root + os.sep) for root in source_roots)
-
-targets = []
-plain = [token for token in args if token != "--" and not token.startswith("-")]
-if name in {"touch", "truncate", "mkdir", "rmdir", "rm", "shred", "srm", "tee", "patch", "ed", "ex"}:
-    targets = plain
-elif name == "chmod":
-    targets = plain[1:] if plain else []
-elif name in {"cp", "install", "ln"}:
-    targets = plain[-1:]
-elif name == "mv":
-    targets = plain
-elif name in {"sed", "perl"} and any(token == "-i" or token.startswith(("-i", "--in-place")) for token in args):
-    targets = plain[1:]
-elif name == "find" and "-delete" in args:
-    targets = [token for token in args if not token.startswith("-")][:1]
-elif name == "dd":
-    targets = [token[3:] for token in args if token.startswith("of=")]
-elif name == "apply_patch":
-    print("class=source executable=%s token=<patch-payload> path=<payload> resolved=<payload> kind=coordinator-source-write" % argv[0])
-    raise SystemExit(0)
-
-for token in targets:
-    target = resolved(token)
-    if under_source(target):
-        print("class=source executable=%s token=%s path=%s resolved=%s kind=coordinator-source-write" %
-              (argv[0], token, target, target))
-        raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
 
 # Resolve a protected review-gate command independently of its argument
 # validity and independently of ordinary executable admission.  This is an
@@ -12839,12 +12810,6 @@ coordinator_static_pipeline_route() {
       # target checks rather than denying punctuation or expansion by itself.
       return 1
     fi
-    detail="$(proof_path_escape_mutation_detail "$segment" 2>/dev/null || true)"
-    if [ -n "$detail" ]; then
-      deny_eci "ECI_PROOF_PATH_ESCAPE_DENIED" "proof-path-ownership" \
-        "ECI proof-path boundary denied a write through an escaping proof symlink in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}" \
-        "write only a proof target that resolves inside the current session, or use the resolved intended outside target through its owning task"
-    fi
     review_detail="$(review_gate_command_identity "$segment" 2>/dev/null || true)"
     control_detail="$(protected_control_script_identity "$segment" 2>/dev/null || true)"
     if [ -n "$review_detail" ] || [ -n "$control_detail" ] ||
@@ -12879,15 +12844,6 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   validate_active_marker_binding
   if coordinator_static_pipeline_route "$command"; then
     exit 0
-  fi
-fi
-
-if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-  proof_escape_detail="$(proof_path_escape_mutation_detail "$command" 2>/dev/null || true)"
-  if [ -n "$proof_escape_detail" ]; then
-    deny_eci "ECI_PROOF_PATH_ESCAPE_DENIED" "proof-path-ownership" \
-      "ECI proof-path boundary denied a write through an escaping proof symlink: ${proof_escape_detail}" \
-      "write only a proof target that resolves inside the current session, or use the resolved intended outside target through its owning task"
   fi
 fi
 

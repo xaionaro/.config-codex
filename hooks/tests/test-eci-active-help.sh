@@ -367,7 +367,7 @@ run_role_labeled_hook() {
     '{session_id:"t00-help",cwd:$cwd,tool_input:{command:$command}}' \
     >"$input"
   HOME="$fixture_home" CODEX_HOME="$alternate_codex" CODEX_PROOF_ROOT="$proof_root" \
-    XDG_CONFIG_HOME="$config_root" XDG_STATE_HOME="$state_root" CODEX_ROLE=worker \
+    XDG_CONFIG_HOME="$config_root" XDG_STATE_HOME="$state_root" CODEX_ROLE=worker CODEX_HOOK_IS_SUBAGENT=false \
     DISPATCHER_EXECUTION_MARKER="$dispatcher_execution_marker" \
     PLANNER_EXECUTION_MARKER="$planner_execution_marker" \
     PATH="$fake_bin:/usr/bin:/bin" \
@@ -817,6 +817,29 @@ assert_role_labeled_sync_runtime_is_not_role_denied() {
   }
 }
 
+assert_delegated_recovery_is_role_denied() {
+  local explicit_worker transcript worker_transcript="$fixture_codex/sessions/recovery-worker.jsonl"
+
+  mkdir -p -- "${worker_transcript%/*}"
+  jq -cn '{type:"session_meta",payload:{id:"t00-help",source:{subagent:{thread_spawn:{parent_thread_id:"parent-help",depth:1,agent_nickname:"Test",agent_role:"default"}}}}}' >"$worker_transcript"
+  for explicit_worker in true false; do
+    transcript=""
+    [ "$explicit_worker" != false ] || transcript="$worker_transcript"
+    jq -cn --arg cwd "$ROOT" --arg transcript "$transcript" \
+      '{session_id:"t00-help",cwd:$cwd,transcript_path:$transcript,tool_input:{command:"\"$HOME/.codex/bin/eci-active\" sync-runtime"}}' >"$input"
+    HOME="$fixture_home" CODEX_HOME="$alternate_codex" CODEX_PROOF_ROOT="$proof_root" \
+      XDG_CONFIG_HOME="$config_root" XDG_STATE_HOME="$state_root" CODEX_ROLE=coordinator \
+      CODEX_HOOK_IS_SUBAGENT="$explicit_worker" PATH="$fake_bin:/usr/bin:/bin" \
+      /bin/bash "$fixture_codex/hooks/validate-bash.sh" <"$input" >"$output" 2>"$stderr_output"
+    jq -e '.hookSpecificOutput.permissionDecision == "deny" and
+      (.hookSpecificOutput.permissionDecisionReason | contains("role=worker") and contains("worker-lifecycle-control"))' "$output" >/dev/null || {
+      printf 'delegated recovery lost its actual worker role: explicit=%s\n' "$explicit_worker" >&2
+      cat -- "$output" >&2
+      return 1
+    }
+  done
+}
+
 assert_stale_runtime_receipt_deadlock_policy() {
   local stale_receipt_before marker_before
 
@@ -834,6 +857,7 @@ assert_stale_runtime_receipt_deadlock_policy() {
   assert_stale_receipt_admits_ordinary_lifecycle stale-ledger-append \
     '"$HOME/.codex/bin/eci-active" ledger-append receipt-deadlock-regression'
   assert_role_labeled_sync_runtime_is_not_role_denied
+  assert_delegated_recovery_is_role_denied
 
   cmp -- "$stale_receipt_before" "$fixture_codex/.eci-runtime-sync-manifest" || {
     printf '%s\n' 'stale-receipt policy changed the receipt through the active hook' >&2

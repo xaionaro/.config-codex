@@ -1342,20 +1342,23 @@ codex_note_touched_repo() {
 codex_state_value() {
   local file="$1"
   local key="$2"
-  # Proof/control records are authoritative state.  Read only a regular,
-  # owner-owned, single-link file so a hardlink alias cannot make a reader
-  # consume bytes published through an unrelated path.  This also rejects a
-  # symlink final component before awk opens it.
-  codex_state_file_owner_is_valid "$file" || return 1
+  local require_unique="${3:-true}"
+  # State reads remain single-link by default. Active-marker readers opt out
+  # explicitly: another link does not change that marker's owner or context.
+  codex_state_file_owner_is_valid "$file" "$require_unique" || return 1
   awk -F':[[:space:]]*' -v key="$key" '$1 == key { print $2; exit }' "$file" 2>/dev/null
 }
 
 codex_state_file_owner_is_valid() {
-  local file="$1" owner links expected
+  local file="$1" require_unique="${2:-true}" owner links expected
+  case "$require_unique" in
+    true|false) ;;
+    *) return 1 ;;
+  esac
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   expected="${EUID:-$(id -u 2>/dev/null || printf '%s' -1)}"
   read -r owner links < <(stat -Lc '%u %h' -- "$file" 2>/dev/null) || return 1
-  [ "$owner" = "$expected" ] && [ "$links" = 1 ]
+  [ "$owner" = "$expected" ] && { [ "$require_unique" = false ] || [ "$links" = 1 ]; }
 }
 
 # Aggregate repository IDs are path-component-safe selectors.  The plan, not
@@ -1824,7 +1827,7 @@ codex_eci_marker_metadata_is_valid() {
   # a cheap stat/read probe and is shared by Stop, lifecycle, discovery, and
   # refresh hooks.
   codex_eci_marker_file_is_bounded "$marker" || return 1
-  codex_state_file_owner_is_valid "$marker" || return 1
+  codex_state_file_owner_is_valid "$marker" false || return 1
   [ "$(tail -c 1 -- "$marker" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
   dir="${marker%/*}"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
@@ -1887,8 +1890,8 @@ codex_eci_marker_failure_code() {
     printf '%s\n' 'ECI_MARKER_MALFORMED'
     return 0
   }
-  marker_owner="$(codex_state_value "$marker" session_id || true)"
-  marker_cwd="$(codex_state_value "$marker" cwd || true)"
+  marker_owner="$(codex_state_value "$marker" session_id false || true)"
+  marker_cwd="$(codex_state_value "$marker" cwd false || true)"
   [ -n "$marker_owner" ] && [ -n "$marker_cwd" ] || {
     printf '%s\n' 'ECI_MARKER_MALFORMED'
     return 0
@@ -1959,7 +1962,7 @@ codex_eci_markers_for_cwd() {
       if [ "$strict" = strict ]; then
         marker_dir="${marker%/*}"
         marker_name="${marker_dir##*/}"
-        marker_owner="$(codex_state_value "$marker" session_id || true)"
+        marker_owner="$(codex_state_value "$marker" session_id false || true)"
         # A typed caller is interested in its own malformed direct marker.
         # Do not let an unrelated stale session poison every current session;
         # valid same-cwd owners still remain visible and fail closed as
@@ -2015,7 +2018,7 @@ codex_legacy_eci_markers_for_cwd() {
       # Legacy markers live in reserved directories rather than under a
       # session-named path. Bind a typed query to the marker's embedded owner
       # so an unrelated same-cwd session cannot become its active owner.
-      marker_owner="$(codex_state_value "$marker" session_id || true)"
+      marker_owner="$(codex_state_value "$marker" session_id false || true)"
       [ "$marker_owner" = "$expected_session" ] || continue
     fi
     # Newline is the record separator; every other C0/DEL byte makes the
@@ -2045,9 +2048,9 @@ codex_legacy_eci_markers_for_cwd() {
         *) continue ;;
       esac
     fi
-    marker_cwd="$(codex_state_value "$marker" cwd || true)"
+    marker_cwd="$(codex_state_value "$marker" cwd false || true)"
     [ -n "$marker_cwd" ] || continue
-    marker_owner="$(codex_state_value "$marker" session_id || true)"
+    marker_owner="$(codex_state_value "$marker" session_id false || true)"
     [ "$marker_owner" = "$name" ] || continue
     canonical_marker_cwd="$(codex_canonical_cwd "$marker_cwd")"
     [ "$canonical_marker_cwd" = "$canonical_cwd" ] || continue

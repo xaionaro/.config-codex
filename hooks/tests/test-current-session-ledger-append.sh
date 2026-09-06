@@ -134,6 +134,63 @@ assert_no_new_current_control_target_denial() {
   }
 }
 
+assert_output_target_pairs() {
+  local session="$1" foreign_marker="$2" dir="$PROOF_ROOT/$1" role target command output expected_target
+  local marker="$PROOF_ROOT/$1/eci_active" ordinary="$TMP_ROOT/$1-output"
+  local alias="$TMP_ROOT/$1-control-alias" hardlink="$TMP_ROOT/$1-control-hardlink"
+  local ordinary_alias="$PROOF_ROOT/$1/ordinary-output-alias"
+  local foreign_alias="$PROOF_ROOT/$1/foreign-output-alias"
+  local foreign_hardlink="$TMP_ROOT/$1-foreign-hardlink"
+  local note_symlink="$dir/instructions.md" note_hardlink="$dir/latest-status-report.md"
+  local -a commands=()
+
+  printf '%s\n' ordinary >"$ordinary"
+  printf '%s\n' 'control identity fixture' >"$dir/goal_state"
+  ln -s -- "$marker" "$alias"
+  ln -- "$marker" "$hardlink"
+  ln -s -- "$ordinary" "$ordinary_alias"
+  ln -s -- "$foreign_marker" "$foreign_alias"
+  ln -- "$foreign_marker" "$foreign_hardlink"
+  ln -s -- "$marker" "$note_symlink"
+  ln -- "$marker" "$note_hardlink"
+  for role in coordinator worker; do
+    assert_allowed "$session" "touch $ordinary_alias" "$role"
+    assert_allowed "$session" "sort -o $ordinary_alias < $marker" "$role"
+    assert_allowed "$session" "sort < --output=$marker $ordinary" "$role"
+    assert_allowed "$session" "diff --to-file=$marker $ordinary" "$role"
+    assert_allowed "$session" "diff --to-file $marker $ordinary" "$role"
+    assert_allowed "$session" "cp $marker 0<$marker $ordinary" "$role"
+    assert_allowed "$session" "touch $dir/project-understanding.md" "$role"
+    assert_allowed "$session" "sort -o $dir/project-understanding.md < $ordinary" "$role"
+    for target in "$marker" "$alias" "$hardlink" "$note_symlink" "$note_hardlink"; do
+      expected_target="$marker"
+      commands=("touch $target" "sort -o $target < $ordinary")
+      if [ "$target" != "$note_symlink" ] && [ "$target" != "$note_hardlink" ]; then
+        commands+=("sort -o < $ordinary $target" "sort < $ordinary -o$target" \
+          "tool --output=$target < $ordinary" "diff --to-file=$ordinary $ordinary > $target")
+      fi
+      for command in "${commands[@]}"; do
+        output="$(run_hook "$session" "$command" "$role")"
+        jq -e --arg target "$(realpath -e -- "$expected_target")" '
+          .hookSpecificOutput.permissionDecision == "deny" and
+          (.hookSpecificOutput.permissionDecisionReason | contains($target)) and
+          (.hookSpecificOutput.permissionDecisionReason |
+            contains("ECI_PLAN_LIVE_CONTROL_DENIED") or contains("ECI_CONTROL_OWNER_REQUIRED"))
+        ' "$output" >/dev/null || {
+          printf 'expected resolved output control denial: role=%s command=%q\n' "$role" "$command" >&2
+          cat -- "$output" >&2
+          return 1
+        }
+      done
+    done
+    for target in "$foreign_marker" "$foreign_alias" "$foreign_hardlink"; do
+      assert_denied "$session" "sort -o $target < $ordinary" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED 'foreign_session=' "$role"
+    done
+    assert_denied "$session" "sort -o $dir/high_level_log.md < $ordinary" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
+    assert_denied "$session" "sort -o ${foreign_marker%/*}/high_level_log.md < $ordinary" ECI_LEDGER_FOREIGN_SESSION_DENIED 'target_session=' "$role"
+  done
+}
+
 hook_disposition() {
   local output="$1"
   if [ ! -s "$output" ]; then
@@ -188,7 +245,7 @@ assert_allowed "$SESSION" "printf raw &>> $LOG" worker
 assert_allowed "$SESSION" 'printf raw 2>&1' coordinator
 assert_allowed "$SESSION" 'printf raw 2>&1' worker
 
-# Rewrites, anchors, sibling session records, escapes, and shared inodes keep
+# Rewrites, anchors, sibling session records, and shared inodes keep
 # distinct concrete diagnostics. Hook admission never executes these commands.
 assert_denied "$SESSION" "printf raw > $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
 assert_denied "$SESSION" "printf raw >| $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=force-overwrite'
@@ -203,6 +260,9 @@ FOREIGN_ANCHOR="$FOREIGN_DIR/high_level_log.anchor"
 mkdir -p -- "$FOREIGN_DIR"
 printf '%s\n' foreign >"$FOREIGN_LOG"
 printf '%s\n' foreign-anchor >"$FOREIGN_ANCHOR"
+printf '%s\n' 'scope: foreign output fixture' "cwd: $FOREIGN_REPOSITORY" \
+  "session_id: $FOREIGN_SESSION" 'created_utc: 2026-09-06T00:00:00Z' >"$FOREIGN_DIR/eci_active"
+assert_output_target_pairs "$SESSION" "$FOREIGN_DIR/eci_active"
 assert_denied "$SESSION" "printf raw >> $FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION"
 assert_denied "$SESSION" "printf raw >> $FOREIGN_ANCHOR" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION"
 
@@ -210,7 +270,8 @@ ESCAPE_TARGET="$TMP_ROOT/outside-ledger.txt"
 ESCAPE_LINK="$SESSION_DIR/escaping-ledger-link"
 printf '%s\n' outside >"$ESCAPE_TARGET"
 ln -s -- "$ESCAPE_TARGET" "$ESCAPE_LINK"
-assert_denied "$SESSION" "printf raw >> $ESCAPE_LINK" ECI_PROOF_PATH_ESCAPE_DENIED 'predicate=proof-symlink-escape'
+assert_allowed "$SESSION" "printf raw >> $ESCAPE_LINK" coordinator
+assert_allowed "$SESSION" "printf raw >> $ESCAPE_LINK" worker
 
 SHARED_PEER="$TMP_ROOT/shared-ledger-peer"
 ln -- "$LOG" "$SHARED_PEER"
@@ -302,9 +363,12 @@ mkdir -p -- "$FALLBACK_DIR" "$FALLBACK_FOREIGN_DIR"
 printf '%s\n' current >"$FALLBACK_LOG"
 printf '%s\n' foreign >"$FALLBACK_FOREIGN_LOG"
 run_lifecycle "$FALLBACK_SESSION" on 'planner-unavailable ledger fallback fixture' >/dev/null
+printf '%s\n' 'scope: foreign fallback output fixture' "cwd: $FOREIGN_REPOSITORY" \
+  "session_id: $FALLBACK_FOREIGN_SESSION" 'created_utc: 2026-09-06T00:00:00Z' >"$FALLBACK_FOREIGN_ACTIVE"
 printf '%s\n' outside >"$FALLBACK_ESCAPE_TARGET"
 ln -s -- "$FALLBACK_ESCAPE_TARGET" "$FALLBACK_ESCAPE_LINK"
 rm -rf -- "$PLANNER_DIR"
+assert_output_target_pairs "$FALLBACK_SESSION" "$FALLBACK_FOREIGN_ACTIVE"
 
 for role in coordinator worker; do
   assert_allowed "$FALLBACK_SESSION" "printf raw >> $FALLBACK_LOG" "$role"
@@ -341,10 +405,10 @@ for role in coordinator worker; do
   assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; git -C $FOREIGN_REPOSITORY add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED 'active_repo=' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; git -C $REPOSITORY add ." ECI_BROAD_DESTRUCTIVE_DENIED 'effect=whole-worktree-staging' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; git -C $REPOSITORY reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED 'effect=reset-working-tree' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; touch $FALLBACK_ESCAPE_LINK" ECI_PROOF_PATH_ESCAPE_DENIED 'write target follows an escaping proof symlink' "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; touch $FALLBACK_ESCAPE_LINK" "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & rm -rf /" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & git -C $FOREIGN_REPOSITORY add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED 'active_repo=' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & touch $FALLBACK_ESCAPE_LINK" ECI_PROOF_PATH_ESCAPE_DENIED 'write target follows an escaping proof symlink' "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & touch $FALLBACK_ESCAPE_LINK" "$role"
   assert_control_denied "$FALLBACK_SESSION" "touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "touch \"$FALLBACK_GOAL\"" "$FALLBACK_GOAL_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
@@ -398,14 +462,14 @@ for role in coordinator worker; do
   # Redirect-specific diagnostics remain more concrete than the writer target.
   assert_denied "$FALLBACK_SESSION" "tee \"$FALLBACK_ACTIVE\" >> \"$FALLBACK_ANCHOR\"" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
   assert_denied "$FALLBACK_SESSION" "dd if=/dev/null of=\"$FALLBACK_ACTIVE\" >> \"$FALLBACK_FOREIGN_LOG\"" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FALLBACK_FOREIGN_SESSION" "$role"
-  assert_denied "$FALLBACK_SESSION" "install /dev/null \"$FALLBACK_ACTIVE\" >> \"$FALLBACK_ESCAPE_LINK\"" ECI_PROOF_PATH_ESCAPE_DENIED 'predicate=proof-symlink-escape' "$role"
+  assert_control_denied "$FALLBACK_SESSION" "install /dev/null \"$FALLBACK_ACTIVE\" >> \"$FALLBACK_ESCAPE_LINK\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_prefix_disposition_preserved "$FALLBACK_SESSION" "$RUNTIME_ROOT/bin/eci-active off $TMP_ROOT/fallback-disengage.md" "$FALLBACK_LOG" "$role"
   assert_denied "$FALLBACK_SESSION" "cat /dev/null > $FALLBACK_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw &> \"$FALLBACK_LOG\"" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw > $FALLBACK_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw >> $FALLBACK_ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
   assert_denied "$FALLBACK_SESSION" "printf raw >> $FALLBACK_FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FALLBACK_FOREIGN_SESSION" "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> $FALLBACK_ESCAPE_LINK" ECI_PROOF_PATH_ESCAPE_DENIED 'predicate=proof-symlink-escape' "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf raw >> $FALLBACK_ESCAPE_LINK" "$role"
 done
 FALLBACK_SHARED_PEER="$TMP_ROOT/planner-unavailable-shared-log"
 ln -- "$FALLBACK_LOG" "$FALLBACK_SHARED_PEER"

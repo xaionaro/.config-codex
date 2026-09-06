@@ -128,7 +128,7 @@ codex_session_dir_is_safe "$root" "$session_id" || exit 0
 if [ -e "$aggregate_plan" ] || [ -L "$aggregate_plan" ]; then
   aggregate_plan_present=true
   if [ -f "$proof_dir/eci_active" ] && [ ! -L "$proof_dir/eci_active" ]; then
-    aggregate_outer_raw="$(codex_state_value "$proof_dir/eci_active" cwd 2>/dev/null || true)"
+    aggregate_outer_raw="$(codex_state_value "$proof_dir/eci_active" cwd false 2>/dev/null || true)"
     if [ -n "$aggregate_outer_raw" ]; then
       aggregate_outer="$(codex_canonical_cwd "$aggregate_outer_raw")"
       if codex_eci_aggregate_plan_is_valid "$aggregate_plan" "$session_id" \

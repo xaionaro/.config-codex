@@ -34,8 +34,10 @@ printf '%s\n' '{"timestamp":"2026-08-28T00:00:00.000Z","type":"session_meta","pa
 
 run_hook() {
   local role="$1" subagent="$2" command="$3"
+  local callback_transcript=""
+  [ "$subagent" != true ] || callback_transcript="$transcript"
 
-  jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
+  jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$callback_transcript" \
     --arg sid "$sid" \
     '{session_id:$sid,cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' >"$input"
   HOME="$HOST_HOME" CODEX_HOME="$ROOT" CODEX_PROOF_ROOT="$proof_root" \

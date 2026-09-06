@@ -1976,29 +1976,37 @@ func inspectSegment(
 		)
 	}
 	safeLedgerRedirects := make([]bool, len(current.redirects))
+	var controlIndex activeControlIndex
 	if request.Marker == MarkerActive {
-		decision, diagnostic := inspectProofPathOwnership(request, current.argv, segmentIndex, nil, nil)
-		if diagnostic != nil || decision == DecisionDefer {
-			return decision, diagnostic
-		}
+		controlIndex = activeControlFileIndex(request.ActiveMarkers)
+		deferToProvider := false
 		for redirectIndex, redirect := range current.redirects {
 			currentLedgerAppend := false
-			decision, diagnostic = inspectProofPathOwnership(
+			decision, diagnostic := inspectProofPathOwnership(
 				request,
 				redirectWriterArgv(redirect),
 				segmentIndex,
 				&redirect,
 				&currentLedgerAppend,
+				controlIndex,
 			)
-			if diagnostic != nil || decision == DecisionDefer {
+			if diagnostic != nil {
 				return decision, diagnostic
 			}
+			deferToProvider = deferToProvider || decision == DecisionDefer
 			if currentLedgerAppend {
 				safeLedgerRedirects[redirectIndex] = true
 				if ledgerRedirectAppend != nil {
 					*ledgerRedirectAppend = true
 				}
 			}
+		}
+		decision, diagnostic := inspectProofPathOwnership(request, current.argv, segmentIndex, nil, nil, controlIndex)
+		if diagnostic != nil {
+			return decision, diagnostic
+		}
+		if deferToProvider || decision == DecisionDefer {
+			return DecisionDefer, nil
 		}
 	}
 	argvForUnwrap := current.argv
@@ -2165,7 +2173,7 @@ func inspectSegment(
 	}
 	if request.Marker == MarkerActive && request.Role == RoleWorker {
 		if isSourceWriter(name, argv) {
-			if diagnostic := inspectLiveControl(request, argv, segmentIndex); diagnostic != nil {
+			if diagnostic := inspectLiveControl(request, argv, segmentIndex, controlIndex); diagnostic != nil {
 				return DecisionDeny, diagnostic
 			}
 		}
@@ -2173,7 +2181,7 @@ func inspectSegment(
 			if safeLedgerRedirects[redirectIndex] {
 				continue
 			}
-			if diagnostic := inspectLiveControl(request, redirectWriterArgv(redirect), segmentIndex); diagnostic != nil {
+			if diagnostic := inspectLiveControl(request, redirectWriterArgv(redirect), segmentIndex, controlIndex); diagnostic != nil {
 				return DecisionDeny, diagnostic
 			}
 		}
@@ -2656,12 +2664,18 @@ func resolveExecutable(value, cwd string) string {
 	return filepath.Clean(resolved)
 }
 
+// inspectProofPathOwnership classifies concrete writer and redirect targets
+// before deferring ordinary proof artifacts to the provider.
+//
+// Example: a note-named marker alias retains the marker's control identity,
+// while an ordinary coordination note retains its provider route.
 func inspectProofPathOwnership(
 	request Request,
 	argv []token,
 	segmentIndex int,
 	redirect *outputRedirect,
 	ledgerRedirectAppend *bool,
+	controlIndex activeControlIndex,
 ) (DecisionKind, *Diagnostic) {
 	proofSessions := make([]proofSession, 0, len(request.ActiveMarkers))
 	for _, marker := range request.ActiveMarkers {
@@ -2679,17 +2693,20 @@ func inspectProofPathOwnership(
 		return DecisionAllow, nil
 	}
 	selectedProofSession := proofSessions[0]
+	deferToProvider := false
 
-	for argumentIndex, argument := range argv {
-		pathArgument, pathLike := outputDestinationOperand(argv, argumentIndex)
+	for sourceIndex, argument := range argv {
+		pathArgument, argumentIndex, pathLike := outputDestinationOperand(argv, sourceIndex)
 		outputWriter := pathLike
 		switch {
 		case filepath.Base(argv[0].value) == "cp":
 			// Copy operands are authoritative: a generic --output spelling
 			// cannot manufacture a destination for an unsupported cp form.
+			argumentIndex = sourceIndex
 			pathArgument, pathLike = argument, argumentIndex > 0
 			outputWriter = false
 		case !pathLike:
+			argumentIndex = sourceIndex
 			pathArgument, pathLike = commandPathOperand(argv[0].value, argument)
 		}
 		if !pathLike {
@@ -2723,22 +2740,13 @@ func inspectProofPathOwnership(
 				containingSession = proofSession.lexical
 			}
 		}
-		if !contained && containingSession != "" && resolveErr == nil && writer {
-			diagnostic := diagnosticForToken(
-				CodeProofPathEscapeDenied,
-				fmt.Sprintf("proof path resolves outside its active session aliases: resolved=%s proof_root=%s", resolved, containingSession),
-				segmentIndex,
-				argumentIndex,
-				pathArgument,
-				"replace the escaping symlink with a canonical path contained by the active proof session",
-				"proof-symlink-escape",
-			)
-			diagnostic.Path = lexical
-			return DecisionDeny, diagnostic
+		selectedRedirect := redirect
+		if outputWriter {
+			selectedRedirect = &outputRedirect{target: pathArgument, effect: outputRedirectOverwrite}
 		}
-		if redirect != nil {
+		if selectedRedirect != nil {
 			handled, diagnostic := inspectCurrentLedgerRedirect(
-				*redirect,
+				*selectedRedirect,
 				selectedProofSession,
 				lexical,
 				resolved,
@@ -2750,11 +2758,44 @@ func inspectProofPathOwnership(
 				return DecisionDeny, diagnostic
 			}
 			if handled {
-				if ledgerRedirectAppend != nil && redirect.effect == outputRedirectAppend {
+				if ledgerRedirectAppend != nil && selectedRedirect.effect == outputRedirectAppend {
 					*ledgerRedirectAppend = true
 				}
 				continue
 			}
+		}
+		canonicalHandoff := isCanonicalWorkerHandoffPath(lexical, request.ActiveMarkers) ||
+			(resolveErr == nil && isCanonicalWorkerHandoffPath(resolved, request.ActiveMarkers))
+		if writer {
+			if controlPath := activeControlResolvedPath(lexical, controlIndex.files); controlPath != "" {
+				if isCanonicalWorkerHandoffPath(controlPath, request.ActiveMarkers) &&
+					filepath.Base(controlPath) != "high_level_log.md" {
+					deferToProvider = true
+					continue
+				}
+				diagnostic := diagnosticForToken(
+					CodePlanLiveControlDenied,
+					"writer destination resolves to an active-session ECI control artifact",
+					segmentIndex, argumentIndex, pathArgument,
+					"route this exact control operation through the coordinator lifecycle route",
+					string(request.Role)+"-proof-control",
+				)
+				diagnostic.Path = controlPath
+				// The inode index retains the marker's lexical directory spelling;
+				// do not pass that spelling as an already-resolved path.
+				if request.Role == RoleCoordinator && isAppendOnlyLedgerPath(controlPath, "", proofSessions) {
+					diagnostic.Code = CodeLedgerAppendOnly
+					diagnostic.Reason = "active-session high-level ledger files are append-only coordinator artifacts"
+					diagnostic.Predicate = "append-only-ledger"
+					diagnostic.Remediation = ledgerAppendRemediation(request.Provider)
+				}
+				return DecisionDeny, diagnostic
+			}
+		}
+		if writer && canonicalHandoff &&
+			!isAppendOnlyLedgerPath(lexical, resolved, proofSessions) {
+			deferToProvider = true
+			continue
 		}
 		if contained {
 			if request.Role == RoleCoordinator && writer &&
@@ -2800,11 +2841,12 @@ func inspectProofPathOwnership(
 				return DecisionDeny, diagnostic
 			}
 			if writer {
-				return DecisionDefer, nil
+				deferToProvider = true
+				continue
 			}
 			if request.Role == RoleWorker && pathHasMissingComponent(lexical) &&
 				isReservedProofControlPath(lexical, resolved, proofSessions) {
-				return DecisionDefer, nil
+				deferToProvider = true
 			}
 			continue
 		}
@@ -2812,39 +2854,25 @@ func inspectProofPathOwnership(
 			for _, proofSession := range proofSessions {
 				if pathWithin(lexical, proofSession.lexical) &&
 					isReservedProofControlPath(lexical, resolved, proofSessions) {
-					return DecisionDefer, nil
+					deferToProvider = true
 				}
 			}
 		}
 		if containingSession == "" {
 			if !anchorSearchComplete {
-				return DecisionDefer, nil
+				deferToProvider = true
 			}
 			continue
 		}
 		if resolveErr != nil {
-			return DecisionDefer, nil
+			deferToProvider = true
 		}
-		if !writer {
-			// An escaping proof symlink used as an input is an ordinary read.
-			// The resolved target still matters below when this argv operand is
-			// a direct write destination.
-			continue
-		}
-
-		diagnostic := diagnosticForToken(
-			CodeProofPathEscapeDenied,
-			fmt.Sprintf("proof path resolves outside its active session aliases: resolved=%s proof_root=%s", resolved, containingSession),
-			segmentIndex,
-			argumentIndex,
-			pathArgument,
-			"replace the escaping symlink with a canonical path contained by the active proof session",
-			"proof-symlink-escape",
-		)
-		diagnostic.Path = lexical
-		return DecisionDeny, diagnostic
+		// A lexical proof alias does not change an ordinary resolved effect.
 	}
 
+	if deferToProvider {
+		return DecisionDefer, nil
+	}
 	return DecisionAllow, nil
 }
 
@@ -3154,51 +3182,57 @@ func commandPathOperand(command string, argument token) (token, bool) {
 	return pathOperand(argument)
 }
 
-func outputDestinationOperand(argv []token, argumentIndex int) (token, bool) {
-	if argumentIndex <= 0 || argumentIndex >= len(argv) || isGitArchiveCommand(argv) {
-		return token{}, false
+// outputDestinationOperand selects only command output options, retaining the
+// original token coordinates while skipping scalar shell input operands.
+//
+// Example: sort -o < input output selects output's original argv index.
+func outputDestinationOperand(
+	argv []token,
+	argumentIndex int,
+) (token, int, bool) {
+	if argumentIndex <= 0 || argumentIndex >= len(argv) ||
+		argv[argumentIndex].inputRedirectTarget || isGitArchiveCommand(argv) {
+		return token{}, argumentIndex, false
 	}
-
 	argument := argv[argumentIndex]
 	value := argument.value
-	for _, option := range [...]string{"--report-path", "--output", "--to-file"} {
+	separateValue := false
+	suffixOffset := 0
+	for _, option := range [...]string{"--report-path", "--output", "-o"} {
+		if value == option {
+			separateValue = true
+			break
+		}
 		if strings.HasPrefix(value, option+"=") {
-			path := strings.TrimPrefix(value, option+"=")
-			if path == "" || strings.HasPrefix(path, "-") {
-				return token{}, false
-			}
-			return token{value: path, offset: argument.offset + len(option) + 1, quoted: argument.quoted}, true
+			suffixOffset = len(option) + 1
+			break
 		}
-		if value == option && argumentIndex+1 < len(argv) {
-			path := argv[argumentIndex+1]
+	}
+	if separateValue {
+		for index := argumentIndex + 1; index < len(argv); index++ {
+			if argv[index].inputRedirectTarget {
+				continue
+			}
+			path := argv[index]
 			if path.value == "" || strings.HasPrefix(path.value, "-") {
-				return token{}, false
+				break
 			}
-			return path, true
+			return path, index, true
 		}
+		return token{}, argumentIndex, false
 	}
-	if value == "-o" && argumentIndex+1 < len(argv) {
-		path := argv[argumentIndex+1]
-		if path.value == "" || strings.HasPrefix(path.value, "-") {
-			return token{}, false
-		}
-		return path, true
+	if suffixOffset == 0 && strings.HasPrefix(value, "-o") &&
+		len(value) > len("-o") && !strings.HasPrefix(value, "--") {
+		suffixOffset = len("-o")
 	}
-	if strings.HasPrefix(value, "-o=") {
-		path := strings.TrimPrefix(value, "-o=")
-		if path == "" || strings.HasPrefix(path, "-") {
-			return token{}, false
-		}
-		return token{value: path, offset: argument.offset + len("-o="), quoted: argument.quoted}, true
+	if suffixOffset == 0 {
+		return token{}, argumentIndex, false
 	}
-	if strings.HasPrefix(value, "-o") && len(value) > len("-o") && !strings.HasPrefix(value, "--") {
-		path := strings.TrimPrefix(value, "-o")
-		if path == "" || strings.HasPrefix(path, "-") {
-			return token{}, false
-		}
-		return token{value: path, offset: argument.offset + len("-o"), quoted: argument.quoted}, true
+	path := value[suffixOffset:]
+	if path == "" || strings.HasPrefix(path, "-") {
+		return token{}, argumentIndex, false
 	}
-	return token{}, false
+	return token{value: path, offset: argument.offset + suffixOffset, quoted: argument.quoted}, argumentIndex, true
 }
 
 func isGitArchiveCommand(argv []token) bool {
@@ -3209,8 +3243,20 @@ func isGitArchiveCommand(argv []token) bool {
 	return index < len(argv) && argv[index].value == "archive"
 }
 
-func isReservedProofControlPath(lexical, resolved string, sessions []proofSession) bool {
-	base := filepath.Base(lexical)
+// isReservedProofControlPath identifies a reserved basename within an active
+// proof session, using the resolved destination when available.
+//
+// Example: an alias to an ordinary file does not inherit a control basename.
+func isReservedProofControlPath(
+	lexical string,
+	resolved string,
+	sessions []proofSession,
+) bool {
+	path := resolved
+	if path == "" {
+		path = lexical
+	}
+	base := filepath.Base(path)
 	reserved := false
 	for _, name := range eciControlBasenames {
 		if base == name || strings.HasPrefix(base, name+".") {
@@ -3222,22 +3268,32 @@ func isReservedProofControlPath(lexical, resolved string, sessions []proofSessio
 		return false
 	}
 	for _, session := range sessions {
-		if pathWithin(lexical, session.lexical) ||
-			(resolved != "" && pathWithin(resolved, session.resolved)) {
+		if (resolved == "" && pathWithin(path, session.lexical)) || pathWithin(path, session.resolved) {
 			return true
 		}
 	}
 	return false
 }
 
-func isAppendOnlyLedgerPath(lexical, resolved string, sessions []proofSession) bool {
-	base := filepath.Base(lexical)
+// isAppendOnlyLedgerPath identifies a ledger destination within an active
+// proof session, using lexical membership only when no resolved path is given.
+//
+// Example: an indexed ledger path keeps its identity under a symlinked proof root.
+func isAppendOnlyLedgerPath(
+	lexical string,
+	resolved string,
+	sessions []proofSession,
+) bool {
+	path := resolved
+	if path == "" {
+		path = lexical
+	}
+	base := filepath.Base(path)
 	if base != "high_level_log.md" && base != "high_level_log.anchor" {
 		return false
 	}
 	for _, session := range sessions {
-		if pathWithin(lexical, session.lexical) ||
-			(resolved != "" && pathWithin(resolved, session.resolved)) {
+		if (resolved == "" && pathWithin(path, session.lexical)) || pathWithin(path, session.resolved) {
 			return true
 		}
 	}
@@ -4863,17 +4919,28 @@ func isCanonicalWorkerHandoffPath(path string, markers []string) bool {
 //
 // Example: a hardlink used as a touch target resolves to the active marker,
 // while read-only aliases never reach this writer-only check.
-func activeControlResolvedPath(path string, index []activeControlFile) string {
+func activeControlResolvedPath(
+	path string,
+	index []activeControlFile,
+) string {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return ""
 	}
+	var handoffPath string
 	for _, control := range index {
 		if os.SameFile(info, control.info) {
+			// A note-named hardlink cannot hide another control record sharing
+			// its inode. Prefer the concrete control over the ordinary note.
+			switch filepath.Base(control.path) {
+			case "instructions.md", "project-understanding.md", "latest-status-report.md":
+				handoffPath = control.path
+				continue
+			}
 			return control.path
 		}
 	}
-	return ""
+	return handoffPath
 }
 
 // inspectLiveControl rejects a worker's concrete active-control write target
@@ -4881,8 +4948,12 @@ func activeControlResolvedPath(path string, index []activeControlFile) string {
 //
 // Example: `printf value > eci_active` reaches this check through its redirect
 // target, while `cat eci_active` does not.
-func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagnostic {
-	controlIndex := activeControlFileIndex(request.ActiveMarkers)
+func inspectLiveControl(
+	request Request,
+	argv []token,
+	segmentIndex int,
+	controlIndex activeControlIndex,
+) *Diagnostic {
 	// A bounded alias index can be incomplete when a session has many control
 	// records. Its completeness is diagnostic metadata, never a reason to
 	// block a visible concrete write target. Exact marker paths below remain
@@ -4919,10 +4990,13 @@ func inspectLiveControl(request Request, argv []token, segmentIndex int) *Diagno
 				return diagnostic
 			}
 		}
-		if isCanonicalWorkerHandoffPath(candidate, request.ActiveMarkers) {
+		controlPath := activeControlResolvedPath(candidate, controlIndex.files)
+		if isCanonicalWorkerHandoffPath(candidate, request.ActiveMarkers) &&
+			(controlPath == "" || (isCanonicalWorkerHandoffPath(controlPath, request.ActiveMarkers) &&
+				filepath.Base(controlPath) == filepath.Base(candidate))) {
 			continue
 		}
-		if controlPath := activeControlResolvedPath(candidate, controlIndex.files); controlPath != "" {
+		if controlPath != "" {
 			diagnostic := diagnosticForToken(
 				CodePlanLiveControlDenied,
 				"worker argv inode matches an active-session live-control artifact",

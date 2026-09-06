@@ -154,4 +154,23 @@ jq -e '.decision == "block" and ((.reason // "") | contains("[ECI_STOP_ACTIVE_EC
 run_stop "$direct_input" "$direct_second" "$direct_proof"
 assert_continue "$direct_second"
 
+# A hardlink changes neither the direct marker's owner nor its Stop reminder.
+shared_session=shared-marker-session
+shared_proof="$TMP_ROOT/shared-marker-proof"
+shared_input="$TMP_ROOT/shared-marker-input.json"
+shared_first="$TMP_ROOT/shared-marker-first.json"
+shared_second="$TMP_ROOT/shared-marker-second.json"
+write_marker "$shared_proof" "$shared_session" "$REPO"
+shared_marker="$shared_proof/$shared_session/eci_active"
+ln -- "$shared_marker" "$TMP_ROOT/ordinary-marker-hardlink"
+cp -- "$shared_marker" "$TMP_ROOT/shared-marker.before"
+jq -cn --arg session_id "$shared_session" --arg cwd "$REPO" \
+  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:false}' >"$shared_input"
+run_stop "$shared_input" "$shared_first" "$shared_proof"
+jq -e '.decision == "block" and ((.reason // "") | contains("[ECI_STOP_ACTIVE_ECI]"))' \
+  "$shared_first" >/dev/null || { cat "$shared_first" >&2; exit 1; }
+run_stop "$shared_input" "$shared_second" "$shared_proof"
+assert_continue "$shared_second"
+cmp -- "$TMP_ROOT/shared-marker.before" "$shared_marker"
+
 printf '%s\n' 'ordinary Stop continuation assertions: PASS'

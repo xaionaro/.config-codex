@@ -134,4 +134,23 @@ write_marker "$foreign_proof/$SESSION_ID/eci_active" "$ROOT" "$SESSION_ID"
 write_marker "$foreign_marker" "$ROOT" 'foreign-session'
 assert_foreign_marker_mutation_denied "$foreign_proof" "$foreign_marker"
 
+# Marker readers keep the same owner/session/CWD semantics after a hardlink,
+# while unrelated state readers retain their default single-link contract.
+shared_proof="$TMP_ROOT/shared-proof"
+shared_marker="$shared_proof/$SESSION_ID/eci_active"
+write_marker "$shared_marker" "$ROOT" "$SESSION_ID"
+ln -- "$shared_marker" "$TMP_ROOT/ordinary-marker-hardlink"
+shared_marker="$(realpath -e -- "$shared_marker")"
+(
+  export CODEX_PROOF_ROOT="$shared_proof"
+  . "$ROOT/hooks/lib/codex-proof-state.sh"
+  codex_eci_marker_metadata_is_valid "$shared_marker" "$ROOT"
+  [ "$(codex_state_value "$shared_marker" cwd false)" = "$ROOT" ]
+  [ "$(codex_eci_direct_marker_cwd "$(realpath -e -- "$shared_marker")" "$SESSION_ID")" = "$ROOT" ]
+  [ "$(codex_eci_marker_failure_code "$shared_marker" "$ROOT" "$SESSION_ID")" = ECI_MARKER_VALID ]
+  ! codex_state_value "$shared_marker" cwd >/dev/null
+  ! codex_eci_marker_metadata_is_valid "$shared_marker" "$TMP_ROOT"
+  [ "$(codex_eci_marker_failure_code "$shared_marker" "$ROOT" wrong-session)" = ECI_MARKER_SCOPE_MISMATCH ]
+)
+
 printf '%s\n' 'marker metadata advisory regression: PASS'

@@ -37,7 +37,11 @@ func gateModePath(provider Provider) string {
 func TestClassifyLedgerAppendRemediationUsesCodexAuthority(t *testing.T) {
 	t.Parallel()
 
-	proofRoot := t.TempDir()
+	realProofRoot := t.TempDir()
+	proofRoot := filepath.Join(t.TempDir(), "proof-alias")
+	if err := os.Symlink(realProofRoot, proofRoot); err != nil {
+		t.Fatalf("create proof-root alias: %v", err)
+	}
 	sessionDir := filepath.Join(proofRoot, "session")
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		t.Fatalf("create proof session: %v", err)
@@ -1800,7 +1804,7 @@ func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 						{name: "current anchor", command: "printf note >> " + currentAnchor, decision: DecisionDeny, code: "ECI_LEDGER_ANCHOR_WRITE_DENIED", detailPart: "target=high_level_log.anchor"},
 						{name: "foreign log", command: "printf note >> " + foreignLog, decision: DecisionDeny, code: "ECI_LEDGER_FOREIGN_SESSION_DENIED", detailPart: "target_session=foreign-session"},
 						{name: "foreign anchor", command: "printf note >> " + foreignAnchor, decision: DecisionDeny, code: "ECI_LEDGER_FOREIGN_SESSION_DENIED", detailPart: "target_session=foreign-session"},
-						{name: "escaping link", command: "printf note >> " + escapingLink, decision: DecisionDeny, code: CodeProofPathEscapeDenied},
+						{name: "ordinary output through proof alias", command: "printf note >> " + escapingLink, decision: DecisionAllow},
 						{name: "ordinary overwrite", command: "printf note > " + ordinaryOutput, decision: DecisionAllow},
 						{name: "ordinary append", command: "printf note >> " + ordinaryOutput, decision: DecisionAllow},
 						{name: "ordinary forced overwrite", command: "printf note >| " + ordinaryOutput, decision: DecisionAllow},
@@ -4558,11 +4562,8 @@ func TestProofPathOwnership(t *testing.T) {
 				Command:       "touch " + outsideLink,
 				ActiveMarkers: []string{marker},
 			})
-			if escapingWrite.Decision != DecisionDeny || escapingWrite.Diagnostic == nil {
-				t.Fatalf("escaping proof write: decision=%q diagnostic=%#v, want deny with diagnostic", escapingWrite.Decision, escapingWrite.Diagnostic)
-			}
-			if escapingWrite.Diagnostic.Code != CodeProofPathEscapeDenied {
-				t.Fatalf("escaping proof write code=%q, want %q", escapingWrite.Diagnostic.Code, CodeProofPathEscapeDenied)
+			if escapingWrite.Decision != DecisionAllow || escapingWrite.Diagnostic != nil {
+				t.Fatalf("ordinary write through proof alias: decision=%q diagnostic=%#v, want allow", escapingWrite.Decision, escapingWrite.Diagnostic)
 			}
 
 			workerResult := Classify(Request{
@@ -4958,11 +4959,6 @@ func TestGenericOutputWriterProofOwnership(t *testing.T) {
 					other: "gitleaks --report-path=" + filepath.Join(temporaryOutputRoot, "gitleaks-report.json"),
 				},
 				{
-					name:  "diff to-file",
-					proof: "diff --to-file=" + filepath.Join(sessionDir, "diff.out") + " left.txt",
-					other: "diff --to-file=" + filepath.Join(temporaryOutputRoot, "diff.out") + " left.txt",
-				},
-				{
 					name:  "sort short output",
 					proof: "sort -o " + filepath.Join(sessionDir, "sort.out") + " input.txt",
 					other: "sort -o " + filepath.Join(temporaryOutputRoot, "sort.out") + " input.txt",
@@ -5000,6 +4996,178 @@ func TestGenericOutputWriterProofOwnership(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestResolvedProofControlNames verifies that destination identity, not an
+// alias basename, selects reserved-control and ledger classification.
+//
+// Example: high_level_log.md resolving to an ordinary file is not a ledger.
+func TestResolvedProofControlNames(t *testing.T) {
+	t.Parallel()
+	sessions := []proofSession{{lexical: "/proof/session", resolved: "/proof/session"}}
+	for _, classify := range []struct {
+		name string
+		call func(string, string, []proofSession) bool
+	}{
+		{"control", isReservedProofControlPath},
+		{"ledger", isAppendOnlyLedgerPath},
+	} {
+		if classify.call("/proof/session/high_level_log.md", "/proof/session/ordinary", sessions) {
+			t.Errorf("%s: an ordinary resolved file inherited its alias basename", classify.name)
+		}
+		if !classify.call("/ordinary/alias", "/proof/session/high_level_log.md", sessions) {
+			t.Errorf("%s: a resolved ledger lost its actual basename", classify.name)
+		}
+	}
+}
+
+// TestResolvedOutputTargetEffects verifies actual targets and original token
+// coordinates across output forms, input redirects, aliases, and caller roles.
+//
+// Example: sort's output alias to a marker is denied while its input stays readable.
+func TestResolvedOutputTargetEffects(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	session := filepath.Join(root, "proof", "session")
+	foreign := filepath.Join(root, "proof", "foreign")
+	for _, dir := range []string{session, foreign} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"eci_active", "high_level_log.md", "high_level_log.anchor"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("fixture\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	marker := filepath.Join(session, "eci_active")
+	ordinary := filepath.Join(root, "ordinary")
+	if err := os.WriteFile(ordinary, []byte("ordinary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controlAlias := filepath.Join(root, "control-alias")
+	controlHardlink := filepath.Join(root, "control-hardlink")
+	ordinaryAlias := filepath.Join(session, "ordinary-alias")
+	foreignAlias := filepath.Join(session, "foreign-alias")
+	for alias, target := range map[string]string{
+		controlAlias: marker, ordinaryAlias: ordinary, foreignAlias: filepath.Join(foreign, "eci_active"),
+	} {
+		if err := os.Symlink(target, alias); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Link(marker, controlHardlink); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []Role{RoleCoordinator, RoleWorker} {
+		t.Run(string(role),
+			// Exercise the same resolved-target contract for one actual role.
+			//
+			// Example: both callers may read a marker but may not overwrite it.
+			func(t *testing.T) {
+				classify :=
+					// Classify one command against the current and foreign fixtures.
+					//
+					// Example: a foreign output alias retains its foreign control target.
+					func(command string) Result {
+						return Classify(Request{Provider: ProviderCodex, Role: role, CWD: root,
+							Marker: MarkerActive, ActiveSession: "session", Command: command,
+							ActiveMarkers: []string{marker, filepath.Join(foreign, "eci_active")}})
+					}
+				for _, note := range []string{"instructions.md", "project-understanding.md", "latest-status-report.md"} {
+					result := classify("touch " + filepath.Join(session, note))
+					if result.Decision != DecisionDefer || result.Diagnostic != nil {
+						t.Errorf("coordination note %s: got %s %#v, want ordinary provider route", note, result.Decision, result.Diagnostic)
+					}
+				}
+				for _, link := range []struct {
+					name string
+					call func(string, string) error
+				}{
+					{"symlink", os.Symlink}, {"hardlink", os.Link},
+				} {
+					notePath := filepath.Join(session, "instructions.md")
+					if err := link.call(marker, notePath); err != nil {
+						t.Fatal(err)
+					}
+					for _, command := range []string{"touch " + notePath, "sort -o " + notePath + " < " + ordinary} {
+						result := classify(command)
+						if result.Diagnostic == nil || result.Diagnostic.Code != CodePlanLiveControlDenied || result.Diagnostic.Path != marker {
+							t.Errorf("note-named %s: %q got %s %#v, want actual marker denial", link.name, command, result.Decision, result.Diagnostic)
+						}
+					}
+					if role == RoleWorker {
+						result := classify("env touch " + notePath)
+						if result.Diagnostic == nil || result.Diagnostic.Code != CodePlanLiveControlDenied || result.Diagnostic.Path != marker {
+							t.Errorf("wrapped note-named %s: got %s %#v, want actual marker denial", link.name, result.Decision, result.Diagnostic)
+						}
+					}
+					if err := os.Remove(notePath); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, target := range []string{marker, controlAlias, controlHardlink, foreignAlias} {
+					for _, form := range []struct {
+						command string
+						index   int
+					}{
+						{"touch " + target, 1},
+						{"touch " + filepath.Join(session, "ordinary-output") + " " + target, 2},
+						{"sort -o " + target + " < " + ordinary, 2},
+						{"sort -o < " + ordinary + " " + target, 3},
+						{"sort < " + ordinary + " -o " + target, 3},
+						{"sort -o" + target + " < " + ordinary, 1},
+						{"tool --output=" + target + " < " + ordinary, 1},
+						{"tool --output " + filepath.Join(session, "ordinary-output") + " --report-path " + target, 4},
+					} {
+						result := classify(form.command)
+						if result.Decision != DecisionDeny || result.Diagnostic == nil {
+							t.Errorf("%q: got %s, want concrete control denial", form.command, result.Decision)
+							continue
+						}
+						diagnostic := result.Diagnostic
+						wantPath := marker
+						if target == foreignAlias {
+							wantPath = filepath.Join(foreign, "eci_active")
+						}
+						if diagnostic.Code != CodePlanLiveControlDenied || diagnostic.Path != wantPath ||
+							diagnostic.ArgvIndex != form.index || diagnostic.Token != target ||
+							diagnostic.ByteOffset != strings.Index(form.command, target) {
+							t.Errorf("%q: wrong target or coordinates: %#v", form.command, diagnostic)
+						}
+					}
+				}
+				for _, command := range []string{
+					"touch " + ordinaryAlias,
+					"sort -o " + ordinaryAlias + " < " + marker,
+					"sort < --output=" + marker + " " + ordinary,
+					"diff --to-file=" + marker + " " + ordinary,
+					"diff --to-file " + marker + " " + ordinary,
+					"cp " + marker + " 0<" + marker + " " + ordinary,
+				} {
+					result := classify(command)
+					if result.Decision != DecisionAllow || result.Diagnostic != nil {
+						t.Errorf("ordinary/read %q: got %s %#v", command, result.Decision, result.Diagnostic)
+					}
+				}
+				for _, test := range []struct {
+					command string
+					code    DiagnosticCode
+				}{
+					{"sort -o " + filepath.Join(session, "high_level_log.md") + " < " + ordinary, CodeLedgerRewriteDenied},
+					{"sort -o " + filepath.Join(foreign, "high_level_log.md") + " < " + ordinary, CodeLedgerForeignSessionDenied},
+					{"diff --to-file=" + ordinary + " " + ordinary + " > " + marker, CodePlanLiveControlDenied},
+					{"tool --output " + filepath.Join(session, "ordinary-output") + " > " + marker, CodePlanLiveControlDenied},
+					{"touch " + marker + " > " + filepath.Join(session, "high_level_log.anchor"), CodeLedgerAnchorWriteDenied},
+				} {
+					result := classify(test.command)
+					if result.Diagnostic == nil || result.Diagnostic.Code != test.code {
+						t.Errorf("%q: got %s %#v, want %s", test.command, result.Decision, result.Diagnostic, test.code)
+					}
+				}
+			},
+		)
 	}
 }
 

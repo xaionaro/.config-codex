@@ -400,13 +400,13 @@ stop_marker_cache_has_unsafe_structural_sibling() {
   local direct_marker="$1" candidate
 
   # The startup bounded preflight owns file-type and size checks. This helper
-  # distinguishes a structurally unsafe sibling (notably a hard-link alias)
-  # from an unrelated record whose embedded metadata is merely invalid.
+  # distinguishes an unsafe type/owner from an unrelated record whose
+  # embedded metadata is merely invalid. Hardlinks retain marker identity.
   [ "$stop_marker_cache_loaded" = true ] || return 1
   [ "${stop_marker_cache_status:-0}" -eq 0 ] || return 0
   for candidate in "${stop_marker_cache[@]}"; do
     [ "$candidate" = "$direct_marker" ] && continue
-    codex_state_file_owner_is_valid "$candidate" || return 0
+    codex_state_file_owner_is_valid "$candidate" false || return 0
   done
   return 1
 }
@@ -522,9 +522,9 @@ stop_marker_candidate_matches_current() {
     return 0
   fi
   codex_reserved_proof_dir "$marker_name" || return 1
-  marker_owner="$(codex_state_value "$marker" session_id 2>/dev/null || true)"
+  marker_owner="$(codex_state_value "$marker" session_id false 2>/dev/null || true)"
   [ "$marker_owner" = "$session_id" ] || return 1
-  marker_cwd="$(codex_state_value "$marker" cwd 2>/dev/null || true)"
+  marker_cwd="$(codex_state_value "$marker" cwd false 2>/dev/null || true)"
   [ -n "$marker_cwd" ] || return 1
   [ "$(codex_canonical_cwd "$marker_cwd")" = "${canonical_stop_cwd:-$cwd}" ]
 }
@@ -1022,7 +1022,7 @@ stop_direct_marker_is_valid_fast() {
   esac
   marker_dir="${marker%/*}"
   [ -d "$marker_dir" ] && [ ! -L "$marker_dir" ] || return 1
-  codex_state_file_owner_is_valid "$marker" || return 1
+  codex_state_file_owner_is_valid "$marker" false || return 1
   # eci_stop_marker_set_is_bounded already performed the shared finite-size
   # probe before this validator runs.  Avoid reading the same marker twice on
   # every active callback; the remaining mapfile is the schema/ownership read.
