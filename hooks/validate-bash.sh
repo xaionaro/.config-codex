@@ -2259,6 +2259,10 @@ direct_ledger_static_records() {
           case "$word_plain:$word" in
             true:0|true:1|true:2) ;;
             *)
+              # Unsupported input FDs are syntax, not child operands.
+              if [ "$word_plain" = true ] && [[ "$word" =~ ^[0-9]+$ ]]; then
+                return 1
+              fi
               token_kinds+=(word)
               token_values+=("$word")
               ;;
@@ -3565,12 +3569,12 @@ foreign_active_marker_env_child() {
     token="${words[$index]}"
     if [ "$options_ended" = false ]; then
       case "$token" in
-        --)
+        --|-)
           options_ended=true
           index=$((index + 1))
           continue
           ;;
-        -|-v|--debug|-i|--ignore-environment)
+        -v|--debug|-i|--ignore-environment)
           index=$((index + 1))
           continue
           ;;

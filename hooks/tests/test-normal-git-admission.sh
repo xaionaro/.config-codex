@@ -311,6 +311,9 @@ run_foreign_timeout_marker_target() {
     '/usr/bin/env rm eci_active' \
     'env -- rm eci_active' \
     'env - rm eci_active' \
+    'env - - rm eci_active' \
+    'env -- - rm eci_active' \
+    'env FOREIGN_ASSIGNMENT=present - rm eci_active' \
     'env -v rm eci_active' \
     'env --debug rm eci_active' \
     'env -v - rm eci_active' \
@@ -367,7 +370,7 @@ run_foreign_timeout_marker_target() {
   done
 
   # These literal launch forms have an established foreign-marker writer
-  # effect.  Keep the matrix finite: core input FDs and the exact GNU env
+  # effect.  Keep the matrix finite: core input FDs and the exact installed env
   # debug/split combinations below, not a general shell or env grammar.
   for tail in \
     'cp ordinary-copy < eci_active eci_active' \
@@ -376,6 +379,9 @@ run_foreign_timeout_marker_target() {
     'cp ordinary-copy 2< eci_active eci_active' \
     'cp ordinary-copy 2<&0 eci_active' \
     'cp ordinary-copy 2<& 0 eci_active' \
+    "cp '3'< eci_active eci_active" \
+    'cp \3< eci_active eci_active' \
+    'cp 3 < eci_active eci_active' \
     'env -vv rm eci_active' \
     'env -vvv rm eci_active' \
     'env -vS rm eci_active' \
@@ -423,6 +429,8 @@ run_foreign_timeout_marker_target() {
   for tail in \
     'cat 2< eci_active' \
     'cp ordinary-copy 3< eci_active eci_active' \
+    'cp 3< eci_active eci_active' \
+    'mv eci_active 3</dev/null' \
     "cp ordinary-copy '2'< eci_active eci_active" \
     'cp ordinary-copy \2< eci_active eci_active' \
     'cp ordinary-copy 2 < eci_active eci_active' \
@@ -430,6 +438,8 @@ run_foreign_timeout_marker_target() {
     'cp ordinary-copy 2<& 1 eci_active' \
     'env -iv rm eci_active' \
     'env -vi rm eci_active' \
+    'env - -v rm eci_active' \
+    'env FOREIGN_ASSIGNMENT=present -v rm eci_active' \
     'env -S rm eci_active' \
     'env --split-string rm eci_active' \
     'env -Srm eci_active' \
