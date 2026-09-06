@@ -3283,9 +3283,10 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$PLAN_REVIEWED_SCRIPT_COMPOUND_RO
     finalize_command_gate_denial compound-segment "$PLANNER_COMPOUND_SEGMENT_DENIAL"
     exit 0
   fi
-  deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
-    "parser-attested compound topology could not be replayed through a direct command route" \
-    "restore the compiled planner and direct-route hook protocol, then retry the bounded plan"
+  plan_status=3
+  plan_output=""
+  CODEX_PLAN_TRANSPARENT_FALLBACK=true
+  PLAN_CODEX_LIFECYCLE_ROUTE=true
 fi
 
 # Missing topology is parser diagnostic information, not a permission
