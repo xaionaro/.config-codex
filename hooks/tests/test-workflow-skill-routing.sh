@@ -471,6 +471,10 @@ assert_active_literal_directive_fixtures() {
     "1) $directive" \
     $'> historical counterexample\n\n'"$directive" \
     $'> historical counterexample\n- '"$directive" \
+    $' ```text\nhistorical counterexample\n ```\n'"$directive" \
+    $'   ```text\nhistorical counterexample\n   ```\n'"$directive" \
+    $' ~~~text\nhistorical counterexample\n ~~~\n'"$directive" \
+    $'   ~~~text\nhistorical counterexample\n   ~~~\n'"$directive" \
     $'    ```text\n'"$directive"$'\n    ```' \
     $'    ~~~text\n'"$directive"$'\n    ~~~'; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
