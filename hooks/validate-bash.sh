@@ -1346,6 +1346,16 @@ planner_compound_topology_is_valid() {
   ' <<<"${plan_output:-}" >/dev/null 2>&1
 }
 
+# A pipeline is selected only from the planner's lossless operator topology.
+# A literal `|` in quoted data is not a pipeline, and absent topology leaves
+# ordinary work to the concrete-effect fallback below.
+planner_compound_pipeline_topology_is_valid() {
+  planner_compound_topology_is_valid || return 1
+  jq -e '
+    (.plan.operators | index("|")) != null
+  ' <<<"${plan_output:-}" >/dev/null 2>&1
+}
+
 # A typed compound script route owns the original command as one reviewed
 # script topology. It deliberately reuses the parser's byte-for-byte compound
 # reconstruction instead of replaying individual safe-looking segments.
@@ -2243,7 +2253,11 @@ direct_ledger_static_records() {
         word_started=false
         word_plain=false
       fi
-      [ "$record_mode" != foreign-marker ] || return 1
+      # A single pipe starts another visible command segment. Leave `||`
+      # opaque in the foreign-marker walk rather than guessing its effect.
+      if [ "$record_mode" = foreign-marker ] && [ "${raw:$((index + 1)):1}" = '|' ]; then
+        return 1
+      fi
       token_kinds+=(delimiter)
       token_values+=("")
       if [ "${raw:$((index + 1)):1}" = '|' ]; then
@@ -2698,7 +2712,7 @@ direct_ledger_static_segment_control_target_check() {
 
 direct_ledger_static_record_walk() {
   local raw="$1" selected_dir="$2" selected_real="$3" proof_root="$4" selected_session="$5"
-  local nested_context="${6:-false}" depth="${7:-0}" record_kind prefix effect target nested_payload record_index word_count word_index
+  local nested_context="${6:-false}" depth="${7:-0}" record_kind prefix effect target nested_payload record_index word_count word_index prefixes_complete=true
   local -a records=() prefixes=() effects=() targets=() nested_payloads=() word_counts=() word_values=() segment_words=()
 
   # A depth limit is an opaque ordinary nested payload, never a new syntax
@@ -2766,9 +2780,12 @@ direct_ledger_static_record_walk() {
     [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || return 0
   done
   for prefix in "${prefixes[@]}"; do
-    direct_ledger_prefix_effect_check "$prefix" || return 1
+    # An incomplete prefix is advisory: later static prefixes can still name
+    # a concrete broad, Git, proof, or control effect. Preserve incompleteness
+    # for the caller so it cannot admit a ledger append unconditionally.
+    direct_ledger_prefix_effect_check "$prefix" || prefixes_complete=false
   done
-  return 0
+  [ "$prefixes_complete" = true ]
 }
 
 DIRECT_LEDGER_STATIC_SCAN_COMPLETE=false
@@ -3260,18 +3277,14 @@ fi
 # lifecycle, script, or environment segment.
 coordinator_static_pipeline_candidate=false
 worker_read_only_pipeline_candidate=false
-case "$command" in
-  *'|'*)
-    if [ "$hook_is_subagent" != true ]; then
-      coordinator_static_pipeline_candidate=true
-    elif worker_pure_pipeline_shape "$command"; then
-      worker_read_only_pipeline_candidate=true
-    fi
-    ;;
-esac
+if planner_compound_pipeline_topology_is_valid; then
+  if [ "$hook_is_subagent" != true ]; then
+    coordinator_static_pipeline_candidate=true
+  else
+    worker_read_only_pipeline_candidate=true
+  fi
+fi
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$PLAN_REVIEWED_SCRIPT_COMPOUND_ROUTE" != true ] &&
-  [ "$coordinator_static_pipeline_candidate" != true ] &&
-  [ "$worker_read_only_pipeline_candidate" != true ] &&
   planner_compound_topology_is_valid; then
   if validate_planner_compound_segments; then
     validate_active_marker_binding
@@ -3287,6 +3300,8 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$PLAN_REVIEWED_SCRIPT_COMPOUND_RO
   plan_output=""
   CODEX_PLAN_TRANSPARENT_FALLBACK=true
   PLAN_CODEX_LIFECYCLE_ROUTE=true
+  coordinator_static_pipeline_candidate=false
+  worker_read_only_pipeline_candidate=false
 fi
 
 # Missing topology is parser diagnostic information, not a permission
@@ -10016,12 +10031,9 @@ worker_read_only_pipeline_route() {
         "route the reported lifecycle/control invocation through the main/orchestrator coordinator"
     fi
     command="$segment"
-    detail="$(worker_control_path_detail 2>/dev/null || true)"
-    if [ -n "$detail" ]; then
-      deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
-        "ECI worker boundary denied coordinator-owned control path in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}" \
-        "route the reported ECI control or proof path through the main/orchestrator coordinator"
-    fi
+    enforce_foreign_active_marker_mutation_boundary
+    direct_ledger_static_control_target_pass "$command" || true
+    [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
     # A launcher/classification miss is not a resolved effect. Unknown
     # segments fall through after the concrete checks above.
     [ "$classification" = read-only ] || return 1
@@ -10073,20 +10085,9 @@ read_only_fast_safe() {
 }
 
 worker_fast_path_control_guard() {
-  local detail
-  detail="$(worker_control_path_detail false 2>/dev/null || true)"
-  [ -n "$detail" ] || return 0
-  if [[ "$detail" == instruction-denied\ * ]]; then
-    detail="${detail#instruction-denied }"
-    deny_eci "ECI_WORKER_INSTRUCTION_READ_DENIED" "worker-instruction-read" \
-      "ECI worker boundary denied a claimed instruction-source read: $detail; reason=the reported instruction operand is not an existing canonical regular file or read-only traversable directory contained by a configured provider instruction root" \
-      "use the reported instruction_root and read an existing regular CODEX.md, AGENTS.md, installed skill resource, or contained skill directory with a read-only traversal command; do not use missing targets, special files, mutations, or symlink escapes"
-  elif [[ "$detail" == write\ * ]]; then
-    detail="${detail#write }"
-    deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
-      "ECI worker boundary denied a command path owned by the coordinator: $detail" \
-      "route ECI marker, proof, ledger, or teardown state through the main/orchestrator coordinator; workers may not mutate ECI control files or other coordinator-owned control paths"
-  fi
+  enforce_foreign_active_marker_mutation_boundary
+  direct_ledger_static_control_target_pass "$command" || true
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
 }
 
 if [ "$worker_fast_path_candidate" = true ]; then
@@ -10150,20 +10151,10 @@ fi
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   ! command_invokes_eci_binary "$command" &&
   [ "$WORKER_PROJECT_INSPECTION_ALLOWED" != true ] &&
-  [ -z "$worker_protected_control_identity" ] &&
-  worker_control_detail="$(worker_control_path_detail 2>/dev/null || true)" &&
-  [ -n "$worker_control_detail" ]; then
-  if [[ "$worker_control_detail" == instruction-denied\ * ]]; then
-    worker_control_detail="${worker_control_detail#instruction-denied }"
-    deny_eci "ECI_WORKER_INSTRUCTION_READ_DENIED" "worker-instruction-read" \
-      "ECI worker boundary denied a claimed instruction-source read: $worker_control_detail; reason=the reported instruction operand is not an existing canonical regular file or read-only traversable directory contained by a configured provider instruction root" \
-      "use the reported instruction_root and read an existing regular CODEX.md, AGENTS.md, installed skill resource, or contained skill directory with a read-only traversal command; do not use missing targets, special files, mutations, or symlink escapes"
-  elif [[ "$worker_control_detail" == write\ * ]]; then
-    worker_control_detail="${worker_control_detail#write }"
-    deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
-      "ECI worker boundary denied a command path owned by the coordinator: $worker_control_detail" \
-      "route ECI marker, proof, ledger, or teardown state through the main/orchestrator coordinator; workers may not mutate ECI control files or other coordinator-owned control paths"
-  fi
+  [ -z "$worker_protected_control_identity" ]; then
+  enforce_foreign_active_marker_mutation_boundary
+  direct_ledger_static_control_target_pass "$command" || true
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
 fi
 
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
@@ -12690,10 +12681,10 @@ if [ "$hook_is_subagent" = true ] && [ -n "$worker_protected_control_identity" ]
     "route this exact canonical control-script invocation through the main/orchestrator coordinator"
 fi
 
-if [ "$hook_is_subagent" = true ] && command_invokes_eci_control_mutation "$command"; then
-  deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
-    "ECI worker boundary denied a recognizable mutation of coordinator-owned ECI control, proof, ledger, teardown, or acceptance state; rejected command=$(eci_command_identity_subject "$command")" \
-    "route this exact lifecycle, proof-state, or acceptance-state mutation through the main/orchestrator coordinator; workers may not mutate ECI control files"
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  enforce_foreign_active_marker_mutation_boundary
+  direct_ledger_static_control_target_pass "$command" || true
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
 fi
 
 # `env`/`printenv` option grammar is a worker execution-envelope concern.  A
@@ -12728,12 +12719,13 @@ if [ "$coordinator_static_pipeline_candidate" != true ] &&
     [ "$coordinator_inspection_allowed" = true ] || read_only_fast_safe "$command"
   fi
 }; then
-  # Read-only-looking utilities can still write through redirection or an
-  # alias to proof state. Apply the worker control-file boundary before the
-  # early return, just as the full path does below.
-  if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
-    command_invokes_eci_control_mutation "$command"; then
-    deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" "Only the main/orchestrator may mutate ECI control files. The worker command targets coordinator-owned proof state: command=$(eci_command_identity_subject "$command")." "route lifecycle and proof-state changes through the main/orchestrator"
+  # Read-only-looking utilities can still write through a visible redirect or
+  # a concrete control target. Resolve those effects before the early return;
+  # a pathname or incomplete read classification is not itself a mutation.
+  if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+    enforce_foreign_active_marker_mutation_boundary
+    direct_ledger_static_control_target_pass "$command" || true
+    [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
   fi
   mapfile -t read_only_markers < <(active_eci_markers_for_cwd "$cwd" "$session_id")
   for read_only_marker in "${read_only_markers[@]}"; do

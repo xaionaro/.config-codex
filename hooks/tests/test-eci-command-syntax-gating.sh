@@ -59,15 +59,35 @@ ln -s -- "$OUTSIDE_PROOF" "$EVIDENCE_DIR/outside-link"
   exit 1
 }
 TEST_HOOK_ROOT="$TMP_ROOT/private-hooks"
+NO_PLANNER_HOOK_ROOT="$TMP_ROOT/private-hooks-no-planner"
 cp -a -- "$ROOT/hooks" "$TEST_HOOK_ROOT"
+cp -a -- "$ROOT/hooks" "$NO_PLANNER_HOOK_ROOT"
 sed -i '2d' -- "$TEST_HOOK_ROOT/validate-bash.sh"
+sed -i '2d' -- "$NO_PLANNER_HOOK_ROOT/validate-bash.sh"
+mv -- "$NO_PLANNER_HOOK_ROOT/lib/eci-command-plan-go" "$TMP_ROOT/no-planner-command-plan"
 [ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
   printf '%s\n' 'test modified the live user-owned validate-bash bypass' >&2
   exit 1
 }
 
 run_hook() {
-  local command="$1" role="$2" hook_status
+  local command="$1" role="$2" planner_mode="${3:-available}" hook_root hook_status
+
+  case "$planner_mode" in
+  available)
+    hook_root="$TEST_HOOK_ROOT"
+    ;;
+  unavailable)
+    # This second copied hook has no planner source directory, which selects
+    # the hook's transparent target-aware fallback without touching the live
+    # runtime or executing any tested command.
+    hook_root="$NO_PLANNER_HOOK_ROOT"
+    ;;
+  *)
+    printf 'unknown planner mode: %s\n' "$planner_mode" >&2
+    exit 1
+    ;;
+  esac
 
   jq -cn \
     --arg session_id "$SESSION_ID" \
@@ -82,7 +102,7 @@ run_hook() {
     CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$([ "$role" = worker ] && printf true || printf false)" \
     XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" \
     PATH="$ROOT/bin:$PATH" \
-    bash "$TEST_HOOK_ROOT/validate-bash.sh" <"$INPUT" >"$OUTPUT" 2>"$ERROR_OUTPUT"
+    bash "$hook_root/validate-bash.sh" <"$INPUT" >"$OUTPUT" 2>"$ERROR_OUTPUT"
   hook_status=$?
   set -e
   [ "$hook_status" -eq 0 ] || {
@@ -110,6 +130,19 @@ assert_allowed() {
   done
 }
 
+assert_allowed_without_planner() {
+  local command="$1" role
+
+  for role in coordinator worker; do
+    run_hook "$command" "$role" unavailable
+    [ ! -s "$OUTPUT" ] || {
+      printf 'ordinary no-planner command was hook-denied for role=%s: %s\n' "$role" "$command" >&2
+      cat -- "$OUTPUT" >&2
+      exit 1
+    }
+  done
+}
+
 assert_broad_root_denied() {
   local role
 
@@ -126,6 +159,28 @@ assert_broad_root_denied() {
       )
     ' "$OUTPUT" >/dev/null || {
       printf 'broad root denial contract mismatch for role=%s\n' "$role" >&2
+      cat -- "$OUTPUT" >&2
+      exit 1
+    }
+  done
+}
+
+assert_broad_root_denied_without_planner() {
+  local role
+
+  for role in coordinator worker; do
+    run_hook 'rm -rf / | head -n 20' "$role" unavailable
+    jq -e '
+      .hookSpecificOutput.permissionDecision == "deny" and
+      (.hookSpecificOutput.permissionDecisionReason |
+        contains("[ECI_BROAD_DESTRUCTIVE_DENIED]") and
+        contains("operation=broad-destructive") and
+        contains("token=/") and
+        contains("target=/") and
+        contains("class=broad")
+      )
+    ' "$OUTPUT" >/dev/null || {
+      printf 'no-planner broad root denial contract mismatch for role=%s\n' "$role" >&2
       cat -- "$OUTPUT" >&2
       exit 1
     }
@@ -158,12 +213,32 @@ assert_current_marker_denied() {
   done
 }
 
+assert_current_marker_denied_without_planner() {
+  local role
+
+  for role in coordinator worker; do
+    run_hook "touch $MARKER | head -n 20" "$role" unavailable
+    jq -e --arg marker "$MARKER" '
+      .hookSpecificOutput.permissionDecision == "deny" and
+      (.hookSpecificOutput.permissionDecisionReason |
+        contains("[ECI_CONTROL_OWNER_REQUIRED]") and
+        contains("resolved_control_target=" + $marker)
+      )
+    ' "$OUTPUT" >/dev/null || {
+      printf 'no-planner current marker denial contract mismatch for role=%s\n' "$role" >&2
+      cat -- "$OUTPUT" >&2
+      exit 1
+    }
+  done
+}
+
 assert_foreign_marker_denied() {
   local role command foreign_marker
 
   foreign_marker="$(realpath -e -- "$OTHER_MARKER")"
   for command in \
     "touch $OTHER_MARKER | head -n 20" \
+    "novel-inspection-tool --format table | touch $OTHER_MARKER" \
     "printf '%s\\n' marker > $OTHER_MARKER"; do
     for role in coordinator worker; do
       run_hook "$command" "$role"
@@ -181,6 +256,29 @@ assert_foreign_marker_denied() {
         exit 1
       }
     done
+  done
+}
+
+assert_foreign_marker_denied_without_planner() {
+  local role command foreign_marker
+
+  command="novel-inspection-tool --format table | touch $OTHER_MARKER"
+  foreign_marker="$(realpath -e -- "$OTHER_MARKER")"
+  for role in coordinator worker; do
+    run_hook "$command" "$role" unavailable
+    jq -e --arg foreign_marker "$foreign_marker" '
+      .hookSpecificOutput.permissionDecision == "deny" and
+      (.hookSpecificOutput.permissionDecisionReason |
+        contains("[ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED]") and
+        contains("operation=eci-control") and
+        contains("target=" + $foreign_marker) and
+        contains("foreign_session=other-session")
+      )
+    ' "$OUTPUT" >/dev/null || {
+      printf 'no-planner foreign marker denial contract mismatch for role=%s: %s\n' "$role" "$command" >&2
+      cat -- "$OUTPUT" >&2
+      exit 1
+    }
   done
 }
 
@@ -227,6 +325,12 @@ assert_allowed "rm -f -- $ROOT/.eci-normal-target-does-not-exist"
 assert_allowed 'cat /tmp/ordinary-eci-inspection'
 assert_allowed 'rm -f -- /tmp/ordinary-eci-scratch'
 assert_allowed 'TMPDIR=/tmp novel-tool --scratch'
+assert_allowed "cat $OTHER_MARKER"
+assert_allowed "cat $OTHER_MARKER | head -n 20"
+assert_allowed "printf '%s\\n' '|' touch $OTHER_MARKER"
+assert_allowed "printf '%s\\n' '|' touch $OTHER_MARKER | head -n 20"
+assert_allowed_without_planner "cat $OTHER_MARKER | head -n 20"
+assert_allowed_without_planner "printf '%s\\n' '|' touch $OTHER_MARKER | head -n 20"
 
 # `git fsck --lost-found` writes recovered objects under .git/lost-found.  Its
 # worker denial preserves the concrete Git ownership boundary, independent of
@@ -238,5 +342,8 @@ assert_worker_fsck_lost_found_denied
 assert_broad_root_denied
 assert_current_marker_denied
 assert_foreign_marker_denied
+assert_broad_root_denied_without_planner
+assert_current_marker_denied_without_planner
+assert_foreign_marker_denied_without_planner
 
 printf '%s\n' 'target-aware command syntax regression: PASS'
