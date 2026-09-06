@@ -19,22 +19,15 @@ mkdir -p -- "$fixture_hooks" "$fixture_tmp" "$proof_root/$session_id" "$repo"
 chmod 700 -- "$fixture_home" "$fixture_codex" "$fixture_tmp" "$proof_root" "$proof_root/$session_id"
 cp -a -- "$ROOT/hooks/." "$fixture_hooks/"
 
-# The live dispatcher bypass is user-owned.  Assert that exact source state
-# and remove only its copied line, so this test exercises the real dispatcher
-# without mutating the live hook or either user-owned bypass.
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live user-owned dispatcher bypass at line 2' >&2
+# Exercise the private dispatcher with a line-2 bypass removed if present,
+# and preserve the source bytes.
+cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$TMP_ROOT/dispatcher.before"
+sed -i '2{/^exit 0$/d;}' -- "$fixture_hooks/pretooluse-edit-dispatch.sh"
+cmp -- "$TMP_ROOT/dispatcher.before" "$ROOT/hooks/pretooluse-edit-dispatch.sh" || {
+  printf '%s\n' 'test modified the dispatcher source' >&2
   exit 1
 }
-[ "$(sed -n '2p' -- "$fixture_hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'copied dispatcher did not retain the expected line-2 bypass' >&2
-  exit 1
-}
-sed -i '2d' -- "$fixture_hooks/pretooluse-edit-dispatch.sh"
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'test modified the live user-owned dispatcher bypass' >&2
-  exit 1
-}
+cmp -- "$fixture_hooks/pretooluse-edit-dispatch.sh" <(sed '2{/^exit 0$/d;}' -- "$TMP_ROOT/dispatcher.before")
 
 # Simulate only the advisory child validator's health.  The real active-ECI
 # gate remains installed beside it, so this fixture proves a malformed or

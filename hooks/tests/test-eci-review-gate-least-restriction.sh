@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-eci-review-least-restriction.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
+cp -- "$ROOT/hooks/validate-bash.sh" "$TMP_ROOT/validate-bash.before"
+cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$TMP_ROOT/dispatcher.before"
+
 fixture_root="$TMP_ROOT/fixture-home"
 repo="$TMP_ROOT/repo"
 proof_root="$TMP_ROOT/proof"
@@ -137,11 +140,11 @@ run_aggregate_gate() {
   )
 }
 
-assert_live_temporary_bypasses_unchanged() {
-  [ "$(sed -n '2p' "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] ||
-    fail 'validate-bash temporary bypass was changed'
-  [ "$(sed -n '2p' "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] ||
-    fail 'pretooluse edit-dispatch temporary bypass was changed'
+assert_live_hooks_unchanged() {
+  cmp -s -- "$TMP_ROOT/validate-bash.before" "$ROOT/hooks/validate-bash.sh" ||
+    fail 'validate-bash source was changed'
+  cmp -s -- "$TMP_ROOT/dispatcher.before" "$ROOT/hooks/pretooluse-edit-dispatch.sh" ||
+    fail 'pretooluse edit-dispatch source was changed'
 }
 
 test_stale_review_history_is_nonblocking() {
@@ -499,7 +502,7 @@ test_aggregate_plan_shapes_are_advisory() {
   assert_aggregate_plan_shape_is_a_reminder directory
 }
 
-assert_live_temporary_bypasses_unchanged
+assert_live_hooks_unchanged
 test_stale_review_history_is_nonblocking
 test_symlinked_current_target_escape_still_fails
 test_unparseable_historical_manifest_is_a_reminder
@@ -514,4 +517,5 @@ test_aggregate_symlink_current_target_resolves_within_repo
 test_aggregate_repository_alias_escape_still_fails
 test_aggregate_symlinked_repository_target_resolves_within_parent
 test_aggregate_plan_shapes_are_advisory
+assert_live_hooks_unchanged
 printf '%s\n' 'ECI least-restriction review-gate tests: PASS'

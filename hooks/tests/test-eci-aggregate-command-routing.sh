@@ -13,17 +13,10 @@ sandbox_root="$sandbox_home/.codex"
 mkdir -p -- "$sandbox_home/tmp" "$sandbox_root"
 cp -a -- "$ROOT/hooks.json" "$ROOT/bin" "$ROOT/hooks" "$sandbox_root/"
 
-# The live hook has a user-owned temporary bypass at line 2. Preserve that
-# live source exactly; remove only the verified copied line because this test
-# intentionally pipes callback JSON into its private hook fixture. Otherwise
-# the early exit leaves jq writing to a closed pipe (SIGPIPE 141) and does not
-# exercise the routing behavior under test.
+# Remove a line-2 bypass if present in the private copy. The callback JSON
+# must reach the hook body to exercise routing without an early-exit SIGPIPE.
 fixture_validate_bash="$sandbox_root/hooks/validate-bash.sh"
-[ "$(sed -n '2p' -- "$fixture_validate_bash")" = 'exit 0' ] || {
-  printf 'fixture expected the user-owned validate-bash bypass at line 2: %s\n' "$fixture_validate_bash" >&2
-  exit 1
-}
-sed -i '2d' -- "$fixture_validate_bash"
+sed -i '2{/^exit 0$/d;}' -- "$fixture_validate_bash"
 
 write_full_sandbox_runtime_receipt() {
   local relative source digest mode
@@ -139,8 +132,7 @@ run_hook "$outer_cwd" "$stage_accepted_command" "$stage_accepted_output"
 
 # Aggregate staging has no arbitrary upper operand cap. The private full
 # runtime fixture proves both mirrored hook classifiers admit 65 otherwise
-# ordinary selected-root-relative paths after its copied line-2 bypass alone
-# is removed.
+# ordinary selected-root-relative paths with its copied hook body enabled.
 stage_many_paths=()
 for stage_index in $(seq 1 65); do
   stage_many_paths+=("many-$stage_index.txt")

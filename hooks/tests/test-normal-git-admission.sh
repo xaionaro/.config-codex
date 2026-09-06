@@ -6,9 +6,7 @@ SOURCE_ROOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-normal-git-admission.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 
-# The live hook intentionally has a temporary line-2 bypass while this repair
-# is in progress.  Exercise a complete private runtime with only that bypass
-# removed, so this test continues to validate the actual gate source.
+# Exercise a complete private runtime, removing a line-2 bypass if present.
 HOME_ROOT="$TMP_ROOT/home"
 RUNTIME_ROOT="$HOME_ROOT/.codex"
 mkdir -p -- "$RUNTIME_ROOT" "$TMP_ROOT/config/eci" "$TMP_ROOT/state"
@@ -16,11 +14,7 @@ cp -a -- "$SOURCE_ROOT/hooks" "$RUNTIME_ROOT"
 cp -- "$SOURCE_ROOT/hooks.json" "$RUNTIME_ROOT/hooks.json"
 mkdir -p -- "$RUNTIME_ROOT/bin"
 cp -a -- "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
-[ "$(sed -n '2p' -- "$RUNTIME_ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live validate-bash temporary bypass at line 2' >&2
-  exit 1
-}
-sed -i '2d' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
+sed -i '2{/^exit 0$/d;}' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
 BASH_LAUNCHER="$(jq -er '.hooks.PreToolUse[] | select(.matcher == "^Bash$") | .hooks[] | select(.type == "command") | .command' "$RUNTIME_ROOT/hooks.json")"
 [ "$BASH_LAUNCHER" = 'bash "$HOME/.codex/hooks/validate-bash.sh"' ] || {
   printf 'unexpected copied Bash launcher: %s\n' "$BASH_LAUNCHER" >&2

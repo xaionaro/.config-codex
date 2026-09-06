@@ -17,16 +17,11 @@ fake_bin="$TMP_ROOT/fake-bin"
 
 trap 'rm -f -- "$fixture_hook"; rm -rf -- "$TMP_ROOT"' EXIT
 
-# Keep the live user-owned bypass untouched. This private fixture differs only
-# by that one verified line, so it tests the current hook body in isolation.
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'lifecycle fixture expected the live validate-bash bypass at line 2' >&2
-  exit 1
-}
+# Exercise the private hook body, removing a line-2 bypass if present.
 cp -- "$ROOT/hooks/validate-bash.sh" "$fixture_hook"
-sed -i '2d' -- "$fixture_hook"
-cmp -- "$fixture_hook" <(sed '2d' -- "$ROOT/hooks/validate-bash.sh") || {
-  printf '%s\n' 'lifecycle fixture changed bytes other than the live line-2 bypass' >&2
+sed -i '2{/^exit 0$/d;}' -- "$fixture_hook"
+cmp -- "$fixture_hook" <(sed '2{/^exit 0$/d;}' -- "$ROOT/hooks/validate-bash.sh") || {
+  printf '%s\n' 'lifecycle fixture changed bytes other than an optional line-2 bypass' >&2
   exit 1
 }
 

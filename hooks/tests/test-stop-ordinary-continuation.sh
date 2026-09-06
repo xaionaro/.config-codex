@@ -28,15 +28,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# These intentional PreToolUse bypasses are not part of this Stop test.  Keep
-# them active in the copied fixture and never use them to alter live behavior.
-[ "$(sed -n '2p' "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ]
-[ "$(sed -n '2p' "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ]
-
+# Smoke-test the copied PreToolUse hooks in their existing enabled or bypassed
+# state, with any callback state confined to the private fixture.
 mkdir -p -- "$FIXTURE_CODEX" "$FIXTURE_HOME/tmp" "$REPO"
 cp -a -- "$ROOT/hooks" "$FIXTURE_CODEX/hooks"
-printf '%s\n' '{"tool_name":"Bash"}' | bash "$FIXTURE_CODEX/hooks/validate-bash.sh" >/dev/null
-printf '%s\n' '{"tool_name":"Edit"}' | bash "$FIXTURE_CODEX/hooks/pretooluse-edit-dispatch.sh" >/dev/null
+(
+  export HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_CODEX" CODEX_PROOF_ROOT="$TMP_ROOT/pretooluse-proof"
+  export XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" XDG_CACHE_HOME="$TMP_ROOT/cache"
+  printf '%s\n' '{"tool_name":"Bash"}' | bash "$FIXTURE_CODEX/hooks/validate-bash.sh" >/dev/null
+  printf '%s\n' '{"tool_name":"Edit"}' | bash "$FIXTURE_CODEX/hooks/pretooluse-edit-dispatch.sh" >/dev/null
+)
 
 git -C "$REPO" init -q
 git -C "$REPO" config user.email 'stop-ordinary@example.invalid'

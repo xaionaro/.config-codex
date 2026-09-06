@@ -6,19 +6,15 @@ SOURCE_ROOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-git-normalization.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 
-# Exercise the real hook in a private runtime with only the temporary live
-# bypass removed.  No command supplied to the hook is executed by this test.
+# Exercise the real hook in a private runtime, removing a line-2 bypass if
+# present. No command supplied to the hook is executed by this test.
 HOME_ROOT="$TMP_ROOT/home"
 RUNTIME_ROOT="$HOME_ROOT/.codex"
 mkdir -p -- "$RUNTIME_ROOT" "$TMP_ROOT/config/eci" "$TMP_ROOT/state"
 cp -a -- "$SOURCE_ROOT/hooks" "$RUNTIME_ROOT"
 mkdir -p -- "$RUNTIME_ROOT/bin"
 cp -a -- "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
-[ "$(sed -n '2p' -- "$RUNTIME_ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live validate-bash temporary bypass at line 2' >&2
-  exit 1
-}
-sed -i '2d' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
+sed -i '2{/^exit 0$/d;}' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
 
 # Build and attest the planner only inside the disposable fixture.  This keeps
 # the test on the ordinary hook path without changing the shared runtime.

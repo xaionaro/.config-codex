@@ -47,15 +47,10 @@ cp -- "$ROOT/bin/eci-runtime-sync" "$fixture_codex/bin/eci-runtime-sync"
 cp -- "$ROOT/bin/eci-active" "$fixture_kimi_eci"
 cp -a -- "$ROOT/hooks/." "$fixture_codex/hooks/"
 cp -a -- "$ROOT/hooks/." "$fixture_kimi/hooks/"
-# The live hook has a user-owned temporary bypass at line 2. Keep it intact
-# in source; this private fixture alone removes that exact verified line so
-# the assertions exercise the real hook body.
+# Remove a line-2 bypass if present in each private copy so the assertions
+# exercise the hook body without changing the source.
 for fixture_validate_bash in "$fixture_codex/hooks/validate-bash.sh" "$fixture_kimi/hooks/validate-bash.sh"; do
-  [ "$(sed -n '2p' -- "$fixture_validate_bash")" = 'exit 0' ] || {
-    printf 'fixture expected the user-owned validate-bash bypass at line 2: %s\n' "$fixture_validate_bash" >&2
-    exit 1
-  }
-  sed -i '2d' -- "$fixture_validate_bash"
+  sed -i '2{/^exit 0$/d;}' -- "$fixture_validate_bash"
 done
 cp -- "$ROOT/CODEX.md" "$fixture_codex/CODEX.md"
 cp -- "$ROOT/config.toml" "$fixture_codex/config.toml"
@@ -616,11 +611,7 @@ assert_hook_executes_pinned_planner_after_path_replacement() {
   }
 
   cp -- "$ROOT/hooks/validate-bash.sh" "$hook_copy"
-  [ "$(sed -n '2p' -- "$hook_copy")" = 'exit 0' ] || {
-    printf '%s\n' 'restored fixture expected the user-owned validate-bash bypass at line 2' >&2
-    exit 1
-  }
-  sed -i '2d' -- "$hook_copy"
+  sed -i '2{/^exit 0$/d;}' -- "$hook_copy"
   chmod 755 -- "$hook_copy"
   restore_fresh_planner_artifact
 }

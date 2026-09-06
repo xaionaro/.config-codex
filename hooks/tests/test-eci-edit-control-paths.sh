@@ -15,17 +15,11 @@ proof_root="$ROOT/.eci-edit-control-proof-$BASHPID"
 repo_hardlink_alias="$(pwd)/.eci-active-hardlink-alias-$BASHPID"
 trap 'rm -f -- "$control_hook_fixture"; rm -rf -- "$TMP_ROOT" "$proof_root" "$repo_hardlink_alias"' EXIT
 
-# Keep the live user-owned bypass intact.  This fixture differs only by that
-# verified line, so the test exercises the current hook body without changing
-# the runtime that is keeping other sessions unblocked.
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'edit-control fixture expected the live validate-bash bypass at line 2' >&2
-  exit 1
-}
+# Exercise the private hook body, removing a line-2 bypass if present.
 cp -- "$ROOT/hooks/validate-bash.sh" "$control_hook_fixture"
-sed -i '2d' -- "$control_hook_fixture"
-cmp -- "$control_hook_fixture" <(sed '2d' -- "$ROOT/hooks/validate-bash.sh") || {
-  printf '%s\n' 'edit-control fixture changed bytes other than the live line-2 bypass' >&2
+sed -i '2{/^exit 0$/d;}' -- "$control_hook_fixture"
+cmp -- "$control_hook_fixture" <(sed '2{/^exit 0$/d;}' -- "$ROOT/hooks/validate-bash.sh") || {
+  printf '%s\n' 'edit-control fixture changed bytes other than an optional line-2 bypass' >&2
   exit 1
 }
 

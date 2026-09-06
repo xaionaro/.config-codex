@@ -11,16 +11,15 @@ mkdir -p -- "$dispatch_root"
 cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$dispatch_root/pretooluse-edit-dispatch.sh"
 cp -- "$ROOT/hooks/security-reminder.py" "$dispatch_root/security-reminder.py"
 
-# The live dispatcher bypass is user-owned. Exercise only the private copy.
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live user-owned dispatcher bypass at line 2' >&2
+# Exercise the private dispatcher with a line-2 bypass removed if present,
+# and preserve the source bytes.
+cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$TMP_ROOT/dispatcher.before"
+sed -i '2{/^exit 0$/d;}' -- "$dispatch_root/pretooluse-edit-dispatch.sh"
+cmp -- "$TMP_ROOT/dispatcher.before" "$ROOT/hooks/pretooluse-edit-dispatch.sh" || {
+  printf '%s\n' 'test modified the dispatcher source' >&2
   exit 1
 }
-sed -i '2d' -- "$dispatch_root/pretooluse-edit-dispatch.sh"
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'test modified the live user-owned dispatcher bypass' >&2
-  exit 1
-}
+cmp -- "$dispatch_root/pretooluse-edit-dispatch.sh" <(sed '2{/^exit 0$/d;}' -- "$TMP_ROOT/dispatcher.before")
 
 cat >"$dispatch_root/validate-edit-write.sh" <<'EOF'
 #!/usr/bin/env bash

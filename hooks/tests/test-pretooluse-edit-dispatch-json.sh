@@ -12,21 +12,15 @@ cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$dispatch_root/pretooluse-edit-
 ln -s -- "$ROOT/hooks/lib/codex-tmp.sh" "$dispatch_root/lib/codex-tmp.sh"
 ln -s -- "$ROOT/hooks/lib/eci-diagnostic.sh" "$dispatch_root/lib/eci-diagnostic.sh"
 
-# The live bypass is user-owned.  Exercise the dispatcher only in this private
-# copy and remove exactly its copied line; never alter the live hook.
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live user-owned dispatcher bypass at line 2' >&2
+# Exercise the private dispatcher with a line-2 bypass removed if present,
+# and preserve the source bytes.
+cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$TMP_ROOT/dispatcher.before"
+sed -i '2{/^exit 0$/d;}' -- "$dispatch_root/pretooluse-edit-dispatch.sh"
+cmp -- "$TMP_ROOT/dispatcher.before" "$ROOT/hooks/pretooluse-edit-dispatch.sh" || {
+  printf '%s\n' 'test modified the dispatcher source' >&2
   exit 1
 }
-[ "$(sed -n '2p' -- "$dispatch_root/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'copied dispatcher did not retain the expected line-2 bypass' >&2
-  exit 1
-}
-sed -i '2d' -- "$dispatch_root/pretooluse-edit-dispatch.sh"
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'test modified the live user-owned dispatcher bypass' >&2
-  exit 1
-}
+cmp -- "$dispatch_root/pretooluse-edit-dispatch.sh" <(sed '2{/^exit 0$/d;}' -- "$TMP_ROOT/dispatcher.before")
 
 cat >"$dispatch_root/validate-edit-write.sh" <<'EOF'
 #!/usr/bin/env bash

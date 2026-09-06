@@ -46,18 +46,15 @@ printf '%s\n' 'malformed legacy override state' >"$OVERRIDE_RECORD"
 mkdir -- "$OVERRIDE_CLAIM"
 printf '%s\n' consumed >"$OVERRIDE_CLAIM/record"
 
-# The user has temporarily bypassed the live gate while repairs are reviewed.
-# Exercise a private copy and prove this test never modifies that bypass.
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live user-owned validate-bash bypass at line 2' >&2
-  exit 1
-}
+# Exercise the private hook body, removing a line-2 bypass if present.
+cp -- "$ROOT/hooks/validate-bash.sh" "$TMP_ROOT/validate-bash.before"
 cp -a -- "$ROOT/hooks" "$TEST_HOOK_ROOT"
-sed -i '2d' -- "$TEST_HOOK_ROOT/validate-bash.sh"
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'private hook setup modified the live user-owned bypass' >&2
+sed -i '2{/^exit 0$/d;}' -- "$TEST_HOOK_ROOT/validate-bash.sh"
+cmp -- "$TMP_ROOT/validate-bash.before" "$ROOT/hooks/validate-bash.sh" || {
+  printf '%s\n' 'private hook setup modified the source' >&2
   exit 1
 }
+cmp -- "$TEST_HOOK_ROOT/validate-bash.sh" <(sed '2{/^exit 0$/d;}' -- "$TMP_ROOT/validate-bash.before")
 
 run_hook() {
   local command="$1" role="${2:-coordinator}" hook_status

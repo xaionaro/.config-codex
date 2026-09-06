@@ -6,8 +6,7 @@ SOURCE_ROOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-current-ledger-append.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 
-# The live hook has a user-installed temporary bypass at line 2. Exercise a
-# complete copied runtime with only that local fixture bypass removed.
+# Exercise a complete copied runtime, removing a line-2 bypass if present.
 HOME_ROOT="$TMP_ROOT/home"
 RUNTIME_ROOT="$HOME_ROOT/.codex"
 PROOF_ROOT="$TMP_ROOT/proof"
@@ -21,11 +20,7 @@ printf '%s\n' foreign-fixture >"$FOREIGN_REPOSITORY/file.txt"
 cp -a -- "$SOURCE_ROOT/hooks" "$RUNTIME_ROOT"
 mkdir -p -- "$RUNTIME_ROOT/bin"
 cp -a -- "$SOURCE_ROOT/bin/eci-active" "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
-[ "$(sed -n '2p' -- "$RUNTIME_ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'expected the live validate-bash temporary bypass at line 2' >&2
-  exit 1
-}
-sed -i '2d' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
+sed -i '2{/^exit 0$/d;}' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
 
 PLANNER_DIR="$RUNTIME_ROOT/hooks/lib/eci-command-plan-go"
 (
@@ -287,7 +282,7 @@ assert_reconciliation_preserves_raw_append ledger-reconcile-without-lf 'seed wit
 
 # Remove only the copied planner source after all normal-path checks above.
 # The final probe exercises the real copied hook when no planner binary or
-# source is available, without changing either live user-owned bypass.
+# source is available, without changing the live hooks.
 FALLBACK_SESSION=planner-unavailable-ledger-session
 FALLBACK_DIR="$PROOF_ROOT/$FALLBACK_SESSION"
 FALLBACK_LOG="$FALLBACK_DIR/high_level_log.md"

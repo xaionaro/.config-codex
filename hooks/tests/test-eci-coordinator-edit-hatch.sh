@@ -29,10 +29,9 @@ cp -- "$ROOT/bin/eci-active" "$fixture_eci"
 cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$fixture_codex/hooks/lib/codex-proof-state.sh"
 chmod 755 -- "$fixture_eci"
 
-# These temporary bypasses are user-owned and must remain exactly where the
-# user placed them. This hatch test never removes or changes either live hook.
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ]
-[ "$(sed -n '2p' -- "$ROOT/hooks/pretooluse-edit-dispatch.sh")" = 'exit 0' ]
+# Preserve the live hooks regardless of whether a line-2 bypass is present.
+cp -- "$ROOT/hooks/validate-bash.sh" "$TMP_ROOT/validate-bash.before"
+cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$TMP_ROOT/dispatcher.before"
 
 write_marker() {
   local target_session="$1" target_cwd="$2"
@@ -238,4 +237,6 @@ expect_failure run_active "$cwd" coordinator-edit-on
 expect_failure run_active "$cwd" coordinator-edit-status
 [ -d "$record" ] && [ ! -L "$record" ]
 
+cmp -- "$TMP_ROOT/validate-bash.before" "$ROOT/hooks/validate-bash.sh"
+cmp -- "$TMP_ROOT/dispatcher.before" "$ROOT/hooks/pretooluse-edit-dispatch.sh"
 printf '%s\n' 'eci coordinator edit hatch assertions: PASS'

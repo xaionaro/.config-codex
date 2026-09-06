@@ -11,14 +11,10 @@ mkdir -p -- "$classifier_tmp_parent"
 TMP_ROOT="$(mktemp -d "$classifier_tmp_parent/eci-classifier-${BASHPID}.XXXXXX")"
 classifier_hook_fixture="$(mktemp "$ROOT/hooks/.validate-bash-classifier.${BASHPID}.XXXXXX")"
 trap 'rm -f -- "$classifier_hook_fixture"' EXIT
-[ "$(sed -n '2p' -- "$ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-  printf '%s\n' 'classifier fixture expected the live validate-bash bypass at line 2' >&2
-  exit 1
-}
 cp -- "$ROOT/hooks/validate-bash.sh" "$classifier_hook_fixture"
-sed -i '2d' -- "$classifier_hook_fixture"
-cmp -- "$classifier_hook_fixture" <(sed '2d' -- "$ROOT/hooks/validate-bash.sh") || {
-  printf '%s\n' 'classifier fixture changed bytes other than the live line-2 bypass' >&2
+sed -i '2{/^exit 0$/d;}' -- "$classifier_hook_fixture"
+cmp -- "$classifier_hook_fixture" <(sed '2{/^exit 0$/d;}' -- "$ROOT/hooks/validate-bash.sh") || {
+  printf '%s\n' 'classifier fixture changed bytes other than an optional line-2 bypass' >&2
   exit 1
 }
 # Exercise the current-session temporary-root alias explicitly.  The alias is
@@ -260,13 +256,9 @@ prepare_stale_copied_home() {
   mkdir -p -- "$COPIED_HOME" "$COPIED_PROOF_ROOT" "$COPIED_OTHER_CWD" \
     "$COPIED_HOME/.kimi-code/bin" "$COPIED_HOME/xdg-config/eci" "$COPIED_HOME/xdg-state"
   cp -a -- "$ROOT"/. "$COPIED_ROOT"/
-  [ "$(sed -n '2p' -- "$COPIED_ROOT/hooks/validate-bash.sh")" = 'exit 0' ] || {
-    printf '%s\n' 'copied-home fixture expected the live validate-bash bypass at line 2' >&2
-    return 1
-  }
-  sed -i '2d' -- "$COPIED_ROOT/hooks/validate-bash.sh"
-  cmp -- "$COPIED_ROOT/hooks/validate-bash.sh" <(sed '2d' -- "$ROOT/hooks/validate-bash.sh") || {
-    printf '%s\n' 'copied-home fixture changed bytes other than the live line-2 bypass' >&2
+  sed -i '2{/^exit 0$/d;}' -- "$COPIED_ROOT/hooks/validate-bash.sh"
+  cmp -- "$COPIED_ROOT/hooks/validate-bash.sh" <(sed '2{/^exit 0$/d;}' -- "$ROOT/hooks/validate-bash.sh") || {
+    printf '%s\n' 'copied-home fixture changed bytes other than an optional line-2 bypass' >&2
     return 1
   }
   printf '\n// stale copied-home classifier fixture\n' >>"$COPIED_ROOT/hooks/lib/eci-command-plan-go/classifier.go"
@@ -537,11 +529,7 @@ defer_fixture_no_marker_root="$TMP_ROOT/defer-fixture-no-marker-proof"
 mkdir -p "$defer_fixture_root/hooks/lib/eci-command-plan-go" "$defer_fixture_root/bin" \
   "$defer_fixture_home/tmp" "$defer_fixture_proof_root/$defer_fixture_session"
 cp -- "$ROOT/hooks/validate-bash.sh" "$defer_fixture_hook"
-[ "$(sed -n '2p' -- "$defer_fixture_hook")" = 'exit 0' ] || {
-  printf '%s\n' 'defer fixture expected the live validate-bash bypass at line 2' >&2
-  exit 1
-}
-sed -i '2d' -- "$defer_fixture_hook"
+sed -i '2{/^exit 0$/d;}' -- "$defer_fixture_hook"
 cp -a -- "$ROOT/hooks/lib/." "$defer_fixture_root/hooks/lib/"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
