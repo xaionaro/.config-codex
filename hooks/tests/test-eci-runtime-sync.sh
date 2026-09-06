@@ -232,10 +232,19 @@ grep -q $'^bin/eci-active-dispatch\t[0-9a-f]\{64\}\t[0-9]\+$' "$TEST_ROOT/kimi/.
 grep -q $'^bin/eci-runtime-sync\t[0-9a-f]\{64\}\t[0-9]\+$' "$TEST_ROOT/kimi/.kimi-code/.eci-runtime-sync-manifest"
 [ -f "$TEST_ROOT/kimi/runtime/.kimi-code/.eci-runtime-sync-manifest" ]
 # The standalone peer route must also treat its receipt as status, not as a
-# prerequisite for copying the selected runtime surface.
+# prerequisite for copying the selected runtime surface.  peer-apply is
+# codex-launcher-only by contract: the bin derives the provider from its own
+# install root and reserves peer sync for the canonical Codex home, so a
+# Kimi-launcher copy must fail source resolution.  Exercise the route through
+# a codex-launcher copy; invoking "$ROOT/bin/eci-runtime-sync" here only works
+# when this test happens to run from the Codex tree.
 peer_receipt="$TEST_ROOT/kimi/.kimi-code/.eci-codex-kimi-peer-sync-manifest"
 mkdir -- "$peer_receipt"
-HOME="$TEST_ROOT" "$ROOT/bin/eci-runtime-sync" peer-apply --target "$TEST_ROOT/kimi/.kimi-code"
+peer_launcher_bin="$TEST_ROOT/peer-launcher/.codex/bin"
+mkdir -p -- "$peer_launcher_bin"
+cp -- "$ROOT/bin/eci-runtime-sync" "$peer_launcher_bin/eci-runtime-sync"
+chmod 755 "$peer_launcher_bin/eci-runtime-sync"
+HOME="$TEST_ROOT" "$peer_launcher_bin/eci-runtime-sync" peer-apply --target "$TEST_ROOT/kimi/.kimi-code"
 [ -d "$peer_receipt" ]
 cmp "$TEST_ROOT/.codex/bin/eci-active" "$TEST_ROOT/kimi/.kimi-code/bin/eci-active"
 [ ! -e "$TEST_ROOT/kimi/.kimi-code/hooks/lib/eci-command-plan-go/.eci-command-plan.txn.fixture" ]
@@ -259,8 +268,16 @@ cp -- "$ROOT/bin/eci-runtime-sync" "$planner_codex/bin/eci-runtime-sync"
 for planner_source in go.mod classifier.go main.go; do
   cp -- "$ROOT/$planner_dir/$planner_source" "$planner_codex/$planner_dir/$planner_source"
 done
+# The Kimi tree carries only the peer-published safe-importer binary; its Go
+# sources are built from the canonical Codex tree by design (the bin's
+# safe_importer_build_local runs under the Codex source root).  When this
+# test runs from the Kimi tree, stage the fixture sources from there.
+safe_import_source_root="$ROOT"
+if [ ! -f "$ROOT/$safe_import_dir/go.mod" ]; then
+  safe_import_source_root="${HOME:?}/.codex"
+fi
 for safe_import_source in go.mod main.go; do
-  cp -- "$ROOT/$safe_import_dir/$safe_import_source" "$planner_codex/$safe_import_dir/$safe_import_source"
+  cp -- "$safe_import_source_root/$safe_import_dir/$safe_import_source" "$planner_codex/$safe_import_dir/$safe_import_source"
 done
 printf '%s\n' 'provider = "preserve-kimi-config"' >"$planner_kimi/config.toml"
 printf '%s\n' stale-codex >"$planner_codex/$planner_dir/eci-command-plan"
@@ -278,7 +295,13 @@ planner_kimi_stale_root="$planner_kimi/$planner_dir/hooks"
 planner_kimi_stale_dir="$planner_kimi_stale_root/lib/eci-command-plan-go"
 planner_kimi_stale_binary="$planner_kimi_stale_dir/eci-command-plan"
 planner_stale_blob="$TEST_ROOT/known-stale-planner"
-git -C "$ROOT" show a1928cc:hooks/lib/eci-command-plan-go/hooks/lib/eci-command-plan-go/eci-command-plan >"$planner_stale_blob"
+# The historical residue commit predates the Kimi tree's own history; resolve
+# whichever provider repository actually holds the object.
+planner_stale_repo="$ROOT"
+if ! git -C "$planner_stale_repo" cat-file -e "a1928cc:hooks/lib/eci-command-plan-go/hooks/lib/eci-command-plan-go/eci-command-plan" 2>/dev/null; then
+  planner_stale_repo="${HOME:?}/.codex"
+fi
+git -C "$planner_stale_repo" show a1928cc:hooks/lib/eci-command-plan-go/hooks/lib/eci-command-plan-go/eci-command-plan >"$planner_stale_blob"
 mkdir -p -- "$planner_stale_dir"
 cp -- "$planner_stale_blob" "$planner_stale_binary"
 chmod 755 "$planner_stale_binary"
@@ -386,6 +409,11 @@ grep -qx 'provider = "preserve-kimi-config"' "$planner_kimi/config.toml"
 [ "$(sha256sum -- "$planner_kimi/config.toml" | awk '{print $1}')" = "$planner_kimi_config_digest" ]
 [ -f "$planner_codex/$planner_dir/.eci-command-plan.provenance" ]
 [ "$(stat -c '%a' "$planner_codex/$planner_dir/.eci-command-plan.provenance")" = 600 ]
+# planner-apply publishes the path-free provenance receipt to both provider
+# trees; the peer copy must be an owner-only content-identical record.
+[ -f "$planner_kimi/$planner_dir/.eci-command-plan.provenance" ]
+[ "$(stat -c '%a' "$planner_kimi/$planner_dir/.eci-command-plan.provenance")" = 600 ]
+cmp -- "$planner_codex/$planner_dir/.eci-command-plan.provenance" "$planner_kimi/$planner_dir/.eci-command-plan.provenance"
 run_planner_sync planner-check
 
 # The installed/deployed copy is only a launcher.  Planner maintenance must

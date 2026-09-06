@@ -433,6 +433,47 @@ planner_publish_optional_peer() {
   printf 'PLANNER_SYNCED\t%s\t%s\n' "$source_binary" "$target_binary"
 }
 
+# The provenance receipt is path-free (toolchain and content hashes only), so
+# one content-identical record is valid for both provider trees. Publish it to
+# the Kimi peer alongside the peer binary; like the peer binary publish, a
+# missing or unsafe peer is advisory and never blocks Codex repair.
+planner_publish_peer_receipt() {
+  local source_receipt="$1" target_root="$2" target_dir target_receipt target_tmp
+
+  if [ -z "$target_root" ]; then
+    printf 'ECI planner peer synchronization advisory: Kimi peer is unavailable; planner receipt remains local.\n' >&2
+    return 0
+  fi
+  if [ ! -f "$source_receipt" ] || [ -L "$source_receipt" ]; then
+    printf 'ECI planner peer synchronization advisory: local planner receipt is unavailable; Kimi peer receipt not refreshed: %s\n' "$source_receipt" >&2
+    return 0
+  fi
+  target_dir="$(planner_source_dir "$target_root")"
+  if ! /usr/bin/mkdir -p -- "$target_dir"; then
+    printf 'ECI planner peer synchronization advisory: could not prepare Kimi planner directory: %s\n' "$target_dir" >&2
+    return 0
+  fi
+  if [ ! -d "$target_dir" ] || [ -L "$target_dir" ]; then
+    printf 'ECI planner peer synchronization advisory: Kimi planner directory is unavailable: %s\n' "$target_dir" >&2
+    return 0
+  fi
+  target_receipt="$(planner_receipt_path "$target_root")"
+  target_tmp="$(/usr/bin/mktemp "$target_receipt.eci-command-plan.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$target_tmp" ]; then
+    printf 'ECI planner peer synchronization advisory: could not stage Kimi planner receipt: %s\n' "$target_receipt" >&2
+    return 0
+  fi
+  if ! /usr/bin/cp -- "$source_receipt" "$target_tmp" ||
+    ! /usr/bin/chmod 600 -- "$target_tmp" ||
+    ! /usr/bin/mv -f -- "$target_tmp" "$target_receipt" ||
+    ! /usr/bin/cmp -s -- "$source_receipt" "$target_receipt"; then
+    /usr/bin/rm -f -- "$target_tmp" 2>/dev/null || true
+    printf 'ECI planner peer synchronization advisory: could not publish Kimi planner receipt: %s\n' "$target_receipt" >&2
+    return 0
+  fi
+  printf 'PLANNER_RECEIPT_PEER_SYNCED\t%s\t%s\n' "$source_receipt" "$target_receipt"
+}
+
 planner_collect_binary_metadata() {
   local binary="$1"
 
@@ -529,6 +570,7 @@ planner_apply_locked() {
   safe_importer_build_local "$source_root" "$transaction"
   safe_importer_publish_optional_peer "$(safe_importer_binary_path "$source_root")" "$target_root"
   planner_publish_optional_peer "$source_binary" "$target_root"
+  planner_publish_peer_receipt "$receipt" "$target_root"
 }
 
 planner_cleanup() {
@@ -758,8 +800,9 @@ while IFS= read -r -d '' source_path; do
   relative="${source_path#"$source_root/"}"
   if [[ "$mode" == peer-* ]]; then
     # Planner publication atomically installs this hard-linked binary and its
-    # Codex-only provenance receipt. Peer runtime sync must not replace either
-    # artifact: maintain-planner remains the sole publication authority.
+    # provenance receipt in both provider trees. Peer runtime sync must not
+    # replace either artifact: maintain-planner remains the sole publication
+    # authority.
     case "$relative" in
       hooks/lib/eci-command-plan-go/eci-command-plan|hooks/lib/eci-command-plan-go/"$PLANNER_RECEIPT_NAME")
         continue
