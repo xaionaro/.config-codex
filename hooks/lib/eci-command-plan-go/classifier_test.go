@@ -4671,28 +4671,50 @@ func TestCurrentControlCopyOperandRoles(t *testing.T) {
 				name       string
 				command    string
 				target     string
+				segment    int
 				argvIndex  int
 				workerOnly bool
 			}{
 				{name: "marker input", command: "cp " + marker + " " + ordinary},
 				{name: "flagged marker input", command: "cp -f -- " + marker + " " + ordinary},
 				{name: "quoted marker input", command: "cp '" + marker + "' " + ordinary},
+				{name: "marker redirect input", command: "cp " + ordinary + " < " + marker + " " + ordinary + "-two"},
+				{name: "attached marker redirect input", command: "cp " + ordinary + "<" + marker + " " + ordinary + "-two"},
+				{name: "marker source with redirect input", command: "cp " + marker + " 0< " + ordinary + " " + ordinary + "-two"},
 				{name: "marker destination", command: "cp " + ordinary + " " + marker, target: marker, argvIndex: 2},
 				{name: "flagged destination", command: "cp -f -- " + ordinary + " " + marker, target: marker, argvIndex: 4},
 				{name: "terminator after source", command: "cp " + ordinary + " -- " + marker, target: marker, argvIndex: 3},
 				{name: "finite flags destination", command: "cp -frR -v --force --recursive --verbose " + ordinary + " " + marker, target: marker, argvIndex: 7},
+				{name: "bare redirect before destination", command: "cp " + ordinary + " < " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
+				{name: "attached redirect before destination", command: "cp " + ordinary + "<" + ordinary + "-input " + marker, target: marker, argvIndex: 3},
+				{name: "stdin redirect before destination", command: "cp " + ordinary + " 0< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
+				{name: "stdout input redirect before destination", command: "cp " + ordinary + " 1< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
+				{name: "stderr input redirect before destination", command: "cp " + ordinary + " 2< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
+				{name: "unsupported option-looking input before destination", command: "cp " + ordinary + " < --unknown " + marker, target: marker, argvIndex: 3},
+				{name: "terminator with input before destination", command: "cp -- " + ordinary + " 0< " + ordinary + "-input " + marker, target: marker, argvIndex: 4},
 				{name: "unknown option", command: "cp --unknown " + ordinary + " " + marker},
 				{name: "too many operands", command: "cp " + ordinary + " " + marker + " elsewhere"},
 				{name: "one operand", command: "cp " + marker},
+				{name: "heredoc remains unsupported", command: "cp " + ordinary + " << " + marker + " " + marker},
+				{name: "descriptor duplication remains unsupported", command: "cp " + ordinary + " <& " + marker + " " + marker},
+				{name: "process substitution remains visible", command: "cp " + ordinary + " <(printf) " + marker},
+				{name: "brace grouping remains visible", command: "cp " + ordinary + " < { printf } " + marker},
 				{name: "invalid generic output assignment", command: "cp --output=" + marker + " ordinary elsewhere"},
 				{name: "invalid generic output pair", command: "cp --output " + marker + " ordinary elsewhere"},
 				{name: "invalid short output", command: "cp -o" + marker + " ordinary elsewhere"},
 				{name: "independent redirect", command: "cp --output=" + marker + " ordinary elsewhere > " + marker, target: marker, argvIndex: 1},
+				{name: "input reset by output redirect", command: "cp " + ordinary + " < > " + marker, target: marker, argvIndex: 1},
+				{name: "input reset by later segment", command: "cp " + ordinary + " <; cp " + ordinary + " " + marker, target: marker, segment: 2, argvIndex: 2},
+				{name: "later copy destination", command: "cp " + marker + " 0< " + ordinary + " " + ordinary + "-two; cp " + ordinary + " " + marker, target: marker, segment: 2, argvIndex: 2},
 				{name: "generic output retained", command: "novel-tool --output=" + marker, target: marker, argvIndex: 1},
+				{name: "touch marker redirect input", command: "touch < " + marker + " " + ordinary},
+				{name: "touch marker target after input", command: "touch < " + ordinary + " " + marker, target: marker, argvIndex: 2},
 				{name: "move still mutates source", command: "mv " + marker + " " + ordinary, target: marker, argvIndex: 1},
 				{name: "alias input", command: "cp " + alias + " " + ordinary, workerOnly: true},
+				{name: "alias redirect input", command: "cp " + ordinary + " 0< " + alias + " " + ordinary + "-two", workerOnly: true},
 				{name: "alias destination", command: "cp " + ordinary + " " + alias, target: alias, argvIndex: 2, workerOnly: true},
 				{name: "flagged alias destination", command: "cp -f -- " + ordinary + " " + alias, target: alias, argvIndex: 4, workerOnly: true},
+				{name: "alias destination after input", command: "cp " + ordinary + " 0< " + ordinary + "-input " + alias, target: alias, argvIndex: 3, workerOnly: true},
 				{name: "invalid alias output", command: "cp --output=" + alias + " ordinary elsewhere", workerOnly: true},
 				{name: "move still mutates alias source", command: "mv " + alias + " " + ordinary, target: alias, argvIndex: 1, workerOnly: true},
 			} {
@@ -4723,10 +4745,14 @@ func TestCurrentControlCopyOperandRoles(t *testing.T) {
 					if diagnostic.Code != CodePlanLiveControlDenied || diagnostic.Path != marker {
 						t.Errorf("write diagnostic=%#v, want live control path %s", diagnostic, marker)
 					}
+					segment := testCase.segment
+					if segment == 0 {
+						segment = 1
+					}
 					if diagnostic.Token != testCase.target || diagnostic.ArgvIndex != testCase.argvIndex ||
-						diagnostic.ByteOffset != strings.LastIndex(testCase.command, testCase.target) {
-						t.Errorf("write coordinates=%#v, want token=%s argv_index=%d byte_offset=%d", diagnostic,
-							testCase.target, testCase.argvIndex, strings.LastIndex(testCase.command, testCase.target))
+						diagnostic.Segment != segment || diagnostic.ByteOffset != strings.LastIndex(testCase.command, testCase.target) {
+						t.Errorf("write coordinates=%#v, want token=%s segment=%d argv_index=%d byte_offset=%d", diagnostic,
+							testCase.target, segment, testCase.argvIndex, strings.LastIndex(testCase.command, testCase.target))
 					}
 				})
 			}

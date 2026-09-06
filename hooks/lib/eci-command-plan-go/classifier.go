@@ -344,9 +344,10 @@ type Result struct {
 }
 
 type token struct {
-	value  string
-	offset int
-	quoted bool
+	value               string
+	offset              int
+	quoted              bool
+	inputRedirectTarget bool
 }
 
 // outputRedirectEffect identifies the actual filesystem effect of one shell
@@ -1169,6 +1170,7 @@ func parsePlan(command string) (plan, *planError) {
 	tokenStarted := false
 	tokenQuoted := false
 	var redirectTargetPending *outputRedirect
+	inputRedirectTargetPending := false
 	quote := byte(0)
 	escaped := false
 
@@ -1198,8 +1200,10 @@ func parsePlan(command string) (plan, *planError) {
 			}
 			redirectTargetPending = nil
 		} else {
+			parsedToken.inputRedirectTarget = inputRedirectTargetPending
 			current = append(current, parsedToken)
 		}
+		inputRedirectTargetPending = false
 		value.Reset()
 		tokenStarted = false
 		tokenQuoted = false
@@ -1245,6 +1249,7 @@ func parsePlan(command string) (plan, *planError) {
 		current = current[:0]
 		redirects = redirects[:0]
 		redirectTargetPending = nil
+		inputRedirectTargetPending = false
 		segmentStart = offset + len(operator)
 		return nil
 	}
@@ -1312,6 +1317,7 @@ func parsePlan(command string) (plan, *planError) {
 				if err := flushToken(); err != nil {
 					return plan{}, err
 				}
+				inputRedirectTargetPending = false
 				effect := outputRedirectOverwrite
 				next := index + 2
 				if next < len(command) && command[next] == '>' {
@@ -1353,9 +1359,12 @@ func parsePlan(command string) (plan, *planError) {
 				} else if err := flushToken(); err != nil {
 					return plan{}, err
 				}
+				inputRedirectTargetPending = false
 				if character == '<' {
 					if index+1 < len(command) && (command[index+1] == '<' || command[index+1] == '&') {
 						index++
+					} else if index+1 >= len(command) || command[index+1] != '(' {
+						inputRedirectTargetPending = true
 					}
 					continue
 				}
@@ -1389,6 +1398,7 @@ func parsePlan(command string) (plan, *planError) {
 				if err := flushToken(); err != nil {
 					return plan{}, err
 				}
+				inputRedirectTargetPending = false
 				continue
 			}
 			if (character == '{' || character == '}') && !tokenStarted {
@@ -1398,6 +1408,7 @@ func parsePlan(command string) (plan, *planError) {
 				if err := flushToken(); err != nil {
 					return plan{}, err
 				}
+				inputRedirectTargetPending = false
 				continue
 			}
 		}
@@ -5708,6 +5719,9 @@ func isSourceWriterOperand(
 	if len(argv) == 0 || argumentIndex <= 0 || argumentIndex >= len(argv) {
 		return false
 	}
+	if argv[argumentIndex].inputRedirectTarget {
+		return false
+	}
 	name := filepath.Base(argv[0].value)
 	if name != "cp" {
 		return isSourceWriter(name, argv)
@@ -5717,6 +5731,9 @@ func isSourceWriterOperand(
 	operandCount := 0
 	destinationIndex := -1
 	for index := 1; index < len(argv); index++ {
+		if argv[index].inputRedirectTarget {
+			continue
+		}
 		value := argv[index].value
 		if !optionsEnded {
 			switch value {
