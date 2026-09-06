@@ -3,7 +3,7 @@
 #model_reasoning_effort = "xhigh"
 #oss_provider = "ollama"
 #model_catalog_json = "/home/pheona/.codex/model_catalog.json"
-model = "gpt-5.6-terra"
+model = "gpt-6-astra"
 model_reasoning_effort = "max"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -77,6 +77,7 @@ terminal_title = ["activity", "project-name", "task-progress"]
 [tui.model_availability_nux]
 "gpt-5.5" = 4
 "gpt-5.6-sol" = 4
+gpt-6-astra = 4
 
 [model_providers.openrouter]
 name = "OpenRouter"
@@ -194,6 +195,99 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/tmp/codex-stop-runtime-probe.e145WV/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-cli-active.sYBksa"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-cp-input-repair.gwH3XA/actual-cli/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-cp-input-repair.gwH3XA/actual-cli-final/work"]
+trust_level = "trusted"
+
+[projects."/var/tmp/eci-independent-6a907e8.tIZiAN/coordinator/work"]
+trust_level = "trusted"
+
+[projects."/var/tmp/eci-independent-6a907e8.tIZiAN/worker/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-final-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-final-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-final-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-final-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-handoff-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-handoff-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-handoff-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-handoff-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-verified-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-verified-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/worker-verified-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-implementation.9RMmRd/actual-cli/coordinator-verified-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-e2e.KjrDOp/worker/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-effect-e2e.KjrDOp/coordinator/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli/coordinator-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli/worker-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli/coordinator-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli/worker-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli-final/coordinator-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli-final/coordinator-fallback/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli-final/worker-planner/work"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/.cache/eci-fidelity-implementation.EwaJ8V/actual-cli-final/worker-fallback/work"]
 trust_level = "trusted"
 
 [hooks.state]
