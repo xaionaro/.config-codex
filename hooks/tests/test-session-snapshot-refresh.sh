@@ -277,6 +277,104 @@ test_old_marker_dir_with_symlink_eci_marker_is_pruned() {
   [ ! -e "$marker_dir" ] && [ ! -L "$marker_dir" ] && [ -s "$target" ]
 }
 
+# A source-only checkout must bootstrap through the actual SessionStart hook.
+test_session_start_builds_missing_go_tools() {
+  local fixture="$TMP_ROOT/source-only/.codex" module binary before after first second
+  local -a binaries=(
+    bin/eci-command-gate-mode
+    hooks/lib/eci-command-plan-go/eci-command-plan
+    hooks/lib/eci-safe-import-go/eci-safe-import
+  )
+  mkdir -p "$fixture/hooks/lib" "$fixture/bin" "$TMP_ROOT/build-config"
+  cp "$ROOT/hooks/session-snapshot.sh" "$fixture/hooks/"
+  cp "$ROOT/bin/eci-active" "$fixture/bin/"
+  cp "$ROOT/hooks/lib/"*.sh "$fixture/hooks/lib/"
+  for module in eci-command-gate-mode-go eci-command-plan-go eci-safe-import-go; do
+    mkdir -p "$fixture/hooks/lib/$module"
+    cp "$ROOT/hooks/lib/$module/go.mod" "$ROOT/hooks/lib/$module/"*.go "$fixture/hooks/lib/$module/"
+  done
+  printf '%s\n' '{"session_id":"build-test","cwd":"/tmp"}' |
+    bash "$fixture/hooks/session-snapshot.sh" >"$TMP_ROOT/build.out"
+  for binary in "${binaries[@]}"; do
+    [ -x "$fixture/$binary" ] || {
+      printf 'SessionStart did not build %s\n' "$binary" >&2
+      return 1
+    }
+  done
+  [ ! -s "$TMP_ROOT/build.out" ]
+  XDG_CONFIG_HOME="$TMP_ROOT/build-config" "$fixture/bin/eci-command-gate-mode" get |
+    jq -e '.mode == "enforcing" or .mode == "permissive"' >/dev/null
+  printf '%s\n' '{"provider":"codex","role":"coordinator","cwd":"/tmp","marker":"inactive","command":"pwd"}' |
+    "$fixture/hooks/lib/eci-command-plan-go/eci-command-plan" |
+    jq -e '.decision == "allow"' >/dev/null
+  mkdir -p "$TMP_ROOT/import-proof/build-test"
+  printf '%s\n' 'build test report' >"$TMP_ROOT/import-report"
+  "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import" \
+    --proof-root "$(realpath "$TMP_ROOT/import-proof")" --session-dir "$(realpath "$TMP_ROOT/import-proof/build-test")" \
+    --leaf wait-report --source "$TMP_ROOT/import-report"
+  cmp "$TMP_ROOT/import-report" "$TMP_ROOT/import-proof/build-test/eci_user_owned_wait.md"
+
+  before="$(stat -c '%i:%Y:%s' "${binaries[@]/#/$fixture/}")"
+  # A compiler that fails proves warm starts do not attempt another build.
+  mkdir -p "$TMP_ROOT/failing-compiler"
+  cat >"$TMP_ROOT/failing-compiler/go" <<'EOF'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then
+    shift
+    printf 'partial compiler output\n' >"$1"
+    break
+  fi
+  shift
+done
+printf 'compiler intentionally unavailable\n' >&2
+exit 1
+EOF
+  chmod +x "$TMP_ROOT/failing-compiler/go"
+  printf '%s\n' '{"session_id":"build-test","cwd":"/tmp"}' |
+    PATH="$TMP_ROOT/failing-compiler:$PATH" bash "$fixture/hooks/session-snapshot.sh" \
+      >"$TMP_ROOT/warm.out" 2>"$TMP_ROOT/warm.err"
+  after="$(stat -c '%i:%Y:%s' "${binaries[@]/#/$fixture/}")"
+  [ "$before" = "$after" ] && [ ! -s "$TMP_ROOT/warm.err" ]
+
+  rm "$fixture/bin/eci-command-gate-mode"
+  printf '%s\n' '{"session_id":"build-test","cwd":"/tmp"}' |
+    PATH="$TMP_ROOT/failing-compiler:$PATH" bash "$fixture/hooks/session-snapshot.sh" \
+      >"$TMP_ROOT/failed-build.out" 2>"$TMP_ROOT/failed-build.err"
+  [ ! -e "$fixture/bin/eci-command-gate-mode" ]
+  grep -q 'could not build.*eci-command-gate-mode' "$TMP_ROOT/failed-build.err"
+  [ ! -s "$TMP_ROOT/failed-build.out" ]
+  [ -z "$(find "$fixture" -type d -name '.eci-go-build.*' -print -quit)" ]
+
+  # Two cold starts must publish a working tool and invoke the compiler once.
+  printf '%s\n' '{"session_id":"build-test"}' |
+    bash "$fixture/hooks/session-snapshot.sh" >"$TMP_ROOT/first.out" 2>"$TMP_ROOT/first.err" &
+  first=$!
+  printf '%s\n' '{"session_id":"build-test"}' |
+    bash "$fixture/hooks/session-snapshot.sh" >"$TMP_ROOT/second.out" 2>"$TMP_ROOT/second.err" &
+  second=$!
+  wait "$first"
+  wait "$second"
+  [ "$(cat "$TMP_ROOT/first.err" "$TMP_ROOT/second.err" | grep -c 'Building missing Go tool:')" = 1 ]
+  XDG_CONFIG_HOME="$TMP_ROOT/build-config" "$fixture/bin/eci-command-gate-mode" get | jq -e '.mode' >/dev/null
+
+  # The lifecycle CLI must also recover if its importer is deleted mid-session.
+  rm "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import"
+  (
+    cd "$fixture"
+    export CODEX_PROOF_ROOT="$(realpath "$TMP_ROOT/import-proof")" CODEX_SESSION_ID=import-on-demand
+    "$fixture/bin/eci-active" on 'source-only importer test' >/dev/null
+    "$fixture/bin/eci-active" wait "$TMP_ROOT/import-report" >/dev/null
+  )
+  cmp "$TMP_ROOT/import-report" "$TMP_ROOT/import-proof/import-on-demand/eci_user_owned_wait.md"
+  [ -x "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import" ]
+}
+
+test_session_start_builds_missing_go_tools
+if [ "${1:-}" = --build-only ]; then
+  printf '%s\n' 'session-snapshot missing Go build tests: PASS'
+  exit 0
+fi
 test_active_eci_refresh_signal_for_session_start_reminder
 test_session_start_rejects_marker_owner_mismatch
 test_nested_eci_refresh_signal_is_explicit

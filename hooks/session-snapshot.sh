@@ -22,9 +22,14 @@ transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/de
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
 
+codex_valid_session_id "$session_id" || exit 0
+# A checkout contains sources only. Bootstrap before hooks need Go helpers,
+# including SessionStart payloads that do not yet have a transcript path.
+. "$HOOK_DIR/lib/eci-runtime-sync.sh"
+eci_runtime_build_missing "$(cd "$HOOK_DIR/.." && pwd -P)" || true
+
 [ -n "$transcript_path" ] || exit 0
 
-codex_valid_session_id "$session_id" || exit 0
 root="$(codex_proof_root)"
 codex_proof_root_is_safe || exit 0
 

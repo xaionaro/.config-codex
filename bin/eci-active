@@ -944,7 +944,10 @@ safe_import_fixed_session_leaf() {
   local -a arguments
 
   importer="$base_dir/hooks/lib/eci-safe-import-go/eci-safe-import"
-  [ -x "$importer" ] || return 1
+  if [ ! -x "$importer" ]; then
+    . "$base_dir/hooks/lib/eci-runtime-sync.sh"
+    eci_runtime_build_missing "$base_dir" eci-safe-import || return 1
+  fi
   root="$(codex_proof_root)"
   arguments=(--proof-root "$root" --session-dir "$session_dir" --leaf "$leaf" --source "$source")
   [ -z "$repo_id" ] || arguments+=(--repo-id "$repo_id")

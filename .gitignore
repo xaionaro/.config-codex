@@ -48,3 +48,17 @@ tmp/
 .tmp/
 state_*.sqlite*
 logs_*.sqlite*
+
+# Generated Python bytecode and Go runtime build outputs stay local.
+__pycache__/
+*.py[cod]
+/bin/eci-command-gate-mode
+eci-command-plan
+eci-safe-import
+/hooks/lib/eci-command-gate-mode-go/eci-command-gate-mode
+/tools/forecast-target-trend-go/forecast-target-trend
+*.test
+.eci-go-build.*
+.eci-go-build.lock
+.eci-command-plan.provenance
+.eci-command-plan.txn.*/

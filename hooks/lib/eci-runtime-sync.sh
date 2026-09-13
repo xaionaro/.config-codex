@@ -1,6 +1,54 @@
 #!/usr/bin/env bash
 # Synchronize one provider's hook runtime through an explicit coordinator route.
 
+# Build absent runtime tools from this provider's sources. Existing executables
+# remain untouched; explicit planner maintenance still owns source refreshes.
+# The shell bootstrap runs before any compiled helper is available.
+eci_runtime_build_missing() (
+  local root="$1" name module binary compiler lock_fd temporary=''
+  shift
+  [ "$#" -gt 0 ] || set -- eci-command-gate-mode eci-command-plan eci-safe-import
+  trap '[ -z "$temporary" ] || rm -rf -- "$temporary"' EXIT
+  for name in "$@"; do
+    case "$name" in
+      eci-command-gate-mode) binary="$root/bin/$name" ;;
+      eci-command-plan|eci-safe-import) binary="$root/hooks/lib/$name-go/$name" ;;
+      *) printf 'ECI runtime build: unknown tool: %s\n' "$name" >&2; return 1 ;;
+    esac
+    [ ! -x "$binary" ] || continue
+    module="$root/hooks/lib/$name-go"
+    if [ ! -f "$module/go.mod" ]; then
+      printf 'ECI runtime build: could not build %s: source module missing: %s\n' "$name" "$module" >&2
+      return 1
+    fi
+    # Concurrent session starts serialize per module and recheck after waiting.
+    exec {lock_fd}>"$module/.eci-go-build.lock" || return 1
+    flock "$lock_fd" || return 1
+    if [ ! -x "$binary" ]; then
+      compiler="$(command -v go)" || {
+        printf 'ECI runtime build: could not build %s: install Go and put go on PATH\n' "$name" >&2
+        return 1
+      }
+      temporary="$(mktemp -d "$module/.eci-go-build.XXXXXX")" || return 1
+      printf 'Building missing Go tool: %s\n' "$binary" >&2
+      if ! (
+        cd -- "$module" &&
+          env -u GOOS -u GOARCH -u GOARM -u GOAMD64 \
+            GOWORK=off GOFLAGS= CGO_ENABLED=0 "$compiler" build \
+            -mod=readonly -trimpath -buildvcs=false -o "$temporary/$name" . >&2
+      ); then
+        printf 'ECI runtime build: could not build %s from %s\n' "$name" "$module" >&2
+        return 1
+      fi
+      mkdir -p -- "${binary%/*}" && chmod 755 -- "$temporary/$name" &&
+        mv -f -- "$temporary/$name" "$binary" || return 1
+      rmdir -- "$temporary" || return 1
+      temporary=''
+    fi
+    exec {lock_fd}>&-
+  done
+)
+
 eci_runtime_sync_fail() {
   local code="$1"
   shift
@@ -145,7 +193,7 @@ eci_runtime_sync_collect() {
     [ -f "$source_root/bin/eci-command-gate-mode" ] && printf '%s\n' bin/eci-command-gate-mode
     # Planner builds stage short-lived Go files here; pruning this known tree
     # prevents an accidental sync race without excluding ordinary source.
-    find "$source_root/hooks" -type d -name '.eci-command-plan.txn.*' -prune -o -type f ! -path "$source_root/hooks/tests/*" ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '*.pyo' ! -name '.eci-command-plan.lock' ! -name '.eci-command-plan.publish.lock' -printf 'hooks/%P\n' 2>/dev/null
+    find "$source_root/hooks" \( -type d -name '.eci-command-plan.txn.*' -o -name '.eci-go-build.*' -o -name '.eci-go-build.lock' \) -prune -o -type f ! -path "$source_root/hooks/tests/*" ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '*.pyo' ! -name '.eci-command-plan.lock' ! -name '.eci-command-plan.publish.lock' -printf 'hooks/%P\n' 2>/dev/null
   } | LC_ALL=C sort -u | while IFS= read -r relative; do
     [ -n "$relative" ] || continue
     case "$relative" in

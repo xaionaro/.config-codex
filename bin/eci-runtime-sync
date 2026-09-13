@@ -843,9 +843,8 @@ for fixed in "${fixed_files[@]}"; do
     fail ECI_RUNTIME_SYNC_SOURCE_MISSING "canonical managed file is unavailable: $source_root/$fixed"
   manifest+=("$fixed")
 done
-# Tests, compiler-only source, bytecode caches, and editor backups are not
-# runtime inputs. Excluding them keeps deployment scoped to hook scripts,
-# runtime libraries, provider config, and installed helper binaries.
+# Keep Go production sources so a deployed runtime can rebuild missing tools.
+# Tests, bytecode caches, build staging, and editor backups are not runtime inputs.
 while IFS= read -r -d '' source_path; do
   [ -f "$source_path" ] && [ ! -L "$source_path" ] ||
     fail ECI_RUNTIME_SYNC_SOURCE_UNSAFE "canonical managed path is not a regular file: $source_path"
@@ -865,8 +864,9 @@ while IFS= read -r -d '' source_path; do
 done < <(find "$source_root/hooks" "$source_root/bin" \
   \( -path "$source_root/hooks/tests" -o -path "$source_root/hooks/tests/*" \
      -o -type d -name '.eci-command-plan.txn.*' \
+     -o -name '.eci-go-build.*' -o -name '.eci-go-build.lock' \
      -o -name '.eci-command-plan.lock' -o -name '.eci-command-plan.publish.lock' \
-     -o -name '__pycache__' -o -name '*.pyc' -o -name '*.go' -o -name '*.bak*' \) -prune \
+     -o -name '__pycache__' -o -name '*.pyc' -o -name '*_test.go' -o -name '*.bak*' \) -prune \
   -o -type f -print0 2>/dev/null | sort -z)
 [ "${#manifest[@]}" -gt 3 ] || fail ECI_RUNTIME_SYNC_SOURCE_MISSING 'canonical hooks/bin surface is empty'
 
