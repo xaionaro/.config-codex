@@ -80,6 +80,35 @@ printf '%s\n' \
 printf '%s\n' '# protected Git target test' >"$pathspec_value_session_dir/high_level_log.md"
 printf '%s\n' '# test instructions' >"$pathspec_value_session_dir/instructions.md"
 
+literal_dash_session='t04-literal-dash-session'
+literal_dash_cwd="$TMP_ROOT/literal-dash-cwd"
+mkdir -p -- "$literal_dash_cwd"
+printf '%s\n' 'hooks/validate-bash.sh' >"$literal_dash_cwd/--"
+literal_dash_session_dir="$proof_root/$literal_dash_session"
+mkdir -p -- "$literal_dash_session_dir/evidence"
+printf '%s\n' \
+  'scope: coordinator protected Git target test' \
+  "cwd: $literal_dash_cwd" \
+  "session_id: $literal_dash_session" \
+  'created_utc: 2026-09-13T00:00:00Z' \
+  >"$literal_dash_session_dir/eci_active"
+printf '%s\n' '# protected Git target test' >"$literal_dash_session_dir/high_level_log.md"
+printf '%s\n' '# test instructions' >"$literal_dash_session_dir/instructions.md"
+
+literal_dash_missing_session='t05-literal-dash-missing-session'
+literal_dash_missing_cwd="$TMP_ROOT/literal-dash-missing-cwd"
+mkdir -p -- "$literal_dash_missing_cwd"
+literal_dash_missing_session_dir="$proof_root/$literal_dash_missing_session"
+mkdir -p -- "$literal_dash_missing_session_dir/evidence"
+printf '%s\n' \
+  'scope: coordinator protected Git target test' \
+  "cwd: $literal_dash_missing_cwd" \
+  "session_id: $literal_dash_missing_session" \
+  'created_utc: 2026-09-13T00:00:00Z' \
+  >"$literal_dash_missing_session_dir/eci_active"
+printf '%s\n' '# protected Git target test' >"$literal_dash_missing_session_dir/high_level_log.md"
+printf '%s\n' '# test instructions' >"$literal_dash_missing_session_dir/instructions.md"
+
 cleanup() {
   rm -f -- "$symlink_alias"
   rm -rf -- "$TMP_ROOT"
@@ -212,11 +241,18 @@ assert_protected_denial 'git checkout -- --detach hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --detach --no-detach HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout hooks/validate-bash.sh'
 assert_protected_denial 'git checkout ./hooks/validate-bash.sh'
-assert_protected_denial 'git checkout -b iter8-valid HEAD -- hooks/validate-bash.sh'
+assert_allowed 'git checkout -b iter10-invalid HEAD -- hooks/validate-bash.sh'
+assert_allowed 'git checkout -B iter10-invalid HEAD -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --orphan iter10-invalid HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patch --unified=3 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patc --unified=3 -- hooks/validate-bash.sh'
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\" --"
 assert_protected_denial "git checkout --pathspec-from-file \"$protected_pathspec_file\" --"
+for pathspec_option in --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
+  assert_protected_denial_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
+  assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- hooks/validate-bash.sh"
+  assert_allowed_at_session "$literal_dash_missing_session" "$literal_dash_missing_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
+done
 assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
 assert_protected_denial "git --work-tree=\"$ROOT\" checkout -- hooks/validate-bash.sh"
 assert_protected_denial "GIT_WORK_TREE=\"$ROOT\" git restore -- hooks/validate-bash.sh"
@@ -259,6 +295,8 @@ assert_allowed 'git checkout --detach=foo --no-detach HEAD -- hooks/validate-bas
 assert_allowed 'git checkout --detach=foo --no-detach -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --patch=foo --unified=3 -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --patch --no-patc --unified=3 -- hooks/validate-bash.sh'
+assert_allowed "git checkout --patch --pathspec-from-file=\"$protected_pathspec_file\""
+assert_allowed "git checkout --pathspec-from-file=\"$protected_pathspec_file\" --patch"
 for patch_option in --p --pa --pat; do
   assert_allowed "git checkout $patch_option --unified=3 -- hooks/validate-bash.sh"
 done
@@ -281,6 +319,21 @@ assert_allowed 'git checkout --inter-hunk-context=3 hooks/validate-bash.sh'
 assert_allowed 'git checkout --unified 3 hooks/validate-bash.sh'
 assert_allowed 'git checkout -U 3 hooks/validate-bash.sh'
 assert_allowed 'git checkout --inter-hunk-context 3 hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --patch --unified=-1 -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --patch -U-1 -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --patch --inter-hunk-context=-1 -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --patch --unified -1 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --unified=-2 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --unified=-3 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --inter-hunk-context=-2 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --unified=bogus -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --unified=3x -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --unified=999999999999999999999999999999999999999999999999999 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch -Ubogus -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --inter-hunk-context=3x -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --unified=-1 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout -U-1 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --inter-hunk-context=-1 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --conflict merge hooks/validate-bash.sh'
 for detach_option in -dq -qd --d --de --det --deta --detac; do
   assert_allowed "git checkout $detach_option hooks/validate-bash.sh"
