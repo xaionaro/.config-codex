@@ -13,10 +13,9 @@ Start only when CODEX selects ATE. Loading this router alone does not start the 
 
 - Every worker reads this router plus only its exact role module and named conditional modules. Unknown role, predicate, or link returns to coordinator before work.
 - Coordinator/lead alone load lifecycle, prompt/model admission, blocker, pause, stop, required-critic, shutdown, and pressure-policy modules.
-- Use provider-native agents, stable reusable producer roles, fresh blind reviewers, disjoint write ownership, and one event-driven wait per expected completion.
+- Use provider-native agents, stable reusable producer roles, fresh blind reviewers, disjoint write ownership except within nested ECI as linked below, and one event-driven wait per expected completion.
 - Every root follows research → design → execution → root proof → aggregate review → post-review proof → QA. Do not collapse phases because a request looks small.
-- Emergency Unblock is an ECI-defined pre-normal branch, not an ATE workflow, role, or nested normal ECI. It preserves any active ATE marker unchanged but non-authorizing for its repair; it creates no ATE lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff.
-- ATE may contain normal ECI for bounded uncertain work and owns its normal status/lifecycle. Emergency Unblock is not that nesting; after its one repair and required E2E, fresh normal ECI begins at Step 1 for that dirty/untrusted repaired state; unrelated normal work remains active.
+- ATE may contain ECI for bounded uncertain work and retains outer status/lifecycle. Nested tasks use [ECI fast path](../explore-critique-implement/references/fast-path.md), including its scoped shared-tree ownership exception; ATE outside ECI remains unchanged.
 
 ## Module routing
 

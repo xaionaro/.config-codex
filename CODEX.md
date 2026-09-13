@@ -37,7 +37,7 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 
 - **Substantive** work changes durable behavior/risk or has multiple plausible actions; it triggers only planning/skill lookup, never workflow selection.
 - For every substantive request and every discovered issue, call `update_plan` immediately; keep `pending`, `in-progress`, and `completed` visible until work completes or the user changes scope.
-- Select exactly one root workflow: `direct`, `ECI`, or `ATE`; only ECI/ATE are lifecycle-active roots, never two. While one is active, apply its lifecycle instead of rerouting. Emergency Unblock is an ECI-defined pre-normal branch, not a workflow or nested normal ECI.
+- Select exactly one root workflow: `direct`, `ECI`, or `ATE`; only ECI/ATE are lifecycle-active roots, never two. While one is active, apply its lifecycle instead of rerouting. Every new ECI task starts main ECI and its [ECI fast path](skills/explore-critique-implement/references/fast-path.md) concurrently under that lifecycle.
 
 | Active event | Rule |
 |---|---|
@@ -47,8 +47,6 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 | `ATE` receives bounded `ECI` | Nest normal ECI; replace the ATE root only on an explicit switch, replacement, or ATE stop. |
 | Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current root active. |
 
-- A qualifying Emergency Unblock has exactly one direct fixer that self-assesses under its ECI module and owns one bounded reversible repair. It creates no workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, or handoff; no coordinator, critic, reviewer, separate E2E role, parallel fixer, ATE role, or normal lifecycle action participates in that repair; unrelated normal work remains active. It preserves any active ECI/ATE marker unchanged, but that marker does not authorize that repair.
-- Only after the repair and any required E2E does fresh normal ECI begin at Step 1 for that dirty/untrusted repaired state; unrelated normal work remains active.
 - Without an active ECI/ATE root, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
 - Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Without an active ECI/ATE root, select the new root's workflow immediately afterward and before planning, solution framing, implementation-skill lookup, or solution-oriented tools. Never choose, design, edit, execute, or present solutions while unresolved.
 - Derive `M` and `C` only from task-intrinsic requirements; workflow selection and protocol-created choices/workstreams/coordination/review do not count.
@@ -80,6 +78,7 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - Implementers never commit.
 - After every implementer handoff, the coordinator independently verifies the exact scoped diff and creates one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration.
 - A checkpoint commit is not acceptance.
+- Apply the [fast-path adoption and review boundary](skills/explore-critique-implement/references/fast-path.md#adoption-review-and-closure) to overlapping checkpoints and retained fast changes.
 - Stage only exact iteration paths or hunks. Never stage a whole dirty path or tree merely to capture one hunk.
 - If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit a separately named `pre-existing baseline` containing only independently verified, already-completed predecessor content currently coordinator-owned for the same lane. Exclude user-owned, another worker/lane, and in-flight content. Then checkpoint the iteration separately.
 - If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.
@@ -117,7 +116,7 @@ The coordinator may edit session coordination documents, ledgers, plans, status 
 | Handover or resume notes / status, sitrep, progress, checkpoint | `writing-handovers` / `writing-status-reports` |
 | Project, context, `ECI`, or `ATE` ledgers | `maintaining-context-ledger` |
 
-- Selecting `ECI`/`ATE` activates its full normal protocol and required spawned agents, never local-only. Emergency Unblock is neither a selected workflow nor a normal lifecycle action for that repair, so its direct fixer is neither dispatched nor rostered. Use `spawn_agent` for normal ECI/ATE roles, never shell-wrapped Codex agents.
+- Selecting `ECI`/`ATE` activates its full protocol and required spawned agents, never local-only. Use `spawn_agent` for ECI/ATE roles, including the reusable Fast owner, never shell-wrapped Codex agents.
 - Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.
 - Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
 - If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services.

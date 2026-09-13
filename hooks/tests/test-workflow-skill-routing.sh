@@ -13,7 +13,7 @@ ATE="$ROOT/skills/agent-teams-execution/SKILL.md"
 ECI_COVERAGE="$ROOT/skills/explore-critique-implement/references/coverage-map.md"
 STYLE_ADMISSION="$ROOT/skills/references/workflow-runtime/coding-style-admission.md"
 ATE_COVERAGE="$ROOT/skills/agent-teams-execution/references/coverage-map.md"
-EMERGENCY="$ROOT/skills/explore-critique-implement/references/emergency-unblock.md"
+FAST_PATH="$ROOT/skills/explore-critique-implement/references/fast-path.md"
 PAUSE="$ROOT/skills/references/workflow-runtime/pause-all-work.md"
 POLICY="$ROOT/skills/references/workflow-runtime/policy-pressure-tests.md"
 ECI_CRITIQUE="$ROOT/skills/explore-critique-implement/references/critique.md"
@@ -155,6 +155,9 @@ forbid_flattened_pattern() {
 assert_local_links_resolve() {
   local file target resolved
   local -a documents=(
+    "$CODEX"
+    "$LEDGER"
+    "$STATUS_REPORT"
     "$ECI"
     "$ATE"
     "$DEBUGGING"
@@ -162,7 +165,7 @@ assert_local_links_resolve() {
     "$ATE_COVERAGE"
     "$ROOT/skills/explore-critique-implement/references/coordinator.md"
     "$ROOT/skills/explore-critique-implement/references/critique.md"
-    "$EMERGENCY"
+    "$FAST_PATH"
     "$ROOT/skills/explore-critique-implement/references/explore.md"
     "$ROOT/skills/explore-critique-implement/references/implement.md"
     "$ROOT/skills/explore-critique-implement/references/review.md"
@@ -220,7 +223,7 @@ assert_role_rows_are_local() {
     '| `critic-step2` |' \
     '| `implementer` |' \
     '| Critic A/B/C, E2E |' \
-    '| emergency implementer |'; do
+    '| `fast-owner` |'; do
     assert_no_control_routes "$ECI" "$marker"
   done
   for marker in \
@@ -531,7 +534,7 @@ assert_configuration_e2e_contract() {
   require_section_pattern "$section" 'all configuration changes, including configuration-only work, require E2E' \
     "((every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes),?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work|including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+(every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes))[[:space:]]*,?[[:space:]]+requires[[:space:]]+${e2e}([[:space:].,;:!?]|$)"
   require_section_pattern "$section" 'the implementer runs E2E before Step 4' \
-    "the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+that|performs[[:space:]]+the[[:space:]]+required)[[:space:]]+${e2e}[[:space:]]+before[[:space:]]+step[[:space:]]+4"
+    "the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+(that[[:space:]]+${e2e}|it)|performs[[:space:]]+the[[:space:]]+required[[:space:]]+${e2e})[[:space:]]+before[[:space:]]+step[[:space:]]+4"
   require_section_pattern "$section" 'Step 4 independently repeats or extends the implementer E2E' \
     "step[[:space:]]+4[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+the[[:space:]]+implementer.?s[[:space:]]+${e2e}([[:space:].,;:!?]|$)"
   require_section_pattern "$section" 'the Configuration E2E requirement may not be waived' \
@@ -549,7 +552,7 @@ assert_runtime_e2e_policy() {
   require_section_pattern "$section" 'the runtime implementer runs E2E before Step 4' \
     'implementer[[:space:]]+runs[[:space:]]+it[[:space:]]+before[[:space:]]+step[[:space:]]+4'
   require_section_pattern "$section" 'Step 4 independently repeats or extends runtime E2E' \
-    'step[[:space:]]+4[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+it'
+    '(step[[:space:]]+4|which)[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+it'
   require_section_pattern "$section" 'runtime E2E exercises the relevant real path' \
     'full[[:space:]]+suite[[:space:]]+where[[:space:]]+applicable.*affected[[:space:]]+real[[:space:]]+ui/api/device/cli[[:space:]]+path'
 }
@@ -562,15 +565,13 @@ assert_e2e_policy_consumer_pointers() {
   require_line "$IMPLEMENT" "$eci_pointer"
   require_line "$REVIEW" "$eci_pointer"
   require_line "$COORDINATOR" "$eci_pointer"
+  require_line "$FAST_PATH" "$eci_pointer"
   require_line "$REVIEW_POLICY" "$review_policy_pointer"
 }
 
 assert_no_direct_configuration_e2e_waivers_in_input() {
   local source="$1" input="$2" line continuation e2e e2e_end configuration_work configuration_target configuration_e2e
   local primary_configuration_e2e_action no_waiver_action implementer_e2e_action step4_e2e_action required_e2e_action direct_caveat_suffix
-  local nonconfiguration_emergency_waiver emergency_section=none
-  local line_number=0 emergency_policy_line=0 emergency_provisional_line=0
-  local emergency_policy_count=0 emergency_provisional_count=0
   local -a direct_waiver_patterns
 
   [ "$#" -ne 3 ] || input="$3"
@@ -581,11 +582,10 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
   configuration_e2e="(^|[^[:alnum:]-])configuration(-only)?([[:space:]]+(changes?|work))?[[:space:]]+${e2e}"
   primary_configuration_e2e_action="((every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes),?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work|including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+(every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes))[[:space:]]*,?[[:space:]]+requires[[:space:]]+${e2e}"
   no_waiver_action="this[[:space:]]+configuration[[:space:]]+${e2e}[[:space:]]+requirement[[:space:]]+may[[:space:]]+not[[:space:]]+be[[:space:]]+waived"
-  implementer_e2e_action="the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+that|performs[[:space:]]+the[[:space:]]+required)[[:space:]]+${e2e}[[:space:]]+before[[:space:]]+step[[:space:]]+4"
+  implementer_e2e_action="the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+(that[[:space:]]+${e2e}|it)|performs[[:space:]]+the[[:space:]]+required[[:space:]]+${e2e})[[:space:]]+before[[:space:]]+step[[:space:]]+4"
   step4_e2e_action="step[[:space:]]+4[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+(its|the[[:space:]]+implementer.?s)[[:space:]]+${e2e}"
   required_e2e_action="(${primary_configuration_e2e_action}|${no_waiver_action}|${implementer_e2e_action}|${step4_e2e_action})"
   direct_caveat_suffix='[[:space:],;:()]*(except|unless)([[:space:]]|$)'
-  nonconfiguration_emergency_waiver='> For a non-configuration change, E2E may also be waived. E2E required by the [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) may not be waived.'
   direct_waiver_patterns=(
     "${configuration_work}[[:space:],]+((may|can)[[:space:]]+(omit|skip|waive)|do(es)?[[:space:]]+not[[:space:]]+(need|require|run|perform)|need[[:space:]]+not[[:space:]]+(require|run|perform))[[:space:]]+${e2e}${e2e_end}"
     "${e2e}[[:space:]]+(may|can)[[:space:]]+be[[:space:]]+(omitted|skipped|waived)[[:space:]]+for[[:space:]]+${configuration_target}"
@@ -600,42 +600,9 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
 
   continuation=''
   while IFS= read -r line || [ -n "$line" ]; do
-    line_number=$((line_number + 1))
-    if [ "$source" = "$EMERGENCY" ]; then
-      case "$line" in
-        '## Emergency policy')
-          emergency_section=policy
-          emergency_policy_count=$((emergency_policy_count + 1))
-          emergency_policy_line="$line_number"
-          continuation=''
-          continue
-          ;;
-        '## Provisional action')
-          emergency_section=provisional
-          emergency_provisional_count=$((emergency_provisional_count + 1))
-          emergency_provisional_line="$line_number"
-          continuation=''
-          continue
-          ;;
-        '## '*)
-          emergency_section=other
-          continuation=''
-          continue
-          ;;
-      esac
-    fi
-    if [ "$source" = "$EMERGENCY" ] && [ "$emergency_section" = policy ] &&
-      [ "$line" = "$nonconfiguration_emergency_waiver" ]; then
+    if [[ "$line" =~ ^[[:space:]]*\>[[:space:]]*(.*)$ ]]; then
       continuation=''
       continue
-    fi
-    if [[ "$line" =~ ^[[:space:]]*\>[[:space:]]*(.*)$ ]]; then
-      if [ "$source" = "$EMERGENCY" ] && [ "$emergency_section" = policy ]; then
-        line="${BASH_REMATCH[1]}"
-      else
-        continuation=''
-        continue
-      fi
     fi
     if [[ "$line" =~ ^[[:space:]]*$ ]]; then
       continuation=''
@@ -654,18 +621,12 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
       continuation="$line"
     fi
   done <<<"$input"
-
-  if [ "$source" = "$EMERGENCY" ] &&
-    { [ "$emergency_policy_count" -ne 1 ] || [ "$emergency_provisional_count" -ne 1 ] ||
-      [ "$emergency_policy_line" -ge "$emergency_provisional_line" ]; }; then
-    fail "$source requires exactly one ordered ## Emergency policy and ## Provisional action section"
-  fi
 }
 
 assert_no_direct_configuration_e2e_waivers() {
   local file input
 
-  for file in "$ECI" "$IMPLEMENT" "$REVIEW" "$COORDINATOR" "$REVIEW_POLICY" "$EMERGENCY"; do
+  for file in "$ECI" "$IMPLEMENT" "$REVIEW" "$COORDINATOR" "$REVIEW_POLICY" "$FAST_PATH"; do
     input="$(<"$file")"
     assert_no_direct_configuration_e2e_waivers_in_input "$file" "$input"
   done
@@ -681,68 +642,67 @@ assert_direct_configuration_e2e_waiver_is_rejected() {
     fail "direct configuration E2E waiver was rejected for an unexpected reason: $description"
 }
 
-emergency_fixture() {
+fast_path_fixture() {
   local policy_text="$1" provisional_text="$2"
 
   printf '%s\n%s\n\n%s\n%s\n' \
-    '## Emergency policy' "$policy_text" \
-    '## Provisional action' "$provisional_text"
+    '## Solo solving' "$policy_text" \
+    '## Adoption, review, and closure' "$provisional_text"
 }
 
 assert_configuration_e2e_waiver_fixtures() {
   local primary_configuration_contract no_waiver_contract implementer_contract step4_contract
-  local emergency_line reverse_action reverse_modal
+  local reverse_action reverse_modal
 
   primary_configuration_contract='Every configuration change, including configuration-only work, requires E2E'
   no_waiver_contract='This Configuration E2E requirement may not be waived'
   implementer_contract='The implementer runs that E2E before Step 4'
   step4_contract='Step 4 independently repeats or extends its E2E'
-  emergency_line='> For a non-configuration change, E2E may also be waived. E2E required by the [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) may not be waived.'
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'configuration reverse waiver' \
-    "$(emergency_fixture '> Configuration E2E may be waived.' '> ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'configuration reverse waiver' \
+    "$(fast_path_fixture 'Configuration E2E may be waived.' 'ordinary operational text.')"
   for reverse_modal in may can; do
     for reverse_action in omitted skipped waived; do
-      assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" "configuration changes E2E $reverse_modal be $reverse_action" \
-        "$(emergency_fixture "> Configuration changes E2E $reverse_modal be $reverse_action." '> ordinary operational text.')"
-      assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" "E2E for configuration changes $reverse_modal be $reverse_action" \
-        "$(emergency_fixture "> E2E for configuration changes $reverse_modal be $reverse_action." '> ordinary operational text.')"
+      assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "configuration changes E2E $reverse_modal be $reverse_action" \
+        "$(fast_path_fixture "Configuration changes E2E $reverse_modal be $reverse_action." 'ordinary operational text.')"
+      assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "E2E for configuration changes $reverse_modal be $reverse_action" \
+        "$(fast_path_fixture "E2E for configuration changes $reverse_modal be $reverse_action." 'ordinary operational text.')"
     done
   done
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'configuration changes E2E optional' \
-    "$(emergency_fixture '> Configuration changes E2E is optional.' '> ordinary operational text.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'E2E for configuration changes optional' \
-    "$(emergency_fixture '> E2E for configuration changes is optional.' '> ordinary operational text.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'E2E for configuration changes comma continuation' \
-    "$(emergency_fixture $'> E2E for configuration changes may be waived,\n> unless urgent.' '> ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'configuration changes E2E optional' \
+    "$(fast_path_fixture 'Configuration changes E2E is optional.' 'ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'E2E for configuration changes optional' \
+    "$(fast_path_fixture 'E2E for configuration changes is optional.' 'ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'E2E for configuration changes comma continuation' \
+    "$(fast_path_fixture $'E2E for configuration changes may be waived,\nunless urgent.' 'ordinary operational text.')"
   for reverse_action in omitted skipped; do
-    assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" "configuration may be $reverse_action" \
-      "$(emergency_fixture "> Configuration E2E may be $reverse_action." '> ordinary operational text.')"
+    assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "configuration may be $reverse_action" \
+      "$(fast_path_fixture "Configuration E2E may be $reverse_action." 'ordinary operational text.')"
   done
   for reverse_action in omitted skipped waived; do
-    assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" "configuration can be $reverse_action" \
-      "$(emergency_fixture "> Configuration E2E can be $reverse_action." '> ordinary operational text.')"
+    assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "configuration can be $reverse_action" \
+      "$(fast_path_fixture "Configuration E2E can be $reverse_action." 'ordinary operational text.')"
   done
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'configuration optional reverse waiver' \
-    "$(emergency_fixture '> Configuration E2E is optional.' '> ordinary operational text.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'configuration reverse waiver comma continuation' \
-    "$(emergency_fixture $'> Configuration E2E may be waived,\n> for a late change.' '> ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'configuration optional reverse waiver' \
+    "$(fast_path_fixture 'Configuration E2E is optional.' 'ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'configuration reverse waiver comma continuation' \
+    "$(fast_path_fixture $'Configuration E2E may be waived,\nfor a late change.' 'ordinary operational text.')"
 
   for reverse_modal in may can; do
     for reverse_action in omit skip waive; do
-      assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" "configuration work $reverse_modal $reverse_action E2E" \
-        "$(emergency_fixture "> Configuration work $reverse_modal $reverse_action E2E." '> ordinary operational text.')"
+      assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "configuration work $reverse_modal $reverse_action E2E" \
+        "$(fast_path_fixture "Configuration work $reverse_modal $reverse_action E2E." 'ordinary operational text.')"
     done
   done
   for reverse_modal in may can; do
     for reverse_action in omitted skipped waived; do
-      assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" "E2E $reverse_modal be $reverse_action for configuration" \
-        "$(emergency_fixture "> E2E $reverse_modal be $reverse_action for configuration." '> ordinary operational text.')"
+      assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "E2E $reverse_modal be $reverse_action for configuration" \
+        "$(fast_path_fixture "E2E $reverse_modal be $reverse_action for configuration." 'ordinary operational text.')"
     done
   done
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'E2E optional for configuration' \
-    "$(emergency_fixture '> E2E is optional for configuration.' '> ordinary operational text.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'skip E2E for configuration' \
-    "$(emergency_fixture '> Skip E2E for configuration.' '> ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'E2E optional for configuration' \
+    "$(fast_path_fixture 'E2E is optional for configuration.' 'ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'skip E2E for configuration' \
+    "$(fast_path_fixture 'Skip E2E for configuration.' 'ordinary operational text.')"
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'no-waiver comma-soft-wrap except caveat' \
     "$no_waiver_contract,"$'\n''except for late changes.'
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'implementer comma-soft-wrap unless caveat' \
@@ -762,42 +722,36 @@ assert_configuration_e2e_waiver_fixtures() {
     "$step4_contract except a review is delayed."
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'singular configuration waiver' \
     'Configuration change does not require E2E.'
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'Emergency quote primary contract except caveat' \
-    "$(emergency_fixture "> $primary_configuration_contract, except for late changes." '> ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'fast-path prose primary contract except caveat' \
+    "$(fast_path_fixture "$primary_configuration_contract, except for late changes." 'ordinary operational text.')"
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'ECI primary comma-soft-wrap except caveat' \
     "$primary_configuration_contract, "$'\n''except for late changes.'
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'Emergency quote comma-soft-wrap except caveat' \
-    "$(emergency_fixture "> $primary_configuration_contract, "$'\n''> except for late changes.' '> ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'fast-path prose comma-soft-wrap except caveat' \
+    "$(fast_path_fixture "$primary_configuration_contract, "$'\n''except for late changes.' 'ordinary operational text.')"
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'ECI primary comma-no-space soft-wrap except caveat' \
     "$primary_configuration_contract,"$'\n''except for late changes.'
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'Emergency quote comma-no-space soft-wrap except caveat' \
-    "$(emergency_fixture "> $primary_configuration_contract,"$'\n''> except for late changes.' '> ordinary operational text.')"
-  assert_no_direct_configuration_e2e_waivers_in_input "$ECI" 'fixture: non-Emergency historical blockquote primary caveat' \
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'fast-path prose comma-no-space soft-wrap except caveat' \
+    "$(fast_path_fixture "$primary_configuration_contract,"$'\n''except for late changes.' 'ordinary operational text.')"
+  assert_no_direct_configuration_e2e_waivers_in_input "$ECI" 'fixture: historical blockquote primary caveat' \
     "> $primary_configuration_contract, except for late changes."
   assert_no_direct_configuration_e2e_waivers_in_input "$ECI" 'fixture: later separate prose' \
     "$primary_configuration_contract."$'\n''A later prose sentence mentions except and unless without changing the contract.'
   assert_no_direct_configuration_e2e_waivers_in_input "$ECI" 'fixture: comma then blank line' \
     "$primary_configuration_contract, "$'\n\n''except for late changes.'
-  assert_no_direct_configuration_e2e_waivers_in_input "$EMERGENCY" 'fixture: exact nonconfiguration Emergency line' \
-    "$(emergency_fixture "$emergency_line" '> ordinary operational text.')"
-  assert_no_direct_configuration_e2e_waivers_in_input "$EMERGENCY" 'fixture: quoted nonconfiguration reverse waiver in Emergency policy' \
-    "$(emergency_fixture '> Non-configuration E2E may be waived.' '> ordinary historical text.')"
-  assert_no_direct_configuration_e2e_waivers_in_input "$EMERGENCY" 'fixture: quoted E2E-for-nonconfiguration waiver in Emergency policy' \
-    "$(emergency_fixture '> E2E for non-configuration changes may be waived.' '> ordinary historical text.')"
-  assert_no_direct_configuration_e2e_waivers_in_input "$EMERGENCY" 'fixture: historical quote under provisional action' \
-    "$(emergency_fixture '> normative policy remains unchanged.' '> Configuration E2E may be waived.')"
-  assert_no_direct_configuration_e2e_waivers_in_input "$EMERGENCY" 'fixture: E2E-for-configuration quote under provisional action' \
-    "$(emergency_fixture '> normative policy remains unchanged.' '> E2E for configuration changes may be waived.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'quoted E2E-for-configuration waiver under Emergency policy' \
-    "$(emergency_fixture '> E2E for configuration changes may be waived.' '> ordinary operational text.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'normative Emergency policy caveat' \
-    "$(emergency_fixture "> $primary_configuration_contract, except for late changes." '> ordinary operational text.')"
-  assert_no_direct_configuration_e2e_waivers_in_input "$EMERGENCY" 'fixture: nonconfiguration reverse waiver' \
-    "$(emergency_fixture '> normative policy remains unchanged.' 'Non-configuration E2E may be waived.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'unquoted provisional reverse waiver remains scanned' \
-    "$(emergency_fixture '> normative policy remains unchanged.' 'Configuration E2E may be waived.')"
-  assert_direct_configuration_e2e_waiver_is_rejected "$EMERGENCY" 'unquoted E2E-for-configuration waiver under provisional action remains scanned' \
-    "$(emergency_fixture '> normative policy remains unchanged.' 'E2E for configuration changes may be waived.')"
+  assert_no_direct_configuration_e2e_waivers_in_input "$FAST_PATH" 'fixture: nonconfiguration reverse waiver in fast-path policy' \
+    "$(fast_path_fixture 'Non-configuration E2E may be waived.' 'ordinary historical text.')"
+  assert_no_direct_configuration_e2e_waivers_in_input "$FAST_PATH" 'fixture: E2E-for-nonconfiguration waiver in fast-path policy' \
+    "$(fast_path_fixture 'E2E for non-configuration changes may be waived.' 'ordinary historical text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'E2E-for-configuration waiver under fast-path policy' \
+    "$(fast_path_fixture 'E2E for configuration changes may be waived.' 'ordinary operational text.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'normative fast-path policy caveat' \
+    "$(fast_path_fixture "$primary_configuration_contract, except for late changes." 'ordinary operational text.')"
+  assert_no_direct_configuration_e2e_waivers_in_input "$FAST_PATH" 'fixture: nonconfiguration reverse waiver' \
+    "$(fast_path_fixture 'normative policy remains unchanged.' 'Non-configuration E2E may be waived.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'closure configuration waiver remains scanned' \
+    "$(fast_path_fixture 'normative policy remains unchanged.' 'Configuration E2E may be waived.')"
+  assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'closure E2E-for-configuration waiver remains scanned' \
+    "$(fast_path_fixture 'normative policy remains unchanged.' 'E2E for configuration changes may be waived.')"
 }
 
 assert_coordinator_bug_routing_is_nonblocking() {
@@ -929,40 +883,30 @@ assert_ate_ordinary_role_split() {
   require_text "$ATE_ORCHESTRATION" 'Preserve executor diff/status before closure or re-spawn; confirmed crash may re-spawn the same semantic role at most twice, then escalate to the user.'
 }
 
-assert_emergency_qualification_source() {
+assert_fast_path_routes() {
   local file
-  require_text "$ECI" 'Potential Emergency Unblock cases load [Emergency Unblock](references/emergency-unblock.md) to determine qualification.'
-  require_text "$ECI" '[Emergency Unblock](references/emergency-unblock.md) to assess a potential case'
-  require_text "$ECI" 'only after coordinator qualification; immediately rejoin normal Step 1'
-  require_text "$EMERGENCY" 'Coordinator loads this module to assess a potential case.'
-  require_text "$EMERGENCY" 'The assigned emergency implementer loads it only after coordinator qualification.'
-  require_text "$EMERGENCY" 'Eligible only when already available direct evidence shows that the user is blocked now;'
-  require_text "$EMERGENCY" 'Route one implementer to make only the smallest repair.'
-  require_text "$EMERGENCY" 'make no second emergency repair'
-  for file in "$ECI" "$ATE" "$ATE_ORCHESTRATION" "$ATE_RESEARCH" "$ATE_DESIGN" "$ATE_EXECUTION" "$ATE_REVIEW" "$ATE_TESTING"; do
-    if grep -Fq -- 'Eligible only when already available direct evidence shows that the user is blocked now;' "$file"; then
-      fail "Emergency qualification phrase escaped its sole reference: $file"
-    fi
+  require_text "$ECI" '| `fast-owner` | [ECI fast path](references/fast-path.md) |'
+  require_line "$FAST_PATH" '# ECI fast path'
+  for file in "$CODEX" "$ECI" "$COORDINATOR" "$IMPLEMENT" "$REVIEW" \
+    "$ECI_CRITIQUE" "$ROOT/skills/explore-critique-implement/references/explore.md" \
+    "$ATE" "$ATE_ORCHESTRATION" "$COORDINATOR_RUNTIME" "$REVIEW_POLICY" "$LEDGER" "$STATUS_REPORT"; do
+    require_text "$file" 'fast-path.md'
+    forbid_pattern "$file" 'Emergency Unblock|emergency-unblock\.md|pre-normal|Stage: emergency'
   done
-  ! grep -Fq -- 'Emergency Unblock qualifies only when' "$ECI" ||
-    fail 'ECI router duplicates Emergency qualification'
+  [ ! -e "$ROOT/skills/explore-critique-implement/references/emergency-unblock.md" ] ||
+    fail 'obsolete emergency module remains'
+  require_pattern "$FAST_PATH" 'both paths launch for every ECI task' \
+    'Start one Fast owner alongside Step 1 for every new ECI task'
+  require_pattern "$FAST_PATH" 'existing authorization bounds solo solving' \
+    'quickest bounded solution within existing authorization'
+  require_pattern "$FAST_PATH" 'shared live files' 'same checkout and live files'
+  require_pattern "$FAST_PATH" 'retained hunks enter cumulative review' \
+    'retained fast hunk into review.*cumulative review target'
+  require_pattern "$FAST_PATH" 'closure observes task-owned writers' \
+    'either closure path.*both producers and their task-owned write-capable tools stopped or finished'
 }
 
-assert_emergency_and_go_preference() {
-  require_text "$ECI" '| emergency implementer | [Emergency Unblock](references/emergency-unblock.md) |'
-  require_text "$EMERGENCY" '# Emergency Unblock'
-  require_line "$EMERGENCY" '## Emergency policy'
-  require_line "$EMERGENCY" '## Provisional action'
-  require_text "$EMERGENCY" '**Emergency Unblock** is a one-shot provisional path before normal ECI.'
-  require_text "$EMERGENCY" 'Eligible only when already available direct evidence shows that the user is blocked now;'
-  require_text "$EMERGENCY" 'the exact bug cause and repair, or the exact missing-capability change and repair, are already known;'
-  require_text "$EMERGENCY" 'one smallest bounded reversible repair is obvious;'
-  require_text "$EMERGENCY" 'no material competing diagnosis or approach exists;'
-  require_text "$EMERGENCY" 'Qualification performs no new diagnosis, reproduction, exploration, comparison, or hypothesis testing.'
-  require_line "$EMERGENCY" '> For a non-configuration change, E2E may also be waived. E2E required by the [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) may not be waived.'
-  require_text "$EMERGENCY" '**“provisional Emergency Unblock — unchecked”**'
-  require_text "$EMERGENCY" 'Immediately after that action, start normal ECI Step 1 against the changed state.'
-  require_text "$EMERGENCY" 'If the repair fails, uncertainty appears, diagnosis is hard, or another unchecked change seems necessary, make no second emergency repair: load `debugging-discipline` and enter the normal debugging route.'
+assert_go_preference() {
   require_text "$ATE" 'concrete failure diagnosis uses debugging-discipline first.'
   require_text "$ROOT/CODEX.md" '- Use Go, not Python, for new code, scripts, helpers, and tooling. Do not port existing Python solely to apply this preference.'
   require_text "$ROOT/CODEX.md" '| Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` |'
@@ -998,9 +942,10 @@ assert_status_lane_stage_contract() {
 }
 
 assert_status_lane_stage_transition_fixture() {
-  require_text "$STATUS_REPORT" 'stage grammar and its records never authorize or deny normal'
-  require_text "$STATUS_REPORT" 'work or change the implementation/test/production status meanings below.'
-  forbid_text "$STATUS_REPORT" 'Every lane records `Stage: normal` or `Stage: emergency`.'
+  require_text "$STATUS_REPORT" 'For ECI, record `Stage: normal`.'
+  require_text "$STATUS_REPORT" 'Stage records never authorize work or change'
+  require_text "$STATUS_REPORT" 'the implementation/test/production status meanings below.'
+  forbid_text "$STATUS_REPORT" 'Stage: emergency'
   forbid_pattern "$STATUS_REPORT" 'stage.*(must|shall|needs? to).*(record|transition|authorize).*(work|report)'
 }
 
@@ -1061,7 +1006,7 @@ assert_forecast_source_contract() {
   canonical_root_directive='(^|'$'\n'')[[:blank:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:blank:]]*('$'\n''[[:blank:]]*)?<UTC[[:space:]]+ISO8601>\.[[:blank:]]*('$'\n''|$)'
   lane_post_period_addition='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
   root_post_period_addition='`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*[^`[:space:]][^`]*`'
-  role_or_stage='(explorer|implementer|coordinator|e2e|critic([[:blank:]]+(a|b|c)|[-[:blank:]]*step[[:blank:]]*2)?|step[[:blank:]]*2[[:blank:]]+critic|emergency[[:blank:]]+implementer|brainstormer|feasibility[[:blank:]]+validator|loop-breaker|reviewer|actor|stage([[:blank:]]*:[[:blank:]]*[^[:space:]]+)?)'
+  role_or_stage='(explorer|implementer|coordinator|e2e|critic([[:blank:]]+(a|b|c)|[-[:blank:]]*step[[:blank:]]*2)?|step[[:blank:]]*2[[:blank:]]+critic|fast[[:blank:]]+owner|brainstormer|feasibility[[:blank:]]+validator|loop-breaker|reviewer|actor|stage([[:blank:]]*:[[:blank:]]*[^[:space:]]+)?)'
   inline_lane_role_or_stage='`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+'
   inline_lane_role_or_stage+="$role_or_stage"
   inline_lane_role_or_stage+='[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
@@ -1140,7 +1085,7 @@ assert_forecast_source_contract_fixtures() {
     'Critic B'
     'Critic C'
     'Step 2 critic'
-    'Emergency implementer'
+    'Fast owner'
     Brainstormer
     'Feasibility validator'
     'Loop-breaker'
@@ -1815,7 +1760,7 @@ assert_least_restriction_contract() {
   require_text "$STYLE_ADMISSION" 'Style sources guide the change; a brief or tool output is review context, not a write permit.'
   require_text "$IMPLEMENT" 'A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write.'
   require_text "$ECI_CRITIQUE" 'Records, hashes, receipts, and packet shape are review context, not admission criteria.'
-  require_text "$EMERGENCY" 'It is a recovery aid, not an authorization or evidence ceremony.'
+  require_text "$FAST_PATH" 'Speed grants no broader or irreversible authority.'
   require_text "$COORDINATOR" 'Treat records, hashes, receipts, packet shape, and marker spelling as context or audit, never as permission checks.'
   require_text "$ECI_COVERAGE" 'This map is an audit index, not an admission inventory.'
   require_text "$REVIEW_POLICY" 'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work.'
@@ -1893,8 +1838,8 @@ assert_no_direct_configuration_e2e_waivers
 assert_configuration_e2e_waiver_fixtures
 assert_coordinator_bug_routing_is_nonblocking
 assert_ate_ordinary_role_split
-assert_emergency_qualification_source
-assert_emergency_and_go_preference
+assert_fast_path_routes
+assert_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture
 assert_forecast_target_history_contract

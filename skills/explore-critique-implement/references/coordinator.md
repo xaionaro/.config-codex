@@ -6,7 +6,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 - Maintain the project-understanding ledger through maintaining-context-ledger. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An active ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
-- ECI has reusable Explorer and implementer producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
+- ECI has reusable Explorer, implementer, and Fast owner producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
 - Treat records, hashes, receipts, packet shape, and marker spelling as context or audit, never as permission checks. Route only a concrete accidental wrong-target, cross-scope, or destructive effect.
 - For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:
@@ -26,12 +26,14 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - Forecasts are advisory. They never gate work, grant or deny permissions, require artifacts or receipts, create blockers, require parsers, or require per-command ceremony.
 - Use the [`forecast-target-history.tsv` audit contract](../../maintaining-context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.
 - Before a coordinator edits ordinary repository code, create or reuse a bounded implementer assignment with the target, intended change, and verification. Do not attempt then deny the ordinary edit. Report the handoff. If no implementer is free, queue it and continue other admitted work; capacity alone is not a user blocker. Session coordination documents, ledgers, plans, status reports, handoffs, and proof notes remain coordinator-owned. A genuine code-edit edge case may use the session-scoped self-service coordinator self-edit hatch for 600 seconds; re-activation replaces rather than stacks the window. It needs no user approval artifact and changes routing only.
-- Emergency Unblock is outside coordinator lifecycle: no coordinator participation or qualification, workflow, lane, assignment, dispatch, roster role, packet, transition record, ledger/status entry, handoff, or normal lifecycle action occurs for that repair; unrelated normal work remains active. It preserves any active ECI/ATE marker unchanged, but that marker does not authorize the repair. Only after the fixer's one repair and required E2E does fresh normal ECI begin at Step 1 for that dirty/untrusted repaired state; normal coordination and recording for that repaired state begin there.
+- Apply [ECI fast path](fast-path.md) at task launch and throughout shared-tree coordination, evidence rerouting, review, and closure.
 - Follow the shared pause-all-work and stop-recovery modules only on their exact predicates. Load policy-pressure-tests only for workflow-policy changes.
 
 ## Step 4 — Review coordination
 
 After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The review packet gives each reviewer the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions. A `pre-existing baseline` is context outside the iteration range. A checkpoint commit is not acceptance.
+
+Apply the [fast-path adoption boundary](fast-path.md#adoption-review-and-closure) for write-yields, additional cumulative review targets, and final-state coverage.
 
 After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
 
@@ -55,9 +57,9 @@ Use blocker-resolution-protocol only after normal handling cannot resolve a stal
 
 An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. A clean pass needs every original criterion and applicable proof/E2E, no remaining `now` REJECT/CONDITIONAL, and same-gate proof.
 
-On clean pass or user closure: write the disengage report; request/observe final implementer confirmation; record role state without closing terminal agents; then run `eci-active off <report>` last. The report contains exactly one `clean-pass:` or `user-closed:` certificate, Stop-checklist walkthrough, and incomplete-compliance analysis. Teardown failure keeps the marker armed.
+On clean pass or user closure: apply [both-producer closure](fast-path.md#adoption-review-and-closure); write the disengage report; request/observe final implementer confirmation; record role state without closing terminal agents; then run `eci-active off <report>` last. The report contains exactly one `clean-pass:` or `user-closed:` certificate, Stop-checklist walkthrough, and incomplete-compliance analysis. Teardown failure keeps the marker armed.
 
-Status uses human-readable role/lane names, parent-child trees for nested work, and a nearby redacted-verbatim requirements registry for every non-empty canonical `Lane requirement refs`; every normal ECI lane row, assignment state, and current ledger state records exactly `Stage: normal`. Emergency Unblock has no stage, lane, ledger/status entry, or role. The ledger carries the full edge chain. Direct work with inactive lineage does not fabricate refs. Use `<role label> (<runtime name>)` in every status, wait, or close update. Lineage failures are routing risks, never fake `PAUSED`/`BLOCKED` states.
+Status uses human-readable role/lane names, parent-child trees for nested work, and a nearby redacted-verbatim requirements registry for every non-empty canonical `Lane requirement refs`; ECI records `Stage: normal` with main and fast progress under the same task. The ledger carries the full edge chain. Direct work with inactive lineage does not fabricate refs. Use `<role label> (<runtime name>)` in every status, wait, or close update. Lineage failures are routing risks, never fake `PAUSED`/`BLOCKED` states.
 
 ## Provider adapter and marker
 
@@ -69,7 +71,7 @@ Every producer assignment says fresh task treatment: Explorer rereads every refe
 
 ## Exact team separation
 
-Use one stable Explorer and one stable implementer across iterations. Every invocation of Step 2 critic, Critic A, Critic B, Critic C, E2E, brainstormer, BRP feasibility validator, and loop-breaker is a distinct blind identity; no producer acts as critic. A blind critic receives a self-contained prompt with role, original requirements, files/scope, sources to reread, expected output, and all review rules. Critic C code Packet 1 remains the shared runtime’s narrow diff-only exception, never an omission of quality checks. Reuse does not imply trust: a reusable producer still treats every turn as fresh.
+Use stable Explorer and implementer identities across iterations, plus the Fast owner lifetime defined in [ECI fast path](fast-path.md#start-and-lifetime). Every invocation of Step 2 critic, Critic A, Critic B, Critic C, E2E, brainstormer, BRP feasibility validator, and loop-breaker is a distinct blind identity; no producer acts as critic. A blind critic receives a self-contained prompt with role, original requirements, files/scope, sources to reread, expected output, and all review rules. Critic C code Packet 1 remains the shared runtime’s narrow diff-only exception, never an omission of quality checks. Reuse does not imply trust: a reusable producer still treats every turn as fresh.
 
 ## Bug and blocker packet rules
 

@@ -22,7 +22,7 @@ A fresh agent reading only the ledger, without transcript or memory, must reach 
 
 Err on exhaustive useful detail for current state. Do not omit a detail because it seems obvious from transcript, local state, prior agent memory, or project familiarity. Equally, do not retain a detail because it was true earlier. Exhaustive on current state; zero on superseded state.
 
-For ECI lane tracking, record `Stage: normal` or `Stage: emergency` as useful current-state context. Missing, stale, or unknown stage metadata is reconciled while safe bounded work continues; it is never a permission prerequisite. An emergency state may name the [Emergency Unblock](../explore-critique-implement/references/emergency-unblock.md) recovery aid and record its transition, but neither record gates a return to normal work.
+For ECI, record `Stage: normal`. Track main and fast progress under the same task: owners, provisional evidence, current ECI decision, and needed adaptation. [ECI fast path](../explore-critique-implement/references/fast-path.md) defines their relationship; these are paths, not separate stages or automatic lanes. Reconcile missing or stale metadata alongside safe work; records never grant permission.
 
 For material ECI work, keep `exact user source → faithful requested outcome →
 bounded scope` as readable context. A repair stays in its lane when it is

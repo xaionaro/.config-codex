@@ -110,14 +110,15 @@ When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. Keep `Lan
 
 | Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` or `emergency` | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`<br>`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`<br>`Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` for ECI | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`<br>`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`<br>`Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
 
-Every lane may record `Stage: normal` or `Stage: emergency` as current-state
-context. Missing, stale, or unknown stage metadata is reported and reconciled
-without pausing harmless work. `Stage: emergency` may use
-`skills/explore-critique-implement/references/emergency-unblock.md` as a
-recovery aid, but stage grammar and its records never authorize or deny normal
-work or change the implementation/test/production status meanings below.
+For ECI, record `Stage: normal`. Show main and fast progress under the same task,
+with each owner, provisional evidence, current ECI decision, and adaptation.
+These are paths, not separate stages or automatic lanes; apply [ECI fast
+path](../explore-critique-implement/references/fast-path.md) for their relationship.
+Missing, stale, or unknown stage metadata is reported and reconciled
+without pausing harmless work. Stage records never authorize work or change
+the implementation/test/production status meanings below.
 
 Use a short `Requirements` list near the table only when it makes the report
 clearer. It is a readable projection of the ledger, not an admission artifact.
@@ -127,7 +128,7 @@ registries.
 | Rule | Behavior |
 | --- | --- |
 | Status vocabulary | In each status column, use only `NEW`, `IN PROGRESS`, `PAUSED`, `BLOCKED`, `CLOSED`. |
-| Stage vocabulary | `normal` or `emergency` describes known lane state. Missing/stale stage metadata is a report-quality issue to reconcile, never a work gate. |
+| Stage vocabulary | ECI uses `normal`; main/fast progress is path context within the task. Missing/stale stage metadata is a report-quality issue to reconcile, never a work gate. |
 | Implementation Status | Covers exploration, RCA, design, code changes, code review, build checks, unit/component/integration auto-tests, and source-level readiness. `CLOSED` means source-level work is accepted with relevant automated checks. |
 | Test Status | Covers E2E validation in the non-production test environment, including real devices, test services, UI manipulation, and mission/test-plan helpers. `CLOSED` means test-environment E2E passed or was explicitly waived. |
 | Prod Status | Covers E2E validation in production, including deploy provenance, real production services/devices, UI manipulation where relevant, and user-visible behavior. `CLOSED` means production E2E passed or was explicitly waived. |

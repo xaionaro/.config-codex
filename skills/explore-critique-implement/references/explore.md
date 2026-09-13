@@ -2,6 +2,8 @@
 
 Explorer-only. Treat each assignment as fresh: reread every referenced target and do not trust prior-turn summaries.
 
+Consume verified Fast owner discoveries under [evidence can reopen design](fast-path.md#evidence-can-reopen-design); independently check them against current sources when developing options.
+
 The packet must supply the current iteration, exact problem, original requirements, validated lane/assignment/full chain, related paths, prior attempts/gate findings, governed-scope style-source facts, and a bounded word cap. Reject an untraceable material option presented as current scope; reconcile missing lineage alongside known work.
 
 Return ranked options. Each states what changes, why, where, cost, tradeoffs, relevant facts with T1–T5 tags, and the needed Style Brief/Tool route/No-source proposal for any governed scope. Do not make admission or author authoritative design.

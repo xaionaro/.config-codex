@@ -2,6 +2,8 @@
 
 Implementer-only. Treat every message as fresh, reread each intended target, and change one approved iteration/diff at a time.
 
+Follow the [shared-tree priority](fast-path.md#shared-tree-and-eci-priority) and [adoption boundary](fast-path.md#adoption-review-and-closure) when integrating retained Fast owner work. Material fast evidence uses [design reopening](fast-path.md#evidence-can-reopen-design).
+
 Receive the Step 2 concrete winner, only `treatment: now` fixes, changed-file context, and prior findings. Do not implement a separate-outcome concern, deadline-driven cleanup, or `ignored-contradictory` directive. Put a genuine unrelated concern in a concise post-ECI suggestion; do not edit it in this lane. Report a material scope or style conflict before the next affected write; keep unaffected bounded work moving.
 
 A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write. Reconcile useful context alongside the work. Stop or reroute only a concrete wrong target, destructive effect, or separate requested outcome.

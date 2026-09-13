@@ -23,13 +23,15 @@ Every assignment and roster entry names one category and one semantic role. Stat
 | `exploration-only` | non-authoritative / ordinary | Fact gathering, options, evidence; never authoritative design/admission. |
 | `design` | authoritative / special | Designers, design reviewers, ECI Step 2/Critic C, ATE long-term-health reviewers. |
 | `mixed` | combined / special | Only explicit `combined fact-and-authority`; never infer it. |
-| `implementation` | non-authoritative / ordinary | Implementers, executors, test/QA, Critic A/B, correctness reviewers. |
+| `implementation` | non-authoritative / ordinary | Implementers, Fast owners, executors, test/QA, Critic A/B, correctness reviewers. |
 
 Use stable role labels where available. An unfamiliar label or changed profile prompts a quick clarification or a reasonable available assignment; it does not block normal work or require profile hashing. Request the intended model and effort when the provider exposes them, and record unavailable selector fields plainly.
 
 Send exposed selectors when they materially help the assignment. Treat unavailable or conflicting telemetry as a note for review, not a reason to halt, manufacture evidence, or reject ordinary worker progress.
 
 ### Closed role map
+
+`fast-owner`→`Fast owner` is a reusable ECI producer governed by [ECI fast path](../../explore-critique-implement/references/fast-path.md), including its scoped shared-tree ownership exception.
 
 Common labels include `explorer`→`Explorer`; `researcher`→`researcher`; `brainstormer`→`Brainstormer`; `critic-step2`→`ECI critic-step2`; `critic-A`→`ECI Critic A`; `critic-B`→`ECI Critic B`; `critic-C`→`ECI Critic C`; `e2e-gate`→`E2E gate`; `implementer`→`implementer`; `executor`→`Executor`; `qa`→`QA`; `fdr-reviewer`→`FDR reviewer`; `fdr-meta-reviewer`→`FDR meta-reviewer`; `ate-design-reviewer`→`ATE Design Reviewer`; `ate-meta-reviewer`→`ATE meta-reviewer`; `execution-reviewer-correctness`→`Execution Reviewer: correctness/fidelity`; and `execution-reviewer-long-term-health`→`Execution Reviewer: long-term-health`. Normalize when useful; unknown labels ask for clarification rather than block.
 
@@ -59,6 +61,8 @@ Only governed target paths need the assigned review; leave unrelated changes out
 
 Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route. After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration. The checkpointed `current diff` is the named parent-to-checkpoint range. Respect explicit exclusions and exclude later ambient worktree changes. This is review scope, not admission proof. Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
 
+For ECI fast contributions, apply the [adoption boundary](../../explore-critique-implement/references/fast-path.md#adoption-review-and-closure), including cumulative review beyond the iteration range and both-producer closure.
+
 After ECI `off`, record a concise teardown summary and the actual current repository state. If a historical coordination note disagrees, reconcile it; do not make hashes, receipts, or byte-exact records a prerequisite for normal teardown.
 
 ## Shared records
@@ -78,7 +82,7 @@ Prompts and selector records aid review. They do not prove effective model behav
 
 ### Stable roles and fresh identities
 
-Use the closed role map above. Reusable ordinary producer slots are Explorer, implementer, ordinary Executor, and ordinary correctness reviewer only where the outer workflow says so. Step-2 critics, Critic A, Critic B, Critic C, E2E, brainstormer, BRP validator, loop-breaker, Design Reviewer, FDR reviewer/meta-reviewer, and every special semantic role are fresh identities as their owning workflow requires. An ordinary followup never upgrades category or model class.
+Use the closed role map above. Reusable ordinary producer slots are Explorer, implementer, Fast owner, ordinary Executor, and ordinary correctness reviewer only where the outer workflow says so. Step-2 critics, Critic A, Critic B, Critic C, E2E, brainstormer, BRP validator, loop-breaker, Design Reviewer, FDR reviewer/meta-reviewer, and every special semantic role are fresh identities as their owning workflow requires. An ordinary followup never upgrades category or model class.
 
 ## Critic-manifest currentness
 
