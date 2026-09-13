@@ -2123,7 +2123,9 @@ assert_git_environment_denied_early() {
   }
 }
 
-# Git pathspec inspection admits at most sixteen literal operands.
+# The compiled coordinator planner admits finite literal Git pathspec reads;
+# the legacy fallback remains bounded separately when planner admission is
+# unavailable.
 printf -v git_diff_pathspecs_16 ' AGENTS.md%.0s' {1..16}
 git_diff_pathspecs_17="$git_diff_pathspecs_16 AGENTS.md"
 run_hook_matrix_parallel allowed git-read-argv \
@@ -2134,10 +2136,9 @@ run_hook_matrix_parallel allowed git-read-argv \
   "git -C $ROOT diff -- /etc/passwd" \
   "git -C $ROOT diff -- ../outside" \
   "git -C $ROOT diff --$git_diff_pathspecs_16" \
+  "git -C $ROOT diff --$git_diff_pathspecs_17" \
   "git -C $ROOT log -1 --oneline ':(exclude)hooks'" \
   "git -C $ROOT show --stat -1 hooks//validate-bash.sh"
-run_hook_matrix_parallel unknown coordinator-git-pathspec-denial \
-  "git -C $ROOT diff --$git_diff_pathspecs_17"
 run_hook_matrix_parallel unknown coordinator-git-context-denial \
   "git -C $TMP_ROOT status --short" \
   "git -C $ROOT -C $TMP_ROOT status --short" \

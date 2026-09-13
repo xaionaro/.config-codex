@@ -3008,6 +3008,65 @@ deferred_route_git_shape() {
   esac
 }
 
+# The compiled planner has classified this active coordinator Git read as a
+# capability-free defer. Revalidate the one finite approved-root pathspec form
+# here before the legacy inspection adapter: its historical sixteen-path bound
+# is only fallback parser capacity, not an effect boundary. If the planner is
+# unavailable or falls back transparently, this route stays inactive and the
+# legacy bound remains unchanged.
+planner_admitted_coordinator_git_read_route() {
+  [ "${hook_is_subagent:-false}" != true ] || return 1
+  [ "${plan_role:-}" = coordinator ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  [ "${CODEX_PLAN_TRANSPARENT_FALLBACK:-false}" != true ] || return 1
+  [ "${plan_status:-1}" -eq 3 ] || return 1
+  jq -e '
+    type == "object" and
+    .decision == "defer" and
+    (.diagnostic == null) and
+    ((.capabilities // []) | type == "array" and length == 0)
+  ' <<<"${plan_output:-}" >/dev/null 2>&1 || return 1
+  trusted_executable_on_path git || return 1
+  python3 - "$1" "$cwd" \
+    "$CODEX_APPROVED_REPO_ROOT_1" "$CODEX_APPROVED_REPO_ROOT_2" "$CODEX_APPROVED_REPO_ROOT_3" <<'PY'
+import os
+import shlex
+import sys
+
+command, hook_cwd, *approved_roots = sys.argv[1:]
+try:
+    tokens = shlex.split(command, posix=True, punctuation_chars=True)
+except ValueError:
+    raise SystemExit(1)
+
+operators = {";", "&", "&&", "||", "|", "(", ")", ">", ">>", ">|",
+             ">&", "<", "<<", "<<<", "<&"}
+if (not tokens or any(token in operators for token in tokens) or
+        len(tokens) < 6 or tokens[:2] != ["git", "-C"] or
+        tokens[3:5] != ["diff", "--"]):
+    raise SystemExit(1)
+
+repo = tokens[2]
+if (not repo or not os.path.isabs(repo) or os.path.normpath(repo) != repo or
+        not os.path.isdir(repo) or os.path.islink(repo) or
+        os.path.realpath(repo) != repo or repo not in approved_roots):
+    raise SystemExit(1)
+
+paths = tokens[5:]
+if len(paths) <= 16:
+    raise SystemExit(1)
+for path in paths:
+    if (not path or path.startswith(("-", "/", "~", ":")) or
+            any(mark in path for mark in ("$", "`", "\\", "*", "?", "[", "]", "(", ")")) or
+            any(ord(character) < 0x20 for character in path) or
+            os.path.normpath(path) != path or
+            any(component in {"", ".", ".."} for component in path.split("/"))):
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 git_legacy_route_shape() {
   # Compound read-only batches are complete planner decisions and stay on the
   # generic fast path. A direct Git argv that lacks its exact compiled
@@ -4471,6 +4530,10 @@ case "$plan_status" in
     # when this callback has no active ECI marker.  Inactive Git approval
     # callbacks still require the user-owned one-time artifact; ordinary
     # finite allows retain the fast exit above.
+    if planner_admitted_coordinator_git_read_route "$command"; then
+      validate_active_marker_binding
+      exit 0
+    fi
     ;;
   2)
     [ -n "$plan_output" ] || deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
