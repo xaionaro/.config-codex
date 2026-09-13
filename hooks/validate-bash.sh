@@ -10283,9 +10283,9 @@ def checkout_revision(value):
 
 def checkout_context_value_valid(value):
     # Git accepts a nonnegative 32-bit integer with an optional k/m/g suffix,
-    # plus the special signed value -1, for checkout's context options. Keep
-    # malformed and out-of-range values transparent because Git rejects them
-    # before touching the worktree.
+    # plus signed zero and -1, for checkout's context options. Keep malformed
+    # and out-of-range values transparent because Git rejects them before
+    # touching the worktree.
     match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
     if not match:
         return False
@@ -10296,7 +10296,7 @@ def checkout_context_value_valid(value):
         number = int(digits)
     except (TypeError, ValueError):
         return False
-    if sign == "-" and number != 1:
+    if sign == "-" and number not in {0, 1}:
         return False
     number *= {"": 1, "k": 1024, "K": 1024, "m": 1024 ** 2,
                "M": 1024 ** 2, "g": 1024 ** 3, "G": 1024 ** 3}[suffix]
@@ -10304,12 +10304,22 @@ def checkout_context_value_valid(value):
         number = -number
     return -(1 << 31) <= number <= (1 << 31) - 1
 
+def checkout_context_value_has_unpatched_effect(value):
+    # Git's checkout path mode accepts the negative-zero and -1 spellings
+    # without --patch and can still restore a path.  Other valid context
+    # values require --patch, so their invalid command remains transparent.
+    if not checkout_context_value_valid(value):
+        return False
+    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
+    return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) in {0, 1}
+
 def checkout_detach_state(args):
     """Return detach state, branch mode, start point, separator, and flags."""
     state = None
     branch_mode = False
     branch_startpoint = False
     context_option = False
+    context_unpatched_effect = False
     patch_mode = False
     pathspec_file_option = False
     pathspec_dash_consumed = False
@@ -10354,7 +10364,9 @@ def checkout_detach_state(args):
                 if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
                     return invalid_result()
                 branch_mode = branch_mode or option == "--orphan"
-                context_option = context_option or option in {"--unified", "--inter-hunk-context"}
+                if option in {"--unified", "--inter-hunk-context"}:
+                    context_option = True
+                    context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(argument)
                 index += 1
                 continue
             if index + 1 >= len(args):
@@ -10368,7 +10380,9 @@ def checkout_detach_state(args):
             if option == "--conflict" and context_value not in {"merge", "diff3", "zdiff3"}:
                 return invalid_result()
             branch_mode = branch_mode or option == "--orphan"
-            context_option = context_option or option in {"--unified", "--inter-hunk-context"}
+            if option in {"--unified", "--inter-hunk-context"}:
+                context_option = True
+                context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(context_value)
             index += 2
             continue
         if value.startswith("-") and not value.startswith("--"):
@@ -10378,12 +10392,14 @@ def checkout_detach_state(args):
                 short_option = short_options[short_index]
                 if short_option in {"b", "B", "U"}:
                     branch_mode = branch_mode or short_option in {"b", "B"}
-                    context_option = context_option or short_option == "U"
+                    if short_option == "U":
+                        context_option = True
                     argument = short_options[short_index + 1:]
                     if argument:
                         if short_option == "U":
                             if not checkout_context_value_valid(argument):
                                 return invalid_result()
+                            context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(argument)
                         elif argument.startswith("-"):
                             return invalid_result()
                         break
@@ -10392,6 +10408,7 @@ def checkout_detach_state(args):
                     if short_option == "U":
                         if not checkout_context_value_valid(args[index + 1]):
                             return invalid_result()
+                        context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(args[index + 1])
                     elif args[index + 1].startswith("-"):
                         return invalid_result()
                     index += 1
@@ -10404,27 +10421,56 @@ def checkout_detach_state(args):
             index += 1
             continue
         if value.startswith("--"):
+            long_option_recognized = False
             if option.startswith("--no-"):
                 suffix = option[len("--no-"):]
                 if suffix and "detach".startswith(suffix):
                     if separator:
                         return invalid_result()
                     state = False
+                    long_option_recognized = True
                 elif len(suffix) >= len("patc") and "patch".startswith(suffix):
                     if separator:
                         return invalid_result()
                     patch_mode = False
+                    long_option_recognized = True
                 elif suffix and len(suffix) < len("patc") and "patch".startswith(suffix):
                     return invalid_result()
+                elif option in {
+                    "--no-force", "--no-guess", "--no-ignore-other-worktrees",
+                    "--no-ignore-skip-worktree-bits", "--no-merge",
+                    "--no-overlay", "--no-overwrite-ignore", "--no-progress",
+                    "--no-quiet", "--no-recurse-submodules", "--no-track",
+                } and not separator:
+                    long_option_recognized = True
             elif option != "--" and "--detach".startswith(option):
                 if separator:
                     return invalid_result()
                 state = True
+                long_option_recognized = True
             elif len(option) >= len("--patc") and "--patch".startswith(option):
                 if separator:
                     return invalid_result()
                 patch_mode = True
+                long_option_recognized = True
             elif len(option) < len("--patc") and "--patch".startswith(option):
+                return invalid_result()
+            elif option in {
+                "--force", "--guess", "--ignore-other-worktrees",
+                "--ignore-skip-worktree-bits", "--merge", "--no-force",
+                "--no-guess", "--no-ignore-other-worktrees",
+                "--no-ignore-skip-worktree-bits", "--no-merge",
+                "--no-overlay", "--no-overwrite-ignore", "--no-progress",
+                "--no-quiet", "--no-recurse-submodules", "--no-track",
+                "--ours", "--overlay", "--overwrite-ignore", "--progress",
+                "--quiet", "--recurse-submodules", "--theirs", "--track",
+                "--pathspec-file-nul",
+            } and not separator:
+                long_option_recognized = True
+            if pathspec_dash_consumed and not long_option_recognized:
+                # After a literal `--` has been consumed as the pathspec
+                # filename, an unrecognized option is Git-invalid rather
+                # than a second protected pathspec.
                 return invalid_result()
         index += 1
         if pathspec_dash_consumed and not value.startswith("-"):
@@ -10436,7 +10482,7 @@ def checkout_detach_state(args):
             branch_startpoint = True
     if pathspec_dash_trailing_path:
         return invalid_result()
-    if context_option and not patch_mode:
+    if context_option and not patch_mode and not context_unpatched_effect:
         return invalid_result()
     if patch_mode and pathspec_file_option:
         return invalid_result()
