@@ -192,6 +192,7 @@ assert_protected_denial 'git restore --source=HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git restore --source HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout -- --detach hooks/validate-bash.sh'
 assert_protected_denial 'git checkout hooks/validate-bash.sh'
 assert_protected_denial 'git checkout ./hooks/validate-bash.sh'
 assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
@@ -224,6 +225,10 @@ assert_allowed 'git checkout -- hooks/does-not-exist'
 assert_allowed 'git checkout HEAD'
 assert_allowed 'git checkout --detach HEAD'
 assert_allowed 'git checkout --detach hooks/validate-bash.sh'
+assert_allowed 'git checkout -d hooks/validate-bash.sh'
+for detach_option in --d --de --det --deta --detac; do
+  assert_allowed "git checkout $detach_option hooks/validate-bash.sh"
+done
 assert_allowed 'git checkout missing-branch'
 assert_allowed "git rm --pathspec-from-file=\"$missing_pathspec_file\""
 assert_allowed "git restore --pathspec-from-file=\"$missing_pathspec_file\""

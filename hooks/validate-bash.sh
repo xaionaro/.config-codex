@@ -10269,10 +10269,20 @@ def checkout_detail(args, base):
     # With `--`, every following token is a worktree pathspec.  Without it,
     # preserve branch/ref inspection and only inspect an existing path that
     # Git cannot resolve as a revision.
-    # `--detach` selects a revision; it cannot introduce a worktree pathspec.
-    # A path-looking operand in that form is an ordinary Git usage error, not
-    # a protected-file mutation.
-    if any(value == "--detach" or value.startswith("--detach=") for value in args):
+    # Positive detach options select a revision; they cannot introduce a
+    # worktree pathspec.  Restrict this exemption to options before `--` so a
+    # pathspec literally named `--detach` remains a real target.  Git accepts
+    # unique long-option abbreviations (currently --d through --detach) and
+    # the short -d spelling; --no-detach is intentionally not exempt.
+    option_args = args[:args.index("--")] if "--" in args else args
+    def is_detach_option(value):
+        if value == "-d":
+            return True
+        if not value.startswith("--") or value.startswith("--no-"):
+            return False
+        option = value.split("=", 1)[0]
+        return option != "--" and "--detach".startswith(option)
+    if any(is_detach_option(value) for value in option_args):
         return None
     explicit_paths = "--" in args
     if explicit_paths:
