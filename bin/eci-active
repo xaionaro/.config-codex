@@ -52,7 +52,9 @@ Usage:
 Set CODEX_SESSION_ID, or CODEX_THREAD_ID when CODEX_SESSION_ID is
 unset, to target a session. Without either, the newest real session
 directory under the proof root is used. Cwd-scoped ECI state is never
-created. coordinator-edit-on and coordinator-edit-status always require an
+created. Re-running on from a different working directory re-binds the
+same session's validated marker to the current cwd. coordinator-edit-on
+and coordinator-edit-status always require an
 explicit CODEX_SESSION_ID or CODEX_THREAD_ID.
 EOF
 }
@@ -2499,6 +2501,64 @@ on)
     current_cwd="$(codex_canonical_cwd "$PWD")"
     if existing_marker="$(resolve_semantic_direct_marker_for_cwd "$(codex_proof_root)" "${session_dir##*/}" "$current_cwd")"; then
       printf 'ECI active: %s\n' "$existing_marker"
+      exit 0
+    fi
+    # A fully validated direct marker for this same session bound to a
+    # different cwd is a stale binding (the session moved to a new working
+    # root), not an ownership conflict: re-bind it to the current cwd so the
+    # lifecycle subcommands and the stop gate's session/cwd pairing keep
+    # working. Unsafe, foreign, or unparseable markers still refuse below.
+    if existing_cwd="$(codex_eci_direct_marker_cwd "$marker" "${session_dir##*/}" 2>/dev/null)" && [ "$existing_cwd" != "$current_cwd" ]; then
+      [ -d "$current_cwd" ] && [ ! -L "$current_cwd" ] || {
+        echo "ECI marker re-bind target cwd is not a canonical directory: $current_cwd" >&2
+        exit 1
+      }
+      marker_tmp="$marker.tmp.$$"
+      if [ -e "$marker_tmp" ] || [ -L "$marker_tmp" ]; then
+        echo "ECI marker temporary path is already present or unsafe: $marker_tmp" >&2
+        exit 1
+      fi
+      if ! (
+        umask 077
+        set -C
+        {
+          printf 'scope: active\n'
+          printf 'cwd: %s\n' "$current_cwd"
+          printf 'session_id: %s\n' "${session_dir##*/}"
+        } >"$marker_tmp"
+      ); then
+        [ -f "$marker_tmp" ] && [ ! -L "$marker_tmp" ] && rm -f -- "$marker_tmp" || true
+        echo "ECI marker could not be prepared atomically: $marker" >&2
+        exit 1
+      fi
+      [ -f "$marker_tmp" ] && [ ! -L "$marker_tmp" ] || {
+        [ -f "$marker_tmp" ] && [ ! -L "$marker_tmp" ] && rm -f -- "$marker_tmp" || true
+        echo "ECI marker could not be prepared atomically: $marker" >&2
+        exit 1
+      }
+      [ "$(stat -c '%h' -- "$marker_tmp" 2>/dev/null || true)" = 1 ] || {
+        rm -f -- "$marker_tmp"
+        echo "ECI marker could not be prepared atomically: $marker" >&2
+        exit 1
+      }
+      # Re-validate the live target under the mutation lock before the
+      # same-directory rename, mirroring prepare_current_direct_marker_for_mutation.
+      [ "$(codex_eci_direct_marker_cwd "$marker" "${session_dir##*/}" 2>/dev/null || true)" = "$existing_cwd" ] || {
+        rm -f -- "$marker_tmp"
+        echo "ECI marker changed while re-binding; refusing to replace it: $marker" >&2
+        exit 1
+      }
+      mv -T -- "$marker_tmp" "$marker" || {
+        [ -f "$marker_tmp" ] && [ ! -L "$marker_tmp" ] && rm -f -- "$marker_tmp" || true
+        echo "ECI marker could not be re-bound atomically: $marker" >&2
+        exit 1
+      }
+      [ "$(codex_eci_direct_marker_cwd "$marker" "${session_dir##*/}" 2>/dev/null || true)" = "$current_cwd" ] || {
+        echo "ECI marker re-bind did not revalidate: $marker" >&2
+        exit 1
+      }
+      printf 'ECI advisory: re-bound the active marker for session %s from %s to %s\n' "${session_dir##*/}" "$existing_cwd" "$current_cwd" >&2
+      printf 'ECI active: %s\n' "$marker"
       exit 0
     fi
     echo "ECI marker already exists or is unsafe: $marker" >&2

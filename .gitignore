@@ -38,6 +38,7 @@ id_ed25519
 *.log
 *.sqlite
 *.sqlite-*
+.eci-command-plan.publish.lock
 log/
 logs/
 sessions/
