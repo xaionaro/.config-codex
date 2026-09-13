@@ -906,6 +906,42 @@ assert_fast_path_routes() {
     'either closure path.*both producers and their task-owned write-capable tools stopped or finished'
 }
 
+assert_fast_path_progress_wait_contract() {
+  local codex_text="$1" fast_text="$2" wait_rule section
+
+  wait_rule="$(grep '^- If main waits on agents,' <<<"$codex_text")"
+  require_section_pattern "$wait_rule" 'cross-path wait exception scoped at the global default' \
+    'await every still-running in-scope subagent.*For waits between an ECI task.s main path and Fast owner.*fast-path\.md#progress-waits'
+  section="$(extract_h2_section <(printf '%s\n' "$fast_text") '## Progress waits')" ||
+    fail 'missing cross-path wait section'
+  require_section_pattern "$section" 'cross-path wait preserves verification and real dependencies' \
+    'available results once independently verified and the next action.s dependencies are satisfied'
+  require_section_pattern "$section" 'cross-path wait permits independent progress' \
+    'Independent work in the other path is not a completion prerequisite'
+  require_section_pattern "$section" 'cross-path wait excludes unrelated ATE and direct work' \
+    'only between an ECI task.s main path and Fast owner, including ECI nested under ATE'
+  require_section_pattern "$section" 'cross-path wait preserves aggregation and closure boundaries' \
+    'coordinator\.md#step-4--review-coordination.*#adoption-review-and-closure'
+}
+
+assert_fast_path_progress_waits() {
+  local codex_text fast_text mutation output
+  codex_text="$(<"$CODEX")"
+  fast_text="$(<"$FAST_PATH")"
+  assert_fast_path_progress_wait_contract "$codex_text" "$fast_text"
+  mutation="$(sed 's/ For waits between.*#progress-waits).*//' <<<"$codex_text")"
+  if output="$(assert_fast_path_progress_wait_contract "$mutation" "$fast_text" 2>&1)"; then
+    fail 'cross-path wait regression admitted the blanket global wait'
+  fi
+  [[ "$output" == *'cross-path wait exception'* ]] || fail "unexpected mutation failure: $output"
+  mutation="$(sed "s/ and the next action's dependencies are satisfied//" <<<"$fast_text")"
+  if output="$(assert_fast_path_progress_wait_contract "$codex_text" "$mutation" 2>&1)"; then
+    fail 'cross-path wait regression admitted unfinished required evidence'
+  fi
+  [[ "$output" == *'cross-path wait preserves verification and real dependencies'* ]] ||
+    fail "unexpected mutation failure: $output"
+}
+
 assert_go_preference() {
   require_text "$ATE" 'concrete failure diagnosis uses debugging-discipline first.'
   require_text "$ROOT/CODEX.md" '- Use Go, not Python, for new code, scripts, helpers, and tooling. Do not port existing Python solely to apply this preference.'
@@ -1839,6 +1875,7 @@ assert_configuration_e2e_waiver_fixtures
 assert_coordinator_bug_routing_is_nonblocking
 assert_ate_ordinary_role_split
 assert_fast_path_routes
+assert_fast_path_progress_waits
 assert_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture

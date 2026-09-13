@@ -11,6 +11,10 @@ This is the normative contract for the Fast owner and its integration with main 
 - Keep the owner available through acceptance or cancellation. A working result ends unnecessary edits; new evidence or ECI changes may require adaptation.
 - Reserve launch capacity for both paths. If constrained, start available work, queue the missing role for the next slot, and report actual concurrency. Yield fast execution when required ECI work needs capacity, retaining ownership and evidence. Do not merge producer/reviewer identities or add compensating artifacts.
 
+## Progress waits
+
+Use either path's available results once independently verified and the next action's dependencies are satisfied. Independent work in the other path is not a completion prerequisite. This exception applies only between an ECI task's main path and Fast owner, including ECI nested under ATE. Preserve [required review and E2E aggregation](coordinator.md#step-4--review-coordination) and the [write-yield, final-acceptance, and closure boundaries](#adoption-review-and-closure).
+
 ## Solo solving
 
 - Independently investigate, implement the quickest bounded solution within existing authorization, and validate it end to end. Iterate without waiting for main ECI Steps 1–4; do not delegate solving work.

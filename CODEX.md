@@ -119,7 +119,7 @@ The coordinator may edit session coordination documents, ledgers, plans, status 
 - Selecting `ECI`/`ATE` activates its full protocol and required spawned agents, never local-only. Use `spawn_agent` for ECI/ATE roles, including the reusable Fast owner, never shell-wrapped Codex agents.
 - Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.
 - Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
-- If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services.
+- If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services. For waits between an ECI task's main path and Fast owner, apply the [cross-path wait exception](skills/explore-critique-implement/references/fast-path.md#progress-waits).
 - Independently verify subagent claims before relying on them.
 - Subagents follow session Stop-hook prompts/proof/checklists; fix in-scope blockers; completion reports remain allowed; report recovery to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 
