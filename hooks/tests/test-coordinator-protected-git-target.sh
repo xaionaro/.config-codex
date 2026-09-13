@@ -84,6 +84,8 @@ literal_dash_session='t04-literal-dash-session'
 literal_dash_cwd="$TMP_ROOT/literal-dash-cwd"
 mkdir -p -- "$literal_dash_cwd"
 printf '%s\n' 'hooks/validate-bash.sh' >"$literal_dash_cwd/--"
+literal_dash_target_file="$ROOT/--"
+[ ! -e "$literal_dash_target_file" ] && [ ! -L "$literal_dash_target_file" ]
 literal_dash_session_dir="$proof_root/$literal_dash_session"
 mkdir -p -- "$literal_dash_session_dir/evidence"
 printf '%s\n' \
@@ -111,6 +113,7 @@ printf '%s\n' '# test instructions' >"$literal_dash_missing_session_dir/instruct
 
 cleanup() {
   rm -f -- "$symlink_alias"
+  rm -f -- "$literal_dash_target_file"
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -248,12 +251,16 @@ assert_protected_denial 'git checkout --patch --unified=3 -- hooks/validate-bash
 assert_protected_denial 'git checkout --patc --unified=3 -- hooks/validate-bash.sh'
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\" --"
 assert_protected_denial "git checkout --pathspec-from-file \"$protected_pathspec_file\" --"
-for pathspec_option in --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
-  assert_protected_denial_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
+for pathspec_option in --pathspec-fr --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
+  assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
   assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- hooks/validate-bash.sh"
   assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- --bogus"
   assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- -z"
   assert_allowed_at_session "$literal_dash_missing_session" "$literal_dash_missing_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
+done
+printf '%s\n' 'hooks/validate-bash.sh' >"$literal_dash_target_file"
+for pathspec_option in --pathspec-fr --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
+  assert_protected_denial "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
 done
 assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
 assert_protected_denial "git --work-tree=\"$ROOT\" checkout -- hooks/validate-bash.sh"
@@ -262,13 +269,18 @@ assert_protected_denial "GIT_WORK_TREE=\"$ROOT\" git checkout -- hooks/validate-
 assert_protected_denial "git --git-dir=\"$ROOT/.git\" --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
 assert_protected_denial "git rm --pathspec-from-file=\"$protected_pathspec_file\""
 assert_protected_denial "git rm --pathspec-from-file \"$protected_pathspec_file\""
+assert_protected_denial "git rm --pathspec-fr=\"$protected_pathspec_file\""
+assert_protected_denial "git rm --pathspec-fr \"$protected_pathspec_file\""
 assert_protected_denial "git rm --pathspec-from-file=\"$protected_pathspec_nul_file\" --pathspec-file-nul"
 assert_protected_denial "git restore --pathspec-from-file=\"$protected_pathspec_file\""
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\""
+assert_protected_denial "git checkout --pathspec-fr=\"$protected_pathspec_file\""
+assert_protected_denial "git checkout --pathspec-fr \"$protected_pathspec_file\""
+assert_protected_denial "git checkout --pathspec-fr=\"$protected_pathspec_file\" --unified=-1"
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_nul_file\" --pathspec-file-nul"
-for pathspec_option in --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
-  assert_protected_denial_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --detach"
-  assert_protected_denial_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option=--detach"
+for pathspec_option in --pathspec-fr --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
+  assert_allowed_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --detach"
+  assert_allowed_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option=--detach"
 done
 assert_allowed_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout --pathspec-from-file -- hooks/validate-bash.sh"
 assert_allowed_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout --pathspec-from-file"

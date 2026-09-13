@@ -9830,13 +9830,16 @@ def pathspec_candidates(value, base):
         return glob.glob(candidate, recursive=True), False
     return [candidate], False
 
-def pathspec_file_entries(value, file_nul):
+def pathspec_file_entries(value, file_nul, base):
     # Git treats '-' as stdin.  The hook has no command stdin contract for
     # this callback, so leave that and unreadable/malformed files to Git's
     # normal result instead of inventing a denial.
     if value == "-":
         return []
-    path = lexical_resolve(value, command_cwd)
+    # Git resolves a relative pathspec-file name against the effective
+    # work-tree, not the callback CWD.  This matters when --work-tree points
+    # at the repository while the callback is launched from elsewhere.
+    path = lexical_resolve(value, base)
     try:
         with open(path, "rb") as stream:
             data = stream.read()
@@ -9854,7 +9857,7 @@ def pathspec_file_entries(value, file_nul):
 
 def pathspec_from_file_argument(value):
     option, separator, argument = value.partition("=")
-    prefix = "--pathspec-from"
+    prefix = "--pathspec-fr"
     full = "--pathspec-from-file"
     if len(option) < len(prefix) or not full.startswith(option):
         return False, None
@@ -9903,7 +9906,7 @@ def collect_pathspecs(args, base):
         paths.append(value)
         index += 1
     for pathspec_file in pathspec_files:
-        paths.extend(pathspec_file_entries(pathspec_file, file_nul))
+        paths.extend(pathspec_file_entries(pathspec_file, file_nul, base))
     return paths
 
 def inside(root, path):
