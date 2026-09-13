@@ -909,17 +909,17 @@ assert_fast_path_routes() {
 assert_fast_path_progress_wait_contract() {
   local codex_text="$1" fast_text="$2" wait_rule section
 
-  wait_rule="$(grep '^- If main waits on agents,' <<<"$codex_text")"
-  require_section_pattern "$wait_rule" 'cross-path wait exception scoped at the global default' \
-    'await every still-running in-scope subagent.*For waits between an ECI task.s main path and Fast owner.*fast-path\.md#progress-waits'
+  wait_rule="$(grep '^- Wait only for' <<<"$codex_text" || true)"
+  require_section_pattern "$wait_rule" 'dependency-scoped global waits' \
+    'Wait only for.*next action.*independent.*continue'
   section="$(extract_h2_section <(printf '%s\n' "$fast_text") '## Progress waits')" ||
     fail 'missing cross-path wait section'
   require_section_pattern "$section" 'cross-path wait preserves verification and real dependencies' \
     'available results once independently verified and the next action.s dependencies are satisfied'
   require_section_pattern "$section" 'cross-path wait permits independent progress' \
     'Independent work in the other path is not a completion prerequisite'
-  require_section_pattern "$section" 'cross-path wait excludes unrelated ATE and direct work' \
-    'only between an ECI task.s main path and Fast owner, including ECI nested under ATE'
+  require_section_pattern "$section" 'cross-path wait follows general dependency scheduling' \
+    'CODEX.md.*dependency.*independent tasks'
   require_section_pattern "$section" 'cross-path wait preserves aggregation and closure boundaries' \
     'coordinator\.md#step-4--review-coordination.*#adoption-review-and-closure'
 }
@@ -929,17 +929,62 @@ assert_fast_path_progress_waits() {
   codex_text="$(<"$CODEX")"
   fast_text="$(<"$FAST_PATH")"
   assert_fast_path_progress_wait_contract "$codex_text" "$fast_text"
-  mutation="$(sed 's/ For waits between.*#progress-waits).*//' <<<"$codex_text")"
+  mutation="$(sed '/^- Wait only for/d' <<<"$codex_text")"
   if output="$(assert_fast_path_progress_wait_contract "$mutation" "$fast_text" 2>&1)"; then
     fail 'cross-path wait regression admitted the blanket global wait'
   fi
-  [[ "$output" == *'cross-path wait exception'* ]] || fail "unexpected mutation failure: $output"
+  [[ "$output" == *'dependency-scoped global waits'* ]] || fail "unexpected mutation failure: $output"
   mutation="$(sed "s/ and the next action's dependencies are satisfied//" <<<"$fast_text")"
   if output="$(assert_fast_path_progress_wait_contract "$codex_text" "$mutation" 2>&1)"; then
     fail 'cross-path wait regression admitted unfinished required evidence'
   fi
   [[ "$output" == *'cross-path wait preserves verification and real dependencies'* ]] ||
     fail "unexpected mutation failure: $output"
+}
+
+assert_concurrent_task_contract() {
+  local input="$1" clause
+  for clause in \
+    'Admit independent user-requested tasks as separate owned lanes under the active lifecycle' \
+    'Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity' \
+    'A discovered separate-outcome concern still needs user authorization' \
+    'A task clean pass does not close a root with unfinished sibling tasks' \
+    'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
+    'Disjoint same-file edits may proceed with target rereads' \
+    'The coordinator orders cross-task conflicts' \
+    'Preserve all required review/E2E evidence before accepting its target'; do
+    require_section_pattern "$input" "concurrent task contract: $clause" "$clause"
+  done
+  if [[ "$input" == *'| Unrelated request | Queue a separate root until the active root closes'* ||
+        "$input" == *'- If main waits on agents, await every still-running in-scope subagent before using results'* ]]; then
+    fail 'concurrent task contract retains blanket serialization'
+  fi
+}
+
+assert_concurrent_tasks() {
+  local input mutation output clause
+  input="$(<"$CODEX")"
+  assert_concurrent_task_contract "$input"
+  for clause in \
+    'Admit independent user-requested tasks as separate owned lanes under the active lifecycle' \
+    'Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity' \
+    'A discovered separate-outcome concern still needs user authorization' \
+    'A task clean pass does not close a root with unfinished sibling tasks' \
+    'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
+    'Disjoint same-file edits may proceed with target rereads' \
+    'The coordinator orders cross-task conflicts' \
+    'Preserve all required review/E2E evidence before accepting its target'; do
+    mutation="${input/"$clause"/}"
+    if output="$(assert_concurrent_task_contract "$mutation" 2>&1)"; then
+      fail "concurrent task mutation admitted removed rule: $clause"
+    fi
+    [[ "$output" == *'concurrent task contract'* ]] || fail "unexpected mutation failure: $output"
+  done
+  mutation="$input | Unrelated request | Queue a separate root until the active root closes"
+  if output="$(assert_concurrent_task_contract "$mutation" 2>&1)"; then
+    fail 'concurrent task mutation admitted blanket root queue'
+  fi
+  [[ "$output" == *'blanket serialization'* ]] || fail "unexpected mutation failure: $output"
 }
 
 assert_go_preference() {
@@ -1876,6 +1921,7 @@ assert_coordinator_bug_routing_is_nonblocking
 assert_ate_ordinary_role_split
 assert_fast_path_routes
 assert_fast_path_progress_waits
+assert_concurrent_tasks
 assert_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture

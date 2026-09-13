@@ -1,6 +1,6 @@
 # ECI Step 3 — Implement
 
-Implementer-only. Treat every message as fresh, reread each intended target, and change one approved iteration/diff at a time.
+Implementer-only. Treat every message as fresh, reread each intended target, and change one approved iteration/diff at a time within your assigned task. Other task owners may advance independently.
 
 Follow the [shared-tree priority](fast-path.md#shared-tree-and-eci-priority) and [adoption boundary](fast-path.md#adoption-review-and-closure) when integrating retained Fast owner work. Material fast evidence uses [design reopening](fast-path.md#evidence-can-reopen-design).
 

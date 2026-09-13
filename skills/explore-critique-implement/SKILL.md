@@ -12,6 +12,7 @@ Separate exploration, authoritative critique, implementation, and independent re
 Start only when CODEX selects ECI or active ATE explicitly routes bounded work through it. Loading this router alone does not start ECI. Use ECI for non-mechanical work with uncertainty, future behavior/routing/protocol risk, or two plausible approaches; classify by decision complexity and risk, not diff size. A one-line/local change is still non-trivial when it changes instructions, prompts, routing, protocols, public contracts, security, persistence, concurrency, architecture, or reviewer/agent behavior. Skip only a mechanical answer whose consequences are obvious, directly verifiable, and carry no future behavior or routing risk.
 
 - Maintain requirement lineage and a project-understanding ledger. The active ECI/ATE lifecycle owns normal work; ATE may contain normal ECI.
+- Apply [concurrent task scheduling](../../CODEX.md#concurrent-tasks) to new user requests, independent progress, task-local gates, and root closure. Each task keeps its own scope and main/Fast ownership.
 - For material ECI work, keep `exact user source → faithful requested outcome →
   bounded scope`. A repair necessary to meet or prove that outcome stays current-lane work.
   A concern serving a separate outcome is only a post-ECI user follow-up, never current work.

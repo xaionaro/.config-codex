@@ -13,7 +13,7 @@ This is the normative contract for the Fast owner and its integration with main 
 
 ## Progress waits
 
-Use either path's available results once independently verified and the next action's dependencies are satisfied. Independent work in the other path is not a completion prerequisite. This exception applies only between an ECI task's main path and Fast owner, including ECI nested under ATE. Preserve [required review and E2E aggregation](coordinator.md#step-4--review-coordination) and the [write-yield, final-acceptance, and closure boundaries](#adoption-review-and-closure).
+Use either path's available results once independently verified and the next action's dependencies are satisfied. Independent work in the other path is not a completion prerequisite. Apply the [CODEX.md dependency scheduling rule](../../../CODEX.md#concurrent-tasks) across independent tasks, including ECI nested under ATE. Preserve [required review and E2E aggregation](coordinator.md#step-4--review-coordination) and the [write-yield, final-acceptance, and closure boundaries](#adoption-review-and-closure).
 
 ## Solo solving
 

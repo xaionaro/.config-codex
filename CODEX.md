@@ -42,10 +42,20 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 | Active event | Rule |
 |---|---|
 | Additive follow-up | An additive follow-up extends only an active ECI/ATE root; that root owns root/additive work until `clean-pass`, `user-closed`, or `ATE-shutdown` completes; growth alone never reselects. |
-| Unrelated request | Queue a separate root until the active root closes unless the user explicitly replaces it. |
+| Unrelated user request during ECI | Admit independent user-requested tasks as separate owned lanes under the active lifecycle; start ready work without waiting for root closure. |
+| Unrelated request outside ECI | Queue a separate root until the active root closes unless the user explicitly replaces it; bounded ECI under ATE keeps its existing nesting rule. |
 | `ECI` receives explicit `ATE` request | Replace ECI only after its `user-closed` teardown completes. |
 | `ATE` receives bounded `ECI` | Nest normal ECI; replace the ATE root only on an explicit switch, replacement, or ATE stop. |
 | Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current root active. |
+
+### Concurrent tasks
+
+These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Direct work and ATE outside ECI retain their existing lifecycle and wait rules.
+
+- Give each task its own outcome, scope, owner, dependencies, and acceptance evidence. A discovered separate-outcome concern still needs user authorization; a new user request supplies its own scope.
+- Run independent ready tasks concurrently. Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity; name the constraint and continue unaffected work. Disjoint same-file edits may proceed with target rereads; serialize only conflicting hunks or shared state. The coordinator orders cross-task conflicts; main/Fast precedence applies within its own task.
+- Apply critique, iteration, checkpoint, and acceptance sequencing within the affected task. Each new ECI task retains its own main path and Fast owner. Shared targets need integrated review where changes interact.
+- A task clean pass does not close a root with unfinished sibling tasks. Keep lifecycle markers until every owned task is accepted or explicitly cancelled and its writers are stopped. Cancelling one task preserves siblings; explicit root replacement still requires full teardown.
 
 - Without an active ECI/ATE root, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
 - Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Without an active ECI/ATE root, select the new root's workflow immediately afterward and before planning, solution framing, implementation-skill lookup, or solution-oriented tools. Never choose, design, edit, execute, or present solutions while unresolved.
@@ -119,7 +129,8 @@ The coordinator may edit session coordination documents, ledgers, plans, status 
 - Selecting `ECI`/`ATE` activates its full protocol and required spawned agents, never local-only. Use `spawn_agent` for ECI/ATE roles, including the reusable Fast owner, never shell-wrapped Codex agents.
 - Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.
 - Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
-- If main waits on agents, await every still-running in-scope subagent before using results; include the current delegation/`ECI`/`ATE`, excluding closed/completed/outside agents and shell jobs/tests/background services. For waits between an ECI task's main path and Fast owner, apply the [cross-path wait exception](skills/explore-critique-implement/references/fast-path.md#progress-waits).
+- Wait only for evidence or agents needed by the next action when advancing ECI tasks; independently verify available results and continue independent ready work. Preserve all required review/E2E evidence before accepting its target, and all task-owned writer shutdowns before root teardown. Apply this dependency rule across ECI tasks and main/Fast paths, including bounded ECI under ATE.
+- Outside ECI tasks, await every still-running in-scope subagent before using results; exclude closed/completed/outside agents and shell jobs/tests/background services.
 - Independently verify subagent claims before relying on them.
 - Subagents follow session Stop-hook prompts/proof/checklists; fix in-scope blockers; completion reports remain allowed; report recovery to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
 

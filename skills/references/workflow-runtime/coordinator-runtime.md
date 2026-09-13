@@ -5,6 +5,7 @@ Coordinator/lead only. Ordinary workers load only the local module named in thei
 ## Admission and agent lifecycle
 
 - Start an outer workflow only when CODEX selects it. A nested ECI remains owned by outer ATE.
+- Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks) to ECI tasks within the active lifecycle. Stage, checkpoint, and review waits follow the affected task's dependencies; root teardown covers all owned tasks.
 - Before a durable spawn, followup, lane-changing message, or write, identify task, scope, owner, and enough target detail to avoid an accidental cross-scope change. For material ECI work, carry `exact user source → faithful requested outcome → bounded scope`. Missing lineage or a stale label calls for a concise clarification or reassignment; it does not block harmless work.
 - Keep a repair in its current lane when the record shows it is necessary to meet or prove the requested outcome. Do not relabel that repair as a substitute user requirement.
 - Record a discovered concern whose remedy serves a separate outcome as an observation or follow-up suggestion after current ECI. It does not create current lane, assignment, code change, review, deadline, forecast, or proof work.

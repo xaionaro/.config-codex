@@ -4,6 +4,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 ## Engage and route
 
+- Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks): admit independent user requests under the active lifecycle, keep task-owned producer identities, and scope stage/checkpoint waits to the affected task.
 - Maintain the project-understanding ledger through maintaining-context-ledger. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An active ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer, implementer, and Fast owner producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
@@ -55,6 +56,8 @@ Use blocker-resolution-protocol only after normal handling cannot resolve a stal
 
 ## Clean pass and teardown
 
+Accept each task against its own required evidence. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
+
 An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. A clean pass needs every original criterion and applicable proof/E2E, no remaining `now` REJECT/CONDITIONAL, and same-gate proof.
 
 On clean pass or user closure: apply [both-producer closure](fast-path.md#adoption-review-and-closure); write the disengage report; request/observe final implementer confirmation; record role state without closing terminal agents; then run `eci-active off <report>` last. The report contains exactly one `clean-pass:` or `user-closed:` certificate, Stop-checklist walkthrough, and incomplete-compliance analysis. Teardown failure keeps the marker armed.
@@ -91,7 +94,7 @@ The disengage report has `## ECI completion certificate` with exactly one `clean
 
 ## Coordinator red flags
 
-- Two changes are implemented before a new critique, or an iteration skips any of Steps 1–4.
+- Two dependent changes in one task are implemented before a new critique, or a main-path iteration skips any of Steps 1–4.
 - A critic prompt lacks lineage/full chain, original requirements, concrete winner text, or applies a defer/debt as implementation.
 - A fresh critic is replaced by a producer, a same-role followup, or serial review.
 - A known bug is sent to BRP before debugging discipline/attempt record.
