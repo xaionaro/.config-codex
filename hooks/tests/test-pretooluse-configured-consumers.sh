@@ -9,6 +9,7 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 FIXTURE_HOME="$TMP_ROOT/home"
 FIXTURE_ROOT="$FIXTURE_HOME/.codex"
 FIXTURE_KIMI_ROOT="$FIXTURE_HOME/.kimi-code"
+FIXTURE_KIMI_CONFIG="$FIXTURE_KIMI_ROOT/config.toml"
 FIXTURE_PROOF="$TMP_ROOT/proof"
 FIXTURE_SESSION='configured-pretooluse'
 FIXTURE_KIMI_SESSION='configured-kimi-pretooluse'
@@ -22,6 +23,7 @@ mkdir -p -- "$FIXTURE_ROOT" "$FIXTURE_KIMI_ROOT" "$FIXTURE_PROOF/$FIXTURE_SESSIO
   "$FIXTURE_PROOF/$FIXTURE_KIMI_SESSION" "$FIXTURE_CONFIG/eci" "$FIXTURE_STATE"
 cp -a -- "$ROOT/hooks" "$FIXTURE_ROOT/hooks"
 cp -a -- "$ROOT/hooks" "$FIXTURE_KIMI_ROOT/hooks"
+cp -- "$LIVE_KIMI_CONFIG" "$FIXTURE_KIMI_CONFIG"
 mkdir -p -- "$FIXTURE_ROOT/bin"
 cp -- "$ROOT/bin/eci-runtime-sync" "$FIXTURE_ROOT/bin/eci-runtime-sync"
 sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_ROOT/hooks/validate-bash.sh"
@@ -32,6 +34,7 @@ printf 'scope: configured consumer regression\ncwd: %s\nsession_id: %s\ncreated_
   "$FIXTURE_ROOT" "$FIXTURE_SESSION" >"$FIXTURE_PROOF/$FIXTURE_SESSION/eci_active"
 printf 'scope: configured Kimi consumer regression\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-09-13T00:00:00Z\n' \
   "$FIXTURE_KIMI_ROOT" "$FIXTURE_KIMI_SESSION" >"$FIXTURE_PROOF/$FIXTURE_KIMI_SESSION/eci_active"
+FIXTURE_KIMI_MARKER="$(realpath -e -- "$FIXTURE_PROOF/$FIXTURE_KIMI_SESSION/eci_active")"
 
 # Build the canonical fixture planner through the ordinary private publisher,
 # then remove the Kimi fixture's local planner directory. The configured Kimi
@@ -72,7 +75,8 @@ run_configured_consumer() {
     "$ROOT/hooks.json")"
   output="$TMP_ROOT/${matcher//[^[:alnum:]]/_}.json"
   printf '%s' "$input" |
-    HOME="$FIXTURE_HOME" CODEX_PROOF_ROOT="$FIXTURE_PROOF" \
+    HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_ROOT" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
+      CODEX_PROOF_ROOT="$FIXTURE_PROOF" KIMI_PROOF_ROOT="$FIXTURE_PROOF" \
       XDG_CONFIG_HOME="$FIXTURE_CONFIG" XDG_STATE_HOME="$FIXTURE_STATE" \
       bash -c "$callback" >"$output"
   jq -e --arg required_reason "$required_reason" '
@@ -100,7 +104,7 @@ run_configured_consumer '^(Edit|Write|MultiEdit|NotebookEdit)$' \
     '{session_id:$session,cwd:$cwd,tool_name:"Edit",tool_input:{file_path:"notes.txt",old_string:"old",new_string:"new"}}')" \
   'synthetic configured edit validator denial'
 
-kimi_bash_consumer="$(python3 - "$LIVE_KIMI_CONFIG" <<'PY'
+kimi_bash_consumer="$(python3 - "$FIXTURE_KIMI_CONFIG" <<'PY'
 import sys
 import tomllib
 
@@ -122,10 +126,10 @@ run_kimi_bash_consumer() {
 
   input="$TMP_ROOT/kimi-$label-input.json"
   output="$TMP_ROOT/kimi-$label-output.json"
-  jq -cn --arg cwd "$FIXTURE_ROOT" --arg session "$FIXTURE_SESSION" --arg command "$command" \
+  jq -cn --arg cwd "$FIXTURE_KIMI_ROOT" --arg session "$FIXTURE_KIMI_SESSION" --arg command "$command" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' >"$input"
   if ! timeout 10s env \
-    HOME="$FIXTURE_HOME" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
+    HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_ROOT" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
     CODEX_PROOF_ROOT="$FIXTURE_PROOF" KIMI_PROOF_ROOT="$FIXTURE_PROOF" \
     KIMI_LOCAL_PLANNER_SENTINEL="$KIMI_LOCAL_PLANNER_SENTINEL" \
     XDG_CONFIG_HOME="$FIXTURE_CONFIG" XDG_STATE_HOME="$FIXTURE_STATE" \
@@ -143,9 +147,13 @@ run_kimi_bash_consumer() {
       }
       ;;
     broad-deny)
-      jq -e '
+      jq -e --arg session "$FIXTURE_KIMI_SESSION" --arg cwd "$FIXTURE_KIMI_ROOT" \
+        --arg marker "$FIXTURE_KIMI_MARKER" '
         .hookSpecificOutput.permissionDecision == "deny" and
-        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_BROAD_DESTRUCTIVE_DENIED]"))
+        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_BROAD_DESTRUCTIVE_DENIED]")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("callback_session=" + $session)) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("callback_cwd=" + $cwd)) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("callback_marker=" + $marker))
       ' "$output" >/dev/null || {
         printf 'configured Kimi Bash consumer did not report broad-target denial: %s\n' "$command" >&2
         cat -- "$output" >&2

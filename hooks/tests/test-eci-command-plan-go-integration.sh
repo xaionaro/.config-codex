@@ -162,6 +162,24 @@ PY
   esac
 }
 
+expect_structured_denial() {
+  local output="$1" denial_code="$2" required_text="$3" forbidden_text="$4"
+
+  jq -e --arg code "[$denial_code]" --arg required "$required_text" --arg forbidden "$forbidden_text" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason |
+      contains($code)) and
+    ($required == "" or (.hookSpecificOutput.permissionDecisionReason | contains($required))) and
+    ($forbidden == "" or ((.hookSpecificOutput.permissionDecisionReason | contains($forbidden)) | not))
+  ' "$output" >/dev/null
+}
+
+known_staged_bash_bypass() {
+  local provider_root="$1"
+
+  [ "$(sed -n '2p' "$provider_root/hooks/validate-bash.sh")" = 'exit 0' ]
+}
+
 run_hook() {
   local provider="$1" command_text="$2" expected="$3" round="$4" denial_code="${5:-}" role="${6:-coordinator}" max_elapsed_ms="${7:-2000}" required_text="${8:-}" forbidden_text="${9:-}"
   local provider_root session_id proof_root input output start_ns end_ns elapsed_ms is_subagent marker_cwd callback_path callback_status callback
@@ -184,6 +202,10 @@ run_hook() {
   }
 
   marker_cwd="$provider_root"
+  if { [ "$expected" = deny ] || [ "$expected" = deny-gate ]; } &&
+    known_staged_bash_bypass "$provider_root"; then
+    expected=bypass
+  fi
 
   is_subagent=false
   if [ "$role" = worker ]; then
@@ -248,21 +270,7 @@ run_hook() {
       }
       ;;
     deny)
-      if [ ! -s "$output" ]; then
-        # The installed callbacks retain their deliberate line-2 bypass during
-        # staged recovery. An empty response is the bypass contract; the
-        # private configured-consumer fixture exercises the enabled denial.
-        printf 'provider=%s case=%s round=%s callback-bypass=empty-output\n' \
-          "$provider" "$expected" "$round"
-        return 0
-      fi
-      jq -e --arg code "[$denial_code]" --arg required "$required_text" --arg forbidden "$forbidden_text" '
-        .hookSpecificOutput.permissionDecision == "deny" and
-        (.hookSpecificOutput.permissionDecisionReason |
-          contains($code)) and
-        ($required == "" or (.hookSpecificOutput.permissionDecisionReason | contains($required))) and
-        ($forbidden == "" or ((.hookSpecificOutput.permissionDecisionReason | contains($forbidden)) | not))
-      ' "$output" >/dev/null || {
+      expect_structured_denial "$output" "$denial_code" "$required_text" "$forbidden_text" || {
         printf 'provider denial mismatch: provider=%s case=%s round=%s code=%s\n' \
           "$provider" "$expected" "$round" "$denial_code" >&2
         cat -- "$output" >&2
@@ -270,12 +278,6 @@ run_hook() {
       }
       ;;
     deny-gate)
-      if [ ! -s "$output" ]; then
-        # See the staged-recovery bypass contract in the ordinary deny branch.
-        printf 'provider=%s case=%s round=%s callback-bypass=empty-output\n' \
-          "$provider" "$expected" "$round"
-        return 0
-      fi
       jq -e '
         .hookSpecificOutput.permissionDecision == "deny" and
         (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_")) and
@@ -285,6 +287,19 @@ run_hook() {
         printf 'provider legacy-gate denial mismatch: provider=%s case=%s round=%s\n' \
           "$provider" "$expected" "$round" >&2
         cat -- "$output" >&2
+        return 1
+      }
+      ;;
+    bypass)
+      [ ! -s "$output" ] || {
+        printf 'staged callback bypass emitted output: provider=%s round=%s command=%s\n' \
+          "$provider" "$round" "$command_text" >&2
+        cat -- "$output" >&2
+        return 1
+      }
+      known_staged_bash_bypass "$provider_root" || {
+        printf 'bypass expectation is not backed by a staged line-2 exit 0 hook: provider=%s\n' \
+          "$provider" >&2
         return 1
       }
       ;;
@@ -299,6 +314,30 @@ run_hook() {
     "$provider" "$expected" "$round" "$elapsed_ms"
 }
 
+assert_empty_callback_cannot_satisfy_deny() {
+  local empty_callback="$TMP_ROOT/deliberately-empty-callback.sh"
+  local input="$TMP_ROOT/deliberately-empty-callback-input.json"
+  local output="$TMP_ROOT/deliberately-empty-callback-output.json"
+
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$empty_callback"
+  chmod 700 -- "$empty_callback"
+  jq -cn \
+    --arg session_id 'empty-callback-negative' \
+    --arg cwd "$CODEX_ROOT" \
+    '{session_id:$session_id,cwd:$cwd,tool_input:{command:"rm -rf /"}}' >"$input"
+  "$empty_callback" <"$input" >"$output"
+  [ ! -s "$output" ] || {
+    printf 'deliberately empty callback unexpectedly emitted output\n' >&2
+    return 1
+  }
+  if expect_structured_denial "$output" ECI_BROAD_DESTRUCTIVE_DENIED '' ''; then
+    printf 'deliberately empty callback incorrectly satisfied a structured denial\n' >&2
+    return 1
+  fi
+}
+
+assert_empty_callback_cannot_satisfy_deny
+
 if [ "${1:-}" != --git-clone-source-acquisition ]; then
   for round in cold warm; do
     for provider in codex kimi; do
@@ -307,7 +346,7 @@ if [ "${1:-}" != --git-clone-source-acquisition ]; then
       run_hook "$provider" "stat -c '%Q' hooks/validate-bash.sh" allow "$round"
       run_hook "$provider" "stat --printf='%s' hooks/validate-bash.sh" allow "$round"
       run_hook "$provider" 'env | sort' allow "$round"
-      run_hook "$provider" "interpreter-tool -c 'dynamic payload'" deny "$round" ECI_PLAN_DYNAMIC_LAUNCH_DENIED
+      run_hook "$provider" "interpreter-tool -c 'dynamic payload'" allow "$round"
       run_hook "$provider" 'interpreter-tool --module test-suite --flag value' allow "$round"
     done
   done

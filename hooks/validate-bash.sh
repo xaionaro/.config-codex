@@ -170,8 +170,14 @@ finalize_command_gate_denial() {
 }
 
 command_plan_pretooluse_denial() {
-  local plan_result="${1:-}"
-  printf '%s' "$plan_result" | jq -cser '
+  local plan_result="${1:-}" callback_marker='inactive'
+  if declare -p syntax_eci_markers >/dev/null 2>&1 && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+    callback_marker="${syntax_eci_markers[0]}"
+  fi
+  printf '%s' "$plan_result" | jq -cser \
+    --arg callback_session "${session_id:-<missing>}" \
+    --arg callback_cwd "${cwd:-<missing>}" \
+    --arg callback_marker "$callback_marker" '
     def valid_planner_denial:
       type == "object" and
       .decision == "deny" and
@@ -186,7 +192,9 @@ command_plan_pretooluse_denial() {
       (.hookSpecificOutput.permissionDecisionReason | type) == "string" and
       (.hookSpecificOutput.permissionDecisionReason | length > 0);
     if (length == 1 and (.[0] | valid_planner_denial)) then
-      {hookSpecificOutput: .[0].hookSpecificOutput}
+      {hookSpecificOutput: (.[0].hookSpecificOutput |
+        .permissionDecisionReason += "; callback_session=" + $callback_session +
+        ", callback_cwd=" + $callback_cwd + ", callback_marker=" + $callback_marker)}
     else
       error("invalid command-plan PreToolUse denial")
     end
