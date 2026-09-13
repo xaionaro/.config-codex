@@ -704,6 +704,31 @@ assert_allowed "git -C $REPO reset -- file.txt"
 assert_allowed "git add -- hooks.json" worker
 assert_allowed "git add README.md" worker
 
+# Worker Git inspection follows the resolved repository/effect. Harmless
+# launchers, Git options, and a current-repository -C spelling remain ordinary;
+# only a concrete foreign target or file output is denied.
+run_worker_git_inspection() {
+  local command="$1"
+  assert_allowed "$command" worker
+}
+for worker_git_read in \
+  "git status --short" \
+  "git --no-pager status --short" \
+  "git -c color.ui=false status --short" \
+  "git --git-dir=.git status --short" \
+  "git -C $REPO status --short" \
+  "env -- git -C $REPO status --short" \
+  "command git -C $REPO status --short" \
+  "git -C $REPO log -1 --oneline" \
+  "git -C $REPO diff --stat" \
+  "git -C $REPO rev-parse --show-toplevel"; do
+  run_worker_git_inspection "$worker_git_read"
+done
+assert_denied_code "git -C $FOREIGN_REPO status --short" ECI_GIT_CROSS_SCOPE_DENIED worker \
+  "active_repo=$REPO target_repo=$FOREIGN_REPO"
+assert_denied_code "git -C $REPO diff --output=$TMP_ROOT/git-inspection.out" ECI_GIT_OUTPUT_WRITE_DENIED worker \
+  "operation=output"
+
 # A timeout-wrapped Git child is exposed only after the exact callback-PATH
 # timeout executable launches the planner's harmless replacement child. The
 # launch fixture therefore keeps normal named-path work ordinary and preserves

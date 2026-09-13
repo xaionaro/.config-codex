@@ -125,38 +125,22 @@ configured_bash_consumer() {
         "$CODEX_ROOT/hooks.json"
       ;;
     kimi)
-      python3 - "$KIMI_ROOT/config.toml" <<'PY' && return 0
-import sys
-import tomllib
-
-with open(sys.argv[1], "rb") as config_file:
-    config = tomllib.load(config_file)
-for hook in config.get("hooks", []):
-    if hook.get("event") == "PreToolUse" and hook.get("matcher") == "^Bash$":
-        command = hook.get("command")
-        if isinstance(command, str) and command:
-            print(command)
-            break
-else:
-    raise SystemExit("missing Kimi PreToolUse /^Bash$/ command")
-PY
-      # Python 3.11+ supplies tomllib. Retain this compatibility fallback for
-      # an older test host only; current configured-consumer coverage exercises
-      # the tomllib path above.
       awk '
         $0 == "[[hooks]]" { event = ""; matcher = ""; command = ""; next }
-        /^event = "PreToolUse"$/ { event = "PreToolUse" }
-        /^matcher = "\^Bash\$"$/ { matcher = "^Bash$" }
-        /^command = / {
+        index($0, "event = \"PreToolUse\"") == 1 { event = "PreToolUse"; next }
+        index($0, "matcher = \"^Bash$\"") == 1 { matcher = "^Bash$"; next }
+        event == "PreToolUse" && matcher == "^Bash$" && $0 ~ /^[[:space:]]*command[[:space:]]*=/ {
           command = $0
-          sub(/^command = "/, "", command)
-          sub(/"$/, "", command)
-          if (event == "PreToolUse" && matcher == "^Bash$") {
-            print command
-            exit
-          }
+          sub(/^[^=]*=[[:space:]]*"/, "", command)
+          sub(/"[[:space:]]*$/, "", command)
+          gsub(/\\"/, "\"", command)
+          if (command != "") { print command; found = 1; exit }
         }
-      ' "$KIMI_ROOT/config.toml"
+        END { if (!found) exit 1 }
+      ' "$KIMI_ROOT/config.toml" || {
+        printf 'missing Kimi PreToolUse /^Bash$/ command in provider config: %s\n' "$KIMI_ROOT/config.toml" >&2
+        return 1
+      }
       ;;
     *) return 2 ;;
   esac

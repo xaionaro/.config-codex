@@ -70,8 +70,9 @@ PLANNER_TARGET='linux/arm64'
 PLANNER_RECEIPT_NAME='.eci-command-plan.provenance'
 PLANNER_LOCK_NAME='.eci-command-plan.publish.lock'
 PLANNER_KNOWN_STALE_ROOT='hooks'
+PLANNER_SNAPSHOT_ATTEMPTS=3
 readonly PLANNER_GO PLANNER_GOROOT PLANNER_GO_TOOL_DIR PLANNER_TARGET PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME \
-  PLANNER_KNOWN_STALE_ROOT
+  PLANNER_KNOWN_STALE_ROOT PLANNER_SNAPSHOT_ATTEMPTS
 
 declare -A planner_source_hashes=()
 planner_go_sha256=''
@@ -270,21 +271,68 @@ planner_validate_toolchain() {
 planner_snapshot_source_inputs() {
   local source_root="$1" uid="$2" transaction="$3"
   local source_dir="$source_root/hooks/lib/eci-command-plan-go" source_file source_path snapshot_path
+  local source_hash snapshot_hash stable attempt
+  local -A before_hashes=() after_hashes=()
 
-  for source_file in go.mod main.go classifier.go; do
-    source_path="$source_dir/$source_file"
-    snapshot_path="$transaction/source/$source_file"
-    /usr/bin/cp -- "$source_path" "$snapshot_path" ||
-      fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not snapshot planner source: $source_path"
-    /usr/bin/chmod 600 -- "$snapshot_path" ||
-      fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not protect planner source snapshot: $snapshot_path"
-    planner_validate_source_file "$snapshot_path" "$uid"
+  # Copying three live files one-by-one can otherwise produce a source mix
+  # that never existed.  Take a bounded coherent snapshot: source hashes must
+  # be unchanged for the whole copy and each frozen file must match its
+  # corresponding pre-copy hash.  Churn is a maintenance diagnostic and is
+  # retried; it is not an ordinary-command admission boundary.
+  for ((attempt = 1; attempt <= PLANNER_SNAPSHOT_ATTEMPTS; attempt++)); do
+    stable=true
+    before_hashes=()
+    after_hashes=()
+    for source_file in go.mod main.go classifier.go; do
+      source_path="$source_dir/$source_file"
+      if [ ! -f "$source_path" ] || [ -L "$source_path" ] ||
+        ! source_hash="$(hash_file "$source_path" 2>/dev/null)"; then
+        stable=false
+        break
+      fi
+      before_hashes["$source_file"]="$source_hash"
+    done
+
+    if [ "$stable" = true ]; then
+      for source_file in go.mod main.go classifier.go; do
+        source_path="$source_dir/$source_file"
+        snapshot_path="$transaction/source/$source_file"
+        /usr/bin/rm -f -- "$snapshot_path"
+        if ! /usr/bin/cp -- "$source_path" "$snapshot_path" ||
+          ! /usr/bin/chmod 600 -- "$snapshot_path" ||
+          [ ! -f "$snapshot_path" ] || [ -L "$snapshot_path" ] ||
+          ! snapshot_hash="$(hash_file "$snapshot_path" 2>/dev/null)" ||
+          [ "$snapshot_hash" != "${before_hashes[$source_file]}" ]; then
+          stable=false
+          break
+        fi
+      done
+    fi
+
+    if [ "$stable" = true ]; then
+      for source_file in go.mod main.go classifier.go; do
+        source_path="$source_dir/$source_file"
+        if ! after_hashes["$source_file"]="$(hash_file "$source_path" 2>/dev/null)" ||
+          [ "${after_hashes[$source_file]}" != "${before_hashes[$source_file]}" ]; then
+          stable=false
+          break
+        fi
+      done
+    fi
+
+    if [ "$stable" = true ]; then
+      for source_file in go.mod main.go classifier.go; do
+        planner_source_hashes["$source_file"]="${before_hashes[$source_file]}"
+      done
+      return 0
+    fi
+
+    printf 'ECI runtime maintenance advisory: planner source changed during coherent snapshot; retrying (%s/%s): %s\n' \
+      "$attempt" "$PLANNER_SNAPSHOT_ATTEMPTS" "$source_dir" >&2
   done
-  for source_file in go.mod main.go classifier.go; do
-    snapshot_path="$transaction/source/$source_file"
-    planner_source_hashes["$source_file"]="$(hash_file "$snapshot_path")" ||
-      fail ECI_RUNTIME_SYNC_PLANNER_SOURCE "could not hash frozen planner source: $snapshot_path"
-  done
+
+  fail ECI_RUNTIME_SYNC_PLANNER_SOURCE \
+    "could not capture a coherent planner source snapshot after $PLANNER_SNAPSHOT_ATTEMPTS attempts: $source_dir"
 }
 
 planner_build_snapshot() {

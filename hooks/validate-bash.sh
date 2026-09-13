@@ -5613,11 +5613,9 @@ raise SystemExit(1)
 PY
 }
 
-# Workers do not get a direct Git inspection capability while ECI is active.
-# Even read-only-looking Git commands can load repository-local configuration,
-# aliases, external diff/textconv helpers, hooks, or other executable helpers.
-# The coordinator has the bounded Git inspection route; workers must report
-# the requested inspection to it instead of executing Git in their own shell.
+# Git inspection is resolved from the concrete repository target below.  This
+# compatibility parser is retained only for older helper callers; it is not an
+# admission allowlist and the active worker route does not use its spelling.
 command_invokes_worker_git_read_only() {
   python3 - "$1" <<'PY'
 import os
@@ -5717,6 +5715,9 @@ PY
 WORKER_PROJECT_INSPECTION_ALLOWED=false
 WORKER_PROJECT_INSPECTION_DETAIL=""
 worker_project_inspection_route() {
+  worker_git_resolved_inspection_route "$1"
+  return $?
+
   [ "$hook_is_subagent" = true ] || return 1
   local detail
   detail="$(python3 - "$1" "$cwd" <<'PY'
@@ -8603,6 +8604,10 @@ try:
 except (IndexError, TypeError, ValueError):
     raise SystemExit(0)
 MUTATING_WORKTREE = {"add", "remove", "move", "prune", "lock", "unlock", "repair"}
+READ_ONLY_GIT = {
+    "branch", "describe", "diff", "grep", "log", "ls-files", "rev-parse",
+    "show", "status", "submodule", "remote",
+}
 SEPARATORS = {";", "&", "&&", "|", "||"}
 UNRESOLVED_TOPOLOGY = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
@@ -8653,6 +8658,7 @@ def segment_spec(tokens, segment_index):
     index, timeout_replay = observed_timeout_command_index(tokens, index, segment_index)
     if index is None:
         return None
+    repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
 
     # `env NAME=value git ...` is a normal spelling. Its assignments help
     # resolve a concrete target, but do not themselves require a special
@@ -8669,15 +8675,79 @@ def segment_spec(tokens, segment_index):
             if tokens[index] == "--":
                 index += 1
                 break
+            if tokens[index] in {"-C", "--chdir"}:
+                if index + 1 >= len(tokens):
+                    return None
+                repo_dir = resolve(tokens[index + 1], repo_dir)
+                index += 2
+                continue
+            if tokens[index].startswith(("--chdir=",)):
+                repo_dir = resolve(tokens[index].split("=", 1)[1], repo_dir)
+                index += 1
+                continue
             if tokens[index].startswith("-"):
+                if tokens[index] in {"-i", "--ignore-environment", "-v", "--debug"}:
+                    index += 1
+                    continue
+                if tokens[index] in {"-u", "--unset"}:
+                    if index + 1 >= len(tokens):
+                        return None
+                    index += 2
+                    continue
+                if tokens[index].startswith(("--unset=",)):
+                    index += 1
+                    continue
                 return None
             break
+
+    # Transparent launch wrappers preserve the Git child and its current
+    # repository target. Their option values are skipped structurally; no
+    # finite wrapper-name allowlist is used as an admission decision.
+    while index < len(tokens):
+        name = os.path.basename(tokens[index])
+        if name in {"command", "builtin", "exec", "nohup", "setsid"}:
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                if name == "exec" and tokens[index] == "-a":
+                    if index + 1 >= len(tokens):
+                        return None
+                    index += 2
+                else:
+                    index += 1
+            continue
+        if name == "busybox":
+            index += 1
+            if index < len(tokens) and tokens[index] == "--":
+                index += 1
+            continue
+        if name == "stdbuf":
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+            continue
+        if name in {"chronic", "nice", "time", "prlimit", "systemd-run"}:
+            index += 1
+            value_options = {
+                "-n", "-p", "--adjustment", "--property", "--unit",
+                "--setenv", "--working-directory", "-C", "--chdir",
+            }
+            while index < len(tokens) and tokens[index].startswith("-"):
+                if tokens[index] == "--":
+                    index += 1
+                    break
+                if tokens[index] in value_options:
+                    if index + 1 >= len(tokens):
+                        return None
+                    index += 2
+                else:
+                    index += 1
+            continue
+        break
 
     if index >= len(tokens) or os.path.basename(tokens[index]) != "git":
         return None
     index += 1
 
-    repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
     git_dir = environment.get("GIT_DIR")
     work_tree = environment.get("GIT_WORK_TREE")
     value_options = {
@@ -8746,6 +8816,24 @@ def segment_spec(tokens, segment_index):
         if index + 1 < len(tokens) and tokens[index + 1] in MUTATING_WORKTREE:
             return "worktree", repo_dir
         return None
+    if verb == "branch":
+        branch_mutators = {
+            "-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move",
+            "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream",
+        }
+        if any(value in branch_mutators or not value.startswith("-") for value in tokens[index + 1:]):
+            return "repository", repo_dir
+        return "inspection", repo_dir
+    if verb == "remote":
+        remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
+        if tokens[index + 1:index + 2] and tokens[index + 1] in remote_mutators:
+            return "repository", repo_dir
+        return "inspection", repo_dir
+    if verb in READ_ONLY_GIT - {"branch", "remote"}:
+        if any(value in {"-o", "--output"} or value.startswith("--output=")
+               for value in tokens[index + 1:]):
+            return "output", repo_dir
+        return "inspection", repo_dir
     # These operations are ordinary when they resolve inside the current
     # repository. They still expose a concrete foreign repository target.
     if verb in {"branch", "remote", "push"}:
@@ -8783,6 +8871,37 @@ for segment_index, segment in enumerate(segments, 1):
         print(spec[0])
         print(spec[1])
 PY
+}
+
+worker_git_resolved_inspection_route() {
+  [ "$hook_is_subagent" = true ] || return 1
+  local command_text="$1" specs_text operation repo_dir repo_root active_repo index
+  local -a specs=()
+
+  specs_text="$(git_mutation_specs "$command_text" 2>/dev/null || true)"
+  [ -n "$specs_text" ] || return 1
+  mapfile -t specs <<<"$specs_text"
+  [ $(( ${#specs[@]} % 2 )) -eq 0 ] || return 1
+  active_repo="$(codex_git_safe -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+  active_repo="$(realpath -m -- "$active_repo" 2>/dev/null || true)"
+  [ -n "$active_repo" ] && [ -d "$active_repo" ] && [ ! -L "$active_repo" ] || return 1
+
+  for ((index = 0; index < ${#specs[@]}; index += 2)); do
+    operation="${specs[index]}"
+    repo_dir="${specs[index + 1]}"
+    [ "$operation" = inspection ] || continue
+    repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
+    [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
+    if [ "$repo_root" != "$active_repo" ]; then
+      deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-inspection" \
+        "ECI worker Git inspection targets a different repository: active_repo=$active_repo target_repo=$repo_root; operation=inspection" \
+        "run the Git inspection from the owning worker repository or route a foreign-repository inspection through its coordinator"
+    fi
+    WORKER_PROJECT_INSPECTION_ALLOWED=true
+    WORKER_PROJECT_INSPECTION_DETAIL="resolved repository=$repo_root operation=inspection"
+  done
+  [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
 }
 
 git_mutation_cross_scope_detail() {
@@ -9014,7 +9133,7 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|worktree|commit|prep|repository) ;; *) continue ;; esac
+    case "$operation" in reset|worktree|commit|prep|repository|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
@@ -9035,6 +9154,11 @@ enforce_git_mutation_gate() {
       deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-mutation" \
         "ECI Git mutation targets a different repository than this active work scope: ${cross_scope_detail}" \
         "run the Git action from its owning session/repository, or change the active work scope before retrying"
+    fi
+    if [ "$operation" = output ]; then
+      deny_eci "ECI_GIT_OUTPUT_WRITE_DENIED" "git-output" \
+        "ECI Git inspection writes command output to a file: repository=$repo_root; operation=output" \
+        "keep Git inspection output on stdout or use a separate, explicitly scoped file-writing command"
     fi
     if { [ "$operation" = reset ] || [ "$operation" = prep ]; } &&
       broad_effect_detail="$(git_mutation_broad_effect_detail "$repo_root")"; then

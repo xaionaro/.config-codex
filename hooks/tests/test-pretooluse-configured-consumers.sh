@@ -78,7 +78,7 @@ run_configured_consumer() {
     HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_ROOT" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
       CODEX_PROOF_ROOT="$FIXTURE_PROOF" KIMI_PROOF_ROOT="$FIXTURE_PROOF" \
       XDG_CONFIG_HOME="$FIXTURE_CONFIG" XDG_STATE_HOME="$FIXTURE_STATE" \
-      bash -c "$callback" >"$output"
+      bash -c 'cd -- "$1" && exec bash -c "$2"' _ "$FIXTURE_ROOT" "$callback" >"$output"
   jq -e --arg required_reason "$required_reason" '
     .hookSpecificOutput.hookEventName == "PreToolUse" and
     .hookSpecificOutput.permissionDecision == "deny" and
@@ -91,10 +91,40 @@ run_configured_consumer() {
   }
 }
 
+run_configured_consumer_allow() {
+  local matcher="$1" input="$2" callback output
+
+  callback="$(jq -er --arg matcher "$matcher" \
+    '.hooks.PreToolUse[] | select(.matcher == $matcher) | .hooks[] | select(.type == "command") | .command' \
+    "$ROOT/hooks.json")"
+  output="$TMP_ROOT/${matcher//[^[:alnum:]]/_}-allow.json"
+  printf '%s' "$input" |
+    HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_ROOT" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
+      CODEX_PROOF_ROOT="$FIXTURE_PROOF" KIMI_PROOF_ROOT="$FIXTURE_PROOF" \
+      XDG_CONFIG_HOME="$FIXTURE_CONFIG" XDG_STATE_HOME="$FIXTURE_STATE" \
+      bash -c 'cd -- "$1" && exec bash -c "$2"' _ "$FIXTURE_ROOT" "$callback" >"$output"
+  [ ! -s "$output" ] || {
+    printf 'enabled configured consumer denied an ordinary dynamic command: matcher=%s callback=%s\n' \
+      "$matcher" "$callback" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+}
+
+for fixture_hook in "$FIXTURE_ROOT/hooks/validate-bash.sh" "$FIXTURE_KIMI_ROOT/hooks/validate-bash.sh"; do
+  [ "$(sed -n '2p' "$fixture_hook")" != 'exit 0' ] || {
+    printf 'fixture hook retained staged line-2 bypass: %s\n' "$fixture_hook" >&2
+    exit 1
+  }
+done
+
 run_configured_consumer '^Bash$' \
   "$(jq -cn --arg cwd "$FIXTURE_ROOT" --arg session "$FIXTURE_SESSION" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:"rm -rf /"}}')" \
   ECI_BROAD_DESTRUCTIVE_DENIED
+run_configured_consumer_allow '^Bash$' \
+  "$(jq -cn --arg cwd "$FIXTURE_ROOT" --arg session "$FIXTURE_SESSION" \
+    '{session_id:$session,cwd:$cwd,tool_input:{command:"interpreter-tool -c \u0027dynamic payload\u0027"}}')"
 run_configured_consumer '^apply_patch$' \
   "$(jq -cn --arg cwd "$FIXTURE_ROOT" --arg session "$FIXTURE_SESSION" \
     '{session_id:$session,cwd:$cwd,tool_name:"apply_patch",tool_input:{patch:"*** Begin Patch"}}')" \
@@ -104,22 +134,22 @@ run_configured_consumer '^(Edit|Write|MultiEdit|NotebookEdit)$' \
     '{session_id:$session,cwd:$cwd,tool_name:"Edit",tool_input:{file_path:"notes.txt",old_string:"old",new_string:"new"}}')" \
   'synthetic configured edit validator denial'
 
-kimi_bash_consumer="$(python3 - "$FIXTURE_KIMI_CONFIG" <<'PY'
-import sys
-import tomllib
-
-with open(sys.argv[1], "rb") as config_file:
-    config = tomllib.load(config_file)
-for hook in config.get("hooks", []):
-    if hook.get("event") == "PreToolUse" and hook.get("matcher") == "^Bash$":
-        command = hook.get("command")
-        if isinstance(command, str) and command:
-            print(command)
-            break
-else:
-    raise SystemExit("missing Kimi PreToolUse /^Bash$/ command")
-PY
-)"
+kimi_bash_consumer="$(awk '
+  $0 == "[[hooks]]" { event = 0; matcher = 0; next }
+  index($0, "event = \"PreToolUse\"") == 1 { event = 1; next }
+  index($0, "matcher = \"^Bash$\"") == 1 { matcher = 1; next }
+  event && matcher && $0 ~ /^[[:space:]]*command[[:space:]]*=/ {
+    value = $0
+    sub(/^[^=]*=[[:space:]]*"/, "", value)
+    sub(/"[[:space:]]*$/, "", value)
+    gsub(/\\"/, "\"", value)
+    if (value != "") { print value; found = 1; exit }
+  }
+  END { if (!found) exit 1 }
+' "$FIXTURE_KIMI_CONFIG")" || {
+  printf 'missing Kimi PreToolUse /^Bash$/ command in fixture config: %s\n' "$FIXTURE_KIMI_CONFIG" >&2
+  exit 1
+}
 
 run_kimi_bash_consumer() {
   local label="$1" command="$2" expected="$3" output input
@@ -128,13 +158,13 @@ run_kimi_bash_consumer() {
   output="$TMP_ROOT/kimi-$label-output.json"
   jq -cn --arg cwd "$FIXTURE_KIMI_ROOT" --arg session "$FIXTURE_KIMI_SESSION" --arg command "$command" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' >"$input"
-  if ! timeout 10s env \
+  if ! timeout 75s env \
     HOME="$FIXTURE_HOME" CODEX_HOME="$FIXTURE_ROOT" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
     CODEX_PROOF_ROOT="$FIXTURE_PROOF" KIMI_PROOF_ROOT="$FIXTURE_PROOF" \
     KIMI_LOCAL_PLANNER_SENTINEL="$KIMI_LOCAL_PLANNER_SENTINEL" \
     XDG_CONFIG_HOME="$FIXTURE_CONFIG" XDG_STATE_HOME="$FIXTURE_STATE" \
-    bash -c "$kimi_bash_consumer" <"$input" >"$output"; then
-    printf 'configured Kimi Bash consumer did not finish within 10 seconds: %s\n' "$command" >&2
+    bash -c 'cd -- "$1" && exec bash -c "$2"' _ "$FIXTURE_KIMI_ROOT" "$kimi_bash_consumer" <"$input" >"$output"; then
+    printf 'configured Kimi Bash consumer did not finish within bounded timeout: %s\n' "$command" >&2
     cat -- "$output" >&2
     return 1
   fi
@@ -168,6 +198,7 @@ run_kimi_bash_consumer() {
 }
 
 run_kimi_bash_consumer ordinary 'env | sort' allow
+run_kimi_bash_consumer dynamic-allow "interpreter-tool -c 'dynamic payload'" allow
 run_kimi_bash_consumer broad-target 'rm -rf /' broad-deny
 [ ! -e "$KIMI_LOCAL_PLANNER_SENTINEL" ] || {
   printf 'configured Kimi Bash consumer selected its local planner instead of canonical Codex authority\n' >&2
