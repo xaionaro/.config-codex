@@ -7481,6 +7481,8 @@ run_case "PostCompact ECI refresh and policy contracts" \
   "$ROOT/hooks/tests/test-eci-post-compact-refresh.sh"
 run_case "PreToolUse configured-chain latency stays local and sub-second" \
   bash "$ROOT/hooks/tests/test-pretooluse-latency.sh"
+run_case "configured PreToolUse consumers reach enabled guards" \
+  bash "$ROOT/hooks/tests/test-pretooluse-configured-consumers.sh"
 run_case "staged Go module and workspace policy" \
   bash "$ROOT/hooks/tests/test-pre-commit-go-mod.sh"
 run_case "Go module hook parity" \

@@ -858,7 +858,7 @@ codex_plan_provenance_pin_binary() {
 
 codex_plan_provenance_is_current() {
   local selected_root="${HOME:?HOME must be set}/.codex"
-  local uid root_real hook_real planner_dir planner_dir_real binary receipt receipt_real
+  local uid root_real planner_dir planner_dir_real binary receipt receipt_real
   local receipt_owner receipt_mode receipt_links receipt_bytes last_byte line key value
   local actual_digest actual_classifier_digest actual_size actual_mode
   local go_mod_sha='' main_go_sha='' classifier_go_sha='' binary_sha='' binary_size='' binary_mode=''
@@ -874,15 +874,13 @@ codex_plan_provenance_is_current() {
       ;;
   esac
 
-  # Select the root lexically from HOME.  HOME itself may be a stable parent
-  # alias; only after that selection is made may the resolved identity be
-  # compared with the hook currently receiving the callback.
+  # Select the planner authority lexically from HOME.  Both registered
+  # provider callbacks consume this canonical source, so a Kimi callback does
+  # not turn its copied hook tree into a second planner authority.
   root_real="$(realpath -e -- "$selected_root" 2>/dev/null || true)"
-  hook_real="$(realpath -e -- "$HOOK_DIR" 2>/dev/null || true)"
   if [ ! -d "$selected_root" ] || [ -L "$selected_root" ] || [ -z "$root_real" ] ||
-    [ "$(stat -c '%u' -- "$selected_root" 2>/dev/null || true)" != "$uid" ] ||
-    [ "$hook_real" != "$root_real/hooks" ]; then
-    codex_plan_provenance_fail 'the executing hook is not bound to the literal $HOME/.codex authority'
+    [ "$(stat -c '%u' -- "$selected_root" 2>/dev/null || true)" != "$uid" ]; then
+    codex_plan_provenance_fail 'the canonical $HOME/.codex planner authority is unavailable or unsafe'
     return 1
   fi
 
@@ -1039,8 +1037,8 @@ codex_plan_provenance_is_current() {
 # introduced here.
 CODEX_PLAN_CURRENT_SOURCE=false
 CODEX_PLAN_TRANSPARENT_FALLBACK=false
-command_plan_binary="$HOOK_DIR/lib/eci-command-plan-go/eci-command-plan"
-command_plan_source_dir="$HOOK_DIR/lib/eci-command-plan-go"
+command_plan_binary="${HOME:?HOME must be set}/.codex/hooks/lib/eci-command-plan-go/eci-command-plan"
+command_plan_source_dir="${HOME:?HOME must be set}/.codex/hooks/lib/eci-command-plan-go"
 if codex_plan_provenance_is_current; then
   command_plan_executable="${CODEX_PLAN_PROVENANCE_EXECUTABLE:-$command_plan_binary}"
 else

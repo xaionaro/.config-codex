@@ -283,6 +283,17 @@ planner_snapshot_source_inputs() {
   done
 }
 
+planner_validate_source_snapshot_is_current() {
+  local source_root="$1" transaction="$2" source_dir source_file
+
+  source_dir="$(planner_source_dir "$source_root")"
+  for source_file in go.mod main.go classifier.go; do
+    if ! /usr/bin/cmp -s -- "$source_dir/$source_file" "$transaction/source/$source_file"; then
+      fail ECI_RUNTIME_SYNC_PLANNER_SOURCE_DRIFT "planner source changed during the closed build snapshot: $source_dir/$source_file"
+    fi
+  done
+}
+
 planner_build_snapshot() {
   local transaction="$1" binary="$transaction/eci-command-plan"
 
@@ -544,6 +555,7 @@ planner_apply_locked() {
   planner_snapshot_source_inputs "$source_root" "$uid" "$transaction"
   planner_validate_toolchain "$transaction"
   planner_build_snapshot "$transaction"
+  planner_validate_source_snapshot_is_current "$source_root" "$transaction"
   planner_validate_root "$source_root" Codex "$uid"
   planner_validate_binary_path "$source_binary" Codex "$uid"
   planner_validate_receipt_for_apply "$receipt" "$uid"

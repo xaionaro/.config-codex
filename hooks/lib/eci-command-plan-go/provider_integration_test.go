@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,37 +12,89 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
-func TestProviderInstallUsesOneHardLinkedImplementation(t *testing.T) {
+// TestCanonicalPlannerPublicationMatchesConsumerProvenance checks the
+// canonical producer inputs against its published consumer artifact.
+//
+// Example: a changed canonical classifier must be rebuilt before its receipt
+// can describe the installed planner.
+func TestCanonicalPlannerPublicationMatchesConsumerProvenance(t *testing.T) {
 	t.Parallel()
 
 	codexRoot := providerHome(ProviderCodex)
-	kimiRoot := providerHome(ProviderKimi)
-	for _, name := range []string{
-		"go.mod",
-		"classifier.go",
-		"main.go",
-		"classifier_test.go",
-		"oracle_parity_test.go",
-		"provider_integration_test.go",
-		"eci-command-plan",
-	} {
-		codexPath := filepath.Join(codexRoot, "hooks", "lib", "eci-command-plan-go", name)
-		kimiPath := filepath.Join(kimiRoot, "hooks", "lib", "eci-command-plan-go", name)
-		assertSameFile(t, codexPath, kimiPath)
-		if name == "eci-command-plan" {
-			info, err := os.Stat(codexPath)
-			if err != nil {
-				t.Fatalf("stat installed binary: %v", err)
-			}
-			if permission := info.Mode().Perm(); permission != 0o755 {
-				t.Errorf("installed binary mode: got %04o, want 0755", permission)
-			}
+	codexPlanner := filepath.Join(codexRoot, "hooks", "lib", "eci-command-plan-go")
+	codexReceipt := readPlannerProvenance(t, filepath.Join(codexPlanner, ".eci-command-plan.provenance"))
+
+	for _, source := range []string{"go.mod", "main.go", "classifier.go"} {
+		want := codexReceipt["source_"+source+"_sha256"]
+		if got := fileSHA256(t, filepath.Join(codexPlanner, source)); got != want {
+			t.Errorf("canonical %s digest: got %s, receipt records %s", source, got, want)
 		}
 	}
+
+	codexBinary := filepath.Join(codexPlanner, "eci-command-plan")
+	if got := fileSHA256(t, codexBinary); got != codexReceipt["binary_sha256"] {
+		t.Errorf("canonical planner binary digest: got %s, receipt records %s", got, codexReceipt["binary_sha256"])
+	}
+	info, err := os.Stat(codexBinary)
+	if err != nil {
+		t.Fatalf("stat canonical planner binary: %v", err)
+	}
+	if got := fmt.Sprintf("%d", info.Size()); got != codexReceipt["binary_size"] {
+		t.Errorf("canonical planner binary size: got %s, receipt records %s", got, codexReceipt["binary_size"])
+	}
+	if permission := info.Mode().Perm(); permission != 0o755 {
+		t.Errorf("canonical planner binary mode: got %04o, want 0755", permission)
+	}
+}
+
+// readPlannerProvenance decodes the producer receipt required by planner
+// consumers.
+//
+// Example: a publication test reads binary and source digests from the
+// canonical receipt.
+func readPlannerProvenance(t *testing.T, path string) map[string]string {
+	t.Helper()
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read planner provenance %s: %v", path, err)
+	}
+	values := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n") {
+		key, value, found := strings.Cut(line, "\t")
+		if !found || key == "" || value == "" {
+			t.Fatalf("malformed planner provenance row %q in %s", line, path)
+		}
+		values[key] = value
+	}
+	for _, key := range []string{
+		"source_go.mod_sha256",
+		"source_main.go_sha256",
+		"source_classifier.go_sha256",
+		"binary_sha256",
+		"binary_size",
+	} {
+		if values[key] == "" {
+			t.Fatalf("planner provenance %s is missing %s", path, key)
+		}
+	}
+	return values
+}
+
+// fileSHA256 returns a regular fixture file's SHA-256 content digest.
+//
+// Example: publication parity compares a source file to its receipt digest.
+func fileSHA256(t *testing.T, path string) string {
+	t.Helper()
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(contents))
 }
 
 func TestProviderValidatorsUseCompiledJSONInterface(t *testing.T) {
@@ -1251,28 +1304,6 @@ func copyStopGateSyntaxFixtureTree(t *testing.T, sourceRoot, destinationRoot str
 		return os.Chmod(destination, info.Mode().Perm())
 	}); err != nil {
 		t.Fatalf("copy %s to %s: %v", sourceRoot, destinationRoot, err)
-	}
-}
-
-func assertSameFile(t *testing.T, left, right string) {
-	t.Helper()
-
-	leftInfo, err := os.Stat(left)
-	if err != nil {
-		t.Fatalf("stat %s: %v", left, err)
-	}
-	rightInfo, err := os.Stat(right)
-	if err != nil {
-		t.Fatalf("stat %s: %v", right, err)
-	}
-	leftStat, leftOK := leftInfo.Sys().(*syscall.Stat_t)
-	rightStat, rightOK := rightInfo.Sys().(*syscall.Stat_t)
-	if !leftOK || !rightOK {
-		t.Fatalf("stat identity unavailable for %s and %s", left, right)
-	}
-	if leftStat.Dev != rightStat.Dev || leftStat.Ino != rightStat.Ino {
-		t.Errorf("provider files are not hard-linked: %s (%d:%d), %s (%d:%d)",
-			left, leftStat.Dev, leftStat.Ino, right, rightStat.Dev, rightStat.Ino)
 	}
 }
 

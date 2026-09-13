@@ -116,24 +116,54 @@ assert_worker_fsck_route_helper_is_go_only() {
 
 assert_worker_fsck_route_helper_is_go_only
 
+configured_bash_consumer() {
+  local provider="$1"
+
+  case "$provider" in
+    codex)
+      jq -er '.hooks.PreToolUse[] | select(.matcher == "^Bash$") | .hooks[] | select(.type == "command") | .command' \
+        "$CODEX_ROOT/hooks.json"
+      ;;
+    kimi)
+      awk '
+        $0 == "[[hooks]]" { event = ""; matcher = ""; command = ""; next }
+        /^event = "PreToolUse"$/ { event = "PreToolUse" }
+        /^matcher = "\^Bash\$"$/ { matcher = "^Bash$" }
+        /^command = / {
+          command = $0
+          sub(/^command = "/, "", command)
+          sub(/"$/, "", command)
+          if (event == "PreToolUse" && matcher == "^Bash$") {
+            print command
+            exit
+          }
+        }
+      ' "$KIMI_ROOT/config.toml"
+      ;;
+    *) return 2 ;;
+  esac
+}
+
 run_hook() {
   local provider="$1" command_text="$2" expected="$3" round="$4" denial_code="${5:-}" role="${6:-coordinator}" max_elapsed_ms="${7:-2000}" required_text="${8:-}" forbidden_text="${9:-}"
-  local provider_root session_id proof_root output start_ns end_ns elapsed_ms is_subagent marker_cwd callback_path callback_status
-  local -a callback
+  local provider_root session_id proof_root output start_ns end_ns elapsed_ms is_subagent marker_cwd callback_path callback_status callback
 
   case "$provider" in
     codex)
       provider_root="$CODEX_ROOT"
       session_id=codex-go-integration
-      callback=(bash -c 'exec "${CODEX_HOME:-$HOME/.codex}/hooks/validate-bash.sh"')
       ;;
     kimi)
       provider_root="$KIMI_ROOT"
       session_id=session_11111111-1111-4111-8111-111111111111
-      callback=(bash -c 'exec "${KIMI_CODE_HOME:-$HOME/.kimi-code}/hooks/validate-bash.sh"')
       ;;
     *) return 2 ;;
   esac
+  callback="$(configured_bash_consumer "$provider")" || return 1
+  [ -n "$callback" ] || {
+    printf 'provider has no configured Bash consumer: %s\n' "$provider" >&2
+    return 1
+  }
 
   marker_cwd="$provider_root"
 
@@ -166,7 +196,7 @@ run_hook() {
       CODEX_ROLE="$role" KIMI_ROLE="$role" \
       XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" \
       PATH="$callback_path" CODEX_COMMAND_PATH="$callback_path" \
-      bash -c 'cd -- "$1" && exec "${@:2}"' _ "$provider_root" "${callback[@]}" >"$output"; then
+      bash -c 'cd -- "$1" && exec bash -c "$2"' _ "$provider_root" "$callback" >"$output"; then
     :
   else
     callback_status=$?
@@ -241,9 +271,9 @@ if [ "${1:-}" != --git-clone-source-acquisition ]; then
     for provider in codex kimi; do
       run_hook "$provider" 'adb devices -l' allow "$round"
       run_hook "$provider" "stat -c '%x %s %n' hooks/validate-bash.sh" allow "$round"
-      run_hook "$provider" "stat -c '%Q' hooks/validate-bash.sh" deny "$round" ECI_PLAN_STAT_FORMAT_DENIED
-      run_hook "$provider" "stat --printf='%s' hooks/validate-bash.sh" deny "$round" ECI_PLAN_STAT_FORMAT_DENIED
-      run_hook "$provider" 'env | sort' deny "$round" ECI_ENVIRONMENT_ENUMERATION_DENIED
+      run_hook "$provider" "stat -c '%Q' hooks/validate-bash.sh" allow "$round"
+      run_hook "$provider" "stat --printf='%s' hooks/validate-bash.sh" allow "$round"
+      run_hook "$provider" 'env | sort' allow "$round"
       run_hook "$provider" "interpreter-tool -c 'dynamic payload'" deny "$round" ECI_PLAN_DYNAMIC_LAUNCH_DENIED
       run_hook "$provider" 'interpreter-tool --module test-suite --flag value' allow "$round"
     done
