@@ -13285,38 +13285,6 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   maybe_enforce_git_mutation_gate
 fi
 
-# A typed, literal read-only command never mutates ECI or repository state.
-# Resolve the bounded marker set once so malformed/duplicate active markers
-# still fail closed, enforce the worker Git boundary, then return before Git
-# mutation parsing, activity bookkeeping, or other non-hot-path work. This
-# keeps every ordinary inspection callback local and sub-second by design.
-if [ "$coordinator_static_pipeline_candidate" != true ] &&
-  ! eci_cleanup_command_shape "$command" && [ "$read_only" = true ] && {
-  if [ "$hook_is_subagent" = true ]; then
-    [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
-  else
-    [ "$coordinator_inspection_allowed" = true ] || read_only_fast_safe "$command"
-  fi
-}; then
-  # Read-only-looking utilities can still write through a visible redirect or
-  # a concrete control target. Resolve those effects before the early return;
-  # a pathname or incomplete read classification is not itself a mutation.
-  if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-    enforce_foreign_active_marker_mutation_boundary
-    direct_ledger_static_control_target_pass "$command" || true
-    [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
-  fi
-  mapfile -t read_only_markers < <(active_eci_markers_for_cwd "$cwd" "$session_id")
-  for read_only_marker in "${read_only_markers[@]}"; do
-    if ! codex_eci_marker_path_owner_is_valid "$read_only_marker"; then
-      deny_marker_boundary "$read_only_marker" "$(codex_canonical_cwd "$cwd")" "$session_id"
-    fi
-  done
-  [ "${#read_only_markers[@]}" -le 1 ] ||
-    deny_eci "ECI_MARKER_OWNERSHIP_AMBIGUOUS" "commit-boundary" "ECI commit boundary denied: multiple active markers are unsafe; resolve ownership before committing." "resolve marker ownership so exactly one validated owner remains, then retry the commit"
-  exit 0
-fi
-
 proof_path_escape_detail() {
   python3 - "$1" "$cwd" "$CODEX_PROOF_ROOT_CONFIGURED" "$CODEX_PROOF_ROOT_CANONICAL" "$CODEX_PROOF_ROOT_STABLE_ALIAS" <<'PY'
 import os
@@ -13356,6 +13324,73 @@ for token in tokens[1:]:
 raise SystemExit(1)
 PY
 }
+
+proof_path_dereferencing_read() {
+  python3 - "$1" <<'PY'
+import os
+import shlex
+import sys
+
+read_tools = {
+    "cat", "cmp", "cut", "diff", "egrep", "fgrep", "file", "grep", "head",
+    "jq", "ls", "nl", "od", "readlink", "rg", "sed", "sha256sum", "sort",
+    "stat", "tail", "tr", "uniq", "wc",
+}
+try:
+    tokens = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    raise SystemExit(1)
+if not tokens:
+    raise SystemExit(1)
+index = 0
+while index < len(tokens) and "=" in tokens[index] and tokens[index].split("=", 1)[0].replace("_", "A").isalnum():
+    index += 1
+if index < len(tokens) and os.path.basename(tokens[index]) in read_tools:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+# A typed, literal read-only command never mutates ECI or repository state.
+# Resolve the bounded marker set once so malformed/duplicate active markers
+# still fail closed, enforce the worker Git boundary, then return before Git
+# mutation parsing, activity bookkeeping, or other non-hot-path work. This
+# keeps every ordinary inspection callback local and sub-second by design.
+if [ "$coordinator_static_pipeline_candidate" != true ] &&
+  ! eci_cleanup_command_shape "$command" && [ "$read_only" = true ] && {
+  if [ "$hook_is_subagent" = true ]; then
+    [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
+  else
+    [ "$coordinator_inspection_allowed" = true ] || read_only_fast_safe "$command"
+  fi
+}; then
+  # Read-only-looking utilities can still write through a visible redirect or
+  # a concrete control target. Resolve those effects before the early return;
+  # a pathname or incomplete read classification is not itself a mutation.
+  if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+    enforce_foreign_active_marker_mutation_boundary
+    direct_ledger_static_control_target_pass "$command" || true
+    [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
+  fi
+  mapfile -t read_only_markers < <(active_eci_markers_for_cwd "$cwd" "$session_id")
+  for read_only_marker in "${read_only_markers[@]}"; do
+    if ! codex_eci_marker_path_owner_is_valid "$read_only_marker"; then
+      deny_marker_boundary "$read_only_marker" "$(codex_canonical_cwd "$cwd")" "$session_id"
+    fi
+  done
+  [ "${#read_only_markers[@]}" -le 1 ] ||
+    deny_eci "ECI_MARKER_OWNERSHIP_AMBIGUOUS" "commit-boundary" "ECI commit boundary denied: multiple active markers are unsafe; resolve ownership before committing." "resolve marker ownership so exactly one validated owner remains, then retry the commit"
+  if [ "$hook_is_subagent" != true ] &&
+    proof_path_dereferencing_read "$command"; then
+    proof_path_escape_detail_output="$(proof_path_escape_detail "$command" 2>/dev/null || true)"
+    if [ -n "$proof_path_escape_detail_output" ]; then
+      deny_eci "ECI_PROOF_PATH_ESCAPE_DENIED" "proof-path-ownership" \
+        "ECI proof-path ownership denied a read target that escapes the canonical proof root: ${proof_path_escape_detail_output}; predicate=proof-path-escape" \
+        "use the canonical proof-root path or keep the referenced evidence within the proof root"
+    fi
+  fi
+  exit 0
+fi
 
 coordinator_static_pipeline_route() {
   [ "$hook_is_subagent" != true ] || return 1
@@ -13469,6 +13504,19 @@ if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ] &&
   if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     validate_active_marker_binding
     enforce_foreign_active_marker_mutation_boundary
+  fi
+  # The planner-unavailable path remains transparent for ordinary commands,
+  # but it must preserve the one existing proof-ownership check for a direct
+  # read that dereferences a path under a lexical proof-root alias.  This is
+  # an effect check only: ordinary outside paths, non-read commands, and
+  # planner/receipt uncertainty remain transparent.
+  if proof_path_dereferencing_read "$command"; then
+    proof_path_escape_detail_output="$(proof_path_escape_detail "$command" 2>/dev/null || true)"
+    if [ -n "$proof_path_escape_detail_output" ]; then
+      deny_eci "ECI_PROOF_PATH_ESCAPE_DENIED" "proof-path-ownership" \
+        "ECI proof-path ownership denied a read target that escapes the canonical proof root: ${proof_path_escape_detail_output}; predicate=proof-path-escape" \
+        "use the canonical proof-root path or keep the referenced evidence within the proof root"
+    fi
   fi
   exit 0
 fi

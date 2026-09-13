@@ -2067,6 +2067,20 @@ jq -e '
   (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
 ' "$compound_broad_output" >/dev/null
 assert_denied "cat $evidence_dir/outside-link"
+# The same proof-root escape must remain actionable when the planner is
+# unavailable under an isolated HOME.  The fallback checks the already
+# classified read effect, not the path spelling or planner/receipt state.
+alias_proof_escape_output="$(run_hook_with_tmpdir_home_alias "cat $evidence_dir/outside-link")"
+jq -e '
+  .hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PROOF_PATH_ESCAPE_DENIED]")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("operation=proof-path-ownership")) and
+  (.hookSpecificOutput.permissionDecisionReason | contains("predicate=proof-path-escape"))
+' "$alias_proof_escape_output" >/dev/null
+# A generic path outside the proof namespace and an in-root regular file are
+# ordinary read targets; only the lexical proof-root symlink escape is denied.
+assert_allowed "cat $TMP_ROOT/outside-proof.txt" run_hook_with_tmpdir_home_alias
+assert_allowed "cat $evidence_file" run_hook_with_tmpdir_home_alias
 run_subagent_matrix_parallel denied worker-kimi-protected-inspection \
   "find $kimi_find_a $kimi_find_b -maxdepth 2 -type f -print | head -n 40" \
   "readlink -f $ROOT/sessions"
