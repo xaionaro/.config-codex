@@ -223,7 +223,10 @@ assert_protected_denial "git rm --pathspec-from-file=\"$protected_pathspec_nul_f
 assert_protected_denial "git restore --pathspec-from-file=\"$protected_pathspec_file\""
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\""
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_nul_file\" --pathspec-file-nul"
-assert_protected_denial_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout --pathspec-from-file --detach"
+for pathspec_option in --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do
+  assert_protected_denial_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --detach"
+  assert_protected_denial_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option=--detach"
+done
 assert_protected_denial 'bash -c "git rm -- hooks/validate-bash.sh"'
 assert_protected_denial 'sh -c "git restore -- hooks/validate-bash.sh"'
 assert_protected_denial 'env bash -c "git checkout hooks/validate-bash.sh"'
@@ -244,6 +247,16 @@ assert_allowed 'git checkout HEAD'
 assert_allowed 'git checkout --detach HEAD'
 assert_allowed 'git checkout --detach hooks/validate-bash.sh'
 assert_allowed 'git checkout -d hooks/validate-bash.sh'
+assert_allowed 'git checkout --no-detach=foo hooks/validate-bash.sh'
+assert_allowed 'git checkout --conflict --no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout --orphan --no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout -b --no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout -B --no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout --conflict=--no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout --orphan=--no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout -b--no-detach hooks/validate-bash.sh'
+assert_allowed 'git checkout -B--no-detach hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --conflict merge hooks/validate-bash.sh'
 for detach_option in -dq -qd --d --de --det --deta --detac; do
   assert_allowed "git checkout $detach_option hooks/validate-bash.sh"
 done

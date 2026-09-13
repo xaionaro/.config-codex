@@ -9852,6 +9852,14 @@ def pathspec_file_entries(value, file_nul):
         values = data.splitlines()
     return [os.fsdecode(item) for item in values if item]
 
+def pathspec_from_file_argument(value):
+    option, separator, argument = value.partition("=")
+    prefix = "--pathspec-from"
+    full = "--pathspec-from-file"
+    if len(option) < len(prefix) or not full.startswith(option):
+        return False, None
+    return True, argument if separator else None
+
 def collect_pathspecs(args, base):
     paths = []
     pathspec_files = []
@@ -9869,14 +9877,16 @@ def collect_pathspecs(args, base):
             index += 1
             continue
         if not after_separator and value.startswith("-"):
-            if value == "--pathspec-file-nul":
+            is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
+            if is_pathspec_file:
+                if pathspec_file is None:
+                    if index + 1 < len(args):
+                        pathspec_files.append(args[index + 1])
+                        index += 1
+                else:
+                    pathspec_files.append(pathspec_file)
+            elif value == "--pathspec-file-nul":
                 file_nul = True
-            elif value == "--pathspec-from-file":
-                if index + 1 < len(args):
-                    pathspec_files.append(args[index + 1])
-                    index += 1
-            elif value.startswith("--pathspec-from-file="):
-                pathspec_files.append(value.split("=", 1)[1])
             elif value in value_options:
                 if index + 1 < len(args):
                     index += 1
@@ -10266,38 +10276,66 @@ def checkout_revision(value):
     return result.returncode == 0
 
 def checkout_detach_state(args):
-    """Return the final positive detach state before the pathspec separator."""
+    """Return detach state, branch mode, and invalid-option state."""
     state = None
+    branch_mode = False
     index = 0
     while index < len(args):
         value = args[index]
         if value == "--":
             break
-        # This option consumes the following token even when it starts with
-        # a dash.  Do not mistake a pathspec filename named --detach for a
-        # later detach toggle.
-        if value == "--pathspec-from-file":
+        is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
+        if is_pathspec_file:
+            # This option consumes the following token even when it starts
+            # with a dash.  Do not mistake a pathspec filename named
+            # --detach for a later detach toggle.
+            index += 1 if pathspec_file is not None else 2
+            continue
+        option, separator, argument = value.partition("=")
+        if option in {"--source", "--conflict", "--orphan", "--unified", "--inter-hunk-context"}:
+            if separator:
+                if argument.startswith("-"):
+                    return None, branch_mode, True
+                branch_mode = branch_mode or option == "--orphan"
+                index += 1
+                continue
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                return None, branch_mode, True
+            branch_mode = branch_mode or option == "--orphan"
             index += 2
             continue
-        if value.startswith("--pathspec-from-file="):
-            index += 1
-            continue
         if value.startswith("-") and not value.startswith("--"):
-            # Git accepts clustered short flags such as -dq and -qd.
-            if "d" in value[1:]:
-                state = True
+            short_options = value[1:]
+            short_index = 0
+            while short_index < len(short_options):
+                short_option = short_options[short_index]
+                if short_option in {"b", "B", "U"}:
+                    branch_mode = branch_mode or short_option in {"b", "B"}
+                    argument = short_options[short_index + 1:]
+                    if argument:
+                        if argument.startswith("-"):
+                            return None, branch_mode, True
+                        break
+                    if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                        return None, branch_mode, True
+                    index += 1
+                    break
+                if short_option == "d":
+                    state = True
+                short_index += 1
             index += 1
             continue
         if value.startswith("--"):
-            option = value.split("=", 1)[0]
             if option.startswith("--no-"):
                 suffix = option[len("--no-"):]
                 if suffix and "detach".startswith(suffix):
+                    if separator:
+                        return None, branch_mode, True
                     state = False
             elif option != "--" and "--detach".startswith(option):
                 state = True
         index += 1
-    return state
+    return state, branch_mode, False
 
 def checkout_detail(args, base):
     # With `--`, every following token is a worktree pathspec.  Without it,
@@ -10306,9 +10344,12 @@ def checkout_detail(args, base):
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
-    if checkout_detach_state(args) is True:
+    detach_state, branch_mode, invalid = checkout_detach_state(args)
+    if invalid or detach_state is True:
         return None
     explicit_paths = "--" in args
+    if branch_mode and not explicit_paths:
+        return None
     if explicit_paths:
         paths = collect_pathspecs(args[args.index("--"):], base)
     else:
