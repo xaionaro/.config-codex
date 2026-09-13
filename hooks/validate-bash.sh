@@ -455,7 +455,7 @@ if index >= len(tokens):
 
 executable = os.path.basename(os.path.expanduser(os.path.expandvars(tokens[index])))
 arguments = tokens[index + 1:]
-if (executable.startswith("eci-active") and len(arguments) == 1 and
+if (executable == "eci-active" and len(arguments) == 1 and
         arguments[0] in {"--help", "-h", "status"}):
     raise SystemExit(0)
 raise SystemExit(1)
@@ -1410,6 +1410,13 @@ validate_planner_compound_segments() {
   [ "${#segments[@]}" -ge 2 ] || return 2
   for parent_segment in "${!segments[@]}"; do
     segment="${segments[parent_segment]}"
+    # The planner preserves the separator whitespace around a compound
+    # segment.  It is not part of the segment's argv, and leaving it on the
+    # replay command can bypass a target-aware route such as `rm`.  Remove
+    # only shell whitespace at the outer edges; preserve every interior byte
+    # and therefore the command's parsed meaning.
+    segment="${segment#"${segment%%[!$' \t\r\n']*}"}"
+    segment="${segment%"${segment##*[!$' \t\r\n']}"}"
     parent_segment=$((parent_segment + 1))
     if ! replay_records="$(jq -c --argjson parent_segment "$parent_segment" '
       if type == "array" then
@@ -1439,7 +1446,21 @@ validate_planner_compound_segments() {
       child_status=$?
     fi
     [ "$child_status" -eq 0 ] || return 2
-    [ -z "$child_output" ] && continue
+    if [ -z "$child_output" ]; then
+      # A direct cleanup segment may be valid JSON and still have no
+      # user-facing response when its destination is outside the bounded
+      # cleanup route.  Re-check that concrete effect here; otherwise the
+      # parent's successful first inspection would hide the rejected cleanup
+      # segment.  Workers do not own this coordinator-only cleanup capability.
+      if [ "$hook_is_subagent" != true ] &&
+        eci_cleanup_command_shape "$segment" &&
+        ! eci_shared_cleanup_route "$segment" false; then
+        deny_eci "ECI_COMPOUND_MUTATION_DENIED" "compound-mutation" \
+          "ECI coordinator compound mutation denied: ${ECI_SHARED_CLEANUP_ROUTE_DETAIL:-command=$(eci_command_identity_subject "$segment")}; predicate=compound-mutation; reason=the mutation segment is not admitted by the bounded ownership route" \
+          "split the read-only inspection from the mutation, or use the bounded coordinator cleanup route for the exact generated target"
+      fi
+      continue
+    fi
     if ! child_denial="$(compound_segment_pretooluse_denial "$child_output")"; then
       return 2
     fi
@@ -3221,7 +3242,8 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 2 ] && jq -e '
     $code == "ECI_PLAN_SYNTAX_DENIED" or
     $code == "ECI_PLAN_LIMIT_DENIED" or
     $code == "ECI_PLAN_WRAPPER_DENIED" or
-    $code == "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" or
+    ($code == "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" and
+      (.diagnostic.predicate // "") != "dynamic-find-action") or
     $code == "ECI_PLAN_STAT_FORMAT_DENIED" or
     $code == "ECI_PLAN_FILE_OPTION_DENIED" or
     $code == "ECI_PLAN_UNIQ_ARGUMENTS_DENIED" or
@@ -3235,6 +3257,15 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 2 ] && jq -e '
   ' <<<"${plan_output:-}" >/dev/null 2>&1; then
   plan_status=3
   CODEX_PLAN_TRANSPARENT_FALLBACK=true
+fi
+
+# Preserve the concrete capability result before any planner/fallback branch
+# can select a generic coordinator fast exit.  When the compiled planner is
+# unavailable, a compound whose later segment mutates still needs the named
+# coordinator inspection/cleanup route below; a harmless compound remains
+# transparent.
+if coordinator_compound_mutation_shape "$command"; then
+  coordinator_compound_mutation=true
 fi
 
 # Planner diagnostics are authoritative. Forward a specific malformed,
@@ -3865,6 +3896,42 @@ def unwrap(values: list[str], operand_cwd: str) -> tuple[list[str], str]:
             continue
         if name == "timeout":
             return values, operand_cwd
+        if name == "stdbuf":
+            index = 1
+            while index < len(values):
+                token = values[index]
+                if token == "--":
+                    index += 1
+                    break
+                if token in {"-i", "-o", "-e", "--input", "--output", "--error"}:
+                    if index + 1 >= len(values):
+                        values = []
+                        break
+                    index += 2
+                    continue
+                if (
+                    (token.startswith(("-i", "-o", "-e")) and len(token) > 2)
+                    or token.startswith(("--input=", "--output=", "--error="))
+                ):
+                    index += 1
+                    continue
+                if token.startswith("-"):
+                    # The compiled planner reports unsupported stdbuf options
+                    # as malformed wrapper syntax.  The fallback likewise
+                    # declines to infer a child argv from them; it does not
+                    # parse an opaque nested command.
+                    values = []
+                break
+            values = values[index:] if values else []
+            depth += 1
+            continue
+        if name == "busybox":
+            index = 1
+            if index < len(values) and values[index] == "--":
+                index += 1
+            values = values[index:]
+            depth += 1
+            continue
         if name in {"nice", "time", "prlimit", "chronic", "systemd-run"}:
             index = 1
             value_options = {
@@ -3995,27 +4062,79 @@ if is_worker == "true":
                 os.path.join(root, "hooks", "tests", "test-pre-commit-go-mod.sh"),
             })
 
+        def chmod_option_is_recursive(token):
+            if token.startswith("--"):
+                return len(token) >= len("--rec") and "--recursive".startswith(token)
+            return token.startswith("-") and not token.startswith("--") and "R" in token[1:]
+
+        def chmod_option_is_reference(token):
+            option, separator, reference = token.partition("=")
+            return (
+                (not separator or reference != "")
+                and len(option) >= len("--ref")
+                and "--reference".startswith(option)
+            )
+
+        def chmod_option_has_empty_reference_value(token):
+            option, separator, reference = token.partition("=")
+            return (
+                separator
+                and reference == ""
+                and len(option) >= len("--ref")
+                and "--reference".startswith(option)
+            )
+
+        operands = []
         cursor = 0
+        recursive = False
         reference_mode = False
-        while cursor < len(args) and args[cursor] != "--":
+        options = True
+        malformed_reference = False
+        while cursor < len(args):
             token = args[cursor]
-            if token == "--reference":
-                if cursor + 1 >= len(args):
-                    break
-                reference_mode = True
-                cursor += 2
-            elif token.startswith("--reference="):
-                reference_mode = True
+            if options and token == "--":
+                options = False
                 cursor += 1
-            elif token.startswith("-"):
-                cursor += 1
-            else:
-                if not reference_mode:
-                    cursor += 1  # mode
+                continue
+            if options and chmod_option_has_empty_reference_value(token):
+                malformed_reference = True
                 break
-        if cursor < len(args) and args[cursor] == "--":
+            if options and chmod_option_is_reference(token):
+                reference_mode = True
+                if "=" in token:
+                    cursor += 1
+                    continue
+                if cursor + 1 >= len(args):
+                    malformed_reference = True
+                    break
+                cursor += 2
+                continue
+            if options and chmod_option_is_recursive(token):
+                recursive = True
+                cursor += 1
+                continue
+            if options and token.startswith("-"):
+                cursor += 1
+                continue
+            operands.append(token)
             cursor += 1
-        for token in args[cursor:]:
+
+        if malformed_reference:
+            operands = []
+        if reference_mode:
+            targets = operands
+        elif len(operands) >= 2:
+            targets = operands[1:]
+        else:
+            targets = []
+
+        def path_within(path, root):
+            try:
+                return os.path.commonpath((path, root)) == root
+            except ValueError:
+                return False
+
+        for token in targets:
             if token == "--":
                 continue
             target = resolved(token)
@@ -4023,7 +4142,119 @@ if is_worker == "true":
                 print("class=worker-hook-mode executable=%s token=%s path=%s resolved=%s kind=protected-hook-mode-mutation" %
                       (argv[0], token, target, target))
                 raise SystemExit(0)
+            if recursive and any(path_within(protected_hook, target) for protected_hook in protected_hooks):
+                print("class=worker-hook-mode executable=%s token=%s path=%s resolved=%s kind=protected-hook-mode-mutation" %
+                      (argv[0], token, target, target))
+                raise SystemExit(0)
     raise SystemExit(1)
+
+# The compiled planner intentionally defers coordinator hook-mode mutations
+# to this provider-aware adapter.  Keep the peer boundary concrete: changing
+# a protected Kimi hook from a Codex coordinator can desynchronise the peer's
+# control path, while an ordinary target (or an opaque shell payload) has no
+# such resolved effect and remains transparent.
+if is_worker != "true" and name == "chmod":
+    kimi_root = os.environ.get("KIMI_CODE_HOME", "") or os.path.join(
+        os.environ.get("HOME", ""), ".kimi-code"
+    )
+    if (kimi_root and os.path.isabs(kimi_root) and
+            os.path.normpath(kimi_root) == kimi_root and
+            os.path.isdir(kimi_root) and not os.path.islink(kimi_root)):
+        kimi_root = os.path.realpath(kimi_root)
+        protected_peer_hooks = {
+            os.path.join(kimi_root, "hooks", "validate-bash.sh"),
+            os.path.join(kimi_root, "hooks", "pre-commit-go-mod.sh"),
+            os.path.join(kimi_root, "hooks", "install-pre-commit-go-mod.sh"),
+            os.path.join(kimi_root, "hooks", "tests", "test-pre-commit-go-mod.sh"),
+        }
+
+        def peer_chmod_option_is_recursive(token):
+            if token.startswith("--"):
+                return len(token) >= len("--rec") and "--recursive".startswith(token)
+            return token.startswith("-") and not token.startswith("--") and "R" in token[1:]
+
+        def peer_chmod_option_is_reference(token):
+            option, separator, reference = token.partition("=")
+            return (
+                (not separator or reference != "") and
+                len(option) >= len("--ref") and
+                "--reference".startswith(option)
+            )
+
+        def peer_chmod_option_has_empty_reference_value(token):
+            option, separator, reference = token.partition("=")
+            return (
+                separator and reference == "" and
+                len(option) >= len("--ref") and
+                "--reference".startswith(option)
+            )
+
+        peer_operands = []
+        cursor = 0
+        peer_recursive = False
+        peer_reference_mode = False
+        peer_options = True
+        peer_malformed_reference = False
+        while cursor < len(args):
+            token = args[cursor]
+            if peer_options and token == "--":
+                peer_options = False
+                cursor += 1
+                continue
+            if peer_options and peer_chmod_option_has_empty_reference_value(token):
+                peer_malformed_reference = True
+                break
+            if peer_options and peer_chmod_option_is_reference(token):
+                peer_reference_mode = True
+                if "=" in token:
+                    cursor += 1
+                    continue
+                if cursor + 1 >= len(args):
+                    peer_malformed_reference = True
+                    break
+                cursor += 2
+                continue
+            if peer_options and peer_chmod_option_is_recursive(token):
+                peer_recursive = True
+                cursor += 1
+                continue
+            if peer_options and token.startswith("-"):
+                cursor += 1
+                continue
+            peer_operands.append(token)
+            cursor += 1
+
+        if peer_malformed_reference:
+            peer_operands = []
+        if peer_reference_mode:
+            peer_targets = peer_operands
+        elif len(peer_operands) >= 2:
+            peer_targets = peer_operands[1:]
+        else:
+            peer_targets = []
+
+        def peer_path_within(path, root):
+            try:
+                return os.path.commonpath((path, root)) == root
+            except ValueError:
+                return False
+
+        for token in peer_targets:
+            if token == "--":
+                continue
+            target = resolved(token)
+            if target in protected_peer_hooks or (
+                    peer_recursive and any(
+                        peer_path_within(protected_hook, target)
+                        for protected_hook in protected_peer_hooks
+                    )):
+                print(
+                    "class=coordinator-peer-hook-mode executable=%s token=%s "
+                    "path=%s resolved=%s provider=kimi "
+                    "kind=peer-protected-hook-mode-mutation" %
+                    (argv[0], token, target, target)
+                )
+                raise SystemExit(0)
 
 source_roots = {os.path.realpath(hook_cwd), os.path.realpath(os.path.dirname(hook_dir))}
 for value in (
@@ -8735,7 +8966,28 @@ def segment_spec(tokens, segment_index):
                 if tokens[index] == "--":
                     index += 1
                     break
-                if tokens[index] in value_options:
+                option = tokens[index]
+                if name == "systemd-run" and option == "--working-directory":
+                    if index + 1 >= len(tokens):
+                        return None
+                    repo_dir = resolve(tokens[index + 1], repo_dir)
+                    index += 2
+                elif name == "systemd-run" and option.startswith("--working-directory="):
+                    repo_dir = resolve(option.split("=", 1)[1], repo_dir)
+                    index += 1
+                elif name == "systemd-run" and option == "--setenv":
+                    if index + 1 >= len(tokens):
+                        return None
+                    name_value = tokens[index + 1].split("=", 1)
+                    if len(name_value) == 2 and name_value[0] in {"GIT_DIR", "GIT_WORK_TREE"}:
+                        environment[name_value[0]] = name_value[1]
+                    index += 2
+                elif name == "systemd-run" and option.startswith("--setenv="):
+                    name_value = option.split("=", 1)[1].split("=", 1)
+                    if len(name_value) == 2 and name_value[0] in {"GIT_DIR", "GIT_WORK_TREE"}:
+                        environment[name_value[0]] = name_value[1]
+                    index += 1
+                elif option in value_options:
                     if index + 1 >= len(tokens):
                         return None
                     index += 2
@@ -8821,7 +9073,50 @@ def segment_spec(tokens, segment_index):
             "-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move",
             "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream",
         }
-        if any(value in branch_mutators or not value.startswith("-") for value in tokens[index + 1:]):
+        # These options take required separate values.  --abbrev,
+        # --column, and --color have optional values only in their attached
+        # --option=value spelling; a following non-option is a branch operand.
+        branch_value_options = {
+            "--contains", "--no-contains", "--merged", "--no-merged",
+            "--points-at", "--format", "--sort",
+        }
+        list_mode = False
+        values = tokens[index + 1:]
+        value_index = 0
+        while value_index < len(values):
+            value = values[value_index]
+            if value in branch_mutators or any(
+                value.startswith(option + "=") for option in branch_mutators
+                if option.startswith("--")
+            ):
+                return "repository", repo_dir
+            if value in {"-l", "--list"}:
+                list_mode = True
+                value_index += 1
+                continue
+            if value in branch_value_options:
+                if value_index + 1 < len(values) and not values[value_index + 1].startswith("-"):
+                    value_index += 2
+                else:
+                    # Do not consume another option as a required value: the
+                    # next token may be a concrete branch mutation that the
+                    # ownership route must still see.
+                    value_index += 1
+                continue
+            if any(value.startswith(option + "=") for option in branch_value_options):
+                value_index += 1
+                continue
+            if value in {"-a", "--all", "-r", "--remotes", "-v", "-vv",
+                         "--verbose", "--no-color", "--omit-empty", "--show-current",
+                         "--abbrev", "--column", "--color"}:
+                value_index += 1
+                continue
+            if value.startswith("-"):
+                value_index += 1
+                continue
+            if list_mode:
+                value_index += 1
+                continue
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb == "remote":
@@ -8889,7 +9184,10 @@ worker_git_resolved_inspection_route() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    [ "$operation" = inspection ] || continue
+    # A harmless segment cannot short-circuit a second segment that mutates
+    # or otherwise writes. Let the normal mutation/control routes inspect the
+    # complete command whenever any resolved operation is not an inspection.
+    [ "$operation" = inspection ] || return 1
     repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
     [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
@@ -10085,9 +10383,23 @@ def inspect(segment, base=0, depth=0):
     if name == "xargs":
         return segment[0], base, "stdin-argv-indirection"
     if name == "find":
-        for index, token in enumerate(segment[1:], 1):
-            if token in {"-exec", "-execdir", "-ok", "-okdir"}:
-                return token, base + index, "indirect-exec"
+        value_options = {
+            "-amin", "-anewer", "-atime", "-cmin", "-cnewer", "-ctime",
+            "-fstype", "-gid", "-group", "-iname", "-inum", "-ipath",
+            "-iregex", "-iwholename", "-links", "-lname", "-mmin", "-mtime",
+            "-name", "-newer", "-newerXY", "-path", "-perm", "-size",
+            "-samefile", "-type", "-uid", "-used", "-user", "-wholename",
+            "-regex",
+        }
+        index = 1
+        while index < len(segment):
+            token = segment[index]
+            if token in value_options:
+                index += 2
+                continue
+            if token in {"-delete", "-exec", "-execdir", "-ok", "-okdir"}:
+                return token, base + index, "dynamic-find-action"
+            index += 1
     if name in {"eval", "source", "."}:
         return segment[0], base, None
     if name == "export":
@@ -10159,6 +10471,29 @@ token, index, kind = detail
 suffix = " kind=%s" % kind if kind else ""
 print("token=%s argv_index=%d%s" % (token, index, suffix))
 PY
+}
+
+# A find action has a concrete per-match effect even when its visible root is
+# an ordinary path. Keep -print and other inspections transparent, but do not
+# let an active worker fast path hide -delete or an indirect child launch.
+worker_dynamic_find_action_detail() {
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] || return 1
+  # Compound pipelines retain the existing bounded pipeline policy. This
+  # guard owns a direct worker find action; its concrete target checks still
+  # run for each pipeline segment below.
+  local pipeline_segments detail
+  pipeline_segments="$(eci_static_pipeline_segments "$1" 2>/dev/null || true)"
+  [ -z "$pipeline_segments" ] || return 1
+  detail="$(dynamic_indirection_detail "$1" 2>/dev/null || true)"
+  case "$detail" in
+    *'kind=dynamic-find-action')
+      printf '%s\n' "$detail"
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # Admit only a finite pure read-only pipeline for an active worker. Concrete
@@ -10275,6 +10610,13 @@ worker_fast_path_control_guard() {
   [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
 }
 
+dynamic_find_action_detail="$(worker_dynamic_find_action_detail "$command" 2>/dev/null || true)"
+if [ -n "$dynamic_find_action_detail" ]; then
+  deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
+    "ECI worker command plan denied a dynamic find action: ${dynamic_find_action_detail}; predicate=dynamic-find-action" \
+    "replace the find action with a finite direct command, or use -print for inspection"
+fi
+
 if [ "$worker_fast_path_candidate" = true ]; then
   # The planner's plain-worker shape excludes lifecycle, control-path,
   # wrapper, Git, proof, environment, and operator forms.  Bind the active
@@ -10293,6 +10635,18 @@ fi
 # append fallback, inspect only static concrete current-session control targets
 # so an accidental control mutation retains its target-specific diagnosis.
 if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  if [ "$hook_is_subagent" != true ]; then
+    case "$command" in
+      rm|rm\ *|mv|mv\ *)
+        if ! eci_shared_cleanup_route "$command" false; then
+          deny_eci "ECI_COORDINATOR_ROUTE_ARGUMENTS_DENIED" "coordinator-cleanup" \
+            "ECI coordinator cleanup route denied: ${ECI_SHARED_CLEANUP_ROUTE_DETAIL:-command=$(eci_command_identity_subject "$command")}; predicate=cleanup-target" \
+            "use the bounded coordinator cleanup route for an exact generated target"
+        fi
+        exit 0
+        ;;
+    esac
+  fi
   if direct_ledger_static_control_target_pass "$command"; then
     [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
     if [ "$DIRECT_LEDGER_STATIC_DYNAMIC_TARGET" = true ]; then
@@ -12785,11 +13139,51 @@ raise SystemExit(0 if targets else 1)
 PY
 }
 
+# The Kimi provider's no-argument installer is a canonical cross-provider
+# maintenance entrypoint. Keep this narrower than the generic reviewed-script
+# route: only literal bash/sh, the configured canonical Kimi root, and no
+# installer arguments are admitted. Repair arguments remain on their existing
+# hard-link route.
+coordinator_peer_installer_route() {
+  python3 - "$1" "${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}" <<'PY'
+import os
+import shlex
+import shutil
+import sys
+
+try:
+    tokens = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    raise SystemExit(1)
+if len(tokens) != 2 or tokens[0] not in {"bash", "sh"}:
+    raise SystemExit(1)
+shell_path = shutil.which(tokens[0])
+trusted = {"/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash",
+           "/bin/sh", "/usr/bin/sh", "/usr/local/bin/sh"}
+if shell_path not in trusted:
+    raise SystemExit(1)
+kimi_root = sys.argv[2]
+if (not kimi_root or not os.path.isabs(kimi_root) or
+        os.path.normpath(kimi_root) != kimi_root or
+        not os.path.isdir(kimi_root) or os.path.islink(kimi_root) or
+        os.path.realpath(kimi_root) != kimi_root):
+    raise SystemExit(1)
+expected = os.path.join(kimi_root, "hooks", "install-pre-commit-go-mod.sh")
+if (tokens[1] != expected or not os.path.isfile(expected) or
+        os.path.islink(expected) or os.path.realpath(expected) != expected or
+        not os.access(expected, os.R_OK)):
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 # The shared Go hook installer mutates provider-owned Git hook state. Its
 # canonical identity remains protected when its arguments are malformed.
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" != true ]; then
   go_hook_installer_identity="$(coordinator_go_hook_installer_identity "$command" 2>/dev/null || true)"
-  if [ -n "$go_hook_installer_identity" ] && ! coordinator_script_route "$command"; then
+  if [ -n "$go_hook_installer_identity" ] &&
+    ! coordinator_script_route "$command" &&
+    ! coordinator_peer_installer_route "$command"; then
     deny_eci "ECI_COORDINATOR_ROUTE_ARGUMENTS_DENIED" "coordinator-go-hook-installer" \
       "ECI coordinator Go hook installer route denied malformed arguments: ${go_hook_installer_identity}; ${COORDINATOR_SCRIPT_ROUTE_DETAIL}" \
       "invoke the canonical installer without arguments, or use --repair-hardlink with the other canonical Codex/Kimi repository root"
@@ -13027,6 +13421,27 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
         "ECI worker ownership gate denied an acceptance-sensitive Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls repository acceptance/history and is coordinator-owned while ECI is active" \
         "route the reported Git verb through the main/orchestrator coordinator; workers may use finite read-only Git inspection and history commands"
       ;;
+    class=worker-hook-mode\ *)
+      # The compiled planner normally reports this ownership-sensitive source
+      # mode repair directly.  When the planner is unavailable or being
+      # rebuilt, preserve the same resolved target through the legacy route
+      # instead of allowing the worker's plain-argv fast path to skip it.
+      worker_hook_mode_detail="${protected_literal_detail/#class=worker-hook-mode /class=source }"
+      worker_hook_mode_detail="${worker_hook_mode_detail/kind=protected-hook-mode-mutation/kind=coordinator-source-write}"
+      deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
+        "ECI worker ownership gate denied coordinator-owned pre-commit hook mode repair: ${worker_hook_mode_detail}; predicate=hook-mode-repair; reason=the canonical hook mode is coordinator-owned while ECI is active" \
+        "route the exact pre-commit hook mode repair through the coordinator"
+      ;;
+    class=coordinator-peer-hook-mode\ *)
+      # A coordinator may repair its own Codex hook mode through the bounded
+      # route above, but a direct mutation of the configured Kimi peer belongs
+      # to that provider's control path.  Keep the resolved target in the
+      # diagnostic so this is an accidental-wrong-peer denial, not a generic
+      # shell or permission-form restriction.
+      deny_eci "ECI_COORDINATOR_PEER_CONTROL_DENIED" "coordinator-peer-control" \
+        "ECI coordinator peer-control boundary denied protected Kimi hook mode mutation: ${protected_literal_detail}; predicate=peer-hook-mode-repair; reason=the resolved target belongs to the configured Kimi provider control path rather than the current Codex coordinator" \
+        "route the Kimi hook-mode repair through the Kimi provider's owning coordinator route"
+      ;;
   esac
   if [ "$hook_is_subagent" != true ]; then
     case "$command" in
@@ -13048,6 +13463,8 @@ fi
 # retains canonical target, role, session, cwd, and marker validation.
 if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ] &&
   [ "$hook_is_subagent" != true ] &&
+  [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] &&
+  [ "$coordinator_compound_mutation" != true ] &&
   ! command_invokes_eci_lifecycle "$command"; then
   if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     validate_active_marker_binding
@@ -13058,6 +13475,7 @@ fi
 
 ECI_LITERAL_ADMITTED=false
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
+  [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] &&
   ! coordinator_script_batch_shape "$command" &&
   ! shell_script_launcher_shape "$command" &&
   ! opaque_launcher_shape "$command" &&
