@@ -699,7 +699,7 @@ run_subagent_hook() {
   esac
   jq -cn --arg cwd "$ROOT" --arg command "$command" --arg transcript "$transcript" \
     '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
-    CODEX_PROOF_ROOT="$proof_root" HOME="$subagent_home" CODEX_HOME="$subagent_codex_home" \
+    CODEX_PROOF_ROOT="$proof_root" HOME="$subagent_home" CODEX_HOME="$subagent_codex_home" KIMI_CODE_HOME="$kimi_root" \
       PATH="$subagent_codex_home/bin:$PATH" \
       bash "$classifier_hook_fixture" >"$output"
   printf '%s\n' "$output"
@@ -2085,7 +2085,8 @@ run_subagent_matrix_parallel denied worker-kimi-protected-inspection \
   "find $kimi_find_a $kimi_find_b -maxdepth 2 -type f -print | head -n 40" \
   "readlink -f $ROOT/sessions"
 run_subagent_matrix_parallel allowed worker-kimi-finite-inspection \
-  "stat -Lc '%F %N' $kimi_root/hooks/validate-bash.sh"
+  "stat -Lc '%F %N' $kimi_root/hooks/validate-bash.sh" \
+  "find $TMP_ROOT -maxdepth 1 -type f -print"
 
 # The Git execution-context callbacks are defined before the parallel matrix
 # that invokes them; Bash does not resolve function definitions retroactively.

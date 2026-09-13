@@ -10690,10 +10690,183 @@ read_only_fast_safe() {
   return 0
 }
 
+# A worker's ordinary read-only fast path must not turn provider control
+# directories into an inspection relay. This is intentionally effect-based:
+# it recognizes only a recursive find rooted in the known peer-runner fixture
+# area and readlink/realpath of the current provider's session directory.
+# Ordinary project reads, finite metadata reads, and equivalent coordinator
+# commands remain outside this worker-only route.
+worker_protected_inspection_detail() {
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  [ "${plan_marker_state:-inactive}" = active ] || return 1
+  python3 - "$1" "$cwd" "$HOOK_DIR" "${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+command, hook_cwd, hook_dir, raw_peer_root = sys.argv[1:]
+
+try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+
+operators = {";", "&", "&&", "|", "||", ">", ">>", ">|", ">&",
+             "<", "<<", "<<<", "<&", "(", ")"}
+
+def segments(values):
+    current = []
+    for token in values + [";"]:
+        if token in operators:
+            if current:
+                yield current
+            current = []
+        else:
+            current.append(token)
+
+assignment = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+
+def command_argv(values):
+    """Return argv after literal launch wrappers accepted by the planner."""
+    index = 0
+    while index < len(values) and assignment.fullmatch(values[index]):
+        index += 1
+    while index < len(values):
+        name = os.path.basename(values[index])
+        if name == "env":
+            index += 1
+            while index < len(values):
+                token = values[index]
+                if assignment.fullmatch(token):
+                    index += 1
+                elif token in {"-i", "--ignore-environment", "-0", "--null"}:
+                    index += 1
+                elif token in {"-u", "--unset"}:
+                    index += 2
+                elif token.startswith("--unset="):
+                    index += 1
+                elif token == "--":
+                    index += 1
+                    break
+                else:
+                    break
+            continue
+        if name in {"command", "builtin", "exec", "nohup", "setsid"}:
+            index += 1
+            continue
+        if name in {"timeout", "nice", "prlimit", "time"}:
+            index += 1
+            while index < len(values) and values[index].startswith("-"):
+                if values[index] in {"-k", "--kill-after", "-s", "--signal",
+                                     "-n", "--adjustment", "-p", "--property"}:
+                    index += 2
+                else:
+                    index += 1
+            if name == "timeout" and index < len(values):
+                index += 1
+            continue
+        break
+    return values[index:]
+
+def concrete_path(token):
+    if (not token or token.startswith("-") or any(marker in token for marker in
+            ("$", "`", "*", "?", "[", "]", "{", "}"))):
+        return None
+    expanded = os.path.expanduser(token)
+    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(
+        os.path.join(hook_cwd, expanded)
+    )
+    return os.path.normpath(candidate)
+
+codex_root = os.path.realpath(os.path.dirname(hook_dir))
+provider_sessions = os.path.normpath(os.path.join(codex_root, "sessions"))
+peer_root = os.path.realpath(raw_peer_root) if raw_peer_root.startswith("/") else ""
+if peer_root == codex_root:
+    peer_root = ""
+
+runner_name = re.compile(r"^\.codex-runner-test\.[A-Za-z0-9._-]+$")
+
+def peer_runner_path(path):
+    if not peer_root or not (path == peer_root or path.startswith(peer_root + os.sep)):
+        return False
+    relative = os.path.relpath(path, peer_root)
+    first = relative.split(os.sep, 1)[0]
+    return bool(runner_name.fullmatch(first))
+
+def find_roots(argv):
+    roots = []
+    index = 1
+    expression_starts = {"!", "(", ")", ","}
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            index += 1
+            continue
+        if token.startswith("-") or token in expression_starts:
+            break
+        path = concrete_path(token)
+        if path is None:
+            return []
+        roots.append(path)
+        index += 1
+    return roots
+
+def recursive_find(argv):
+    roots = find_roots(argv)
+    if not roots:
+        return None
+    # maxdepth 0 examines only the named starting point and is a finite
+    # metadata read. Any deeper bound, or the default unbounded traversal,
+    # walks the provider-control subtree.
+    for index, token in enumerate(argv[1:], 1):
+        if token == "-maxdepth" and index + 1 < len(argv):
+            if argv[index + 1] == "0":
+                return None
+        if token.startswith("-maxdepth=") and token.split("=", 1)[1] == "0":
+            return None
+    for path in roots:
+        if peer_runner_path(path):
+            return path
+    return None
+
+for raw_segment in segments(tokens):
+    argv = command_argv(raw_segment)
+    if not argv:
+        continue
+    executable = os.path.basename(argv[0])
+    if executable == "find":
+        target = recursive_find(argv)
+        if target is not None:
+            print("predicate=peer-provider-recursive-inspection executable=find target=%s peer_root=%s" %
+                  (target, peer_root))
+            raise SystemExit(0)
+    elif executable in {"readlink", "realpath"}:
+        for token in argv[1:]:
+            target = concrete_path(token)
+            if target is None:
+                continue
+            if target == provider_sessions or os.path.realpath(target) == provider_sessions:
+                print("predicate=provider-session-inspection executable=%s target=%s provider_sessions=%s" %
+                      (executable, target, provider_sessions))
+                raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 worker_fast_path_control_guard() {
   enforce_foreign_active_marker_mutation_boundary
   direct_ledger_static_control_target_pass "$command" || true
   [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
+  local detail
+  detail="$(worker_protected_inspection_detail "$command" 2>/dev/null || true)"
+  if [ -n "$detail" ]; then
+    deny_eci "ECI_WORKER_CONTROL_INSPECTION_DENIED" "worker-control" \
+      "ECI worker control inspection denied: ${detail}; reason=the worker does not own this provider-control inspection and it could divert work from its task-owned files" \
+      "inspect task-owned project or evidence files, or route provider-control inspection through the coordinator"
+  fi
 }
 
 dynamic_find_action_detail="$(worker_dynamic_find_action_detail "$command" 2>/dev/null || true)"
