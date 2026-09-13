@@ -124,12 +124,16 @@ run_hook() {
 
 run_hook_at() {
   local session="$1" hook_cwd="$2" command="$3" output="$4"
+  local -a hook_command=(bash "$fixture_root/hooks/validate-bash.sh")
+  if [ -n "${HOOK_TIMEOUT_SECONDS:-}" ]; then
+    hook_command=(timeout "$HOOK_TIMEOUT_SECONDS" "${hook_command[@]}")
+  fi
   jq -cn --arg session "$session" --arg cwd "$hook_cwd" --arg command "$command" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' |
     HOME="${HOME:?}" CODEX_SESSION_ID="$session" CODEX_ROLE=coordinator \
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
     KIMI_CODE_HOME="${KIMI_CODE_HOME:-$HOME/.kimi-code}" PATH="$ROOT/bin:$PATH" \
-      bash "$fixture_root/hooks/validate-bash.sh" >"$output"
+      "${hook_command[@]}" >"$output"
 }
 
 assert_protected_denial() {
@@ -145,6 +149,25 @@ assert_protected_denial() {
     (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null || {
     printf 'protected target was not denied: command=%q\n' "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+}
+
+assert_protected_denial_with_timeout() {
+  local seconds="$1" command="$2" output="$TMP_ROOT/timeout-denial.json"
+  if ! HOOK_TIMEOUT_SECONDS="$seconds" run_hook "$command" "$output"; then
+    printf 'protected target hook timed out or failed: timeout=%ss command=%q\n' "$seconds" "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  fi
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COORDINATOR_EDIT_ROUTING_REQUIRED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=edit-routing")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=coordinator-protected-target"))
+  ' "$output" >/dev/null || {
+    printf 'timed protected target was not denied: timeout=%ss command=%q\n' "$seconds" "$command" >&2
     cat -- "$output" >&2
     return 1
   }
@@ -248,7 +271,7 @@ assert_allowed 'git checkout -b iter10-invalid HEAD -- hooks/validate-bash.sh'
 assert_allowed 'git checkout -B iter10-invalid HEAD -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --orphan iter10-invalid HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patch --unified=3 -- hooks/validate-bash.sh'
-assert_protected_denial 'git checkout --patc --unified=3 -- hooks/validate-bash.sh'
+assert_protected_denial_with_timeout 10 'git checkout --patc --unified=3 -- hooks/validate-bash.sh'
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\" --"
 assert_protected_denial "git checkout --pathspec-from-file \"$protected_pathspec_file\" --"
 for pathspec_option in --pathspec-fr --pathspec-from --pathspec-from-f --pathspec-from-fi --pathspec-from-fil --pathspec-from-file; do

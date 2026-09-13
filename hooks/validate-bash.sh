@@ -300,6 +300,14 @@ active_eci_markers_for_cwd() {
     fi
   fi
 
+  # The typed session marker is authoritative.  Avoid rescanning the entire
+  # proof root on every callback once it has been validated; the scan is only
+  # needed to discover a marker when the direct session record is absent.
+  if [ -n "$resolved_marker" ]; then
+    printf '%s\n' "$resolved_marker"
+    return 0
+  fi
+
   # A historical session_ alias can be the one valid marker for this callback.
   # Once the direct marker is valid, any additional aliases are observations,
   # not competing owners.
