@@ -10856,17 +10856,21 @@ raise SystemExit(1)
 PY
 }
 
-worker_fast_path_control_guard() {
-  enforce_foreign_active_marker_mutation_boundary
-  direct_ledger_static_control_target_pass "$command" || true
-  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
+enforce_worker_protected_inspection() {
   local detail
-  detail="$(worker_protected_inspection_detail "$command" 2>/dev/null || true)"
+  detail="$(worker_protected_inspection_detail "$1" 2>/dev/null || true)"
   if [ -n "$detail" ]; then
     deny_eci "ECI_WORKER_CONTROL_INSPECTION_DENIED" "worker-control" \
       "ECI worker control inspection denied: ${detail}; reason=the worker does not own this provider-control inspection and it could divert work from its task-owned files" \
       "inspect task-owned project or evidence files, or route provider-control inspection through the coordinator"
   fi
+}
+
+worker_fast_path_control_guard() {
+  enforce_foreign_active_marker_mutation_boundary
+  direct_ledger_static_control_target_pass "$command" || true
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
+  enforce_worker_protected_inspection "$command"
 }
 
 dynamic_find_action_detail="$(worker_dynamic_find_action_detail "$command" 2>/dev/null || true)"
@@ -10894,6 +10898,9 @@ fi
 # append fallback, inspect only static concrete current-session control targets
 # so an accidental control mutation retains its target-specific diagnosis.
 if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  if [ "$hook_is_subagent" = true ]; then
+    enforce_worker_protected_inspection "$command"
+  fi
   if [ "$hook_is_subagent" != true ]; then
     case "$command" in
       rm|rm\ *|mv|mv\ *)
