@@ -90,13 +90,14 @@ printf '%s\n' \
   "session_id: $split_session" \
   'created_utc: 2026-08-28T00:00:00Z' \
   >"$split_root/$split_session/eci_active"
+split_marker="$(realpath -e -- "$split_root/$split_session/eci_active")"
 split_status_output="$TMP_ROOT/shared-root-status.out"
 split_status_error="$TMP_ROOT/shared-root-status.err"
 if ! HOME="$split_home" XDG_CACHE_HOME="$split_xdg_cache" CODEX_ROLE=worker \
   CODEX_SESSION_ID="$split_session" "$copy_eci" status >"$split_status_output" 2>"$split_status_error"; then
   fail "shared-proof-root status failed: $(cat -- "$split_status_error")"
 else
-  grep -Fqx "ECI active: $split_root/$split_session/eci_active" "$split_status_output" ||
+  grep -Fqx "ECI active: $split_marker" "$split_status_output" ||
     fail "shared-proof-root status did not use the mutation proof root: $(cat -- "$split_status_output")"
   [ ! -s "$split_status_error" ] ||
     fail "shared-proof-root status wrote stderr: $(cat -- "$split_status_error")"
