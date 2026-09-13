@@ -10319,8 +10319,10 @@ def checkout_detach_state(args):
     state = None
     branch_mode = False
     branch_startpoint = False
-    context_option = False
-    context_unpatched_effect = False
+    unified_context_option = False
+    unified_context_unpatched_effect = False
+    inter_hunk_context_option = False
+    inter_hunk_context_unpatched_effect = False
     patch_mode = False
     pathspec_file_option = False
     pathspec_dash_consumed = False
@@ -10365,9 +10367,12 @@ def checkout_detach_state(args):
                 if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
                     return invalid_result()
                 branch_mode = branch_mode or option == "--orphan"
-                if option in {"--unified", "--inter-hunk-context"}:
-                    context_option = True
-                    context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
+                if option == "--unified":
+                    unified_context_option = True
+                    unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
+                elif option == "--inter-hunk-context":
+                    inter_hunk_context_option = True
+                    inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
                 index += 1
                 continue
             if index + 1 >= len(args):
@@ -10381,9 +10386,12 @@ def checkout_detach_state(args):
             if option == "--conflict" and context_value not in {"merge", "diff3", "zdiff3"}:
                 return invalid_result()
             branch_mode = branch_mode or option == "--orphan"
-            if option in {"--unified", "--inter-hunk-context"}:
-                context_option = True
-                context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
+            if option == "--unified":
+                unified_context_option = True
+                unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
+            elif option == "--inter-hunk-context":
+                inter_hunk_context_option = True
+                inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
             index += 2
             continue
         if value.startswith("-") and not value.startswith("--"):
@@ -10395,13 +10403,13 @@ def checkout_detach_state(args):
                 if short_option in {"b", "B", "U"}:
                     branch_mode = branch_mode or short_option in {"b", "B"}
                     if short_option == "U":
-                        context_option = True
+                        unified_context_option = True
                     argument = short_options[short_index + 1:]
                     if argument:
                         if short_option == "U":
                             if not checkout_context_value_valid(argument):
                                 return invalid_result()
-                            context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
+                            unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
                         elif argument.startswith("-"):
                             return invalid_result()
                         break
@@ -10410,7 +10418,7 @@ def checkout_detach_state(args):
                     if short_option == "U":
                         if not checkout_context_value_valid(args[index + 1]):
                             return invalid_result()
-                        context_unpatched_effect = checkout_context_value_has_unpatched_effect(args[index + 1])
+                        unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(args[index + 1])
                     elif args[index + 1].startswith("-"):
                         return invalid_result()
                     index += 1
@@ -10493,8 +10501,11 @@ def checkout_detach_state(args):
             branch_startpoint = True
     if pathspec_dash_trailing_path:
         return invalid_result()
-    if context_option and not patch_mode and not context_unpatched_effect:
-        return invalid_result()
+    if not patch_mode:
+        if unified_context_option and not unified_context_unpatched_effect:
+            return invalid_result()
+        if inter_hunk_context_option and not inter_hunk_context_unpatched_effect:
+            return invalid_result()
     if patch_mode and pathspec_file_option:
         return invalid_result()
     return (state, branch_mode, branch_startpoint, separator_index,
