@@ -1348,6 +1348,23 @@ planner_compound_pipeline_topology_is_valid() {
   ' <<<"${plan_output:-}" >/dev/null 2>&1
 }
 
+# A planner-approved compound containing a visible Git worktree verb must
+# still reach the concrete-effect resolver below.  Do not let the compound
+# fast path hide a later `git rm`, `git mv`, `git restore`, or path-form
+# `git checkout` behind an `if`, redirection, or ordinary wrapper.  This is a
+# routing hint only: the effect resolver remains the sole source of a denial,
+# and false positives merely take the slower transparent path.
+planner_compound_git_worktree_candidate() {
+  planner_compound_topology_is_valid || return 1
+  jq -e '
+    [.plan.segments[]?.command] |
+    any(.[];
+      contains("git") and
+      (contains(" rm") or contains(" mv") or contains(" restore") or contains(" checkout") or
+       startswith("git rm") or startswith("git mv") or startswith("git restore") or startswith("git checkout")))
+  ' <<<"${plan_output:-}" >/dev/null 2>&1
+}
+
 # A typed compound script route owns the original command as one reviewed
 # script topology. It deliberately reuses the parser's byte-for-byte compound
 # reconstruction instead of replaying individual safe-looking segments.
@@ -3350,7 +3367,7 @@ fi
 # lifecycle, script, or environment segment.
 coordinator_static_pipeline_candidate=false
 worker_read_only_pipeline_candidate=false
-if planner_compound_pipeline_topology_is_valid; then
+if planner_compound_pipeline_topology_is_valid && ! planner_compound_git_worktree_candidate; then
   if [ "$hook_is_subagent" != true ]; then
     coordinator_static_pipeline_candidate=true
   else
@@ -3358,7 +3375,7 @@ if planner_compound_pipeline_topology_is_valid; then
   fi
 fi
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$PLAN_REVIEWED_SCRIPT_COMPOUND_ROUTE" != true ] &&
-  planner_compound_topology_is_valid; then
+  planner_compound_topology_is_valid && ! planner_compound_git_worktree_candidate; then
   if validate_planner_compound_segments; then
     validate_active_marker_binding
     exit 0
@@ -4449,6 +4466,34 @@ enforce_proof_path_escape_boundary() {
       "use the canonical proof-root path or keep the referenced evidence within the proof root"
 }
 
+# Keep planner status-0 compounds with a visible Git worktree verb on the
+# concrete-effect path below.  This is deliberately a routing hint rather
+# than a denial: an unrecognized wrapper, shell keyword, or path merely loses
+# the fast exit and is then judged by the resolved effect parser.
+coordinator_git_worktree_effect_candidate() {
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  python3 - "${1:-}" <<'PY'
+import os
+import shlex
+import sys
+
+try:
+    tokens = list(shlex.shlex(sys.argv[1], posix=True, punctuation_chars=True))
+except ValueError:
+    raise SystemExit(1)
+verbs = {"rm", "mv", "restore", "checkout"}
+for index, value in enumerate(tokens):
+    if os.path.basename(value) != "git":
+        continue
+    for child in tokens[index + 1:]:
+        if child in {";", "&", "&&", "|", "||", "(", ")"}:
+            break
+        if child in verbs:
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 if [ "$plan_marker_state" = active ] && [ "$plan_status" -ne 2 ]; then
   direct_ledger_static_control_target_pass "$command" true || true
   if [ "$DIRECT_LEDGER_FALLBACK_DECISION" = deny ]; then
@@ -4505,6 +4550,7 @@ case "$plan_status" in
         deferred_worker_wrapper_shape "$command" &&
         [ "$PLAN_GIT_CLONE_SOURCE_ACQUISITION" != true ]; } &&
       ! eci_cleanup_command_shape "$command" &&
+      ! coordinator_git_worktree_effect_candidate "$command" &&
       ! shell_script_launcher_shape "$command" &&
       { ! opaque_launcher_shape "$command" ||
         [ "$PLAN_GIT_CLONE_SOURCE_ACQUISITION" = true ]; } &&
@@ -8989,7 +9035,6 @@ READ_ONLY_GIT = {
     "show", "status", "submodule", "remote",
 }
 SEPARATORS = {";", "&", "&&", "|", "||"}
-UNRESOLVED_TOPOLOGY = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
 
 
@@ -9027,6 +9072,24 @@ def segment_spec(tokens, segment_index):
 
     index = 0
     environment = {}
+    # Shell control words, labels, assignments, and redirections are
+    # structural context.  They do not change the concrete Git child that
+    # follows them, so skip them before resolving that child.
+    while index < len(tokens):
+        value = tokens[index]
+        if value in {"if", "then", "else", "elif", "while", "until", "do", "{", "}"}:
+            index += 1
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*:", value):
+            index += 1
+            continue
+        if value in {">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}:
+            index += min(2, len(tokens) - index)
+            continue
+        if value.isdigit() and index + 1 < len(tokens) and tokens[index + 1] in {">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}:
+            index += 1
+            continue
+        break
     while index < len(tokens):
         assignment = ASSIGNMENT.fullmatch(tokens[index])
         if not assignment:
@@ -9051,7 +9114,7 @@ def segment_spec(tokens, segment_index):
     # `env NAME=value git ...` is a normal spelling. Its assignments help
     # resolve a concrete target, but do not themselves require a special
     # route. An observed direct timeout may select this exact env child.
-    if index < len(tokens) and os.path.basename(tokens[index]) == "env":
+    def consume_env(index, repo_dir):
         index += 1
         while index < len(tokens):
             assignment = ASSIGNMENT.fullmatch(tokens[index])
@@ -9061,15 +9124,15 @@ def segment_spec(tokens, segment_index):
                 index += 1
                 continue
             if tokens[index] == "--":
-                index += 1
-                break
+                return index + 1, repo_dir
             if tokens[index] in {"-C", "--chdir"}:
                 if index + 1 >= len(tokens):
                     return None
+                return_index = index + 2
                 repo_dir = resolve(tokens[index + 1], repo_dir)
-                index += 2
+                index = return_index
                 continue
-            if tokens[index].startswith(("--chdir=",)):
+            if tokens[index].startswith("--chdir="):
                 repo_dir = resolve(tokens[index].split("=", 1)[1], repo_dir)
                 index += 1
                 continue
@@ -9082,17 +9145,30 @@ def segment_spec(tokens, segment_index):
                         return None
                     index += 2
                     continue
-                if tokens[index].startswith(("--unset=",)):
+                if tokens[index].startswith("--unset="):
                     index += 1
                     continue
                 return None
             break
+        return index, repo_dir
+
+    if index < len(tokens) and os.path.basename(tokens[index]) == "env":
+        result = consume_env(index, repo_dir)
+        if result is None:
+            return None
+        index, repo_dir = result
 
     # Transparent launch wrappers preserve the Git child and its current
     # repository target. Their option values are skipped structurally; no
     # finite wrapper-name allowlist is used as an admission decision.
     while index < len(tokens):
         name = os.path.basename(tokens[index])
+        if name == "env":
+            result = consume_env(index, repo_dir)
+            if result is None:
+                return None
+            index, repo_dir = result
+            continue
         if name in {"command", "builtin", "exec", "nohup", "setsid"}:
             index += 1
             while index < len(tokens) and tokens[index].startswith("-"):
@@ -9183,8 +9259,12 @@ def segment_spec(tokens, segment_index):
                 if option in value_options:
                     if index + 1 >= len(tokens):
                         return None
+                    if option in {"-C", "--chdir", "-D"}:
+                        repo_dir = resolve(tokens[index + 1], repo_dir)
                     index += 2
                 elif any(option.startswith(value + "=") for value in value_options):
+                    if option.startswith(("-C=", "--chdir=", "-D=")):
+                        repo_dir = resolve(option.split("=", 1)[1], repo_dir)
                     index += 1
                 else:
                     index += 1
@@ -9199,6 +9279,7 @@ def segment_spec(tokens, segment_index):
     work_tree = environment.get("GIT_WORK_TREE")
     value_options = {
         "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix",
+        "--source", "--pathspec-from-file",
     }
     while index < len(tokens):
         token = tokens[index]
@@ -9234,7 +9315,7 @@ def segment_spec(tokens, segment_index):
                 return None
             index += 2
             continue
-        if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=")):
+        if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
             index += 1
             continue
         if token in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
@@ -9257,6 +9338,10 @@ def segment_spec(tokens, segment_index):
         return "reset", repo_dir
     if verb in {"add", "rm", "mv", "restore"}:
         return "prep", repo_dir
+    if verb == "checkout":
+        # Without `--`, checkout may only switch a branch/ref.  A pathspec
+        # after `--` is the concrete worktree-changing form.
+        return ("prep", repo_dir) if "--" in tokens[index + 1:] else None
     if verb == "commit":
         return "commit", repo_dir
     if verb == "worktree":
@@ -9342,9 +9427,8 @@ if not tokens:
     raise SystemExit(0)
 
 # Shell topology is not a permission boundary. Inspect independently visible
-# command segments, and leave genuinely opaque topology advisory.
-if any(token in UNRESOLVED_TOPOLOGY for token in tokens):
-    raise SystemExit(0)
+# command segments even when they contain a redirection or conditional; only
+# an unresolved command child remains advisory.
 segments = []
 current = []
 for token in tokens + [";"]:
@@ -9635,7 +9719,7 @@ except ValueError:
     raise SystemExit(1)
 
 SEPARATORS = {";", "&", "&&", "|", "||"}
-OPAQUE = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
+REDIRECTIONS = {">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 target_repo = os.path.normpath(os.path.abspath(target_repo or command_cwd))
 command_cwd = os.path.normpath(os.path.abspath(command_cwd))
@@ -9672,12 +9756,11 @@ def lexical_resolve(value, base):
         return os.path.normpath(expanded)
     return os.path.normpath(os.path.join(base, expanded))
 
-def parse_pathspec(value):
-    base = command_cwd
+def parse_pathspec(value, base):
     exclude = False
     if value.startswith(":/"):
-        base = target_repo
         value = value[2:]
+        return value, target_repo, exclude, not value
     elif value.startswith(":("):
         close = value.find(")")
         if close < 0:
@@ -9687,15 +9770,18 @@ def parse_pathspec(value):
         if "top" in magic:
             base = target_repo
         value = value[close + 1:]
-    return value, base, exclude
+        return value, base, exclude, "top" in magic and not value
+    return value, base, exclude, False
 
-def pathspec_candidates(value):
-    parsed = parse_pathspec(value)
+def pathspec_candidates(value, base):
+    parsed = parse_pathspec(value, base)
     if parsed is None:
         return [], False
-    value, base, exclude = parsed
-    if exclude or not value:
+    value, base, exclude, root = parsed
+    if exclude:
         return [], exclude
+    if root or not value:
+        return [target_repo], False
     candidate = lexical_resolve(value, base)
     if any(character in value for character in "*?["):
         return glob.glob(candidate, recursive=True), False
@@ -9737,6 +9823,28 @@ def split_segments(values):
             current.append(value)
     return segments
 
+def strip_structural_prefix(segment):
+    index = 0
+    while index < len(segment):
+        value = segment[index]
+        if value in {"if", "then", "else", "elif", "while", "until", "do", "{", "}", "("}:
+            index += 1
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*:", value):
+            index += 1
+            continue
+        if ASSIGNMENT.fullmatch(value):
+            index += 1
+            continue
+        if value in REDIRECTIONS:
+            index += min(2, len(segment) - index)
+            continue
+        if value.isdigit() and index + 1 < len(segment) and segment[index + 1] in REDIRECTIONS:
+            index += 1
+            continue
+        break
+    return segment[index:]
+
 def consume_env(segment, index, base):
     index += 1
     while index < len(segment):
@@ -9768,18 +9876,22 @@ def consume_env(segment, index, base):
     return index, base
 
 def unwrap(segment):
+    segment = strip_structural_prefix(segment)
     index = 0
     base = command_cwd
-    while index < len(segment) and ASSIGNMENT.fullmatch(segment[index]):
-        index += 1
-    if index < len(segment) and os.path.basename(segment[index]) == "env":
-        result = consume_env(segment, index, base)
-        if result is None:
-            return None
-        index, base = result
 
     while index < len(segment):
+        while index < len(segment) and ASSIGNMENT.fullmatch(segment[index]):
+            index += 1
+        if index >= len(segment):
+            break
         name = os.path.basename(segment[index])
+        if name == "env":
+            result = consume_env(segment, index, base)
+            if result is None:
+                return None
+            index, base = result
+            continue
         if name in {"command", "builtin", "exec", "nohup", "setsid"}:
             index += 1
             while index < len(segment) and segment[index].startswith("-"):
@@ -9857,11 +9969,11 @@ def unwrap(segment):
                 if option in value_options:
                     if index + 1 >= len(segment):
                         return None
-                    if option in {"-C", "--chdir"}:
+                    if option in {"-C", "--chdir", "-D"}:
                         base = lexical_resolve(segment[index + 1], base)
                     index += 2
                 elif any(option.startswith(value + "=") for value in value_options):
-                    if option.startswith(("-C=", "--chdir=")):
+                    if option.startswith(("-C=", "--chdir=", "-D=")):
                         base = lexical_resolve(option.split("=", 1)[1], base)
                     index += 1
                 else:
@@ -9871,6 +9983,7 @@ def unwrap(segment):
     return index, base
 
 def git_command(segment):
+    segment = strip_structural_prefix(segment)
     result = unwrap(segment)
     if result is None:
         return None
@@ -9890,12 +10003,12 @@ def git_command(segment):
             base = lexical_resolve(value[2:], base)
             index += 1
             continue
-        if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix"}:
+        if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--source", "--pathspec-from-file"}:
             if index + 1 >= len(segment):
                 return None
             index += 2
             continue
-        if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=")):
+        if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
             index += 1
             continue
         if value in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
@@ -9930,7 +10043,7 @@ def rm_detail(args, base):
     if cached_or_dry:
         return None
     for value in paths:
-        candidates, _ = pathspec_candidates(value)
+        candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
                 continue
@@ -9955,7 +10068,7 @@ def mv_detail(args, base):
     if dry_run or len(paths) < 2:
         return None
     destination_raw = paths[-1]
-    destination_values, destination_excluded = pathspec_candidates(destination_raw)
+    destination_values, destination_excluded = pathspec_candidates(destination_raw, base)
     if destination_excluded or not destination_values:
         return None
     destination = destination_values[0]
@@ -9965,7 +10078,7 @@ def mv_detail(args, base):
         return None
     sources = []
     for value in paths[:-1]:
-        candidates, _ = pathspec_candidates(value)
+        candidates, _ = pathspec_candidates(value, base)
         sources.extend(candidates)
     if not sources:
         return None
@@ -9986,9 +10099,62 @@ def mv_detail(args, base):
             return "operation=mv target=%s kind=protected-live-hook" % effective_destination
     return None
 
-def inspect_segment(segment):
-    if any(value in OPAQUE for value in segment):
+def restore_detail(args, base):
+    worktree = True
+    paths = []
+    after_separator = False
+    value_options = {"--source", "--pathspec-from-file"}
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if not after_separator and value == "--":
+            after_separator = True
+            index += 1
+            continue
+        if not after_separator and value.startswith("-"):
+            if value in {"--staged", "-S"} or value.startswith("--staged="):
+                worktree = False
+            elif value in {"--worktree", "-W"} or value.startswith("--worktree="):
+                worktree = True
+            elif value in value_options:
+                # The value only affects the source/pathspec input, not the
+                # worktree target.  Skip it when it is a separate argv.
+                index += 2
+                continue
+            index += 1
+            continue
+        paths.append(value)
+        index += 1
+    if not worktree:
         return None
+    for value in paths:
+        candidates, _ = pathspec_candidates(value, base)
+        for candidate in candidates:
+            if not inside(target_repo, candidate):
+                continue
+            detail = protected_path_detail(candidate, "restore", True)
+            if detail:
+                return detail
+    return None
+
+def checkout_detail(args, base):
+    # `checkout` without `--` can only name a branch/ref and is not a
+    # worktree-file selection.  Once `--` is present, every following
+    # pathspec is a concrete worktree restore target.
+    if "--" not in args:
+        return None
+    separator = args.index("--")
+    for value in args[separator + 1:]:
+        candidates, _ = pathspec_candidates(value, base)
+        for candidate in candidates:
+            if not inside(target_repo, candidate):
+                continue
+            detail = protected_path_detail(candidate, "checkout", True)
+            if detail:
+                return detail
+    return None
+
+def inspect_segment(segment):
     parsed = git_command(segment)
     if parsed is None:
         return None
@@ -9997,6 +10163,10 @@ def inspect_segment(segment):
         return rm_detail(args, base)
     if verb == "mv":
         return mv_detail(args, base)
+    if verb == "restore":
+        return restore_detail(args, base)
+    if verb == "checkout":
+        return checkout_detail(args, base)
     return None
 
 for segment in split_segments(tokens):
@@ -10058,7 +10228,7 @@ enforce_git_mutation_gate() {
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
     fi
     if [ "${hook_is_subagent:-false}" != true ] && [ "$operation" = prep ] &&
-      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$repo_dir" 2>/dev/null || true)" &&
+      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" 2>/dev/null || true)" &&
       [ -n "$protected_target_detail" ]; then
       deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
         "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
@@ -11478,6 +11648,7 @@ fi
 
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
   ! eci_cleanup_command_shape "$command" &&
+  ! coordinator_git_worktree_effect_candidate "$command" &&
   [ "$coordinator_compound_mutation" != true ] &&
   [ "$coordinator_static_pipeline_candidate" != true ] &&
   ! coordinator_script_batch_shape "$command" &&
