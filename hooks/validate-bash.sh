@@ -9564,8 +9564,169 @@ raise SystemExit(1)
 PY
 }
 
+git_protected_worktree_target_detail() {
+  local command_text="${1:-$command}" target_repo="${2:-}" command_cwd="${3:-$cwd}"
+  local configured_home="${CODEX_CONFIGURED_HOME:-${CODEX_HOME:-}}"
+
+  # Coordinator Git preparation is normally harmless staging, but deleting a
+  # live ECI hook is an actual source/control edit. Resolve only that concrete
+  # target here; flags, wrappers, punctuation, and ordinary path failures are
+  # not permission boundaries.
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" <<'PY'
+import glob
+import os
+import re
+import shlex
+import sys
+
+command, target_repo, command_cwd, configured_home, hook_dir = sys.argv[1:]
+try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+if not tokens:
+    raise SystemExit(1)
+
+separators = {";", "&", "&&", "|", "||"}
+opaque = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
+assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+target_repo = os.path.realpath(os.path.normpath(target_repo))
+command_cwd = os.path.realpath(os.path.abspath(command_cwd))
+control_roots = set()
+for value in (configured_home, os.path.dirname(os.path.realpath(hook_dir))):
+    if value and os.path.isabs(value):
+        control_roots.add(os.path.realpath(os.path.normpath(value)))
+protected = {
+    os.path.join(root, "hooks", name)
+    for root in control_roots
+    for name in (
+        "validate-bash.sh", "pretooluse-edit-dispatch.sh", "stop-gate.sh",
+        "eci-active-gate.sh", "eci-review-gate.sh", "ate-orchestrator-gate.sh",
+        "validate-edit-write.sh", "validate-apply-patch.sh",
+    )
+}
+
+def resolve(value, base):
+    value = os.path.expanduser(value)
+    if os.path.isabs(value):
+        return os.path.realpath(os.path.normpath(value))
+    return os.path.realpath(os.path.normpath(os.path.join(base, value)))
+
+def split_segments(values):
+    segments, current = [], []
+    for value in values + [";"]:
+        if value in separators:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(value)
+    return segments
+
+def inspect_segment(segment):
+    if any(value in opaque for value in segment):
+        return None
+    index = 0
+    base = command_cwd
+    while index < len(segment) and assignment.fullmatch(segment[index]):
+        index += 1
+    if index < len(segment) and os.path.basename(segment[index]) == "env":
+        index += 1
+        while index < len(segment):
+            value = segment[index]
+            if assignment.fullmatch(value):
+                index += 1
+                continue
+            if value in {"-i", "--ignore-environment", "-v", "--debug"}:
+                index += 1
+                continue
+            if value in {"-u", "--unset"}:
+                index += 2
+                continue
+            if value in {"-C", "--chdir"}:
+                if index + 1 >= len(segment):
+                    return None
+                base = resolve(segment[index + 1], base)
+                index += 2
+                continue
+            if value.startswith(("--chdir=",)):
+                base = resolve(value.split("=", 1)[1], base)
+                index += 1
+                continue
+            if value == "--":
+                index += 1
+            break
+    while index < len(segment) and os.path.basename(segment[index]) in {
+        "command", "builtin", "exec", "nohup", "setsid",
+    }:
+        index += 1
+        while index < len(segment) and segment[index].startswith("-"):
+            index += 1
+    if index >= len(segment) or os.path.basename(segment[index]) != "git":
+        return None
+    index += 1
+    while index < len(segment):
+        value = segment[index]
+        if value == "-C":
+            if index + 1 >= len(segment):
+                return None
+            base = resolve(segment[index + 1], base)
+            index += 2
+            continue
+        if value.startswith("-C") and len(value) > 2:
+            base = resolve(value[2:], base)
+            index += 1
+            continue
+        if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix"}:
+            index += 2
+            continue
+        if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=")):
+            index += 1
+            continue
+        if value in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+            index += 1
+            continue
+        if value.startswith("-"):
+            index += 1
+            continue
+        break
+    if index >= len(segment) or segment[index] != "rm":
+        return None
+    arguments = segment[index + 1:]
+    paths = []
+    after_separator = False
+    for value in arguments:
+        if value == "--":
+            after_separator = True
+            continue
+        if not after_separator and value.startswith("-"):
+            continue
+        paths.append(value)
+    for value in paths:
+        candidates = []
+        if any(character in value for character in "*?["):
+            candidates = glob.glob(os.path.join(base, value), recursive=True)
+        else:
+            candidates = [os.path.join(base, value)]
+        for candidate in candidates:
+            resolved = resolve(candidate, base)
+            if resolved in protected and os.path.lexists(candidate):
+                return "operation=rm target=%s kind=protected-live-hook" % resolved
+    return None
+
+for segment in split_segments(tokens):
+    detail = inspect_segment(segment)
+    if detail:
+        print(detail)
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 enforce_git_mutation_gate() {
-  local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index
+  local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail
 
   if ! specs_text="$(git_mutation_specs)"; then
     return 0
@@ -9612,6 +9773,13 @@ enforce_git_mutation_gate() {
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
         "ECI Git mutation has a broad destructive effect: ${broad_effect_detail}" \
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
+    fi
+    if [ "${hook_is_subagent:-false}" != true ] && [ "$operation" = prep ] &&
+      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$repo_dir" 2>/dev/null || true)" &&
+      [ -n "$protected_target_detail" ]; then
+      deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
+        "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
+        "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
     fi
     if [ "${hook_is_subagent:-false}" = true ]; then
       case "$operation" in

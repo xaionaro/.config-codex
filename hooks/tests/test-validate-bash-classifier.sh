@@ -1196,6 +1196,24 @@ assert_git_whole_worktree_staging_denied() {
   }
 }
 
+assert_coordinator_protected_git_target_denied() {
+  local command="$1" runner="${2:-run_hook}" output
+  output="$($runner "$command")"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COORDINATOR_EDIT_ROUTING_REQUIRED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=edit-routing")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=coordinator-protected-target")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("target=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null || {
+    printf 'Coordinator protected Git target denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
+    [ ! -e "$output" ] || cat -- "$output" >&2
+    return 1
+  }
+}
+
 assert_compound_mutation_denied() {
   local command="$1" runner="${2:-run_hook}" output
   output="$("$runner" "$command")"
@@ -2167,16 +2185,17 @@ assert_commit() {
 # deciding whether the concrete effect is ordinary or broad/destructive.
 run_hook_matrix_parallel allowed coordinator-git-prep \
   "git add -- hooks/validate-bash.sh" \
-  "git rm -- hooks/validate-bash.sh" \
   "git mv -- hooks/validate-bash.sh hooks/validate-bash.sh" \
   "git restore --staged -- hooks/validate-bash.sh" \
   "git add -- ../outside" \
-  "git rm -r -- hooks/validate-bash.sh" \
   "git mv -- hooks/validate-bash.sh ../outside" \
   "git restore --staged hooks/validate-bash.sh" \
   "env git add -- hooks/validate-bash.sh"
 run_matrix_parallel coordinator assert_git_whole_worktree_staging_denied coordinator-git-prep-unsafe \
   "git add ."
+run_matrix_parallel coordinator assert_coordinator_protected_git_target_denied coordinator-protected-git-target \
+  "git rm -- hooks/validate-bash.sh" \
+  "git rm -r -- hooks/validate-bash.sh"
 run_subagent_matrix_parallel allowed worker-git-staging \
   "git add -- hooks.json" \
   "git add README.md"
@@ -3672,4 +3691,5 @@ printf '%s' "$stable_anchor" >"$proof_root/t00-session/high_level_log.anchor"
 # classifier suite so its red/green behavior is exercised by the allowlisted
 # test entry point.
 bash "$ROOT/hooks/tests/test-validate-bash-git-approvals.sh"
+bash "$ROOT/hooks/tests/test-coordinator-protected-git-target.sh"
 printf '%s\n' 'validate-bash classifier tests: PASS'
