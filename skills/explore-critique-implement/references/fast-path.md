@@ -17,6 +17,7 @@ Use either path's available results once independently verified and the next act
 
 ## Solo solving
 
+- Track the problem as a list of achievable milestones in existing task tracking. Extend it as investigation reveals additional in-scope issues; report out-of-scope findings without expanding authorization. Keep each milestone's status, verification evidence, and checkpoint current.
 - Independently investigate, implement the quickest bounded solution within existing authorization, and validate it end to end. Iterate without waiting for main ECI Steps 1–4; do not delegate solving work.
 - Analysis-only requests authorize analysis and evidence only. Preserve secret-handling, destructive-action, external-mutation, unrelated-dirty-work, and target-reread safeguards. Speed grants no broader or irreversible authority.
 - Defer the main path's design/style/TDD/review sequence for provisional fast work. Run useful focused checks and all applicable configuration/runtime E2E. If unavailable, report the missing resource and attempted evidence; never equate proxy checks with E2E.
@@ -42,8 +43,10 @@ E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-con
 ## Adoption, review, and closure
 
 - Report fast results as provisional with exact evidence and limits. Fast E2E is producer evidence, not acceptance or independent review.
+- After each issue is resolved, immediately hand off its change and evidence for a separate coordinator-owned checkpoint commit. The coordinator independently verifies the scoped change and commits it promptly; do not batch resolved issues or wait for remaining milestones, main-path adoption, or Step 4. The Fast owner never commits. A resolution without file changes needs evidence, not an empty commit.
 - The main implementer inspects retained fast changes in place, adopts or revises them under the selected winner, and runs its required checks/E2E. No copying or redundant rewrite is needed.
 - Before checkpointing overlapping work, the coordinator obtains a bounded write-yield from both producers and inspects actual scoped changes. It owns checkpoints and preserves unrelated hunks; resume useful work afterward.
+- If a checkpoint cannot safely isolate the resolved change, record it as checkpoint-pending with the concrete conflict. Resolve that boundary promptly while unaffected work continues; never silently treat it as committed or include unrelated/in-flight changes.
 - The coordinator tracks every retained fast hunk into review. When a preceding baseline contains adopted fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
 - Neither producer supplies its own independent acceptance reviews. Step 4 independently repeats or extends required main-implementer E2E.
 - Before final acceptance, the coordinator stops both producers' task-owned writes, inspects the current cumulative scoped diff, and verifies reviews and checks cover that state. Material late edits require fresh appropriate review and verification.
