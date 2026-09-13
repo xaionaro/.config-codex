@@ -9868,7 +9868,8 @@ def collect_pathspecs(args, base):
     index = 0
     value_options = {
         "--pathspec-from-file", "--source", "--conflict", "-b", "-B",
-        "--orphan", "--recurse-submodules",
+        "--orphan", "--unified", "-U", "--inter-hunk-context",
+        "--recurse-submodules",
     }
     while index < len(args):
         value = args[index]
@@ -9890,7 +9891,7 @@ def collect_pathspecs(args, base):
             elif value in value_options:
                 if index + 1 < len(args):
                     index += 1
-            elif value.startswith(("--source=", "--conflict=", "--orphan=", "--recurse-submodules=")):
+            elif value.startswith(("--source=", "--conflict=", "--orphan=", "--unified=", "--inter-hunk-context=", "--recurse-submodules=")):
                 pass
             index += 1
             continue
@@ -10276,9 +10277,12 @@ def checkout_revision(value):
     return result.returncode == 0
 
 def checkout_detach_state(args):
-    """Return detach state, branch mode, and invalid-option state."""
+    """Return detach state, branch mode, start-point state, and invalid state."""
     state = None
     branch_mode = False
+    branch_startpoint = False
+    context_option = False
+    patch_mode = False
     index = 0
     while index < len(args):
         value = args[index]
@@ -10289,19 +10293,32 @@ def checkout_detach_state(args):
             # This option consumes the following token even when it starts
             # with a dash.  Do not mistake a pathspec filename named
             # --detach for a later detach toggle.
-            index += 1 if pathspec_file is not None else 2
+            if pathspec_file is None:
+                if index + 1 >= len(args) or args[index + 1] == "--":
+                    return None, branch_mode, branch_startpoint, True
+                index += 2
+            elif not pathspec_file:
+                return None, branch_mode, branch_startpoint, True
+            else:
+                index += 1
             continue
         option, separator, argument = value.partition("=")
         if option in {"--source", "--conflict", "--orphan", "--unified", "--inter-hunk-context"}:
             if separator:
                 if argument.startswith("-"):
-                    return None, branch_mode, True
+                    return None, branch_mode, branch_startpoint, True
+                if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
+                    return None, branch_mode, branch_startpoint, True
                 branch_mode = branch_mode or option == "--orphan"
+                context_option = context_option or option in {"--unified", "--inter-hunk-context"}
                 index += 1
                 continue
             if index + 1 >= len(args) or args[index + 1].startswith("-"):
-                return None, branch_mode, True
+                return None, branch_mode, branch_startpoint, True
+            if option == "--conflict" and args[index + 1] not in {"merge", "diff3", "zdiff3"}:
+                return None, branch_mode, branch_startpoint, True
             branch_mode = branch_mode or option == "--orphan"
+            context_option = context_option or option in {"--unified", "--inter-hunk-context"}
             index += 2
             continue
         if value.startswith("-") and not value.startswith("--"):
@@ -10311,17 +10328,20 @@ def checkout_detach_state(args):
                 short_option = short_options[short_index]
                 if short_option in {"b", "B", "U"}:
                     branch_mode = branch_mode or short_option in {"b", "B"}
+                    context_option = context_option or short_option == "U"
                     argument = short_options[short_index + 1:]
                     if argument:
                         if argument.startswith("-"):
-                            return None, branch_mode, True
+                            return None, branch_mode, branch_startpoint, True
                         break
                     if index + 1 >= len(args) or args[index + 1].startswith("-"):
-                        return None, branch_mode, True
+                        return None, branch_mode, branch_startpoint, True
                     index += 1
                     break
                 if short_option == "d":
                     state = True
+                elif short_option == "p":
+                    patch_mode = True
                 short_index += 1
             index += 1
             continue
@@ -10330,12 +10350,22 @@ def checkout_detach_state(args):
                 suffix = option[len("--no-"):]
                 if suffix and "detach".startswith(suffix):
                     if separator:
-                        return None, branch_mode, True
+                        return None, branch_mode, branch_startpoint, True
                     state = False
+                elif suffix == "patch":
+                    patch_mode = False
             elif option != "--" and "--detach".startswith(option):
+                if separator:
+                    return None, branch_mode, branch_startpoint, True
                 state = True
+            elif option == "--patch":
+                patch_mode = True
         index += 1
-    return state, branch_mode, False
+        if branch_mode and not value.startswith("-") and checkout_revision(value) is True:
+            branch_startpoint = True
+    if context_option and not patch_mode:
+        return None, branch_mode, branch_startpoint, True
+    return state, branch_mode, branch_startpoint, False
 
 def checkout_detail(args, base):
     # With `--`, every following token is a worktree pathspec.  Without it,
@@ -10344,11 +10374,11 @@ def checkout_detail(args, base):
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
-    detach_state, branch_mode, invalid = checkout_detach_state(args)
+    detach_state, branch_mode, branch_startpoint, invalid = checkout_detach_state(args)
     if invalid or detach_state is True:
         return None
     explicit_paths = "--" in args
-    if branch_mode and not explicit_paths:
+    if branch_mode and (not explicit_paths or not branch_startpoint):
         return None
     if explicit_paths:
         paths = collect_pathspecs(args[args.index("--"):], base)
