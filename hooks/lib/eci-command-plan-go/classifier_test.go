@@ -2095,6 +2095,13 @@ func TestRawGitPlansHaveNoGenericCapability(t *testing.T) {
 		"git status --short",
 		"git --no-pager rev-parse HEAD",
 		"git archive HEAD",
+		// Git context spelling and exclude pathspecs do not create an
+		// effect by themselves.  The planner defers these forms without a
+		// diagnostic so the provider can resolve the concrete read target.
+		"git -C /tmp/foreign status --short",
+		"git -C /tmp/root -C /tmp/foreign status --short",
+		"git -C /tmp/root diff -- :(exclude)AGENTS.md",
+		"git -C /tmp/root diff -- ':(exclude)AGENTS.md'",
 		"git --no-pager rev-parse HEAD",
 	}
 	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {

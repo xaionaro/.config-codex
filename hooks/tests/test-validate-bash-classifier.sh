@@ -2139,10 +2139,14 @@ run_hook_matrix_parallel allowed git-read-argv \
   "git -C $ROOT diff --$git_diff_pathspecs_17" \
   "git -C $ROOT log -1 --oneline ':(exclude)hooks'" \
   "git -C $ROOT show --stat -1 hooks//validate-bash.sh"
-run_hook_matrix_parallel unknown coordinator-git-context-denial \
+# Git context selection and exclude pathspec spelling are read-only concerns.
+# Keep them transparent so Git/provider handling can resolve the actual target;
+# foreign/repeated context is not itself an accidental mutation.
+run_hook_matrix_parallel allowed coordinator-git-context-inspection \
   "git -C $TMP_ROOT status --short" \
   "git -C $ROOT -C $TMP_ROOT status --short" \
-  "git -C $ROOT diff -- :(exclude)AGENTS.md"
+  "git -C $ROOT diff -- :(exclude)AGENTS.md" \
+  "git -C $ROOT diff -- ':(exclude)AGENTS.md'"
 run_matrix_parallel coordinator assert_git_execution_context_denied_early coordinator-git-execution-context \
   "git -C $ROOT -c user.name=test status --short"
 run_matrix_parallel coordinator assert_git_environment_denied_early coordinator-git-environment \
