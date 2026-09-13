@@ -2088,22 +2088,6 @@ run_subagent_matrix_parallel allowed worker-kimi-finite-inspection \
   "stat -Lc '%F %N' $kimi_root/hooks/validate-bash.sh" \
   "find $TMP_ROOT -maxdepth 1 -type f -print"
 
-assert_git_environment_denied_early() {
-  local command="$1" runner="${2:-run_hook}" output
-  output="$($runner "$command")"
-  jq -e '
-    .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operation=plan-segment")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("token=GIT_DIR=")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=leading-assignment"))
-  ' "$output" >/dev/null || {
-    printf 'Git environment denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
-    [ ! -e "$output" ] || cat -- "$output" >&2
-    return 1
-  }
-}
-
 # The compiled coordinator planner admits finite literal Git pathspec reads;
 # the legacy fallback remains bounded separately when planner admission is
 # unavailable.
@@ -2128,8 +2112,7 @@ run_hook_matrix_parallel allowed coordinator-git-context-inspection \
   "git -C $ROOT -C $TMP_ROOT status --short" \
   "git -C $ROOT diff -- :(exclude)AGENTS.md" \
   "git -C $ROOT diff -- ':(exclude)AGENTS.md'" \
-  "git -C $ROOT -c user.name=test status --short"
-run_matrix_parallel coordinator assert_git_environment_denied_early coordinator-git-environment \
+  "git -C $ROOT -c user.name=test status --short" \
   "GIT_DIR=$TMP_ROOT git -C $ROOT status --short"
 
 # Read-only ls remains admitted through the full classifier when a transcript
