@@ -909,13 +909,22 @@ assert_fast_path_routes() {
 assert_fast_quality_contract() {
   local text="$1"
   require_section_pattern "$text" 'requirements-first quality assessment' \
-    'assess Fast work against original requirements and applicable quality standards'
+    'Main ECI establishes design and quality from original requirements and applicable standards'
+  require_section_pattern "$text" 'Fast implementation is a candidate, not a design premise' \
+    'candidate implementation, never as acceptance or an authoritative design premise'
   require_section_pattern "$text" 'existing work cannot anchor design' \
-    'presence, passing tests, checkpoint, sunk cost, or deadline pressure.*does not establish an acceptable design'
+    'presence, checkpoint, sunk cost, deadline pressure, or passing tests alone does not settle quality'
   require_section_pattern "$text" 'independent alternatives and material quality' \
-    'Evaluate viable alternatives.*correctness, maintainability, architecture, and applicable style'
+    'Evaluate viable alternatives within authorized scope for correctness, maintainability, architecture, and applicable style'
   require_section_pattern "$text" 'evidence survives without mandatory rewriting' \
-    'Preserve useful verified discoveries.*retain qualifying code in place'
+    'Preserve useful verified discoveries, still-valid tests, and qualifying code in place'
+  require_section_pattern "$text" 'provenance or cosmetics do not force a rewrite' \
+    'Fast provenance or cosmetic preference alone does not justify a rewrite'
+}
+
+assert_fast_quality_critique_contract() {
+  require_section_pattern "$1" 'passing tests remain evidence but cannot settle design alone' \
+    'implementation status and passing tests alone do not justify selecting it'
 }
 
 assert_fast_quality() {
@@ -923,15 +932,23 @@ assert_fast_quality() {
   text="$(extract_h2_section "$FAST_PATH" '## Main ECI quality responsibility')" ||
     fail 'Fast quality section missing'
   assert_fast_quality_contract "$text"
-  for clause in 'assess Fast work against original requirements' \
-    'does not establish an acceptable design' 'Evaluate viable alternatives' \
-    'retain qualifying code in place'; do
+  for clause in 'establishes design and quality from original requirements' \
+    'candidate implementation, never as acceptance or an authoritative design premise' \
+    'does not settle quality' 'within authorized scope' 'still-valid tests' \
+    'qualifying code in place' 'cosmetic preference alone does not justify a rewrite'; do
     mutation="${text/"$clause"/REMOVED}"
     if output="$(assert_fast_quality_contract "$mutation" 2>&1)"; then
       fail "Fast quality mutation admitted missing requirement: $clause"
     fi
     [[ "$output" == *'workflow routing assertion failed:'* ]] || fail "unexpected mutation failure: $output"
   done
+  text="$(<"$ECI_CRITIQUE")"
+  assert_fast_quality_critique_contract "$text"
+  mutation="${text/'passing tests alone'/'passing tests'}"
+  if output="$(assert_fast_quality_critique_contract "$mutation" 2>&1)"; then
+    fail 'Fast quality mutation discarded passing tests as useful evidence'
+  fi
+  [[ "$output" == *'passing tests remain evidence'* ]] || fail "unexpected mutation failure: $output"
   for file in "$ROOT/skills/explore-critique-implement/references/explore.md" \
     "$ECI_CRITIQUE" "$IMPLEMENT" "$REVIEW"; do
     require_text "$file" 'fast-path.md#main-eci-quality-responsibility'

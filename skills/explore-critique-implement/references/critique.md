@@ -4,7 +4,7 @@ Fresh special `ECI critic-step2` only. It is authoritative for choosing an explo
 
 Apply [fast evidence routing](fast-path.md#evidence-can-reopen-design) when assessing discoveries and reopened options; preserve independent source checks and winner selection.
 
-Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): assess the Fast design as a candidate on its merits; implementation status and passing tests do not justify selecting it.
+Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): assess the Fast design as a candidate on its merits; implementation status and passing tests alone do not justify selecting it.
 
 Read the target state, original requirements, available lineage context, candidate options, and relevant style sources. Independently check applicable style guidance. Audit citations, claim tags, duplication, PoCs, scope, mechanism wording, and boundary counterexamples. Fetch and quote load-bearing T1/T2 sources where available; flag unavailable material and its effect on the choice.
 

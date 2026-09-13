@@ -35,9 +35,11 @@ E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-con
 
 ## Main ECI quality responsibility
 
-- Main ECI owns quality: assess Fast work against original requirements and applicable quality standards. Its presence, passing tests, checkpoint, sunk cost, or deadline pressure does not establish an acceptable design or limit exploration to polishing it.
-- Evaluate viable alternatives on correctness, maintainability, architecture, and applicable style. Explorer develops options from requirements; Step 2 independently selects the winner; implementation meets that winner; Step 4 independently reviews retained work to the same standard as main-path changes.
-- Preserve useful verified discoveries and retain qualifying code in place. Revise or replace work with material quality problems through normal ECI; neither Fast provenance nor cosmetic preference justifies a redundant rewrite.
+Main ECI establishes design and quality from original requirements and applicable standards. Treat existing Fast work as a candidate implementation, never as acceptance or an authoritative design premise. Its presence, checkpoint, sunk cost, deadline pressure, or passing tests alone does not settle quality or restrict exploration to polishing it.
+
+Evaluate viable alternatives within authorized scope for correctness, maintainability, architecture, and applicable style. Explorer develops options; Step 2 independently selects the winner; implementation meets it; Step 4 applies the same quality scrutiny to retained Fast work and main-path changes.
+
+Preserve useful verified discoveries, still-valid tests, and qualifying code in place. Revise or replace material deficiencies through normal ECI. Fast provenance or cosmetic preference alone does not justify a rewrite.
 
 ## Evidence can reopen design
 
