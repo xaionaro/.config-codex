@@ -2010,8 +2010,8 @@ assert_ate_explicit_only_contract() {
     fail 'ATE explicit-only contract: discovery policy must disable implicit invocation'
   [[ "$codex_source" == *'Start ATE only when the user explicitly asks to use ATE or `agent-teams-execution`.'* ]] ||
     fail 'ATE explicit-only contract: root activation needs an explicit user request'
-  [[ "$codex_source" == *'Descriptive mentions and requests to inspect or edit its skill documents do not invoke ATE.'* ]] ||
-    fail 'ATE explicit-only contract: maintenance and mentions must not activate ATE'
+  [[ "$codex_source" == *'Descriptive mentions and skill-document maintenance alone do not invoke ATE.'* ]] ||
+    fail 'ATE explicit-only contract: maintenance alone must not suppress explicit activation'
   inferred="${codex_source#*'| Inferred condition | Workflow |'}"
   inferred="${inferred%%$'\n\n'*}"
   [[ "$inferred" == *'| `!M` | `direct` |'* && "$inferred" == *'| `M` | `ECI` |'* && "$inferred" != *'ATE'* ]] ||
@@ -2019,6 +2019,9 @@ assert_ate_explicit_only_contract() {
   [[ "$ate_source" == *'description: Use only when the user explicitly asks to use ATE or agent-teams-execution;'* &&
     "$ate_source" == *'Once explicitly active, ATE retains its lifecycle until normal closure.'* ]] ||
     fail 'ATE explicit-only contract: discovery trigger and active lifecycle must agree'
+  [[ "$ate_source" == *'mentioning or maintaining this skill alone does not invoke it.'* &&
+    "$ate_source" == *'Task size, parallel work, descriptive mentions, and skill-document maintenance alone do not activate ATE.'* ]] ||
+    fail 'ATE explicit-only contract: description and activation must distinguish maintenance alone'
 }
 
 assert_ate_explicit_only() {
@@ -2042,6 +2045,17 @@ assert_ate_explicit_only() {
     fail 'ATE explicit-only contract: automatic ATE routing mutation was admitted'
   fi
   [[ "$output" == *'ATE explicit-only contract:'* ]] || fail "unexpected ATE routing mutation failure: $output"
+  mutation="${codex_source/'maintenance alone'/'maintenance'}"
+  if output="$(assert_ate_explicit_only_contract "$mutation" "$ate_source" "$policy_source" 2>&1)"; then
+    fail 'ATE explicit-only contract: categorical CODEX maintenance exclusion was admitted'
+  fi
+  [[ "$output" == *'maintenance alone'* ]] || fail "unexpected ATE maintenance mutation failure: $output"
+  for mutation in "${ate_source/'skill alone'/'skill'}" "${ate_source/'maintenance alone'/'maintenance'}"; do
+    if output="$(assert_ate_explicit_only_contract "$codex_source" "$mutation" "$policy_source" 2>&1)"; then
+      fail 'ATE explicit-only contract: categorical skill maintenance exclusion was admitted'
+    fi
+    [[ "$output" == *'distinguish maintenance alone'* ]] || fail "unexpected ATE skill mutation failure: $output"
+  done
 }
 
 assert_local_links_resolve
