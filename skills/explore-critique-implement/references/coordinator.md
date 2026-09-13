@@ -34,7 +34,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The review packet gives each reviewer the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions. A `pre-existing baseline` is context outside the iteration range. A checkpoint commit is not acceptance.
 
-Apply the [fast-path adoption boundary](fast-path.md#adoption-review-and-closure) for write-yields, additional cumulative review targets, and final-state coverage.
+Apply the [fast-path adoption boundary](fast-path.md#adoption-review-and-closure) for write-yields, additional cumulative review targets, and final-state coverage. An intermediate review does not complete the normal path; schedule the mandatory [post-Fast sequence](fast-path.md#post-fast-completion) after Fast finishes and its write-capable tools stop.
 
 After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
 
@@ -56,7 +56,7 @@ Use blocker-resolution-protocol only after normal handling cannot resolve a stal
 
 ## Clean pass and teardown
 
-Accept each task against its own required evidence. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
+Complete each task's normal path and accept it only after its [post-Fast sequence](fast-path.md#post-fast-completion) and required evidence pass. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
 
 An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. A clean pass needs every original criterion and applicable proof/E2E, no remaining `now` REJECT/CONDITIONAL, and same-gate proof.
 

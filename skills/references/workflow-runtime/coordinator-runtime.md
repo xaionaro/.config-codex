@@ -62,7 +62,7 @@ Only governed target paths need the assigned review; leave unrelated changes out
 
 Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route. After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration. The checkpointed `current diff` is the named parent-to-checkpoint range. Respect explicit exclusions and exclude later ambient worktree changes. This is review scope, not admission proof. Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
 
-For ECI fast contributions, apply the [adoption boundary](../../explore-critique-implement/references/fast-path.md#adoption-review-and-closure), including cumulative review beyond the iteration range and both-producer closure.
+For ECI fast contributions, apply the [adoption boundary](../../explore-critique-implement/references/fast-path.md#adoption-review-and-closure), including cumulative review beyond the iteration range and both-producer closure. Normal-path completion requires the [post-Fast sequence](../../explore-critique-implement/references/fast-path.md#post-fast-completion), even after a clean intermediate review.
 
 After ECI `off`, record a concise teardown summary and the actual current repository state. If a historical coordination note disagrees, reconcile it; do not make hashes, receipts, or byte-exact records a prerequisite for normal teardown.
 

@@ -966,11 +966,63 @@ assert_fast_path_progress_wait_contract() {
   require_section_pattern "$section" 'cross-path wait preserves verification and real dependencies' \
     'available results once independently verified and the next action.s dependencies are satisfied'
   require_section_pattern "$section" 'cross-path wait permits independent progress' \
-    'Independent work in the other path is not a completion prerequisite'
+    'Independent work in the other path does not block intermediate progress'
   require_section_pattern "$section" 'cross-path wait follows general dependency scheduling' \
     'CODEX.md.*dependency.*independent tasks'
   require_section_pattern "$section" 'cross-path wait preserves aggregation and closure boundaries' \
     'coordinator\.md#step-4--review-coordination.*#adoption-review-and-closure'
+}
+
+assert_post_fast_completion_contract() {
+  local text="$1"
+  require_section_pattern "$text" 'Fast must actually finish before final exploration' \
+    'Fast owner has finished its assigned work and its task-owned write-capable tools have stopped'
+  require_section_pattern "$text" 'yield, labels, or cancellation cannot stand in for completion' \
+    'write-yield, idle label, timeout, or cancellation is not Fast completion'
+  require_section_pattern "$text" 'fresh exploration inspects final shared code' \
+    'new Step 1 exploration of the final shared scoped code.*after Fast completion'
+  require_section_pattern "$text" 'independent post-Fast design disposition' \
+    'fresh Step 2 critic independently assesses.*retain, revise, or replace'
+  require_section_pattern "$text" 'post-Fast review remains required even without changes' \
+    'Step 4 independently reviews the final cumulative scoped state even when no further edits are needed'
+  require_section_pattern "$text" 'normal completion waits for post-Fast quality' \
+    'normal path remains incomplete until this post-Fast sequence passes'
+  require_section_pattern "$text" 'resumed Fast writes restart final-state assessment' \
+    'Resumed Fast writes invalidate this sequence; after Fast finishes again, repeat it'
+  require_section_pattern "$text" 'cancellation closes without claiming success' \
+    'Cancellation uses user closure, never a clean pass or substitute Fast completion'
+  require_order "$text" 'Fast owner has finished' 'new Step 1 exploration' &&
+    require_order "$text" 'new Step 1 exploration' 'fresh Step 2 critic' &&
+    require_order "$text" 'fresh Step 2 critic' 'Step 4 independently reviews' ||
+    fail 'post-Fast completion sequence is out of order'
+}
+
+assert_post_fast_completion() {
+  local text clause mutation output file
+  text="$(awk '
+    /^## Post-Fast completion$/ { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+    END { if (!found) exit 1 }
+  ' "$FAST_PATH")" ||
+    fail 'missing post-Fast completion barrier'
+  assert_post_fast_completion_contract "$text"
+  for clause in 'has finished its assigned work' 'write-capable tools have stopped' \
+    'write-yield, idle label, timeout, or cancellation' 'after Fast completion' \
+    'fresh Step 2 critic independently assesses' 'even when no further edits are needed' \
+    'normal path remains incomplete' 'Resumed Fast writes invalidate this sequence' \
+    'never a clean pass or substitute Fast completion'; do
+    mutation="${text/"$clause"/REMOVED}"
+    if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
+      fail "post-Fast mutation admitted missing requirement: $clause"
+    fi
+    [[ "$output" == *'workflow routing assertion failed:'* ]] || fail "unexpected mutation failure: $output"
+  done
+  for file in "$ECI" "$COORDINATOR" "$COORDINATOR_RUNTIME" "$ECI_CRITIQUE" \
+    "$ROOT/skills/explore-critique-implement/references/explore.md" "$IMPLEMENT" "$REVIEW"; do
+    require_text "$file" 'fast-path.md#post-fast-completion'
+  done
+  forbid_text "$FAST_PATH" 'Independent work in the other path is not a completion prerequisite'
 }
 
 assert_fast_path_progress_waits() {
@@ -2074,6 +2126,7 @@ assert_coordinator_bug_routing_is_nonblocking
 assert_ate_ordinary_role_split
 assert_fast_path_routes
 assert_fast_quality
+assert_post_fast_completion
 assert_fast_path_progress_waits
 assert_concurrent_tasks
 assert_task_root_closure

@@ -18,6 +18,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
   A concern serving a separate outcome is only a post-ECI user follow-up, never current work.
   Missing or stale lineage never blocks known in-scope work.
 - Every ECI task starts main ECI and one [Fast owner](references/fast-path.md) concurrently. That module owns launch, lifetime, shared-tree priority, evidence feedback, adoption, and closure rules.
+- Normal-path completion requires the [post-Fast sequence](references/fast-path.md#post-fast-completion); intermediate iteration progress remains concurrent.
 - Record `Stage: normal` for ECI; show main and fast progress within the same task, not as separate stages or automatic lanes.
 - A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 - Every normal ECI worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.

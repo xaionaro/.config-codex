@@ -8,12 +8,12 @@ This is the normative contract for the Fast owner and its integration with main 
 - Additive extensions update the existing owner's scope. A distinct new ECI task gets its own owner; iterations, reviews, repairs, and re-exploration reuse that identity.
 - Preserve root workflow and markers. Direct work and ATE outside nested ECI do not acquire this protocol by loading it.
 - Assign original requirements, authorized targets, dirty-work exclusions, current ECI decisions, verification, and shared-tree rules. The Fast owner is a reusable ordinary implementation producer, distinct from the main implementer and all independent critics.
-- Keep the owner available through acceptance or cancellation. A working result ends unnecessary edits; new evidence or ECI changes may require adaptation.
+- Finish the assigned milestones, stop task-owned write-capable tools, and report completion promptly. Keep the reusable owner available but idle through acceptance or cancellation; new evidence or ECI changes may require adaptation.
 - Reserve launch capacity for both paths. If constrained, start available work, queue the missing role for the next slot, and report actual concurrency. Yield fast execution when required ECI work needs capacity, retaining ownership and evidence. Do not merge producer/reviewer identities or add compensating artifacts.
 
 ## Progress waits
 
-Use either path's available results once independently verified and the next action's dependencies are satisfied. Independent work in the other path is not a completion prerequisite. Apply the [CODEX.md dependency scheduling rule](../../../CODEX.md#concurrent-tasks) across independent tasks, including ECI nested under ATE. Preserve [required review and E2E aggregation](coordinator.md#step-4--review-coordination) and the [write-yield, final-acceptance, and closure boundaries](#adoption-review-and-closure).
+Use either path's available results once independently verified and the next action's dependencies are satisfied. Independent work in the other path does not block intermediate progress. Normal-path completion requires the [post-Fast sequence](#post-fast-completion). Apply the [CODEX.md dependency scheduling rule](../../../CODEX.md#concurrent-tasks) across independent tasks, including ECI nested under ATE. Preserve [required review and E2E aggregation](coordinator.md#step-4--review-coordination) and the [write-yield, final-acceptance, and closure boundaries](#adoption-review-and-closure).
 
 ## Solo solving
 
@@ -57,5 +57,18 @@ Preserve useful verified discoveries, still-valid tests, and qualifying code in 
 - If a checkpoint cannot safely isolate the resolved change, record it as checkpoint-pending with the concrete conflict. Resolve that boundary promptly while unaffected work continues; never silently treat it as committed or include unrelated/in-flight changes.
 - The coordinator tracks every retained fast hunk into review. When a preceding baseline contains adopted fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
 - Neither producer supplies its own independent acceptance reviews. Step 4 independently repeats or extends required main-implementer E2E.
-- Before final acceptance, the coordinator stops both producers' task-owned writes, inspects the current cumulative scoped diff, and verifies reviews and checks cover that state. Material late edits require fresh appropriate review and verification.
+- Before normal-path completion or final acceptance, satisfy [post-Fast completion](#post-fast-completion). The coordinator stops both producers' task-owned writes, inspects the current cumulative scoped diff, and verifies reviews and checks cover that state. Material late edits require fresh appropriate review and verification.
 - On task cancellation/replacement, the coordinator cancels the Fast owner with the main task and preserves dirty changes/evidence. On task clean pass, it observes both producers' final state. On either closure path, it observes both producers and their task-owned write-capable tools stopped or finished. Root teardown and marker removal follow [concurrent task scheduling](../../../CODEX.md#concurrent-tasks). Fast success alone never closes ECI or outer ATE.
+
+## Post-Fast completion
+
+Main ECI may advance and review iterations concurrently with Fast. Its normal path remains incomplete until this post-Fast sequence passes for the task:
+
+1. The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped. A write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while main ECI performs the following steps; Fast need not wait for main acceptance to finish.
+2. Assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. Reread current targets and relevant surrounding code against original requirements and quality standards, including retained Fast and main-path changes. Prior exploration, diffs, and passing tests are context, not this new exploration.
+3. A fresh Step 2 critic independently assesses the current sources and Explorer's options, then selects a concrete retain, revise, or replace disposition under [main ECI quality responsibility](#main-eci-quality-responsibility). Preserve qualifying code; make only justified changes through the main implementer. The implementer validates retained code and any repairs under that winner and runs required checks/E2E; checkpoint changed iterations normally.
+4. Step 4 independently reviews the final cumulative scoped state even when no further edits are needed. Aggregate all required critics and E2E, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task. Earlier reviews alone cannot satisfy this sequence.
+
+Resumed Fast writes invalidate this sequence; after Fast finishes again, repeat it. Later main-path or interacting task edits refresh affected review and verification; material design findings return through Steps 1–2. Independent sibling tasks keep advancing.
+
+Cancellation uses user closure, never a clean pass or substitute Fast completion. Preserve changes and evidence, observe task-owned writers stopped, and keep uncancelled siblings active under the existing closure rules.

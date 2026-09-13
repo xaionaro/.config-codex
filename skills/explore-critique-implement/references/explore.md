@@ -6,6 +6,8 @@ Consume verified Fast owner discoveries under [evidence can reopen design](fast-
 
 Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): derive options from original requirements and quality needs; existing Fast code does not restrict exploration to its design.
 
+For [post-Fast completion](fast-path.md#post-fast-completion), begin a new exploration after Fast has finished and its write-capable tools have stopped. Reread final shared scoped code and relevant context; an earlier exploration does not satisfy this assignment.
+
 The packet must supply the current iteration, exact problem, original requirements, validated lane/assignment/full chain, related paths, prior attempts/gate findings, governed-scope style-source facts, and a bounded word cap. Reject an untraceable material option presented as current scope; reconcile missing lineage alongside known work.
 
 Return ranked options. Each states what changes, why, where, cost, tradeoffs, relevant facts with T1–T5 tags, and the needed Style Brief/Tool route/No-source proposal for any governed scope. Do not make admission or author authoritative design.
