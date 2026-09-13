@@ -9035,9 +9035,17 @@ def segment_spec(tokens, segment_index):
         environment[name] = value
         index += 1
 
+    original_index = index
     index, timeout_replay = observed_timeout_command_index(tokens, index, segment_index)
+    # An observed timeout replay is useful context when the planner has it,
+    # but a plain finite `timeout DURATION git ...` is still an ordinary
+    # structural wrapper.  Missing replay metadata must not make the wrapper
+    # a permission boundary.
     if index is None:
-        return None
+        if (original_index >= len(tokens) or
+                os.path.basename(tokens[original_index]) != "timeout"):
+            return None
+        index = original_index
     repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
 
     # `env NAME=value git ...` is a normal spelling. Its assignments help
@@ -9105,6 +9113,23 @@ def segment_spec(tokens, segment_index):
             while index < len(tokens) and tokens[index].startswith("-"):
                 index += 1
             continue
+        if name == "timeout":
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                option = tokens[index]
+                if option in {"-k", "--kill-after", "-s", "--signal"}:
+                    if index + 1 >= len(tokens):
+                        return None
+                    index += 2
+                elif option.startswith(("--kill-after=", "--signal=")):
+                    index += 1
+                else:
+                    index += 1
+            # timeout requires a duration before its child command.
+            if index >= len(tokens) or tokens[index].startswith("-"):
+                return None
+            index += 1
+            continue
         if name in {"chronic", "nice", "time", "prlimit", "systemd-run"}:
             index += 1
             value_options = {
@@ -9140,6 +9165,27 @@ def segment_spec(tokens, segment_index):
                     if index + 1 >= len(tokens):
                         return None
                     index += 2
+                else:
+                    index += 1
+            continue
+        if name in {"sudo", "doas"}:
+            index += 1
+            value_options = {
+                "-u", "--user", "-g", "--group", "-h", "--host",
+                "-p", "--prompt", "-C", "--chdir", "-R", "--chroot",
+                "-D", "--chdir", "-r", "--role", "-t", "--type",
+            }
+            while index < len(tokens) and tokens[index].startswith("-"):
+                option = tokens[index]
+                if option == "--":
+                    index += 1
+                    break
+                if option in value_options:
+                    if index + 1 >= len(tokens):
+                        return None
+                    index += 2
+                elif any(option.startswith(value + "=") for value in value_options):
+                    index += 1
                 else:
                     index += 1
             continue
@@ -9564,14 +9610,15 @@ raise SystemExit(1)
 PY
 }
 
+
 git_protected_worktree_target_detail() {
   local command_text="${1:-$command}" target_repo="${2:-}" command_cwd="${3:-$cwd}"
   local configured_home="${CODEX_CONFIGURED_HOME:-${CODEX_HOME:-}}"
 
-  # Coordinator Git preparation is normally harmless staging, but deleting a
-  # live ECI hook is an actual source/control edit. Resolve only that concrete
-  # target here; flags, wrappers, punctuation, and ordinary path failures are
-  # not permission boundaries.
+  # This is an effect check for the coordinator's Git preparation route.  It
+  # deliberately follows a concrete Git child through ordinary launch
+  # wrappers, and it uses lexical worktree paths: a symlink alias is a
+  # different Git entry from the live control file it may point at.
   python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" <<'PY'
 import glob
 import os
@@ -9586,18 +9633,29 @@ try:
     tokens = list(lexer)
 except ValueError:
     raise SystemExit(1)
-if not tokens:
-    raise SystemExit(1)
 
-separators = {";", "&", "&&", "|", "||"}
-opaque = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
-assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
-target_repo = os.path.realpath(os.path.normpath(target_repo))
-command_cwd = os.path.realpath(os.path.abspath(command_cwd))
+SEPARATORS = {";", "&", "&&", "|", "||"}
+OPAQUE = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+target_repo = os.path.normpath(os.path.abspath(target_repo or command_cwd))
+command_cwd = os.path.normpath(os.path.abspath(command_cwd))
+
+def canonical_root(value):
+    if not value or not os.path.isabs(value):
+        return None
+    return os.path.realpath(os.path.normpath(value))
+
 control_roots = set()
-for value in (configured_home, os.path.dirname(os.path.realpath(hook_dir))):
-    if value and os.path.isabs(value):
-        control_roots.add(os.path.realpath(os.path.normpath(value)))
+for value in (
+    configured_home,
+    os.environ.get("KIMI_CODE_HOME", ""),
+    os.path.join(os.environ.get("HOME", ""), ".kimi-code"),
+    os.path.dirname(os.path.realpath(hook_dir)),
+):
+    root = canonical_root(value)
+    if root:
+        control_roots.add(root)
+
 protected = {
     os.path.join(root, "hooks", name)
     for root in control_roots
@@ -9608,16 +9666,70 @@ protected = {
     )
 }
 
-def resolve(value, base):
-    value = os.path.expanduser(value)
-    if os.path.isabs(value):
-        return os.path.realpath(os.path.normpath(value))
-    return os.path.realpath(os.path.normpath(os.path.join(base, value)))
+def lexical_resolve(value, base):
+    expanded = os.path.expanduser(value)
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    return os.path.normpath(os.path.join(base, expanded))
+
+def parse_pathspec(value):
+    base = command_cwd
+    exclude = False
+    if value.startswith(":/"):
+        base = target_repo
+        value = value[2:]
+    elif value.startswith(":("):
+        close = value.find(")")
+        if close < 0:
+            return None
+        magic = {part.strip().lower() for part in value[2:close].split(",")}
+        exclude = "exclude" in magic or "!" in magic or "^" in magic
+        if "top" in magic:
+            base = target_repo
+        value = value[close + 1:]
+    return value, base, exclude
+
+def pathspec_candidates(value):
+    parsed = parse_pathspec(value)
+    if parsed is None:
+        return [], False
+    value, base, exclude = parsed
+    if exclude or not value:
+        return [], exclude
+    candidate = lexical_resolve(value, base)
+    if any(character in value for character in "*?["):
+        return glob.glob(candidate, recursive=True), False
+    return [candidate], False
+
+def inside(root, path):
+    return path == root or path.startswith(root + os.sep)
+
+def existing_protected_file(path):
+    # Do not follow a symlink alias: Git removes/renames the alias entry, not
+    # the live control file reached through the alias.
+    return path in protected and os.path.lexists(path) and not os.path.islink(path)
+
+def existing_protected_descendant(path):
+    if os.path.islink(path):
+        return False
+    return any(
+        protected_path.startswith(path + os.sep) and
+        os.path.lexists(protected_path) and
+        not os.path.islink(protected_path)
+        for protected_path in protected
+    )
+
+def protected_path_detail(path, operation, recursive=False):
+    if existing_protected_file(path):
+        return "operation=%s target=%s kind=protected-live-hook" % (operation, path)
+    if recursive and existing_protected_descendant(path):
+        return "operation=%s target=%s kind=protected-live-hook-tree" % (operation, path)
+    return None
 
 def split_segments(values):
     segments, current = [], []
     for value in values + [";"]:
-        if value in separators:
+        if value in SEPARATORS:
             if current:
                 segments.append(current)
                 current = []
@@ -9625,45 +9737,144 @@ def split_segments(values):
             current.append(value)
     return segments
 
-def inspect_segment(segment):
-    if any(value in opaque for value in segment):
-        return None
+def consume_env(segment, index, base):
+    index += 1
+    while index < len(segment):
+        value = segment[index]
+        if ASSIGNMENT.fullmatch(value):
+            index += 1
+            continue
+        if value in {"-i", "--ignore-environment", "-v", "--debug"}:
+            index += 1
+            continue
+        if value in {"-u", "--unset"}:
+            if index + 1 >= len(segment):
+                return None
+            index += 2
+            continue
+        if value in {"-C", "--chdir"}:
+            if index + 1 >= len(segment):
+                return None
+            base = lexical_resolve(segment[index + 1], base)
+            index += 2
+            continue
+        if value.startswith("--chdir="):
+            base = lexical_resolve(value.split("=", 1)[1], base)
+            index += 1
+            continue
+        if value == "--":
+            index += 1
+        break
+    return index, base
+
+def unwrap(segment):
     index = 0
     base = command_cwd
-    while index < len(segment) and assignment.fullmatch(segment[index]):
+    while index < len(segment) and ASSIGNMENT.fullmatch(segment[index]):
         index += 1
     if index < len(segment) and os.path.basename(segment[index]) == "env":
-        index += 1
-        while index < len(segment):
-            value = segment[index]
-            if assignment.fullmatch(value):
-                index += 1
-                continue
-            if value in {"-i", "--ignore-environment", "-v", "--debug"}:
-                index += 1
-                continue
-            if value in {"-u", "--unset"}:
-                index += 2
-                continue
-            if value in {"-C", "--chdir"}:
-                if index + 1 >= len(segment):
-                    return None
-                base = resolve(segment[index + 1], base)
-                index += 2
-                continue
-            if value.startswith(("--chdir=",)):
-                base = resolve(value.split("=", 1)[1], base)
-                index += 1
-                continue
-            if value == "--":
-                index += 1
-            break
-    while index < len(segment) and os.path.basename(segment[index]) in {
-        "command", "builtin", "exec", "nohup", "setsid",
-    }:
-        index += 1
-        while index < len(segment) and segment[index].startswith("-"):
+        result = consume_env(segment, index, base)
+        if result is None:
+            return None
+        index, base = result
+
+    while index < len(segment):
+        name = os.path.basename(segment[index])
+        if name in {"command", "builtin", "exec", "nohup", "setsid"}:
             index += 1
+            while index < len(segment) and segment[index].startswith("-"):
+                if name == "exec" and segment[index] == "-a":
+                    if index + 1 >= len(segment):
+                        return None
+                    index += 2
+                else:
+                    index += 1
+            continue
+        if name == "busybox":
+            index += 1
+            if index < len(segment) and segment[index] == "--":
+                index += 1
+            continue
+        if name == "stdbuf":
+            index += 1
+            while index < len(segment) and segment[index].startswith("-"):
+                index += 1
+            continue
+        if name == "timeout":
+            index += 1
+            while index < len(segment) and segment[index].startswith("-"):
+                option = segment[index]
+                if option in {"-k", "--kill-after", "-s", "--signal"}:
+                    if index + 1 >= len(segment):
+                        return None
+                    index += 2
+                elif option.startswith(("--kill-after=", "--signal=")):
+                    index += 1
+                else:
+                    index += 1
+            if index >= len(segment) or segment[index].startswith("-"):
+                return None
+            index += 1
+            continue
+        if name in {"chronic", "nice", "time", "prlimit", "systemd-run"}:
+            index += 1
+            value_options = {
+                "-n", "-p", "--adjustment", "--property", "--unit",
+                "--setenv", "--working-directory", "-C", "--chdir",
+            }
+            while index < len(segment) and segment[index].startswith("-"):
+                option = segment[index]
+                if option == "--":
+                    index += 1
+                    break
+                if name == "systemd-run" and option in {"--working-directory", "--chdir"}:
+                    if index + 1 >= len(segment):
+                        return None
+                    base = lexical_resolve(segment[index + 1], base)
+                    index += 2
+                elif name == "systemd-run" and option.startswith(("--working-directory=", "--chdir=")):
+                    base = lexical_resolve(option.split("=", 1)[1], base)
+                    index += 1
+                elif option in value_options:
+                    if index + 1 >= len(segment):
+                        return None
+                    index += 2
+                else:
+                    index += 1
+            continue
+        if name in {"sudo", "doas"}:
+            index += 1
+            value_options = {
+                "-u", "--user", "-g", "--group", "-h", "--host",
+                "-p", "--prompt", "-C", "--chdir", "-R", "--chroot",
+                "-D", "-r", "--role", "-t", "--type",
+            }
+            while index < len(segment) and segment[index].startswith("-"):
+                option = segment[index]
+                if option == "--":
+                    index += 1
+                    break
+                if option in value_options:
+                    if index + 1 >= len(segment):
+                        return None
+                    if option in {"-C", "--chdir"}:
+                        base = lexical_resolve(segment[index + 1], base)
+                    index += 2
+                elif any(option.startswith(value + "=") for value in value_options):
+                    if option.startswith(("-C=", "--chdir=")):
+                        base = lexical_resolve(option.split("=", 1)[1], base)
+                    index += 1
+                else:
+                    index += 1
+            continue
+        break
+    return index, base
+
+def git_command(segment):
+    result = unwrap(segment)
+    if result is None:
+        return None
+    index, base = result
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
         return None
     index += 1
@@ -9672,14 +9883,16 @@ def inspect_segment(segment):
         if value == "-C":
             if index + 1 >= len(segment):
                 return None
-            base = resolve(segment[index + 1], base)
+            base = lexical_resolve(segment[index + 1], base)
             index += 2
             continue
         if value.startswith("-C") and len(value) > 2:
-            base = resolve(value[2:], base)
+            base = lexical_resolve(value[2:], base)
             index += 1
             continue
         if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix"}:
+            if index + 1 >= len(segment):
+                return None
             index += 2
             continue
         if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=")):
@@ -9692,28 +9905,98 @@ def inspect_segment(segment):
             index += 1
             continue
         break
-    if index >= len(segment) or segment[index] != "rm":
+    if index >= len(segment):
         return None
-    arguments = segment[index + 1:]
+    return segment[index], segment[index + 1:], base
+
+def rm_detail(args, base):
+    recursive = False
+    cached_or_dry = False
     paths = []
     after_separator = False
-    for value in arguments:
-        if value == "--":
+    for value in args:
+        if not after_separator and value == "--":
             after_separator = True
             continue
         if not after_separator and value.startswith("-"):
+            if value in {"--cached", "--dry-run", "-n"}:
+                cached_or_dry = True
+            if value == "--recursive" or (value.startswith("-") and not value.startswith("--") and "r" in value[1:]):
+                recursive = True
             continue
         paths.append(value)
+    # Index-only and dry-run operations have no worktree effect.  Invalid or
+    # missing pathspecs likewise remain Git's ordinary runtime result.
+    if cached_or_dry:
+        return None
     for value in paths:
-        candidates = []
-        if any(character in value for character in "*?["):
-            candidates = glob.glob(os.path.join(base, value), recursive=True)
-        else:
-            candidates = [os.path.join(base, value)]
+        candidates, _ = pathspec_candidates(value)
         for candidate in candidates:
-            resolved = resolve(candidate, base)
-            if resolved in protected and os.path.lexists(candidate):
-                return "operation=rm target=%s kind=protected-live-hook" % resolved
+            if not inside(target_repo, candidate):
+                continue
+            detail = protected_path_detail(candidate, "rm", recursive)
+            if detail:
+                return detail
+    return None
+
+def mv_detail(args, base):
+    dry_run = False
+    paths = []
+    after_separator = False
+    for value in args:
+        if not after_separator and value == "--":
+            after_separator = True
+            continue
+        if not after_separator and value.startswith("-"):
+            if value in {"-n", "--dry-run"} or (value.startswith("-") and not value.startswith("--") and "n" in value[1:]):
+                dry_run = True
+            continue
+        paths.append(value)
+    if dry_run or len(paths) < 2:
+        return None
+    destination_raw = paths[-1]
+    destination_values, destination_excluded = pathspec_candidates(destination_raw)
+    if destination_excluded or not destination_values:
+        return None
+    destination = destination_values[0]
+    # `git mv` cannot move a worktree entry outside its repository. Treat
+    # that invalid request as transparent rather than blocking it by spelling.
+    if not inside(target_repo, destination):
+        return None
+    sources = []
+    for value in paths[:-1]:
+        candidates, _ = pathspec_candidates(value)
+        sources.extend(candidates)
+    if not sources:
+        return None
+    for source in sources:
+        effective_destination = destination
+        if os.path.isdir(destination) and not os.path.islink(destination):
+            effective_destination = os.path.normpath(os.path.join(destination, os.path.basename(source)))
+        if source == effective_destination:
+            continue
+        # A source outside the worktree is invalid for Git mv and cannot
+        # mutate the protected target through this command.
+        if not inside(target_repo, source):
+            continue
+        detail = protected_path_detail(source, "mv", True)
+        if detail:
+            return detail
+        if effective_destination in protected:
+            return "operation=mv target=%s kind=protected-live-hook" % effective_destination
+    return None
+
+def inspect_segment(segment):
+    if any(value in OPAQUE for value in segment):
+        return None
+    parsed = git_command(segment)
+    if parsed is None:
+        return None
+    verb, args, base = parsed
+    if verb == "rm":
+        return rm_detail(args, base)
+    if verb == "mv":
+        return mv_detail(args, base)
     return None
 
 for segment in split_segments(tokens):
