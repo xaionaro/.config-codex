@@ -8935,6 +8935,14 @@ def inspect(segment, depth=0, inherited_assignments=False, inherited_injection=F
                     or INHERITED_GIT_CONTEXT
                     or not safe_prep_args(token, segment[index + 1:])
                 ) else PREP
+            if token == "checkout":
+                # Checkout is routed to the concrete worktree-effect
+                # resolver. Branch/ref forms remain transparent there; only
+                # a resolved protected path becomes a coordinator edit route.
+                return UNKNOWN if (
+                    saw_assignment or repo_context_changed or git_global_seen
+                    or INHERITED_GIT_CONTEXT
+                ) else PREP
             if token == "reset":
                 return UNKNOWN if (
                     saw_assignment or git_global_seen or INHERITED_GIT_CONTEXT
@@ -9259,11 +9267,14 @@ def segment_spec(tokens, segment_index):
                 if option in value_options:
                     if index + 1 >= len(tokens):
                         return None
-                    if option in {"-C", "--chdir", "-D"}:
+                    # sudo -C is a file-descriptor close option, not a
+                    # working-directory option.  Only sudo's directory
+                    # options alter the child Git worktree context.
+                    if option in {"--chdir", "-D"}:
                         repo_dir = resolve(tokens[index + 1], repo_dir)
                     index += 2
                 elif any(option.startswith(value + "=") for value in value_options):
-                    if option.startswith(("-C=", "--chdir=", "-D=")):
+                    if option.startswith(("--chdir=", "-D=")):
                         repo_dir = resolve(option.split("=", 1)[1], repo_dir)
                     index += 1
                 else:
@@ -9271,6 +9282,34 @@ def segment_spec(tokens, segment_index):
             continue
         break
 
+    if index < len(tokens) and os.path.basename(tokens[index]) in {"bash", "sh", "dash", "zsh"}:
+        shell_args = tokens[index + 1:]
+        for shell_index, shell_value in enumerate(shell_args):
+            is_c = shell_value in {"-c", "-lc", "-cl"} or (
+                shell_value.startswith("-") and not shell_value.startswith("--") and
+                "c" in shell_value[1:]
+            )
+            if not is_c or shell_index + 1 >= len(shell_args):
+                continue
+            try:
+                nested_lexer = shlex.shlex(shell_args[shell_index + 1], posix=True, punctuation_chars=True)
+                nested_tokens = list(nested_lexer)
+            except ValueError:
+                return None
+            nested_segments, nested_current = [], []
+            for nested_value in nested_tokens + [";"]:
+                if nested_value in SEPARATORS:
+                    if nested_current:
+                        nested_segments.append(nested_current)
+                        nested_current = []
+                else:
+                    nested_current.append(nested_value)
+            for nested_segment in nested_segments:
+                nested_spec = segment_spec(nested_segment, segment_index)
+                if nested_spec:
+                    return nested_spec
+            return None
+        return None
     if index >= len(tokens) or os.path.basename(tokens[index]) != "git":
         return None
     index += 1
@@ -9339,9 +9378,10 @@ def segment_spec(tokens, segment_index):
     if verb in {"add", "rm", "mv", "restore"}:
         return "prep", repo_dir
     if verb == "checkout":
-        # Without `--`, checkout may only switch a branch/ref.  A pathspec
-        # after `--` is the concrete worktree-changing form.
-        return ("prep", repo_dir) if "--" in tokens[index + 1:] else None
+        # Route every checkout to the concrete effect resolver.  Branch/ref
+        # forms remain transparent there; a path form is admitted only when
+        # it resolves to an actual worktree target.
+        return "prep", repo_dir
     if verb == "commit":
         return "commit", repo_dir
     if verb == "worktree":
@@ -9721,8 +9761,11 @@ except ValueError:
 SEPARATORS = {";", "&", "&&", "|", "||"}
 REDIRECTIONS = {">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
-target_repo = os.path.normpath(os.path.abspath(target_repo or command_cwd))
-command_cwd = os.path.normpath(os.path.abspath(command_cwd))
+target_repo = os.path.realpath(os.path.normpath(os.path.abspath(target_repo or command_cwd)))
+# The callback CWD identifies the Git worktree, so resolve a CWD symlink before
+# joining ordinary pathspecs.  A final path component is kept lexical and is
+# checked with lstat-style existence below; an alias entry remains distinct.
+command_cwd = os.path.realpath(os.path.normpath(os.path.abspath(command_cwd)))
 
 def canonical_root(value):
     if not value or not os.path.isabs(value):
@@ -9787,6 +9830,66 @@ def pathspec_candidates(value, base):
         return glob.glob(candidate, recursive=True), False
     return [candidate], False
 
+def pathspec_file_entries(value, file_nul):
+    # Git treats '-' as stdin.  The hook has no command stdin contract for
+    # this callback, so leave that and unreadable/malformed files to Git's
+    # normal result instead of inventing a denial.
+    if value == "-":
+        return []
+    path = lexical_resolve(value, command_cwd)
+    try:
+        with open(path, "rb") as stream:
+            data = stream.read()
+    except (OSError, ValueError):
+        return []
+    if file_nul:
+        if b"\n" in data or b"\r" in data:
+            return []
+        values = data.split(b"\0")
+    else:
+        if b"\0" in data:
+            return []
+        values = data.splitlines()
+    return [os.fsdecode(item) for item in values if item]
+
+def collect_pathspecs(args, base):
+    paths = []
+    pathspec_files = []
+    file_nul = False
+    after_separator = False
+    index = 0
+    value_options = {
+        "--pathspec-from-file", "--source", "--conflict", "-b", "-B",
+        "--orphan", "--recurse-submodules",
+    }
+    while index < len(args):
+        value = args[index]
+        if not after_separator and value == "--":
+            after_separator = True
+            index += 1
+            continue
+        if not after_separator and value.startswith("-"):
+            if value == "--pathspec-file-nul":
+                file_nul = True
+            elif value == "--pathspec-from-file":
+                if index + 1 < len(args):
+                    pathspec_files.append(args[index + 1])
+                    index += 1
+            elif value.startswith("--pathspec-from-file="):
+                pathspec_files.append(value.split("=", 1)[1])
+            elif value in value_options:
+                if index + 1 < len(args):
+                    index += 1
+            elif value.startswith(("--source=", "--conflict=", "--orphan=", "--recurse-submodules=")):
+                pass
+            index += 1
+            continue
+        paths.append(value)
+        index += 1
+    for pathspec_file in pathspec_files:
+        paths.extend(pathspec_file_entries(pathspec_file, file_nul))
+    return paths
+
 def inside(root, path):
     return path == root or path.startswith(root + os.sep)
 
@@ -9845,11 +9948,13 @@ def strip_structural_prefix(segment):
         break
     return segment[index:]
 
-def consume_env(segment, index, base):
+def consume_env(segment, index, base, environment):
     index += 1
     while index < len(segment):
         value = segment[index]
         if ASSIGNMENT.fullmatch(value):
+            name, assigned = value.split("=", 1)
+            environment[name] = assigned
             index += 1
             continue
         if value in {"-i", "--ignore-environment", "-v", "--debug"}:
@@ -9873,24 +9978,27 @@ def consume_env(segment, index, base):
         if value == "--":
             index += 1
         break
-    return index, base
+    return index, base, environment
 
-def unwrap(segment):
+def unwrap(segment, initial_base=None):
     segment = strip_structural_prefix(segment)
     index = 0
-    base = command_cwd
+    base = command_cwd if initial_base is None else initial_base
+    environment = {}
 
     while index < len(segment):
         while index < len(segment) and ASSIGNMENT.fullmatch(segment[index]):
+            name, assigned = segment[index].split("=", 1)
+            environment[name] = assigned
             index += 1
         if index >= len(segment):
             break
         name = os.path.basename(segment[index])
         if name == "env":
-            result = consume_env(segment, index, base)
+            result = consume_env(segment, index, base, environment)
             if result is None:
                 return None
-            index, base = result
+            index, base, environment = result
             continue
         if name in {"command", "builtin", "exec", "nohup", "setsid"}:
             index += 1
@@ -9969,28 +10077,30 @@ def unwrap(segment):
                 if option in value_options:
                     if index + 1 >= len(segment):
                         return None
-                    if option in {"-C", "--chdir", "-D"}:
+                    if option in {"--chdir", "-D"}:
                         base = lexical_resolve(segment[index + 1], base)
                     index += 2
                 elif any(option.startswith(value + "=") for value in value_options):
-                    if option.startswith(("-C=", "--chdir=", "-D=")):
+                    if option.startswith(("--chdir=", "-D=")):
                         base = lexical_resolve(option.split("=", 1)[1], base)
                     index += 1
                 else:
                     index += 1
             continue
         break
-    return index, base
+    return index, base, environment
 
-def git_command(segment):
+def git_command(segment, initial_base=None):
     segment = strip_structural_prefix(segment)
-    result = unwrap(segment)
+    result = unwrap(segment, initial_base)
     if result is None:
         return None
-    index, base = result
+    index, base, environment = result
     if index >= len(segment) or os.path.basename(segment[index]) != "git":
         return None
     index += 1
+    work_tree = environment.get("GIT_WORK_TREE")
+    git_dir = environment.get("GIT_DIR")
     while index < len(segment):
         value = segment[index]
         if value == "-C":
@@ -10006,9 +10116,17 @@ def git_command(segment):
         if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--source", "--pathspec-from-file"}:
             if index + 1 >= len(segment):
                 return None
+            if value == "--git-dir":
+                git_dir = segment[index + 1]
+            elif value == "--work-tree":
+                work_tree = segment[index + 1]
             index += 2
             continue
         if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
+            if value.startswith("--git-dir="):
+                git_dir = value.split("=", 1)[1]
+            elif value.startswith("--work-tree="):
+                work_tree = value.split("=", 1)[1]
             index += 1
             continue
         if value in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
@@ -10020,29 +10138,33 @@ def git_command(segment):
         break
     if index >= len(segment):
         return None
+    if work_tree:
+        base = lexical_resolve(work_tree, base)
+    # An explicit --git-dir changes repository identity, not the callback
+    # worktree path. Keep it recorded so the target-root binding remains
+    # visible to the resolver without treating a missing/invalid Git dir as a
+    # permission error.
+    _ = git_dir
     return segment[index], segment[index + 1:], base
 
 def rm_detail(args, base):
     recursive = False
     cached_or_dry = False
-    paths = []
     after_separator = False
     for value in args:
-        if not after_separator and value == "--":
+        if value == "--":
             after_separator = True
             continue
         if not after_separator and value.startswith("-"):
             if value in {"--cached", "--dry-run", "-n"}:
                 cached_or_dry = True
-            if value == "--recursive" or (value.startswith("-") and not value.startswith("--") and "r" in value[1:]):
+            if value == "--recursive" or (not value.startswith("--") and "r" in value[1:]):
                 recursive = True
-            continue
-        paths.append(value)
     # Index-only and dry-run operations have no worktree effect.  Invalid or
     # missing pathspecs likewise remain Git's ordinary runtime result.
     if cached_or_dry:
         return None
-    for value in paths:
+    for value in collect_pathspecs(args, base):
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -10092,6 +10214,10 @@ def mv_detail(args, base):
         # mutate the protected target through this command.
         if not inside(target_repo, source):
             continue
+        # Missing/invalid sources are ordinary Git errors.  They cannot
+        # rename a protected live entry, even when the destination spells one.
+        if not os.path.lexists(source):
+            continue
         detail = protected_path_detail(source, "mv", True)
         if detail:
             return detail
@@ -10101,33 +10227,18 @@ def mv_detail(args, base):
 
 def restore_detail(args, base):
     worktree = True
-    paths = []
     after_separator = False
-    value_options = {"--source", "--pathspec-from-file"}
-    index = 0
-    while index < len(args):
-        value = args[index]
-        if not after_separator and value == "--":
+    for value in args:
+        if value == "--":
             after_separator = True
-            index += 1
             continue
-        if not after_separator and value.startswith("-"):
-            if value in {"--staged", "-S"} or value.startswith("--staged="):
-                worktree = False
-            elif value in {"--worktree", "-W"} or value.startswith("--worktree="):
-                worktree = True
-            elif value in value_options:
-                # The value only affects the source/pathspec input, not the
-                # worktree target.  Skip it when it is a separate argv.
-                index += 2
-                continue
-            index += 1
-            continue
-        paths.append(value)
-        index += 1
+        if not after_separator and (value in {"--staged", "-S"} or value.startswith("--staged=")):
+            worktree = False
+        elif not after_separator and (value in {"--worktree", "-W"} or value.startswith("--worktree=")):
+            worktree = True
     if not worktree:
         return None
-    for value in paths:
+    for value in collect_pathspecs(args, base):
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -10137,14 +10248,37 @@ def restore_detail(args, base):
                 return detail
     return None
 
-def checkout_detail(args, base):
-    # `checkout` without `--` can only name a branch/ref and is not a
-    # worktree-file selection.  Once `--` is present, every following
-    # pathspec is a concrete worktree restore target.
-    if "--" not in args:
+def checkout_revision(value):
+    # A path-looking token is a branch/ref when Git can resolve it to a
+    # commit.  Failed/ambiguous probing stays on path inspection; only a
+    # positive revision result exempts an existing protected path.
+    if not value or value.startswith("-"):
+        return False
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", target_repo, "rev-parse", "--verify", "--quiet", value + "^{commit}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    separator = args.index("--")
-    for value in args[separator + 1:]:
+    return result.returncode == 0
+
+def checkout_detail(args, base):
+    # With `--`, every following token is a worktree pathspec.  Without it,
+    # preserve branch/ref inspection and only inspect an existing path that
+    # Git cannot resolve as a revision.
+    explicit_paths = "--" in args
+    if explicit_paths:
+        paths = collect_pathspecs(args[args.index("--"):], base)
+    else:
+        paths = collect_pathspecs(args, base)
+    for value in paths:
+        if not explicit_paths:
+            revision = checkout_revision(value)
+            if revision is True:
+                continue
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -10154,8 +10288,52 @@ def checkout_detail(args, base):
                 return detail
     return None
 
-def inspect_segment(segment):
-    parsed = git_command(segment)
+def shell_child_segments(segment, initial_base=None):
+    result = unwrap(segment, initial_base)
+    if result is None:
+        return None
+    index, base, _ = result
+    if index >= len(segment) or os.path.basename(segment[index]) not in {"bash", "sh", "dash", "zsh"}:
+        return None
+    shell_args = segment[index + 1:]
+    for shell_index, shell_value in enumerate(shell_args):
+        is_c = shell_value in {"-c", "-lc", "-cl"} or (
+            shell_value.startswith("-") and not shell_value.startswith("--") and
+            "c" in shell_value[1:]
+        )
+        if not is_c or shell_index + 1 >= len(shell_args):
+            continue
+        try:
+            nested_lexer = shlex.shlex(shell_args[shell_index + 1], posix=True, punctuation_chars=True)
+            nested_tokens = list(nested_lexer)
+        except ValueError:
+            return []
+        nested_segments, nested_current = [], []
+        for nested_value in nested_tokens + [";"]:
+            if nested_value in SEPARATORS:
+                if nested_current:
+                    nested_segments.append(nested_current)
+                    nested_current = []
+            else:
+                nested_current.append(nested_value)
+        # The nested callback uses the same canonical worktree identity. A
+        # shell payload with a variable/opaque command simply has no visible
+        # concrete child and remains transparent.
+        return nested_segments, base
+    return []
+
+def inspect_segment(segment, depth=0, base_override=None):
+    if depth > 4:
+        return None
+    nested = shell_child_segments(segment, base_override)
+    if nested is not None:
+        nested_segments, nested_base = nested if nested else ([], base_override or command_cwd)
+        for nested_segment in nested_segments:
+            detail = inspect_segment(nested_segment, depth + 1, nested_base)
+            if detail:
+                return detail
+        return None
+    parsed = git_command(segment, base_override)
     if parsed is None:
         return None
     verb, args, base = parsed

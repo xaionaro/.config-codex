@@ -14,6 +14,17 @@ sed -i '2{/^exit 0$/d;}' -- "$fixture_root/hooks/validate-bash.sh"
 ln -s -- "$ROOT/hooks/lib" "$fixture_root/hooks/lib"
 ln -s -- "$ROOT/bin" "$fixture_root/bin"
 
+protected_pathspec_file="$TMP_ROOT/protected-pathspecs"
+protected_pathspec_nul_file="$TMP_ROOT/protected-pathspecs.nul"
+missing_pathspec_file="$TMP_ROOT/missing-pathspecs"
+printf '%s\n' 'hooks/validate-bash.sh' >"$protected_pathspec_file"
+printf 'hooks/validate-bash.sh\0' >"$protected_pathspec_nul_file"
+
+# A symlink is a distinct Git worktree entry.  Keep the alias outside the
+# tracked set and remove it with the temporary test state on exit.
+symlink_alias="$ROOT/hooks/.eci-protected-target-alias.$(basename -- "$TMP_ROOT")"
+ln -s -- "$ROOT/hooks/validate-bash.sh" "$symlink_alias"
+
 proof_root="$TMP_ROOT/proof"
 session_dir="$proof_root/t00-session"
 mkdir -p -- "$session_dir/evidence"
@@ -38,6 +49,26 @@ printf '%s\n' \
   >"$hooks_session_dir/eci_active"
 printf '%s\n' '# protected Git target test' >"$hooks_session_dir/high_level_log.md"
 printf '%s\n' '# test instructions' >"$hooks_session_dir/instructions.md"
+
+alias_session='t02-canonical-cwd-session'
+alias_cwd="$TMP_ROOT/codex-callback-alias"
+ln -s -- "$ROOT" "$alias_cwd"
+alias_session_dir="$proof_root/$alias_session"
+mkdir -p -- "$alias_session_dir/evidence"
+printf '%s\n' \
+  'scope: coordinator protected Git target test' \
+  "cwd: $alias_cwd" \
+  "session_id: $alias_session" \
+  'created_utc: 2026-09-13T00:00:00Z' \
+  >"$alias_session_dir/eci_active"
+printf '%s\n' '# protected Git target test' >"$alias_session_dir/high_level_log.md"
+printf '%s\n' '# test instructions' >"$alias_session_dir/instructions.md"
+
+cleanup() {
+  rm -f -- "$symlink_alias"
+  rm -rf -- "$TMP_ROOT"
+}
+trap cleanup EXIT
 
 run_hook() {
   run_hook_at t00-session "$ROOT" "$1" "$2"
@@ -89,11 +120,49 @@ assert_protected_denial_at() {
   }
 }
 
+assert_protected_denial_at_session() {
+  local session="$1" hook_cwd="$2" command="$3" output="$TMP_ROOT/denial-session.json"
+  run_hook_at "$session" "$hook_cwd" "$command" "$output"
+  jq -e '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_COORDINATOR_EDIT_ROUTING_REQUIRED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=edit-routing")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("predicate=coordinator-protected-target")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("target=")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("reason:")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null || {
+    printf 'protected target was not denied at session/cwd: session=%q cwd=%q command=%q\n' "$session" "$hook_cwd" "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+}
+
 assert_allowed() {
   local command="$1" output="$TMP_ROOT/allowed.json"
   run_hook "$command" "$output"
   [ ! -s "$output" ] || {
     printf 'transparent or ordinary Git target was denied: command=%q\n' "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+}
+
+assert_allowed_at() {
+  local hook_cwd="$1" command="$2" output="$TMP_ROOT/allowed-at.json"
+  run_hook_at "$hooks_session" "$hook_cwd" "$command" "$output"
+  [ ! -s "$output" ] || {
+    printf 'transparent or ordinary Git target was denied at cwd: cwd=%q command=%q\n' "$hook_cwd" "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  }
+}
+
+assert_allowed_at_session() {
+  local session="$1" hook_cwd="$2" command="$3" output="$TMP_ROOT/allowed-session.json"
+  run_hook_at "$session" "$hook_cwd" "$command" "$output"
+  [ ! -s "$output" ] || {
+    printf 'transparent or ordinary Git target was denied at session/cwd: session=%q cwd=%q command=%q\n' "$session" "$hook_cwd" "$command" >&2
     cat -- "$output" >&2
     return 1
   }
@@ -123,19 +192,49 @@ assert_protected_denial 'git restore --source=HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git restore --source HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout hooks/validate-bash.sh'
+assert_protected_denial 'git checkout ./hooks/validate-bash.sh'
+assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
+assert_protected_denial "git --work-tree=\"$ROOT\" checkout -- hooks/validate-bash.sh"
+assert_protected_denial "GIT_WORK_TREE=\"$ROOT\" git restore -- hooks/validate-bash.sh"
+assert_protected_denial "GIT_WORK_TREE=\"$ROOT\" git checkout -- hooks/validate-bash.sh"
+assert_protected_denial "git --git-dir=\"$ROOT/.git\" --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
+assert_protected_denial "git rm --pathspec-from-file=\"$protected_pathspec_file\""
+assert_protected_denial "git rm --pathspec-from-file \"$protected_pathspec_file\""
+assert_protected_denial "git rm --pathspec-from-file=\"$protected_pathspec_nul_file\" --pathspec-file-nul"
+assert_protected_denial "git restore --pathspec-from-file=\"$protected_pathspec_file\""
+assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\""
+assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_nul_file\" --pathspec-file-nul"
+assert_protected_denial 'bash -c "git rm -- hooks/validate-bash.sh"'
+assert_protected_denial 'sh -c "git restore -- hooks/validate-bash.sh"'
+assert_protected_denial 'env bash -c "git checkout hooks/validate-bash.sh"'
+assert_protected_denial 'bash -c "echo before; git rm -- hooks/validate-bash.sh"'
 assert_protected_denial_at "$hooks_cwd" 'git -C .. rm -- hooks/validate-bash.sh'
 assert_protected_denial_at "$hooks_cwd" 'env -C .. git rm -- hooks/validate-bash.sh'
-assert_protected_denial_at "$hooks_cwd" 'sudo -C .. git rm -- hooks/validate-bash.sh'
+assert_protected_denial_at "$hooks_cwd" 'sudo -D .. git rm -- hooks/validate-bash.sh'
+assert_protected_denial_at "$hooks_cwd" 'sudo --chdir .. git rm -- hooks/validate-bash.sh'
+assert_allowed_at "$hooks_cwd" 'sudo -C 3 git rm -- hooks/validate-bash.sh'
+assert_protected_denial_at_session "$alias_session" "$alias_cwd" 'git rm -- hooks/validate-bash.sh'
+assert_allowed "git rm -- hooks/$(basename -- "$symlink_alias")"
 assert_allowed 'git rm --cached -- hooks/validate-bash.sh'
 assert_allowed 'git rm -n -- hooks/validate-bash.sh'
 assert_allowed 'git rm --dry-run -- hooks/validate-bash.sh'
 assert_allowed 'git restore --staged -- hooks/validate-bash.sh'
 assert_allowed 'git checkout -- hooks/does-not-exist'
+assert_allowed 'git checkout HEAD'
+assert_allowed 'git checkout missing-branch'
+assert_allowed "git rm --pathspec-from-file=\"$missing_pathspec_file\""
+assert_allowed "git restore --pathspec-from-file=\"$missing_pathspec_file\""
+assert_allowed "git checkout --pathspec-from-file=\"$missing_pathspec_file\""
+assert_allowed 'bash -c "$ECI_DYNAMIC_COMMAND"'
+assert_allowed 'sh -c "$ECI_DYNAMIC_COMMAND"'
 assert_allowed 'git rm -- hooks'
 assert_allowed 'git rm -- hooks/does-not-exist'
 assert_allowed 'git rm -- hooks/alias-to-validate.sh'
 assert_allowed 'git rm -- hooks/tests/test-coordinator-protected-git-target.sh'
 assert_allowed 'git mv -- hooks/validate-bash.sh hooks/validate-bash.sh'
 assert_allowed 'git mv -- hooks/validate-bash.sh ../outside'
+assert_allowed 'git mv -- hooks/missing-source hooks/validate-bash.sh'
+assert_allowed 'git mv -- hooks/missing-source hooks/also-missing'
 
 printf '%s\n' 'coordinator protected Git target contract: PASS'
