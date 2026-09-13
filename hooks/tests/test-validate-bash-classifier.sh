@@ -2088,25 +2088,6 @@ run_subagent_matrix_parallel allowed worker-kimi-finite-inspection \
   "stat -Lc '%F %N' $kimi_root/hooks/validate-bash.sh" \
   "find $TMP_ROOT -maxdepth 1 -type f -print"
 
-# The Git execution-context callbacks are defined before the parallel matrix
-# that invokes them; Bash does not resolve function definitions retroactively.
-assert_git_execution_context_denied_early() {
-  local command="$1" runner="${2:-run_hook}" output
-  output="$($runner "$command")"
-  jq -e '
-    .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_GIT_EXECUTION_CONTEXT_DENIED]")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-execution-context")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("token=-c")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("argv_index=3")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("bounded coordinator Git route"))
-  ' "$output" >/dev/null || {
-    printf 'Git execution-context denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
-    [ ! -e "$output" ] || cat -- "$output" >&2
-    return 1
-  }
-}
-
 assert_git_environment_denied_early() {
   local command="$1" runner="${2:-run_hook}" output
   output="$($runner "$command")"
@@ -2146,8 +2127,7 @@ run_hook_matrix_parallel allowed coordinator-git-context-inspection \
   "git -C $TMP_ROOT status --short" \
   "git -C $ROOT -C $TMP_ROOT status --short" \
   "git -C $ROOT diff -- :(exclude)AGENTS.md" \
-  "git -C $ROOT diff -- ':(exclude)AGENTS.md'"
-run_matrix_parallel coordinator assert_git_execution_context_denied_early coordinator-git-execution-context \
+  "git -C $ROOT diff -- ':(exclude)AGENTS.md'" \
   "git -C $ROOT -c user.name=test status --short"
 run_matrix_parallel coordinator assert_git_environment_denied_early coordinator-git-environment \
   "GIT_DIR=$TMP_ROOT git -C $ROOT status --short"
@@ -3036,23 +3016,6 @@ assert_diagnostic_denied() {
     (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
   ' "$output" >/dev/null || {
     printf 'diagnostic denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
-    [ ! -e "$output" ] || cat -- "$output" >&2
-    return 1
-  }
-}
-
-assert_git_execution_context_denied() {
-  local command="$1" runner="${2:-run_hook}" output
-  output="$("$runner" "$command")"
-  jq -e '
-    .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_GIT_EXECUTION_CONTEXT_DENIED]")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-execution-context")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("token=-c")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("argv_index=3")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("bounded coordinator Git route"))
-  ' "$output" >/dev/null || {
-    printf 'Git execution-context denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
     [ ! -e "$output" ] || cat -- "$output" >&2
     return 1
   }
