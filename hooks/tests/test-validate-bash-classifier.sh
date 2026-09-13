@@ -1179,6 +1179,23 @@ assert_unknown() {
   }
 }
 
+assert_git_whole_worktree_staging_denied() {
+  local command="$1" runner="${2:-run_hook}" output
+  output="$("$runner" "$command")"
+  jq -e --arg repository "$ROOT" '
+    .hookSpecificOutput.permissionDecision == "deny" and
+    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_BROAD_DESTRUCTIVE_DENIED]")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-mutation")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("effect=whole-worktree-staging")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains(("target=" + $repository))) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation:"))
+  ' "$output" >/dev/null || {
+    printf 'Git whole-worktree staging denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
+    [ ! -e "$output" ] || cat -- "$output" >&2
+    return 1
+  }
+}
+
 assert_compound_mutation_denied() {
   local command="$1" runner="${2:-run_hook}" output
   output="$("$runner" "$command")"
@@ -2152,14 +2169,14 @@ run_hook_matrix_parallel allowed coordinator-git-prep \
   "git add -- hooks/validate-bash.sh" \
   "git rm -- hooks/validate-bash.sh" \
   "git mv -- hooks/validate-bash.sh hooks/validate-bash.sh" \
-  "git restore --staged -- hooks/validate-bash.sh"
-run_hook_matrix_parallel unknown coordinator-git-prep-unsafe \
-  "git add ." \
+  "git restore --staged -- hooks/validate-bash.sh" \
   "git add -- ../outside" \
   "git rm -r -- hooks/validate-bash.sh" \
   "git mv -- hooks/validate-bash.sh ../outside" \
   "git restore --staged hooks/validate-bash.sh" \
   "env git add -- hooks/validate-bash.sh"
+run_matrix_parallel coordinator assert_git_whole_worktree_staging_denied coordinator-git-prep-unsafe \
+  "git add ."
 run_subagent_matrix_parallel allowed worker-git-staging \
   "git add -- hooks.json" \
   "git add README.md"
