@@ -15,6 +15,11 @@ set -euo pipefail
 
 unset ECI_READ_ONLY_PIPELINE
 
+# User-directed temporary exception: the owning worker may inspect and repair a
+# declared dependency repository without being rerouted. Keep this narrow gate
+# disabled until the owner-scoped additional-repository escape hatch exists.
+ECI_CROSS_SCOPE_GATE_ENABLED=false
+
 # Determine the hook directory without a PATH lookup: callback PATH may be
 # empty or relative until the original value is captured below.
 case "${BASH_SOURCE[0]}" in
@@ -9517,7 +9522,7 @@ worker_git_resolved_inspection_route() {
     repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
     [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
-    if [ "$repo_root" != "$active_repo" ]; then
+    if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] && [ "$repo_root" != "$active_repo" ]; then
       deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-inspection" \
         "ECI worker Git inspection targets a different repository: active_repo=$active_repo target_repo=$repo_root; operation=inspection" \
         "run the Git inspection from the owning worker repository or route a foreign-repository inspection through its coordinator"
@@ -10661,7 +10666,8 @@ enforce_git_mutation_gate() {
     git_dir_raw="$(codex_git_safe -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null || true)"
     git_dir="$(realpath -m -- "$git_dir_raw" 2>/dev/null || true)"
     [ -n "$git_dir" ] && [ -d "$git_dir" ] || continue
-    if cross_scope_detail="$(git_mutation_cross_scope_detail "$repo_root")"; then
+    if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] &&
+      cross_scope_detail="$(git_mutation_cross_scope_detail "$repo_root")"; then
       deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-mutation" \
         "ECI Git mutation targets a different repository than this active work scope: ${cross_scope_detail}" \
         "run the Git action from its owning session/repository, or change the active work scope before retrying"
