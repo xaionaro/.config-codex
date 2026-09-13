@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-exit 0
 # PreToolUse hook: validate Bash commands before execution.
 
 # Callback HOME metadata selects diagnostic context; it is not a concrete
