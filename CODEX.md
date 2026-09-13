@@ -48,15 +48,6 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 | `ATE` receives bounded `ECI` | Nest normal ECI; replace the ATE root only on an explicit switch, replacement, or ATE stop. |
 | Explicit cancel/withdraw/replace root | Close it; finish teardown and marker closure before a successor. Failure leaves the current root active. |
 
-### Concurrent tasks
-
-These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Direct work and ATE outside ECI retain their existing lifecycle and wait rules.
-
-- Give each task its own outcome, scope, owner, dependencies, and acceptance evidence. A discovered separate-outcome concern still needs user authorization; a new user request supplies its own scope.
-- Run independent ready tasks concurrently. Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity; name the constraint and continue unaffected work. Disjoint same-file edits may proceed with target rereads; serialize only conflicting hunks or shared state. The coordinator orders cross-task conflicts; main/Fast precedence applies within its own task.
-- Apply critique, iteration, checkpoint, and acceptance sequencing within the affected task. Each new ECI task retains its own main path and Fast owner. Shared targets need integrated review where changes interact.
-- A task clean pass does not close a root with unfinished sibling tasks. Keep lifecycle markers until every owned task is accepted or explicitly cancelled and its writers are stopped. Cancelling one task preserves siblings; explicit root replacement still requires full teardown.
-
 - Without an active ECI/ATE root, current-request instructions precede inference: `ECI` alone selects ECI; `ATE` alone or both select ATE. Mere descriptive mentions of workflows are not instructions.
 - Before solution work, resolve lifecycle/instruction state from the request, active state, and routing sources. Unresolved material lifecycle/instruction state blocks selection without setting `M`. Without an active ECI/ATE root, select the new root's workflow immediately afterward and before planning, solution framing, implementation-skill lookup, or solution-oriented tools. Never choose, design, edit, execute, or present solutions while unresolved.
 - Derive `M` and `C` only from task-intrinsic requirements; workflow selection and protocol-created choices/workstreams/coordination/review do not count.
@@ -74,6 +65,16 @@ These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Dire
 - Verify UI manipulation with screenshots, DOM checks, or equivalent evidence. Assume bugs local until isolated evidence disproves it.
 - Handle explicit cases; error on unknowns. Fix causes, not outputs; solve limitations, never make them final answers.
 - Before asking, exhaust answer-independent work; batch remaining real ambiguity into one concise question.
+
+### Concurrent tasks
+
+These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Direct work and ATE outside ECI retain their existing lifecycle and wait rules.
+
+- Give each task its own outcome, scope, owner, dependencies, and acceptance evidence. A discovered separate-outcome concern still needs user authorization; a new user request supplies its own scope.
+- Run independent ready tasks concurrently. Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity; name the constraint and continue unaffected work.
+- Serialize conflicting writes and shared Git-index mutations through coordinator ownership handoffs; continue disjoint work, including nonconflicting work in the same file, with target rereads. The coordinator orders cross-task conflicts; main/Fast precedence applies within its own task.
+- Apply critique, iteration, checkpoint, and acceptance sequencing within the affected task. Each new ECI task retains its own main path and Fast owner. Shared targets need integrated review where changes interact. Later interacting changes invalidate affected acceptance evidence; refresh that review and verification before final root closure.
+- A task clean pass does not close a root with unfinished sibling tasks. Keep lifecycle markers until every owned task is accepted or explicitly cancelled and its writers are stopped. Cancelling one task preserves siblings; explicit root replacement still requires full teardown.
 
 ## Git
 

@@ -950,7 +950,10 @@ assert_concurrent_task_contract() {
     'A discovered separate-outcome concern still needs user authorization' \
     'A task clean pass does not close a root with unfinished sibling tasks' \
     'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
-    'Disjoint same-file edits may proceed with target rereads' \
+    'nonconflicting work in the same file, with target rereads' \
+    'Serialize conflicting writes and shared Git-index mutations through coordinator ownership handoffs' \
+    'continue disjoint work, including nonconflicting work in the same file' \
+    'Later interacting changes invalidate affected acceptance evidence; refresh that review and verification before final root closure' \
     'The coordinator orders cross-task conflicts' \
     'Preserve all required review/E2E evidence before accepting its target'; do
     require_section_pattern "$input" "concurrent task contract: $clause" "$clause"
@@ -971,7 +974,10 @@ assert_concurrent_tasks() {
     'A discovered separate-outcome concern still needs user authorization' \
     'A task clean pass does not close a root with unfinished sibling tasks' \
     'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
-    'Disjoint same-file edits may proceed with target rereads' \
+    'nonconflicting work in the same file, with target rereads' \
+    'Serialize conflicting writes and shared Git-index mutations through coordinator ownership handoffs' \
+    'continue disjoint work, including nonconflicting work in the same file' \
+    'Later interacting changes invalidate affected acceptance evidence; refresh that review and verification before final root closure' \
     'The coordinator orders cross-task conflicts' \
     'Preserve all required review/E2E evidence before accepting its target'; do
     mutation="${input/"$clause"/}"
@@ -985,6 +991,48 @@ assert_concurrent_tasks() {
     fail 'concurrent task mutation admitted blanket root queue'
   fi
   [[ "$output" == *'blanket serialization'* ]] || fail "unexpected mutation failure: $output"
+}
+
+assert_task_root_closure_contract() {
+  local coordinator_text="$1" fast_text="$2"
+  require_section_pattern "$coordinator_text" 'root-only coordinator teardown' \
+    'On root clean pass or root user closure:'
+  require_section_pattern "$fast_text" 'task-owned shutdown on either closure path' \
+    'either closure path.*both producers and their task-owned write-capable tools stopped or finished'
+  require_section_pattern "$fast_text" 'root-only Fast teardown follows normative scheduling' \
+    'Root teardown and marker removal follow.*CODEX.md#concurrent-tasks'
+  [[ "$coordinator_text" != *'On clean pass or user closure:'* &&
+     "$fast_text" != *'performs normal user-closure teardown'* ]] ||
+    fail 'task closure still triggers root teardown'
+}
+
+assert_task_root_closure() {
+  local coordinator_text fast_text mutation output
+  coordinator_text="$(<"$COORDINATOR")"
+  fast_text="$(<"$FAST_PATH")"
+  assert_task_root_closure_contract "$coordinator_text" "$fast_text"
+  mutation="${coordinator_text/On root clean pass or root user closure:/On clean pass or user closure:}"
+  if output="$(assert_task_root_closure_contract "$mutation" "$fast_text" 2>&1)"; then
+    fail 'task closure mutation admitted task-triggered coordinator teardown'
+  fi
+  [[ "$output" == *'root-only coordinator teardown'* ]] || fail "unexpected mutation failure: $output"
+  mutation="${fast_text/Root teardown and marker removal follow/Task teardown and marker removal follow}"
+  if output="$(assert_task_root_closure_contract "$coordinator_text" "$mutation" 2>&1)"; then
+    fail 'task closure mutation admitted task-triggered Fast teardown'
+  fi
+  [[ "$output" == *'root-only Fast teardown'* ]] || fail "unexpected mutation failure: $output"
+}
+
+assert_concurrency_section_placement() {
+  local section
+  section="$(awk '
+    /^### Concurrent tasks$/ { capture = 1; next }
+    capture && /^##? / { exit }
+    capture { print }
+  ' "$CODEX")"
+  [[ "$section" == *'Run independent ready tasks concurrently'* ]] || fail 'missing concurrency section'
+  [[ "$section" != *'Without an active ECI/ATE root'* && "$section" != *'Inferred condition'* ]] ||
+    fail 'concurrency section contains root workflow selection'
 }
 
 assert_go_preference() {
@@ -1922,6 +1970,8 @@ assert_ate_ordinary_role_split
 assert_fast_path_routes
 assert_fast_path_progress_waits
 assert_concurrent_tasks
+assert_task_root_closure
+assert_concurrency_section_placement
 assert_go_preference
 assert_status_lane_stage_contract
 assert_status_lane_stage_transition_fixture
