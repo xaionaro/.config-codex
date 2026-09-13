@@ -10305,13 +10305,14 @@ def checkout_context_value_valid(value):
     return -(1 << 31) <= number <= (1 << 31) - 1
 
 def checkout_context_value_has_unpatched_effect(value):
-    # Git's checkout path mode accepts the negative-zero and -1 spellings
-    # without --patch and can still restore a path.  Other valid context
-    # values require --patch, so their invalid command remains transparent.
+    # Git's checkout path mode accepts -1 without --patch and can still
+    # restore a path. Other valid context values require --patch, while
+    # negative zero is invalid without it, so those commands remain
+    # transparent.
     if not checkout_context_value_valid(value):
         return False
     match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
-    return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) in {0, 1}
+    return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) == 1
 
 def checkout_detach_state(args):
     """Return detach state, branch mode, start point, separator, and flags."""
@@ -10366,7 +10367,7 @@ def checkout_detach_state(args):
                 branch_mode = branch_mode or option == "--orphan"
                 if option in {"--unified", "--inter-hunk-context"}:
                     context_option = True
-                    context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(argument)
+                    context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
                 index += 1
                 continue
             if index + 1 >= len(args):
@@ -10382,11 +10383,12 @@ def checkout_detach_state(args):
             branch_mode = branch_mode or option == "--orphan"
             if option in {"--unified", "--inter-hunk-context"}:
                 context_option = True
-                context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(context_value)
+                context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
             index += 2
             continue
         if value.startswith("-") and not value.startswith("--"):
             short_options = value[1:]
+            short_options_recognized = True
             short_index = 0
             while short_index < len(short_options):
                 short_option = short_options[short_index]
@@ -10399,7 +10401,7 @@ def checkout_detach_state(args):
                         if short_option == "U":
                             if not checkout_context_value_valid(argument):
                                 return invalid_result()
-                            context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(argument)
+                            context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
                         elif argument.startswith("-"):
                             return invalid_result()
                         break
@@ -10408,7 +10410,7 @@ def checkout_detach_state(args):
                     if short_option == "U":
                         if not checkout_context_value_valid(args[index + 1]):
                             return invalid_result()
-                        context_unpatched_effect = context_unpatched_effect or checkout_context_value_has_unpatched_effect(args[index + 1])
+                        context_unpatched_effect = checkout_context_value_has_unpatched_effect(args[index + 1])
                     elif args[index + 1].startswith("-"):
                         return invalid_result()
                     index += 1
@@ -10417,7 +10419,16 @@ def checkout_detach_state(args):
                     state = True
                 elif short_option == "p":
                     patch_mode = True
+                elif short_option in {"f", "l", "m", "q", "t"}:
+                    pass
+                else:
+                    short_options_recognized = False
                 short_index += 1
+            if pathspec_dash_consumed and not short_options_recognized:
+                # After a literal `--` has been consumed as the pathspec
+                # filename, an unrecognized short option is Git-invalid
+                # rather than a second protected pathspec.
+                return invalid_result()
             index += 1
             continue
         if value.startswith("--"):

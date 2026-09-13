@@ -252,6 +252,7 @@ for pathspec_option in --pathspec-from --pathspec-from-f --pathspec-from-fi --pa
   assert_protected_denial_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
   assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- hooks/validate-bash.sh"
   assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- --bogus"
+  assert_allowed_at_session "$literal_dash_session" "$literal_dash_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option -- -z"
   assert_allowed_at_session "$literal_dash_missing_session" "$literal_dash_missing_cwd" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout $pathspec_option --"
 done
 assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
@@ -327,12 +328,16 @@ assert_protected_denial 'git checkout --patch --unified -1 -- hooks/validate-bas
 assert_protected_denial 'git checkout --unified=-1 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout -U-1 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --inter-hunk-context=-1 -- hooks/validate-bash.sh'
-assert_protected_denial 'git checkout --unified=-0 -- hooks/validate-bash.sh'
-assert_protected_denial 'git checkout -U-0 -- hooks/validate-bash.sh'
-assert_protected_denial 'git checkout --inter-hunk-context=-0 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --unified=-0 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout -U-0 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --inter-hunk-context=-0 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patch --unified=-0 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patch -U-0 -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patch --inter-hunk-context=-0 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --unified=-1 --unified=3 -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --unified=3 --unified=-1 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout -U-1 -U3 -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout -U3 -U-1 -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --patch --unified=-2 -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --patch --unified=-3 -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --patch --inter-hunk-context=-2 -- hooks/validate-bash.sh'
