@@ -257,7 +257,7 @@ When ATE is outer, it may run independent tasks in parallel while routing each b
 | Skill | Relationship |
 |-------|-------------|
 | `explore-critique-implement` | Each Phase 7 task is a full ECI iteration. Under ATE, ECI is bounded and nested. |
-| `agent-teams-execution` | Outer workflow for parallel independent Phase 7 tasks; ATE remains outer while routing each bounded task through ECI. |
+| `agent-teams-execution` | Starts only on explicit user request; when already outer, routes each bounded Phase 7 task through ECI and remains outer. |
 | `harness-tuning` | Apply when the porting target is a skill file, system prompt, or CODEX.md. |
 | `brainstorming` | Use before this skill if user intent is unclear (what to port, why). |
 | `proof-driven-development` | Invoked inside `explore-critique-implement` for logic-bearing ported code. |

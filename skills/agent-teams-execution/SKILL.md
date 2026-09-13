@@ -1,15 +1,15 @@
 ---
 name: agent-teams-execution
-description: Use when CODEX selects ATE as the active workflow
+description: Use only when the user explicitly asks to use ATE or agent-teams-execution; requests to inspect or edit this skill do not invoke it.
 ---
 
 # Agent Teams Execution
 
-ATE is the active workflow for coordinated multi-workstream work: research, design, disjoint execution, integrated review, proof, and QA. Coordinator and lead route/enforce; they never implement.
+ATE coordinates multi-workstream work when explicitly requested: research, design, disjoint execution, integrated review, proof, and QA. Coordinator and lead route/enforce; they never implement.
 
 ## Activation and invariants
 
-Start only when CODEX selects ATE. Loading this router alone does not start the team. Maintain active lineage and a project-understanding ledger; every durable normal route has an admitted lane, assignment, ownership, and full requirement chain.
+Start only when the user explicitly asks to use ATE or `agent-teams-execution`, subject to CODEX lifecycle routing. Task size, parallel work, descriptive mentions, and skill-document maintenance do not activate ATE. Loading this router alone does not start the team. Once explicitly active, ATE retains its lifecycle until normal closure. Maintain active lineage and a project-understanding ledger; every durable normal route has an admitted lane, assignment, ownership, and full requirement chain.
 
 - Every worker reads this router plus only its exact role module and named conditional modules. Unknown role, predicate, or link returns to coordinator before work.
 - Coordinator/lead alone load lifecycle, prompt/model admission, blocker, pause, stop, required-critic, shutdown, and pressure-policy modules.

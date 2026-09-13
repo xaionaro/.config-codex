@@ -61,7 +61,7 @@ After the Step 3 handoff and before Step 4 or another implementation iteration, 
 | Skill | Relationship |
 | --- | --- |
 | `brainstorming` | Explores user intent before design; ECI explores solutions after intent is clear. |
-| `agent-teams-execution` | Remains active for large or multi-workstream work and may route bounded work through ECI. Re-spawn an ECI critic that cites no issues beyond producer self-reports. |
+| `agent-teams-execution` | Starts only on explicit user request; once active, may route bounded work through ECI. Re-spawn an ECI critic that cites no issues beyond producer self-reports. |
 | `blocker-resolution-protocol` | Supplies shared blocker records and escalation rules. ECI retains role separation, loop-breaker, and hard-escalation semantics. |
 | `debugging-discipline` | Diagnoses known bugs; ECI explores open-ended improvement/design. |
 
