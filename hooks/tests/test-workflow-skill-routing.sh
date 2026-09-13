@@ -2003,7 +2003,49 @@ assert_implementer_iteration_checkpoint_contract() {
   forbid_text "$COORDINATOR_RUNTIME" 'A checkpoint requires a new receipt, permission, or Git prerequisite.'
 }
 
+assert_ate_explicit_only_contract() {
+  local codex_source="$1" ate_source="$2" policy_source="$3" inferred
+
+  [[ "$policy_source" == *$'policy:\n  allow_implicit_invocation: false'* ]] ||
+    fail 'ATE explicit-only contract: discovery policy must disable implicit invocation'
+  [[ "$codex_source" == *'Start ATE only when the user explicitly asks to use ATE or `agent-teams-execution`.'* ]] ||
+    fail 'ATE explicit-only contract: root activation needs an explicit user request'
+  [[ "$codex_source" == *'Descriptive mentions and requests to inspect or edit its skill documents do not invoke ATE.'* ]] ||
+    fail 'ATE explicit-only contract: maintenance and mentions must not activate ATE'
+  inferred="${codex_source#*'| Inferred condition | Workflow |'}"
+  inferred="${inferred%%$'\n\n'*}"
+  [[ "$inferred" == *'| `!M` | `direct` |'* && "$inferred" == *'| `M` | `ECI` |'* && "$inferred" != *'ATE'* ]] ||
+    fail 'ATE explicit-only contract: inference must preserve direct/ECI without ATE'
+  [[ "$ate_source" == *'description: Use only when the user explicitly asks to use ATE or agent-teams-execution;'* &&
+    "$ate_source" == *'Once explicitly active, ATE retains its lifecycle until normal closure.'* ]] ||
+    fail 'ATE explicit-only contract: discovery trigger and active lifecycle must agree'
+}
+
+assert_ate_explicit_only() {
+  local codex_source ate_source policy_source mutation output
+  codex_source="$(<"$CODEX")"
+  ate_source="$(<"$ATE")"
+  policy_source="$(<"$ROOT/skills/agent-teams-execution/agents/openai.yaml")"
+  assert_ate_explicit_only_contract "$codex_source" "$ate_source" "$policy_source"
+  require_text "$ECI" 'Starts only on explicit user request; once active, may route bounded work through ECI.'
+  require_text "$ROOT/skills/code-porting/SKILL.md" 'Starts only on explicit user request; when already outer, routes each bounded Phase 7 task through ECI and remains outer.'
+  require_text "$CODEX" '| `ATE` receives bounded `ECI` | Nest normal ECI;'
+
+  for mutation in '' "${policy_source/false/true}"; do
+    if output="$(assert_ate_explicit_only_contract "$codex_source" "$ate_source" "$mutation" 2>&1)"; then
+      fail 'ATE explicit-only contract: absent/enabled implicit policy mutation was admitted'
+    fi
+    [[ "$output" == *'ATE explicit-only contract:'* ]] || fail "unexpected ATE policy mutation failure: $output"
+  done
+  mutation="${codex_source/'| `M` | `ECI` |'/'| `M` | `ATE` |'}"
+  if output="$(assert_ate_explicit_only_contract "$mutation" "$ate_source" "$policy_source" 2>&1)"; then
+    fail 'ATE explicit-only contract: automatic ATE routing mutation was admitted'
+  fi
+  [[ "$output" == *'ATE explicit-only contract:'* ]] || fail "unexpected ATE routing mutation failure: $output"
+}
+
 assert_local_links_resolve
+assert_ate_explicit_only
 assert_role_rows_are_local
 assert_debugging_role_routes
 assert_eci_relationships
