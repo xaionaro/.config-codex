@@ -10265,24 +10265,48 @@ def checkout_revision(value):
         return None
     return result.returncode == 0
 
+def checkout_detach_state(args):
+    """Return the final positive detach state before the pathspec separator."""
+    state = None
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--":
+            break
+        # This option consumes the following token even when it starts with
+        # a dash.  Do not mistake a pathspec filename named --detach for a
+        # later detach toggle.
+        if value == "--pathspec-from-file":
+            index += 2
+            continue
+        if value.startswith("--pathspec-from-file="):
+            index += 1
+            continue
+        if value.startswith("-") and not value.startswith("--"):
+            # Git accepts clustered short flags such as -dq and -qd.
+            if "d" in value[1:]:
+                state = True
+            index += 1
+            continue
+        if value.startswith("--"):
+            option = value.split("=", 1)[0]
+            if option.startswith("--no-"):
+                suffix = option[len("--no-"):]
+                if suffix and "detach".startswith(suffix):
+                    state = False
+            elif option != "--" and "--detach".startswith(option):
+                state = True
+        index += 1
+    return state
+
 def checkout_detail(args, base):
     # With `--`, every following token is a worktree pathspec.  Without it,
     # preserve branch/ref inspection and only inspect an existing path that
     # Git cannot resolve as a revision.
     # Positive detach options select a revision; they cannot introduce a
-    # worktree pathspec.  Restrict this exemption to options before `--` so a
-    # pathspec literally named `--detach` remains a real target.  Git accepts
-    # unique long-option abbreviations (currently --d through --detach) and
-    # the short -d spelling; --no-detach is intentionally not exempt.
-    option_args = args[:args.index("--")] if "--" in args else args
-    def is_detach_option(value):
-        if value == "-d":
-            return True
-        if not value.startswith("--") or value.startswith("--no-"):
-            return False
-        option = value.split("=", 1)[0]
-        return option != "--" and "--detach".startswith(option)
-    if any(is_detach_option(value) for value in option_args):
+    # worktree pathspec.  Restrict this exemption to an effective positive
+    # option before `--`; a later --no-detach or an option value cancels it.
+    if checkout_detach_state(args) is True:
         return None
     explicit_paths = "--" in args
     if explicit_paths:

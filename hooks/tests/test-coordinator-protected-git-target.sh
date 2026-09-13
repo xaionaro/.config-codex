@@ -64,6 +64,22 @@ printf '%s\n' \
 printf '%s\n' '# protected Git target test' >"$alias_session_dir/high_level_log.md"
 printf '%s\n' '# test instructions' >"$alias_session_dir/instructions.md"
 
+# `--pathspec-from-file` consumes the following `--detach` token as its
+# filename.  Keep the value file in the temporary callback CWD while the
+# explicit work-tree points at the repository under test.
+pathspec_value_session='t03-pathspec-value-session'
+printf '%s\n' 'hooks/validate-bash.sh' >"$TMP_ROOT/--detach"
+pathspec_value_session_dir="$proof_root/$pathspec_value_session"
+mkdir -p -- "$pathspec_value_session_dir/evidence"
+printf '%s\n' \
+  'scope: coordinator protected Git target test' \
+  "cwd: $TMP_ROOT" \
+  "session_id: $pathspec_value_session" \
+  'created_utc: 2026-09-13T00:00:00Z' \
+  >"$pathspec_value_session_dir/eci_active"
+printf '%s\n' '# protected Git target test' >"$pathspec_value_session_dir/high_level_log.md"
+printf '%s\n' '# test instructions' >"$pathspec_value_session_dir/instructions.md"
+
 cleanup() {
   rm -f -- "$symlink_alias"
   rm -rf -- "$TMP_ROOT"
@@ -193,6 +209,7 @@ assert_protected_denial 'git restore --source HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout -- --detach hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --detach --no-detach HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout hooks/validate-bash.sh'
 assert_protected_denial 'git checkout ./hooks/validate-bash.sh'
 assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
@@ -206,6 +223,7 @@ assert_protected_denial "git rm --pathspec-from-file=\"$protected_pathspec_nul_f
 assert_protected_denial "git restore --pathspec-from-file=\"$protected_pathspec_file\""
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\""
 assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_nul_file\" --pathspec-file-nul"
+assert_protected_denial_at_session "$pathspec_value_session" "$TMP_ROOT" "git --work-tree=\"$ROOT\" --git-dir=\"$ROOT/.git\" checkout --pathspec-from-file --detach"
 assert_protected_denial 'bash -c "git rm -- hooks/validate-bash.sh"'
 assert_protected_denial 'sh -c "git restore -- hooks/validate-bash.sh"'
 assert_protected_denial 'env bash -c "git checkout hooks/validate-bash.sh"'
@@ -226,7 +244,7 @@ assert_allowed 'git checkout HEAD'
 assert_allowed 'git checkout --detach HEAD'
 assert_allowed 'git checkout --detach hooks/validate-bash.sh'
 assert_allowed 'git checkout -d hooks/validate-bash.sh'
-for detach_option in --d --de --det --deta --detac; do
+for detach_option in -dq -qd --d --de --det --deta --detac; do
   assert_allowed "git checkout $detach_option hooks/validate-bash.sh"
 done
 assert_allowed 'git checkout missing-branch'
