@@ -214,6 +214,9 @@ assert_protected_denial 'git checkout hooks/validate-bash.sh'
 assert_protected_denial 'git checkout ./hooks/validate-bash.sh'
 assert_protected_denial 'git checkout -b iter8-valid HEAD -- hooks/validate-bash.sh'
 assert_protected_denial 'git checkout --patch --unified=3 -- hooks/validate-bash.sh'
+assert_protected_denial 'git checkout --patc --unified=3 -- hooks/validate-bash.sh'
+assert_protected_denial "git checkout --pathspec-from-file=\"$protected_pathspec_file\" --"
+assert_protected_denial "git checkout --pathspec-from-file \"$protected_pathspec_file\" --"
 assert_protected_denial "git --work-tree=\"$ROOT\" restore -- hooks/validate-bash.sh"
 assert_protected_denial "git --work-tree=\"$ROOT\" checkout -- hooks/validate-bash.sh"
 assert_protected_denial "GIT_WORK_TREE=\"$ROOT\" git restore -- hooks/validate-bash.sh"
@@ -254,6 +257,11 @@ assert_allowed 'git checkout -d hooks/validate-bash.sh'
 assert_allowed 'git checkout --no-detach=foo hooks/validate-bash.sh'
 assert_allowed 'git checkout --detach=foo --no-detach HEAD -- hooks/validate-bash.sh'
 assert_allowed 'git checkout --detach=foo --no-detach -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch=foo --unified=3 -- hooks/validate-bash.sh'
+assert_allowed 'git checkout --patch --no-patc --unified=3 -- hooks/validate-bash.sh'
+for patch_option in --p --pa --pat; do
+  assert_allowed "git checkout $patch_option --unified=3 -- hooks/validate-bash.sh"
+done
 assert_allowed 'git checkout --conflict --no-detach hooks/validate-bash.sh'
 assert_allowed 'git checkout --orphan --no-detach hooks/validate-bash.sh'
 assert_allowed 'git checkout -b --no-detach hooks/validate-bash.sh'

@@ -10277,16 +10277,22 @@ def checkout_revision(value):
     return result.returncode == 0
 
 def checkout_detach_state(args):
-    """Return detach state, branch mode, start-point state, and invalid state."""
+    """Return detach state, branch mode, start point, separator, and invalid state."""
     state = None
     branch_mode = False
     branch_startpoint = False
     context_option = False
     patch_mode = False
+    separator_index = None
     index = 0
+
+    def invalid_result():
+        return None, branch_mode, branch_startpoint, separator_index, True
+
     while index < len(args):
         value = args[index]
         if value == "--":
+            separator_index = index
             break
         is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
         if is_pathspec_file:
@@ -10295,10 +10301,10 @@ def checkout_detach_state(args):
             # --detach for a later detach toggle.
             if pathspec_file is None:
                 if index + 1 >= len(args) or args[index + 1] == "--":
-                    return None, branch_mode, branch_startpoint, True
+                    return invalid_result()
                 index += 2
             elif not pathspec_file:
-                return None, branch_mode, branch_startpoint, True
+                return invalid_result()
             else:
                 index += 1
             continue
@@ -10306,17 +10312,17 @@ def checkout_detach_state(args):
         if option in {"--source", "--conflict", "--orphan", "--unified", "--inter-hunk-context"}:
             if separator:
                 if argument.startswith("-"):
-                    return None, branch_mode, branch_startpoint, True
+                    return invalid_result()
                 if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
-                    return None, branch_mode, branch_startpoint, True
+                    return invalid_result()
                 branch_mode = branch_mode or option == "--orphan"
                 context_option = context_option or option in {"--unified", "--inter-hunk-context"}
                 index += 1
                 continue
             if index + 1 >= len(args) or args[index + 1].startswith("-"):
-                return None, branch_mode, branch_startpoint, True
+                return invalid_result()
             if option == "--conflict" and args[index + 1] not in {"merge", "diff3", "zdiff3"}:
-                return None, branch_mode, branch_startpoint, True
+                return invalid_result()
             branch_mode = branch_mode or option == "--orphan"
             context_option = context_option or option in {"--unified", "--inter-hunk-context"}
             index += 2
@@ -10332,10 +10338,10 @@ def checkout_detach_state(args):
                     argument = short_options[short_index + 1:]
                     if argument:
                         if argument.startswith("-"):
-                            return None, branch_mode, branch_startpoint, True
+                            return invalid_result()
                         break
                     if index + 1 >= len(args) or args[index + 1].startswith("-"):
-                        return None, branch_mode, branch_startpoint, True
+                        return invalid_result()
                     index += 1
                     break
                 if short_option == "d":
@@ -10350,22 +10356,30 @@ def checkout_detach_state(args):
                 suffix = option[len("--no-"):]
                 if suffix and "detach".startswith(suffix):
                     if separator:
-                        return None, branch_mode, branch_startpoint, True
+                        return invalid_result()
                     state = False
-                elif suffix == "patch":
+                elif len(suffix) >= len("patc") and "patch".startswith(suffix):
+                    if separator:
+                        return invalid_result()
                     patch_mode = False
+                elif suffix and len(suffix) < len("patc") and "patch".startswith(suffix):
+                    return invalid_result()
             elif option != "--" and "--detach".startswith(option):
                 if separator:
-                    return None, branch_mode, branch_startpoint, True
+                    return invalid_result()
                 state = True
-            elif option == "--patch":
+            elif len(option) >= len("--patc") and "--patch".startswith(option):
+                if separator:
+                    return invalid_result()
                 patch_mode = True
+            elif len(option) < len("--patc") and "--patch".startswith(option):
+                return invalid_result()
         index += 1
         if branch_mode and not value.startswith("-") and checkout_revision(value) is True:
             branch_startpoint = True
     if context_option and not patch_mode:
-        return None, branch_mode, branch_startpoint, True
-    return state, branch_mode, branch_startpoint, False
+        return invalid_result()
+    return state, branch_mode, branch_startpoint, separator_index, False
 
 def checkout_detail(args, base):
     # With `--`, every following token is a worktree pathspec.  Without it,
@@ -10374,16 +10388,17 @@ def checkout_detail(args, base):
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
-    detach_state, branch_mode, branch_startpoint, invalid = checkout_detach_state(args)
+    detach_state, branch_mode, branch_startpoint, separator_index, invalid = checkout_detach_state(args)
     if invalid or detach_state is True:
         return None
-    explicit_paths = "--" in args
+    explicit_paths = separator_index is not None
     if branch_mode and (not explicit_paths or not branch_startpoint):
         return None
-    if explicit_paths:
-        paths = collect_pathspecs(args[args.index("--"):], base)
-    else:
-        paths = collect_pathspecs(args, base)
+    # Scan the complete option region so a pathspec file placed before the
+    # actual separator cannot be discarded.  `separator_index` comes from
+    # the option-state parser, so a `--` consumed as an option value is not
+    # mistaken for the pathspec separator.
+    paths = collect_pathspecs(args, base)
     for value in paths:
         if not explicit_paths:
             revision = checkout_revision(value)
