@@ -8,19 +8,46 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 
 FIXTURE_HOME="$TMP_ROOT/home"
 FIXTURE_ROOT="$FIXTURE_HOME/.codex"
+FIXTURE_KIMI_ROOT="$FIXTURE_HOME/.kimi-code"
 FIXTURE_PROOF="$TMP_ROOT/proof"
 FIXTURE_SESSION='configured-pretooluse'
+FIXTURE_KIMI_SESSION='configured-kimi-pretooluse'
 FIXTURE_CONFIG="$TMP_ROOT/config"
 FIXTURE_STATE="$TMP_ROOT/state"
+LIVE_KIMI_ROOT="${KIMI_CODE_HOME:-${HOME:?}/.kimi-code}"
+LIVE_KIMI_CONFIG="$LIVE_KIMI_ROOT/config.toml"
+live_kimi_config_before="$(sha256sum -- "$LIVE_KIMI_CONFIG" | awk '{print $1}')"
 
-mkdir -p -- "$FIXTURE_ROOT" "$FIXTURE_PROOF/$FIXTURE_SESSION" \
-  "$FIXTURE_CONFIG/eci" "$FIXTURE_STATE"
+mkdir -p -- "$FIXTURE_ROOT" "$FIXTURE_KIMI_ROOT" "$FIXTURE_PROOF/$FIXTURE_SESSION" \
+  "$FIXTURE_PROOF/$FIXTURE_KIMI_SESSION" "$FIXTURE_CONFIG/eci" "$FIXTURE_STATE"
 cp -a -- "$ROOT/hooks" "$FIXTURE_ROOT/hooks"
+cp -a -- "$ROOT/hooks" "$FIXTURE_KIMI_ROOT/hooks"
+mkdir -p -- "$FIXTURE_ROOT/bin"
+cp -- "$ROOT/bin/eci-runtime-sync" "$FIXTURE_ROOT/bin/eci-runtime-sync"
 sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_ROOT/hooks/validate-bash.sh"
 sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_ROOT/hooks/pretooluse-edit-dispatch.sh"
+sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_KIMI_ROOT/hooks/validate-bash.sh"
 printf '%s\n' enforcing >"$FIXTURE_CONFIG/eci/command-gate-mode"
-printf 'scope: configured consumer regression\ncwd: %s\nsession_id: %s\n' \
+printf 'scope: configured consumer regression\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-09-13T00:00:00Z\n' \
   "$FIXTURE_ROOT" "$FIXTURE_SESSION" >"$FIXTURE_PROOF/$FIXTURE_SESSION/eci_active"
+printf 'scope: configured Kimi consumer regression\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-09-13T00:00:00Z\n' \
+  "$FIXTURE_KIMI_ROOT" "$FIXTURE_KIMI_SESSION" >"$FIXTURE_PROOF/$FIXTURE_KIMI_SESSION/eci_active"
+
+# Build the canonical fixture planner through the ordinary private publisher,
+# then remove the Kimi fixture's local planner directory. The configured Kimi
+# callback must therefore consume the coherent canonical planner authority.
+HOME="$FIXTURE_HOME" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
+  "$FIXTURE_ROOT/bin/eci-runtime-sync" planner-apply --target "$FIXTURE_KIMI_ROOT" >/dev/null
+rm -rf -- "$FIXTURE_KIMI_ROOT/hooks/lib/eci-command-plan-go"
+mkdir -p -- "$FIXTURE_KIMI_ROOT/hooks/lib/eci-command-plan-go"
+KIMI_LOCAL_PLANNER="$FIXTURE_KIMI_ROOT/hooks/lib/eci-command-plan-go/eci-command-plan"
+KIMI_LOCAL_PLANNER_SENTINEL="$TMP_ROOT/kimi-local-planner-selected"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf selected >"${KIMI_LOCAL_PLANNER_SENTINEL:?}"' \
+  'printf "%s\\n" "{\\"hookSpecificOutput\\":{\\"permissionDecision\\":\\"deny\\"}}"' \
+  >"$KIMI_LOCAL_PLANNER"
+chmod 755 -- "$KIMI_LOCAL_PLANNER"
 
 cat >"$FIXTURE_ROOT/hooks/validate-apply-patch.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -72,5 +99,75 @@ run_configured_consumer '^(Edit|Write|MultiEdit|NotebookEdit)$' \
   "$(jq -cn --arg cwd "$FIXTURE_ROOT" --arg session "$FIXTURE_SESSION" \
     '{session_id:$session,cwd:$cwd,tool_name:"Edit",tool_input:{file_path:"notes.txt",old_string:"old",new_string:"new"}}')" \
   'synthetic configured edit validator denial'
+
+kimi_bash_consumer="$(python3 - "$LIVE_KIMI_CONFIG" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as config_file:
+    config = tomllib.load(config_file)
+for hook in config.get("hooks", []):
+    if hook.get("event") == "PreToolUse" and hook.get("matcher") == "^Bash$":
+        command = hook.get("command")
+        if isinstance(command, str) and command:
+            print(command)
+            break
+else:
+    raise SystemExit("missing Kimi PreToolUse /^Bash$/ command")
+PY
+)"
+
+run_kimi_bash_consumer() {
+  local label="$1" command="$2" expected="$3" output input
+
+  input="$TMP_ROOT/kimi-$label-input.json"
+  output="$TMP_ROOT/kimi-$label-output.json"
+  jq -cn --arg cwd "$FIXTURE_ROOT" --arg session "$FIXTURE_SESSION" --arg command "$command" \
+    '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' >"$input"
+  if ! timeout 10s env \
+    HOME="$FIXTURE_HOME" KIMI_CODE_HOME="$FIXTURE_KIMI_ROOT" \
+    CODEX_PROOF_ROOT="$FIXTURE_PROOF" KIMI_PROOF_ROOT="$FIXTURE_PROOF" \
+    KIMI_LOCAL_PLANNER_SENTINEL="$KIMI_LOCAL_PLANNER_SENTINEL" \
+    XDG_CONFIG_HOME="$FIXTURE_CONFIG" XDG_STATE_HOME="$FIXTURE_STATE" \
+    bash -c "$kimi_bash_consumer" <"$input" >"$output"; then
+    printf 'configured Kimi Bash consumer did not finish within 10 seconds: %s\n' "$command" >&2
+    cat -- "$output" >&2
+    return 1
+  fi
+  case "$expected" in
+    allow)
+      [ ! -s "$output" ] || {
+        printf 'configured Kimi Bash consumer denied an ordinary command: %s\n' "$command" >&2
+        cat -- "$output" >&2
+        return 1
+      }
+      ;;
+    broad-deny)
+      jq -e '
+        .hookSpecificOutput.permissionDecision == "deny" and
+        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_BROAD_DESTRUCTIVE_DENIED]"))
+      ' "$output" >/dev/null || {
+        printf 'configured Kimi Bash consumer did not report broad-target denial: %s\n' "$command" >&2
+        cat -- "$output" >&2
+        return 1
+      }
+      ;;
+    *)
+      printf 'unknown Kimi Bash expected result: %s\n' "$expected" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_kimi_bash_consumer ordinary 'env | sort' allow
+run_kimi_bash_consumer broad-target 'rm -rf /' broad-deny
+[ ! -e "$KIMI_LOCAL_PLANNER_SENTINEL" ] || {
+  printf 'configured Kimi Bash consumer selected its local planner instead of canonical Codex authority\n' >&2
+  exit 1
+}
+[ "$(sha256sum -- "$LIVE_KIMI_CONFIG" | awk '{print $1}')" = "$live_kimi_config_before" ] || {
+  printf 'configured Kimi consumer test changed live Kimi config: %s\n' "$LIVE_KIMI_CONFIG" >&2
+  exit 1
+}
 
 printf '%s\n' 'configured PreToolUse consumers: PASS'

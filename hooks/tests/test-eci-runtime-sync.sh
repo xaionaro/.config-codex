@@ -416,6 +416,52 @@ grep -qx 'provider = "preserve-kimi-config"' "$planner_kimi/config.toml"
 cmp -- "$planner_codex/$planner_dir/.eci-command-plan.provenance" "$planner_kimi/$planner_dir/.eci-command-plan.provenance"
 run_planner_sync planner-check
 
+# A normal edit that lands after the private source snapshot belongs to the
+# next publication. The current publication must retain the frozen source
+# hashes and complete normally; the following publication records the edit.
+planner_live_main="$planner_codex/$planner_dir/main.go"
+planner_frozen_main_hash="$(sha256sum -- "$planner_live_main" | awk '{print $1}')"
+planner_race_output="$planner_root/planner-snapshot-race.out"
+planner_race_witness="$planner_root/planner-snapshot-race-witness"
+run_planner_sync planner-apply >"$planner_race_output" 2>&1 &
+planner_race_pid=$!
+planner_snapshot_main=''
+for planner_snapshot_attempt in $(seq 1 200); do
+  planner_snapshot_main="$(find "$planner_codex/$planner_dir" -maxdepth 3 -path '*/.eci-command-plan.txn.*/source/main.go' -type f -print -quit)"
+  [ -n "$planner_snapshot_main" ] && break
+  if ! kill -0 "$planner_race_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.01
+done
+[ -n "$planner_snapshot_main" ] || {
+  printf 'runtime-sync test: planner transaction source/main.go was not observed before planner-apply completed\n' >&2
+  cat -- "$planner_race_output" >&2
+  exit 1
+}
+[ "$(sha256sum -- "$planner_snapshot_main" | awk '{print $1}')" = "$planner_frozen_main_hash" ] || {
+  printf 'runtime-sync test: observed planner snapshot did not preserve the pre-edit main.go hash\n' >&2
+  exit 1
+}
+printf '%s\n' "snapshot=$planner_snapshot_main" >"$planner_race_witness"
+printf '%s\n' '// planner snapshot race fixture edit' >>"$planner_live_main"
+planner_edited_main_hash="$(sha256sum -- "$planner_live_main" | awk '{print $1}')"
+[ "$planner_edited_main_hash" != "$planner_frozen_main_hash" ] || {
+  printf 'runtime-sync test: fixture main.go mutation did not change its digest\n' >&2
+  exit 1
+}
+if ! wait "$planner_race_pid"; then
+  printf 'runtime-sync test: planner-apply rejected an ordinary post-snapshot source edit:\n' >&2
+  cat -- "$planner_race_output" >&2
+  exit 1
+fi
+grep -Fq "snapshot=$planner_snapshot_main" "$planner_race_witness"
+[ "$(awk -F '\t' '$1 == "source_main.go_sha256" { print $2 }' "$planner_codex/$planner_dir/.eci-command-plan.provenance")" = "$planner_frozen_main_hash" ]
+cmp -- "$planner_codex/$planner_dir/eci-command-plan" "$planner_kimi/$planner_dir/eci-command-plan"
+run_planner_sync planner-apply
+[ "$(awk -F '\t' '$1 == "source_main.go_sha256" { print $2 }' "$planner_codex/$planner_dir/.eci-command-plan.provenance")" = "$planner_edited_main_hash" ]
+cmp -- "$planner_codex/$planner_dir/eci-command-plan" "$planner_kimi/$planner_dir/eci-command-plan"
+
 # The installed/deployed copy is only a launcher.  Planner maintenance must
 # select HOME/.codex as its source, rather than refusing to repair because the
 # launcher itself lives under a mounted runtime copy.

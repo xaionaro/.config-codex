@@ -16,23 +16,16 @@ import (
 )
 
 // TestCanonicalPlannerPublicationMatchesConsumerProvenance checks the
-// canonical producer inputs against its published consumer artifact.
+// canonical published planner artifact against its receipt.
 //
-// Example: a changed canonical classifier must be rebuilt before its receipt
-// can describe the installed planner.
+// Example: a receipt can describe the frozen source used by a publication
+// while a developer prepares its next ordinary source edit.
 func TestCanonicalPlannerPublicationMatchesConsumerProvenance(t *testing.T) {
 	t.Parallel()
 
 	codexRoot := providerHome(ProviderCodex)
 	codexPlanner := filepath.Join(codexRoot, "hooks", "lib", "eci-command-plan-go")
 	codexReceipt := readPlannerProvenance(t, filepath.Join(codexPlanner, ".eci-command-plan.provenance"))
-
-	for _, source := range []string{"go.mod", "main.go", "classifier.go"} {
-		want := codexReceipt["source_"+source+"_sha256"]
-		if got := fileSHA256(t, filepath.Join(codexPlanner, source)); got != want {
-			t.Errorf("canonical %s digest: got %s, receipt records %s", source, got, want)
-		}
-	}
 
 	codexBinary := filepath.Join(codexPlanner, "eci-command-plan")
 	if got := fileSHA256(t, codexBinary); got != codexReceipt["binary_sha256"] {
@@ -45,8 +38,8 @@ func TestCanonicalPlannerPublicationMatchesConsumerProvenance(t *testing.T) {
 	if got := fmt.Sprintf("%d", info.Size()); got != codexReceipt["binary_size"] {
 		t.Errorf("canonical planner binary size: got %s, receipt records %s", got, codexReceipt["binary_size"])
 	}
-	if permission := info.Mode().Perm(); permission != 0o755 {
-		t.Errorf("canonical planner binary mode: got %04o, want 0755", permission)
+	if got := fmt.Sprintf("%03o", info.Mode().Perm()); got != codexReceipt["binary_mode"] {
+		t.Errorf("canonical planner binary mode: got %s, receipt records %s", got, codexReceipt["binary_mode"])
 	}
 }
 
@@ -62,24 +55,39 @@ func readPlannerProvenance(t *testing.T, path string) map[string]string {
 	if err != nil {
 		t.Fatalf("read planner provenance %s: %v", path, err)
 	}
-	values := make(map[string]string)
-	for _, line := range strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n") {
-		key, value, found := strings.Cut(line, "\t")
-		if !found || key == "" || value == "" {
-			t.Fatalf("malformed planner provenance row %q in %s", line, path)
-		}
-		values[key] = value
-	}
-	for _, key := range []string{
+	expectedKeys := []string{
+		"contract",
+		"go_path",
+		"go_sha256",
+		"go_version",
+		"go_root",
+		"go_tool_path",
+		"go_tool_sha256",
+		"target",
 		"source_go.mod_sha256",
 		"source_main.go_sha256",
 		"source_classifier.go_sha256",
 		"binary_sha256",
 		"binary_size",
-	} {
-		if values[key] == "" {
-			t.Fatalf("planner provenance %s is missing %s", path, key)
+		"binary_mode",
+	}
+	lines := strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n")
+	if len(lines) != len(expectedKeys) {
+		t.Fatalf("planner provenance %s has %d rows, want %d", path, len(lines), len(expectedKeys))
+	}
+	values := make(map[string]string, len(expectedKeys))
+	for index, line := range lines {
+		key, value, found := strings.Cut(line, "\t")
+		if !found || key != expectedKeys[index] || value == "" {
+			t.Fatalf("malformed planner provenance row %q in %s", line, path)
 		}
+		values[key] = value
+	}
+	if values["contract"] != "closed-go-build/v1" {
+		t.Fatalf("planner provenance %s has contract %q", path, values["contract"])
+	}
+	if values["binary_mode"] != "755" {
+		t.Fatalf("planner provenance %s has binary mode %q", path, values["binary_mode"])
 	}
 	return values
 }

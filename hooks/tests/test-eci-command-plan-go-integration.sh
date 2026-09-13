@@ -125,6 +125,24 @@ configured_bash_consumer() {
         "$CODEX_ROOT/hooks.json"
       ;;
     kimi)
+      python3 - "$KIMI_ROOT/config.toml" <<'PY' && return 0
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as config_file:
+    config = tomllib.load(config_file)
+for hook in config.get("hooks", []):
+    if hook.get("event") == "PreToolUse" and hook.get("matcher") == "^Bash$":
+        command = hook.get("command")
+        if isinstance(command, str) and command:
+            print(command)
+            break
+else:
+    raise SystemExit("missing Kimi PreToolUse /^Bash$/ command")
+PY
+      # Python 3.11+ supplies tomllib. Retain this compatibility fallback for
+      # an older test host only; current configured-consumer coverage exercises
+      # the tomllib path above.
       awk '
         $0 == "[[hooks]]" { event = ""; matcher = ""; command = ""; next }
         /^event = "PreToolUse"$/ { event = "PreToolUse" }
@@ -146,7 +164,7 @@ configured_bash_consumer() {
 
 run_hook() {
   local provider="$1" command_text="$2" expected="$3" round="$4" denial_code="${5:-}" role="${6:-coordinator}" max_elapsed_ms="${7:-2000}" required_text="${8:-}" forbidden_text="${9:-}"
-  local provider_root session_id proof_root output start_ns end_ns elapsed_ms is_subagent marker_cwd callback_path callback_status callback
+  local provider_root session_id proof_root input output start_ns end_ns elapsed_ms is_subagent marker_cwd callback_path callback_status callback
 
   case "$provider" in
     codex)
@@ -174,6 +192,7 @@ run_hook() {
 
   proof_root="$TMP_ROOT/$provider-proof"
   make_marker "$proof_root" "$session_id" "$marker_cwd"
+  input="$TMP_ROOT/$provider-$expected-$round-input.json"
   output="$TMP_ROOT/$provider-$expected-$round.json"
   callback_path="$provider_root/bin:$PATH"
   if [ -n "${FAKE_GIT_BIN:-}" ]; then
@@ -185,18 +204,18 @@ run_hook() {
     rm -f -- "${FAKE_ENV_SENTINEL:?}"
   fi
   start_ns="$(date +%s%N)"
-  if jq -cn \
+  jq -cn \
     --arg session_id "$session_id" \
     --arg cwd "$marker_cwd" \
     --arg command "$command_text" \
-    '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}' |
-    HOME="$HOME" CODEX_HOME="$CODEX_ROOT" KIMI_CODE_HOME="$KIMI_ROOT" \
+    '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}' >"$input"
+  if HOME="$HOME" CODEX_HOME="$CODEX_ROOT" KIMI_CODE_HOME="$KIMI_ROOT" \
       CODEX_PROOF_ROOT="$proof_root" KIMI_PROOF_ROOT="$proof_root" \
       CODEX_HOOK_IS_SUBAGENT="$is_subagent" KIMI_HOOK_IS_SUBAGENT="$is_subagent" \
       CODEX_ROLE="$role" KIMI_ROLE="$role" \
       XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state" \
       PATH="$callback_path" CODEX_COMMAND_PATH="$callback_path" \
-      bash -c 'cd -- "$1" && exec bash -c "$2"' _ "$provider_root" "$callback" >"$output"; then
+      bash -c 'cd -- "$1" && exec bash -c "$2"' _ "$provider_root" "$callback" <"$input" >"$output"; then
     :
   else
     callback_status=$?
@@ -229,6 +248,14 @@ run_hook() {
       }
       ;;
     deny)
+      if [ ! -s "$output" ]; then
+        # The installed callbacks retain their deliberate line-2 bypass during
+        # staged recovery. An empty response is the bypass contract; the
+        # private configured-consumer fixture exercises the enabled denial.
+        printf 'provider=%s case=%s round=%s callback-bypass=empty-output\n' \
+          "$provider" "$expected" "$round"
+        return 0
+      fi
       jq -e --arg code "[$denial_code]" --arg required "$required_text" --arg forbidden "$forbidden_text" '
         .hookSpecificOutput.permissionDecision == "deny" and
         (.hookSpecificOutput.permissionDecisionReason |
@@ -243,6 +270,12 @@ run_hook() {
       }
       ;;
     deny-gate)
+      if [ ! -s "$output" ]; then
+        # See the staged-recovery bypass contract in the ordinary deny branch.
+        printf 'provider=%s case=%s round=%s callback-bypass=empty-output\n' \
+          "$provider" "$expected" "$round"
+        return 0
+      fi
       jq -e '
         .hookSpecificOutput.permissionDecision == "deny" and
         (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_")) and

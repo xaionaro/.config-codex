@@ -271,7 +271,6 @@ planner_snapshot_source_inputs() {
   local source_root="$1" uid="$2" transaction="$3"
   local source_dir="$source_root/hooks/lib/eci-command-plan-go" source_file source_path snapshot_path
 
-  planner_hash_source_inputs "$source_root" "$uid"
   for source_file in go.mod main.go classifier.go; do
     source_path="$source_dir/$source_file"
     snapshot_path="$transaction/source/$source_file"
@@ -281,16 +280,10 @@ planner_snapshot_source_inputs() {
       fail ECI_RUNTIME_SYNC_PLANNER_TRANSACTION "could not protect planner source snapshot: $snapshot_path"
     planner_validate_source_file "$snapshot_path" "$uid"
   done
-}
-
-planner_validate_source_snapshot_is_current() {
-  local source_root="$1" transaction="$2" source_dir source_file
-
-  source_dir="$(planner_source_dir "$source_root")"
   for source_file in go.mod main.go classifier.go; do
-    if ! /usr/bin/cmp -s -- "$source_dir/$source_file" "$transaction/source/$source_file"; then
-      fail ECI_RUNTIME_SYNC_PLANNER_SOURCE_DRIFT "planner source changed during the closed build snapshot: $source_dir/$source_file"
-    fi
+    snapshot_path="$transaction/source/$source_file"
+    planner_source_hashes["$source_file"]="$(hash_file "$snapshot_path")" ||
+      fail ECI_RUNTIME_SYNC_PLANNER_SOURCE "could not hash frozen planner source: $snapshot_path"
   done
 }
 
@@ -555,7 +548,6 @@ planner_apply_locked() {
   planner_snapshot_source_inputs "$source_root" "$uid" "$transaction"
   planner_validate_toolchain "$transaction"
   planner_build_snapshot "$transaction"
-  planner_validate_source_snapshot_is_current "$source_root" "$transaction"
   planner_validate_root "$source_root" Codex "$uid"
   planner_validate_binary_path "$source_binary" Codex "$uid"
   planner_validate_receipt_for_apply "$receipt" "$uid"
