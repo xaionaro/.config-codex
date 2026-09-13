@@ -10269,6 +10269,11 @@ def checkout_detail(args, base):
     # With `--`, every following token is a worktree pathspec.  Without it,
     # preserve branch/ref inspection and only inspect an existing path that
     # Git cannot resolve as a revision.
+    # `--detach` selects a revision; it cannot introduce a worktree pathspec.
+    # A path-looking operand in that form is an ordinary Git usage error, not
+    # a protected-file mutation.
+    if any(value == "--detach" or value.startswith("--detach=") for value in args):
+        return None
     explicit_paths = "--" in args
     if explicit_paths:
         paths = collect_pathspecs(args[args.index("--"):], base)

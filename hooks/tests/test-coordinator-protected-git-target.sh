@@ -222,6 +222,8 @@ assert_allowed 'git rm --dry-run -- hooks/validate-bash.sh'
 assert_allowed 'git restore --staged -- hooks/validate-bash.sh'
 assert_allowed 'git checkout -- hooks/does-not-exist'
 assert_allowed 'git checkout HEAD'
+assert_allowed 'git checkout --detach HEAD'
+assert_allowed 'git checkout --detach hooks/validate-bash.sh'
 assert_allowed 'git checkout missing-branch'
 assert_allowed "git rm --pathspec-from-file=\"$missing_pathspec_file\""
 assert_allowed "git restore --pathspec-from-file=\"$missing_pathspec_file\""
