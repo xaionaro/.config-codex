@@ -33,6 +33,12 @@ E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-con
 - When ECI needs an overlapping target, the Fast owner yields affected writes, preserves ECI changes, and adapts its solution and checks. Continue unaffected useful work; ECI does not wait for the fast solution.
 - Attribute results to the state exercised. A relevant concurrent change makes affected results stale; rerun them.
 
+## Main ECI quality responsibility
+
+- Main ECI owns quality: assess Fast work against original requirements and applicable quality standards. Its presence, passing tests, checkpoint, sunk cost, or deadline pressure does not establish an acceptable design or limit exploration to polishing it.
+- Evaluate viable alternatives on correctness, maintainability, architecture, and applicable style. Explorer develops options from requirements; Step 2 independently selects the winner; implementation meets that winner; Step 4 independently reviews retained work to the same standard as main-path changes.
+- Preserve useful verified discoveries and retain qualifying code in place. Revise or replace work with material quality problems through normal ECI; neither Fast provenance nor cosmetic preference justifies a redundant rewrite.
+
 ## Evidence can reopen design
 
 - The coordinator independently verifies material fast discoveries and gives the evidence to Explorer and fresh Step 2.

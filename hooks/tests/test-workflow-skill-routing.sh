@@ -906,6 +906,38 @@ assert_fast_path_routes() {
     'either closure path.*both producers and their task-owned write-capable tools stopped or finished'
 }
 
+assert_fast_quality_contract() {
+  local text="$1"
+  require_section_pattern "$text" 'requirements-first quality assessment' \
+    'assess Fast work against original requirements and applicable quality standards'
+  require_section_pattern "$text" 'existing work cannot anchor design' \
+    'presence, passing tests, checkpoint, sunk cost, or deadline pressure.*does not establish an acceptable design'
+  require_section_pattern "$text" 'independent alternatives and material quality' \
+    'Evaluate viable alternatives.*correctness, maintainability, architecture, and applicable style'
+  require_section_pattern "$text" 'evidence survives without mandatory rewriting' \
+    'Preserve useful verified discoveries.*retain qualifying code in place'
+}
+
+assert_fast_quality() {
+  local text mutation output clause file
+  text="$(extract_h2_section "$FAST_PATH" '## Main ECI quality responsibility')" ||
+    fail 'Fast quality section missing'
+  assert_fast_quality_contract "$text"
+  for clause in 'assess Fast work against original requirements' \
+    'does not establish an acceptable design' 'Evaluate viable alternatives' \
+    'retain qualifying code in place'; do
+    mutation="${text/"$clause"/REMOVED}"
+    if output="$(assert_fast_quality_contract "$mutation" 2>&1)"; then
+      fail "Fast quality mutation admitted missing requirement: $clause"
+    fi
+    [[ "$output" == *'workflow routing assertion failed:'* ]] || fail "unexpected mutation failure: $output"
+  done
+  for file in "$ROOT/skills/explore-critique-implement/references/explore.md" \
+    "$ECI_CRITIQUE" "$IMPLEMENT" "$REVIEW"; do
+    require_text "$file" 'fast-path.md#main-eci-quality-responsibility'
+  done
+}
+
 assert_fast_path_progress_wait_contract() {
   local codex_text="$1" fast_text="$2" wait_rule section
 
@@ -1968,6 +2000,7 @@ assert_configuration_e2e_waiver_fixtures
 assert_coordinator_bug_routing_is_nonblocking
 assert_ate_ordinary_role_split
 assert_fast_path_routes
+assert_fast_quality
 assert_fast_path_progress_waits
 assert_concurrent_tasks
 assert_task_root_closure
