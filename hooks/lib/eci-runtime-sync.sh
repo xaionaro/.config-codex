@@ -267,6 +267,15 @@ eci_runtime_sync_publish_target() {
       source="$stage_root/$relative"
       target="$target_root/$relative"
       parent="${target%/*}"
+      # A valid target root may be freshly mounted and contain no copied
+      # runtime tree yet. Create missing descendants beneath that root, then
+      # retain the alias/type checks for every existing component.
+      if [ ! -e "$parent" ] && [ ! -L "$parent" ]; then
+        mkdir -p -- "$parent" || {
+          eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_PARENT "provider=$provider target=$target parent could not be created"
+          return 1
+        }
+      fi
       [ -d "$parent" ] && [ ! -L "$parent" ] || {
         eci_runtime_sync_fail ECI_RUNTIME_SYNC_TARGET_PARENT "provider=$provider target=$target parent is missing or aliased"
         return 1

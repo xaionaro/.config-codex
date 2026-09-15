@@ -98,6 +98,14 @@ cmp "$TEST_ROOT/.codex/bin/eci-runtime-sync" "$TEST_ROOT/runtime/.codex/bin/eci-
 cmp "$TEST_ROOT/.codex/hooks/validate-bash.sh" "$TEST_ROOT/runtime/.codex/hooks/validate-bash.sh"
 cmp "$TEST_ROOT/.codex/hooks/lib/nested.sh" "$TEST_ROOT/runtime/.codex/hooks/lib/nested.sh"
 cmp "$planner_source_dir/main.go" "$TEST_ROOT/runtime/.codex/hooks/lib/eci-command-plan-go/main.go"
+# A fresh, canonical provider root need not pre-create the managed runtime's
+# nested directories. Synchronization creates those descendants below the
+# already validated root and publishes the same snapshot.
+fresh_target_parent="$TEST_ROOT/fresh-runtime"
+mkdir -p -- "$fresh_target_parent/.codex"
+run_sync codex "$TEST_ROOT" "$fresh_target_parent"
+cmp "$TEST_ROOT/.codex/hooks.json" "$fresh_target_parent/.codex/hooks.json"
+cmp "$TEST_ROOT/.codex/hooks/lib/nested.sh" "$fresh_target_parent/.codex/hooks/lib/nested.sh"
 [ -d "$planner_transaction" ]
 [ "$(sha256sum -- "$planner_transaction/gocache/cache-entry" | awk '{print $1}')" = "$planner_transaction_digest" ]
 [ ! -e "$TEST_ROOT/runtime/.codex/hooks/lib/eci-command-plan-go/.eci-command-plan.txn.fixture" ]
