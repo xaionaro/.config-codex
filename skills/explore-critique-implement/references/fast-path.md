@@ -71,6 +71,7 @@ Any Step 4 review that runs concurrently before this restart is intermediate onl
 1. The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped. A write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while main ECI performs the following steps; Fast need not wait for main acceptance to finish.
    - The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk.
    - Include findings with no retained hunk and changes that are retained, revised, non-retained, superseded, or reverted.
+   - Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.
    - The coordinator reconciles the report with shared state.
    - This complete inventory is review context, never a manifest, receipt, or admission/write gate.
    - Final acceptance requires every in-scope inventory item to have a disposition and evidence.
@@ -80,7 +81,7 @@ Any Step 4 review that runs concurrently before this restart is intermediate onl
    - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
    - The Explorer reviews each in-scope inventory item against original requirements and quality standards, alongside retained main-path changes. Reread current targets and relevant surrounding code. Prior exploration, diffs, and passing tests are context, not this new exploration.
 3. A fresh Step 2 critic independently assesses the current sources and Explorer's options.
-   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).
+   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).
    - Step 2 authority is limited to design-winner selection; it does not apply treatment.
    - The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.
    - Apply impact-proportional routing before implementation.

@@ -462,7 +462,9 @@ section_active_literal_directive_line() {
         if (!match(prefix, /^[ \t]+/)) break
         spaces = RLENGTH
         marker_indent = marker_offset
-        candidate_path = path_prefix_for_indent(candidate_path, marker_indent) \
+        candidate_path = path_prefix_for_indent(candidate_path, marker_indent)
+        candidate_depth = (candidate_path == "" ? 0 : split(candidate_path, path_parts, "/") - 1)
+        candidate_path = candidate_path \
           "/" path_component(line_quote_depth, marker_indent, marker, ++list_item_serial)
         candidate_depth++
         line_has_explicit_list = 1
@@ -1293,7 +1295,7 @@ assert_post_fast_transition_contract() {
   require_active_literal_order "$text" "$explorer_directive" "$step2_directive" ||
     fail 'post-Fast active Explorer directive must precede active Step 2'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and Fast-originated hunk' \
-    'fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*recommends exactly one disposition'
+    'fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*recommends exactly one canonical disposition'
   require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
     'implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   require_section_pattern "$text" 'concurrent Step 4 is intermediate only' \
@@ -1331,7 +1333,7 @@ assert_post_fast_scope_and_disposition_contract() {
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
   revise_replace='A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   other_dispositions='Other dispositions require evidence, not implementation.'
-  recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
+  recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   final_evidence='The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
   final_now='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
   separate_outcome='Separate-outcome observations remain outside acceptance.'
@@ -1357,9 +1359,9 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'Step 1 reviews every Fast finding and hunk for scope and quality' \
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and hunk before disposition' \
-    'A fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*recommends exactly one disposition'
+    'A fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*recommends exactly one canonical disposition'
   require_section_pattern "$text" 'Step 2 recommends one disposition per in-scope item' \
-    'A fresh Step 2 critic.*recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
+    'A fresh Step 2 critic.*recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   require_section_pattern "$text" 'Step 2 authority is limited to design-winner selection' \
     'Step 2 authority is limited to design-winner selection.*does not apply treatment'
   require_section_pattern "$text" 'coordinator applies one canonical disposition per item' \
@@ -1396,8 +1398,8 @@ assert_post_fast_no_active_contradiction() {
 assert_post_fast_critique_contract() {
   local text="$1"
 
-  require_section_pattern "$text" 'critic recommends exactly one disposition per in-scope item' \
-    'For post-Fast completion, independently assess final current sources and the new Explorer options before recommending exactly one disposition for each in-scope inventory item in.*fast-path\.md#post-fast-completion'
+  require_section_pattern "$text" 'critic recommends exactly one canonical disposition per in-scope item' \
+    'For post-Fast completion, independently assess final current sources and the new Explorer options before recommending exactly one canonical disposition for each in-scope inventory item in.*fast-path\.md#post-fast-completion'
   [[ "$text" != *'before selecting the canonical per-item disposition for each inventory item'* ]] ||
     fail 'critic still owns final per-item disposition selection'
   [[ "$text" != *'before selecting the concrete retain, revise, or replace disposition.'* ]] ||
@@ -1408,7 +1410,7 @@ assert_post_fast_critique_ownership_contract() {
   local text="$1"
 
   require_text <(printf '%s\n' "$text") \
-    'before recommending exactly one disposition for each in-scope inventory item'
+    'before recommending exactly one canonical disposition for each in-scope inventory item'
   require_text <(printf '%s\n' "$text") \
     'Step 2 authority is limited to design-winner selection; it does not apply treatment.'
   require_text <(printf '%s\n' "$text") \
@@ -1519,12 +1521,13 @@ assert_deferred_disposition_policy_contract() {
 }
 
 assert_post_fast_inventory_contract() {
-  local text="$1" recommendation coordinator_application retained_fix scope_clause
+  local text="$1" recommendation coordinator_application retained_fix scope_clause provenance
 
-  recommendation='recommends exactly one disposition for each in-scope inventory item'
+  recommendation='recommends exactly one canonical disposition for each in-scope inventory item'
   coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
   retained_fix='The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
+  provenance='Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.'
 
   assert_post_fast_completion_observation_contract "$text"
   assert_post_fast_scope_and_disposition_contract "$text"
@@ -1533,6 +1536,8 @@ assert_post_fast_inventory_contract() {
     'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
   require_section_pattern "$text" 'inventory includes no-hunk findings and every change outcome' \
     'Include findings with no retained hunk and changes that are retained, revised, non-retained, superseded, or reverted'
+  require_section_pattern "$text" 'inventory states are provenance, not dispositions' "$provenance"
+  require_active_literal_directive "$text" 'inventory states are active provenance-only guidance' "$provenance"
   require_section_pattern "$text" 'coordinator reconciles the complete inventory' \
     'The coordinator reconciles the report with shared state'
   require_section_pattern "$text" 'inventory is review context and never a gate' \
@@ -1544,7 +1549,7 @@ assert_post_fast_inventory_contract() {
   require_section_pattern "$text" 'fresh Step 1 reviews every Fast-originated hunk for scope and quality' \
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'fresh Step 2 assigns one disposition per item' \
-    'A fresh Step 2 critic.*recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
+    'A fresh Step 2 critic.*recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   require_section_pattern "$text" 'contained treatment-now finding routes once' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated'
   require_section_pattern "$text" 'implementer applies selected revise and replace dispositions' \
@@ -1568,6 +1573,8 @@ assert_post_fast_inventory_contract() {
     require_order "$text" "$scope_clause" \
       'The Explorer reviews each in-scope inventory item' &&
     require_order "$text" 'The Explorer reviews each in-scope inventory item' \
+      "$recommendation" &&
+    require_order "$text" "$provenance" \
       "$recommendation" &&
     require_order "$text" "$recommendation" \
       "$coordinator_application" &&
@@ -1605,7 +1612,7 @@ assert_post_fast_completion_contract() {
   require_section_pattern "$text" 'fresh exploration inspects final shared code' \
     'new Step 1 exploration of the final shared scoped code.*after Fast completion'
   require_section_pattern "$text" 'independent post-Fast design disposition' \
-    'fresh Step 2 critic independently assesses.*recommends exactly one disposition'
+    'fresh Step 2 critic independently assesses.*recommends exactly one canonical disposition'
   require_section_pattern "$text" 'post-Fast review remains required even without changes' \
     'Step 4 independently reviews the final cumulative scoped state even when no further edits are needed'
   require_section_pattern "$text" 'normal completion waits for post-Fast quality' \
@@ -1623,7 +1630,7 @@ assert_post_fast_completion_contract() {
 assert_post_fast_completion() {
   local text clause mutation output file pressure state dispositions replacement inventory_gate contradiction base
   local defer_clause defer_evidence_clause missing_defer missing_evidence observation report critique
-  local restart_line quality_clause scope_clause scope_line step2_directive step2_line step4_tail explorer_directive explorer_line recommendation recommendation_line coordinator_application retained_fix contained_now
+  local restart_line quality_clause scope_clause scope_line step2_directive step2_line step4_tail explorer_directive explorer_line recommendation recommendation_line coordinator_application retained_fix contained_now provenance provenance_line
   local inventory_line final_acceptance_line routing_line repair_batch_line contained_now_line revise_replace_line other_dispositions_line
   local defer_line final_evidence_line final_now_line separate_outcome_line
   text="$(awk '
@@ -1679,9 +1686,11 @@ $step2_line}"
   fi
   [[ "$output" == *'post-Fast scope-screen must precede the Step 1 quality review'* ]] ||
     fail "unexpected post-Fast scope-order failure: $output"
-  recommendation='recommends exactly one disposition for each in-scope inventory item'
-  recommendation_line='   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
+  recommendation='recommends exactly one canonical disposition for each in-scope inventory item'
+  recommendation_line='   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
+  provenance='Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.'
+  provenance_line='   - '"$provenance"
   retained_fix='The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.'
   mutation="${text/"$coordinator_application"/}"
   mutation="${mutation/"$contained_now"/"$contained_now"$'\n   - '"$coordinator_application"}"
@@ -1701,6 +1710,7 @@ $step2_line}"
     "$restart_line" \
     "$scope_line" \
     "$inventory_line" \
+    "$provenance_line" \
     "$final_acceptance_line" \
     "$routing_line" \
     "$repair_batch_line" \
@@ -1738,7 +1748,7 @@ $step2_line}"
     'every in-scope inventory item to have a disposition and evidence' \
     'reviews each in-scope inventory item' \
     'reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality' \
-    'recommends exactly one disposition for each in-scope inventory item' \
+    'recommends exactly one canonical disposition for each in-scope inventory item' \
     'Step 2 authority is limited to design-winner selection' \
     'does not apply treatment' \
     'owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item' \
@@ -1766,6 +1776,18 @@ $step2_line}"
     fi
     [[ "$output" == *'workflow routing assertion failed:'* ]] || fail "unexpected mutation failure: $output"
   done
+  for clause in 'retained' 'revised' 'non-retained' 'superseded' 'reverted' \
+    'provenance only' 'not canonical dispositions' 'no inventory state implies a disposition'; do
+    mutation="${text/"$clause"/REMOVED}"
+    if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
+      fail "post-Fast provenance mutation admitted missing rule: $clause"
+    fi
+    [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+      fail "unexpected provenance mutation failure: $clause: $output"
+  done
+  assert_active_literal_directive_fixtures \
+    assert_post_fast_no_active_contradiction "$FAST_PATH" "$text" "$provenance_line" \
+    'An inventory state implies its same-named canonical disposition.' 'post-Fast contradiction'
   for state in 'no retained hunk' non-retained superseded reverted resolved deferred; do
     mutation="${text/"$state"/REMOVED}"
     if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
@@ -2178,6 +2200,9 @@ assert_fast_lexer_fixtures() {
   fi
   if output="$(section_active_literal_directive_line $'> - item\n    '"$directive" "$directive" 2>&1)"; then
     fail 'Fast lexer leaked quoted-list continuation state into root indented code'
+  fi
+  if ! output="$(section_active_literal_directive_line $'- outer\n    - child\n        ~~~text\n        inside\n    - sibling\n        ~~~\n        '"$directive"$'\n        ~~~\n'"$directive" "$directive" 2>&1)" || [[ "$output" != 9 ]]; then
+    fail "Fast lexer did not close a nested continuation fence at a same-indent sibling transition: $output"
   fi
   for thematic in '* * *' '- - -'; do
     if output="$(section_active_literal_directive_line "$thematic"$'\n    '"$directive" "$directive" 2>&1)"; then
