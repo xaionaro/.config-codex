@@ -375,6 +375,7 @@ section_active_literal_directive_line() {
   # Quoted, container, and fenced counterexamples remain ordinary prose.
   awk -v directive="$directive" '
     function container_content(line, rest) {
+      container_kind = "root"
       # Four leading spaces are an indented code block, not a policy form.
       container_valid = (line !~ /^    /)
       if (!container_valid) {
@@ -387,8 +388,10 @@ section_active_literal_directive_line() {
       # after up to three spaces of container indentation.
       while (1) {
         if (match(rest, /^[-+*][ \t]+/)) {
+          container_kind = "list"
           rest = substr(rest, RLENGTH + 1)
-        } else if (match(rest, /^[0-9]+[.)][ \t]+/)) {
+        } else if (match(rest, /^[0-9]{1,9}[.)][ \t]+/)) {
+          container_kind = "list"
           rest = substr(rest, RLENGTH + 1)
         } else {
           break
@@ -409,6 +412,7 @@ section_active_literal_directive_line() {
         while (substr(rest, run + 1, 1) == "`") run++
         fence_candidate = "`"
         fence_suffix = substr(rest, run + 1)
+        if (fence_suffix ~ /`/) return 0
         return run
       }
       if ((wanted == "" || wanted == "~") && substr(rest, 1, 3) == "~~~") {
@@ -432,9 +436,11 @@ section_active_literal_directive_line() {
     {
       if (fence_delimiter != "") {
         fence_run = fence_width_for($0, fence_delimiter)
-        if (fence_run >= fence_width && fence_suffix ~ /^[ \t]*$/) {
+        if (fence_run >= fence_width && fence_suffix ~ /^[ \t]*$/ &&
+            (fence_container == "list" || container_kind == "root")) {
           fence_delimiter = ""
           fence_width = 0
+          fence_container = ""
         }
         next
       }
@@ -443,7 +449,9 @@ section_active_literal_directive_line() {
         quoted_line = 0
         next
       }
-      if ($0 ~ /^[ ]{0,3}>/) {
+      if ($0 ~ /^[ ]{0,3}>[ \t]*$/) {
+        quoted_line = 0
+      } else if ($0 ~ /^[ ]{0,3}>/) {
         quoted_line = 1
         next
       }
@@ -452,7 +460,7 @@ section_active_literal_directive_line() {
         # ATX heading, list container, or recognized fence starts a new block;
         # otherwise keep all content quoted.
         if ($0 !~ /^[ ]{0,3}#{1,6}([ \t]|$)/ &&
-            $0 !~ /^[ ]{0,3}[0-9]+[.)][ \t]+/ &&
+            $0 !~ /^[ ]{0,3}[0-9]{1,9}[.)][ \t]+/ &&
             $0 !~ /^[ ]{0,3}[-+*][ \t]+/ &&
             fence_width_for($0, "") < 3) next
         quoted_line = 0
@@ -461,6 +469,7 @@ section_active_literal_directive_line() {
       fence_width = fence_width_for($0, "")
       if (fence_width >= 3) {
         fence_delimiter = fence_candidate
+        fence_container = container_kind
         next
       }
 
@@ -1844,6 +1853,35 @@ assert_fast_lexer_fixtures() {
       fail "Fast lexer admitted inactive boundary fixture: $fixture"
     fi
   done
+
+  for fixture in \
+    $'```text\n- ```\n'"$directive" \
+    $'```text\n1. ```\n'"$directive" \
+    $'```text\n* ```\n'"$directive"; do
+    if output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+      fail "Fast lexer admitted root-fence pseudo-closer fixture: $fixture"
+    fi
+  done
+
+  fixture=$'123456789. '"$directive"
+  if ! output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected nine-digit ordered container fixture: $output"
+  fi
+  fixture=$'1234567890. '"$directive"
+  if output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted ten-digit ordered pseudo-container fixture'
+  fi
+
+  if ! output="$(section_active_literal_directive_line $'> quoted prose\n>\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected active directive after blank blockquote marker: $output"
+  fi
+
+  if ! output="$(section_active_literal_directive_line $'```text`invalid\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected active directive after invalid backtick info: $output"
+  fi
+  if output="$(section_active_literal_directive_line $'```text\n'"$directive"$'\n```' "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted directive inside normal-info fence'
+  fi
 
   for fixture in \
     $'-  '"$directive" \
