@@ -980,9 +980,9 @@ assert_post_fast_transition_contract() {
   require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
     'A genuine Fast completion restarts the normal path from a fresh Step 1'
   require_section_pattern "$text" 'Explorer reviews every Fast finding and Fast-originated hunk' \
-    'The Explorer reviews every Fast finding and every Fast-originated changed hunk for scope and quality'
+    'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and Fast-originated hunk' \
-    'fresh Step 2 critic.*reviews every Fast finding and every Fast-originated changed hunk.*concrete disposition'
+    'fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*concrete disposition'
   require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
     'implementer fixes or justifies every retained Fast change under that selected winner'
   require_section_pattern "$text" 'concurrent Step 4 is intermediate only' \
@@ -1014,9 +1014,9 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'Fast-originated hunks stay review context' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization'
   require_section_pattern "$text" 'Step 1 reviews every Fast finding and hunk for scope and quality' \
-    'The Explorer reviews every Fast finding and every Fast-originated changed hunk for scope and quality'
+    'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and hunk before disposition' \
-    'A fresh Step 2 critic.*reviews every Fast finding and every Fast-originated changed hunk.*concrete disposition'
+    'A fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*concrete disposition'
   require_section_pattern "$text" 'Step 2 gives each in-scope item exactly one disposition' \
     'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition'
   require_section_pattern "$text" 'Step 2 includes every disposition' \
@@ -1031,6 +1031,26 @@ assert_post_fast_scope_and_disposition_contract() {
     'no unresolved in-scope `treatment: now` finding'
   require_section_pattern "$text" 'separate-outcome observations stay outside acceptance' \
     'Separate-outcome observations remain outside acceptance'
+  [[ "$text" != *'A separate-outcome finding creates current repair, review, proof, or acceptance work.'* ]] ||
+    fail 'scope carve-out admits contradictory current work'
+  [[ "$text" != *'except when the coordinator approves current work.'* ]] ||
+    fail 'scope carve-out admits coordinator suffix weakening'
+  [[ "$text" != *'Final Step 4 may leave an unresolved in-scope now finding.'* ]] ||
+    fail 'final coverage admits contradictory unresolved-now wording'
+  [[ "$text" != *'unless the item was unchanged.'* ]] ||
+    fail 'final coverage admits unchanged-item suffix weakening'
+  [[ "$text" != *'Step 2 may assign multiple dispositions to an in-scope inventory item.'* ]] ||
+    fail 'disposition cardinality admits contradictory wording'
+  [[ "$text" != *'A policy-valid deferred-with-reason disposition may apply to a hard finding.'* ]] ||
+    fail 'deferred disposition admits contradictory hard-finding wording'
+  [[ "$text" != *'Hard findings may also use this disposition.'* ]] ||
+    fail 'deferred disposition admits hard-finding suffix weakening'
+  [[ "$text" != *'This complete inventory is an admission/write gate.'* ]] ||
+    fail 'inventory boundary admits contradictory gate wording'
+  [[ "$text" != *'except when a manifest is convenient.'* ]] ||
+    fail 'inventory boundary admits manifest suffix weakening'
+  [[ "$text" != *'or skipped.'* ]] ||
+    fail 'disposition list admits skipped suffix weakening'
 }
 
 assert_post_fast_critique_contract() {
@@ -1058,10 +1078,10 @@ assert_post_fast_inventory_contract() {
     'This complete inventory is review context, never a manifest, receipt, or admission/write gate'
   require_section_pattern "$text" 'final acceptance covers every inventory item' \
     'Final acceptance requires every in-scope inventory item to have a disposition and evidence'
-  require_section_pattern "$text" 'fresh Step 1 reviews every inventory item' \
-    'The Explorer reviews every inventory item'
+  require_section_pattern "$text" 'fresh Step 1 reviews each in-scope inventory item' \
+    'The Explorer reviews each in-scope inventory item'
   require_section_pattern "$text" 'fresh Step 1 reviews every Fast-originated hunk for scope and quality' \
-    'The Explorer reviews every Fast finding and every Fast-originated changed hunk for scope and quality'
+    'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'fresh Step 2 assigns one disposition per item' \
     'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   require_section_pattern "$text" 'coordinator routes every now finding' \
@@ -1085,8 +1105,10 @@ assert_post_fast_inventory_contract() {
     require_order "$text" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' \
       'The coordinator reconciles the report with shared state' &&
     require_order "$text" 'The coordinator reconciles the report with shared state' \
-      'The Explorer reviews every inventory item' &&
-    require_order "$text" 'The Explorer reviews every inventory item' \
+      'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome' &&
+    require_order "$text" 'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome' \
+      'The Explorer reviews each in-scope inventory item' &&
+    require_order "$text" 'The Explorer reviews each in-scope inventory item' \
       'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition' &&
     require_order "$text" 'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition' \
       'The coordinator routes every in-scope `treatment: now` finding' &&
@@ -1128,7 +1150,7 @@ assert_post_fast_completion_contract() {
 }
 
 assert_post_fast_completion() {
-  local text clause mutation output file pressure state dispositions replacement inventory_gate
+  local text clause mutation output file pressure state dispositions replacement inventory_gate contradiction base
   local defer_clause missing_defer observation report critique
   text="$(awk '
     /^## Post-Fast completion$/ { found = 1; next }
@@ -1152,8 +1174,8 @@ assert_post_fast_completion() {
     'reconciles the report with shared state' \
     'review context, never a manifest, receipt, or admission/write gate' \
     'every in-scope inventory item to have a disposition and evidence' \
-    'reviews every inventory item' \
-    'reviews every Fast finding and every Fast-originated changed hunk for scope and quality' \
+    'reviews each in-scope inventory item' \
+    'reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality' \
     'gives each in-scope inventory item exactly one disposition' \
     'retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason' \
     'policy-valid deferred-with-reason only where' \
@@ -1212,8 +1234,61 @@ assert_post_fast_completion() {
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
     fail 'post-Fast inventory gate pressure fixture was admitted'
   fi
-  [[ "$output" == *'inventory is review context and never a gate'* ]] ||
+  [[ "$output" == *'inventory boundary admits contradictory gate wording'* ]] ||
     fail "unexpected inventory gate pressure failure: $output"
+  for contradiction in \
+    'A separate-outcome finding creates current repair, review, proof, or acceptance work.' \
+    'This complete inventory is an admission/write gate.' \
+    'Final Step 4 may leave an unresolved in-scope now finding.' \
+    'Step 2 may assign multiple dispositions to an in-scope inventory item.' \
+    'A policy-valid deferred-with-reason disposition may apply to a hard finding.'; do
+    pressure="$text"$'\n\n'"$contradiction"
+    if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
+      fail "post-Fast contradictory pressure fixture was admitted: $contradiction"
+    fi
+    [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+      fail "unexpected contradictory pressure failure: $contradiction: $output"
+  done
+  base='Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome.'
+  replacement="${base%.} except when the coordinator approves current work."
+  pressure="${text/"$base"/"$replacement"}"
+  if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast scope suffix pressure fixture was admitted'
+  fi
+  [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+    fail "unexpected scope suffix pressure failure: $output"
+  base='A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding with a technical reason and revisit trigger; it never waives original criteria.'
+  replacement="${base%.} Hard findings may also use this disposition."
+  pressure="${text/"$base"/"$replacement"}"
+  if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast defer suffix pressure fixture was admitted'
+  fi
+  [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+    fail "unexpected defer suffix pressure failure: $output"
+  base='This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
+  replacement="${base%.} except when a manifest is convenient."
+  pressure="${text/"$base"/"$replacement"}"
+  if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast inventory suffix pressure fixture was admitted'
+  fi
+  [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+    fail "unexpected inventory suffix pressure failure: $output"
+  base='final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence'
+  replacement="$base unless the item was unchanged."
+  pressure="${text/"$base"/"$replacement"}"
+  if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast final-coverage suffix pressure fixture was admitted'
+  fi
+  [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+    fail "unexpected final-coverage suffix pressure failure: $output"
+  base='retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
+  replacement="$base or skipped"
+  pressure="${text/"$base"/"$replacement"}"
+  if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast disposition suffix pressure fixture was admitted'
+  fi
+  [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+    fail "unexpected disposition suffix pressure failure: $output"
   observation='The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped.'
   report='The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk.'
   pressure="${text/"$observation"/REMOVED}"
