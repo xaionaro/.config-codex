@@ -36,6 +36,7 @@ After every implementer handoff, independently verify the exact scoped diff and 
 
 Apply the [fast-path adoption boundary](fast-path.md#adoption-review-and-closure) for write-yields, additional cumulative review targets, and final-state coverage. An intermediate review does not complete the normal path; schedule the mandatory post-Fast sequence after Fast finishes and its write-capable tools stop.
 Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
+After the Step 2 recommendation, the coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item. Step 2 authority is limited to design-winner selection; it does not apply treatment.
 
 After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
 

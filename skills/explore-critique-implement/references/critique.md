@@ -7,7 +7,7 @@ Apply [fast evidence routing](fast-path.md#evidence-can-reopen-design) when asse
 Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): assess the Fast design as a candidate on its merits; implementation status and passing tests alone do not justify selecting it.
 
 Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
-For post-Fast completion, independently assess final current sources and the new Explorer options before selecting the canonical per-item disposition for each inventory item in [fast-path.md#post-fast-completion](fast-path.md#post-fast-completion).
+For post-Fast completion, independently assess final current sources and the new Explorer options before recommending exactly one disposition for each in-scope inventory item in [fast-path.md#post-fast-completion](fast-path.md#post-fast-completion). Step 2 authority is limited to design-winner selection; it does not apply treatment.
 
 Read the target state, original requirements, available lineage context, candidate options, and relevant style sources. Independently check applicable style guidance. Audit citations, claim tags, duplication, PoCs, scope, mechanism wording, and boundary counterexamples. Fetch and quote load-bearing T1/T2 sources where available; flag unavailable material and its effect on the choice.
 
@@ -15,7 +15,7 @@ Records, hashes, receipts, and packet shape are review context, not admission cr
 
 For every material option, verify `exact user source → faithful requested outcome → bounded scope`. Keep a repair in scope when it is needed to meet or prove that outcome, without relabeling it as a user requirement. REJECT a discovered concern whose remedy serves a separate outcome when presented as current scope, and report it only as an observation or follow-up suggestion. Stale lineage does not reject known in-scope work.
 
-Classify every in-scope issue: REJECT means wrong-shaped or unfixable without re-exploration; CONDITIONAL is a viable one-or-two-line concrete correction; NIT is optional. Do not rewrite options. Report scope impact, debt/defer candidates, and acceptance concerns to coordinator; coordinator owns their disposition and application.
+Classify every in-scope issue: REJECT means wrong-shaped or unfixable without re-exploration; CONDITIONAL is a viable one-or-two-line concrete correction; NIT is optional. Do not rewrite options. Report scope impact, debt/defer candidates, and acceptance concerns to coordinator; the coordinator owns final disposition application/treatment.
 
 If one option has zero remaining material REJECTs, select the highest-ranked survivor and emit its concrete text, necessary corrections, relevant style guidance, and NITs. If all options reject, return verbatim issues with `reroute: explorer-revision`. Stop after the recommendation. Unsupported load-bearing claims and missing required PoCs reject only the dependent design conclusion.
 
@@ -29,11 +29,11 @@ For governance/prompt/hook/protocol/reviewer changes, audit mechanism/predicate,
 
 Independently re-resolve applicable style guidance before recommending Step 3. Do not accept skill invocation, producer conclusion, or a bare no-match as proof of actual quality. Hand useful guidance to implementation. A material unjustified deviation is REJECT; cosmetic style is NIT; hard non-style failures remain their own consequence.
 
-Report evidence-backed scope impact, debt/defer candidates, and conflicting remedies without assigning treatment, creating records, calculating impact, or applying acceptance gates. Coordinator decides scope disposition, debt/defer handling, impact accumulation, and gate application.
+Report evidence-backed scope impact, debt/defer candidates, and conflicting remedies without assigning treatment, creating records, calculating impact, or applying acceptance gates. The coordinator decides scope disposition, debt/defer handling, impact accumulation, and gate application, then applies exactly one canonical disposition per in-scope inventory item.
 
 ## Selection loop and output
 
-Each issue attaches to one option and may carry the orthogonal `DUPLICATE-of-#N` marker. A single option gets the same adversarial treatment. If any survivor has zero remaining material REJECTs, select the highest-ranked survivor and return concrete winner text verbatim, necessary corrections, relevant guidance, and NITs. The critic emits issues and a recommendation only; it does not rewrite options, implement, or assign debt/defer treatment. If every option rejects, return verbatim REJECTs with `reroute: explorer-revision` in round one or `reroute: all-REJECT` in round two. Stop after the recommendation. Zero survivors is valid.
+Each issue attaches to one option and may carry the orthogonal `DUPLICATE-of-#N` marker. A single option gets the same adversarial treatment. If any survivor has zero remaining material REJECTs, select the highest-ranked survivor and return concrete winner text verbatim, necessary corrections, relevant guidance, and NITs. The critic emits issues and a per-item disposition recommendation only; it does not rewrite options, implement, assign debt/defer treatment, or apply treatment. If every option rejects, return verbatim REJECTs with `reroute: explorer-revision` in round one or `reroute: all-REJECT` in round two. Stop after the recommendation. Zero survivors is valid.
 
 ## Critic red flags
 
