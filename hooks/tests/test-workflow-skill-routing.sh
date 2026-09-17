@@ -453,6 +453,13 @@ section_has_active_literal_directive() {
   ' <<<"$section"
 }
 
+require_active_literal_directive() {
+  local section="$1" description="$2" directive="$3"
+
+  section_has_active_literal_directive "$section" "$directive" ||
+    fail "section is missing active literal directive: $description"
+}
+
 insert_fixture_after() {
   local input="$1" anchor="$2" fixture="$3" mutation
 
@@ -977,9 +984,10 @@ assert_fast_path_progress_wait_contract() {
 
 assert_post_fast_transition_contract() {
   local text="$1"
-  local scope_clause quality_clause
+  local scope_clause quality_clause explorer_directive
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome.'
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_directive='   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
     'A genuine Fast completion restarts the normal path from a fresh Step 1'
   require_section_pattern "$text" 'Explorer reviews every Fast finding and Fast-originated hunk' \
@@ -1000,6 +1008,7 @@ assert_post_fast_transition_contract() {
     'Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance'
   require_section_pattern "$text" 'final cumulative Step 4 follows disposition' \
     'After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews'
+  require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
 }
 
 assert_post_fast_completion_observation_contract() {
@@ -1017,7 +1026,9 @@ assert_post_fast_completion_observation_contract() {
 
 assert_post_fast_scope_and_disposition_contract() {
   local text="$1"
+  local explorer_directive
 
+  explorer_directive='   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
     'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome'
   require_section_pattern "$text" 'separate-outcome findings stay outside current work' \
@@ -1076,6 +1087,7 @@ assert_post_fast_scope_and_disposition_contract() {
     fail 'inventory boundary admits manifest suffix weakening'
   [[ "$text" != *'or skipped'* ]] ||
     fail 'disposition list admits skipped suffix weakening'
+  require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
 }
 
 assert_post_fast_critique_contract() {
@@ -1298,7 +1310,7 @@ assert_post_fast_completion_contract() {
 assert_post_fast_completion() {
   local text clause mutation output file pressure state dispositions replacement inventory_gate contradiction base
   local defer_clause defer_evidence_clause missing_defer missing_evidence observation report critique
-  local quality_clause scope_clause step2_anchor recommendation coordinator_application retained_fix now_route
+  local quality_clause scope_clause step2_anchor explorer_directive recommendation coordinator_application retained_fix now_route
   text="$(awk '
     /^## Post-Fast completion$/ { found = 1; next }
     found && /^## / { exit }
@@ -1308,7 +1320,16 @@ assert_post_fast_completion() {
     fail 'missing post-Fast completion barrier'
   assert_post_fast_completion_contract "$text"
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_directive='   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   step2_anchor='3. A fresh Step 2 critic independently assesses'
+  mutation="${text/"$explorer_directive"/}"
+  mutation="${mutation/"$step2_anchor"/> The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
+$step2_anchor}"
+  if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
+    fail 'post-Fast active Explorer directive mutation admitted quoted replacement'
+  fi
+  [[ "$output" == *'section is missing active literal directive: post-Fast Explorer restart and quality review'* ]] ||
+    fail "unexpected post-Fast active Explorer directive failure: $output"
   mutation="${text/"$quality_clause"/}"
   mutation="${mutation/"$step2_anchor"/"$step2_anchor $quality_clause"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
