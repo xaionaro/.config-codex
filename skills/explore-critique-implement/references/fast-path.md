@@ -83,7 +83,10 @@ Main ECI may advance and review iterations concurrently with Fast. A genuine Fas
    - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.
    - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.
    - A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.
+   - For an in-scope coordinator-applied `revise` or `replace` that needs implementation, route `treatment: now` only when it is contained, impact-trivial, and isolated.
+   - If any eligibility condition fails, return through one complete fresh Steps 1–2 design-repair batch before implementation.
    - Other dispositions require evidence, not implementation.
+   - Carry the resulting disposition and evidence into Step 4; never leave it unresolved.
    - Use policy-valid deferred-with-reason only where [review-policy.md#impact-proportional-routing](../../references/workflow-runtime/review-policy.md#impact-proportional-routing) permits.
    - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.
    - Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work.
@@ -96,7 +99,7 @@ Main ECI may advance and review iterations concurrently with Fast. A genuine Fas
    - Run required checks/E2E and checkpoint changed iterations normally.
 4. After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews the final cumulative scoped state even when no further edits are needed.
    - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.
-   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding.
+   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.
    - Separate-outcome observations remain outside acceptance.
    - Aggregate all required critics and E2E, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task.
    - Earlier reviews alone cannot satisfy this sequence.

@@ -372,39 +372,60 @@ section_active_literal_directive_line() {
   local section="$1" directive="$2"
 
   # This deliberately recognizes only the direct policy forms exercised below.
-  # Quoted and fenced counterexamples remain ordinary explanatory prose.
+  # Quoted, container, and fenced counterexamples remain ordinary prose.
   awk -v directive="$directive" '
-    function indented_fence_width(line, delimiter, matched, run_length) {
-      # This bounded lexer accepts only the Markdown fence indentation used by
-      # these policy documents; it deliberately does not parse arbitrary prose.
-      if (delimiter == "`" && match(line, /^[ ]{0,3}```+/)) {
-        matched = substr(line, 1, RLENGTH)
-        run_length = length(matched)
-        sub(/`+$/, "", matched)
-        fence_indent = length(matched)
-        return run_length - fence_indent
+    function container_content(line, rest) {
+      # Four leading spaces are an indented code block, not a policy form.
+      container_valid = (line !~ /^    /)
+      if (!container_valid) {
+        container_rest = ""
+        return ""
       }
-      if (delimiter == "~" && match(line, /^[ ]{0,3}~~~+/)) {
-        matched = substr(line, 1, RLENGTH)
-        run_length = length(matched)
-        sub(/~+$/, "", matched)
-        fence_indent = length(matched)
-        return run_length - fence_indent
+      rest = line
+      sub(/^ {0,3}/, "", rest)
+      # Consume unordered/ordered list containers, including nested containers
+      # after up to three spaces of container indentation.
+      while (1) {
+        if (match(rest, /^[-+*][ \t]+/)) {
+          rest = substr(rest, RLENGTH + 1)
+        } else if (match(rest, /^[0-9]+[.)][ \t]+/)) {
+          rest = substr(rest, RLENGTH + 1)
+        } else {
+          break
+        }
+        sub(/^ {0,3}/, "", rest)
       }
-      fence_indent = 0
+      container_rest = rest
+      return rest
+    }
+
+    function fence_width_for(line, wanted, rest, run) {
+      rest = container_content(line)
+      fence_candidate = ""
+      fence_suffix = ""
+      if (!container_valid) return 0
+      if ((wanted == "" || wanted == "`") && substr(rest, 1, 3) == "```") {
+        run = 3
+        while (substr(rest, run + 1, 1) == "`") run++
+        fence_candidate = "`"
+        fence_suffix = substr(rest, run + 1)
+        return run
+      }
+      if ((wanted == "" || wanted == "~") && substr(rest, 1, 3) == "~~~") {
+        run = 3
+        while (substr(rest, run + 1, 1) == "~") run++
+        fence_candidate = "~"
+        fence_suffix = substr(rest, run + 1)
+        return run
+      }
       return 0
     }
 
-    function strip_markdown_indent(line) {
-      if (match(line, /^[ ]{0,3}/)) {
-        return substr(line, RLENGTH + 1)
-      }
-      return line
-    }
-
     function is_active_directive(line, expected, normalized_line, normalized_expected) {
-      normalized_line = strip_markdown_indent(line)
-      normalized_expected = strip_markdown_indent(expected)
+      normalized_line = line
+      sub(/^ {0,3}/, "", normalized_line)
+      normalized_expected = expected
+      sub(/^ {0,3}/, "", normalized_expected)
       if (normalized_line == normalized_expected || normalized_line == "- " normalized_expected || normalized_line == "* " normalized_expected || normalized_line == "+ " normalized_expected) {
         return 1
       }
@@ -419,12 +440,11 @@ section_active_literal_directive_line() {
 
     {
       if (fence_delimiter != "") {
-        fence_run = indented_fence_width($0, fence_delimiter)
-        if (fence_run >= fence_width && substr($0, fence_indent + fence_run + 1) ~ /^[ \t]*$/) {
+        fence_run = fence_width_for($0, fence_delimiter)
+        if (fence_run >= fence_width && fence_suffix ~ /^[ \t]*$/) {
           fence_delimiter = ""
           fence_width = 0
         }
-        quoted_line = 0
         next
       }
 
@@ -436,20 +456,18 @@ section_active_literal_directive_line() {
         quoted_line = 1
         next
       }
-      if (quoted_line && strip_markdown_indent($0) == strip_markdown_indent(directive)) {
+      if (quoted_line) {
+        # A nonblank line can be a lazy continuation of the blockquote. A
+        # heading or ordered block starts a new block; otherwise keep all
+        # content quoted.
+        if ($0 !~ /^[ ]{0,3}#{1,6}([ \t]|$)/ &&
+            $0 !~ /^[ ]{0,3}[0-9]+[.)][ \t]+/) next
         quoted_line = 0
-        next
       }
-      quoted_line = 0
 
-      fence_width = indented_fence_width($0, "`")
+      fence_width = fence_width_for($0, "")
       if (fence_width >= 3) {
-        fence_delimiter = "`"
-        next
-      }
-      fence_width = indented_fence_width($0, "~")
-      if (fence_width >= 3) {
-        fence_delimiter = "~"
+        fence_delimiter = fence_candidate
         next
       }
 
@@ -523,7 +541,6 @@ assert_active_literal_directive_fixtures() {
     "  1) $directive" \
     "   1) $directive" \
     $'> historical counterexample\n\n'"$directive" \
-    $'> historical counterexample\n- '"$directive" \
     $' ```text\nhistorical counterexample\n ```\n'"$directive" \
     $'   ```text\nhistorical counterexample\n   ```\n'"$directive" \
     $' ~~~text\nhistorical counterexample\n ~~~\n'"$directive" \
@@ -1111,7 +1128,7 @@ assert_post_fast_scope_and_disposition_contract() {
   other_dispositions='Other dispositions require evidence, not implementation.'
   recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   final_evidence='The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
-  final_now='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding.'
+  final_now='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
   separate_outcome='Separate-outcome observations remain outside acceptance.'
   require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
     'Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
@@ -1431,7 +1448,7 @@ assert_post_fast_completion() {
   defer_line='   - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.'
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
   final_evidence_line='   - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
-  final_now_line='   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding.'
+  final_now_line='   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
   separate_outcome_line='   - Separate-outcome observations remain outside acceptance.'
   step2_directive="A fresh Step 2 critic independently assesses the current sources and Explorer's options."
   step2_line='3. '"$step2_directive"
@@ -1736,6 +1753,105 @@ assert_fast_path_progress_waits() {
   fi
   [[ "$output" == *'cross-path wait preserves verification and real dependencies'* ]] ||
     fail "unexpected mutation failure: $output"
+}
+
+assert_fast_treatment_now_contract_text() {
+  local text="$1" eligibility repair carry final_guard
+
+  eligibility='For an in-scope coordinator-applied `revise` or `replace` that needs implementation, route `treatment: now` only when it is contained, impact-trivial, and isolated.'
+  repair='If any eligibility condition fails, return through one complete fresh Steps 1–2 design-repair batch before implementation.'
+  carry='Carry the resulting disposition and evidence into Step 4; never leave it unresolved.'
+  final_guard='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
+
+  require_text <(printf '%s\n' "$text") "$eligibility"
+  require_text <(printf '%s\n' "$text") "$repair"
+  require_text <(printf '%s\n' "$text") "$carry"
+  require_text <(printf '%s\n' "$text") "$final_guard"
+  require_active_literal_directive "$text" 'treatment eligibility is active' "$eligibility"
+  require_active_literal_directive "$text" 'failed eligibility returns to design repair' "$repair"
+  require_active_literal_directive "$text" 'disposition and evidence reach Step 4' "$carry"
+  require_active_literal_directive "$text" 'final guard rejects unresolved findings' "$final_guard"
+  require_order "$text" "$eligibility" "$repair" ||
+    fail 'Fast treatment-now eligibility must precede failed-eligibility repair'
+  require_order "$text" "$repair" "$carry" ||
+    fail 'Fast treatment-now repair must precede Step 4 evidence carry'
+}
+
+assert_fast_treatment_now_contract() {
+  local text mutation output clause
+
+  text="$(<"$FAST_PATH")"
+  assert_fast_treatment_now_contract_text "$text"
+  for clause in \
+    'For an in-scope coordinator-applied `revise` or `replace` that needs implementation' \
+    'route `treatment: now` only when it is contained, impact-trivial, and isolated' \
+    'If any eligibility condition fails' \
+    'one complete fresh Steps 1–2 design-repair batch before implementation' \
+    'Carry the resulting disposition and evidence into Step 4' \
+    'never leave it unresolved' \
+    'or failed-eligibility `revise`/`replace` needing implementation'; do
+    mutation="${text/"$clause"/REMOVED}"
+    if output="$(assert_fast_treatment_now_contract_text "$mutation" 2>&1)"; then
+      fail "Fast treatment-now mutation admitted missing requirement: $clause"
+    fi
+    [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+      fail "unexpected Fast treatment-now mutation failure: $clause: $output"
+  done
+  local eligibility repair carry
+  eligibility='For an in-scope coordinator-applied `revise` or `replace` that needs implementation, route `treatment: now` only when it is contained, impact-trivial, and isolated.'
+  repair='If any eligibility condition fails, return through one complete fresh Steps 1–2 design-repair batch before implementation.'
+  carry='Carry the resulting disposition and evidence into Step 4; never leave it unresolved.'
+  mutation="${text/"$repair"/}"
+  mutation="${mutation/"$carry"/"$carry"$'\n   - '"$repair"}"
+  if output="$(assert_fast_treatment_now_contract_text "$mutation" 2>&1)"; then
+    fail 'Fast treatment-now order mutation was admitted'
+  fi
+  [[ "$output" == *'Fast treatment-now repair must precede Step 4 evidence carry'* ]] ||
+    fail "unexpected Fast treatment-now order failure: $output"
+  for contradiction in \
+    'If any eligibility condition fails, send it directly to the implementer.' \
+    'The final cumulative Step 4 may leave an unresolved failed-eligibility `revise`/`replace` needing implementation.'; do
+    mutation="$text"$'\n\n- '"$contradiction"
+    if output="$(assert_fast_treatment_now_no_active_contradiction "$FAST_PATH" "$mutation" "$contradiction" 2>&1)"; then
+      fail "Fast treatment-now contradiction was admitted: $contradiction"
+    fi
+  done
+}
+
+assert_fast_treatment_now_no_active_contradiction() {
+  local source="$1" input="$2" contradiction="$3"
+
+  if section_has_active_literal_directive "$input" "$contradiction"; then
+    fail "$source admits active treatment-now contradiction: $contradiction"
+  fi
+}
+
+assert_fast_lexer_fixtures() {
+  local source="$FAST_PATH" directive output fixture mutation
+
+  directive='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
+  for fixture in \
+    $'> lazy quote continuation\n'"$directive" \
+    $'- ```text\n'"$directive"$'\n```' \
+    $'  1. ~~~text\n'"$directive"$'\n  ~~~' \
+    $'> - '"$directive" \
+    $'    '"$directive"; do
+    if output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+      fail "Fast lexer admitted inactive directive fixture: $fixture"
+    fi
+  done
+
+  fixture=$'> quoted prose\n\n'
+  mutation="$fixture$directive"
+  if ! output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected active directive after blank quote boundary: $output"
+  fi
+
+  fixture=$'- ```text\ninside\n```\n\n'
+  mutation="$fixture$directive"
+  if ! output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected active directive after list-fence closure boundary: $output"
+  fi
 }
 
 assert_concurrent_task_contract() {
@@ -2840,6 +2956,8 @@ assert_ate_ordinary_role_split
 assert_fast_path_routes
 assert_fast_quality
 assert_post_fast_completion
+assert_fast_treatment_now_contract
+assert_fast_lexer_fixtures
 assert_post_fast_role_ownership
 assert_deferred_disposition_policy_contract
 assert_fast_path_progress_waits
