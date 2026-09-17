@@ -1160,11 +1160,28 @@ assert_deferred_disposition_policy_contract_text() {
     'Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work.'
 }
 
+assert_deferred_disposition_policy_active_directive_contract() {
+  local source="$1" input="$2" routing
+
+  routing="$(extract_h2_section <(printf '%s\n' "$input") '## Impact-proportional routing')" ||
+    fail "$source lacks a bounded Impact-proportional routing section for defer-policy validation"
+  if section_has_active_literal_directive "$routing" 'Hard findings may also use this disposition.'; then
+    fail "$source defer-policy contract admits an active hard-finding disposition directive"
+  fi
+}
+
 assert_deferred_disposition_policy_contract() {
-  local text mutation output clause
+  local text mutation output clause defer_anchor
 
   text="$(<"$REVIEW_POLICY")"
   assert_deferred_disposition_policy_contract_text "$text"
+  assert_deferred_disposition_policy_active_directive_contract "$REVIEW_POLICY" "$text"
+  defer_anchor="$(grep -F -- 'Only an in-scope, non-hard, impact-trivial, isolated finding may defer.' <<<"$text")"
+  assert_active_literal_directive_fixtures \
+    assert_deferred_disposition_policy_active_directive_contract "$REVIEW_POLICY" "$text" \
+    "$defer_anchor" \
+    'Hard findings may also use this disposition.' \
+    'defer-policy contract'
   for clause in \
     'Only an in-scope, non-hard, impact-trivial, isolated finding may defer.' \
     'Require evidence supporting each eligibility condition' \
