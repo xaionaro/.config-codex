@@ -981,6 +981,10 @@ assert_post_fast_transition_contract() {
     'A genuine Fast completion restarts the normal path from a fresh Step 1'
   require_section_pattern "$text" 'Explorer reviews every Fast finding and Fast-originated hunk' \
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
+  require_order "$text" \
+    'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality' \
+    '3. A fresh Step 2 critic independently assesses' ||
+    fail 'post-Fast Step 1 quality review must precede the fresh Step 2 critic'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and Fast-originated hunk' \
     'fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*concrete disposition'
   require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
@@ -1151,7 +1155,7 @@ assert_post_fast_completion_contract() {
 
 assert_post_fast_completion() {
   local text clause mutation output file pressure state dispositions replacement inventory_gate contradiction base
-  local defer_clause missing_defer observation report critique
+  local defer_clause missing_defer observation report critique quality_clause step2_anchor
   text="$(awk '
     /^## Post-Fast completion$/ { found = 1; next }
     found && /^## / { exit }
