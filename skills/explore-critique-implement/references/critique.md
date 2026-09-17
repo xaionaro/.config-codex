@@ -6,7 +6,8 @@ Apply [fast evidence routing](fast-path.md#evidence-can-reopen-design) when asse
 
 Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): assess the Fast design as a candidate on its merits; implementation status and passing tests alone do not justify selecting it.
 
-For [post-Fast completion](fast-path.md#post-fast-completion), independently assess final current sources and the new Explorer options before selecting the concrete retain, revise, or replace disposition.
+Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
+For post-Fast completion, independently assess final current sources and the new Explorer options before selecting the concrete retain, revise, or replace disposition.
 
 Read the target state, original requirements, available lineage context, candidate options, and relevant style sources. Independently check applicable style guidance. Audit citations, claim tags, duplication, PoCs, scope, mechanism wording, and boundary counterexamples. Fetch and quote load-bearing T1/T2 sources where available; flag unavailable material and its effect on the choice.
 

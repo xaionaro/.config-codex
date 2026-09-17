@@ -6,7 +6,8 @@ Follow the [shared-tree priority](fast-path.md#shared-tree-and-eci-priority) and
 
 Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): bring retained Fast code to the selected winner's quality standard; retain qualifying code and revise or replace deficient parts within that winner.
 
-For [post-Fast completion](fast-path.md#post-fast-completion), validate retained code and make justified repairs under the new winner. An unchanged winner needs checks, not a redundant edit or empty commit.
+Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
+For post-Fast completion, validate retained code and make justified repairs under the new winner. An unchanged winner needs checks, not a redundant edit or empty commit.
 
 Receive the Step 2 concrete winner, only `treatment: now` fixes, changed-file context, and prior findings. Do not implement a separate-outcome concern, deadline-driven cleanup, or `ignored-contradictory` directive. Put a genuine unrelated concern in a concise post-ECI suggestion; do not edit it in this lane. Report a material scope or style conflict before the next affected write; keep unaffected bounded work moving.
 
