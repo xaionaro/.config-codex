@@ -371,109 +371,187 @@ extract_h2_section() {
 section_active_literal_directive_line() {
   local section="$1" directive="$2"
 
-  # This deliberately recognizes only the direct policy forms exercised below.
-  # Quoted, container, and fenced counterexamples remain ordinary prose.
   awk -v directive="$directive" '
-    function container_content(line, rest) {
+    BEGIN { tick = sprintf("%c", 96) }
+
+    function container_content(line, rest, prefix, spaces) {
       container_kind = "root"
-      # Four leading spaces are an indented code block, not a policy form.
+      container_depth = 0
+      container_indent = 0
       container_valid = (line !~ /^    /)
-      if (!container_valid) {
-        container_rest = ""
-        return ""
-      }
+      if (!container_valid) return ""
       rest = line
       sub(/^ {0,3}/, "", rest)
-      # Consume unordered/ordered list containers, including nested containers
-      # after up to three spaces of container indentation.
       while (1) {
-        if (match(rest, /^[-+*][ \t]+/)) {
-          container_kind = "list"
-          rest = substr(rest, RLENGTH + 1)
-        } else if (match(rest, /^[0-9]{1,9}[.)][ \t]+/)) {
-          container_kind = "list"
-          rest = substr(rest, RLENGTH + 1)
+        if (match(rest, /^[-+*]/)) {
+          marker_len = 1
+        } else if (match(rest, /^[0-9]{1,9}[.)]/)) {
+          marker_len = RLENGTH
         } else {
           break
         }
+        prefix = substr(rest, marker_len + 1)
+        if (!match(prefix, /^[ \t]+/)) break
+        spaces = RLENGTH
+        rest = substr(prefix, spaces + 1)
+        container_kind = "list"
+        container_depth++
+        container_indent = spaces - 1
         sub(/^ {0,3}/, "", rest)
       }
-      container_rest = rest
       return rest
     }
 
-    function fence_width_for(line, wanted, rest, run) {
-      rest = container_content(line)
-      fence_candidate = ""
-      fence_suffix = ""
-      if (!container_valid) return 0
-      if ((wanted == "" || wanted == "`") && substr(rest, 1, 3) == "```") {
-        run = 3
-        while (substr(rest, run + 1, 1) == "`") run++
-        fence_candidate = "`"
-        fence_suffix = substr(rest, run + 1)
-        if (fence_suffix ~ /`/) return 0
-        return run
+    function parse_line(line, rest, before) {
+      line_quote_depth = 0
+      rest = line
+      while (1) {
+        before = rest
+        if (match(rest, /^ {0,3}>[ \t]?/)) {
+          rest = substr(rest, RLENGTH + 1)
+          line_quote_depth++
+        } else {
+          break
+        }
       }
-      if ((wanted == "" || wanted == "~") && substr(rest, 1, 3) == "~~~") {
-        run = 3
-        while (substr(rest, run + 1, 1) == "~") run++
-        fence_candidate = "~"
-        fence_suffix = substr(rest, run + 1)
-        return run
-      }
-      return 0
+      line_quote_content = rest
+      line_content = container_content(rest)
+      line_valid = container_valid
+      line_kind = container_kind
+      line_depth = container_depth
+      line_indent = container_indent
+      line_blank = (rest ~ /^[ \t]*$/)
     }
 
-    function is_active_directive(line, expected, line_content, expected_content, line_valid, expected_valid) {
-      line_content = container_content(line)
-      line_valid = container_valid
-      expected_content = container_content(expected)
-      expected_valid = container_valid
-      return line_valid && expected_valid && line_content != "" && expected_content != "" && line_content == expected_content
+    function fence_width_for(wanted, rest, run, candidate, suffix) {
+      fence_candidate = ""
+      fence_suffix = ""
+      if (!line_valid) return 0
+      rest = line_content
+      if ((wanted == "" || wanted == tick) && substr(rest, 1, 3) == tick tick tick) {
+        run = 3
+        while (substr(rest, run + 1, 1) == tick) run++
+        candidate = tick
+        suffix = substr(rest, run + 1)
+        if (suffix ~ tick) return 0
+      } else if ((wanted == "" || wanted == "~") && substr(rest, 1, 3) == "~~~") {
+        run = 3
+        while (substr(rest, run + 1, 1) == "~") run++
+        candidate = "~"
+        suffix = substr(rest, run + 1)
+      } else {
+        return 0
+      }
+      fence_candidate = candidate
+      fence_suffix = suffix
+      return run
+    }
+
+    function is_thematic() {
+      return line_valid && line_quote_depth == 0 &&
+        (line_content ~ /^([*][ \t]*){3}$/ ||
+         line_content ~ /^([_][ \t]*){3}$/ ||
+         line_content ~ /^([-][ \t]*){3}$/)
+    }
+
+    function is_lazy_boundary(width) {
+      width = fence_width_for("")
+      return line_blank || line_content ~ /^#{1,6}([ \t]|$)/ ||
+        (line_kind == "list" && line_content != "") || width >= 3 || is_thematic()
+    }
+
+    function directive_is_active(line, expected, actual_content, actual_valid, actual_quote, expected_content, expected_valid, expected_quote) {
+      parse_line(line)
+      actual_content = line_content
+      actual_valid = line_valid
+      actual_quote = line_quote_depth
+      parse_line(expected)
+      expected_content = line_content
+      expected_valid = line_valid
+      expected_quote = line_quote_depth
+      return actual_valid && expected_valid && actual_quote == 0 && expected_quote == 0 &&
+        actual_content != "" && expected_content != "" && actual_content == expected_content
+    }
+
+    function clear_fence() {
+      fence_delimiter = ""
+      fence_width = 0
+      fence_quote_depth = 0
+      fence_container = ""
+      fence_depth = 0
+      fence_indent = 0
+    }
+
+    function fence_close_is_compatible(width) {
+      if (width < fence_width || fence_suffix !~ /^[ \t]*$/) return 0
+      if (line_quote_depth != fence_quote_depth) return 0
+      if (fence_container == "root")
+        return line_kind == "root" && line_depth == 0 && line_indent <= fence_indent
+      if (line_kind == "root")
+        return line_quote_depth == 0 && line_depth == 0 && line_indent <= fence_indent
+      return line_kind == "list" && line_depth == fence_depth && line_indent <= fence_indent
     }
 
     {
+      parse_line($0)
+
       if (fence_delimiter != "") {
-        fence_run = fence_width_for($0, fence_delimiter)
-        if (fence_run >= fence_width && fence_suffix ~ /^[ \t]*$/ &&
-            (fence_container == "list" || container_kind == "root")) {
-          fence_delimiter = ""
-          fence_width = 0
-          fence_container = ""
+        width = fence_width_for(fence_delimiter)
+        if (fence_close_is_compatible(width)) clear_fence()
+        next
+      }
+
+      if (fence_quote_depth > 0) {
+        if (line_quote_depth == fence_quote_depth) {
+          width = fence_width_for(fence_delimiter)
+          if (fence_close_is_compatible(width)) clear_fence()
         }
         next
       }
 
-      if ($0 == "") {
-        quoted_line = 0
-        next
-      }
-      if ($0 ~ /^[ ]{0,3}>[ \t]*$/) {
-        quoted_line = 0
-      } else if ($0 ~ /^[ ]{0,3}>/) {
-        quoted_line = 1
-        next
-      }
-      if (quoted_line) {
-        # A nonblank line can be a lazy continuation of the blockquote. An
-        # ATX heading, list container, or recognized fence starts a new block;
-        # otherwise keep all content quoted.
-        if ($0 !~ /^[ ]{0,3}#{1,6}([ \t]|$)/ &&
-            $0 !~ /^[ ]{0,3}[0-9]{1,9}[.)][ \t]+/ &&
-            $0 !~ /^[ ]{0,3}[-+*][ \t]+/ &&
-            fence_width_for($0, "") < 3) next
-        quoted_line = 0
+      if (lazy_quote_depth > 0) {
+        if (line_quote_depth > 0) {
+          if (line_blank) {
+            lazy_quote_depth = 0
+            next
+          }
+          width = fence_width_for("")
+          if (width >= 3) {
+            fence_delimiter = fence_candidate
+            fence_width = width
+            fence_quote_depth = line_quote_depth
+            fence_container = line_kind
+            fence_depth = line_depth
+            fence_indent = line_indent
+          }
+          next
+        }
+        if (!is_lazy_boundary()) next
+        lazy_quote_depth = 0
       }
 
-      fence_width = fence_width_for($0, "")
-      if (fence_width >= 3) {
+      if (line_blank) {
+        lazy_quote_depth = 0
+        next
+      }
+
+      width = fence_width_for("")
+      if (width >= 3) {
         fence_delimiter = fence_candidate
-        fence_container = container_kind
+        fence_width = width
+        fence_quote_depth = line_quote_depth
+        fence_container = line_kind
+        fence_depth = line_depth
+        fence_indent = line_indent
         next
       }
 
-      if (is_active_directive($0, directive)) {
+      if (line_quote_depth > 0) {
+        lazy_quote_depth = line_quote_depth
+        next
+      }
+
+      if (directive_is_active($0, directive)) {
         found = 1
         print NR
         exit
@@ -1916,6 +1994,77 @@ assert_fast_lexer_fixtures() {
   mutation="$fixture$directive"
   if ! output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
     fail "Fast lexer rejected active directive after list-fence closure boundary: $output"
+  fi
+
+  # Step 3 state-machine probes: quote depth and quoted-fence ownership.
+  if ! output="$(section_active_literal_directive_line $'> \x60\x60\x60text\n> inside\n> \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected directive after quoted-fence close: $output"
+  fi
+  if output="$(section_active_literal_directive_line $'> \x60\x60\x60text\n> inside\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted unquoted directive after unclosed quoted fence'
+  fi
+  if output="$(section_active_literal_directive_line $'> \x60\x60\x60text\n> inside\n\x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted unquoted pseudo-close for quoted fence'
+  fi
+  if output="$(section_active_literal_directive_line $'> > \x60\x60\x60text\n> > inside\n> \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted shallower pseudo-close for nested quoted fence'
+  fi
+  if ! output="$(section_active_literal_directive_line $'> > \x60\x60\x60text\n> > inside\n> > \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected directive after nested quoted-fence close: $output"
+  fi
+
+  # Whitespace-only lines terminate lazy quote continuation, but remain fence content.
+  if ! output="$(section_active_literal_directive_line $'> quoted prose\n   \n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected directive after whitespace-only quote boundary: $output"
+  fi
+  if ! output="$(section_active_literal_directive_line $'\x60\x60\x60text\n \t\n\x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected directive after whitespace-only fence content: $output"
+  fi
+
+  # Thematic breaks are bounded lazy-quote boundaries; prose mentioning one is not.
+  for thematic in '***' '___' '---'; do
+    if ! output="$(section_active_literal_directive_line $'> quoted prose\n'"$thematic"$'\n'"$directive" "$directive" 2>&1)"; then
+      fail "Fast lexer rejected directive after thematic-break boundary: $thematic: $output"
+    fi
+  done
+  if output="$(section_active_literal_directive_line $'> quoted prose\n** **\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted unbounded thematic-break pseudo-boundary'
+  fi
+
+  # A list-relative four-space fence is active; standalone four-space code is not.
+  if output="$(section_active_literal_directive_line $'-    \x60\x60\x60text\n-    inside\n- -    \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted directive after unclosed list-relative fence'
+  fi
+  if ! output="$(section_active_literal_directive_line $'-    \x60\x60\x60text\n-    inside\n-    \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected directive after list-relative four-space fence: $output"
+  fi
+  if output="$(section_active_literal_directive_line $'    code\n    '"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted standalone indented-code directive'
+  fi
+  if ! output="$(section_active_literal_directive_line $'    code\n\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected directive after indented-code boundary: $output"
+  fi
+
+  # List fences close at their own depth or a root-dedent, never at a nested marker.
+  if output="$(section_active_literal_directive_line $'- \x60\x60\x60text\n- inside\n- - \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted nested list pseudo-closer for list fence'
+  fi
+  if ! output="$(section_active_literal_directive_line $'- \x60\x60\x60text\n- inside\n\x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail "Fast lexer rejected root-dedent list-fence close: $output"
+  fi
+
+  # Mutations must flip only the guard under test.
+  mutation=$'> \x60\x60\x60text\n> inside\n\x60\x60\x60\n'"$directive"
+  if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted mutation removing the quoted-fence close marker'
+  fi
+  mutation=$'> quoted prose\n** **\n'"$directive"
+  if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted mutation widening the thematic-break boundary'
+  fi
+  mutation=$'- \x60\x60\x60text\n- inside\n- - \x60\x60\x60\n'"$directive"
+  if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted mutation using a nested list pseudo-closer'
   fi
 }
 
