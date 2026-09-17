@@ -973,8 +973,25 @@ assert_fast_path_progress_wait_contract() {
     'coordinator\.md#step-4--review-coordination.*#adoption-review-and-closure'
 }
 
+assert_post_fast_transition_contract() {
+  local text="$1"
+  require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
+    'A genuine Fast completion restarts the normal path from a fresh Step 1'
+  require_section_pattern "$text" 'Explorer reviews every Fast finding and retained Fast change' \
+    'The Explorer reviews every Fast finding and every retained Fast change'
+  require_section_pattern "$text" 'Step 2 reviews every Fast finding and retained Fast change' \
+    'fresh Step 2 critic.*reviews every Fast finding and every retained Fast change'
+  require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
+    'implementer fixes or justifies every retained Fast change under that selected winner'
+  require_section_pattern "$text" 'concurrent Step 4 is intermediate only' \
+    'Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance'
+  require_section_pattern "$text" 'final cumulative Step 4 follows disposition' \
+    'After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews'
+}
+
 assert_post_fast_completion_contract() {
   local text="$1"
+  assert_post_fast_transition_contract "$text"
   require_section_pattern "$text" 'Fast must actually finish before final exploration' \
     'Fast owner has finished its assigned work and its task-owned write-capable tools have stopped'
   require_section_pattern "$text" 'yield, labels, or cancellation cannot stand in for completion' \
@@ -998,7 +1015,7 @@ assert_post_fast_completion_contract() {
 }
 
 assert_post_fast_completion() {
-  local text clause mutation output file
+  local text clause mutation output file pressure
   text="$(awk '
     /^## Post-Fast completion$/ { found = 1; next }
     found && /^## / { exit }
@@ -1018,6 +1035,14 @@ assert_post_fast_completion() {
     fi
     [[ "$output" == *'workflow routing assertion failed:'* ]] || fail "unexpected mutation failure: $output"
   done
+  pressure="${text//Step 1/removed Step 1}"
+  require_section_pattern "$pressure" 'pressure fixture retains a Step 4 candidate substitute' \
+    'Step 4 independently reviews the final cumulative scoped state'
+  if output="$(assert_post_fast_transition_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast transition pressure fixture admitted a Step 4 substitute for Step 1'
+  fi
+  [[ "$output" == *'genuine Fast completion restarts from a fresh Step 1'* ]] ||
+    fail "unexpected post-Fast transition pressure failure: $output"
   for file in "$ECI" "$COORDINATOR" "$COORDINATOR_RUNTIME" "$ECI_CRITIQUE" \
     "$ROOT/skills/explore-critique-implement/references/explore.md" "$IMPLEMENT" "$REVIEW"; do
     require_text "$file" 'fast-path.md#post-fast-completion'
