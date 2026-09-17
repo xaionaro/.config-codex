@@ -2248,6 +2248,14 @@ assert_primary_scope_fidelity_contract_mutations() {
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'stale lineage blocks known work' "$mutation"
 }
 
+assert_review_policy_least_restriction_contract() {
+  local source="$1" input="$2"
+
+  if section_has_active_literal_directive "$input" 'Receipt required before ordinary work.'; then
+    fail "$source contradicts least restriction contract: receipt becomes an ordinary-work gate"
+  fi
+}
+
 assert_implement_write_boundary_contract() {
   local source="$1" input="$2" boundary
 
@@ -2546,6 +2554,16 @@ assert_pause_resume_closure_contract() {
 }
 
 assert_least_restriction_contract() {
+  local review_policy
+
+  review_policy="$(<"$REVIEW_POLICY")"
+  assert_review_policy_least_restriction_contract "$REVIEW_POLICY" "$review_policy"
+  assert_active_literal_directive_fixtures \
+    assert_review_policy_least_restriction_contract "$REVIEW_POLICY" "$review_policy" \
+    'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work.' \
+    'Receipt required before ordinary work.' \
+    'least restriction contract'
+
   require_text "$STYLE_ADMISSION" 'Style sources guide the change; a brief or tool output is review context, not a write permit.'
   require_text "$IMPLEMENT" 'A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write.'
   require_text "$ECI_CRITIQUE" 'Records, hashes, receipts, and packet shape are review context, not admission criteria.'
