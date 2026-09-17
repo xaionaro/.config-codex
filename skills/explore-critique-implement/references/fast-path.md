@@ -62,7 +62,11 @@ Preserve useful verified discoveries, still-valid tests, and qualifying code in 
 
 ## Post-Fast completion
 
-Main ECI may advance and review iterations concurrently with Fast. A genuine Fast completion restarts the normal path from a fresh Step 1. Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance. The normal path remains incomplete until this post-Fast sequence passes for the task:
+Main ECI may advance and review iterations concurrently with Fast.
+
+A genuine Fast completion restarts the normal path from a fresh Step 1.
+
+Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance. The normal path remains incomplete until this post-Fast sequence passes for the task:
 
 1. The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped. A write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while main ECI performs the following steps; Fast need not wait for main acceptance to finish.
    - The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk.

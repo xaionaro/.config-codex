@@ -374,49 +374,110 @@ section_active_literal_directive_line() {
   awk -v directive="$directive" '
     BEGIN { tick = sprintf("%c", 96) }
 
-    function container_content(line, rest, prefix, spaces) {
+    function path_component(quote_depth, marker_indent, marker, item_id) {
+      return quote_depth ":" marker_indent ":" marker ":" item_id
+    }
+
+    function path_prefix_for_indent(base, marker_indent, out, count, i, parts) {
+      out = ""
+      count = split(base, path_parts, "/")
+      for (i = 2; i <= count; i++) {
+        split(path_parts[i], parts, ":")
+        if ((parts[2] + 0) < marker_indent)
+          out = out "/" path_parts[i]
+        else
+          break
+      }
+      return out
+    }
+
+    function clear_list_path() {
+      list_path_key = ""
+      list_path_depth = 0
+      list_path_quote_depth = 0
+    }
+
+    function commit_line_path() {
+      if (line_is_thematic) {
+        clear_list_path()
+      } else if (line_has_explicit_list) {
+        list_path_key = line_path_key
+        list_path_depth = line_path_depth
+        list_path_quote_depth = line_quote_depth
+      } else if (!(line_inherited_continuation && line_valid &&
+                   line_quote_depth == list_path_quote_depth)) {
+        clear_list_path()
+      }
+    }
+
+    function container_content(line, rest, prefix, spaces, leading, continuation, path_base, marker_offset, marker_indent, marker, marker_len, candidate_path, candidate_depth) {
       container_kind = "root"
       container_depth = 0
       container_indent = 0
       container_valid = 1
+      line_has_explicit_list = 0
+      line_inherited_continuation = 0
+      line_path_key = ""
+      line_path_depth = 0
+      line_path_quote_depth = line_quote_depth
+      match(line, /^ */)
+      leading = RLENGTH
       rest = line
-      # Four-or-more spaces can continue the preceding list item.  Keep the
-      # absolute indentation so fence closure can compare relative columns.
-      if (list_path_depth > 0 && match(rest, /^ {4,}/)) {
-        continuation_indent = RLENGTH
+      path_base = ""
+      candidate_path = ""
+      candidate_depth = 0
+      marker_offset = leading
+
+      # Four-or-more spaces continue the exact preceding list item only when
+      # they are at the same quote depth.  Otherwise they are root indented
+      # code and must never become an active directive.
+      if (list_path_key != "" && list_path_quote_depth == line_quote_depth && leading >= 4) {
+        continuation = 1
+        line_inherited_continuation = 1
+        path_base = list_path_key
+        candidate_path = path_base
+        candidate_depth = list_path_depth
         container_kind = "list"
         container_depth = list_path_depth
-        container_indent = continuation_indent
-        rest = substr(rest, continuation_indent + 1)
-        sub(/^ {0,3}/, "", rest)
-      } else if (line ~ /^    /) {
+        container_indent = leading
+        rest = substr(line, leading + 1)
+      } else if (leading >= 4) {
         container_valid = 0
         return ""
       } else {
         sub(/^ {0,3}/, "", rest)
       }
+
       while (1) {
         if (match(rest, /^[-+*]/)) {
           marker_len = 1
+          marker = substr(rest, 1, marker_len)
         } else if (match(rest, /^[0-9]{1,9}[.)]/)) {
           marker_len = RLENGTH
+          marker = substr(rest, 1, marker_len)
         } else {
           break
         }
         prefix = substr(rest, marker_len + 1)
         if (!match(prefix, /^[ \t]+/)) break
         spaces = RLENGTH
-        rest = substr(prefix, spaces + 1)
+        marker_indent = marker_offset
+        candidate_path = path_prefix_for_indent(candidate_path, marker_indent) \
+          "/" path_component(line_quote_depth, marker_indent, marker, ++list_item_serial)
+        candidate_depth++
+        line_has_explicit_list = 1
         container_kind = "list"
-        container_depth++
+        container_depth = candidate_depth
         container_indent = spaces - 1
-        if (fence_delimiter == "") list_path_depth = container_depth
-        sub(/^ {0,3}/, "", rest)
+        marker_offset += marker_len + spaces
+        rest = substr(prefix, spaces + 1)
       }
+      line_path_key = candidate_path
+      line_path_depth = candidate_depth
       return rest
     }
 
-    function parse_line(line, rest, before) {
+    function parse_line(line, rest, before, commit_path) {
       line_quote_depth = 0
       match(line, /^[ ]*/)
       line_leading_spaces = RLENGTH
@@ -439,9 +500,14 @@ section_active_literal_directive_line() {
       line_depth = container_depth
       line_indent = container_indent
       line_blank = (rest ~ /^[ \t]*$/)
-      # A list path only governs immediately indented continuation lines.
-      if (fence_delimiter == "" && line_kind == "root" && line_leading_spaces < 4 &&
-          line_content !~ /^([-+*]|[0-9]{1,9}[.)])[ \t]+/) list_path_depth = 0
+      line_is_thematic = line_valid && line_quote_depth == 0 &&
+        (line_thematic_content ~ /^([*][ \t]*){3,}$/ ||
+         line_thematic_content ~ /^([_][ \t]*){3,}$/ ||
+         line_thematic_content ~ /^([-][ \t]*){3,}$/)
+      # Commit list state only for ordinary (non-fence) lines.  Active-fence
+      # parsing still computes a candidate path so sibling transitions can be
+      # distinguished from nested pseudo-closers.
+      if (fence_delimiter == "") commit_line_path()
     }
 
     function fence_width_for(wanted, rest, run, candidate, suffix) {
@@ -487,17 +553,23 @@ section_active_literal_directive_line() {
         (line_kind == "list" && line_content != "") || width >= 3 || is_thematic()
     }
 
-    function directive_is_active(line, expected, actual_content, actual_valid, actual_quote, expected_content, expected_valid, expected_quote, saved_list_path_depth) {
+    function directive_is_active(line, expected, actual_content, actual_valid, actual_quote, expected_content, expected_valid, expected_quote, saved_list_path_key, saved_list_path_depth, saved_list_path_quote_depth, saved_list_item_serial) {
       parse_line(line)
       actual_content = line_content
       actual_valid = line_valid
       actual_quote = line_quote_depth
+      saved_list_path_key = list_path_key
       saved_list_path_depth = list_path_depth
+      saved_list_path_quote_depth = list_path_quote_depth
+      saved_list_item_serial = list_item_serial
       parse_line(expected)
       expected_content = line_content
       expected_valid = line_valid
       expected_quote = line_quote_depth
+      list_path_key = saved_list_path_key
       list_path_depth = saved_list_path_depth
+      list_path_quote_depth = saved_list_path_quote_depth
+      list_item_serial = saved_list_item_serial
       return actual_valid && expected_valid && actual_quote == 0 && expected_quote == 0 &&
         actual_content != "" && expected_content != "" && actual_content == expected_content
     }
@@ -509,6 +581,8 @@ section_active_literal_directive_line() {
       fence_container = ""
       fence_depth = 0
       fence_indent = 0
+      fence_path_key = ""
+      fence_continuation = 0
       lazy_quote_depth = 0
     }
 
@@ -519,6 +593,9 @@ section_active_literal_directive_line() {
         return line_kind == "root" && line_depth == 0 && line_indent <= fence_indent
       if (line_kind == "root")
         return line_quote_depth == 0 && line_depth == 0 && line_indent <= fence_indent
+      if (fence_continuation)
+        return line_kind == "list" && line_path_key == fence_path_key &&
+          line_indent <= fence_indent + 3
       return line_kind == "list" && line_depth == fence_depth && line_indent <= fence_indent + 3
     }
 
@@ -526,9 +603,19 @@ section_active_literal_directive_line() {
       parse_line($0)
 
       if (fence_delimiter != "") {
-        width = fence_width_for(fence_delimiter)
-        if (fence_close_is_compatible(width)) clear_fence()
-        next
+        # A root/ancestor list-item transition ends a continuation fence.  The
+        # transition line is then reprocessed as the next list item, allowing
+        # its own continuation fence to open without aliasing the old path.
+        if (fence_continuation && line_has_explicit_list &&
+            line_quote_depth == fence_quote_depth &&
+            line_path_key != fence_path_key && line_path_depth <= fence_depth) {
+          clear_fence()
+          commit_line_path()
+        } else {
+          width = fence_width_for(fence_delimiter)
+          if (fence_close_is_compatible(width)) clear_fence()
+          next
+        }
       }
 
       if (fence_quote_depth > 0) {
@@ -553,6 +640,8 @@ section_active_literal_directive_line() {
             fence_container = line_kind
             fence_depth = line_depth
             fence_indent = line_indent
+            fence_path_key = line_path_key
+            fence_continuation = line_inherited_continuation && !line_has_explicit_list
           }
           next
         }
@@ -573,6 +662,8 @@ section_active_literal_directive_line() {
         fence_container = line_kind
         fence_depth = line_depth
         fence_indent = line_indent
+        fence_path_key = line_path_key
+        fence_continuation = line_inherited_continuation && !line_has_explicit_list
         next
       }
 
@@ -1173,17 +1264,23 @@ assert_fast_path_progress_wait_contract() {
 
 assert_post_fast_transition_contract() {
   local text="$1"
-  local scope_clause quality_clause explorer_directive step2_directive
+  local restart_directive scope_clause quality_clause explorer_directive step2_directive
+  restart_directive='A genuine Fast completion restarts the normal path from a fresh Step 1.'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   step2_directive="A fresh Step 2 critic independently assesses the current sources and Explorer's options."
+  require_active_literal_directive "$text" 'post-Fast fresh Step 1 restart' "$restart_directive"
   require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
     'A genuine Fast completion restarts the normal path from a fresh Step 1'
   require_section_pattern "$text" 'Explorer reviews every Fast finding and Fast-originated hunk' \
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_active_literal_directive "$text" 'post-Fast scope-screen and source-outcome chain' "$scope_clause"
   require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
+  require_order "$text" \
+    "$restart_directive" \
+    "$explorer_directive" ||
+    fail 'post-Fast fresh Step 1 restart must precede the Step 1 quality review'
   require_order "$text" \
     "$scope_clause" \
     "$quality_clause" ||
@@ -1526,7 +1623,7 @@ assert_post_fast_completion_contract() {
 assert_post_fast_completion() {
   local text clause mutation output file pressure state dispositions replacement inventory_gate contradiction base
   local defer_clause defer_evidence_clause missing_defer missing_evidence observation report critique
-  local quality_clause scope_clause scope_line step2_directive step2_line step4_tail explorer_directive explorer_line recommendation recommendation_line coordinator_application retained_fix contained_now
+  local restart_line quality_clause scope_clause scope_line step2_directive step2_line step4_tail explorer_directive explorer_line recommendation recommendation_line coordinator_application retained_fix contained_now
   local inventory_line final_acceptance_line routing_line repair_batch_line contained_now_line revise_replace_line other_dispositions_line
   local defer_line final_evidence_line final_now_line separate_outcome_line
   text="$(awk '
@@ -1537,6 +1634,7 @@ assert_post_fast_completion() {
   ' "$FAST_PATH")" ||
     fail 'missing post-Fast completion barrier'
   assert_post_fast_completion_contract "$text"
+  restart_line='A genuine Fast completion restarts the normal path from a fresh Step 1.'
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
   scope_line='   - '"$scope_clause"
@@ -1600,6 +1698,7 @@ $step2_line}"
   [[ "$output" == *'post-Fast inventory and repair sequence is out of order'* ]] ||
     fail "unexpected post-Fast retained-fix order failure: $output"
   for active_line in \
+    "$restart_line" \
     "$scope_line" \
     "$inventory_line" \
     "$final_acceptance_line" \
@@ -1794,7 +1893,7 @@ $step2_line}"
   if output="$(assert_post_fast_transition_contract "$pressure" 2>&1)"; then
     fail 'post-Fast transition pressure fixture admitted a Step 4 substitute for Step 1'
   fi
-  [[ "$output" == *'genuine Fast completion restarts from a fresh Step 1'* ]] ||
+  [[ "$output" == *'post-Fast fresh Step 1 restart'* ]] ||
     fail "unexpected post-Fast transition pressure failure: $output"
   pressure="${text/Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance./Any Step 4 review that runs concurrently before this restart may be acceptance.}"
   if output="$(assert_post_fast_transition_contract "$pressure" 2>&1)"; then
@@ -2074,6 +2173,17 @@ assert_fast_lexer_fixtures() {
   if output="$(section_active_literal_directive_line $'- item\n    \x60\x60\x60text\n'"$directive"$'\n    - \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
     fail 'Fast lexer admitted nested list pseudo-closer for continuation fence'
   fi
+  if output="$(section_active_literal_directive_line $'- item\n    ~~~text\n'"$directive"$'\n- sibling\n    ~~~\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted directive inside a sibling continuation fence'
+  fi
+  if output="$(section_active_literal_directive_line $'> - item\n    '"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer leaked quoted-list continuation state into root indented code'
+  fi
+  for thematic in '* * *' '- - -'; do
+    if output="$(section_active_literal_directive_line "$thematic"$'\n    '"$directive" "$directive" 2>&1)"; then
+      fail "Fast lexer let thematic list state activate root indented code: $thematic"
+    fi
+  done
 
   # Mutations must flip only the guard under test.
   mutation=$'> \x60\x60\x60text\n> inside\n\x60\x60\x60\n'"$directive"
