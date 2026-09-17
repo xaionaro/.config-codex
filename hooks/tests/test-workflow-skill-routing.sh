@@ -368,7 +368,7 @@ extract_h2_section() {
   ' "$file"
 }
 
-section_has_active_literal_directive() {
+section_active_literal_directive_line() {
   local section="$1" directive="$2"
 
   # This deliberately recognizes only the direct policy forms exercised below.
@@ -395,15 +395,24 @@ section_has_active_literal_directive() {
       return 0
     }
 
-    function is_active_directive(line, expected) {
-      if (line == expected || line == "- " expected || line == "* " expected || line == "+ " expected) {
+    function strip_markdown_indent(line) {
+      if (match(line, /^[ ]{0,3}/)) {
+        return substr(line, RLENGTH + 1)
+      }
+      return line
+    }
+
+    function is_active_directive(line, expected, normalized_line, normalized_expected) {
+      normalized_line = strip_markdown_indent(line)
+      normalized_expected = strip_markdown_indent(expected)
+      if (normalized_line == normalized_expected || normalized_line == "- " normalized_expected || normalized_line == "* " normalized_expected || normalized_line == "+ " normalized_expected) {
         return 1
       }
-      if (match(line, /^[0-9][0-9]*[.] /)) {
-        return substr(line, RLENGTH + 1) == expected
+      if (match(normalized_line, /^[0-9][0-9]*[.] /)) {
+        return substr(normalized_line, RLENGTH + 1) == normalized_expected
       }
-      if (match(line, /^[0-9][0-9]*[)] /)) {
-        return substr(line, RLENGTH + 1) == expected
+      if (match(normalized_line, /^[0-9][0-9]*[)] /)) {
+        return substr(normalized_line, RLENGTH + 1) == normalized_expected
       }
       return 0
     }
@@ -423,11 +432,11 @@ section_has_active_literal_directive() {
         quoted_line = 0
         next
       }
-      if ($0 ~ /^>/) {
+      if ($0 ~ /^[ ]{0,3}>/) {
         quoted_line = 1
         next
       }
-      if (quoted_line && $0 == directive) {
+      if (quoted_line && strip_markdown_indent($0) == strip_markdown_indent(directive)) {
         quoted_line = 0
         next
       }
@@ -446,11 +455,27 @@ section_has_active_literal_directive() {
 
       if (is_active_directive($0, directive)) {
         found = 1
+        print NR
         exit
       }
     }
-    END { exit !found }
+    END { if (!found) exit 1 }
   ' <<<"$section"
+}
+
+section_has_active_literal_directive() {
+  local section="$1" directive="$2"
+
+  section_active_literal_directive_line "$section" "$directive" >/dev/null
+}
+
+require_active_literal_order() {
+  local section="$1" first="$2" second="$3"
+  local first_line second_line
+
+  first_line="$(section_active_literal_directive_line "$section" "$first")" || return 1
+  second_line="$(section_active_literal_directive_line "$section" "$second")" || return 1
+  [ "$first_line" -lt "$second_line" ]
 }
 
 require_active_literal_directive() {
@@ -474,11 +499,29 @@ assert_active_literal_directive_fixtures() {
 
   for fixture in \
     "$directive" \
+    " $directive" \
+    "  $directive" \
+    "   $directive" \
     "- $directive" \
+    " - $directive" \
+    "  - $directive" \
+    "   - $directive" \
     "* $directive" \
+    " * $directive" \
+    "  * $directive" \
+    "   * $directive" \
     "+ $directive" \
+    " + $directive" \
+    "  + $directive" \
+    "   + $directive" \
     "1. $directive" \
+    " 1. $directive" \
+    "  1. $directive" \
+    "   1. $directive" \
     "1) $directive" \
+    " 1) $directive" \
+    "  1) $directive" \
+    "   1) $directive" \
     $'> historical counterexample\n\n'"$directive" \
     $'> historical counterexample\n- '"$directive" \
     $' ```text\nhistorical counterexample\n ```\n'"$directive" \
@@ -489,7 +532,7 @@ assert_active_literal_directive_fixtures() {
     $'    ~~~text\n'"$directive"$'\n    ~~~'; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
       fail "$source active directive fixture did not alter its section"
-    if output="$("$checker" "$source" "$mutation" 2>&1)"; then
+    if output="$("$checker" "$source" "$mutation" "$directive" 2>&1)"; then
       fail "$source admitted active directive fixture: $fixture"
     fi
     grep -Fq -- "$failure" <<<"$output" ||
@@ -498,6 +541,8 @@ assert_active_literal_directive_fixtures() {
 
   for fixture in \
     "> $directive" \
+    " > $directive" \
+    "   > $directive" \
     "> historical prose mentioning $directive" \
     "\"$directive\"" \
     "$directive trailing explanatory text" \
@@ -517,9 +562,28 @@ assert_active_literal_directive_fixtures() {
     $'> historical counterexample\n'"$directive"; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
       fail "$source explanatory directive fixture did not alter its section"
-    if ! output="$("$checker" "$source" "$mutation" 2>&1)"; then
+    if ! output="$("$checker" "$source" "$mutation" "$directive" 2>&1)"; then
       fail "$source rejected explanatory directive fixture: $fixture: $output"
     fi
+  done
+}
+
+assert_active_directive_demotions() {
+  local checker="$1" source="$2" input="$3" anchor="$4" failure="$5"
+  local demotion mutation output
+
+  for demotion in \
+    "> $anchor" \
+    $'```text\n'"$anchor"$'\n```' \
+    $'~~~text\n'"$anchor"$'\n~~~'; do
+    mutation="${input/"$anchor"/"$demotion"}"
+    [ "$mutation" != "$input" ] ||
+      fail "$source active directive demotion did not alter its section"
+    if output="$("$checker" "$mutation" 2>&1)"; then
+      fail "$source admitted demoted active directive: $anchor"
+    fi
+    grep -Fq -- "$failure" <<<"$output" ||
+      fail "$source rejected demoted active directive for an unexpected reason: $anchor: $output"
   done
 }
 
@@ -984,14 +1048,17 @@ assert_fast_path_progress_wait_contract() {
 
 assert_post_fast_transition_contract() {
   local text="$1"
-  local scope_clause quality_clause explorer_directive
-  scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome.'
+  local scope_clause quality_clause explorer_directive step2_directive
+  scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
-  explorer_directive='   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  step2_directive="A fresh Step 2 critic independently assesses the current sources and Explorer's options."
   require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
     'A genuine Fast completion restarts the normal path from a fresh Step 1'
   require_section_pattern "$text" 'Explorer reviews every Fast finding and Fast-originated hunk' \
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
+  require_active_literal_directive "$text" 'post-Fast scope-screen and source-outcome chain' "$scope_clause"
+  require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
   require_order "$text" \
     "$scope_clause" \
     "$quality_clause" ||
@@ -1000,6 +1067,9 @@ assert_post_fast_transition_contract() {
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality' \
     '3. A fresh Step 2 critic independently assesses' ||
     fail 'post-Fast Step 1 quality review must precede the fresh Step 2 critic'
+  require_active_literal_directive "$text" 'post-Fast Step 2 critic directive' "$step2_directive"
+  require_active_literal_order "$text" "$explorer_directive" "$step2_directive" ||
+    fail 'post-Fast active Explorer directive must precede active Step 2'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and Fast-originated hunk' \
     'fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*recommends exactly one disposition'
   require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
@@ -1008,7 +1078,6 @@ assert_post_fast_transition_contract() {
     'Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance'
   require_section_pattern "$text" 'final cumulative Step 4 follows disposition' \
     'After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews'
-  require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
 }
 
 assert_post_fast_completion_observation_contract() {
@@ -1026,15 +1095,43 @@ assert_post_fast_completion_observation_contract() {
 
 assert_post_fast_scope_and_disposition_contract() {
   local text="$1"
-  local explorer_directive
+  local scope_clause explorer_directive inventory_directive final_acceptance_directive
+  local defer_directive routing_directive repair_batch contained_now revise_replace other_dispositions
+  local recommendation_directive final_evidence final_now separate_outcome
 
-  explorer_directive='   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
+  explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  inventory_directive='This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
+  final_acceptance_directive='Final acceptance requires every in-scope inventory item to have a disposition and evidence.'
+  defer_directive='A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.'
+  routing_directive='Apply impact-proportional routing before implementation.'
+  repair_batch='Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.'
+  contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
+  revise_replace='A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.'
+  other_dispositions='Other dispositions require evidence, not implementation.'
+  recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
+  final_evidence='The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
+  final_now='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding.'
+  separate_outcome='Separate-outcome observations remain outside acceptance.'
   require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
-    'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome'
+    'Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
   require_section_pattern "$text" 'separate-outcome findings stay outside current work' \
     'A separate-outcome finding stays only a post-ECI observation/follow-up and creates no current repair, review, proof, or acceptance work'
   require_section_pattern "$text" 'Fast-originated hunks stay review context' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization'
+  require_active_literal_directive "$text" 'post-Fast scope-screen and source-outcome chain' "$scope_clause"
+  require_active_literal_directive "$text" 'post-Fast inventory remains review context' "$inventory_directive"
+  require_active_literal_directive "$text" 'post-Fast final acceptance covers every inventory item' "$final_acceptance_directive"
+  require_active_literal_directive "$text" 'post-Fast impact routing precedes implementation' "$routing_directive"
+  require_active_literal_directive "$text" 'post-Fast substantive findings return through Steps 1–2' "$repair_batch"
+  require_active_literal_directive "$text" 'post-Fast contained findings route once' "$contained_now"
+  require_active_literal_directive "$text" 'post-Fast revise/replace mapping is explicit' "$revise_replace"
+  require_active_literal_directive "$text" 'post-Fast non-now dispositions require evidence' "$other_dispositions"
+  require_active_literal_directive "$text" 'post-Fast recommendation covers every disposition' "$recommendation_directive"
+  require_active_literal_directive "$text" 'post-Fast defer policy is active' "$defer_directive"
+  require_active_literal_directive "$text" 'post-Fast final evidence is active' "$final_evidence"
+  require_active_literal_directive "$text" 'post-Fast unresolved-now rejection is active' "$final_now"
+  require_active_literal_directive "$text" 'post-Fast separate outcomes stay outside acceptance' "$separate_outcome"
   require_section_pattern "$text" 'Step 1 reviews every Fast finding and hunk for scope and quality' \
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and hunk before disposition' \
@@ -1063,31 +1160,15 @@ assert_post_fast_scope_and_disposition_contract() {
     'no unresolved in-scope `treatment: now` finding'
   require_section_pattern "$text" 'separate-outcome observations stay outside acceptance' \
     'Separate-outcome observations remain outside acceptance'
-  [[ "$text" != *'A separate-outcome finding creates current repair, review, proof, or acceptance work.'* ]] ||
-    fail 'scope carve-out admits contradictory current work'
-  [[ "$text" != *'except when the coordinator approves current work.'* ]] ||
-    fail 'scope carve-out admits coordinator suffix weakening'
-  [[ "$text" != *'Final Step 4 may leave an unresolved in-scope now finding.'* ]] ||
-    fail 'final coverage admits contradictory unresolved-now wording'
-  [[ "$text" != *'unless the item was unchanged.'* ]] ||
-    fail 'final coverage admits unchanged-item suffix weakening'
-  [[ "$text" != *'Step 2 may assign multiple dispositions to an in-scope inventory item.'* ]] ||
-    fail 'disposition cardinality admits contradictory wording'
-  [[ "$text" != *'The fresh Step 2 critic applies treatment.'* ]] ||
-    fail 'Step 2 ownership admits critic treatment application'
-  [[ "$text" != *'The coordinator applies multiple canonical dispositions per in-scope inventory item.'* ]] ||
-    fail 'coordinator ownership admits multiple canonical dispositions'
-  [[ "$text" != *'A policy-valid deferred-with-reason disposition may apply to a hard finding.'* ]] ||
-    fail 'deferred disposition admits contradictory hard-finding wording'
-  [[ "$text" != *'Hard findings may also use this disposition.'* ]] ||
-    fail 'deferred disposition admits hard-finding suffix weakening'
-  [[ "$text" != *'This complete inventory is an admission/write gate.'* ]] ||
-    fail 'inventory boundary admits contradictory gate wording'
-  [[ "$text" != *'except when a manifest is convenient.'* ]] ||
-    fail 'inventory boundary admits manifest suffix weakening'
-  [[ "$text" != *'or skipped'* ]] ||
-    fail 'disposition list admits skipped suffix weakening'
   require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
+}
+
+assert_post_fast_no_active_contradiction() {
+  local source="$1" input="$2" contradiction="$3"
+
+  if section_has_active_literal_directive "$input" "$contradiction"; then
+    fail "$source admits active post-Fast contradiction: $contradiction"
+  fi
 }
 
 assert_post_fast_critique_contract() {
@@ -1137,7 +1218,11 @@ assert_post_fast_role_ownership() {
   assert_post_fast_critique_ownership_contract "$critique"
   assert_post_fast_coordinator_ownership_contract "$coordinator"
   require_text "$IMPLEMENT" \
-    "Receive the Step 2 design-winner recommendation and the coordinator's final per-item disposition/treatment; implement only \`treatment: now\` fixes"
+    "Receive the Step 2 design-winner recommendation and the coordinator's final per-item disposition/treatment."
+  require_text "$IMPLEMENT" \
+    'Implement only findings routed as `treatment: now`: fix each routed finding and implement coordinator-applied `revise`/`replace` changes.'
+  require_text "$IMPLEMENT" \
+    'Provide evidence, not implementation, for other dispositions.'
   require_text "$REVIEW" \
     'Review the final cumulative scoped state after the coordinator applies exactly one canonical disposition per in-scope inventory item.'
 
@@ -1212,12 +1297,12 @@ assert_deferred_disposition_policy_contract() {
 }
 
 assert_post_fast_inventory_contract() {
-  local text="$1" recommendation coordinator_application retained_fix now_route
+  local text="$1" recommendation coordinator_application retained_fix scope_clause
 
   recommendation='recommends exactly one disposition for each in-scope inventory item'
   coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
   retained_fix='The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
-  now_route='The coordinator routes every in-scope `treatment: now` finding'
+  scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
 
   assert_post_fast_completion_observation_contract "$text"
   assert_post_fast_scope_and_disposition_contract "$text"
@@ -1238,12 +1323,12 @@ assert_post_fast_inventory_contract() {
     'The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality'
   require_section_pattern "$text" 'fresh Step 2 assigns one disposition per item' \
     'A fresh Step 2 critic.*recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
-  require_section_pattern "$text" 'coordinator routes every now finding' \
-    'The coordinator routes every in-scope `treatment: now` finding'
+  require_section_pattern "$text" 'contained treatment-now finding routes once' \
+    'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated'
   require_section_pattern "$text" 'implementer repairs no-hunk and other routed findings' \
     'The implementer fixes every routed finding, including no-hunk findings'
   require_section_pattern "$text" 'implementer applies selected revise and replace dispositions' \
-    'The implementer implements coordinator-applied revise/replace changes'
+    'The implementer implements those routed coordinator-applied revise/replace changes'
   require_section_pattern "$text" 'implementer validates retained and revised changes' \
     'validates retained/revised changes'
   require_section_pattern "$text" 'implementer evidences no-hunk resolutions' \
@@ -1259,22 +1344,32 @@ assert_post_fast_inventory_contract() {
     require_order "$text" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' \
       'The coordinator reconciles the report with shared state' &&
     require_order "$text" 'The coordinator reconciles the report with shared state' \
-      'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome' &&
-    require_order "$text" 'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome' \
+      "$scope_clause" &&
+    require_order "$text" "$scope_clause" \
       'The Explorer reviews each in-scope inventory item' &&
     require_order "$text" 'The Explorer reviews each in-scope inventory item' \
       "$recommendation" &&
     require_order "$text" "$recommendation" \
       "$coordinator_application" &&
     require_order "$text" "$coordinator_application" \
+      'Apply impact-proportional routing before implementation.' &&
+    require_order "$text" 'Apply impact-proportional routing before implementation.' \
+      'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.' &&
+    require_order "$text" 'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.' \
+      'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.' &&
+    require_order "$text" 'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.' \
+      'A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.' &&
+    require_order "$text" 'A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.' \
+      'Other dispositions require evidence, not implementation.' &&
+    require_order "$text" "$coordinator_application" \
+      "$retained_fix" &&
+    require_order "$text" 'Other dispositions require evidence, not implementation.' \
       "$retained_fix" &&
     require_order "$text" "$retained_fix" \
-      "$now_route" &&
-    require_order "$text" "$now_route" \
       'The implementer fixes every routed finding, including no-hunk findings' &&
     require_order "$text" 'The implementer fixes every routed finding, including no-hunk findings' \
-      'The implementer implements coordinator-applied revise/replace changes' &&
-    require_order "$text" 'The implementer implements coordinator-applied revise/replace changes' \
+      'The implementer implements those routed coordinator-applied revise/replace changes' &&
+    require_order "$text" 'The implementer implements those routed coordinator-applied revise/replace changes' \
       'supplies evidence for no-hunk resolutions' &&
     require_order "$text" 'supplies evidence for no-hunk resolutions' \
       'the final cumulative Step 4 independently reviews' ||
@@ -1310,7 +1405,9 @@ assert_post_fast_completion_contract() {
 assert_post_fast_completion() {
   local text clause mutation output file pressure state dispositions replacement inventory_gate contradiction base
   local defer_clause defer_evidence_clause missing_defer missing_evidence observation report critique
-  local quality_clause scope_clause step2_anchor explorer_directive recommendation coordinator_application retained_fix now_route
+  local quality_clause scope_clause scope_line step2_directive step2_line step4_tail explorer_directive explorer_line recommendation recommendation_line coordinator_application retained_fix contained_now
+  local inventory_line final_acceptance_line routing_line repair_batch_line contained_now_line revise_replace_line other_dispositions_line
+  local defer_line final_evidence_line final_now_line separate_outcome_line
   text="$(awk '
     /^## Post-Fast completion$/ { found = 1; next }
     found && /^## / { exit }
@@ -1320,55 +1417,97 @@ assert_post_fast_completion() {
     fail 'missing post-Fast completion barrier'
   assert_post_fast_completion_contract "$text"
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
-  explorer_directive='   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
-  step2_anchor='3. A fresh Step 2 critic independently assesses'
-  mutation="${text/"$explorer_directive"/}"
-  mutation="${mutation/"$step2_anchor"/> The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
-$step2_anchor}"
+  scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
+  scope_line='   - '"$scope_clause"
+  explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_line='   - '"$explorer_directive"
+  inventory_line='   - This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
+  final_acceptance_line='   - Final acceptance requires every in-scope inventory item to have a disposition and evidence.'
+  routing_line='   - Apply impact-proportional routing before implementation.'
+  repair_batch_line='   - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.'
+  contained_now_line='   - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
+  revise_replace_line='   - A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.'
+  other_dispositions_line='   - Other dispositions require evidence, not implementation.'
+  defer_line='   - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.'
+  contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
+  final_evidence_line='   - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
+  final_now_line='   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding.'
+  separate_outcome_line='   - Separate-outcome observations remain outside acceptance.'
+  step2_directive="A fresh Step 2 critic independently assesses the current sources and Explorer's options."
+  step2_line='3. '"$step2_directive"
+  step4_tail='   - Earlier reviews alone cannot satisfy this sequence.'
+  mutation="${text/"$explorer_line"/}"
+  mutation="${mutation/"$step2_line"/> The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
+$step2_line}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
     fail 'post-Fast active Explorer directive mutation admitted quoted replacement'
   fi
   [[ "$output" == *'section is missing active literal directive: post-Fast Explorer restart and quality review'* ]] ||
     fail "unexpected post-Fast active Explorer directive failure: $output"
-  mutation="${text/"$quality_clause"/}"
-  mutation="${mutation/"$step2_anchor"/"$step2_anchor $quality_clause"}"
+  mutation="${text/"$explorer_line"/}"
+  mutation="${mutation/"$step2_line"/> $explorer_directive
+$step2_line}"
+  mutation="${mutation/"$step4_tail"/"$step4_tail"$'\n'"$explorer_line"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
-    fail 'post-Fast quality-order mutation admitted Step 1 quality after Step 2'
+    fail 'post-Fast active Explorer/Step 2 order mutation admitted reordered directives'
   fi
-  [[ "$output" == *'post-Fast Step 1 quality review must precede the fresh Step 2 critic'* ]] ||
-    fail "unexpected post-Fast quality-order failure: $output"
-  scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome.'
-  mutation="${text/"$quality_clause"/}"
-  mutation="${mutation/"$scope_clause"/"$quality_clause"$'\n   - '"$scope_clause"}"
+  [[ "$output" == *'post-Fast active Explorer directive must precede active Step 2'* ]] ||
+    fail "unexpected post-Fast active Explorer/Step 2 order failure: $output"
+  mutation="${text/"$scope_line"/}"
+  mutation="${mutation/"$explorer_line"/"$explorer_line"$'\n'"$scope_line"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
     fail 'post-Fast scope-order mutation admitted quality review before scope screening'
   fi
   [[ "$output" == *'post-Fast scope-screen must precede the Step 1 quality review'* ]] ||
     fail "unexpected post-Fast scope-order failure: $output"
   recommendation='recommends exactly one disposition for each in-scope inventory item'
+  recommendation_line='   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
   retained_fix='The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.'
-  now_route='The coordinator routes every in-scope `treatment: now` finding.'
   mutation="${text/"$coordinator_application"/}"
-  mutation="${mutation/"$now_route"/"$now_route"$'\n   - '"$coordinator_application"}"
+  mutation="${mutation/"$contained_now"/"$contained_now"$'\n   - '"$coordinator_application"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
     fail 'post-Fast ownership-order mutation admitted coordinator application after treatment routing'
   fi
   [[ "$output" == *'post-Fast inventory and repair sequence is out of order'* ]] ||
     fail "unexpected post-Fast ownership-order failure: $output"
   mutation="${text/"$retained_fix"/}"
-  mutation="${mutation/"$recommendation"/"$retained_fix"$'\n   - '"$recommendation"}"
+  mutation="${mutation/"$recommendation_line"/"$retained_fix"$'\n'"$recommendation_line"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
     fail 'post-Fast ownership-order mutation admitted retained-fix before coordinator application'
   fi
   [[ "$output" == *'post-Fast inventory and repair sequence is out of order'* ]] ||
     fail "unexpected post-Fast retained-fix order failure: $output"
+  for active_line in \
+    "$scope_line" \
+    "$inventory_line" \
+    "$final_acceptance_line" \
+    "$routing_line" \
+    "$repair_batch_line" \
+    "$contained_now_line" \
+    "$revise_replace_line" \
+    "$other_dispositions_line" \
+    "$defer_line" \
+    "$final_evidence_line" \
+    "$final_now_line" \
+    "$separate_outcome_line"; do
+    assert_active_directive_demotions \
+      assert_post_fast_completion_contract "$FAST_PATH" "$text" "$active_line" \
+      'section is missing active literal directive:'
+  done
   for clause in 'has finished its assigned work' 'write-capable tools have stopped' \
     'write-yield, idle label, timeout, or cancellation' 'after Fast completion' \
     'fresh Step 2 critic independently assesses' 'even when no further edits are needed' \
     'normal path remains incomplete' 'Resumed Fast writes invalidate this sequence' \
     'never a clean pass or substitute Fast completion' \
     'Scope-screen every Fast finding and every Fast-originated changed hunk' \
+    'exact user source → faithful requested outcome → bounded scope' \
+    'Keep only repairs necessary to meet or prove that outcome in scope' \
+    'Apply impact-proportional routing before implementation' \
+    'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch' \
+    'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
+    'A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`' \
+    'Other dispositions require evidence, not implementation' \
     'separate-outcome finding stays only a post-ECI observation/follow-up' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization' \
     'enumerates every Fast finding and every Fast-originated changed hunk' \
@@ -1393,9 +1532,9 @@ $step2_anchor}"
     'fixes or justifies every retained Fast finding and every retained Fast-originated change' \
     'including no-hunk findings' \
     'Every no-hunk retain or resolved-with-evidence outcome requires evidence' \
-    'routes every in-scope `treatment: now` finding' \
+    'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
     'fixes every routed finding, including no-hunk findings' \
-    'implements coordinator-applied revise/replace changes' \
+    'implements those routed coordinator-applied revise/replace changes' \
     'validates retained/revised changes' \
     'supplies evidence for no-hunk resolutions' \
     'supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes' \
@@ -1463,10 +1602,10 @@ $step2_anchor}"
   done
   inventory_gate='This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
   mutation="${text/"$inventory_gate"/'This complete inventory is an admission/write gate.'}"
-  if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
+  if output="$(assert_post_fast_no_active_contradiction "$FAST_PATH" "$mutation" 'This complete inventory is an admission/write gate.' 2>&1)"; then
     fail 'post-Fast inventory gate pressure fixture was admitted'
   fi
-  [[ "$output" == *'inventory boundary admits contradictory gate wording'* ]] ||
+  [[ "$output" == *'admits active post-Fast contradiction'* ]] ||
     fail "unexpected inventory gate pressure failure: $output"
   for contradiction in \
     'A separate-outcome finding creates current repair, review, proof, or acceptance work.' \
@@ -1476,14 +1615,11 @@ $step2_anchor}"
     'The fresh Step 2 critic applies treatment.' \
     'The coordinator applies multiple canonical dispositions per in-scope inventory item.' \
     'A policy-valid deferred-with-reason disposition may apply to a hard finding.'; do
-    pressure="$text"$'\n\n'"$contradiction"
-    if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
-      fail "post-Fast contradictory pressure fixture was admitted: $contradiction"
-    fi
-    [[ "$output" == *'workflow routing assertion failed:'* ]] ||
-      fail "unexpected contradictory pressure failure: $contradiction: $output"
+    assert_active_literal_directive_fixtures \
+      assert_post_fast_no_active_contradiction "$FAST_PATH" "$text" "$scope_line" \
+      "$contradiction" 'post-Fast contradiction'
   done
-  base='Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome.'
+  base="$scope_clause"
   replacement="${base%.} except when the coordinator approves current work."
   pressure="${text/"$base"/"$replacement"}"
   if output="$(assert_post_fast_completion_contract "$pressure" 2>&1)"; then
@@ -2560,7 +2696,7 @@ assert_least_restriction_contract() {
   assert_review_policy_least_restriction_contract "$REVIEW_POLICY" "$review_policy"
   assert_active_literal_directive_fixtures \
     assert_review_policy_least_restriction_contract "$REVIEW_POLICY" "$review_policy" \
-    'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work.' \
+    'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work. Unsupported evidence can invalidate the conclusion that relies on it, not unrelated bounded work.' \
     'Receipt required before ordinary work.' \
     'least restriction contract'
 

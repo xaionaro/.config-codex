@@ -71,12 +71,35 @@ Main ECI may advance and review iterations concurrently with Fast. A genuine Fas
    - This complete inventory is review context, never a manifest, receipt, or admission/write gate.
    - Final acceptance requires every in-scope inventory item to have a disposition and evidence.
 2. Restart main ECI at a fresh Step 1.
-   - Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome.
+   - Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.
    - Keep every Fast-originated hunk in inventory/review context; do not expand authorization. A separate-outcome finding stays only a post-ECI observation/follow-up and creates no current repair, review, proof, or acceptance work; it remains inventory context only.
    - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
    - The Explorer reviews each in-scope inventory item against original requirements and quality standards, alongside retained main-path changes. Reread current targets and relevant surrounding code. Prior exploration, diffs, and passing tests are context, not this new exploration.
-3. A fresh Step 2 critic independently assesses the current sources and Explorer's options, reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk, and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility). Step 2 authority is limited to design-winner selection; it does not apply treatment. The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item. Use policy-valid deferred-with-reason only where [review-policy.md#impact-proportional-routing](../../references/workflow-runtime/review-policy.md#impact-proportional-routing) permits. A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria. Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work. Preserve qualifying code; make only justified changes through the main implementer. The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings. Every no-hunk retain or resolved-with-evidence outcome requires evidence. The coordinator routes every in-scope `treatment: now` finding. The implementer fixes every routed finding, including no-hunk findings. The implementer implements coordinator-applied revise/replace changes, validates retained/revised changes, and supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes. Run required checks/E2E and checkpoint changed iterations normally.
-4. After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews the final cumulative scoped state even when no further edits are needed. The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence, with no unresolved in-scope `treatment: now` finding. Separate-outcome observations remain outside acceptance. Aggregate all required critics and E2E, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task. Earlier reviews alone cannot satisfy this sequence.
+3. A fresh Step 2 critic independently assesses the current sources and Explorer's options.
+   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).
+   - Step 2 authority is limited to design-winner selection; it does not apply treatment.
+   - The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.
+   - Apply impact-proportional routing before implementation.
+   - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.
+   - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.
+   - A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.
+   - Other dispositions require evidence, not implementation.
+   - Use policy-valid deferred-with-reason only where [review-policy.md#impact-proportional-routing](../../references/workflow-runtime/review-policy.md#impact-proportional-routing) permits.
+   - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.
+   - Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work.
+   - Preserve qualifying code; make only justified changes through the main implementer.
+   - The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.
+   - Every no-hunk retain or resolved-with-evidence outcome requires evidence.
+   - The implementer fixes every routed finding, including no-hunk findings.
+   - The implementer implements those routed coordinator-applied revise/replace changes and validates retained/revised changes.
+   - The implementer supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes.
+   - Run required checks/E2E and checkpoint changed iterations normally.
+4. After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews the final cumulative scoped state even when no further edits are needed.
+   - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.
+   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding.
+   - Separate-outcome observations remain outside acceptance.
+   - Aggregate all required critics and E2E, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task.
+   - Earlier reviews alone cannot satisfy this sequence.
 
 Resumed Fast writes invalidate this sequence; after Fast finishes again, repeat it. Later main-path or interacting task edits refresh affected review and verification; material design findings return through Steps 1–2. Independent sibling tasks keep advancing.
 
