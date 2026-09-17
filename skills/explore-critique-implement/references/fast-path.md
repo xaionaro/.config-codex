@@ -82,18 +82,15 @@ Main ECI may advance and review iterations concurrently with Fast. A genuine Fas
    - Apply impact-proportional routing before implementation.
    - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.
    - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.
-   - A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.
-   - For an in-scope coordinator-applied `revise` or `replace` that needs implementation, route `treatment: now` only when it is contained, impact-trivial, and isolated.
-   - If any eligibility condition fails, return through one complete fresh Steps 1–2 design-repair batch before implementation.
+   - A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.
    - Other dispositions require evidence, not implementation.
    - Carry the resulting disposition and evidence into Step 4; never leave it unresolved.
    - Use policy-valid deferred-with-reason only where [review-policy.md#impact-proportional-routing](../../references/workflow-runtime/review-policy.md#impact-proportional-routing) permits.
    - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.
    - Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work.
    - Preserve qualifying code; make only justified changes through the main implementer.
-   - The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.
+   - The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.
    - Every no-hunk retain or resolved-with-evidence outcome requires evidence.
-   - The implementer fixes every routed finding, including no-hunk findings.
    - The implementer implements those routed coordinator-applied revise/replace changes and validates retained/revised changes.
    - The implementer supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes.
    - Run required checks/E2E and checkpoint changed iterations normally.

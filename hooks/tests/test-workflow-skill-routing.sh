@@ -378,10 +378,23 @@ section_active_literal_directive_line() {
       container_kind = "root"
       container_depth = 0
       container_indent = 0
-      container_valid = (line !~ /^    /)
-      if (!container_valid) return ""
+      container_valid = 1
       rest = line
-      sub(/^ {0,3}/, "", rest)
+      # Four-or-more spaces can continue the preceding list item.  Keep the
+      # absolute indentation so fence closure can compare relative columns.
+      if (list_path_depth > 0 && match(rest, /^ {4,}/)) {
+        continuation_indent = RLENGTH
+        container_kind = "list"
+        container_depth = list_path_depth
+        container_indent = continuation_indent
+        rest = substr(rest, continuation_indent + 1)
+        sub(/^ {0,3}/, "", rest)
+      } else if (line ~ /^    /) {
+        container_valid = 0
+        return ""
+      } else {
+        sub(/^ {0,3}/, "", rest)
+      }
       while (1) {
         if (match(rest, /^[-+*]/)) {
           marker_len = 1
@@ -397,6 +410,7 @@ section_active_literal_directive_line() {
         container_kind = "list"
         container_depth++
         container_indent = spaces - 1
+        if (fence_delimiter == "") list_path_depth = container_depth
         sub(/^ {0,3}/, "", rest)
       }
       return rest
@@ -404,6 +418,8 @@ section_active_literal_directive_line() {
 
     function parse_line(line, rest, before) {
       line_quote_depth = 0
+      match(line, /^[ ]*/)
+      line_leading_spaces = RLENGTH
       rest = line
       while (1) {
         before = rest
@@ -415,12 +431,17 @@ section_active_literal_directive_line() {
         }
       }
       line_quote_content = rest
+      line_thematic_content = rest
+      sub(/^ {0,3}/, "", line_thematic_content)
       line_content = container_content(rest)
       line_valid = container_valid
       line_kind = container_kind
       line_depth = container_depth
       line_indent = container_indent
       line_blank = (rest ~ /^[ \t]*$/)
+      # A list path only governs immediately indented continuation lines.
+      if (fence_delimiter == "" && line_kind == "root" && line_leading_spaces < 4 &&
+          line_content !~ /^([-+*]|[0-9]{1,9}[.)])[ \t]+/) list_path_depth = 0
     }
 
     function fence_width_for(wanted, rest, run, candidate, suffix) {
@@ -449,26 +470,34 @@ section_active_literal_directive_line() {
 
     function is_thematic() {
       return line_valid && line_quote_depth == 0 &&
-        (line_content ~ /^([*][ \t]*){3}$/ ||
-         line_content ~ /^([_][ \t]*){3}$/ ||
-         line_content ~ /^([-][ \t]*){3}$/)
+        (line_thematic_content ~ /^([*][ \t]*){3,}$/ ||
+         line_thematic_content ~ /^([_][ \t]*){3,}$/ ||
+         line_thematic_content ~ /^([-][ \t]*){3,}$/)
+    }
+
+    function is_thematic_candidate() {
+      return line_valid && line_quote_depth == 0 &&
+        line_thematic_content ~ /^([*_-][ \t]*){3,}$/
     }
 
     function is_lazy_boundary(width) {
       width = fence_width_for("")
+      if (is_thematic_candidate()) return is_thematic()
       return line_blank || line_content ~ /^#{1,6}([ \t]|$)/ ||
         (line_kind == "list" && line_content != "") || width >= 3 || is_thematic()
     }
 
-    function directive_is_active(line, expected, actual_content, actual_valid, actual_quote, expected_content, expected_valid, expected_quote) {
+    function directive_is_active(line, expected, actual_content, actual_valid, actual_quote, expected_content, expected_valid, expected_quote, saved_list_path_depth) {
       parse_line(line)
       actual_content = line_content
       actual_valid = line_valid
       actual_quote = line_quote_depth
+      saved_list_path_depth = list_path_depth
       parse_line(expected)
       expected_content = line_content
       expected_valid = line_valid
       expected_quote = line_quote_depth
+      list_path_depth = saved_list_path_depth
       return actual_valid && expected_valid && actual_quote == 0 && expected_quote == 0 &&
         actual_content != "" && expected_content != "" && actual_content == expected_content
     }
@@ -480,6 +509,7 @@ section_active_literal_directive_line() {
       fence_container = ""
       fence_depth = 0
       fence_indent = 0
+      lazy_quote_depth = 0
     }
 
     function fence_close_is_compatible(width) {
@@ -489,7 +519,7 @@ section_active_literal_directive_line() {
         return line_kind == "root" && line_depth == 0 && line_indent <= fence_indent
       if (line_kind == "root")
         return line_quote_depth == 0 && line_depth == 0 && line_indent <= fence_indent
-      return line_kind == "list" && line_depth == fence_depth && line_indent <= fence_indent
+      return line_kind == "list" && line_depth == fence_depth && line_indent <= fence_indent + 3
     }
 
     {
@@ -624,9 +654,7 @@ assert_active_literal_directive_fixtures() {
     $' ```text\nhistorical counterexample\n ```\n'"$directive" \
     $'   ```text\nhistorical counterexample\n   ```\n'"$directive" \
     $' ~~~text\nhistorical counterexample\n ~~~\n'"$directive" \
-    $'   ~~~text\nhistorical counterexample\n   ~~~\n'"$directive" \
-    $'    ```text\n'"$directive"$'\n    ```' \
-    $'    ~~~text\n'"$directive"$'\n    ~~~'; do
+    $'   ~~~text\nhistorical counterexample\n   ~~~\n'"$directive"; do
     mutation="$(insert_fixture_after "$input" "$anchor" "$fixture")" ||
       fail "$source active directive fixture did not alter its section"
     if output="$("$checker" "$source" "$mutation" "$directive" 2>&1)"; then
@@ -1170,7 +1198,7 @@ assert_post_fast_transition_contract() {
   require_section_pattern "$text" 'Step 2 reviews every Fast finding and Fast-originated hunk' \
     'fresh Step 2 critic.*reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk.*recommends exactly one disposition'
   require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
-    'implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
+    'implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   require_section_pattern "$text" 'concurrent Step 4 is intermediate only' \
     'Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance'
   require_section_pattern "$text" 'final cumulative Step 4 follows disposition' \
@@ -1204,7 +1232,7 @@ assert_post_fast_scope_and_disposition_contract() {
   routing_directive='Apply impact-proportional routing before implementation.'
   repair_batch='Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.'
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
-  revise_replace='A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.'
+  revise_replace='A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   other_dispositions='Other dispositions require evidence, not implementation.'
   recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   final_evidence='The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
@@ -1248,7 +1276,7 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'defer evidence failure is local and non-gating' \
     'Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work'
   require_section_pattern "$text" 'retained Fast findings and changes are fixed or justified' \
-    'The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
+    'The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   require_section_pattern "$text" 'no-hunk retain and resolved outcomes require evidence' \
     'Every no-hunk retain or resolved-with-evidence outcome requires evidence'
   require_section_pattern "$text" 'final coverage is every in-scope item exactly once' \
@@ -1398,7 +1426,7 @@ assert_post_fast_inventory_contract() {
 
   recommendation='recommends exactly one disposition for each in-scope inventory item'
   coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
-  retained_fix='The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
+  retained_fix='The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
 
   assert_post_fast_completion_observation_contract "$text"
@@ -1422,8 +1450,6 @@ assert_post_fast_inventory_contract() {
     'A fresh Step 2 critic.*recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   require_section_pattern "$text" 'contained treatment-now finding routes once' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated'
-  require_section_pattern "$text" 'implementer repairs no-hunk and other routed findings' \
-    'The implementer fixes every routed finding, including no-hunk findings'
   require_section_pattern "$text" 'implementer applies selected revise and replace dispositions' \
     'The implementer implements those routed coordinator-applied revise/replace changes'
   require_section_pattern "$text" 'implementer validates retained and revised changes' \
@@ -1455,16 +1481,14 @@ assert_post_fast_inventory_contract() {
     require_order "$text" 'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.' \
       'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.' &&
     require_order "$text" 'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.' \
-      'A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.' &&
-    require_order "$text" 'A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.' \
+      'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.' &&
+    require_order "$text" 'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.' \
       'Other dispositions require evidence, not implementation.' &&
     require_order "$text" "$coordinator_application" \
       "$retained_fix" &&
     require_order "$text" 'Other dispositions require evidence, not implementation.' \
       "$retained_fix" &&
     require_order "$text" "$retained_fix" \
-      'The implementer fixes every routed finding, including no-hunk findings' &&
-    require_order "$text" 'The implementer fixes every routed finding, including no-hunk findings' \
       'The implementer implements those routed coordinator-applied revise/replace changes' &&
     require_order "$text" 'The implementer implements those routed coordinator-applied revise/replace changes' \
       'supplies evidence for no-hunk resolutions' &&
@@ -1523,7 +1547,7 @@ assert_post_fast_completion() {
   routing_line='   - Apply impact-proportional routing before implementation.'
   repair_batch_line='   - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.'
   contained_now_line='   - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
-  revise_replace_line='   - A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`.'
+  revise_replace_line='   - A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   other_dispositions_line='   - Other dispositions require evidence, not implementation.'
   defer_line='   - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.'
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
@@ -1560,7 +1584,7 @@ $step2_line}"
   recommendation='recommends exactly one disposition for each in-scope inventory item'
   recommendation_line='   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
-  retained_fix='The implementer fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.'
+  retained_fix='The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.'
   mutation="${text/"$coordinator_application"/}"
   mutation="${mutation/"$contained_now"/"$contained_now"$'\n   - '"$coordinator_application"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
@@ -1603,7 +1627,7 @@ $step2_line}"
     'Apply impact-proportional routing before implementation' \
     'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
-    'A coordinator-applied `revise` or `replace` disposition reaches the implementer only when routed as `treatment: now`' \
+    'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated' \
     'Other dispositions require evidence, not implementation' \
     'separate-outcome finding stays only a post-ECI observation/follow-up' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization' \
@@ -1626,11 +1650,10 @@ $step2_line}"
     'technical reason and revisit trigger; it never waives original criteria' \
     'Missing evidence invalidates only that defer conclusion' \
     'gates unrelated bounded work' \
-    'fixes or justifies every retained Fast finding and every retained Fast-originated change' \
+    'fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change' \
     'including no-hunk findings' \
     'Every no-hunk retain or resolved-with-evidence outcome requires evidence' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
-    'fixes every routed finding, including no-hunk findings' \
     'implements those routed coordinator-applied revise/replace changes' \
     'validates retained/revised changes' \
     'supplies evidence for no-hunk resolutions' \
@@ -1811,7 +1834,6 @@ $step2_line}"
     "$ROOT/skills/explore-critique-implement/references/explore.md" "$IMPLEMENT" "$REVIEW"; do
     forbid_text "$file" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
     forbid_text "$file" 'The fresh Step 2 critic gives each inventory item exactly one disposition'
-    forbid_text "$file" 'The implementer fixes every routed finding, including no-hunk findings'
     forbid_text "$file" 'final cumulative Step 4 verifies every inventory item has a disposition and final evidence'
   done
   forbid_text "$FAST_PATH" 'Independent work in the other path is not a completion prerequisite'
@@ -1836,25 +1858,20 @@ assert_fast_path_progress_waits() {
 }
 
 assert_fast_treatment_now_contract_text() {
-  local text="$1" eligibility repair carry final_guard
+  local text="$1" eligibility carry final_guard
 
-  eligibility='For an in-scope coordinator-applied `revise` or `replace` that needs implementation, route `treatment: now` only when it is contained, impact-trivial, and isolated.'
-  repair='If any eligibility condition fails, return through one complete fresh Steps 1–2 design-repair batch before implementation.'
+  eligibility='A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   carry='Carry the resulting disposition and evidence into Step 4; never leave it unresolved.'
   final_guard='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
 
   require_text <(printf '%s\n' "$text") "$eligibility"
-  require_text <(printf '%s\n' "$text") "$repair"
   require_text <(printf '%s\n' "$text") "$carry"
   require_text <(printf '%s\n' "$text") "$final_guard"
   require_active_literal_directive "$text" 'treatment eligibility is active' "$eligibility"
-  require_active_literal_directive "$text" 'failed eligibility returns to design repair' "$repair"
   require_active_literal_directive "$text" 'disposition and evidence reach Step 4' "$carry"
   require_active_literal_directive "$text" 'final guard rejects unresolved findings' "$final_guard"
-  require_order "$text" "$eligibility" "$repair" ||
-    fail 'Fast treatment-now eligibility must precede failed-eligibility repair'
-  require_order "$text" "$repair" "$carry" ||
-    fail 'Fast treatment-now repair must precede Step 4 evidence carry'
+  require_order "$text" "$eligibility" "$carry" ||
+    fail 'Fast treatment-now eligibility must precede Step 4 evidence carry'
 }
 
 assert_fast_treatment_now_contract() {
@@ -1863,9 +1880,8 @@ assert_fast_treatment_now_contract() {
   text="$(<"$FAST_PATH")"
   assert_fast_treatment_now_contract_text "$text"
   for clause in \
-    'For an in-scope coordinator-applied `revise` or `replace` that needs implementation' \
-    'route `treatment: now` only when it is contained, impact-trivial, and isolated' \
-    'If any eligibility condition fails' \
+    'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now`' \
+    'only when it is in-scope, contained, impact-trivial, and isolated' \
     'one complete fresh Steps 1–2 design-repair batch before implementation' \
     'Carry the resulting disposition and evidence into Step 4' \
     'never leave it unresolved' \
@@ -1877,17 +1893,6 @@ assert_fast_treatment_now_contract() {
     [[ "$output" == *'workflow routing assertion failed:'* ]] ||
       fail "unexpected Fast treatment-now mutation failure: $clause: $output"
   done
-  local eligibility repair carry
-  eligibility='For an in-scope coordinator-applied `revise` or `replace` that needs implementation, route `treatment: now` only when it is contained, impact-trivial, and isolated.'
-  repair='If any eligibility condition fails, return through one complete fresh Steps 1–2 design-repair batch before implementation.'
-  carry='Carry the resulting disposition and evidence into Step 4; never leave it unresolved.'
-  mutation="${text/"$repair"/}"
-  mutation="${mutation/"$carry"/"$carry"$'\n   - '"$repair"}"
-  if output="$(assert_fast_treatment_now_contract_text "$mutation" 2>&1)"; then
-    fail 'Fast treatment-now order mutation was admitted'
-  fi
-  [[ "$output" == *'Fast treatment-now repair must precede Step 4 evidence carry'* ]] ||
-    fail "unexpected Fast treatment-now order failure: $output"
   for contradiction in \
     'If any eligibility condition fails, send it directly to the implementer.' \
     'The final cumulative Step 4 may leave an unresolved failed-eligibility `revise`/`replace` needing implementation.'; do
@@ -2000,6 +2005,9 @@ assert_fast_lexer_fixtures() {
   if ! output="$(section_active_literal_directive_line $'> \x60\x60\x60text\n> inside\n> \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
     fail "Fast lexer rejected directive after quoted-fence close: $output"
   fi
+  if ! output="$(section_active_literal_directive_line $'> prose\n> \x60\x60\x60text\n> inside\n> \x60\x60\x60\n'"$directive" "$directive" 2>&1)" || [[ "$output" != 5 ]]; then
+    fail "Fast lexer did not select only the directive after a lazily introduced quoted fence: $output"
+  fi
   if output="$(section_active_literal_directive_line $'> \x60\x60\x60text\n> inside\n'"$directive" "$directive" 2>&1)"; then
     fail 'Fast lexer admitted unquoted directive after unclosed quoted fence'
   fi
@@ -2021,15 +2029,17 @@ assert_fast_lexer_fixtures() {
     fail "Fast lexer rejected directive after whitespace-only fence content: $output"
   fi
 
-  # Thematic breaks are bounded lazy-quote boundaries; prose mentioning one is not.
-  for thematic in '***' '___' '---'; do
-    if ! output="$(section_active_literal_directive_line $'> quoted prose\n'"$thematic"$'\n'"$directive" "$directive" 2>&1)"; then
+  # Thematic breaks contain at least three copies of one marker and whitespace only.
+  for thematic in '***' '* * *' '** **' $'*\t* *' '___' '_ _ _ _' '---' '- - - -'; do
+    if ! output="$(section_active_literal_directive_line $'> quoted prose\n'"$thematic"$'\n'"$directive" "$directive" 2>&1)" || [[ "$output" != 3 ]]; then
       fail "Fast lexer rejected directive after thematic-break boundary: $thematic: $output"
     fi
   done
-  if output="$(section_active_literal_directive_line $'> quoted prose\n** **\n'"$directive" "$directive" 2>&1)"; then
-    fail 'Fast lexer admitted unbounded thematic-break pseudo-boundary'
-  fi
+  for thematic in '* * -' '_ - _' '- - *'; do
+    if output="$(section_active_literal_directive_line $'> quoted prose\n'"$thematic"$'\n'"$directive" "$directive" 2>&1)"; then
+      fail "Fast lexer admitted mixed-marker thematic-break pseudo-boundary: $thematic"
+    fi
+  done
 
   # A list-relative four-space fence is active; standalone four-space code is not.
   if output="$(section_active_literal_directive_line $'-    \x60\x60\x60text\n-    inside\n- -    \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
@@ -2040,6 +2050,9 @@ assert_fast_lexer_fixtures() {
   fi
   if output="$(section_active_literal_directive_line $'    code\n    '"$directive" "$directive" 2>&1)"; then
     fail 'Fast lexer admitted standalone indented-code directive'
+  fi
+  if output="$(section_active_literal_directive_line $'    \x60\x60\x60text\n    '"$directive"$'\n    \x60\x60\x60' "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted directive inside standalone four-space fence-shaped code'
   fi
   if ! output="$(section_active_literal_directive_line $'    code\n\n'"$directive" "$directive" 2>&1)"; then
     fail "Fast lexer rejected directive after indented-code boundary: $output"
@@ -2053,14 +2066,27 @@ assert_fast_lexer_fixtures() {
     fail "Fast lexer rejected root-dedent list-fence close: $output"
   fi
 
+  # A continuation fence uses the list item's path; three relative spaces
+  # remain valid for its closer, while a nested list marker cannot close it.
+  if ! output="$(section_active_literal_directive_line $'- item\n    \x60\x60\x60text\n'"$directive"$'\n       \x60\x60\x60\n'"$directive" "$directive" 2>&1)" || [[ "$output" != 5 ]]; then
+    fail "Fast lexer did not select only the directive after a list-relative continuation fence: $output"
+  fi
+  if output="$(section_active_literal_directive_line $'- item\n    \x60\x60\x60text\n'"$directive"$'\n    - \x60\x60\x60\n'"$directive" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted nested list pseudo-closer for continuation fence'
+  fi
+
   # Mutations must flip only the guard under test.
   mutation=$'> \x60\x60\x60text\n> inside\n\x60\x60\x60\n'"$directive"
   if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
     fail 'Fast lexer admitted mutation removing the quoted-fence close marker'
   fi
-  mutation=$'> quoted prose\n** **\n'"$directive"
+  mutation=$'> quoted prose\n* * -\n'"$directive"
   if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
     fail 'Fast lexer admitted mutation widening the thematic-break boundary'
+  fi
+  mutation=$'- item\n    \x60\x60\x60text\n'"$directive"$'\n        \x60\x60\x60\n'"$directive"
+  if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
+    fail 'Fast lexer admitted mutation indenting a continuation-fence closer beyond three relative spaces'
   fi
   mutation=$'- \x60\x60\x60text\n- inside\n- - \x60\x60\x60\n'"$directive"
   if output="$(section_active_literal_directive_line "$mutation" "$directive" 2>&1)"; then
