@@ -900,8 +900,8 @@ assert_fast_path_routes() {
   require_pattern "$FAST_PATH" 'existing authorization bounds solo solving' \
     'quickest bounded solution within existing authorization'
   require_pattern "$FAST_PATH" 'shared live files' 'same checkout and live files'
-  require_pattern "$FAST_PATH" 'all inventory items enter review' \
-    'tracks every inventory item into review'
+  require_pattern "$FAST_PATH" 'each in-scope inventory item enters review' \
+    'tracks each in-scope inventory item into review'
   require_pattern "$FAST_PATH" 'retained hunks remain cumulative code targets' \
     'retained fast hunk.*cumulative code target'
   require_pattern "$FAST_PATH" 'closure observes task-owned writers' \
@@ -979,10 +979,10 @@ assert_post_fast_transition_contract() {
   local text="$1"
   require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
     'A genuine Fast completion restarts the normal path from a fresh Step 1'
-  require_section_pattern "$text" 'Explorer reviews every Fast finding and retained Fast change' \
-    'The Explorer reviews every Fast finding and every retained Fast change'
-  require_section_pattern "$text" 'Step 2 reviews every Fast finding and retained Fast change' \
-    'fresh Step 2 critic.*reviews every Fast finding and every retained Fast change'
+  require_section_pattern "$text" 'Explorer reviews every Fast finding and Fast-originated hunk' \
+    'The Explorer reviews every Fast finding and every Fast-originated changed hunk for scope and quality'
+  require_section_pattern "$text" 'Step 2 reviews every Fast finding and Fast-originated hunk' \
+    'fresh Step 2 critic.*reviews every Fast finding and every Fast-originated changed hunk.*concrete disposition'
   require_section_pattern "$text" 'implementer fixes or justifies retained Fast changes under winner' \
     'implementer fixes or justifies every retained Fast change under that selected winner'
   require_section_pattern "$text" 'concurrent Step 4 is intermediate only' \
@@ -991,8 +991,62 @@ assert_post_fast_transition_contract() {
     'After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews'
 }
 
+assert_post_fast_completion_observation_contract() {
+  local text="$1"
+
+  require_section_pattern "$text" 'completion observation identifies stopped Fast tools' \
+    'The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped'
+  require_section_pattern "$text" 'owner report enumerates all findings and hunks' \
+    'The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
+  require_order "$text" \
+    'The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped' \
+    'The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' ||
+    fail 'Fast completion observation must precede the owner report'
+}
+
+assert_post_fast_scope_and_disposition_contract() {
+  local text="$1"
+
+  require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
+    'Scope-screen every Fast finding and every Fast-originated changed hunk against the original user outcome'
+  require_section_pattern "$text" 'separate-outcome findings stay outside current work' \
+    'A separate-outcome finding stays only a post-ECI observation/follow-up and creates no current repair, review, proof, or acceptance work'
+  require_section_pattern "$text" 'Fast-originated hunks stay review context' \
+    'Keep every Fast-originated hunk in inventory/review context; do not expand authorization'
+  require_section_pattern "$text" 'Step 1 reviews every Fast finding and hunk for scope and quality' \
+    'The Explorer reviews every Fast finding and every Fast-originated changed hunk for scope and quality'
+  require_section_pattern "$text" 'Step 2 reviews every Fast finding and hunk before disposition' \
+    'A fresh Step 2 critic.*reviews every Fast finding and every Fast-originated changed hunk.*concrete disposition'
+  require_section_pattern "$text" 'Step 2 gives each in-scope item exactly one disposition' \
+    'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition'
+  require_section_pattern "$text" 'Step 2 includes every disposition' \
+    'retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
+  require_section_pattern "$text" 'defer disposition points to impact-proportional routing' \
+    'policy-valid deferred-with-reason only where.*review-policy\.md#impact-proportional-routing.*permits'
+  require_section_pattern "$text" 'defer is bounded and never waives criteria' \
+    'A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding with a technical reason and revisit trigger; it never waives original criteria'
+  require_section_pattern "$text" 'final coverage is every in-scope item exactly once' \
+    'final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence'
+  require_section_pattern "$text" 'final coverage leaves no unresolved now finding' \
+    'no unresolved in-scope `treatment: now` finding'
+  require_section_pattern "$text" 'separate-outcome observations stay outside acceptance' \
+    'Separate-outcome observations remain outside acceptance'
+}
+
+assert_post_fast_critique_contract() {
+  local text="$1"
+
+  require_section_pattern "$text" 'critic points to canonical per-item disposition' \
+    'For post-Fast completion, independently assess final current sources and the new Explorer options before selecting the canonical per-item disposition for each inventory item in.*fast-path\.md#post-fast-completion'
+  [[ "$text" != *'before selecting the concrete retain, revise, or replace disposition.'* ]] ||
+    fail 'stale three-choice disposition'
+}
+
 assert_post_fast_inventory_contract() {
   local text="$1"
+
+  assert_post_fast_completion_observation_contract "$text"
+  assert_post_fast_scope_and_disposition_contract "$text"
 
   require_section_pattern "$text" 'Fast completion reports every finding and changed hunk' \
     'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
@@ -1003,11 +1057,13 @@ assert_post_fast_inventory_contract() {
   require_section_pattern "$text" 'inventory is review context and never a gate' \
     'This complete inventory is review context, never a manifest, receipt, or admission/write gate'
   require_section_pattern "$text" 'final acceptance covers every inventory item' \
-    'Final acceptance requires every inventory item to have a disposition and evidence'
+    'Final acceptance requires every in-scope inventory item to have a disposition and evidence'
   require_section_pattern "$text" 'fresh Step 1 reviews every inventory item' \
     'The Explorer reviews every inventory item'
+  require_section_pattern "$text" 'fresh Step 1 reviews every Fast-originated hunk for scope and quality' \
+    'The Explorer reviews every Fast finding and every Fast-originated changed hunk for scope and quality'
   require_section_pattern "$text" 'fresh Step 2 assigns one disposition per item' \
-    'The fresh Step 2 critic gives each inventory item exactly one disposition: retain, revise, replace, superseded, or resolved-with-evidence'
+    'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   require_section_pattern "$text" 'coordinator routes every now finding' \
     'The coordinator routes every in-scope `treatment: now` finding'
   require_section_pattern "$text" 'implementer repairs no-hunk and other routed findings' \
@@ -1018,17 +1074,21 @@ assert_post_fast_inventory_contract() {
     'validates retained/revised changes'
   require_section_pattern "$text" 'implementer evidences no-hunk resolutions' \
     'supplies evidence for no-hunk resolutions'
+  require_section_pattern "$text" 'implementer evidences every non-retained and deferred outcome' \
+    'supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes'
   require_section_pattern "$text" 'final Step 4 verifies disposition and final evidence' \
-    'final cumulative Step 4 verifies every inventory item has a disposition and final evidence'
+    'final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence'
   require_section_pattern "$text" 'final Step 4 leaves no unresolved in-scope item' \
-    'no unresolved in-scope item'
-  require_order "$text" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' \
-    'The coordinator reconciles the report with shared state' &&
+    'no unresolved in-scope `treatment: now` finding'
+  require_order "$text" 'The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped' \
+    'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' &&
+    require_order "$text" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' \
+      'The coordinator reconciles the report with shared state' &&
     require_order "$text" 'The coordinator reconciles the report with shared state' \
       'The Explorer reviews every inventory item' &&
     require_order "$text" 'The Explorer reviews every inventory item' \
-      'The fresh Step 2 critic gives each inventory item exactly one disposition' &&
-    require_order "$text" 'The fresh Step 2 critic gives each inventory item exactly one disposition' \
+      'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition' &&
+    require_order "$text" 'The fresh Step 2 critic gives each in-scope inventory item exactly one disposition' \
       'The coordinator routes every in-scope `treatment: now` finding' &&
     require_order "$text" 'The coordinator routes every in-scope `treatment: now` finding' \
       'The implementer fixes every routed finding, including no-hunk findings' &&
@@ -1069,6 +1129,7 @@ assert_post_fast_completion_contract() {
 
 assert_post_fast_completion() {
   local text clause mutation output file pressure state dispositions replacement inventory_gate
+  local defer_clause missing_defer observation report critique
   text="$(awk '
     /^## Post-Fast completion$/ { found = 1; next }
     found && /^## / { exit }
@@ -1082,29 +1143,38 @@ assert_post_fast_completion() {
     'fresh Step 2 critic independently assesses' 'even when no further edits are needed' \
     'normal path remains incomplete' 'Resumed Fast writes invalidate this sequence' \
     'never a clean pass or substitute Fast completion' \
+    'Scope-screen every Fast finding and every Fast-originated changed hunk' \
+    'separate-outcome finding stays only a post-ECI observation/follow-up' \
+    'Keep every Fast-originated hunk in inventory/review context; do not expand authorization' \
     'enumerates every Fast finding and every Fast-originated changed hunk' \
     'findings with no retained hunk' \
     'retained, revised, non-retained, superseded, or reverted' \
     'reconciles the report with shared state' \
     'review context, never a manifest, receipt, or admission/write gate' \
-    'every inventory item to have a disposition and evidence' \
+    'every in-scope inventory item to have a disposition and evidence' \
     'reviews every inventory item' \
-    'gives each inventory item exactly one disposition' \
-    'retain, revise, replace, superseded, or resolved-with-evidence' \
+    'reviews every Fast finding and every Fast-originated changed hunk for scope and quality' \
+    'gives each in-scope inventory item exactly one disposition' \
+    'retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason' \
+    'policy-valid deferred-with-reason only where' \
+    'A policy-valid deferred-with-reason disposition is only for an in-scope' \
+    'technical reason and revisit trigger; it never waives original criteria' \
     'routes every in-scope `treatment: now` finding' \
     'fixes every routed finding, including no-hunk findings' \
     'applies revise/replace' \
     'validates retained/revised changes' \
     'supplies evidence for no-hunk resolutions' \
-    'verifies every inventory item has a disposition and final evidence' \
-    'no unresolved in-scope item'; do
+    'supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes' \
+    'verifies every in-scope inventory item has exactly one disposition and final evidence' \
+    'no unresolved in-scope `treatment: now` finding' \
+    'Separate-outcome observations remain outside acceptance'; do
     mutation="${text/"$clause"/REMOVED}"
     if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
       fail "post-Fast mutation admitted missing requirement: $clause"
     fi
     [[ "$output" == *'workflow routing assertion failed:'* ]] || fail "unexpected mutation failure: $output"
   done
-  for state in 'no retained hunk' non-retained superseded reverted; do
+  for state in 'no retained hunk' non-retained superseded reverted resolved deferred; do
     mutation="${text/"$state"/REMOVED}"
     if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
       fail "post-Fast state mutation admitted missing case: $state"
@@ -1112,19 +1182,30 @@ assert_post_fast_completion() {
     [[ "$output" == *'workflow routing assertion failed:'* ]] ||
       fail "unexpected state mutation failure: $state: $output"
   done
-  dispositions='retain, revise, replace, superseded, or resolved-with-evidence'
+  dispositions='retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   for replacement in \
-    'revise, replace, superseded, or resolved-with-evidence' \
-    'retain, replace, superseded, or resolved-with-evidence' \
-    'retain, revise, superseded, or resolved-with-evidence' \
-    'retain, revise, replace, or resolved-with-evidence' \
-    'retain, revise, replace, superseded'; do
+    'revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason' \
+    'retain, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason' \
+    'retain, revise, superseded, resolved-with-evidence, or policy-valid deferred-with-reason' \
+    'retain, revise, replace, resolved-with-evidence, or policy-valid deferred-with-reason' \
+    'retain, revise, replace, superseded, or policy-valid deferred-with-reason' \
+    'retain, revise, replace, superseded, resolved-with-evidence'; do
     mutation="${text/"$dispositions"/"$replacement"}"
     if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
       fail "post-Fast disposition mutation admitted missing item: $replacement"
     fi
     [[ "$output" == *'workflow routing assertion failed:'* ]] ||
       fail "unexpected disposition mutation failure: $replacement: $output"
+  done
+  defer_clause='A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding with a technical reason and revisit trigger; it never waives original criteria.'
+  for missing_defer in 'in-scope' non-hard impact-trivial isolated 'technical reason' 'revisit trigger' 'never waives original criteria'; do
+    replacement="${defer_clause/"$missing_defer"/REMOVED}"
+    mutation="${text/"$defer_clause"/"$replacement"}"
+    if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
+      fail "post-Fast defer mutation admitted missing rule: $missing_defer"
+    fi
+    [[ "$output" == *'workflow routing assertion failed:'* ]] ||
+      fail "unexpected defer mutation failure: $missing_defer: $output"
   done
   inventory_gate='This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
   mutation="${text/"$inventory_gate"/'This complete inventory is an admission/write gate.'}"
@@ -1133,6 +1214,15 @@ assert_post_fast_completion() {
   fi
   [[ "$output" == *'inventory is review context and never a gate'* ]] ||
     fail "unexpected inventory gate pressure failure: $output"
+  observation='The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped.'
+  report='The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk.'
+  pressure="${text/"$observation"/REMOVED}"
+  pressure="${pressure/"$report"/"$report $observation"}"
+  if output="$(assert_post_fast_completion_observation_contract "$pressure" 2>&1)"; then
+    fail 'post-Fast observation/report pressure fixture admitted swapped order'
+  fi
+  [[ "$output" == *'completion observation must precede the owner report'* ]] ||
+    fail "unexpected observation/report pressure failure: $output"
   pressure="${text//Step 1/removed Step 1}"
   require_section_pattern "$pressure" 'pressure fixture retains a Step 4 candidate substitute' \
     'Step 4 independently reviews the final cumulative scoped state'
@@ -1165,6 +1255,16 @@ assert_post_fast_completion() {
     'Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).'
   require_text "$REVIEW" \
     'Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).'
+  forbid_text "$FAST_PATH" 'The Explorer reviews every Fast finding and every retained Fast change'
+  forbid_text "$FAST_PATH" 'reviews every Fast finding and every retained Fast change, then selects a concrete disposition'
+  critique="$(<"$ECI_CRITIQUE")"
+  assert_post_fast_critique_contract "$critique"
+  pressure="$critique"$'\n\nFor post-Fast completion, independently assess final current sources and the new Explorer options before selecting the concrete retain, revise, or replace disposition.'
+  if output="$(assert_post_fast_critique_contract "$pressure" 2>&1)"; then
+    fail 'critique stale three-choice pressure fixture was admitted'
+  fi
+  [[ "$output" == *'stale three-choice disposition'* ]] ||
+    fail "unexpected critique stale three-choice failure: $output"
   for file in "$ECI" "$COORDINATOR" "$COORDINATOR_RUNTIME" "$ECI_CRITIQUE" \
     "$ROOT/skills/explore-critique-implement/references/explore.md" "$IMPLEMENT" "$REVIEW"; do
     forbid_text "$file" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
