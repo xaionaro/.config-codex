@@ -421,21 +421,12 @@ section_active_literal_directive_line() {
       return 0
     }
 
-    function is_active_directive(line, expected, normalized_line, normalized_expected) {
-      normalized_line = line
-      sub(/^ {0,3}/, "", normalized_line)
-      normalized_expected = expected
-      sub(/^ {0,3}/, "", normalized_expected)
-      if (normalized_line == normalized_expected || normalized_line == "- " normalized_expected || normalized_line == "* " normalized_expected || normalized_line == "+ " normalized_expected) {
-        return 1
-      }
-      if (match(normalized_line, /^[0-9][0-9]*[.] /)) {
-        return substr(normalized_line, RLENGTH + 1) == normalized_expected
-      }
-      if (match(normalized_line, /^[0-9][0-9]*[)] /)) {
-        return substr(normalized_line, RLENGTH + 1) == normalized_expected
-      }
-      return 0
+    function is_active_directive(line, expected, line_content, expected_content, line_valid, expected_valid) {
+      line_content = container_content(line)
+      line_valid = container_valid
+      expected_content = container_content(expected)
+      expected_valid = container_valid
+      return line_valid && expected_valid && line_content != "" && expected_content != "" && line_content == expected_content
     }
 
     {
@@ -457,11 +448,13 @@ section_active_literal_directive_line() {
         next
       }
       if (quoted_line) {
-        # A nonblank line can be a lazy continuation of the blockquote. A
-        # heading or ordered block starts a new block; otherwise keep all
-        # content quoted.
+        # A nonblank line can be a lazy continuation of the blockquote. An
+        # ATX heading, list container, or recognized fence starts a new block;
+        # otherwise keep all content quoted.
         if ($0 !~ /^[ ]{0,3}#{1,6}([ \t]|$)/ &&
-            $0 !~ /^[ ]{0,3}[0-9]+[.)][ \t]+/) next
+            $0 !~ /^[ ]{0,3}[0-9]+[.)][ \t]+/ &&
+            $0 !~ /^[ ]{0,3}[-+*][ \t]+/ &&
+            fence_width_for($0, "") < 3) next
         quoted_line = 0
       }
 
@@ -1830,6 +1823,40 @@ assert_fast_lexer_fixtures() {
   local source="$FAST_PATH" directive output fixture mutation
 
   directive='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
+  for fixture in \
+    $'> quoted prose\n- '"$directive" \
+    $'> quoted prose\n-  '"$directive" \
+    $'> quoted prose\n-\t'"$directive" \
+    $'> quoted prose\n- - '"$directive" \
+    $'> quoted prose\n```text\ninside\n```\n'"$directive" \
+    $'> quoted prose\n- ```text\ninside\n- ```\n'"$directive"; do
+    if ! output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+      fail "Fast lexer rejected quote boundary fixture: $fixture: $output"
+    fi
+  done
+
+  for fixture in \
+    $'> quoted prose\n```text\n'"$directive"$'\n```' \
+    $'> quoted prose\n- ```text\n'"$directive"$'\n- ```' \
+    $'> quoted prose\n> '"$directive" \
+    $'> quoted prose\n    '"$directive"; do
+    if output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+      fail "Fast lexer admitted inactive boundary fixture: $fixture"
+    fi
+  done
+
+  for fixture in \
+    $'-  '"$directive" \
+    $'-\t'"$directive" \
+    $'  -  '"$directive" \
+    $'  -\t'"$directive" \
+    $'- -  '"$directive" \
+    $'  -\t- '"$directive"; do
+    if ! output="$(section_active_literal_directive_line "$fixture" "$directive" 2>&1)"; then
+      fail "Fast lexer rejected normalized container fixture: $fixture: $output"
+    fi
+  done
+
   for fixture in \
     $'> lazy quote continuation\n'"$directive" \
     $'- ```text\n'"$directive"$'\n```' \
