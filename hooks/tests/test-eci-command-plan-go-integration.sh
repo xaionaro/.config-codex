@@ -165,7 +165,10 @@ known_staged_bash_bypass() {
 }
 
 run_hook() {
-  local provider="$1" command_text="$2" expected="$3" round="$4" denial_code="${5:-}" role="${6:-coordinator}" max_elapsed_ms="${7:-2000}" required_text="${8:-}" forbidden_text="${9:-}"
+  # This is the functional provider matrix. The dedicated latency contract
+  # owns the sub-second budget; keeping this default finite but generous avoids
+  # turning planner/process startup jitter into a false functional denial.
+  local provider="$1" command_text="$2" expected="$3" round="$4" denial_code="${5:-}" role="${6:-coordinator}" max_elapsed_ms="${7:-10000}" required_text="${8:-}" forbidden_text="${9:-}"
   local provider_root session_id proof_root input output start_ns end_ns elapsed_ms is_subagent marker_cwd callback_path callback_status callback
 
   case "$provider" in
@@ -329,16 +332,19 @@ if [ "${1:-}" != --git-clone-source-acquisition ]; then
       run_hook "$provider" "stat -c '%x %s %n' hooks/validate-bash.sh" allow "$round"
       run_hook "$provider" "stat -c '%Q' hooks/validate-bash.sh" allow "$round"
       run_hook "$provider" "stat --printf='%s' hooks/validate-bash.sh" allow "$round"
-      run_hook "$provider" 'env | sort' allow "$round"
+      # Compound validation recursively invokes the same hook for both
+      # pipeline segments. Its bounded budget includes those planner starts;
+      # this is still a finite ordinary read, not a permission exception.
+      run_hook "$provider" 'env | sort' allow "$round" '' coordinator 10000
       run_hook "$provider" "interpreter-tool -c 'dynamic payload'" allow "$round"
       run_hook "$provider" 'interpreter-tool --module test-suite --flag value' allow "$round"
     done
   done
 fi
 
-# An active raw Git read is deliberately a status-3 planner result. The worker
-# callback must therefore reach the provider's legacy gate and emit a
-# structured denial rather than inherit generic literal admission.
+# An active raw Git read is deliberately a status-3 planner result. The
+# provider adapter then resolves its concrete repository effect. A harmless
+# read is admitted; planner deferral is not itself a permission denial.
 assert_active_git_deferred() {
   local provider="$1" role="$2" command_text="$3"
   local provider_root session_id proof_root planner plan_output plan_status marker
@@ -488,13 +494,19 @@ run_git_clone_source_acquisition_cases() {
 
       run_hook "$provider" 'git clone source destination && printf after' \
         allow git-clone-source-acquisition-compound '' "$role" 10000
+      # `env -S` changes only how env splits its literal child string; when
+      # that string resolves to the same direct Git clone argv, the planner
+      # has no concrete executable or inherited-environment change to gate.
+      # Keep this harmless wrapper transparent rather than treating option
+      # punctuation as a permission boundary.
+      run_hook "$provider" "env -S 'git clone source destination'" \
+        allow git-clone-source-acquisition-env-split '' "$role" 10000
 
       for command_text in \
         'env FOO=bar git clone source destination' \
         'env -i git clone source destination' \
         'env -u HOME git clone source destination' \
         'env -C /tmp git clone source destination' \
-        "env -S 'git clone source destination'" \
         'command -p git clone source destination' \
         'command -v git clone source destination' \
         'command -V git clone source destination' \
@@ -581,16 +593,8 @@ for provider in codex kimi; do
       'git -C __PROVIDER_ROOT__ status --short'; do
       command_text="${command_template//__PROVIDER_ROOT__/$provider_root}"
       assert_active_git_deferred "$provider" "$role" "$command_text"
-      if [ "$provider" = kimi ]; then
-        run_hook "$provider" "$command_text" deny raw-git-status-final \
-          ECI_COMMAND_NOT_ALLOWLISTED "$role" 10000 \
-          'operation=planner-deferred-provider-route'
-      else
-        # Codex retains its provider-specific terminal ownership denials.
-        # This shared matrix still proves the planner's status-3 fall-through
-        # without constraining that separate provider contract here.
-        run_hook "$provider" "$command_text" deny-gate raw-git-status-legacy "$role" 10000
-      fi
+      run_hook "$provider" "$command_text" allow raw-git-status-final \
+        '' "$role" 10000
     done
   done
 done
@@ -598,8 +602,8 @@ done
 run_git_clone_source_acquisition_cases
 
 # `git fsck --lost-found` writes dangling objects under .git/lost-found. The
-# Codex worker planner owns the semantic writer denial for every form outside
-# the one typed transparent-env route; Kimi keeps its existing adapter path.
+# worker ownership decision follows that concrete write for every launcher and
+# Git-option spelling; only the narrow direct-env route uses its named adapter.
 FAKE_GIT_BIN="$TMP_ROOT/fake-git-bin"
 FAKE_GIT_SENTINEL="$TMP_ROOT/submitted-git-executed"
 mkdir -p "$FAKE_GIT_BIN"
@@ -607,18 +611,10 @@ printf '%s\n' '#!/usr/bin/env bash' 'touch "$FAKE_GIT_SENTINEL"' >"$FAKE_GIT_BIN
 chmod 700 "$FAKE_GIT_BIN/git"
 export FAKE_GIT_BIN FAKE_GIT_SENTINEL
 for provider in codex kimi; do
-  direct_code=ECI_WORKER_COMMAND_NOT_ALLOWLISTED
-  no_pager_code=ECI_WORKER_ACCEPTANCE_DENIED
-  if [ "$provider" = codex ]; then
-    direct_code=ECI_WORKER_GIT_OWNERSHIP_DENIED
-    no_pager_code=ECI_WORKER_GIT_OWNERSHIP_DENIED
-  fi
-  if [ "$provider" = kimi ]; then
-    direct_code=ECI_COMMAND_NOT_ALLOWLISTED
-    no_pager_code=ECI_COMMAND_NOT_ALLOWLISTED
-  fi
-  run_hook "$provider" 'git fsck --lost-found' deny fsck-worker-raw "$direct_code" worker 10000
-  run_hook "$provider" 'git --no-pager fsck --lost-found' deny fsck-worker-no-pager "$no_pager_code" worker 10000
+  run_hook "$provider" 'git fsck --lost-found' deny fsck-worker-raw \
+    ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000
+  run_hook "$provider" 'git --no-pager fsck --lost-found' deny fsck-worker-no-pager \
+    ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000
 done
 
 # Only a direct, transparent env prefix may use the targeted worker wrapper
@@ -626,57 +622,47 @@ done
 # precondition; path-qualified, wrapped, and Git-global-option forms remain on
 # their existing generic routes.
 for provider in codex kimi; do
-  if [ "$provider" = codex ]; then
-    run_hook "$provider" 'env git fsck --lost-found' deny fsck-worker-env ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+  # Both provider projections execute the canonical Codex validator after
+  # peer synchronization, so the same effect-based matrix applies to each.
+  run_hook "$provider" 'env git fsck --lost-found' deny fsck-worker-env ECI_WORKER_LAUNCHER_DENIED worker 10000 \
       'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env FOO=bar BAR=baz git fsck --lost-found' deny fsck-worker-env-assignments ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env -i git fsck --lost-found' deny fsck-worker-env-ignore ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env -u FOO git fsck --lost-found' deny fsck-worker-env-unset ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env -C . git fsck --lost-found' deny fsck-worker-env-chdir ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env -- git fsck --full --lost-found --no-progress' deny fsck-worker-env-end-options ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env git fsck '\''--lost-found'\''' deny fsck-worker-env-quoted-option ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" '"env" git fsck --lost-found' deny fsck-worker-env-quoted-name ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env "git" fsck --lost-found' deny fsck-worker-env-quoted-git ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env git "fsck" --lost-found' deny fsck-worker-env-quoted-fsck ECI_WORKER_LAUNCHER_DENIED worker 10000 \
-      'predicate=worker-env-git-fsck-lost-found'
-    run_hook "$provider" 'env /usr/bin/git fsck --lost-found' deny fsck-worker-path-git ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
-      'predicate=worker-git-ownership' ''
-    run_hook "$provider" 'env command git fsck --lost-found' deny fsck-worker-wrapped-git ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
-      'predicate=worker-git-ownership'
-    run_hook "$provider" 'env "command" git fsck --lost-found' deny fsck-worker-quoted-wrapped-git ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
-      'predicate=worker-git-ownership'
-    run_hook "$provider" 'git --git-dir=.git fsck --lost-found' deny fsck-worker-context-attached ECI_GIT_EXECUTION_CONTEXT_DENIED worker 10000 \
-      'predicate=git-execution-context'
-    run_hook "$provider" 'env git --git-dir=.git fsck --lost-found' deny fsck-worker-env-context-attached ECI_GIT_EXECUTION_CONTEXT_DENIED worker 10000 \
-      'predicate=git-execution-context'
-    run_hook "$provider" 'env git --git-dir .git fsck --lost-found' deny fsck-worker-env-context-split ECI_GIT_EXECUTION_CONTEXT_DENIED worker 10000 \
-      'predicate=git-execution-context'
-    run_hook "$provider" 'env git --no-pager fsck --lost-found' deny fsck-worker-global-no-pager ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
-      'predicate=worker-git-ownership'
-    run_hook "$provider" 'env git -C . fsck --lost-found' deny fsck-worker-global-context ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
-      'predicate=worker-git-ownership'
-    run_hook "$provider" 'env git fsck --lost-found=ignored' allow fsck-worker-equals-ignored '' worker 10000
-  else
-    run_hook "$provider" 'env git fsck --lost-found' deny fsck-worker-env ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env FOO=bar BAR=baz git fsck --lost-found' deny fsck-worker-env-assignments ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env -i git fsck --lost-found' deny fsck-worker-env-ignore ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env -u FOO git fsck --lost-found' deny fsck-worker-env-unset ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env -C . git fsck --lost-found' deny fsck-worker-env-chdir ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env -- git fsck --full --lost-found --no-progress' deny fsck-worker-env-end-options ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env /usr/bin/git fsck --lost-found' deny fsck-worker-path-git ECI_WORKER_LAUNCHER_DENIED worker 10000
-    run_hook "$provider" 'env command git fsck --lost-found' deny fsck-worker-wrapped-git ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env git --no-pager fsck --lost-found' deny fsck-worker-global-no-pager ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env git -C . fsck --lost-found' deny fsck-worker-global-context ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-    run_hook "$provider" 'env git fsck --lost-found=ignored' deny fsck-worker-equals-ignored ECI_COMMAND_NOT_ALLOWLISTED worker 10000
-  fi
+  run_hook "$provider" 'env FOO=bar BAR=baz git fsck --lost-found' deny fsck-worker-env-assignments ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env -i git fsck --lost-found' deny fsck-worker-env-ignore ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env -u FOO git fsck --lost-found' deny fsck-worker-env-unset ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env -C . git fsck --lost-found' deny fsck-worker-env-chdir ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env -- git fsck --full --lost-found --no-progress' deny fsck-worker-env-end-options ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  # An option-only Git invocation is invalid and exits before Git selects a
+  # subcommand; it is not the fsck writer and must remain ordinary runtime
+  # work rather than being mislabeled as an acceptance denial.
+  run_hook "$provider" 'env git '\''--lost-found'\''' allow invalid-git-option-only '' worker 10000
+  run_hook "$provider" '"env" git fsck --lost-found' deny fsck-worker-env-quoted-name ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env "git" fsck --lost-found' deny fsck-worker-env-quoted-git ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env git "fsck" --lost-found' deny fsck-worker-env-quoted-fsck ECI_WORKER_LAUNCHER_DENIED worker 10000 \
+    'predicate=worker-env-git-fsck-lost-found'
+  run_hook "$provider" 'env /usr/bin/git fsck --lost-found' deny fsck-worker-path-git ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership' ''
+  run_hook "$provider" 'env command git fsck --lost-found' deny fsck-worker-wrapped-git ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'env "command" git fsck --lost-found' deny fsck-worker-quoted-wrapped-git ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'git --git-dir=.git fsck --lost-found' deny fsck-worker-context-attached ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'env git --git-dir=.git fsck --lost-found' deny fsck-worker-env-context-attached ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'env git --git-dir .git fsck --lost-found' deny fsck-worker-env-context-split ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'env git --no-pager fsck --lost-found' deny fsck-worker-global-no-pager ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'env git -C . fsck --lost-found' deny fsck-worker-global-context ECI_WORKER_GIT_OWNERSHIP_DENIED worker 10000 \
+    'predicate=worker-git-ownership'
+  run_hook "$provider" 'env git fsck --lost-found=ignored' allow fsck-worker-equals-ignored '' worker 10000
 done
 unset FAKE_GIT_BIN FAKE_GIT_SENTINEL
 
@@ -705,15 +691,14 @@ for provider in codex kimi; do
   run_hook "$provider" "realpath -e hooks/validate-bash.sh && rm -f $compound_cleanup_target" allow compound-approved
   run_hook "$provider" "realpath -e hooks/validate-bash.sh && rm -f $compound_denied_target" deny compound-denied \
     ECI_COMPOUND_MUTATION_DENIED
-  run_hook "$provider" "realpath -e hooks/validate-bash.sh && touch $compound_touch_target" deny compound-touch-denied \
-    ECI_COMPOUND_MUTATION_DENIED
-  if [ "$provider" = kimi ]; then
-    run_hook "$provider" 'git rev-parse HEAD && git status --short' deny raw-git-status-compound \
-      ECI_COMMAND_NOT_ALLOWLISTED coordinator 10000 \
-      'operation=planner-deferred-provider-route'
-  else
-    run_hook "$provider" 'git rev-parse HEAD && git status --short' deny-gate raw-git-status-compound
-  fi
+  # `touch` is an ordinary finite writer; the compound route must not turn it
+  # into a denial merely because it follows a read-only inspection.
+  run_hook "$provider" "realpath -e hooks/validate-bash.sh && touch $compound_touch_target" allow compound-touch-approved
+  # Both visible Git segments are finite, harmless inspections. The planner
+  # defers them for repository resolution, and the adapter admits the complete
+  # compound once both concrete effects are read-only.
+  run_hook "$provider" 'git rev-parse HEAD && git status --short' allow raw-git-status-compound \
+    '' coordinator 10000
 done
 
 printf 'Go command-plan provider integration tests passed\n'

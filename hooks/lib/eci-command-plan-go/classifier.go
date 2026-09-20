@@ -439,7 +439,7 @@ type gateModeIdentity struct {
 }
 
 var eciControlBasenames = [...]string{
-	"eci_active", "goal_state", "eci_wait", "eci_user_owned_wait.md",
+	"eci_active", "goal_state", "eci_wait", "eci_user_owned_wait.md", "eci-additional-repository",
 	"eci-required-critics.json", "eci-critic-identities.ledger",
 	"eci-acceptance-anchor", "eci-acceptance-transaction",
 	"eci-teardown-complete", "eci-baseline-binding", "baseline_head",
@@ -520,6 +520,31 @@ func isLifecycleReadOnlyVerb(verb string) bool {
 // executable bytes match a provider lifecycle binary.
 func isLifecycleReadOnlyInvocation(argv []token) bool {
 	return len(argv) >= 2 && isLifecycleReadOnlyVerb(argv[1].value)
+}
+
+// isWorkerRepositoryAllowInvocation recognizes the one lifecycle route that
+// an owning worker may use to declare an additional dependency repository.
+// The lifecycle binary performs the marker, repository, and reason checks;
+// the planner only keeps this exact route from becoming a generic control
+// denial.  Other lifecycle verbs remain coordinator-owned.
+func isWorkerRepositoryAllowInvocation(argv []token) bool {
+	if len(argv) < 2 || filepath.Base(argv[0].value) != "eci-active" {
+		return false
+	}
+	switch argv[1].value {
+	case "repository-allow-status":
+		return len(argv) == 2
+	case "repository-allow-off":
+		return len(argv) == 3 && filepath.IsAbs(argv[2].value) && filepath.Clean(argv[2].value) == argv[2].value
+	case "repository-allow-on":
+		if len(argv) != 4 || !filepath.IsAbs(argv[2].value) || filepath.Clean(argv[2].value) != argv[2].value || argv[3].value == "" {
+			return false
+		}
+		return !strings.ContainsAny(argv[3].value, "\r\n") &&
+			!strings.ContainsFunc(argv[3].value, func(r rune) bool { return r < 0x20 || r == 0x7f })
+	default:
+		return false
+	}
 }
 
 // lifecycleEnvironmentLauncherCandidate recognizes an env-looking first
@@ -904,6 +929,12 @@ func isWorkerEnvGitFsckLostFound(argv []token) bool {
 	if diagnostic != nil || len(child) < 3 || child[0].value != "git" || child[1].value != "fsck" {
 		return false
 	}
+	// The transparent worker route is only the direct `env` launch. Git
+	// global/context options remain on the ordinary ownership route so the
+	// concrete fsck writer cannot be hidden by a changed repository context.
+	if gitSubcommandIndex(child) != 1 || hasAttachedGitContextOption(child) {
+		return false
+	}
 	_, ok := gitFsckLostFoundOption(child, 1)
 	return ok
 }
@@ -977,7 +1008,7 @@ func gitCloneSourceAcquisitionLaunch(
 		return nil, false
 	}
 	if !isGitCloneSourceAcquisitionArgv(unwrapped.argv) {
-		return nil, isCommandQueryGitCloneLaunch(original)
+		return nil, isGitCloneLaunchContextCandidate(unwrapped.argv) || isCommandQueryGitCloneLaunch(original)
 	}
 	if launch := directGitCloneLaunch(original, unwrapped); launch != nil {
 		return launch, true
@@ -993,6 +1024,44 @@ func gitCloneSourceAcquisitionLaunch(
 
 func isGitCloneSourceAcquisitionArgv(argv []token) bool {
 	return len(argv) >= 2 && filepath.Base(argv[0].value) == "git" && argv[1].value == "clone"
+}
+
+// isGitCloneLaunchContextCandidate recognizes a Git clone whose global
+// context options alter where Git resolves the operation or how it starts.
+// Those options are a concrete target/execution-context change, not a
+// punctuation or spelling boundary: the provider must inspect them before
+// admitting the clone.  Plain `git clone` remains the typed source-acquisition
+// capability above.
+func isGitCloneLaunchContextCandidate(argv []token) bool {
+	if len(argv) < 3 || filepath.Base(argv[0].value) != "git" {
+		return false
+	}
+	for index := 1; index < len(argv); index++ {
+		value := argv[index].value
+		if value == "clone" {
+			return index > 1
+		}
+		switch {
+		case value == "-C" || value == "-c" || value == "--config-env" ||
+			value == "--git-dir" || value == "--work-tree" || value == "--exec-path" ||
+			value == "--namespace" || value == "--super-prefix":
+			if index+1 >= len(argv) {
+				return false
+			}
+			index++
+		case strings.HasPrefix(value, "-C") && len(value) > 2,
+			strings.HasPrefix(value, "--config-env="),
+			strings.HasPrefix(value, "--git-dir="),
+			strings.HasPrefix(value, "--work-tree="),
+			strings.HasPrefix(value, "--exec-path="),
+			strings.HasPrefix(value, "--namespace="),
+			strings.HasPrefix(value, "--super-prefix="):
+			// Attached context values are already consumed by this token.
+		case value == "--":
+			return false
+		}
+	}
+	return false
 }
 
 // isCommandQueryGitCloneLaunch recognizes command's query-only forms when
@@ -2046,9 +2115,6 @@ func inspectSegment(
 	)
 	if name == "git" {
 		if optionIndex, ok := gitFsckLostFoundOption(argv, gitSubcommandIndex(argv)); ok {
-			if hasAttachedGitContextOption(argv) {
-				return inspectGit(request, argv, segmentIndex)
-			}
 			routeQualified := wholeSingleSegmentPlan && isWorkerEnvGitFsckLostFound(current.argv)
 			if request.Provider == ProviderCodex && request.Marker == MarkerActive && request.Role == RoleWorker && !routeQualified {
 				return DecisionDeny, diagnosticForToken(
@@ -2060,6 +2126,9 @@ func inspectSegment(
 					"route this exact Git fsck writer through the main/orchestrator coordinator acceptance path",
 					"worker-git-ownership",
 				)
+			}
+			if hasAttachedGitContextOption(argv) {
+				return inspectGit(request, argv, segmentIndex)
 			}
 			return DecisionDefer, nil
 		}
@@ -2083,6 +2152,12 @@ func inspectSegment(
 			return DecisionDeny, diagnostic
 		}
 		return DecisionAllow, nil
+	}
+	if request.Marker == MarkerActive && request.Role == RoleWorker && isWorkerRepositoryAllowInvocation(argv) {
+		// The provider-side lifecycle adapter still validates the canonical
+		// executable, active marker, repository, and reason. Defer this exact
+		// owner-scoped route before the generic worker lifecycle identity check.
+		return DecisionDefer, nil
 	}
 	if request.Marker == MarkerActive && request.Role == RoleWorker && !isLifecycleReadOnlyInvocation(argv) {
 		if diagnostic := inspectActiveWorkerLifecycleIdentity(request, current.argv, argv, segmentIndex); diagnostic != nil {
@@ -2159,6 +2234,9 @@ func inspectSegment(
 			return DecisionDeny, diagnostic
 		}
 		if decision == DecisionDefer {
+			if request.Marker == MarkerActive && gitCloneLaunchVisible {
+				return DecisionDeny, gitCloneLaunchContextDiagnostic(current.argv, segmentIndex)
+			}
 			return DecisionDefer, nil
 		}
 		if request.Marker == MarkerActive {
@@ -2183,6 +2261,22 @@ func inspectSegment(
 	if diagnostic := inspectBroadDestruction(argv, segmentIndex); diagnostic != nil {
 		return DecisionDeny, diagnostic
 	}
+	if request.Marker == MarkerActive && request.Role == RoleCoordinator && wholeSingleSegmentPlan && name == "find" {
+		// Compound pipelines retain their existing finite-pipeline route. A
+		// direct active find action is the unbounded per-match capability this
+		// guard owns; the pipeline route separately resolves concrete targets.
+		if action, ok := findDynamicAction(argv); ok {
+			return DecisionDeny, diagnosticForToken(
+				CodePlanDynamicLaunchDenied,
+				"find action executes a per-match operation outside a finite direct argv",
+				segmentIndex,
+				originalTokenIndex(current.argv, action),
+				action,
+				"replace the find action with a finite direct command, or use -print for inspection",
+				"dynamic-find-action",
+			)
+		}
+	}
 	if request.Marker == MarkerActive && request.Role == RoleWorker {
 		if isSourceWriter(name, argv) {
 			if diagnostic := inspectLiveControl(request, argv, segmentIndex, controlIndex); diagnostic != nil {
@@ -2199,6 +2293,70 @@ func inspectSegment(
 		}
 	}
 	return DecisionAllow, nil
+}
+
+// findDynamicAction returns the first find predicate that launches a child or
+// mutates each match. Predicate operands are skipped so a literal pattern such
+// as `-name -delete` remains an ordinary inspection command.
+//
+// Example: `find /tmp -type d -delete` returns `-delete`, while
+// `find /tmp -name -delete -print` returns no dynamic action.
+func findDynamicAction(argv []token) (token, bool) {
+	valueOptions := map[string]struct{}{
+		"-amin": {}, "-anewer": {}, "-atime": {}, "-cmin": {}, "-cnewer": {},
+		"-ctime": {}, "-fstype": {}, "-gid": {}, "-group": {},
+		"-iname": {}, "-inum": {}, "-ipath": {}, "-iregex": {}, "-iwholename": {},
+		"-links": {}, "-lname": {}, "-mmin": {}, "-mtime": {},
+		"-name": {}, "-newer": {}, "-newerXY": {}, "-path": {}, "-perm": {},
+		"-size": {}, "-samefile": {}, "-type": {}, "-uid": {}, "-used": {},
+		"-user": {}, "-wholename": {}, "-regex": {},
+	}
+	for index := 1; index < len(argv); index++ {
+		value := argv[index].value
+		if _, needsValue := valueOptions[value]; needsValue {
+			if index+1 < len(argv) {
+				index++
+			}
+			continue
+		}
+		switch value {
+		case "-delete":
+			return argv[index], true
+		case "-exec", "-execdir", "-ok", "-okdir":
+			if !findActionIsReadOnly(argv, index) {
+				return argv[index], true
+			}
+		}
+	}
+	return token{}, false
+}
+
+// findActionIsReadOnly admits only a small, explicit set of per-match
+// metadata readers for find's -exec family.  This is effect-based rather than
+// punctuation-based: a child such as `file --brief {}` only reads each match,
+// while rm, shell interpreters, and unknown children remain dynamic actions.
+func findActionIsReadOnly(argv []token, actionIndex int) bool {
+	if actionIndex+1 >= len(argv) {
+		return false
+	}
+	readers := map[string]struct{}{
+		"file": {}, "realpath": {}, "readlink": {}, "sha256sum": {}, "stat": {}, "wc": {},
+	}
+	child := argv[actionIndex+1].value
+	if _, ok := readers[filepath.Base(child)]; !ok || strings.HasPrefix(child, "-") {
+		return false
+	}
+	for index := actionIndex + 2; index < len(argv); index++ {
+		value := argv[index].value
+		if value == ";" || value == "+" {
+			return true
+		}
+		if value == "|" || value == "&&" || value == "||" || value == ">" || value == ">>" ||
+			value == "<" || value == "<<<" || value == ">&" {
+			return false
+		}
+	}
+	return false
 }
 
 // redirectWriterArgv gives one shell redirect destination the same concrete
@@ -5743,7 +5901,7 @@ func gitSubcommandIndex(argv []token) int {
 	for index < len(argv) {
 		value := argv[index].value
 		switch {
-		case value == "-C" && index+1 < len(argv):
+		case isGitSplitContextOption(value) && index+1 < len(argv):
 			index += 2
 		case value == "--literal-pathspecs", value == "--no-optional-locks", value == "--no-pager", strings.HasPrefix(value, "-"):
 			index++
@@ -5752,6 +5910,19 @@ func gitSubcommandIndex(argv []token) int {
 		}
 	}
 	return index
+}
+
+// isGitSplitContextOption reports Git global options whose value is supplied
+// as the following argv token. Keeping these options in the subcommand scan
+// prevents a worker fsck writer from being mistaken for a direct-env route
+// merely because its context value uses split spelling.
+func isGitSplitContextOption(value string) bool {
+	switch value {
+	case "-C", "-c", "--config-env", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix":
+		return true
+	default:
+		return false
+	}
 }
 
 // gitFsckLostFoundOption returns the exact --lost-found token after the fsck
@@ -5796,21 +5967,27 @@ func gitMutation(argv []token, subcommandIndex int) (int, string) {
 			}
 		}
 	case "branch":
-		expectsValue := false
-		for index, argument := range argv[subcommandIndex+1:] {
-			value := argument.value
-			if expectsValue {
-				expectsValue = false
-				continue
-			}
+		listMode := false
+		arguments := argv[subcommandIndex+1:]
+		for index := 0; index < len(arguments); index++ {
+			value := arguments[index].value
 			if isBranchMutationOption(value) {
 				return subcommandIndex + index + 1, "branch " + value
 			}
-			if isBranchInspectionValueOption(value) {
-				expectsValue = true
+			if value == "-l" || value == "--list" || strings.HasPrefix(value, "--list=") {
+				listMode = true
 				continue
 			}
-			if isBranchInspectionAssignment(value) || strings.HasPrefix(value, "-") {
+			if isBranchInspectionValueOption(value) {
+				if index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1].value, "-") {
+					index++
+				}
+				continue
+			}
+			if isBranchInspectionAssignment(value) || isBranchInspectionFlag(value) || strings.HasPrefix(value, "-") {
+				continue
+			}
+			if listMode {
 				continue
 			}
 			return subcommandIndex + index + 1, "branch update"
@@ -5822,6 +5999,15 @@ func gitMutation(argv []token, subcommandIndex int) (int, string) {
 func isBranchInspectionValueOption(value string) bool {
 	switch value {
 	case "--contains", "--format", "--merged", "--no-contains", "--no-merged", "--points-at", "--sort":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBranchInspectionFlag(value string) bool {
+	switch value {
+	case "-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose", "--no-color", "--omit-empty", "--show-current", "--column", "--color", "--abbrev":
 		return true
 	default:
 		return false

@@ -60,6 +60,7 @@ shared_runtime_paths() {
       ! -path 'hooks/tests' ! -path 'hooks/tests/*' \
       ! -path 'hooks/lib/eci-command-plan-go/eci-command-plan' \
       ! -path 'hooks/lib/eci-command-plan-go/.eci-command-plan.provenance' \
+      ! -path 'hooks/lib/eci-command-plan-go/.eci-command-plan.publish.lock' \
       ! -path '*/__pycache__/*' \
       ! -name '*.pyc' ! -name '*.pyo' ! -name '*.go' ! -name '*.bak*' \
       -print | LC_ALL=C sort

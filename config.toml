@@ -21,6 +21,9 @@ multi_agent = true
 sqlite = false
 multi_agent_v2 = true
 
+[agents]
+max_concurrent_threads_per_session = 32
+
 [history]
 persistence = "none"
 max_bytes = 0
@@ -292,6 +295,12 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/dxobs"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/owon"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/ndk"]
 trust_level = "trusted"
 
 [hooks.state]

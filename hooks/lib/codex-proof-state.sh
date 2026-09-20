@@ -392,7 +392,7 @@ codex_eci_control_basename() {
     eci-wait-repair-authorize|eci-wait-repair-authorize.*)
       return 0
       ;;
-    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.md|project-understanding.md.*|high_level_log.md|high_level_log.md.*|latest-status-report.md|latest-status-report.md.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.md.tmp.*)
+    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-additional-repository|eci-additional-repository.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.md|project-understanding.md.*|high_level_log.md|high_level_log.md.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.md.tmp.*)
       return 0
       ;;
     *)
@@ -875,6 +875,94 @@ codex_eci_session_permissive_active() {
     codex_state_file_owner_is_valid "$record" && rm -f -- "$record" 2>/dev/null || true
   fi
   return 1
+}
+
+# A repository allowance is a persistent, session-owned routing exception for
+# one additional Git repository.  It records the concrete owner, marker cwd,
+# canonical repository, and human reason; it is not a receipt, hash, or generic
+# command authorization.  The active marker remains required at use time.
+codex_eci_additional_repository_record_name='eci-additional-repository'
+codex_eci_additional_repository_schema='eci-additional-repository/v1'
+codex_eci_additional_repository_max_reason_bytes=2048
+
+codex_eci_additional_repository_record_path() {
+  local session_id="$1" root path
+
+  codex_valid_session_id "$session_id" || return 1
+  root="$(codex_proof_root)"
+  codex_session_dir_is_safe "$root" "$session_id" || return 1
+  path="$root/$session_id/$codex_eci_additional_repository_record_name"
+  codex_state_path_is_safe "$path" "$root" || return 1
+  printf '%s\n' "$path"
+}
+
+codex_eci_additional_repository_reason_is_valid() {
+  local reason="${1-}" bytes
+
+  [ -n "$reason" ] || return 1
+  [[ "$reason" != *$'\n'* && "$reason" != *$'\r'* ]] || return 1
+  LC_ALL=C printf '%s' "$reason" | LC_ALL=C grep -q '[[:cntrl:]]' && return 1 || true
+  bytes="$(LC_ALL=C printf '%s' "$reason" | wc -c)"
+  [[ "$bytes" =~ ^[0-9]+$ ]] && [ "$bytes" -le "$codex_eci_additional_repository_max_reason_bytes" ]
+}
+
+# Resolve a user-supplied repository to its owning Git root.  Absolute lexical
+# aliases are accepted and normalized once; the durable record stores the
+# resolved root, so a harmless `/home` ↔ `/mnt` mount alias is not mistaken for
+# a different repository.
+codex_eci_additional_repository_canonical_root() {
+  local requested="${1-}" resolved actual
+
+  [ -n "$requested" ] || return 1
+  [ "${requested#/}" != "$requested" ] || return 1
+  resolved="$(realpath -e -- "$requested" 2>/dev/null || true)"
+  [ -n "$resolved" ] && [ -d "$resolved" ] || return 1
+  actual="$(codex_git_safe -C "$resolved" rev-parse --show-toplevel 2>/dev/null || true)"
+  actual="$(realpath -e -- "$actual" 2>/dev/null || true)"
+  [ -n "$actual" ] && [ -d "$actual" ] && [ ! -L "$actual" ] || return 1
+  [ "$actual" = "$resolved" ] || return 1
+  printf '%s\n' "$actual"
+}
+
+codex_eci_additional_repository_record_is_valid() {
+  local session_id="$1" expected_cwd="$2" expected_repo="$3" record marker_cwd repo reason
+  local -a lines=()
+
+  codex_valid_session_id "$session_id" || return 1
+  [ -d "$expected_cwd" ] && [ ! -L "$expected_cwd" ] || return 1
+  expected_cwd="$(codex_canonical_cwd "$expected_cwd")"
+  record="$(codex_eci_additional_repository_record_path "$session_id")" || return 1
+  [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  codex_state_file_owner_is_valid "$record" || return 1
+  [ "$(stat -Lc '%a' -- "$record" 2>/dev/null || true)" = 600 ] || return 1
+  [ "$(wc -c <"$record" 2>/dev/null || printf 999999)" -le 4096 ] || return 1
+  [ "$(tail -c 1 -- "$record" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" = 0a ] || return 1
+  LC_ALL=C grep -q $'\r' "$record" 2>/dev/null && return 1 || true
+  mapfile -t lines <"$record" || return 1
+  [ "${#lines[@]}" -eq 6 ] || return 1
+  [ "${lines[0]}" = "schema: $codex_eci_additional_repository_schema" ] || return 1
+  [ "${lines[1]}" = "session_id: $session_id" ] || return 1
+  marker_cwd="${lines[2]#cwd: }"
+  [ "${lines[2]}" = "cwd: $marker_cwd" ] || return 1
+  [ "$(codex_canonical_cwd "$marker_cwd")" = "$expected_cwd" ] || return 1
+  repo="${lines[3]#repository: }"
+  [ "${lines[3]}" = "repository: $repo" ] || return 1
+  codex_eci_additional_repository_canonical_root "$repo" >/dev/null || return 1
+  [ -z "$expected_repo" ] || [ "$repo" = "$expected_repo" ] || return 1
+  reason="${lines[4]#reason: }"
+  [ "${lines[4]}" = "reason: $reason" ] || return 1
+  codex_eci_additional_repository_reason_is_valid "$reason" || return 1
+  [ "${lines[5]}" = 'state: active' ] || return 1
+  marker_cwd="$(codex_eci_direct_marker_cwd "$(codex_proof_root)/$session_id/eci_active" "$session_id" 2>/dev/null || true)"
+  [ "$marker_cwd" = "$expected_cwd" ] || return 1
+}
+
+codex_eci_additional_repository_is_allowed() {
+  local session_id="$1" cwd="$2" repository="$3" canonical_repo
+
+  canonical_repo="$(codex_eci_additional_repository_canonical_root "$repository" 2>/dev/null || true)"
+  [ -n "$canonical_repo" ] || return 1
+  codex_eci_additional_repository_record_is_valid "$session_id" "$cwd" "$canonical_repo"
 }
 
 # Coordinator self-edit state is a short-lived routing preference.  It is not

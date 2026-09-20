@@ -147,6 +147,7 @@ LIVE_EXACT = {
     "eci-teardown-complete",
     "eci-user-closed.ledger",
     "eci_active",
+    "eci-additional-repository",
     "eci_user_owned_wait.md",
     "eci_wait",
     "goal_state",
@@ -154,6 +155,7 @@ LIVE_EXACT = {
     "stop_timestamps",
 }
 LIVE_PREFIXES = (
+    "eci-additional-repository.",
     "eci-acceptance-anchor.",
     "eci-acceptance-transaction.",
     "eci-baseline-binding.",
@@ -841,6 +843,41 @@ def canonical_lifecycle_name(token: Token, cwd: str) -> str | None:
     return None
 
 
+def worker_repository_allow_lifecycle(argv: tuple[Token, ...], cwd: str) -> bool:
+    """Recognize the narrow worker-owned additional-repository route.
+
+    The lifecycle binary performs the canonical repository, marker, and
+    durable-record validation.  The planner only keeps this exact route from
+    being mistaken for generic coordinator control; it does not authorize
+    any other lifecycle verb or broaden the target.
+    """
+    if not argv or canonical_lifecycle_name(argv[0], cwd) != "eci-active":
+        return False
+    if len(argv) < 2:
+        return False
+    verb = argv[1].value
+    if verb == "repository-allow-status":
+        return len(argv) == 2
+    if verb == "repository-allow-off":
+        if len(argv) != 3:
+            return False
+        target = argv[2].value
+        return os.path.isabs(target) and os.path.normpath(target) == target
+    if verb == "repository-allow-on":
+        if len(argv) != 4:
+            return False
+        target, reason = argv[2].value, argv[3].value
+        return (
+            os.path.isabs(target)
+            and os.path.normpath(target) == target
+            and bool(reason)
+            and "\n" not in reason
+            and "\r" not in reason
+            and all(ord(char) >= 32 and ord(char) != 127 for char in reason)
+        )
+    return False
+
+
 def lifecycle_identity_error(
     argv: tuple[Token, ...], segment_index: int, active_session: str
 ) -> PlanError | None:
@@ -1428,6 +1465,8 @@ def inspect_segment(
     def protected_lifecycle_result(token_index: int) -> str:
         lifecycle_name = os.path.basename(argv[token_index].value)
         if active and role == "worker":
+            if worker_repository_allow_lifecycle(argv[token_index:], cwd):
+                return "DEFER"
             code = (
                 "ECI_WORKER_REVIEW_GATE_DENIED"
                 if lifecycle_name in {"eci-review-gate", "eci-review-gate.sh"}

@@ -223,6 +223,16 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 			decision: DecisionDefer,
 		},
 		{
+			name:     "git branch list pattern inspection",
+			request:  activeWorker("git branch --list 'release/*'"),
+			decision: DecisionDefer,
+		},
+		{
+			name:     "git branch merged inspection",
+			request:  activeWorker("git branch --merged HEAD"),
+			decision: DecisionDefer,
+		},
+		{
 			name:      "git branch creation",
 			request:   activeWorker("git branch feature"),
 			decision:  DecisionDeny,
@@ -301,6 +311,211 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 			}
 			if result.Diagnostic.Reason == "" || result.Diagnostic.Remediation == "" {
 				t.Fatalf("incomplete diagnostic: %#v", result.Diagnostic)
+			}
+		})
+	}
+}
+
+// TestActiveFindActionsUseEffectDiagnostics verifies that direct active find
+// actions are denied by their per-match effect for coordinators, while worker
+// behavior and ordinary inspection remain admitted and broad-root deletion
+// keeps its precedence.
+//
+// Example: an active coordinator may inspect with `find /tmp -print`, but
+// `find /tmp -exec rm -f {} \\;` receives the dynamic-action diagnostic.
+func TestActiveFindActionsUseEffectDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		command   string
+		role      Role
+		decision  DecisionKind
+		code      DiagnosticCode
+		predicate string
+	}{
+		{
+			name:      "coordinator delete",
+			command:   "find /tmp -maxdepth 1 -type f -delete",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec",
+			command:   "find /tmp -maxdepth 1 -type f -exec rm -f {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator execdir",
+			command:   "find /tmp -maxdepth 1 -type f -execdir rm -f {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator ok",
+			command:   "find /tmp -maxdepth 1 -type f -ok rm -f {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator okdir",
+			command:   "find /tmp -maxdepth 1 -type f -okdir rm -f {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:     "worker exec behavior preserved",
+			command:  "find /tmp -maxdepth 1 -type f -exec rm -f {} \\;",
+			role:     RoleWorker,
+			decision: DecisionAllow,
+		},
+		{
+			name:     "coordinator print inspection",
+			command:  "find /tmp -maxdepth 1 -type f -print",
+			role:     RoleCoordinator,
+			decision: DecisionAllow,
+		},
+		{
+			name:     "coordinator metadata exec inspection",
+			command:  "find /tmp -maxdepth 1 -type f -exec file --brief {} \\;",
+			role:     RoleCoordinator,
+			decision: DecisionAllow,
+		},
+		{
+			name:     "coordinator find read with temporary output",
+			command:  "find /tmp -maxdepth 1 -type f -print > /tmp/find-output.txt",
+			role:     RoleCoordinator,
+			decision: DecisionAllow,
+		},
+		{
+			name:     "worker print inspection",
+			command:  "find /tmp -maxdepth 1 -type f -print",
+			role:     RoleWorker,
+			decision: DecisionAllow,
+		},
+		{
+			name:      "coordinator broad root precedence",
+			command:   "find / -delete",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodeBroadDestructiveDenied,
+			predicate: "broad-destructive-root",
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			request := activeWorker(testCase.command)
+			request.Role = testCase.role
+			result := Classify(request)
+			if result.Decision != testCase.decision {
+				t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.code == "" {
+				if result.Diagnostic != nil {
+					t.Fatalf("unexpected diagnostic=%#v", result.Diagnostic)
+				}
+				return
+			}
+			if result.Diagnostic == nil {
+				t.Fatal("missing diagnostic")
+			}
+			if result.Diagnostic.Code != testCase.code {
+				t.Errorf("code=%q, want %q", result.Diagnostic.Code, testCase.code)
+			}
+			if result.Diagnostic.Predicate != testCase.predicate {
+				t.Errorf("predicate=%q, want %q", result.Diagnostic.Predicate, testCase.predicate)
+			}
+			if result.Diagnostic.Reason == "" || result.Diagnostic.Remediation == "" {
+				t.Fatalf("incomplete diagnostic=%#v", result.Diagnostic)
+			}
+		})
+	}
+}
+
+// TestGitBranchInspectionOptionGrammar keeps the provider-side Git target
+// resolver aligned with the planner's branch mutation recognizer.  Required
+// value options consume only a following non-option; optional display values
+// are attached with --option=value, so a following branch name remains a
+// concrete mutation operand.  --list patterns remain inspection operands.
+func TestGitBranchInspectionOptionGrammar(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		command  string
+		decision DecisionKind
+		code     DiagnosticCode
+	}{
+		{
+			name:     "attached optional display values with list pattern",
+			command:  "git branch --abbrev=12 --column=always --color=always --list 'release/*'",
+			decision: DecisionDefer,
+		},
+		{
+			name:     "short list pattern",
+			command:  "git branch -l 'release/*'",
+			decision: DecisionDefer,
+		},
+		{
+			name:     "required inspection values",
+			command:  "git branch --contains HEAD --format '%(refname)' --sort committerdate",
+			decision: DecisionDefer,
+		},
+		{
+			name:     "abbrev option leaves branch operand visible",
+			command:  "git branch --abbrev feature",
+			decision: DecisionDeny,
+			code:     CodeWorkerGitOwnershipDenied,
+		},
+		{
+			name:     "column option leaves branch operand visible",
+			command:  "git branch --column feature",
+			decision: DecisionDeny,
+			code:     CodeWorkerGitOwnershipDenied,
+		},
+		{
+			name:     "color option leaves branch operand visible",
+			command:  "git branch --color feature",
+			decision: DecisionDeny,
+			code:     CodeWorkerGitOwnershipDenied,
+		},
+		{
+			name:     "required option does not hide mutation option",
+			command:  "git branch --format --delete",
+			decision: DecisionDeny,
+			code:     CodeWorkerGitOwnershipDenied,
+		},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := Classify(activeWorker(testCase.command))
+			if result.Decision != testCase.decision {
+				t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if testCase.code == "" {
+				if result.Diagnostic != nil {
+					t.Fatalf("unexpected diagnostic=%#v", result.Diagnostic)
+				}
+				return
+			}
+			if result.Diagnostic == nil || result.Diagnostic.Code != testCase.code {
+				t.Fatalf("diagnostic=%#v, want code %q", result.Diagnostic, testCase.code)
 			}
 		})
 	}
@@ -2045,6 +2260,9 @@ func TestActiveBareGitCloneSourceAcquisitionCapability(t *testing.T) {
 		{name: "env removes inherited variable", command: "env -u HOME git clone source destination"},
 		{name: "env changes directory", command: "env -C /tmp git clone source destination"},
 		{name: "env split string", command: "env -S 'git clone source destination'", wantDecision: DecisionAllow},
+		{name: "git repository directory context", command: "git -C /tmp clone source destination"},
+		{name: "git configuration context", command: "git -c user.name=test clone source destination"},
+		{name: "git directory context", command: "git --git-dir=.git clone source destination"},
 		{name: "command default path", command: "command -p git clone source destination"},
 		{name: "command query option", command: "command -v git clone source destination"},
 		{name: "command verbose query option", command: "command -V git clone source destination"},
@@ -2102,7 +2320,6 @@ func TestRawGitPlansHaveNoGenericCapability(t *testing.T) {
 		"git -C /tmp/root -C /tmp/foreign status --short",
 		"git -C /tmp/root diff -- :(exclude)AGENTS.md",
 		"git -C /tmp/root diff -- ':(exclude)AGENTS.md'",
-		"git --no-pager rev-parse HEAD",
 	}
 	for _, provider := range []Provider{ProviderCodex, ProviderKimi} {
 		provider := provider
@@ -2434,43 +2651,45 @@ func TestGitFsckLostFoundWorkerOwnershipGuard(t *testing.T) {
 	}
 }
 
-func TestGitFsckLostFoundGitContextRemainsDeferred(t *testing.T) {
+func TestGitFsckLostFoundGitContextCannotHideWorkerWrite(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name          string
-		command       string
-		wantToken     string
-		wantArgvIndex int
+		name    string
+		command string
 	}{
-		{name: "direct git-dir attached", command: "git --git-dir=.git fsck --lost-found", wantToken: "--git-dir=.git", wantArgvIndex: 1},
-		{name: "direct work-tree attached", command: "git --work-tree=/tmp fsck --lost-found", wantToken: "--work-tree=/tmp", wantArgvIndex: 1},
-		{name: "direct namespace attached", command: "git --namespace=foo fsck --lost-found", wantToken: "--namespace=foo", wantArgvIndex: 1},
-		{name: "direct exec-path attached", command: "git --exec-path=/tmp fsck --lost-found", wantToken: "--exec-path=/tmp", wantArgvIndex: 1},
-		{name: "direct config-env attached", command: "git --config-env=GIT_CONFIG_COUNT=0 fsck --lost-found", wantToken: "--config-env=GIT_CONFIG_COUNT=0", wantArgvIndex: 1},
-		{name: "env git-dir attached", command: "env git --git-dir=.git fsck --lost-found", wantToken: "--git-dir=.git", wantArgvIndex: 1},
-		{name: "env work-tree attached", command: "env git --work-tree=/tmp fsck --lost-found", wantToken: "--work-tree=/tmp", wantArgvIndex: 1},
-		{name: "env namespace attached", command: "env git --namespace=foo fsck --lost-found", wantToken: "--namespace=foo", wantArgvIndex: 1},
-		{name: "env exec-path attached", command: "env git --exec-path=/tmp fsck --lost-found", wantToken: "--exec-path=/tmp", wantArgvIndex: 1},
-		{name: "env config-env attached", command: "env git --config-env=GIT_CONFIG_COUNT=0 fsck --lost-found", wantToken: "--config-env=GIT_CONFIG_COUNT=0", wantArgvIndex: 1},
-		{name: "direct git-dir split", command: "git --git-dir .git fsck --lost-found", wantToken: "--git-dir", wantArgvIndex: 1},
-		{name: "direct work-tree split", command: "git --work-tree /tmp fsck --lost-found", wantToken: "--work-tree", wantArgvIndex: 1},
-		{name: "direct namespace split", command: "git --namespace foo fsck --lost-found", wantToken: "--namespace", wantArgvIndex: 1},
-		{name: "direct exec-path split", command: "git --exec-path /tmp fsck --lost-found", wantToken: "--exec-path", wantArgvIndex: 1},
-		{name: "direct config-env split", command: "git --config-env GIT_CONFIG_COUNT fsck --lost-found", wantToken: "--config-env", wantArgvIndex: 1},
-		{name: "env git-dir split", command: "env git --git-dir .git fsck --lost-found", wantToken: "--git-dir", wantArgvIndex: 1},
-		{name: "env work-tree split", command: "env git --work-tree /tmp fsck --lost-found", wantToken: "--work-tree", wantArgvIndex: 1},
-		{name: "env namespace split", command: "env git --namespace foo fsck --lost-found", wantToken: "--namespace", wantArgvIndex: 1},
-		{name: "env exec-path split", command: "env git --exec-path /tmp fsck --lost-found", wantToken: "--exec-path", wantArgvIndex: 1},
-		{name: "env config-env split", command: "env git --config-env GIT_CONFIG_COUNT fsck --lost-found", wantToken: "--config-env", wantArgvIndex: 1},
+		{name: "direct git-dir attached", command: "git --git-dir=.git fsck --lost-found"},
+		{name: "direct work-tree attached", command: "git --work-tree=/tmp fsck --lost-found"},
+		{name: "direct namespace attached", command: "git --namespace=foo fsck --lost-found"},
+		{name: "direct exec-path attached", command: "git --exec-path=/tmp fsck --lost-found"},
+		{name: "direct config-env attached", command: "git --config-env=GIT_CONFIG_COUNT=0 fsck --lost-found"},
+		{name: "env git-dir attached", command: "env git --git-dir=.git fsck --lost-found"},
+		{name: "env work-tree attached", command: "env git --work-tree=/tmp fsck --lost-found"},
+		{name: "env namespace attached", command: "env git --namespace=foo fsck --lost-found"},
+		{name: "env exec-path attached", command: "env git --exec-path=/tmp fsck --lost-found"},
+		{name: "env config-env attached", command: "env git --config-env=GIT_CONFIG_COUNT=0 fsck --lost-found"},
+		{name: "direct git-dir split", command: "git --git-dir .git fsck --lost-found"},
+		{name: "direct work-tree split", command: "git --work-tree /tmp fsck --lost-found"},
+		{name: "direct namespace split", command: "git --namespace foo fsck --lost-found"},
+		{name: "direct exec-path split", command: "git --exec-path /tmp fsck --lost-found"},
+		{name: "direct config-env split", command: "git --config-env GIT_CONFIG_COUNT fsck --lost-found"},
+		{name: "env git-dir split", command: "env git --git-dir .git fsck --lost-found"},
+		{name: "env work-tree split", command: "env git --work-tree /tmp fsck --lost-found"},
+		{name: "env namespace split", command: "env git --namespace foo fsck --lost-found"},
+		{name: "env exec-path split", command: "env git --exec-path /tmp fsck --lost-found"},
+		{name: "env config-env split", command: "env git --config-env GIT_CONFIG_COUNT fsck --lost-found"},
 	}
 
 	for _, testCase := range testCases {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			result := Classify(activeWorker(testCase.command))
-			if result.Decision != DecisionDefer || result.Diagnostic != nil {
-				t.Fatalf("decision=%q diagnostic=%#v, want ordinary Git-context defer", result.Decision, result.Diagnostic)
+			if result.Decision != DecisionDeny || result.Diagnostic == nil {
+				t.Fatalf("decision=%q diagnostic=%#v, want worker Git ownership denial", result.Decision, result.Diagnostic)
+			}
+			if result.Diagnostic.Code != CodeWorkerGitOwnershipDenied ||
+				result.Diagnostic.Token != "--lost-found" {
+				t.Fatalf("diagnostic=%#v, want worker Git ownership on --lost-found", result.Diagnostic)
 			}
 		})
 	}
@@ -6651,6 +6870,33 @@ func TestEnvironmentUnsetOptions(t *testing.T) {
 				t.Fatalf("decision=%q diagnostic=%#v, want ordinary allow", result.Decision, result.Diagnostic)
 			}
 		})
+	}
+}
+
+func TestWorkerRepositoryAllowLifecycleRouteDefers(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{
+		`"$HOME/.codex/bin/eci-active" repository-allow-status`,
+		`"$HOME/.codex/bin/eci-active" repository-allow-on /tmp/dependency "owned dependency repair"`,
+		`"$HOME/.codex/bin/eci-active" repository-allow-off /tmp/dependency`,
+	} {
+		result := Classify(activeWorker(command))
+		if result.Decision != DecisionDefer || result.Diagnostic != nil {
+			t.Fatalf("command=%q decision=%q diagnostic=%#v, want defer without diagnostic", command, result.Decision, result.Diagnostic)
+		}
+	}
+
+	for _, command := range []string{
+		`"$HOME/.codex/bin/eci-active" repository-allow-on /tmp/dependency "line
+break"`,
+		`"$HOME/.codex/bin/eci-active" repository-allow-on /tmp/dependency`,
+		`"$HOME/.codex/bin/eci-active" repository-allow-off relative/dependency`,
+	} {
+		result := Classify(activeWorker(command))
+		if result.Decision == DecisionDefer && result.Diagnostic == nil {
+			t.Fatalf("malformed command=%q was deferred as a repository-allow route", command)
+		}
 	}
 }
 

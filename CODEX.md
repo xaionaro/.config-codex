@@ -104,6 +104,28 @@ While an ECI marker is active:
 - The coordinator and workers may use ordinary project, proof, ledger, skills, Git inspection, and relevant verification. Shell punctuation, quoting, aliases, environment expansion, command spelling, or an unfamiliar utility form are not mistakes by themselves.
 - Diagnose commands by their resolved effect and target. Stop only a concrete broad, unresolved, cross-scope, or destructive effect; name that effect and offer the narrow safe route. Treat parser or metadata uncertainty as advisory and continue harmless work.
 - Keep each worker within its assigned scope. Route or clarify a scope mismatch before execution. Deny only a resolved operation that would damage another scope, name that target, and offer the narrow safe route.
+- Every enabled denial names a documented bounded legitimate-work escape path in [the gate catalog](hooks/gate-escape-hatches.md). If no such path exists, keep that gate disabled until one is implemented. Preserve the legitimate owner and session; do not reroute owner-scoped dependency work.
+- Treat the gate catalog as an audit of concrete effects, not a permission system. Do not add an approval artifact, hash, receipt, generated plan, parser ceremony, or special command spelling as a prerequisite for ordinary work.
+
+### Hook-system contract
+
+Treat these as binding workspace requirements. Keep the catalog and this table
+in sync when a gate changes.
+
+| Area | Required behavior |
+|---|---|
+| Mission | Prevent accidental bot deviation. Do not model bots as adversaries or turn the hooks into a security/default-deny system. Resolve the actual effect and target; do not reject syntax, punctuation, wrappers, aliases, metadata, or uncertainty alone. |
+| Command handling | Evaluate the complete command, including compound effects. Do not force command splitting. Preserve valid PreToolUse JSON. |
+| Authority | Use the literal `$HOME/.codex` runtime as the single source of truth. Keep provider projections synchronized, but never make synchronization, hashes, receipts, plans, or generated permission artifacts prerequisites for ordinary work. |
+| Lifecycle CLI | Keep `"$HOME/.codex/bin/eci-active" --help` available. Diagnose PATH collisions as the wrong executable, not as missing help. Lifecycle visibility must not become a false access boundary. |
+| Gate design | Enable a gate only when it catches a concrete accidental broad, destructive, wrong-target, wrong-owner, or cross-scope effect and has a documented bounded legitimate-work hatch. Disable any gate lacking such a hatch. Preserve the legitimate owner/session; never reroute merely because work touches a dependency repository. |
+| Dependency repositories | The owning worker may declare one additional canonical repository with a human-readable reason, then inspect and repair it itself. Other workers and undeclared repositories remain outside that worker's scope. |
+| Edit ownership | Coordinators delegate ordinary repository-code edits to implementers. They may edit ledgers/status/plans/proof directly. A genuine coordinator code edge case uses a session-scoped 600-second self-edit hatch; reactivation replaces the window and never stacks. |
+| Review | Run at least one Critic B check per ECI round for the non-malicious accidental-deviation model, least restriction, scope fidelity, and available hatches. Trace every active task from exact user requirement to faithful outcome to bounded scope. A separate discovered concern is a post-ECI suggestion; a defect required to meet the requested outcome is in scope. |
+| Iterations and acceptance | After every implementer iteration, independently verify the exact diff and make one narrow coordinator checkpoint commit. Validate the implementer's result E2E before other independent checks; configuration changes also require E2E. Keep the repository clean and exclude disposable artifacts from tracking. |
+| Emergency bridge | A user-managed `exit 0` hook bypass is an extraordinary temporary bridge only. Re-enable hooks after the repair and verification; it is not a normal route or a replacement for a bounded hatch. |
+| Stop behavior | A valid active marker means resume work or perform normal teardown. Give one unchanged-condition reminder, then continuation metadata rather than a denial loop. Do not claim Stop can retract already-rendered output. Quota pauses do not close work. |
+| ECI records | Keep the ledger, append-only high-level log, latest status report, and forecast history current. Status reports name requirement lineage, active lanes, absolute target timestamps, and any target change's previous value and reason. A lane is an independently advancing workstream, not one serial ECI step. |
 
 ### Coordinator repository-edit routing
 

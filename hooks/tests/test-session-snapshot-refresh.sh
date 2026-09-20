@@ -177,25 +177,64 @@ test_baseline_pair_recovers_after_publication_boundary() {
   [ -f "$baseline" ] && [ -f "$binding" ]
 }
 
-test_worker_cli_lifecycle_mutations_are_main_owned() {
-  local proof_root="$TMP_ROOT/worker-lifecycle-proof" session_dir report fingerprint
+test_worker_cli_lifecycle_mutations_are_role_neutral() {
+  local proof_root="$TMP_ROOT/worker-lifecycle-proof" session_dir wait_report teardown_report fingerprint
   session_dir="$proof_root/t00-worker"
-  report="$session_dir/disengage.md"
+  wait_report="$TMP_ROOT/worker-wait-report.md"
+  teardown_report="$TMP_ROOT/worker-disengage.md"
   fingerprint="$(printf '%064d' 1)"
   mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
-  printf '%s\n' '# worker teardown report' >"$report"
-  for command in \
-    "on worker-scope" \
-    "wait $session_dir/eci_user_owned_wait.md" \
-    "resume $fingerprint" \
-    "off $report"; do
-    if CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$ROOT/bin/eci-active" $command >"$TMP_ROOT/worker-lifecycle.out" 2>"$TMP_ROOT/worker-lifecycle.err"; then
-      return 1
-    fi
-    grep -Fq 'main/orchestrator' "$TMP_ROOT/worker-lifecycle.err" || return 1
-  done
-  [ ! -e "$session_dir/eci_wait" ]
+  printf '%s\n' '# worker wait report' >"$wait_report"
+  printf '%s\n' '# worker teardown report' >"$teardown_report"
+
+  # Direct current-session lifecycle commands are role-neutral when their
+  # marker, CWD, and report targets resolve to the current session.  A worker
+  # label must not turn this documented local lifecycle into a false owner
+  # boundary.
+  (
+    cd "$ROOT"
+    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$ROOT/bin/eci-active" on worker-scope >"$TMP_ROOT/worker-on.out" \
+      2>"$TMP_ROOT/worker-on.err"
+  )
+  [ -f "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ]
+
+  # The live marker/CWD binding remains a safety boundary even though the
+  # lifecycle command itself is role-neutral.
+  if (
+    cd "$TMP_ROOT"
+    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$ROOT/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-wrong-cwd.out" \
+      2>"$TMP_ROOT/worker-wrong-cwd.err"
+  ); then
+    return 1
+  fi
+  grep -Fq 'current session/cwd' "$TMP_ROOT/worker-wrong-cwd.err" || return 1
+
+  (
+    cd "$ROOT"
+    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$ROOT/bin/eci-active" wait "$wait_report" >"$TMP_ROOT/worker-wait.out" \
+      2>"$TMP_ROOT/worker-wait.err"
+  )
+  [ -f "$session_dir/eci_wait" ] && [ ! -L "$session_dir/eci_wait" ]
+  [ -f "$session_dir/eci_user_owned_wait.md" ] && [ ! -L "$session_dir/eci_user_owned_wait.md" ]
+
+  (
+    cd "$ROOT"
+    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$ROOT/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-resume.out" \
+      2>"$TMP_ROOT/worker-resume.err"
+  )
+  [ ! -e "$session_dir/eci_wait" ] && [ ! -L "$session_dir/eci_wait" ]
+
+  (
+    cd "$ROOT"
+    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$ROOT/bin/eci-active" off "$teardown_report" >"$TMP_ROOT/worker-off.out" \
+      2>"$TMP_ROOT/worker-off.err"
+  )
+  [ ! -e "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ]
 }
 
 test_eci_active_mutations_fail_closed_when_lock_is_busy() {
@@ -384,7 +423,7 @@ test_session_start_rejects_malformed_types
 test_session_start_rejects_root_and_session_symlinks
 test_baseline_uses_fixed_git_and_resolves_head
 test_baseline_pair_recovers_after_publication_boundary
-test_worker_cli_lifecycle_mutations_are_main_owned
+test_worker_cli_lifecycle_mutations_are_role_neutral
 test_eci_active_mutations_fail_closed_when_lock_is_busy
 test_session_start_skips_pruning_when_mutation_lock_is_busy
 test_old_uuid_session_with_active_eci_marker_survives_cleanup

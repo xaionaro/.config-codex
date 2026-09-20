@@ -78,6 +78,7 @@ declare -A planner_source_hashes=()
 planner_go_sha256=''
 planner_go_version=''
 planner_toolchain_sha256=''
+planner_snapshot_test_mutated=false
 planner_binary_sha256=''
 planner_binary_size=''
 planner_cleanup_transaction=''
@@ -310,6 +311,16 @@ planner_snapshot_source_inputs() {
     fi
 
     if [ "$stable" = true ]; then
+      # Tests may request one fixed-purpose source mutation at this boundary
+      # to prove that a mixed snapshot is discarded and retried.  This is a
+      # deterministic probe, not an executor or an authorization mechanism;
+      # production runs leave the probe disabled.
+      if [ "${ECI_RUNTIME_SYNC_TEST_MUTATE_PLANNER_SOURCE_ONCE:-false}" = true ] &&
+        [ "$planner_snapshot_test_mutated" = false ]; then
+        planner_snapshot_test_mutated=true
+        printf '%s\n' '// runtime-sync one-shot snapshot mutation probe' \
+          >>"$source_dir/classifier.go"
+      fi
       for source_file in go.mod main.go classifier.go; do
         source_path="$source_dir/$source_file"
         if ! after_hashes["$source_file"]="$(hash_file "$source_path" 2>/dev/null)" ||
@@ -745,11 +756,14 @@ write_peer_receipt() {
   local receipt receipt_tmp relative source_path source_hash source_mode
 
   receipt="$peer_target_root/$PEER_RECEIPT_NAME"
+  if [ -L "$receipt" ]; then
+    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "peer receipt is a symlink: $receipt"
+  fi
   if [ -e "$receipt" ] || [ -L "$receipt" ]; then
     # A receipt is status from an earlier run. Refresh it when it is a
     # replaceable leaf; otherwise keep the metadata residue and let the
     # already-published runtime files stand.
-    if [ -f "$receipt" ] || [ -L "$receipt" ]; then
+    if [ -f "$receipt" ]; then
       if ! rm -f -- "$receipt"; then
         printf 'ECI runtime maintenance advisory: could not replace peer receipt: %s\n' "$receipt" >&2
         return 0
@@ -870,6 +884,12 @@ done < <(find "$source_root/hooks" "$source_root/bin" \
   -o -type f -print0 2>/dev/null | sort -z)
 [ "${#manifest[@]}" -gt 3 ] || fail ECI_RUNTIME_SYNC_SOURCE_MISSING 'canonical hooks/bin surface is empty'
 
+if [[ "$mode" == peer-* ]] && [ -L "$target_root/$PEER_RECEIPT_NAME" ]; then
+  # The receipt is a managed target too. Do not replace a link whose resolved
+  # destination is outside the declared provider home.
+  fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "peer receipt is a symlink: $target_root/$PEER_RECEIPT_NAME"
+fi
+
 path_parent_is_safe() {
   local path="$1" parent
   parent="${path%/*}"
@@ -888,12 +908,10 @@ for relative in "${manifest[@]}"; do
   path_parent_is_safe "$target_path" ||
     fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target parent contains a symlink: $target_path"
   if [ -L "$target_path" ]; then
-    # `mv` below replaces a stale leaf link; do not follow it or treat it as
-    # authority over the next synchronization.
-    drift=1
-    needs_sync["$relative"]=1
-    printf 'DRIFT\t%s\tstale-target-link\n' "$relative"
-    continue
+    # A managed leaf link is an ambiguous target even when `mv` would usually
+    # replace it. Reject it before staging so publication cannot follow an
+    # accidental link into another directory.
+    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target is a symlink: $target_path"
   fi
   if [ -e "$target_path" ]; then
     [ -f "$target_path" ] ||
@@ -935,6 +953,8 @@ for relative in "${manifest[@]}"; do
   target_path="$target_root/$relative"
   path_parent_is_safe "$target_path" ||
     fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target parent changed to a symlink: $target_path"
+  [ ! -L "$target_path" ] ||
+    fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "managed target is a symlink: $target_path"
   target_parent="${target_path%/*}"
   mkdir -p -- "$target_parent"
   [ ! -L "$target_parent" ] || fail ECI_RUNTIME_SYNC_TARGET_UNSAFE "target parent is a symlink: $target_parent"

@@ -130,14 +130,26 @@ if temporary_unqualified_file_remove:
             reject("path=" + path + " reason=temporary cleanup requires canonical absolute paths")
         parent = os.path.dirname(path)
         canonical_parent = os.path.realpath(parent)
-        if parent != canonical_parent:
+        # `$HOME/tmp` is a supported home-scoped temporary-root alias on this
+        # host.  Its spelling is not a different effect: permit that exact
+        # alias when it resolves to one of the already validated roots, while
+        # continuing to reject arbitrary symlinked parents.
+        home_tmp_alias = os.path.join(home, "tmp") if home else ""
+        parent_is_home_tmp_alias = (
+            parent == home_tmp_alias and
+            os.path.islink(parent) and
+            canonical_parent in temporary_roots and
+            exact_home_tmp_alias(parent, canonical_parent)
+        )
+        if parent != canonical_parent and not parent_is_home_tmp_alias:
             reject("path=" + path + " reason=temporary cleanup parent must use its canonical root spelling")
         candidate_roots = [candidate for candidate in temporary_roots
-                           if parent == candidate or os.path.dirname(parent) == candidate]
+                           if canonical_parent == candidate or
+                           os.path.dirname(canonical_parent) == candidate]
         root = max(candidate_roots, key=lambda candidate: (len(candidate), candidate), default="")
         if not root:
             reject("path=" + path + " reason=unqualified rm -f is limited to canonical temporary roots")
-        if parent != root:
+        if canonical_parent != root:
             if (not allow_private_session_child or len(paths) != 1 or
                     not private_session_temp_parent(root, parent)):
                 reject("path=" + path + " reason=temporary cleanup permits one regular leaf only under a private direct eci session directory")

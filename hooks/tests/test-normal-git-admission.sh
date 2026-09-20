@@ -721,10 +721,18 @@ for worker_git_read in \
   "command git -C $REPO status --short" \
   "git -C $REPO log -1 --oneline" \
   "git -C $REPO diff --stat" \
-  "git -C $REPO rev-parse --show-toplevel"; do
+  "git -C $REPO rev-parse --show-toplevel" \
+  "git branch --list 'main*'" \
+  "git branch --contains HEAD" \
+  "systemd-run --working-directory=. --setenv=GIT_DIR=.git --setenv=GIT_WORK_TREE=. git status --short" \
+  "systemd-run --working-directory $REPO --setenv GIT_DIR=.git --setenv GIT_WORK_TREE=. git log -1 --oneline"; do
   run_worker_git_inspection "$worker_git_read"
 done
 assert_denied_code "git -C $FOREIGN_REPO status --short" ECI_GIT_CROSS_SCOPE_DENIED worker \
+  "active_repo=$REPO target_repo=$FOREIGN_REPO"
+assert_denied_code "systemd-run --working-directory=$FOREIGN_REPO git status --short" ECI_GIT_CROSS_SCOPE_DENIED worker \
+  "active_repo=$REPO target_repo=$FOREIGN_REPO"
+assert_denied_code "systemd-run --working-directory=$REPO --setenv=GIT_WORK_TREE=$FOREIGN_REPO git status --short" ECI_GIT_CROSS_SCOPE_DENIED worker \
   "active_repo=$REPO target_repo=$FOREIGN_REPO"
 assert_denied_code "git -C $REPO diff --output=$TMP_ROOT/git-inspection.out" ECI_GIT_OUTPUT_WRITE_DENIED worker \
   "operation=output"

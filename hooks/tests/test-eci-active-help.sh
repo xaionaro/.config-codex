@@ -33,8 +33,6 @@ fresh_planner="$TMP_ROOT/fresh-eci-command-plan"
 planner_dir="$fixture_codex/hooks/lib/eci-command-plan-go"
 planner_binary="$planner_dir/eci-command-plan"
 planner_receipt="$planner_dir/.eci-command-plan.provenance"
-replacement_planner="$TMP_ROOT/replacement-eci-command-plan"
-planner_race_done="$TMP_ROOT/planner-race-done"
 
 mkdir -p -- "$fixture_home/tmp" "$fixture_codex/bin" "$fixture_kimi/bin" "$alternate_home" \
   "$proof_root/t00-help" "$state_root" "$config_root/eci" "$fake_bin"
@@ -531,88 +529,31 @@ restore_fresh_planner_artifact() {
   write_full_codex_runtime_receipt
 }
 
-# Replace the planner pathname immediately after the hook hashes its inherited
-# /proc/self/fd descriptor.  The planner itself records which inode executed,
-# so this is an integration regression for the hook handoff rather than a
-# production fault-injection path.
-assert_hook_executes_pinned_planner_after_path_replacement() {
-  local hook_copy="$fixture_codex/hooks/validate-bash.sh"
-  local patched_hook="$TMP_ROOT/validate-bash.race.sh"
-  local patch_status
-
+# A missing planner receipt is maintenance state, not an ordinary-work gate.
+# The hook may use the published planner binary when no receipt exists; it
+# must still leave the normal command path admitted.
+assert_hook_executes_published_planner_without_receipt() {
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'cat >/dev/null' \
-    'printf pinned-planner > "${PLANNER_EXECUTION_MARKER:?}"' \
+    'printf published-planner > "${PLANNER_EXECUTION_MARKER:?}"' \
     'printf "%s\\n" "{\"decision\":\"allow\"}"' \
     >"$planner_binary"
-  printf '%s\n' \
-    '#!/usr/bin/env bash' \
-    'cat >/dev/null' \
-    'printf replacement-planner > "${PLANNER_EXECUTION_MARKER:?}"' \
-    'printf "%s\\n" "{\"decision\":\"allow\"}"' \
-    >"$replacement_planner"
-  chmod 755 -- "$planner_binary" "$replacement_planner"
-  write_current_planner_provenance
-
-  # Patch only the private fixture copy.  The inserted branch runs after the
-  # pinned binary digest comparison and before the copied hook reaches planner
-  # execution; no production hook accepts this test control input.
-  if awk '
-    { print }
-    /pinned planner binary digest does not match provenance/ {
-      count++
-      print "  if [ -n \"${PLANNER_RACE_BINARY:-}\" ] && [ -n \"${PLANNER_RACE_REPLACEMENT:-}\" ] && [ ! -e \"${PLANNER_RACE_DONE:-}\" ]; then"
-      print "    mv -- \"$PLANNER_RACE_REPLACEMENT\" \"$PLANNER_RACE_BINARY\""
-      print "    : > \"$PLANNER_RACE_DONE\""
-      print "  fi"
-    }
-    END { exit(count == 1 ? 0 : 42) }
-  ' "$hook_copy" >"$patched_hook"; then
-    :
-  else
-    patch_status=$?
-    printf 'planner-race fixture could not patch exactly one pinned-digest site (status=%s)\n' "$patch_status" >&2
-    exit 1
-  fi
-  mv -- "$patched_hook" "$hook_copy"
-  chmod 755 -- "$hook_copy"
+  chmod 755 -- "$planner_binary"
+  rm -f -- "$planner_receipt" "$planner_execution_marker"
   write_full_codex_runtime_receipt
 
-  rm -f -- "$planner_execution_marker" "$dispatcher_execution_marker" "$planner_race_done"
-  export PLANNER_RACE_BINARY="$planner_binary"
-  export PLANNER_RACE_REPLACEMENT="$replacement_planner"
-  export PLANNER_RACE_DONE="$planner_race_done"
-  run_worker_hook 'printf hook-fd-handoff'
-  unset PLANNER_RACE_BINARY PLANNER_RACE_REPLACEMENT PLANNER_RACE_DONE
-
-  [ -e "$planner_race_done" ] || {
-    printf '%s\n' 'planner replacement did not run after pinned-digest validation' >&2
-    exit 1
-  }
-  [ "$(cat -- "$planner_execution_marker")" = pinned-planner ] || {
-    printf 'hook executed the replaced planner pathname instead of the pinned descriptor:\n' >&2
+  run_worker_hook 'printf planner-no-receipt'
+  [ "$(cat -- "$planner_execution_marker")" = published-planner ] || {
+    printf '%s\n' 'published planner was not used without a receipt:' >&2
     cat -- "$planner_execution_marker" >&2 2>/dev/null || true
     exit 1
   }
-  grep -Fq replacement-planner "$planner_binary" || {
-    printf '%s\n' 'planner race fixture did not replace the planner pathname' >&2
+  [ ! -s "$stderr_output" ] && [ ! -s "$output" ] || {
+    printf '%s\n' 'missing planner receipt became an ordinary-work denial:' >&2
+    cat -- "$output" "$stderr_output" >&2
     exit 1
   }
-  [ ! -s "$stderr_output" ] || {
-    printf 'pinned planner handoff wrote unexpected stderr:\n' >&2
-    cat -- "$stderr_output" >&2
-    exit 1
-  }
-  [ ! -s "$output" ] || {
-    printf 'pinned planner handoff was not admitted:\n' >&2
-    cat -- "$output" >&2
-    exit 1
-  }
-
-  cp -- "$ROOT/hooks/validate-bash.sh" "$hook_copy"
-  sed -i '2{/^exit 0$/d;}' -- "$hook_copy"
-  chmod 755 -- "$hook_copy"
   restore_fresh_planner_artifact
 }
 
@@ -1122,7 +1063,7 @@ assert_stale_planner_uses_safe_fallback
 assert_hook_allows_maintain_planner_bootstrap
 restore_fresh_planner_artifact
 assert_worker_lifecycle_visibility_allowed
-assert_hook_executes_pinned_planner_after_path_replacement
+assert_hook_executes_published_planner_without_receipt
 assert_stale_runtime_receipt_deadlock_policy
 assert_external_runtime_receipt_refresh
 assert_hook_allows_home_token_help '$HOME/.codex/bin/eci-active' --help

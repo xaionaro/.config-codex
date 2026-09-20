@@ -10,6 +10,9 @@
 !hooks.json
 !bin/**
 !hooks/**
+# Classifier tests create disposable fixtures beside the hook; interrupted
+# test processes must not leave any of those fixtures eligible for tracking.
+/hooks/.validate-bash-*
 !proofs/**
 !skills/**
 !tools/**

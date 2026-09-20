@@ -15,10 +15,11 @@ set -euo pipefail
 
 unset ECI_READ_ONLY_PIPELINE
 
-# User-directed temporary exception: the owning worker may inspect and repair a
-# declared dependency repository without being rerouted. Keep this narrow gate
-# disabled until the owner-scoped additional-repository escape hatch exists.
-ECI_CROSS_SCOPE_GATE_ENABLED=false
+# Cross-repository Git checks remain enabled. A worker that owns a legitimate
+# dependency repair may declare exactly one additional repository through the
+# owner-scoped eci-active repository-allow-on route; the record stores its
+# resolved canonical Git root.
+ECI_CROSS_SCOPE_GATE_ENABLED=true
 
 # Determine the hook directory without a PATH lookup: callback PATH may be
 # empty or relative until the original value is captured below.
@@ -59,7 +60,16 @@ if [[ -v PATH ]]; then
   CODEX_COMMAND_PATH_SET=true
   CODEX_COMMAND_PATH_EXPORTED=true
 fi
-CODEX_COMMAND_PATH="${PATH-}"
+if [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" = true ] &&
+  [[ -v ECI_COMPOUND_COMMAND_PATH ]]; then
+  # Recursive segment validation must preserve the callback's original
+  # executable-resolution context.  The parent hook prepends fixed system
+  # directories to PATH for its own helpers; re-deriving this value in the
+  # child would hide a caller-supplied executable shadowing the trusted one.
+  CODEX_COMMAND_PATH="$ECI_COMPOUND_COMMAND_PATH"
+else
+  CODEX_COMMAND_PATH="${PATH-}"
+fi
 export CODEX_COMMAND_PATH CODEX_COMMAND_PATH_EXPORTED
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEX_COMMAND_PATH}"
 export PATH
@@ -283,6 +293,327 @@ deny_eci() {
   deny "$(eci_diagnostic_reason "$code" "PreToolUse" "$operation" "$subject" "$detail" "$remediation")"
 }
 
+# Resolve interpreter-context assignments by their concrete effect.  An
+# environment variable name, punctuation, or an unfamiliar wrapper is not a
+# denial reason.  Only an assignment that points at an existing file/path and
+# is attached to an existing literal interpreter script is actionable: it can
+# change that script's startup/modules/executable context before the script
+# runs.  Missing, empty, ordinary, and unresolved values remain transparent.
+environment_script_target() {
+  python3 - "$1" "$cwd" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+command, callback_cwd = sys.argv[1:]
+
+FILE_VARS = {"BASH_ENV", "ENV", "PYTHONSTARTUP", "LD_PRELOAD"}
+PATH_VARS = {
+    "PATH", "CDPATH", "GEM_HOME", "GEM_PATH", "LD_LIBRARY_PATH", "NODE_PATH",
+    "PERL5LIB", "PYTHONHOME", "PYTHONPATH", "RUBYLIB", "ZDOTDIR",
+}
+OPTION_VARS = {"NODE_OPTIONS", "PERL5OPT", "RUBYOPT"}
+CONTEXT_VARS = FILE_VARS | PATH_VARS | OPTION_VARS
+ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.S)
+
+# `shlex` with punctuation enabled gives us a finite top-level argv for each
+# visible shell segment.  Operators split execution contexts; they do not
+# themselves make a command unsafe.
+OPERATORS = {
+    ";", "&", "&&", "|", "||", "(", ")", ">", ">>", ">|", ">&",
+    "<", "<<", "<<<", "<&",
+}
+
+INTERPRETER_RE = {
+    "shell": re.compile(r"^(?:ash|bash|dash|fish|ksh|sh|zsh)(?:[0-9.]*)$"),
+    "node": re.compile(r"^(?:node|nodejs)(?:[0-9.]*)$"),
+    "perl": re.compile(r"^perl(?:[0-9.]*)$"),
+    "php": re.compile(r"^php(?:[0-9.]*)$"),
+    "python": re.compile(r"^python(?:[0-9.]*)$"),
+    "ruby": re.compile(r"^ruby(?:[0-9.]*)$"),
+}
+
+
+def split_segments(values):
+    segments = []
+    current = []
+    for token in values + [";"]:
+        if token in OPERATORS:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    return segments
+
+
+def resolved_path(value, base):
+    # Shell expansion is intentionally not guessed.  A literal `$VAR`, glob,
+    # command substitution, or malformed value is unresolved and transparent.
+    if not value or "\x00" in value or "\n" in value or "\r" in value:
+        return None
+    candidate = value if os.path.isabs(value) else os.path.join(base, value)
+    return os.path.realpath(os.path.normpath(candidate))
+
+
+def existing_file(value, base):
+    path = resolved_path(value, base)
+    return path if path and os.path.isfile(path) else None
+
+
+def existing_path(value, base):
+    path = resolved_path(value, base)
+    return path if path and os.path.exists(path) else None
+
+
+def option_references(value, kind):
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError:
+        return []
+    references = []
+    index = 0
+    if kind == "node":
+        attached = ("--require=", "--loader=", "--import=")
+        separate = {"--require", "--loader", "--import", "-r"}
+    elif kind == "ruby":
+        attached = ()
+        separate = {"-r", "-I"}
+    else:  # perl
+        attached = ()
+        separate = {"-I"}
+
+    while index < len(tokens):
+        token = tokens[index]
+        if any(token.startswith(prefix) and len(token) > len(prefix) for prefix in attached):
+            for prefix in attached:
+                if token.startswith(prefix) and len(token) > len(prefix):
+                    references.append(token[len(prefix):])
+                    break
+        elif token in separate:
+            if index + 1 < len(tokens):
+                references.append(tokens[index + 1])
+                index += 1
+        elif kind == "node" and token.startswith("-r") and len(token) > 2:
+            references.append(token[2:])
+        elif kind == "ruby" and token.startswith(("-r", "-I")) and len(token) > 2:
+            references.append(token[2:])
+        elif kind == "perl" and token.startswith("-I") and len(token) > 2:
+            references.append(token[2:])
+        index += 1
+    return references
+
+
+def assignment_effect(name, value, base):
+    if name in FILE_VARS:
+        return ("file", existing_file(value, base))
+    if name in PATH_VARS:
+        for component in value.split(":"):
+            if component:
+                path = existing_path(component, base)
+                if path:
+                    return ("path", path)
+        return ("path", None)
+    if name in OPTION_VARS:
+        if name == "NODE_OPTIONS":
+            kind = "node"
+        elif name == "RUBYOPT":
+            kind = "ruby"
+        else:
+            kind = "perl"
+        for reference in option_references(value, kind):
+            path = existing_path(reference, base)
+            if path:
+                return ("option", path)
+        return ("option", None)
+    return ("", None)
+
+
+def interpreter_kind(token):
+    name = os.path.basename(token)
+    for kind, pattern in INTERPRETER_RE.items():
+        if pattern.fullmatch(name):
+            return kind
+    return None
+
+
+def script_target(values, kind, base):
+    if not values:
+        return None
+    index = 1
+    while index < len(values):
+        token = values[index]
+        if token == "--":
+            index += 1
+            break
+        if token == "-":
+            return None
+        if kind == "shell":
+            if token in {"-c", "--command", "--rcfile"}:
+                return None
+            if token.startswith("--command=") or token.startswith("--rcfile="):
+                return None
+            if token in {"-O", "--option"}:
+                index += 2
+                continue
+        elif kind == "node":
+            if token in {"-e", "--eval", "-p", "--print"} or token.startswith(("--eval=", "--print=")):
+                return None
+        elif kind == "perl":
+            if token in {"-e", "-E"} or token.startswith(("-e", "-E")):
+                return None
+        elif kind == "php":
+            if token in {"-r", "-R", "-B", "-E"} or token.startswith(("-r", "-R", "-B", "-E")):
+                return None
+        elif kind == "python":
+            if token in {"-c", "-m", "-"} or token.startswith(("-c", "-m")):
+                return None
+            if token in {"-X", "-W"}:
+                index += 2
+                continue
+        elif kind == "ruby":
+            if token in {"-e", "-E", "-"} or token.startswith(("-e", "-E")):
+                return None
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if index >= len(values):
+        return None
+    candidate = values[index]
+    resolved = resolved_path(candidate, base)
+    if not resolved or not os.path.isfile(resolved):
+        return None
+    return resolved
+
+
+def parse_command(values, context, base, segment, allow_assignments=True, depth=0):
+    if not values or depth > 8:
+        return None
+    values = list(values)
+    index = 0
+    context = list(context)
+    if allow_assignments:
+        while index < len(values):
+            match = ASSIGNMENT.fullmatch(values[index])
+            if not match:
+                break
+            name, value = match.groups()
+            if name in CONTEXT_VARS:
+                effect, path = assignment_effect(name, value, base)
+                context.append((name, index, effect, path))
+            index += 1
+    if index >= len(values):
+        return None
+
+    executable = os.path.basename(values[index])
+    if executable == "env":
+        index += 1
+        env_context = list(context)
+        env_base = base
+        while index < len(values):
+            token = values[index]
+            if token in {"-i", "--ignore-environment"}:
+                env_context = []
+                index += 1
+                continue
+            if token in {"-u", "--unset"}:
+                if index + 1 >= len(values):
+                    return None
+                name = values[index + 1]
+                env_context = [item for item in env_context if item[0] != name]
+                index += 2
+                continue
+            if token.startswith("--unset="):
+                name = token.split("=", 1)[1]
+                env_context = [item for item in env_context if item[0] != name]
+                index += 1
+                continue
+            if token in {"-C", "--chdir"}:
+                if index + 1 >= len(values):
+                    return None
+                changed = existing_path(values[index + 1], env_base)
+                if changed and os.path.isdir(changed):
+                    env_base = changed
+                index += 2
+                continue
+            if token.startswith("--chdir="):
+                changed = existing_path(token.split("=", 1)[1], env_base)
+                if changed and os.path.isdir(changed):
+                    env_base = changed
+                index += 1
+                continue
+            if token in {"-S", "--split-string"} or token.startswith("--split-string="):
+                if token in {"-S", "--split-string"}:
+                    if index + 1 >= len(values):
+                        return None
+                    payload = values[index + 1]
+                else:
+                    payload = token.split("=", 1)[1]
+                try:
+                    nested = shlex.split(payload, posix=True)
+                except ValueError:
+                    return None
+                return parse_command(nested, env_context, env_base, segment, True, depth + 1)
+            if token == "--":
+                # After `env --`, all following tokens are command argv.  An
+                # assignment-looking token is not reinterpreted as an env
+                # assignment (for example `env -- BASH_ENV=/etc/profile bash script`).
+                return parse_command(values[index + 1:], env_context, env_base, segment, False, depth + 1)
+            match = ASSIGNMENT.fullmatch(token)
+            if match:
+                name, value = match.groups()
+                if name in CONTEXT_VARS:
+                    effect, path = assignment_effect(name, value, env_base)
+                    env_context.append((name, index, effect, path))
+                index += 1
+                continue
+            if token.startswith("-"):
+                return None
+            break
+        return parse_command(values[index:], env_context, env_base, segment, False, depth + 1)
+
+    if executable in {"command", "builtin", "exec", "nohup", "setsid"}:
+        return parse_command(values[index + 1:], context, base, segment, False, depth + 1)
+
+    kind = interpreter_kind(values[index])
+    if kind is None:
+        return None
+    target = script_target(values[index:], kind, base)
+    if target is None:
+        return None
+    for name, assignment_index, effect, path in context:
+        if path:
+            return name, assignment_index, segment, target, effect
+    return None
+
+
+try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    tokens = list(lexer)
+except ValueError:
+    raise SystemExit(1)
+
+for segment, values in enumerate(split_segments(tokens), 1):
+    result = parse_command(values, [], callback_cwd, segment)
+    if result is not None:
+        print("\t".join(str(value) for value in result))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+enforce_environment_script_target() {
+  local command_value="$1" detail context_name context_index segment target effect
+  detail="$(environment_script_target "$command_value" 2>/dev/null || true)"
+  [ -n "$detail" ] || return 0
+  IFS=$'\t' read -r context_name context_index segment target effect <<<"$detail"
+  deny_eci "ECI_ENVIRONMENT_CONTEXT_DENIED" "environment-boundary" \
+    "ECI ${plan_role:-coordinator} environment context denied for an existing interpreter script: token=$context_name argv_index=$context_index segment=$segment target=$target effect=$effect; predicate=interpreter-context; reason=the resolved environment assignment changes the reviewed script's execution context" \
+    "invoke the existing script without the resolved startup/module/path assignment, or use a reviewed clean-context route"
+}
+
 active_eci_markers_for_cwd() {
   local probe_cwd="${1:-}" probe_session="${2:-}" marker parent_session
   local direct_marker="" parent_marker="" canonical_cwd="" resolved_marker=""
@@ -503,6 +834,54 @@ if not tokens or any(token in operators for token in tokens):
 
 assignment = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
 environment = dict(os.environ)
+def skip_transparent(index):
+    """Return the child argv index for finite transparent wrappers."""
+    if index >= len(tokens):
+        return None
+    name = os.path.basename(os.path.expanduser(os.path.expandvars(tokens[index])))
+    if name == "env":
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return index + 1
+            match = assignment.fullmatch(token)
+            if match is not None:
+                environment[match.group(1)] = match.group(2)
+                index += 1
+                continue
+            if token in {"-i", "--ignore-environment", "-0", "--null"}:
+                index += 1
+                continue
+            if token in {"-u", "--unset", "-C", "--chdir"}:
+                index += 2
+                continue
+            if token.startswith("--unset=") or token.startswith("--chdir="):
+                index += 1
+                continue
+            break
+        return index
+    if name in {"command", "builtin", "exec", "nohup", "setsid", "chronic"}:
+        return index + 1
+    if name == "busybox":
+        return index + 2 if index + 1 < len(tokens) and tokens[index + 1] == "--" else index + 1
+    if name == "stdbuf":
+        index += 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            index += 1
+        return index
+    if name == "timeout":
+        index += 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            index += 2 if tokens[index] in {"-k", "--kill-after", "-s", "--signal"} else 1
+        return index + 1 if index < len(tokens) else index
+    if name in {"time", "nice", "prlimit", "systemd-run", "sudo", "doas"}:
+        index += 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            index += 1
+        return index
+    return index
+
 index = 0
 while index < len(tokens):
     match = assignment.fullmatch(tokens[index])
@@ -510,32 +889,11 @@ while index < len(tokens):
         break
     environment[match.group(1)] = match.group(2)
     index += 1
-if index >= len(tokens):
-    raise SystemExit(1)
-
-launcher = os.path.basename(os.path.expanduser(os.path.expandvars(tokens[index])))
-if launcher == "env":
-    index += 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
-            index += 1
-            continue
-        match = assignment.fullmatch(token)
-        if match is not None:
-            environment[match.group(1)] = match.group(2)
-            index += 1
-            continue
-        if token in {"-i", "--ignore-environment", "-0", "--null"}:
-            index += 1
-            continue
-        if token in {"-u", "--unset"}:
-            index += 2
-            continue
-        if token.startswith("--unset="):
-            index += 1
-            continue
+while index < len(tokens):
+    child = skip_transparent(index)
+    if child is None or child == index:
         break
+    index = child
 if index >= len(tokens):
     raise SystemExit(1)
 
@@ -791,6 +1149,15 @@ plan_role=coordinator
 plan_marker_state=inactive
 [ "${#syntax_eci_markers[@]}" -eq 0 ] || plan_marker_state=active
 
+# Resolve concrete startup/module/path effects immediately after marker
+# selection, before planner fast paths or read-only exits can bypass the
+# check.  This is effect-based: ordinary and unresolved assignments remain
+# transparent, while an existing interpreter script with an existing context
+# path receives the narrow execution-context denial.
+if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  enforce_environment_script_target "$command"
+fi
+
 if lifecycle_mutation_target="$(lifecycle_mutation_different_target "$command" 2>/dev/null || true)"; then
   if [ -n "$lifecycle_mutation_target" ]; then
     deny_eci "ECI_LIFECYCLE_TARGET_DENIED" "eci-lifecycle" \
@@ -804,42 +1171,19 @@ fi
 # a temp-looking argument is not an admission boundary by itself.  Concrete
 # destructive or cross-scope targets remain checked by the normal routes.
 
-# The compiled planner is an executable policy authority, not merely a cache.
-# Bind it to the literal selected Codex home before it gets a chance to classify
-# an active callback. A physical path is used only to prove that the current
-# hook and source files are that same HOME-selected authority; it must never
-# select a different provider root. This is a per-callback source/binary plus
-# receipt-coherence check, not full toolchain attestation: controlled
-# `planner-check` remains the complete producer-side verifier. The bounded
-# lifecycle recovery below runs before planner execution, so it remains able
-# to repair this artifact.
+# The planner is a helper for understanding a command, not an ordinary-work
+# permission authority. Select it from the literal `$HOME/.codex` source and
+# use publication metadata only to avoid silently running an older binary.
+# Controlled `planner-check` remains the full maintenance attestation route;
+# ordinary commands continue through the transparent fallback when metadata or
+# source execution is unavailable.
 CODEX_PLAN_PROVENANCE_DETAIL=""
-CODEX_PLAN_PROVENANCE_BINARY=""
 CODEX_PLAN_PROVENANCE_FD=""
 CODEX_PLAN_PROVENANCE_EXECUTABLE=""
-CODEX_PLAN_PROVENANCE_CLASSIFIER_ONLY_STALE=false
 
 codex_plan_provenance_fail() {
   CODEX_PLAN_PROVENANCE_DETAIL="$1"
   return 1
-}
-
-codex_plan_provenance_regular_file_is_safe() {
-  local path="$1" expected_real="$2" uid="$3" actual_real actual_owner
-
-  actual_real="$(realpath -e -- "$path" 2>/dev/null || true)"
-  actual_owner="$(stat -c '%u' -- "$path" 2>/dev/null || true)"
-  [ -f "$path" ] && [ ! -L "$path" ] && [ -n "$actual_real" ] &&
-    [ "$actual_real" = "$expected_real" ] && [ "$actual_owner" = "$uid" ]
-}
-
-codex_plan_provenance_sha256() {
-  local path="$1" digest
-
-  digest="$(sha256sum -- "$path" 2>/dev/null || true)"
-  digest="${digest%% *}"
-  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
-  printf '%s' "$digest"
 }
 
 codex_plan_provenance_close_pinned_binary() {
@@ -851,8 +1195,8 @@ codex_plan_provenance_close_pinned_binary() {
 }
 
 codex_plan_provenance_pin_binary() {
-  local path="$1" expected_real="$2" uid="$3"
-  local fd_path path_real path_owner path_identity fd_owner fd_identity
+  local path="$1"
+  local fd_path
 
   codex_plan_provenance_close_pinned_binary
   if ! exec {CODEX_PLAN_PROVENANCE_FD}<"$path"; then
@@ -860,14 +1204,13 @@ codex_plan_provenance_pin_binary() {
     return 1
   fi
   fd_path="/proc/self/fd/$CODEX_PLAN_PROVENANCE_FD"
-  path_real="$(realpath -e -- "$path" 2>/dev/null || true)"
-  path_owner="$(stat -c '%u' -- "$path" 2>/dev/null || true)"
-  path_identity="$(stat -Lc '%d:%i' -- "$path" 2>/dev/null || true)"
-  fd_owner="$(stat -Lc '%u' -- "$fd_path" 2>/dev/null || true)"
-  fd_identity="$(stat -Lc '%d:%i' -- "$fd_path" 2>/dev/null || true)"
-  if [ ! -f "$path" ] || [ -L "$path" ] || [ "$path_real" != "$expected_real" ] ||
-    [ "$path_owner" != "$uid" ] || [[ ! "$path_identity" =~ ^[0-9]+:[0-9]+$ ]] ||
-    [ "$path_identity" != "$fd_identity" ] || [ "$fd_owner" != "$uid" ]; then
+  # The canonical HOME-derived planner path was checked by the caller before
+  # opening this descriptor.  Pinning the already-open regular executable is
+  # enough to keep an atomic publication from swapping the bytes underneath
+  # this callback; repeated owner/inode/hash probes here only turn advisory
+  # metadata into a latency and access boundary.
+  if [ ! -f "$path" ] || [ -L "$path" ] || [ ! -x "$path" ] ||
+    [ ! -e "$fd_path" ]; then
     codex_plan_provenance_close_pinned_binary
     codex_plan_provenance_fail 'planner binary changed or became unsafe while it was being pinned for validation'
     return 1
@@ -878,28 +1221,16 @@ codex_plan_provenance_pin_binary() {
 
 codex_plan_provenance_is_current() {
   local selected_root="${HOME:?HOME must be set}/.codex"
-  local uid root_real planner_dir planner_dir_real binary receipt receipt_real
-  local receipt_owner receipt_mode receipt_links receipt_bytes last_byte line key value
-  local actual_digest actual_classifier_digest actual_size actual_mode
-  local go_mod_sha='' main_go_sha='' classifier_go_sha='' binary_sha='' binary_size='' binary_mode=''
-  local -a expected_keys=()
-  local -a receipt_lines=()
-  local index
-
-  uid="$(id -u 2>/dev/null || true)"
-  case "$uid" in
-    ''|*[!0-9]*)
-      codex_plan_provenance_fail 'current uid is unavailable'
-      return 1
-      ;;
-  esac
+  local root_real planner_dir planner_dir_real binary receipt binary_mtime source_mtime
+  local recorded_binary_sha actual_binary_sha
+  local -a mtimes=()
 
   # Select the planner authority lexically from HOME.  Both registered
   # provider callbacks consume this canonical source, so a Kimi callback does
   # not turn its copied hook tree into a second planner authority.
   root_real="$(realpath -e -- "$selected_root" 2>/dev/null || true)"
   if [ ! -d "$selected_root" ] || [ -L "$selected_root" ] || [ -z "$root_real" ] ||
-    [ "$(stat -c '%u' -- "$selected_root" 2>/dev/null || true)" != "$uid" ]; then
+    [ "$root_real" != "$selected_root" ]; then
     codex_plan_provenance_fail 'the canonical $HOME/.codex planner authority is unavailable or unsafe'
     return 1
   fi
@@ -907,154 +1238,85 @@ codex_plan_provenance_is_current() {
   planner_dir="$selected_root/hooks/lib/eci-command-plan-go"
   planner_dir_real="$(realpath -e -- "$planner_dir" 2>/dev/null || true)"
   if [ ! -d "$planner_dir" ] || [ -L "$planner_dir" ] ||
-    [ "$planner_dir_real" != "$root_real/hooks/lib/eci-command-plan-go" ] ||
-    [ "$(stat -c '%u' -- "$planner_dir" 2>/dev/null || true)" != "$uid" ]; then
+    [ "$planner_dir_real" != "$root_real/hooks/lib/eci-command-plan-go" ]; then
     codex_plan_provenance_fail 'the planner source directory is missing or unsafe below the literal $HOME/.codex authority'
     return 1
   fi
 
   binary="$planner_dir/eci-command-plan"
+  for source in go.mod main.go classifier.go; do
+    [ -f "$planner_dir/$source" ] && [ ! -L "$planner_dir/$source" ] || {
+      codex_plan_provenance_fail "planner source file is missing or unsafe: $source"
+      return 1
+    }
+  done
+  [ -f "$binary" ] && [ ! -L "$binary" ] && [ -x "$binary" ] || {
+    codex_plan_provenance_fail 'planner binary is missing or not executable'
+    return 1
+  }
+
+  # A producer receipt may identify the binary that was published with the
+  # source snapshot.  Use that digest only to choose the current source when
+  # the pathname now contains a different binary; it is never an ordinary
+  # work permission check.  Missing or malformed receipt metadata remains
+  # advisory and does not deny the callback.
   receipt="$planner_dir/.eci-command-plan.provenance"
-  receipt_real="$(realpath -e -- "$receipt" 2>/dev/null || true)"
-  receipt_owner="$(stat -c '%u' -- "$receipt" 2>/dev/null || true)"
-  receipt_mode="$(stat -c '%a' -- "$receipt" 2>/dev/null || true)"
-  receipt_links="$(stat -c '%h' -- "$receipt" 2>/dev/null || true)"
-  if [ ! -f "$receipt" ] || [ -L "$receipt" ] ||
-    [ "$receipt_real" != "$planner_dir_real/.eci-command-plan.provenance" ] ||
-    [ "$receipt_owner" != "$uid" ] || [ "$receipt_mode" != 600 ] ||
-    [ "$receipt_links" != 1 ]; then
-    codex_plan_provenance_fail 'planner provenance receipt is missing, malformed, or unsafe'
-    return 1
-  fi
-
-  receipt_bytes="$(wc -c <"$receipt" 2>/dev/null || true)"
-  if [[ ! "$receipt_bytes" =~ ^[1-9][0-9]*$ ]] || [ "$receipt_bytes" -gt 8192 ]; then
-    codex_plan_provenance_fail 'planner provenance receipt has an unsafe size'
-    return 1
-  fi
-  last_byte="$(tail -c 1 -- "$receipt" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')"
-  if [ "$last_byte" != 0a ]; then
-    codex_plan_provenance_fail 'planner provenance receipt is not newline terminated'
-    return 1
-  fi
-
-  if ! mapfile -t receipt_lines <"$receipt"; then
-    codex_plan_provenance_fail 'planner provenance receipt could not be read'
-    return 1
-  fi
-  expected_keys=(
-    contract
-    go_path
-    go_sha256
-    go_version
-    go_root
-    go_tool_path
-    go_tool_sha256
-    target
-    source_go.mod_sha256
-    source_main.go_sha256
-    source_classifier.go_sha256
-    binary_sha256
-    binary_size
-    binary_mode
-  )
-  if [ "${#receipt_lines[@]}" -ne "${#expected_keys[@]}" ]; then
-    codex_plan_provenance_fail 'planner provenance receipt does not have the producer coherence schema'
-    return 1
-  fi
-  for index in "${!expected_keys[@]}"; do
-    line="${receipt_lines[$index]}"
-    case "$line" in
-      *$'\t'*)
-        key="${line%%$'\t'*}"
-        value="${line#*$'\t'}"
-        ;;
-      *)
-        codex_plan_provenance_fail 'planner provenance receipt has a malformed row'
+  if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
+    recorded_binary_sha="$(awk -F '\t' '$1 == "binary_sha256" { print $2; exit }' "$receipt" 2>/dev/null || true)"
+    if [[ "$recorded_binary_sha" =~ ^[0-9a-f]{64}$ ]]; then
+      actual_binary_sha="$(sha256sum -- "$binary" 2>/dev/null | awk '{print $1}' || true)"
+      if [ "$actual_binary_sha" != "$recorded_binary_sha" ]; then
+        codex_plan_provenance_fail 'planner binary provenance differs from the published receipt; selecting current source'
         return 1
-        ;;
-    esac
-    if [ "$key" != "${expected_keys[$index]}" ] || [ -z "$value" ] ||
-      [[ "$value" == *$'\t'* ]] || [[ "$value" == *[![:print:]]* ]]; then
-      codex_plan_provenance_fail 'planner provenance receipt has an unexpected row'
+      fi
+    fi
+  fi
+
+  # Source freshness is a cheap advisory selector.  It keeps an older binary
+  # from silently classifying a callback after a local source edit, while a
+  # missing/malformed receipt never blocks ordinary work.
+  if ! mapfile -t mtimes < <(/usr/bin/stat -c '%Y' -- "$binary" \
+      "$planner_dir/go.mod" "$planner_dir/main.go" "$planner_dir/classifier.go" 2>/dev/null); then
+    codex_plan_provenance_fail 'planner freshness metadata is unavailable'
+    return 1
+  fi
+  [ "${#mtimes[@]}" -eq 4 ] || {
+    codex_plan_provenance_fail 'planner freshness metadata is malformed'
+    return 1
+  }
+  binary_mtime="${mtimes[0]}"
+  [[ "$binary_mtime" =~ ^[0-9]+$ ]] || {
+    codex_plan_provenance_fail 'planner binary freshness metadata is malformed'
+    return 1
+  }
+  for source_mtime in "${mtimes[@]:1}"; do
+    [[ "$source_mtime" =~ ^[0-9]+$ ]] || {
+      codex_plan_provenance_fail 'planner source freshness metadata is malformed'
+      return 1
+    }
+    if [ "$source_mtime" -gt "$binary_mtime" ]; then
+      codex_plan_provenance_fail 'planner source is newer than the published binary; selecting current source'
       return 1
     fi
-    case "$key" in
-      contract) [ "$value" = closed-go-build/v1 ] || { codex_plan_provenance_fail 'planner provenance contract is unsupported'; return 1; } ;;
-      go_path) [ "$value" = /usr/lib/go-1.24/bin/go ] || { codex_plan_provenance_fail 'planner provenance Go path is unsupported'; return 1; } ;;
-      go_sha256|go_tool_sha256)
-        [[ "$value" =~ ^[0-9a-f]{64}$ ]] || { codex_plan_provenance_fail 'planner provenance Go digest is malformed'; return 1; }
-        ;;
-      go_version)
-        [[ "$value" =~ ^go[[:space:]]version[[:space:]]go1\.24\.[0-9]+[[:space:]]linux/arm64$ ]] || { codex_plan_provenance_fail 'planner provenance Go version is malformed'; return 1; }
-        ;;
-      go_root) [ "$value" = /usr/lib/go-1.24 ] || { codex_plan_provenance_fail 'planner provenance Go root is unsupported'; return 1; } ;;
-      go_tool_path) [ "$value" = /usr/lib/go-1.24/pkg/tool/linux_arm64 ] || { codex_plan_provenance_fail 'planner provenance Go tool path is unsupported'; return 1; } ;;
-      target) [ "$value" = linux/arm64 ] || { codex_plan_provenance_fail 'planner provenance target is unsupported'; return 1; } ;;
-      source_go.mod_sha256) go_mod_sha="$value" ;;
-      source_main.go_sha256) main_go_sha="$value" ;;
-      source_classifier.go_sha256) classifier_go_sha="$value" ;;
-      binary_sha256) binary_sha="$value" ;;
-      binary_size) binary_size="$value" ;;
-      binary_mode) binary_mode="$value" ;;
-    esac
   done
 
-  [[ "$go_mod_sha" =~ ^[0-9a-f]{64}$ ]] &&
-    [[ "$main_go_sha" =~ ^[0-9a-f]{64}$ ]] &&
-    [[ "$classifier_go_sha" =~ ^[0-9a-f]{64}$ ]] &&
-    [[ "$binary_sha" =~ ^[0-9a-f]{64}$ ]] &&
-    [[ "$binary_size" =~ ^[1-9][0-9]*$ ]] && [ "$binary_mode" = 755 ] || {
-      codex_plan_provenance_fail 'planner provenance source or binary metadata is malformed'
-      return 1
-    }
-
-  codex_plan_provenance_regular_file_is_safe "$planner_dir/go.mod" "$planner_dir_real/go.mod" "$uid" &&
-    codex_plan_provenance_regular_file_is_safe "$planner_dir/main.go" "$planner_dir_real/main.go" "$uid" &&
-    codex_plan_provenance_regular_file_is_safe "$planner_dir/classifier.go" "$planner_dir_real/classifier.go" "$uid" || {
-      codex_plan_provenance_fail 'planner source path is missing or unsafe'
-      return 1
-    }
-  codex_plan_provenance_pin_binary "$binary" "$planner_dir_real/eci-command-plan" "$uid" || return 1
+  codex_plan_provenance_pin_binary "$binary" || return 1
   [ -x "$CODEX_PLAN_PROVENANCE_EXECUTABLE" ] || {
     codex_plan_provenance_close_pinned_binary
     codex_plan_provenance_fail 'pinned planner binary is not executable'
     return 1
   }
 
-  actual_mode="$(stat -Lc '%a' -- "$CODEX_PLAN_PROVENANCE_EXECUTABLE" 2>/dev/null || true)"
-  actual_size="$(stat -Lc '%s' -- "$CODEX_PLAN_PROVENANCE_EXECUTABLE" 2>/dev/null || true)"
-  if [ "$actual_mode" != "$binary_mode" ] || [ "$actual_size" != "$binary_size" ]; then
-    codex_plan_provenance_close_pinned_binary
-    codex_plan_provenance_fail 'pinned planner binary mode or size does not match provenance'
-    return 1
-  fi
-  actual_digest="$(codex_plan_provenance_sha256 "$planner_dir/go.mod" || true)"
-  [ "$actual_digest" = "$go_mod_sha" ] || { codex_plan_provenance_close_pinned_binary; codex_plan_provenance_fail 'planner go.mod digest does not match provenance'; return 1; }
-  actual_digest="$(codex_plan_provenance_sha256 "$planner_dir/main.go" || true)"
-  [ "$actual_digest" = "$main_go_sha" ] || { codex_plan_provenance_close_pinned_binary; codex_plan_provenance_fail 'planner main.go digest does not match provenance'; return 1; }
-  actual_classifier_digest="$(codex_plan_provenance_sha256 "$planner_dir/classifier.go" || true)"
-  actual_digest="$(codex_plan_provenance_sha256 "$CODEX_PLAN_PROVENANCE_EXECUTABLE" || true)"
-  [ "$actual_digest" = "$binary_sha" ] || { codex_plan_provenance_close_pinned_binary; codex_plan_provenance_fail 'pinned planner binary digest does not match provenance'; return 1; }
-
-  if [ "$actual_classifier_digest" != "$classifier_go_sha" ]; then
-    CODEX_PLAN_PROVENANCE_CLASSIFIER_ONLY_STALE=true
-    codex_plan_provenance_close_pinned_binary
-    codex_plan_provenance_fail 'planner classifier.go digest does not match provenance'
-    return 1
-  fi
-
-  CODEX_PLAN_PROVENANCE_DETAIL=""
-  CODEX_PLAN_PROVENANCE_BINARY="$planner_dir_real/eci-command-plan"
   return 0
 }
 
-# Provenance is a selector, not an admission boundary. A coherent installed
-# artifact remains the fast path. Any receipt/source/binary drift selects the
-# current Go source instead, so an old binary never classifies the callback.
-# If that source is mid-edit and cannot run, existing Bash/Python capability
-# gates below provide the transparent fallback; no second command parser is
-# introduced here.
+# Planner publication state is a selector, not an admission boundary. A
+# published binary whose mtime covers the current source is the fast path. If
+# source is newer, the current Go source is selected so an old binary does not
+# silently classify the callback. Missing or malformed receipts are ignored;
+# they are maintenance evidence, not ordinary-work permission. If the source
+# is mid-edit and cannot run, existing Bash/Python capability gates below
+# provide the transparent fallback; no second command parser is introduced.
 CODEX_PLAN_CURRENT_SOURCE=false
 CODEX_PLAN_TRANSPARENT_FALLBACK=false
 command_plan_binary="${HOME:?HOME must be set}/.codex/hooks/lib/eci-command-plan-go/eci-command-plan"
@@ -1087,6 +1349,18 @@ plan_input="$(
     '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,command_path_set:$command_path_set,command_path_exported:$command_path_exported,timeout_replay:$timeout_replay,timeout_replays:$timeout_replays,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
     "${syntax_eci_markers[@]}"
 )"
+
+# Planner output is advisory metadata.  A failed, empty, or malformed
+# classifier response cannot establish a harmful effect, so it must select the
+# existing capability-aware fallback rather than become a new denial surface.
+# Keep the status synchronized with the flag: later dispatch must not re-enter
+# the status-2 denial branch after this helper has been selected.
+planner_mark_transparent_fallback() {
+  plan_status=3
+  plan_output=""
+  CODEX_PLAN_TRANSPARENT_FALLBACK=true
+}
+
 if [ "$CODEX_PLAN_CURRENT_SOURCE" = true ]; then
   current_go="$(command -v go 2>/dev/null || true)"
   plan_output=""
@@ -1102,9 +1376,7 @@ if [ "$CODEX_PLAN_CURRENT_SOURCE" = true ]; then
     deny) plan_status=2 ;;
     defer) plan_status=3 ;;
     *)
-      plan_status=3
-      plan_output=""
-      CODEX_PLAN_TRANSPARENT_FALLBACK=true
+      planner_mark_transparent_fallback
       ;;
   esac
 else
@@ -1147,9 +1419,7 @@ planner_response_matches_status() {
 
 if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" != true ] &&
   ! planner_response_matches_status "$plan_status" "$plan_output"; then
-  plan_status=3
-  plan_output=""
-  CODEX_PLAN_TRANSPARENT_FALLBACK=true
+  planner_mark_transparent_fallback
 fi
 
 # A current planner result normally selects the lifecycle adapter. During a
@@ -1261,7 +1531,6 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   PLAN_GIT_CLONE_GIT_EXECUTABLE="$(jq -r '.git_clone_launch.git_executable' <<<"${plan_output:-}")"
   PLAN_GIT_CLONE_ENV_EXECUTABLE="$(jq -r '.git_clone_launch.env_executable // ""' <<<"${plan_output:-}")"
 fi
-
 # planner_timeout_replays_shape accepts complete planner-owned timeout state.
 # Bash uses an observed replay only as a coordinate for existing Git target
 # resolution; it never reconstructs timeout option or signal behavior.
@@ -1467,6 +1736,7 @@ validate_planner_compound_segments() {
       return 2
     fi
     if child_output="$(
+      ECI_COMPOUND_COMMAND_PATH="$CODEX_COMMAND_PATH" \
       ECI_COMPOUND_SEGMENT_VALIDATION=true \
         bash "$self_hook" <<<"$child_input" 2>/dev/null
     )"; then
@@ -1668,6 +1938,10 @@ coordinator_compound_fast_route() {
     "rm -f "* ) target="${right#rm -f }" ;;
     touch|"touch "* )
       COORDINATOR_CLEANUP_ROUTE_DETAIL="coordinator-cleanup-route command=$right reason=mutation segment is not an ownership-approved cleanup operation"
+      # `touch` is an ordinary non-destructive writer. Leave it for the
+      # segment target checks below instead of turning this fast-path miss
+      # into a generic compound denial.
+      COORDINATOR_COMPOUND_FAST_APPLICABLE=false
       return 1
       ;;
     *)
@@ -2969,11 +3243,18 @@ chunks.append(current)
 if len(chunks) < 2 or len(chunks) > 16:
     raise SystemExit(1)
 for segment in chunks:
-    if (len(segment) not in {2, 3} or segment[0] not in {"bash", "sh"} or
-            (len(segment) == 3 and segment[1] != "-n")):
+    if len(segment) < 2 or segment[0] not in {"bash", "sh"}:
         raise SystemExit(1)
-    script = segment[-1]
-    if not script or script.startswith("-") or any(mark in script for mark in ("$", "`", "..")):
+    if segment[1] == "-n":
+        scripts = segment[2:]
+    elif len(segment) == 2:
+        scripts = segment[1:]
+    else:
+        raise SystemExit(1)
+    if not scripts or any(
+        not script or script.startswith("-") or any(mark in script for mark in ("$", "`"))
+        for script in scripts
+    ):
         raise SystemExit(1)
 raise SystemExit(0)
 PY
@@ -3065,7 +3346,9 @@ import sys
 
 command, hook_cwd, *approved_roots = sys.argv[1:]
 try:
-    tokens = shlex.split(command, posix=True, punctuation_chars=True)
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
 except ValueError:
     raise SystemExit(1)
 
@@ -3339,12 +3622,10 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 2 ] && jq -e '
     $code == "ECI_ENVIRONMENT_NAME_DENIED" or
     $code == "ECI_ENVIRONMENT_OPTION_DENIED" or
     $code == "ECI_ENVIRONMENT_CONTEXT_DENIED" or
-    $code == "ECI_GIT_EXECUTION_CONTEXT_DENIED" or
     $code == "ECI_COMMAND_NOT_ALLOWLISTED" or
     $code == "ECI_WORKER_COMMAND_NOT_ALLOWLISTED"
   ' <<<"${plan_output:-}" >/dev/null 2>&1; then
-  plan_status=3
-  CODEX_PLAN_TRANSPARENT_FALLBACK=true
+  planner_mark_transparent_fallback
 fi
 
 # Preserve the concrete capability result before any planner/fallback branch
@@ -3358,17 +3639,14 @@ fi
 
 # Planner diagnostics are authoritative. Forward a specific malformed,
 # dynamic, protected, or limit denial before examining any legacy shell shape.
-if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 2 ]; then
-  [ -n "$plan_output" ] || deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
-    "command-plan classifier returned an empty denial" \
-    "retry one finite literal argv and report the missing classifier diagnostic"
-  if ! plan_denial="$(command_plan_pretooluse_denial "$plan_output")"; then
-    deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
-      "command-plan classifier returned a malformed PreToolUse denial envelope" \
-      "restore the compiled classifier's structured denial output and retry"
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  [ "$plan_status" -eq 2 ] &&
+  [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" != true ]; then
+  if plan_denial="$(command_plan_pretooluse_denial "$plan_output")"; then
+    finalize_command_gate_denial parser "$plan_denial"
+    exit 0
   fi
-  finalize_command_gate_denial parser "$plan_denial"
-  exit 0
+  planner_mark_transparent_fallback
 fi
 
 # A bounded compound plan is owned by the compiled planner's lossless parser,
@@ -4420,6 +4698,17 @@ for token in tokens[1:]:
         continue
     candidate = token if os.path.isabs(token) else os.path.abspath(os.path.join(hook_cwd, token))
     candidate = os.path.normpath(candidate)
+    # A proof-root alias may be a symlink outside the configured spelling.
+    # Treat only a lexical prefix that resolves to the already-authoritative
+    # canonical root as an alias; an arbitrary path is not pulled into the
+    # protected namespace merely because it contains similar text.
+    prefix = os.path.sep
+    for component in candidate.split(os.path.sep):
+        if not component:
+            continue
+        prefix = os.path.join(prefix, component)
+        if os.path.realpath(prefix) == canonical:
+            lexical_roots.append(prefix)
     for lexical_root in lexical_roots:
         if candidate != lexical_root and not candidate.startswith(lexical_root + os.sep):
             continue
@@ -4506,6 +4795,119 @@ raise SystemExit(1)
 PY
 }
 
+# The compiled planner may conservatively allow an otherwise finite argv while
+# the shell launcher still hides a concrete lifecycle mutation.  Resolve only
+# that effect before the planner's status-0 fast exit; ordinary sourced or
+# inline scripts remain transparent.
+coordinator_dynamic_lifecycle_detail_early() {
+  [ "$hook_is_subagent" != true ] || return 1
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  python3 - "${1:-}" "${cwd:-}" "${CODEX_CONFIGURED_HOME:-}" <<'PY'
+import os
+import shlex
+import sys
+
+text, invocation_cwd, configured_home = sys.argv[1:]
+configured_eci = os.path.realpath(os.path.join(configured_home, "bin", "eci-active"))
+mutating = {
+    "on", "off", "wait", "resume", "ledger-append", "nested-enter",
+    "nested-accept", "nested-exit", "manifest-write", "approve-commit",
+    "aggregate-migrate", "aggregate-stage", "aggregate-manifest-write",
+    "aggregate-review", "aggregate-commit", "repository-allow-on",
+    "repository-allow-off",
+}
+operators = {";", "&", "&&", "|", "||", "(", ")"}
+
+def tokenize(value):
+    try:
+        lexer = shlex.shlex(value, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+def canonical_script(value):
+    value = os.path.expandvars(os.path.expanduser(value))
+    if os.path.isabs(value):
+        candidate = value
+    else:
+        candidate = os.path.join(invocation_cwd, value)
+    return os.path.realpath(candidate) == configured_eci and os.path.isfile(candidate)
+
+def split(values):
+    result, current = [], []
+    for value in values + [";"]:
+        if value in operators:
+            if current:
+                result.append(current)
+            current = []
+        else:
+            current.append(value)
+    return result
+
+def skip_env(argv, index):
+    while index < len(argv):
+        value = argv[index]
+        if value == "--":
+            return index + 1
+        if value.startswith(("-u=", "--unset=", "-C=", "--chdir=")):
+            index += 1
+            continue
+        if value in {"-i", "--ignore-environment"} or "=" in value and value.split("=", 1)[0].replace("_", "A").isalnum():
+            index += 1
+            continue
+        if value in {"-u", "--unset", "-C", "--chdir"}:
+            index += 2
+            continue
+        break
+    return index
+
+def inspect(argv, base=0, depth=0):
+    if not argv or depth > 6:
+        return None
+    while argv and "=" in argv[0] and argv[0].split("=", 1)[0].replace("_", "A").isalnum():
+        argv, base = argv[1:], base + 1
+    if not argv:
+        return None
+    name = os.path.basename(argv[0])
+    if name in {"source", "."}:
+        if len(argv) >= 3 and canonical_script(argv[1]) and argv[2] in mutating:
+            return "token=%s argv_index=%d" % (name, base)
+        return None
+    if name == "env":
+        index = skip_env(argv, 1)
+        return inspect(argv[index:], base + index, depth + 1)
+    if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
+        return inspect(argv[1:], base + 1, depth + 1)
+    if name in {"timeout", "nice", "chronic", "systemd-run", "prlimit", "time"}:
+        index = 1
+        while index < len(argv) and argv[index].startswith("-"):
+            index += 2 if index + 1 < len(argv) and argv[index] in {"-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-p", "--property", "--unit", "--setenv", "--working-directory", "-C", "--chdir"} else 1
+        if name == "timeout" and index < len(argv):
+            index += 1
+        return inspect(argv[index:], base + index, depth + 1)
+    if name in {"bash", "sh", "dash", "zsh"}:
+        for index, value in enumerate(argv[1:], 1):
+            if value in {"-c", "-lc", "-cl"} and index + 1 < len(argv):
+                nested = tokenize(argv[index + 1])
+                if nested is not None and any(inspect(part, 0, depth + 1) for part in split(nested)):
+                    return "token=%s argv_index=%d" % (value, base + index)
+        return None
+    if len(argv) >= 2 and canonical_script(argv[0]) and argv[1] in mutating:
+        return None
+    return None
+
+tokens = tokenize(text)
+if tokens is not None:
+    for segment in split(tokens):
+        detail = inspect(segment)
+        if detail:
+            print(detail)
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 if [ "$plan_marker_state" = active ] && [ "$plan_status" -ne 2 ]; then
   direct_ledger_static_control_target_pass "$command" true || true
   if [ "$DIRECT_LEDGER_FALLBACK_DECISION" = deny ]; then
@@ -4516,6 +4918,13 @@ if [ "$plan_marker_state" = active ] && [ "$plan_status" -ne 2 ]; then
     deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "broad-destructive" \
       "$broad_effect_detail" "replace the broad root with one explicit narrow recoverable target"
   fi
+fi
+
+coordinator_dynamic_lifecycle_detail="$(coordinator_dynamic_lifecycle_detail_early "$command" 2>/dev/null || true)"
+if [ -n "$coordinator_dynamic_lifecycle_detail" ]; then
+  deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
+    "ECI coordinator command plan denied dynamic lifecycle indirection: ${coordinator_dynamic_lifecycle_detail}; predicate=dynamic-launch; reason=the resolved lifecycle mutation is hidden behind a shell launcher and cannot use the literal lifecycle admission route" \
+    "invoke the canonical lifecycle executable directly through the coordinator route"
 fi
 
 worker_fast_path_candidate=false
@@ -4594,21 +5003,17 @@ case "$plan_status" in
     fi
     ;;
   2)
-    [ -n "$plan_output" ] || deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
-      "command-plan classifier returned an empty denial" \
-      "retry one finite literal argv and report the missing classifier diagnostic"
-    if ! plan_denial="$(command_plan_pretooluse_denial "$plan_output")"; then
-      deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
-        "command-plan classifier returned a malformed PreToolUse denial envelope" \
-        "restore the compiled classifier's structured denial output and retry"
+    if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ]; then
+      planner_mark_transparent_fallback
+    elif plan_denial="$(command_plan_pretooluse_denial "$plan_output")"; then
+      finalize_command_gate_denial parser "$plan_denial"
+      exit 0
+    else
+      planner_mark_transparent_fallback
     fi
-    finalize_command_gate_denial parser "$plan_denial"
-    exit 0
     ;;
   *)
-    deny_eci "ECI_PLAN_INTERNAL_DENIED" "plan-segment" \
-      "command-plan classifier failed with status=$plan_status" \
-      "correct the classifier invocation or command encoding before retrying"
+    planner_mark_transparent_fallback
     ;;
 esac
 
@@ -5034,12 +5439,15 @@ def inspect(segment, depth=0):
     # the explicit control-boundary denial before option parsing.
     if name in {"tar", "unzip", "rsync", "cpio", "zip", "7z"}:
         return True
+    if name == "eval":
+        # A literal eval payload can still expose a concrete broad target.
+        # Inspect that payload recursively, but do not deny eval merely
+        # because its eventual effect is unknown.
+        nested = tokenize(" ".join(segment[index + 1:]))
+        return nested is not None and any(
+            inspect(part, depth + 1) for part in segment_tokens(nested)
+        )
     if name in wrappers:
-        if name == "eval":
-            # `eval` is arbitrary shell indirection.  Even a payload that
-            # currently looks harmless can source a copied lifecycle binary
-            # or mutate state through a later expansion.
-            return True
         if name in {"bash", "dash", "sh", "zsh"}:
             for option_index, option in enumerate(segment[index + 1:], index + 1):
                 if option == "-c" or (option.startswith("-") and "c" in option[1:]):
@@ -5679,9 +6087,13 @@ def inspect(segment, depth=0):
     if "/" in program:
         return False
     if name == "eval":
-        # Shell evaluation is arbitrary indirection even when its payload
-        # happens not to contain an obvious control path.
-        return True
+        # Resolve literal payloads for concrete lifecycle/control effects.
+        # An unknown or ordinary payload is not itself an accidental effect,
+        # so leave it transparent to the capability-aware routes.
+        nested = tokenize(" ".join(segment[index + 1:]))
+        return nested is not None and any(
+            inspect(part, depth + 1) for part in split(nested)
+        )
     if name in archive_writers:
         return True
     if name in shells:
@@ -5778,10 +6190,10 @@ def inspect(segment, depth=0):
         # unknown wrapped scripts and startup contexts.
         return name != "find"
     if name in {"source", "."}:
-        # Sourcing an arbitrary script executes code before bounded token
-        # inspection.  Canonical lifecycle forms are handled by the separate
-        # lifecycle recognizers; subagents may not source unknown paths.
-        return True
+        # The source path alone does not establish a concrete ECI effect.
+        # Canonical lifecycle/control paths are recognized by the dedicated
+        # effect routes; unknown scripts remain ordinary execution.
+        return False
     # Unknown bare commands, PATH/hash aliases, and exported shell helpers are
     # not bounded worker routes. Only the explicit read-only/test allowlist
     # above remains admissible.
@@ -6639,6 +7051,14 @@ def protected_control_path(path):
     if not path:
         return False
     resolved = os.path.realpath(path)
+    # A symlink directly in an active session directory is itself a control
+    # namespace entry even when its final target resolves outside the proof
+    # root.  Preserve the lexical ownership boundary without treating an
+    # arbitrary repository symlink as control state.
+    if os.path.islink(path) and any(
+            os.path.dirname(path) == os.path.dirname(marker)
+            for marker in active_markers):
+        return True
     if (in_root(path) and is_control_name(os.path.basename(path))) or (
             in_root(resolved) and is_control_name(os.path.basename(resolved))):
         return True
@@ -6658,6 +7078,7 @@ def emit(kind, token, resolved):
 
 output_path_options = {"sort": {"--output", "-o"}, "gitleaks": {"--report-path"}}.get(command_name, set())
 output_operands = set()
+instruction_denied_detail = ""
 for index, raw_token in enumerate(tokens[1:], 1):
     if raw_token == "--":
         break
@@ -6698,11 +7119,12 @@ for token in tokens[1:]:
             if instruction_state == "deny":
                 # A missing, foreign, or otherwise malformed *read* operand
                 # has no hook-side effect.  Let the invoked read tool report
-                # its normal result; only an actual write needs a target
-                # decision below.
+                # its normal result; retain the diagnostic until nested
+                # wrapper inspection has had a chance to find an actual
+                # write target (for example a missing eci_wait created by
+                # `timeout ... bash -c '... > eci_wait'`).
                 if not read_command:
-                    print("instruction-denied " + detail)
-                    raise SystemExit(0)
+                    instruction_denied_detail = "instruction-denied " + detail
                 continue
             control_alias = current_control_hardlink(candidate)
             if control_alias:
@@ -6713,9 +7135,11 @@ for token in tokens[1:]:
     if in_root(candidate):
         if (not read_command and not os.path.lexists(candidate) and token not in output_operands and
                 not history_pathspec_token):
-            print("instruction-denied token=%s candidate=%s resolved=%s instruction_root=%s failure=missing-instruction-source" %
-                  (token, candidate, resolved, containing_root(candidate)))
-            raise SystemExit(0)
+            instruction_denied_detail = (
+                "instruction-denied token=%s candidate=%s resolved=%s instruction_root=%s failure=missing-instruction-source" %
+                (token, candidate, resolved, containing_root(candidate))
+            )
+            continue
         if bounded_control_read(tokens) and canonical_document(token):
             continue
         if protected_control_path(candidate):
@@ -6754,6 +7178,137 @@ for token in tokens[1:]:
     if control_alias:
         if not read_command:
             emit("write", token, control_alias)
+
+# A finite wrapper can hide a concrete write from the top-level argv scanner:
+# `timeout ... bash -c '... > proof/eci_wait'` and `env -S '... > proof/...'
+# are still ordinary shell execution, but their resolved target is a worker
+# control record. Decode only these bounded wrapper/interpreter forms; do not
+# reject a wrapper or punctuation merely because it is present.
+def shell_tokens(value):
+    try:
+        lexer = shlex.shlex(value, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+def nested_segments(values):
+    segments, current = [], []
+    for token in values + [";"]:
+        if token in operators:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    return segments
+
+def nested_emit_path(token):
+    if not token or token.startswith("-") or token in operators:
+        return False
+    expanded = os.path.expanduser(token)
+    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(
+        os.path.join(hook_cwd, expanded)
+    )
+    candidate = os.path.normpath(candidate)
+    resolved = os.path.realpath(candidate)
+    if (in_root(candidate) or in_root(resolved)) and protected_control_path(candidate):
+        print("write token=%s resolved=%s" % (token, resolved))
+        raise SystemExit(0)
+    return False
+
+def nested_shell_payload(payload, depth):
+    nested = shell_tokens(payload)
+    if nested is None:
+        return
+    # Redirection operators are separators in `nested_segments`; inspect the
+    # following operand before splitting so a payload such as
+    # `printf forged > proof/eci_wait` retains its write effect.
+    for index, value in enumerate(nested):
+        if value in {">", ">>", ">|", ">>&"} and index + 1 < len(nested):
+            nested_emit_path(nested[index + 1])
+    for segment in nested_segments(nested):
+        nested_inspect(segment, depth + 1)
+
+def nested_inspect(values, depth=0):
+    if depth > 5 or not values:
+        return
+    name = os.path.basename(values[0])
+    if name == "eval":
+        # Resolve a literal eval payload for concrete control-path writes;
+        # unknown payloads stay transparent and are handled by ordinary shell
+        # execution rather than denied for indirection alone.
+        nested_shell_payload(" ".join(values[1:]), depth)
+        return
+    if name in {"source", "."}:
+        # Sourcing an arbitrary script has no statically resolved write target.
+        # Canonical lifecycle/control targets are recognized by their direct
+        # effect routes elsewhere in the hook.
+        return
+    if name == "env":
+        index = 1
+        while index < len(values):
+            value = values[index]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", value) or value in {"-i", "--ignore-environment"}:
+                index += 1
+                continue
+            if value in {"-u", "--unset", "-C", "--chdir"}:
+                index += 2
+                continue
+            if value.startswith(("--unset=", "--chdir=")):
+                index += 1
+                continue
+            if value == "-S" or value == "--split-string":
+                if index + 1 < len(values):
+                    nested_shell_payload(values[index + 1], depth)
+                return
+            if value == "--":
+                index += 1
+            break
+        nested_inspect(values[index:], depth + 1)
+        return
+    if name in {"timeout", "time", "nice", "prlimit", "chronic", "systemd-run"}:
+        index = 1
+        value_options = {
+            "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
+            "-p", "--property", "--unit", "--setenv", "--working-directory",
+            "-C", "--chdir",
+        }
+        while index < len(values) and values[index].startswith("-"):
+            if values[index] == "--":
+                index += 1
+                break
+            index += 2 if values[index] in value_options and index + 1 < len(values) else 1
+        if name == "timeout" and index < len(values) and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?[smhd]?", values[index]):
+            index += 1
+        nested_inspect(values[index:], depth + 1)
+        return
+    if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
+        nested_inspect(values[1:], depth + 1)
+        return
+    if name in {"bash", "sh", "dash", "zsh", "ksh", "ash", "fish"}:
+        for index, value in enumerate(values[1:], 1):
+            if value == "-c" or value.startswith("--command="):
+                payload = value.split("=", 1)[1] if value.startswith("--command=") else (
+                    values[index + 1] if index + 1 < len(values) else ""
+                )
+                if payload:
+                    nested_shell_payload(payload, depth)
+                return
+        return
+    if name in {"rm", "unlink", "shred", "srm", "touch", "truncate", "dd", "cp", "mv", "ln", "install", "tee", "rsync"}:
+        for value in values[1:]:
+            nested_emit_path(value.split("=", 1)[1] if "=" in value and value.split("=", 1)[0].startswith("-") else value)
+        return
+    if any(value in {">", ">>", ">|", ">>&"} for value in values):
+        for value in values:
+            nested_emit_path(value)
+
+for segment in nested_segments(tokens):
+    nested_inspect(segment)
+if instruction_denied_detail:
+    print(instruction_denied_detail)
+    raise SystemExit(0)
 raise SystemExit(1)
 PY
   )" || true
@@ -6776,7 +7331,6 @@ text = sys.argv[1]
 operators = {";", "&", "&&", "|", "||", "(", ")"}
 git_mutators = {
     "commit", "merge", "rebase", "cherry-pick", "revert", "am", "apply",
-    "rm", "mv", "restore",
     "tag",
 }
 branch_mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
@@ -6815,6 +7369,13 @@ def inspect(segment, depth=0):
     name = os.path.basename(segment[index])
     if name == "git":
         index += 1
+        # Git's global options are execution context, not acceptance
+        # mutations on their own.  In particular, an option-only invocation
+        # such as `env git --lost-found` is invalid Git and exits before it
+        # can change repository state; classifying the option as a commit
+        # boundary would turn a harmless runtime error into a misleading
+        # worker denial.  Skip global options (and their separate operands),
+        # then classify only a concrete Git subcommand/effect below.
         while index < len(segment):
             token = segment[index]
             if token in {"-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix"}:
@@ -6827,7 +7388,8 @@ def inspect(segment, depth=0):
                 index += 1
                 continue
             if token.startswith("-"):
-                return True
+                index += 1
+                continue
             if token in git_mutators:
                 return True
             if token == "branch":
@@ -6844,6 +7406,14 @@ def inspect(segment, depth=0):
                 nested = tokenize(segment[option_index + 1])
                 return nested is None or any(inspect(part, depth + 1) for part in split(nested))
         return False
+    if name == "eval":
+        # Evaluate only the literal payload for a concrete acceptance-sensitive
+        # Git effect.  An ordinary or unresolved payload is not itself a
+        # reason to reroute the worker.
+        nested = tokenize(" ".join(segment[index + 1:]))
+        return nested is not None and any(
+            inspect(part, depth + 1) for part in split(nested)
+        )
     if name == "env":
         index += 1
         while index < len(segment):
@@ -7257,6 +7827,12 @@ def inspect(segment, depth=0):
                     return False
         return shell_script_lifecycle(segment, index)
 
+    if command == "eval":
+        nested = tokenize(" ".join(segment[index + 1:]))
+        return nested is not None and any(
+            inspect(part, depth + 1) for part in split(nested)
+        )
+
     if command in {"timeout", "nice", "chronic", "systemd-run", "prlimit", "time"}:
         option_index = skip_options(
             segment,
@@ -7307,6 +7883,7 @@ targets = {
     "--help", "-h", "status", "on", "off", "wait", "resume", "ledger-append", "nested-enter",
     "nested-accept", "nested-exit", "manifest-write", "approve-commit", "maintain-planner",
     "accidental-override-cleanup", "aggregate-review", "aggregate-stage",
+    "repository-allow-on", "repository-allow-off", "repository-allow-status",
 }
 
 home = os.environ.get("HOME", "")
@@ -7407,6 +7984,49 @@ raise SystemExit(1)
 PY
 }
 
+# A worker may use only the explicit owner-scoped repository declaration
+# lifecycle route.  The CLI validates the active marker and canonical Git
+# target; this parser admits the shape without turning other eci-active calls
+# into worker capabilities.
+worker_repository_allow_lifecycle_route() {
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  python3 - "$1" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+try:
+    tokens = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    raise SystemExit(1)
+operators = {";", "&", "&&", "|", "||", "(", ")", ">", ">>", "<", "<<", "<<<", ">|", ">&", "<&"}
+if any(token in operators for token in tokens):
+    raise SystemExit(1)
+if tokens and tokens[0] == "env":
+    tokens = tokens[1:]
+    if tokens and tokens[0] == "--":
+        tokens = tokens[1:]
+    while tokens and re.fullmatch(r"CODEX_SESSION_ID=[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", tokens[0]):
+        tokens = tokens[1:]
+if not tokens or tokens[0] != "$HOME/.codex/bin/eci-active":
+    raise SystemExit(1)
+if len(tokens) == 2 and tokens[1] == "repository-allow-status":
+    raise SystemExit(0)
+if len(tokens) == 3 and tokens[1] == "repository-allow-off":
+    target = tokens[2]
+    raise SystemExit(0 if target.startswith("/") and target == os.path.normpath(target) else 1)
+if len(tokens) == 4 and tokens[1] == "repository-allow-on":
+    target, reason = tokens[2:]
+    if not target.startswith("/") or target != os.path.normpath(target) or not reason:
+        raise SystemExit(1)
+    if any(ord(char) < 32 or ord(char) == 127 for char in reason):
+        raise SystemExit(1)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 classify_eci_command() {
   python3 - "$1" <<'PY'
 import os
@@ -7494,7 +8114,7 @@ def assignment(token):
 
 
 AGGREGATE_STAGE_CONTROL_EXACT = {
-    "eci-wait-repair-authorize", "eci_active", "goal_state", "eci_wait",
+    "eci-wait-repair-authorize", "eci_active", "eci-additional-repository", "goal_state", "eci_wait",
     "eci_user_owned_wait.md", "eci-permissive-mode", "eci-permissive-authorize",
     ".eci-permissive-mode", ".eci-permissive-authorize", "eci-required-critics.json",
     "eci-critic-identities.ledger", "eci-acceptance-anchor", "eci-acceptance-transaction",
@@ -7507,7 +8127,7 @@ AGGREGATE_STAGE_CONTROL_EXACT = {
     "high_level_log.md", "latest-status-report.md", "high_level_log.anchor",
 }
 AGGREGATE_STAGE_CONTROL_PREFIXES = (
-    "eci-wait-repair-authorize.", "eci_active.", "goal_state.", "eci_wait.",
+    "eci-wait-repair-authorize.", "eci_active.", "eci-additional-repository.", "goal_state.", "eci_wait.",
     "eci_user_owned_wait.md.", "eci-permissive-mode.", "eci-permissive-authorize.",
     ".eci-permissive-mode.", ".eci-permissive-authorize.", "eci-required-critics.",
     "eci-critic-identities.ledger.", "eci-acceptance-anchor.",
@@ -9036,15 +9656,17 @@ git_mutation_specs() {
   # unfamiliar spelling or shell topology is advisory and must not turn
   # ordinary repository work into a denial.
   local command_text="${1:-$command}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
-  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" <<'PY'
+  local worker_mode="${hook_is_subagent:-false}"
+  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" <<'PY'
 import json
 import os
 import re
 import shlex
 import sys
 
-command = sys.argv[1]
-cwd = sys.argv[2] or os.getcwd()
+command, cwd = sys.argv[1:3]
+worker_mode = len(sys.argv) > 4 and sys.argv[4] == "true"
+cwd = cwd or os.getcwd()
 try:
     timeout_replays = json.loads(sys.argv[3])
 except (IndexError, TypeError, ValueError):
@@ -9210,6 +9832,12 @@ def segment_spec(tokens, segment_index):
                 index += 1
             continue
         if name == "timeout":
+            # A coordinator keeps an unobserved timeout opaque because its
+            # callback-selected executable may not launch the child. An
+            # active worker's finite literal timeout is a concrete wrapper
+            # around the visible child and must not bypass Git ownership.
+            if (not timeout_replay or timeout_replay.get("disposition") != "observed") and not worker_mode:
+                return None
             index += 1
             while index < len(tokens) and tokens[index].startswith("-"):
                 option = tokens[index]
@@ -9369,7 +9997,10 @@ def segment_spec(tokens, segment_index):
         if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
             index += 1
             continue
-        if token in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if token == "--":
+            index += 1
+            break
+        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
             index += 1
             continue
         if token.startswith("-"):
@@ -9522,15 +10153,52 @@ worker_git_resolved_inspection_route() {
     repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
     [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
-    if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] && [ "$repo_root" != "$active_repo" ]; then
+    if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] && [ "$repo_root" != "$active_repo" ] &&
+      ! worker_additional_repository_allowed "$repo_root"; then
       deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-inspection" \
-        "ECI worker Git inspection targets a different repository: active_repo=$active_repo target_repo=$repo_root; operation=inspection" \
-        "run the Git inspection from the owning worker repository or route a foreign-repository inspection through its coordinator"
+        "ECI worker Git inspection targets a different undeclared repository: active_repo=$active_repo target_repo=$repo_root; operation=inspection" \
+        "declare this exact repository once for the owning worker with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git inspection from its owning worker repository"
     fi
     WORKER_PROJECT_INSPECTION_ALLOWED=true
     WORKER_PROJECT_INSPECTION_DETAIL="resolved repository=$repo_root operation=inspection"
   done
   [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
+}
+
+worker_additional_repository_allowed() {
+  local repository="$1" marker marker_cwd worker_session
+
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  [ "${ECI_CROSS_SCOPE_GATE_ENABLED:-true}" = true ] || return 0
+  worker_session="${session_id:-}"
+  codex_valid_session_id "$worker_session" || return 1
+  marker="${syntax_eci_markers[0]:-}"
+  [ -n "$marker" ] || return 1
+  marker_cwd="$(codex_state_value "$marker" cwd false 2>/dev/null || true)"
+  [ -n "$marker_cwd" ] || return 1
+  marker_cwd="$(codex_canonical_cwd "$marker_cwd")"
+  codex_eci_additional_repository_is_allowed "$worker_session" "$marker_cwd" "$repository"
+}
+
+# A worker may execute a script outside its assigned provider root only when
+# the resolved script belongs to the one additional repository it explicitly
+# declared.  This reuses the same owner/session-bound record as Git cross-scope
+# work; a path or launcher spelling alone never grants the exception.
+worker_script_target_additional_repository_allowed() {
+  local detail="$1" resolved repository
+
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  case "$detail" in
+    *" resolved="*" reason="*) ;;
+    *) return 1 ;;
+  esac
+  resolved="${detail#* resolved=}"
+  resolved="${resolved%% reason=*}"
+  [ -n "$resolved" ] && [ -f "$resolved" ] || return 1
+  repository="$(codex_git_safe -C "$(dirname -- "$resolved")" rev-parse --show-toplevel 2>/dev/null || true)"
+  repository="$(realpath -e -- "$repository" 2>/dev/null || true)"
+  [ -n "$repository" ] || return 1
+  worker_additional_repository_allowed "$repository"
 }
 
 git_mutation_cross_scope_detail() {
@@ -9655,7 +10323,10 @@ def git_add_whole_worktree_selector(segment, segment_index):
         if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--git-dir=", "--work-tree=")):
             index += 1
             continue
-        if token in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if token == "--":
+            index += 1
+            break
+        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
             index += 1
             continue
         if token.startswith("-"):
@@ -9718,7 +10389,10 @@ def broad_reset(segment, segment_index):
         if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--git-dir=", "--work-tree=")):
             index += 1
             continue
-        if token in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if token == "--":
+            index += 1
+            break
+        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
             index += 1
             continue
         if token.startswith("-"):
@@ -9749,20 +10423,21 @@ PY
 
 git_protected_worktree_target_detail() {
   local command_text="${1:-$command}" target_repo="${2:-}" command_cwd="${3:-$cwd}"
+  local include_index="${4:-false}"
   local configured_home="${CODEX_CONFIGURED_HOME:-${CODEX_HOME:-}}"
 
   # This is an effect check for the coordinator's Git preparation route.  It
   # deliberately follows a concrete Git child through ordinary launch
   # wrappers, and it uses lexical worktree paths: a symlink alias is a
   # different Git entry from the live control file it may point at.
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$include_index" <<'PY'
 import glob
 import os
 import re
 import shlex
 import sys
 
-command, target_repo, command_cwd, configured_home, hook_dir = sys.argv[1:]
+command, target_repo, command_cwd, configured_home, hook_dir, include_index = sys.argv[1:]
 try:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -10160,7 +10835,10 @@ def git_command(segment, initial_base=None):
                 work_tree = value.split("=", 1)[1]
             index += 1
             continue
-        if value in {"--", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if value == "--":
+            index += 1
+            break
+        if value in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
             index += 1
             continue
         if value.startswith("-"):
@@ -10205,7 +10883,7 @@ def rm_detail(args, base):
                 return detail
     return None
 
-def mv_detail(args, base):
+def mv_detail(args, base, include_index=False):
     dry_run = False
     paths = []
     after_separator = False
@@ -10239,8 +10917,6 @@ def mv_detail(args, base):
         effective_destination = destination
         if os.path.isdir(destination) and not os.path.islink(destination):
             effective_destination = os.path.normpath(os.path.join(destination, os.path.basename(source)))
-        if source == effective_destination:
-            continue
         # A source outside the worktree is invalid for Git mv and cannot
         # mutate the protected target through this command.
         if not inside(target_repo, source):
@@ -10249,6 +10925,12 @@ def mv_detail(args, base):
         # rename a protected live entry, even when the destination spells one.
         if not os.path.lexists(source):
             continue
+        if source == effective_destination:
+            if include_index:
+                detail = protected_path_detail(source, "mv", True)
+                if detail:
+                    return detail
+            continue
         detail = protected_path_detail(source, "mv", True)
         if detail:
             return detail
@@ -10256,7 +10938,7 @@ def mv_detail(args, base):
             return "operation=mv target=%s kind=protected-live-hook" % effective_destination
     return None
 
-def restore_detail(args, base):
+def restore_detail(args, base, include_index=False):
     worktree = True
     after_separator = False
     for value in args:
@@ -10267,7 +10949,7 @@ def restore_detail(args, base):
             worktree = False
         elif not after_separator and (value in {"--worktree", "-W"} or value.startswith("--worktree=")):
             worktree = True
-    if not worktree:
+    if not worktree and not include_index:
         return None
     for value in collect_pathspecs(args, base):
         candidates, _ = pathspec_candidates(value, base)
@@ -10617,9 +11299,9 @@ def inspect_segment(segment, depth=0, base_override=None):
     if verb == "rm":
         return rm_detail(args, base)
     if verb == "mv":
-        return mv_detail(args, base)
+        return mv_detail(args, base, include_index=(include_index == "true"))
     if verb == "restore":
-        return restore_detail(args, base)
+        return restore_detail(args, base, include_index=(include_index == "true"))
     if verb == "checkout":
         return checkout_detail(args, base)
     return None
@@ -10634,7 +11316,7 @@ PY
 }
 
 enforce_git_mutation_gate() {
-  local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail
+  local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_scope protected_target_token
 
   if ! specs_text="$(git_mutation_specs)"; then
     return 0
@@ -10642,7 +11324,31 @@ enforce_git_mutation_gate() {
   if [ -n "$specs_text" ]; then
     mapfile -t specs <<<"$specs_text"
   fi
-  [ "${#specs[@]}" -gt 0 ] || return 0
+  if [ "${#specs[@]}" -eq 0 ]; then
+    # A finite timeout wrapper may have no planner replay because its child
+    # was not observed.  That absence is not a generic denial, but a
+    # concrete protected-hook target remains actionable when the callback
+    # CWD itself is a repository.  Keep this narrow fallback target-aware.
+    repo_root="$(codex_git_safe -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+    repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
+    protected_target_scope=false
+    [ "${hook_is_subagent:-false}" = true ] && protected_target_scope=true
+    protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" "$protected_target_scope" 2>/dev/null || true)"
+    if [ -n "$protected_target_detail" ]; then
+      if [ "${hook_is_subagent:-false}" = true ]; then
+        protected_target_token="${protected_target_detail#operation=}"
+        protected_target_token="${protected_target_token%% *}"
+        deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control code remains coordinator-owned while task implementation stays worker-owned" \
+          "route the control-hook mutation through the coordinator, or use the documented owner-scoped implementation route"
+      else
+        deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
+          "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
+          "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
+      fi
+    fi
+    return 0
+  fi
   if [ $(( ${#specs[@]} % 2 )) -ne 0 ]; then
     return 0
   fi
@@ -10667,10 +11373,11 @@ enforce_git_mutation_gate() {
     git_dir="$(realpath -m -- "$git_dir_raw" 2>/dev/null || true)"
     [ -n "$git_dir" ] && [ -d "$git_dir" ] || continue
     if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] &&
-      cross_scope_detail="$(git_mutation_cross_scope_detail "$repo_root")"; then
+      cross_scope_detail="$(git_mutation_cross_scope_detail "$repo_root")" &&
+      ! worker_additional_repository_allowed "$repo_root"; then
       deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-mutation" \
-        "ECI Git mutation targets a different repository than this active work scope: ${cross_scope_detail}" \
-        "run the Git action from its owning session/repository, or change the active work scope before retrying"
+        "ECI Git mutation targets a different undeclared repository than this active work scope: ${cross_scope_detail}" \
+        "declare this exact repository once for the owning worker with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git action from its owning session/repository"
     fi
     if [ "$operation" = output ]; then
       deny_eci "ECI_GIT_OUTPUT_WRITE_DENIED" "git-output" \
@@ -10683,18 +11390,28 @@ enforce_git_mutation_gate() {
         "ECI Git mutation has a broad destructive effect: ${broad_effect_detail}" \
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
     fi
-    if [ "${hook_is_subagent:-false}" != true ] && [ "$operation" = prep ] &&
-      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" 2>/dev/null || true)" &&
+    protected_target_scope=false
+    [ "${hook_is_subagent:-false}" = true ] && protected_target_scope=true
+    if [ "$operation" = prep ] &&
+      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" "$protected_target_scope" 2>/dev/null || true)" &&
       [ -n "$protected_target_detail" ]; then
-      deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-        "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
-        "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
+      if [ "${hook_is_subagent:-false}" = true ]; then
+        protected_target_token="${protected_target_detail#operation=}"
+        protected_target_token="${protected_target_token%% *}"
+        deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control code remains coordinator-owned while task implementation stays worker-owned" \
+          "route the control-hook mutation through the coordinator, or use the documented owner-scoped implementation route"
+      else
+        deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
+          "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
+          "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
+      fi
     fi
     if [ "${hook_is_subagent:-false}" = true ]; then
       case "$operation" in
         commit|worktree|repository)
           deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-            "ECI worker Git mutation controls repository acceptance or references: operation=${operation}" \
+            "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
             "hand the tested change to the coordinator for normal review and commit"
           ;;
       esac
@@ -11529,7 +12246,11 @@ if os.path.basename(tokens[0]) in {"bash", "dash", "sh", "zsh"}:
         if option.startswith("-"):
             raise SystemExit(1)
         break
-if syntax_only or index >= len(tokens):
+# A syntax-only invocation still names the protected control script.  Keep
+# identifying that concrete target so workers receive the same ownership
+# guidance as for an executing invocation; ordinary scripts remain outside
+# this target-specific route.
+if index >= len(tokens):
     raise SystemExit(1)
 candidate = tokens[index]
 expanded = os.path.expanduser(candidate)
@@ -12020,6 +12741,281 @@ if [ -n "$dynamic_find_action_detail" ]; then
     "replace the find action with a finite direct command, or use -print for inspection"
 fi
 
+# Inline interpreter code is ordinary work when its effect is unresolved and
+# no protected target is named.  Once the payload names an ECI control target
+# and a write-like operation, however, the resolved effect is concrete even
+# though the interpreter hides it from the argv planner.  Preserve the same
+# dynamic-launch diagnostic for that narrow accidental-control-state case.
+dynamic_interpreter_control_detail() {
+  python3 - "${1:-}" "${CODEX_PROOF_ROOT_CONFIGURED:-${CODEX_PROOF_ROOT:-${HOME:?}/.cache/codex-proof}}" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+text, configured_root = sys.argv[1:]
+try:
+    tokens = shlex.split(text, posix=True)
+except ValueError:
+    raise SystemExit(1)
+
+separators = {";", "&", "&&", "|", "||", "(", ")"}
+interpreters = {
+    "awk", "node", "nodejs", "perl", "php", "python", "python2", "python3",
+    "ruby", "tclsh", "wish",
+}
+control_names = {
+    "eci_active", "goal_state", "eci_wait", "eci_user_owned_wait.md",
+    "eci-permissive-mode", "eci-permissive-authorize", ".eci-permissive-mode",
+    ".eci-permissive-authorize", "eci-required-critics.json",
+    "eci-critic-identities.ledger", "eci-acceptance-anchor",
+    "eci-acceptance-transaction", "eci-teardown-complete", "eci-baseline-binding",
+    "eci-commit-admitted", "eci-aggregate", "eci-aggregate-plan.json",
+    "eci-aggregate-teardown-complete", "eci-accidental-mistake-override",
+    ".eci-accidental-mistake-override", "eci-user-closed.ledger", "proof.md",
+    "instructions.md", "stop_timestamps", "stop_loop_state", "disengage.md",
+    "user-closed.md", "project-understanding.md", "high_level_log.md",
+    "latest-status-report.md", "high_level_log.anchor",
+}
+write_call = re.compile(
+    r"\b(?:open|write|write_text|unlink|remove|rename|replace|chmod|chown|mkdir|makedirs|rmdir|truncate|copy|move|install)\s*\(",
+    re.IGNORECASE,
+)
+write_mode = re.compile(r"['\"](?:[wax]|[wax]\+|\+[wax])['\"]")
+
+try:
+    root = os.path.realpath(os.path.abspath(configured_root))
+except OSError:
+    root = ""
+
+def split_segments(values):
+    result, current = [], []
+    for value in values + [";"]:
+        if value in separators:
+            if current:
+                result.append(current)
+            current = []
+        else:
+            current.append(value)
+    return result
+
+def mutating_payload(payload):
+    return bool(write_call.search(payload) or write_mode.search(payload))
+
+def target_in_payload(payload):
+    if not mutating_payload(payload):
+        return ""
+    if root:
+        absolute = re.escape(root)
+        match = re.search(absolute + r"/[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]+)*", payload)
+        if match and os.path.basename(match.group(0)) in control_names:
+            return match.group(0)
+    for name in sorted(control_names, key=len, reverse=True):
+        if re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_.-])", payload):
+            return name
+    return ""
+
+def interpreter_flags(name):
+    if name in {"python", "python2", "python3"} or name.startswith("python3."):
+        return {"-c", "-"}
+    if name in {"node", "nodejs"}:
+        return {"-e", "-p", "--eval", "--print"}
+    if name == "perl":
+        return {"-e", "-E", "-"}
+    if name == "php":
+        return {"-r", "-R", "-B", "-E"}
+    if name == "ruby" or name.startswith("ruby"):
+        return {"-e", "-"}
+    return {"-c", "-e", "-"}
+
+def inspect(argv, depth=0):
+    if depth > 5 or not argv:
+        return
+    while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+        argv = argv[1:]
+    if not argv:
+        return
+    name = os.path.basename(argv[0])
+    if name == "env":
+        index = 1
+        while index < len(argv):
+            value = argv[index]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", value) or value in {"-i", "--ignore-environment"}:
+                index += 1
+                continue
+            if value in {"-u", "--unset", "-C", "--chdir"}:
+                index += 2
+                continue
+            if value.startswith("--unset=") or value.startswith("--chdir="):
+                index += 1
+                continue
+            if value == "--":
+                index += 1
+            break
+        inspect(argv[index:], depth + 1)
+        return
+    if name in {"command", "builtin", "exec", "nohup", "setsid"}:
+        inspect(argv[1:], depth + 1)
+        return
+    if name in interpreters:
+        flags = interpreter_flags(name)
+        for index, value in enumerate(argv[1:], 1):
+            flag = next(
+                (
+                    candidate for candidate in sorted(flags, key=len, reverse=True)
+                    if value == candidate or
+                    (candidate != "-" and value.startswith(candidate) and len(value) > len(candidate))
+                ),
+                "",
+            )
+            if not flag:
+                continue
+            if value == flag:
+                if index + 1 >= len(argv):
+                    return
+                payload = argv[index + 1]
+            else:
+                payload = value[len(flag):]
+            target = target_in_payload(payload)
+            if target:
+                print("token=%s argv_index=%d target=%s" % (flag, index, target))
+                return
+
+for segment in split_segments(tokens):
+    inspect(segment)
+PY
+}
+
+worker_dynamic_execution_context_detail() {
+  [ "$hook_is_subagent" = true ] || return 1
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  python3 - "${1:-}" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+try:
+    tokens = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    raise SystemExit(1)
+
+assignment = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+context_names = {
+    "BASH_ENV", "CDPATH", "ENV", "LD_LIBRARY_PATH", "LD_PRELOAD",
+    "NODE_OPTIONS", "NODE_PATH", "PATH", "PERL5LIB", "PERL5OPT",
+    "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "RUBYLIB", "RUBYOPT",
+    "ZDOTDIR",
+}
+if not tokens:
+    raise SystemExit(1)
+
+# Exporting a variable or installing a shell hash entry changes only the
+# current shell context; it does not itself invoke a control executable.  Do
+# not turn those state changes into an ECI denial.  A leading PATH assignment
+# matters only when it resolves the immediately invoked bare eci-active to the
+# canonical Codex binary and therefore establishes a concrete lifecycle call.
+if tokens[0] in {"export", "hash"}:
+    raise SystemExit(1)
+
+configured_home = os.path.realpath(os.path.abspath(
+    os.environ["CODEX_CONFIGURED_HOME"]
+))
+configured_eci = os.path.realpath(os.path.join(configured_home, "bin", "eci-active"))
+index = 0
+path_value = None
+while index < len(tokens):
+    match = assignment.fullmatch(tokens[index])
+    if match is None:
+        break
+    if match.group(1) == "PATH":
+        path_value = match.group(2)
+    index += 1
+
+if path_value is not None and index < len(tokens):
+    executable = tokens[index]
+    if executable == "eci-active":
+        expanded_path = os.path.expandvars(os.path.expanduser(path_value))
+        for path_entry in expanded_path.split(os.pathsep):
+            if not path_entry:
+                path_entry = "."
+            candidate = os.path.realpath(os.path.join(path_entry, executable))
+            if candidate == configured_eci:
+                print("token=PATH argv_index=0 context=canonical-lifecycle-resolution executable=%s" % executable)
+                raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+worker_dynamic_shell_indirection_detail() {
+  [ "$hook_is_subagent" = true ] || return 1
+  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
+  local detail
+  detail="$(dynamic_indirection_detail "$1" 2>/dev/null || true)"
+  case "$detail" in
+    token=eval\ *|token=source\ *|token=.\ *)
+      # Indirection is not an effect by itself.  Keep ordinary/unknown
+      # payloads transparent and route only a payload whose concrete target is
+      # already recognized by an effect-aware boundary.
+      if command_invokes_eci_binary "$1" ||
+         command_invokes_eci_off "$1" ||
+         command_invokes_eci_wait_or_resume "$1" ||
+         command_invokes_eci_acceptance_mutation "$1" ||
+         command_invokes_eci_control_mutation "$1" ||
+         protected_literal_operation_detail "$1" true >/dev/null 2>&1; then
+        printf '%s\n' "$detail"
+        return 0
+      fi
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+worker_dynamic_shell_indirection_detail="$(worker_dynamic_shell_indirection_detail "$command" 2>/dev/null || true)"
+if [ -n "$worker_dynamic_shell_indirection_detail" ]; then
+  deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
+    "ECI worker command plan denied arbitrary shell indirection: ${worker_dynamic_shell_indirection_detail}; predicate=dynamic-shell-indirection; reason=the evaluated or sourced payload can execute an effect that cannot be established from the reviewed argv" \
+    "invoke the intended executable or script directly through its resolved task-owned route"
+fi
+
+worker_dynamic_execution_context_detail="$(worker_dynamic_execution_context_detail "$command" 2>/dev/null || true)"
+if [ -n "$worker_dynamic_execution_context_detail" ]; then
+  dynamic_context_predicate=leading-assignment
+  [[ "$worker_dynamic_execution_context_detail" == *"context=command-name-alias"* ]] &&
+    dynamic_context_predicate=dynamic-launch
+  deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
+    "ECI worker command plan denied a dynamic execution-context mutation: ${worker_dynamic_execution_context_detail}; predicate=$dynamic_context_predicate; reason=the command changes executable resolution or command-name binding beyond a bounded task target" \
+    "invoke the task executable with its ordinary context, or use a resolved reviewed route"
+fi
+
+# Resolve concrete worker mutations of ECI control state before any generic
+# planner/inspection route can fall through.  This is target/effect based:
+# ordinary files and unrelated commands remain transparent, while a worker
+# attempting to write the active control records is routed to the coordinator.
+worker_control_detail=""
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  worker_control_detail="$(worker_control_path_detail 2>/dev/null || true)"
+  # A bounded read of a missing instruction-like path can report an
+  # instruction-denied diagnostic from the shared resolver; it is not a
+  # mutation of ECI control state and must remain transparent.
+  case "$worker_control_detail" in
+    instruction-denied\ *) worker_control_detail="" ;;
+  esac
+  if [ -n "$worker_control_detail" ]; then
+    deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
+      "ECI worker ownership gate denied mutation of ECI control state: $worker_control_detail; predicate=worker-control; reason=the resolved target is active ECI control state rather than task-owned project data" \
+      "route the resolved ECI control mutation through the owning coordinator"
+  fi
+fi
+
+dynamic_interpreter_control_detail="$(dynamic_interpreter_control_detail "$command" 2>/dev/null || true)"
+if [ -n "$dynamic_interpreter_control_detail" ]; then
+  deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
+    "ECI command plan denied a dynamic interpreter launch targeting ECI control state: ${dynamic_interpreter_control_detail}; predicate=dynamic-interpreter-launch; reason=the payload contains a write-like operation whose control target cannot be validated as an ordinary project file" \
+    "invoke a literal script or executable with a resolved task-owned target, or route the control-state mutation through the owning coordinator"
+fi
+
 if [ "$worker_fast_path_candidate" = true ]; then
   # The planner's plain-worker shape excludes lifecycle, control-path,
   # wrapper, Git, proof, environment, and operator forms.  Bind the active
@@ -12124,9 +13120,10 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
   exit 0
 fi
 
-# `bash -n` and `sh -n` parse one file without executing it. Keep this
-# default-read-only route independent of reviewed test manifests and filename
-# suffixes so an extensionless runtime script can be checked before repair.
+# `bash -n` and `sh -n` parse one or more files without executing them. Keep
+# this default-read-only route independent of reviewed test manifests and
+# filename suffixes so extensionless runtime scripts can be checked before
+# repair.
 syntax_only_shell_check_route() {
   python3 - "$1" "$cwd" <<'PY'
 import os
@@ -12140,25 +13137,28 @@ try:
     tokens = list(lexer)
 except ValueError:
     raise SystemExit(1)
-if len(tokens) != 3 or tokens[0] not in {"bash", "sh"} or tokens[1] != "-n":
-    raise SystemExit(1)
-script = tokens[2]
-if not script or script.startswith("-"):
+if len(tokens) < 3 or tokens[0] not in {"bash", "sh"} or tokens[1] != "-n":
     raise SystemExit(1)
 root = os.path.realpath(hook_cwd)
 if (not os.path.isabs(hook_cwd) or os.path.normpath(hook_cwd) != hook_cwd or
         not os.path.isdir(hook_cwd) or os.path.islink(hook_cwd) or root != hook_cwd):
     raise SystemExit(1)
-candidate = script if os.path.isabs(script) else os.path.join(root, script)
-if (os.path.normpath(candidate) != candidate or
-        not candidate.startswith(root + os.sep) or
-        not os.path.isfile(candidate) or os.path.islink(candidate) or
-        os.path.realpath(candidate) != candidate):
-    raise SystemExit(1)
+for script in tokens[2:]:
+    if not script or script.startswith("-"):
+        raise SystemExit(1)
+    candidate = script if os.path.isabs(script) else os.path.join(root, script)
+    candidate = os.path.normpath(candidate)
+    resolved = os.path.realpath(candidate)
+    if (not os.path.isfile(resolved) or
+            not resolved.startswith(root + os.sep)):
+        raise SystemExit(1)
 raise SystemExit(0)
 PY
 }
 
+# `bash -n`/`sh -n` only parse the named file and do not execute it.  That
+# remains harmless inspection even when the file is a coordinator-owned hook;
+# the worker control-script boundary below applies only to execution.
 if syntax_only_shell_check_route "$command"; then
   validate_active_marker_binding
   exit 0
@@ -12339,24 +13339,25 @@ if not roots:
 
 # Test-launch admission protects against accidental wrong-workspace and
 # wrong-target writes, not adversarially modeled byte changes. A generic test
-# must be a readable, regular direct-child .sh file below the callback root.
+# must resolve to a readable .sh file directly below hooks/tests in the
+# callback root; harmless symlink aliases are judged by that resolved target.
 def structural_test_script(root, relative, candidate, resolved):
     prefix = "hooks/tests/"
-    if candidate != resolved or candidate != os.path.join(root, relative):
+    resolved_relative = os.path.relpath(resolved, root)
+    if not resolved.startswith(root + os.sep):
         return False
-    if not relative.startswith(prefix):
+    if not resolved_relative.startswith(prefix):
         return False
-    leaf = relative[len(prefix):]
+    leaf = resolved_relative[len(prefix):]
     if not leaf or "/" in leaf or not leaf.endswith(".sh"):
         return False
-    return (os.path.isfile(candidate) and not os.path.islink(candidate)
-            and os.access(candidate, os.R_OK))
+    return (os.path.isfile(resolved) and not os.path.islink(resolved)
+            and os.access(resolved, os.R_OK))
 
 def structural_installer_script(root, relative, candidate, resolved):
-    return (relative == "hooks/install-pre-commit-go-mod.sh"
-            and candidate == resolved == os.path.join(root, relative)
-            and os.path.isfile(candidate) and not os.path.islink(candidate)
-            and os.access(candidate, os.R_OK))
+    target = os.path.join(root, "hooks/install-pre-commit-go-mod.sh")
+    return (resolved == target and os.path.isfile(resolved)
+            and not os.path.islink(resolved) and os.access(resolved, os.R_OK))
 
 # Bind the route to the callback's selected canonical provider root.  Peer and
 # companion roots are deliberately not fallback candidates for generic tests.
@@ -12384,28 +13385,35 @@ def resolve_structural_callback_script(script, label):
         print("coordinator-script-route " + label + " script=" + script +
               " reason=non-literal path")
         raise SystemExit(1)
-    # Preserve submitted spelling so a traversal component cannot be
-    # normalized away before the full-realpath check.
+    # Normalize harmless internal `.`/`..` components before identifying the
+    # concrete script.  The resolved target, rather than lexical spelling or
+    # symlink shape, determines whether the script remains in the selected
+    # callback root.
     candidate = script if os.path.isabs(script) else os.path.join(selected_root, script)
-    if os.path.normpath(candidate) != candidate:
-        print("coordinator-script-route " + label + " script=" + script +
-              " reason=non-canonical path spelling")
-        raise SystemExit(1)
+    candidate = os.path.normpath(candidate)
     resolved = os.path.realpath(candidate)
-    if candidate != resolved:
+    if (resolved != selected_root and
+            not resolved.startswith(selected_root + os.sep)):
         print("coordinator-script-route " + label + " script=" + script +
-              " reason=script path or a parent must not be a symlink")
-        raise SystemExit(1)
-    if not resolved.startswith(selected_root + os.sep):
-        print("coordinator-script-route " + label + " script=" + script +
+              " candidate=" + candidate + " resolved=" + resolved +
               " reason=script must be below the callback provider root")
         raise SystemExit(1)
-    if (not os.path.isfile(candidate) or os.path.islink(candidate) or
-            not candidate.endswith(".sh") or not os.access(candidate, os.R_OK)):
+    # A missing ordinary script is deliberately transparent: the shell owns
+    # the resulting "not found" diagnostic and no control-state effect can
+    # occur.  Keep this distinct from an existing malformed, unsupported, or
+    # unreadable script, which still needs the reviewed-route boundary.
+    if not os.path.exists(resolved):
         print("coordinator-script-route " + label + " script=" + script +
-              " reason=readable regular non-symlink .sh file required")
+              " candidate=" + candidate + " resolved=" + resolved +
+              " reason=script target does not exist")
         raise SystemExit(1)
-    return candidate, resolved, os.path.relpath(candidate, selected_root)
+    if (not os.path.isfile(resolved) or
+            not resolved.endswith(".sh") or not os.access(resolved, os.R_OK)):
+        print("coordinator-script-route " + label + " script=" + script +
+              " candidate=" + candidate + " resolved=" + resolved +
+              " reason=readable regular .sh file required")
+        raise SystemExit(1)
+    return candidate, resolved, os.path.relpath(resolved, selected_root)
 
 # The prevalidated manifest-emitter assignment set is only useful to the
 # canonical review-gate test; it is not a general assignment escape hatch.
@@ -12437,14 +13445,31 @@ if "&&" in tokens:
         print("coordinator-script-route batch=count=" + str(len(chunks)) + " reason=expected 2..16 reviewed segments")
         raise SystemExit(1)
     for segment_index, segment in enumerate(chunks, 1):
-        if not segment or segment[0] not in {"bash", "sh"} or len(segment) not in {2, 3} or (len(segment) == 3 and segment[1] != "-n"):
-            print("coordinator-script-route batch=segment-" + str(segment_index) + " reason=expected bash/sh SCRIPT or bash/sh -n SCRIPT")
+        if not segment or segment[0] not in {"bash", "sh"} or len(segment) < 2:
+            print("coordinator-script-route batch=segment-" + str(segment_index) + " reason=expected bash/sh SCRIPT or bash/sh -n SCRIPT...")
             raise SystemExit(1)
         require_trusted_test_shell(segment[0], "batch=segment-" + str(segment_index))
+        if segment[1] == "-n":
+            syntax_scripts = segment[2:]
+            if not syntax_scripts:
+                print("coordinator-script-route batch=segment-" + str(segment_index) + " reason=syntax-only route requires at least one script")
+                raise SystemExit(1)
+            for syntax_script in syntax_scripts:
+                syntax_candidate = syntax_script if os.path.isabs(syntax_script) else os.path.join(selected_root, syntax_script)
+                syntax_candidate = os.path.normpath(syntax_candidate)
+                syntax_resolved = os.path.realpath(syntax_candidate)
+                if (not os.path.isfile(syntax_resolved) or
+                        not syntax_resolved.startswith(selected_root + os.sep)):
+                    print("coordinator-script-route batch=segment-" + str(segment_index) + " script=" + syntax_script + " candidate=" + syntax_candidate + " resolved=" + syntax_resolved + " reason=syntax-only target is outside the callback provider root")
+                    raise SystemExit(1)
+            continue
+        if len(segment) != 2:
+            print("coordinator-script-route batch=segment-" + str(segment_index) + " reason=expected exactly one executable script for an executing route")
+            raise SystemExit(1)
         candidate, resolved, relative = resolve_structural_callback_script(
-            segment[-1], "batch=segment-" + str(segment_index))
+            segment[1], "batch=segment-" + str(segment_index))
         if not structural_test_script(selected_root, relative, candidate, resolved):
-            print("coordinator-script-route batch=segment-" + str(segment_index) + " script=" + segment[-1] + " reason=script is outside the structural callback-root test route")
+            print("coordinator-script-route batch=segment-" + str(segment_index) + " script=" + segment[1] + " reason=script is outside the structural callback-root test route")
             raise SystemExit(1)
     print("ok")
     raise SystemExit(0)
@@ -12493,6 +13518,7 @@ candidate, resolved, relative = resolve_structural_callback_script(script, route
 if structural_installer_script(selected_root, relative, candidate, resolved):
     if worker or assignments or route_kind not in {"shell", "installer-repair"}:
         print("coordinator-script-route script=" + relative +
+              " canonical_target=" + resolved +
               " reason=installer route is coordinator-only, non-diagnostic, and accepts no assignments")
         raise SystemExit(1)
     if repair_peer is not None:
@@ -12511,14 +13537,15 @@ if structural_installer_script(selected_root, relative, candidate, resolved):
             raise SystemExit(1)
     print("ok")
     raise SystemExit(0)
+if assignments and (worker or route_kind != "shell" or relative != manifest_emitter_entrypoint):
+    print("coordinator-script-route script=" + relative +
+          " canonical_target=" + os.path.join(selected_root, manifest_emitter_entrypoint) +
+          " reason=manifest-emitter assignments require the canonical coordinator review-gate test")
+    raise SystemExit(1)
 if repair_peer is not None or not structural_test_script(
         selected_root, relative, candidate, resolved):
     print("coordinator-script-route script=" + relative +
           " reason=generic route admits only readable canonical direct-child hooks/tests/*.sh scripts")
-    raise SystemExit(1)
-if assignments and (worker or route_kind != "shell" or relative != manifest_emitter_entrypoint):
-    print("coordinator-script-route script=" + relative +
-          " reason=manifest-emitter assignments require the canonical coordinator review-gate test")
     raise SystemExit(1)
 print("ok")
 raise SystemExit(0)
@@ -12551,31 +13578,112 @@ trusted_stop_gate_syntax_bash() {
 }
 
 coordinator_stop_gate_syntax_route() {
-  local canonical_root canonical_target cwd_target root_real target_real cwd_target_real
+  local canonical_root canonical_target cwd_target root_real target_real cwd_target_real relative_target
 
   [ "$hook_is_subagent" != true ] || return 1
   [ "${plan_role:-}" = coordinator ] || return 1
-  [ "${plan_marker_state:-}" = active ] || return 1
-  [ "${#syntax_eci_markers[@]}" -eq 1 ] || return 1
-  [ "$1" = 'bash -n hooks/stop-gate.sh' ] || return 1
   trusted_stop_gate_syntax_bash || return 1
 
   canonical_root="${HOME:?HOME must be set}/.codex"
   canonical_target="$canonical_root/hooks/stop-gate.sh"
   cwd_target="$cwd/hooks/stop-gate.sh"
+  # The canonical hook may be syntax-checked by its coordinator from a
+  # foreign callback CWD.  An absolute canonical target identifies the same
+  # read-only effect regardless of CWD; keep the relative spelling bound to
+  # the callback workspace so a foreign relative path cannot borrow this
+  # route.
+  case "$1" in
+    'bash -n hooks/stop-gate.sh')
+      relative_target=true
+      ;;
+    "bash -n $canonical_target")
+      relative_target=false
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  # Relative inspection is tied to an active marker for the callback CWD;
+  # absolute inspection already identifies the canonical provider target and
+  # is harmless even when the callback itself runs from another workspace.
+  if [ "$relative_target" = true ]; then
+    [ "${plan_marker_state:-}" = active ] || return 1
+    [ "${#syntax_eci_markers[@]}" -eq 1 ] || return 1
+  fi
   [ -d "$canonical_root" ] && [ ! -L "$canonical_root" ] || return 1
   root_real="$(realpath -e -- "$canonical_root" 2>/dev/null || true)"
   [ "$root_real" = "$canonical_root" ] || return 1
   [ -f "$canonical_target" ] && [ ! -L "$canonical_target" ] || return 1
   target_real="$(realpath -e -- "$canonical_target" 2>/dev/null || true)"
   [ "$target_real" = "$canonical_target" ] || return 1
-  cwd_target_real="$(realpath -e -- "$cwd_target" 2>/dev/null || true)"
-  [ "$cwd_target_real" = "$canonical_target" ]
+  [ "$relative_target" = false ] || {
+    cwd_target_real="$(realpath -e -- "$cwd_target" 2>/dev/null || true)"
+    [ "$cwd_target_real" = "$canonical_target" ] || return 1
+  }
+  return 0
 }
 
 coordinator_script_route() {
   [ "$hook_is_subagent" != true ] || return 1
   reviewed_script_route "$1"
+}
+
+# The coordinator may run the configured peer provider's bounded test scripts
+# for cross-provider verification.  This is a concrete provider-root route,
+# not a generic escape for arbitrary external scripts; canonical installer and
+# lifecycle operations retain their own routes above.
+coordinator_peer_script_target_allowed() {
+  local detail="$1" resolved peer
+  [[ "$detail" == *"reason=script must be below the callback provider root"* ]] || return 1
+  resolved="${detail#* resolved=}"
+  resolved="${resolved%% reason=*}"
+  peer="${KIMI_CODE_HOME:-${HOME:-}/.kimi-code}"
+  [ -n "$peer" ] && [ "${peer#/}" != "$peer" ] || return 1
+  [ "$(realpath -e -- "$peer" 2>/dev/null || true)" = "$peer" ] || return 1
+  case "$resolved" in
+    "$peer"/hooks/tests/*.sh) ;;
+    *) return 1 ;;
+  esac
+  [ -f "$resolved" ] && [ ! -L "$resolved" ] &&
+    [ "$(realpath -e -- "$resolved" 2>/dev/null || true)" = "$resolved" ] &&
+  [ -r "$resolved" ]
+}
+
+coordinator_enforce_script_target() {
+  local command_value="$1" detail
+  [ "$hook_is_subagent" != true ] || return 0
+  shell_script_launcher_shape "$command_value" || return 0
+  COORDINATOR_SCRIPT_ROUTE_DETAIL=""
+  coordinator_script_route "$command_value" && return 0
+  detail="${COORDINATOR_SCRIPT_ROUTE_DETAIL:-}"
+  [[ "$detail" == *"reason=script must be below the callback provider root"* ]] || return 0
+  coordinator_peer_script_target_allowed "$detail" && return 0
+  coordinator_peer_installer_route "$command_value" && return 0
+  deny_eci "ECI_COORDINATOR_SCRIPT_TARGET_DENIED" "coordinator-script-target" \
+    "ECI coordinator shell-script target denied: ${detail}; predicate=coordinator-script-target; reason=the resolved script target is outside the selected provider root" \
+    "invoke a script under the selected canonical provider root, or route the concrete dependency-repository work through its owning coordinator"
+}
+
+
+# Manifest-emitter assignments are a concrete control-state route, not a
+# generic shell-syntax permission.  If those bounded assignments are present,
+# require the canonical review-gate entrypoint; an ordinary script command (or
+# an unknown planner result) remains transparent.  This catches an accidental
+# wrong-entrypoint invocation without turning parser/receipt metadata into a
+# blanket denial.
+coordinator_enforce_manifest_script_route() {
+  local command_value="$1" detail
+  [ "$hook_is_subagent" != true ] || return 0
+  [[ "$command_value" == ECI_EMIT_* ]] || return 0
+  COORDINATOR_SCRIPT_ROUTE_DETAIL=""
+  coordinator_script_route "$command_value" && return 0
+  detail="${COORDINATOR_SCRIPT_ROUTE_DETAIL:-}"
+  [[ "$detail" == *"assignment="* ||
+    "$detail" == *"assignment-set"* ||
+    "$detail" == *"manifest-emitter assignments require the canonical coordinator review-gate test"* ]] || return 0
+  deny_eci "ECI_COORDINATOR_MANIFEST_ROUTE_DENIED" "coordinator-manifest-route" \
+    "ECI coordinator manifest-emitter route denied: ${detail}; predicate=coordinator-manifest-route; reason=ECI_EMIT_* assignments are control metadata and may be passed only to the canonical review-gate test entrypoint" \
+    "invoke hooks/tests/test-eci-review-gate.sh with the complete supported ECI_EMIT_* assignment set, or remove the manifest-emitter assignments"
 }
 
 worker_reviewed_script_route() {
@@ -13337,7 +14445,11 @@ PY
 # digest-bound script route accepts it; inspection commands retain their own
 # literal parser.
 coordinator_compound_read_only_segment() {
-  coordinator_inspection_route "$1" || coordinator_script_route "$1"
+  # `bash -n`/`sh -n` only parse a file; they do not execute its payload and
+  # therefore remain ordinary inspection even when composed with a writer.
+  syntax_only_shell_check_route "$1" ||
+    coordinator_inspection_route "$1" ||
+    coordinator_script_route "$1"
 }
 
 coordinator_compound_private_session_cleanup_left() {
@@ -13350,6 +14462,49 @@ coordinator_compound_private_session_cleanup_left() {
     bash\ hooks/tests/*.sh|sh\ hooks/tests/*.sh) return 0 ;;
   esac
   return 1
+}
+
+# A non-cleanup mutation in a coordinator compound is not automatically an
+# ECI error.  The planner has already identified the segment as a finite
+# ordinary argv; this adapter only replays the concrete target checks that a
+# direct segment would receive.  In particular, `touch`, `tee`, and similar
+# ordinary writers must not be rejected merely because they follow an
+# inspection with `&&`/`||`.  Destructive cleanup remains on its named bounded
+# route, while broad, proof/control, and Git effects keep their own diagnoses.
+coordinator_compound_mutation_effect_route() {
+  [ "$hook_is_subagent" != true ] || return 1
+  local segment="$1" detail saved_command
+
+  # Cleanup has a deliberately narrower ownership route.  Let the caller
+  # report the existing compound-mutation diagnostic when it is not eligible.
+  if eci_cleanup_command_shape "$segment"; then
+    return 1
+  fi
+
+  detail="$(protected_broad_operation_detail "$segment" 2>/dev/null || true)"
+  if [ -n "$detail" ]; then
+    deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "broad-destructive" \
+      "ECI coordinator compound contains a broad destructive effect: ${detail}; predicate=compound-mutation" \
+      "replace the broad target with one explicit narrow recoverable target"
+  fi
+
+  # Reuse the normal proof/control target resolver for this one segment.  It
+  # emits the concrete cross-session/live-control denial itself when needed;
+  # an ordinary repository or temporary-file writer leaves the decision empty.
+  direct_ledger_static_control_target_pass "$segment" true || true
+  [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
+  enforce_proof_path_escape_boundary "$segment"
+
+  # Git target/effect checks use the shell-global command for historical
+  # compatibility.  Temporarily bind it to this segment so a compound does
+  # not lose cross-repository, output, broad, or protected-worktree checks.
+  if [[ "$segment" == *git* || "$segment" == *reset* || "$segment" == *worktree* ]]; then
+    saved_command="$command"
+    command="$segment"
+    maybe_enforce_git_mutation_gate
+    command="$saved_command"
+  fi
+  return 0
 }
 
 coordinator_compound_inspection_route() {
@@ -13380,7 +14535,10 @@ coordinator_compound_inspection_route() {
       if coordinator_compound_private_session_cleanup_left "$operator" "$left"; then
         allow_private_session_child=true
       fi
-      coordinator_shared_cleanup_route "$right" "$allow_private_session_child" || return 1
+      if coordinator_shared_cleanup_route "$right" "$allow_private_session_child"; then
+        return 0
+      fi
+      coordinator_compound_mutation_effect_route "$right" || return 1
       return 0
       ;;
   esac
@@ -13424,7 +14582,9 @@ PY
   [ -n "$detail" ] || return 1
   while IFS= read -r segment; do
     [ -n "$segment" ] || return 1
-    coordinator_compound_read_only_segment "$segment" || coordinator_shared_cleanup_route "$segment" || return 1
+    coordinator_compound_read_only_segment "$segment" ||
+      coordinator_shared_cleanup_route "$segment" ||
+      coordinator_compound_mutation_effect_route "$segment" || return 1
   done <<< "$detail"
   return 0
 }
@@ -13736,6 +14896,15 @@ arguments = words[index + 1:]
 session_independent_maintenance = (
     bool(arguments) and arguments[0] in {"maintain-planner", "sync-runtime"}
 )
+# Mutating Codex lifecycle calls must retain the literal current-home authority
+# so a symlinked/expanded path cannot silently become a second control entry
+# point.  Read-only visibility (help/status) was handled before this adapter;
+# malformed help continues to the CLI as ordinary discovery.
+canonical_spelling = re.compile(r"(?:(?:\"|')?\$HOME/\.codex/bin/eci-active(?:\"|')?)")
+if (arguments and arguments[0] not in {"--help", "-h", "status"} and
+        not canonical_spelling.search(command)):
+    print("canonical lifecycle spelling mismatch: expected literal $HOME/.codex/bin/eci-active for mutating provider arguments")
+    raise SystemExit(0)
 if not session_independent_maintenance:
     if "KIMI_SESSION_ID" in assigned_names:
         print("provider session identity mismatch: expected_name=CODEX_SESSION_ID observed_name=KIMI_SESSION_ID")
@@ -13758,10 +14927,13 @@ PY
       ;;
     "same lifecycle")
       COORDINATOR_PEER_ECI_ROUTE_MODE=lifecycle
-      return 0
       ;;
     "different lifecycle target")
       COORDINATOR_PEER_ECI_ROUTE_DETAIL="target identity mismatch: executable resolves to a different provider, copy, or target"
+      return 1
+      ;;
+    "canonical lifecycle spelling mismatch:"*)
+      COORDINATOR_PEER_ECI_ROUTE_DETAIL="$target_resolution"
       return 1
       ;;
     "provider session identity mismatch:"*|"active session identity mismatch:"*)
@@ -13775,7 +14947,7 @@ PY
 
   local detail
 
-  if detail="$(python3 - "$1" "${session_id:-}" <<'PY'
+if detail="$(python3 - "$1" "${session_id:-}" <<'PY'
 import os
 import re
 import shlex
@@ -14037,6 +15209,15 @@ else:
         accepted = True
     elif verb == "maintain-planner":
         accepted = len(tokens) == 2 and os.path.basename(matched_root) == ".codex"
+    elif verb == "repository-allow-status":
+        accepted = len(tokens) == 2
+    elif verb == "repository-allow-off":
+        accepted = (len(tokens) == 3 and os.path.isabs(tokens[2]) and
+                    os.path.normpath(tokens[2]) == tokens[2])
+    elif verb == "repository-allow-on":
+        accepted = (len(tokens) == 4 and os.path.isabs(tokens[2]) and
+                    os.path.normpath(tokens[2]) == tokens[2] and
+                    bounded_data(tokens[3]))
     elif verb == "accidental-override-cleanup":
         accepted = (len(tokens) == 4 and tokens[2] == "--authorized-by-user" and
                     os.path.basename(matched_root) == ".codex" and
@@ -14050,10 +15231,22 @@ else:
         accepted = len(tokens) == 2
     else:
         accepted = False
-raise SystemExit(0 if accepted else 1)
+if accepted:
+    raise SystemExit(0)
+
+# Aggregate staging is a lifecycle mutation with a concrete repository and
+# path-selection payload.  Unlike read-only help (whose malformed argv should
+# reach the CLI), malformed aggregate-stage shapes must be rejected here so a
+# wrapper, missing separator, or control-file operand cannot be mistaken for
+# an admitted parent-owned staging route.  Keep this diagnostic specific; all
+# other malformed lifecycle argv remains the CLI's responsibility.
+if verb == "aggregate-stage":
+    print("aggregate-stage provider arguments do not match the bounded repository -- relative-path route")
+raise SystemExit(1)
 PY
 )"; then
     COORDINATOR_PEER_ECI_ROUTE_DETAIL=""
+    COORDINATOR_PEER_ECI_ROUTE_MODE=lifecycle
     return 0
   fi
   COORDINATOR_PEER_ECI_ROUTE_DETAIL="${detail:-lifecycle command does not match the bounded provider route}"
@@ -14102,6 +15295,16 @@ if [ "$PLAN_CODEX_LIFECYCLE_ROUTE" = true ]; then
       deny_eci "ECI_LIFECYCLE_IDENTITY_DENIED" "eci-lifecycle" \
         "ECI lifecycle identity denied: ${lifecycle_target_detail}" \
         "use the callback's active Codex session identity"
+      ;;
+    "canonical lifecycle spelling mismatch:"*)
+      deny_eci "ECI_LIFECYCLE_CANONICAL_PATH_DENIED" "eci-lifecycle" \
+        "ECI lifecycle canonical path denied: ${lifecycle_target_detail}; predicate=canonical-lifecycle-spelling; target=canonical Codex/Kimi eci-active control binary" \
+        "invoke the mutating lifecycle command through the literal \"\$HOME/.codex/bin/eci-active\" spelling"
+      ;;
+    "aggregate-stage provider arguments do not match"*)
+      deny_eci "ECI_LIFECYCLE_ARGUMENTS_DENIED" "eci-lifecycle" \
+        "ECI lifecycle provider arguments denied: ${lifecycle_target_detail}; target=canonical Codex/Kimi eci-active control binary; reason=aggregate-stage requires one repository selector, a literal -- separator, and one or more safe repository-relative paths" \
+        "use the canonical Codex/Kimi eci-active control binary with aggregate-stage <repository> -- <relative-path>..."
       ;;
   esac
 fi
@@ -14663,9 +15866,18 @@ if [ -n "$review_gate_identity" ]; then
 fi
 
 if [ "$hook_is_subagent" = true ] && [ -n "$worker_protected_control_identity" ]; then
-  deny_eci "ECI_WORKER_CONTROL_SCRIPT_DENIED" "worker-control-script" \
-    "ECI worker boundary denied coordinator-owned lifecycle/control script: ${worker_protected_control_identity}; reason=the canonical control script owns ECI admission or stop state" \
-    "route this exact canonical control-script invocation through the main/orchestrator coordinator"
+  case "$worker_protected_control_identity" in
+    *"install-pre-commit-go-mod.sh"*)
+      deny_eci "ECI_WORKER_HOOK_INSTALLER_DENIED" "worker-hook-installer" \
+        "ECI worker boundary denied coordinator-owned hook installer: ${worker_protected_control_identity}; predicate=worker-hook-installer; reason=the canonical installer mutates provider hook state and is coordinator-owned" \
+        "route this exact canonical installer invocation through the owning coordinator"
+      ;;
+    *)
+      deny_eci "ECI_WORKER_CONTROL_SCRIPT_DENIED" "worker-control-script" \
+        "ECI worker boundary denied coordinator-owned lifecycle/control script: ${worker_protected_control_identity}; reason=the canonical control script owns ECI admission or stop state" \
+        "route this exact canonical control-script invocation through the main/orchestrator coordinator"
+      ;;
+  esac
 fi
 
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
@@ -14674,10 +15886,12 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   [ "$DIRECT_LEDGER_FALLBACK_DECISION" != deny ] || direct_ledger_emit_fallback_denial
 fi
 
-# `env`/`printenv` option grammar is a worker execution-envelope concern.  A
-# coordinator's ordinary command may use a shell wrapper or an option the
-# recognizer does not understand; that alone is not evidence of a wrong
-# target. Concrete downstream routes still inspect Git/proof/control effects.
+# `env`/`printenv` option grammar is an execution-envelope diagnostic.  An
+# ordinary command may use a shell wrapper or an option the recognizer does
+# not understand; that alone is not evidence of a wrong target. The
+# effect-based interpreter-context check above has already handled an
+# existing context path attached to an existing script. Concrete downstream
+# routes still inspect Git/proof/control effects.
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" = true ] &&
   [ "$ECI_ENVIRONMENT_BOUNDARY_CHECKED" != true ]; then
   enforce_environment_command_boundary
@@ -14825,6 +16039,14 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   fi
 fi
 
+# Keep the control-metadata route narrow even when the planner is unavailable
+# or returns a generic admission.  This is intentionally limited to the
+# explicit ECI_EMIT_* assignment family; ordinary shell commands remain
+# effect-transparent.
+if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" != true ]; then
+  coordinator_enforce_manifest_script_route "$command"
+fi
+
 # Current-source compilation can be temporarily unavailable while the planner
 # is being edited. After the existing marker, proof-path, cleanup, and concrete
 # destructive-target checks above have run, ordinary coordinator work remains
@@ -14835,6 +16057,7 @@ if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ] &&
   [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] &&
   [ "$coordinator_compound_mutation" != true ] &&
   ! command_invokes_eci_lifecycle "$command"; then
+  coordinator_enforce_script_target "$command"
   if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     validate_active_marker_binding
     enforce_foreign_active_marker_mutation_boundary
@@ -14875,6 +16098,13 @@ fi
 review_markers=()
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_binary "$command"; then
+  if worker_repository_allow_lifecycle_route "$command"; then
+    # The binary itself is the owner-scoped declaration authority.  Keep the
+    # active marker binding in the hook, then let the CLI validate and publish
+    # the persistent repository allowance; no generic lifecycle bypass exists.
+    validate_active_marker_binding
+    exit 0
+  fi
   eci_binary_subject="$(eci_command_identity_subject "$command")"
   eci_binary_detail="$(rejected_command_detail "$command" 2>/dev/null || printf 'segment=<unclassified>')"
   deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
@@ -14926,9 +16156,30 @@ if worker_env_git_fsck_lost_found_shape; then
 fi
 
 worker_reviewed_script_admitted=false
+worker_reviewed_script_route_detail=""
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   worker_reviewed_script_route "$command"; then
   worker_reviewed_script_admitted=true
+else
+  worker_reviewed_script_route_detail="${COORDINATOR_SCRIPT_ROUTE_DETAIL:-}"
+fi
+
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  { [[ "$worker_reviewed_script_route_detail" == *"reason=script path or a parent must not be a symlink"* ]] ||
+    [[ "$worker_reviewed_script_route_detail" == *"reason=script must be below the callback provider root"* ]]; }; then
+  if ! worker_script_target_additional_repository_allowed "$worker_reviewed_script_route_detail"; then
+    deny_eci "ECI_WORKER_SCRIPT_TARGET_DENIED" "worker-script-target" \
+      "ECI worker boundary denied a script target outside the assigned canonical provider root: ${worker_reviewed_script_route_detail}; predicate=worker-script-target; reason=the resolved script target is outside the worker's assigned root and has no owner-declared additional-repository allowance" \
+      "for an owned dependency repository, first run \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\"; otherwise route the foreign script execution through its owning coordinator"
+  fi
+fi
+
+if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+  [[ "$worker_reviewed_script_route_detail" == *"script=hooks/install-pre-commit-go-mod.sh canonical_target="* ]] &&
+  [[ "$worker_reviewed_script_route_detail" == *"reason=installer route is coordinator-only"* ]]; then
+  deny_eci "ECI_WORKER_HOOK_INSTALLER_DENIED" "worker-hook-installer" \
+    "ECI worker boundary denied coordinator-owned hook installer: ${worker_reviewed_script_route_detail}; predicate=worker-hook-installer; reason=the canonical installer mutates provider hook state and is coordinator-owned" \
+    "route this exact canonical installer invocation through the owning coordinator"
 fi
 
 # An unfamiliar worker launcher, interpreter spelling, or direct utility is
@@ -14939,6 +16190,15 @@ fi
 # Peer-provider reads are advisory context.  A path alone has no accidental
 # effect; concrete writes and destructive targets are handled by their own
 # resolved-target checks.
+
+# Keep the concrete script-target boundary active even when the compiled
+# planner has already granted a finite literal argv.  Planner admission is
+# not a substitute for resolving an interpreter's script operand: an
+# arbitrary out-of-root script remains a wrong-target execution, while the
+# helper above preserves the explicit canonical Kimi peer route.
+if [ "$hook_is_subagent" != true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  coordinator_enforce_script_target "$command"
+fi
 
 if [ "$ECI_LITERAL_ADMITTED" = true ]; then
   # The planner has already completed the protected checks and admitted this
@@ -14978,9 +16238,8 @@ if [ "$hook_is_subagent" != true ] && [ "$ECI_LITERAL_ADMITTED" != true ]; then
         read_only=true
       fi
     fi
-    if [ "$command_state" = unknown ] && [ "${#review_markers[@]}" -eq 1 ] &&
-      coordinator_stop_gate_syntax_route "$command"; then
-      validate_active_marker_binding
+    if [ "$command_state" = unknown ] && coordinator_stop_gate_syntax_route "$command"; then
+      [ "${#review_markers[@]}" -eq 0 ] || validate_active_marker_binding
       command_state=read-only
       read_only=true
     fi
@@ -15010,6 +16269,13 @@ if [ "$hook_is_subagent" != true ] && [ "$ECI_LITERAL_ADMITTED" != true ]; then
         fi
         ;;
     esac
+    # A failed structural-script parse is not itself a harmful effect.  Keep
+    # ordinary in-root scripts, harmless extra arguments, and missing scripts
+    # transparent; concrete control/installer routes and resolved out-of-root
+    # targets are handled by their named checks below.
+    if [ "$command_state" = unknown ]; then
+      coordinator_enforce_script_target "$command"
+    fi
     if [ "$command_state" = unknown ] && [ "${#review_markers[@]}" -eq 1 ] && coordinator_mktemp_route "$command"; then
       # Creating a temporary directory is a coordinator-owned setup action,
       # not a worker read-only capability.  The helper accepts only the exact

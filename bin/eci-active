@@ -41,6 +41,9 @@ Usage:
   $lifecycle_usage_command nested-exit
   $lifecycle_usage_command coordinator-edit-on
   $lifecycle_usage_command coordinator-edit-status
+  $lifecycle_usage_command repository-allow-on <canonical-repository> "<reason>"
+  $lifecycle_usage_command repository-allow-off <canonical-repository>
+  $lifecycle_usage_command repository-allow-status
   $lifecycle_usage_command permissive-on <session|global> <gate> <operation> <request> <ttl-seconds>
   $lifecycle_usage_command permissive-off <session|global> <gate> <operation> <request>
   $lifecycle_usage_command permissive-status <session|global> <gate> <operation> <request>
@@ -2374,6 +2377,172 @@ write_permissive_record() {
   codex_eci_session_permissive_record_is_valid "$scope" "$session_id" "$cwd" "$gate" "$operation" "$request" "$now"
 }
 
+repository_allow_context() {
+  repository_allow_session_id="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
+  [ -n "$repository_allow_session_id" ] || {
+    echo 'repository-allow requires an explicit CODEX_SESSION_ID or CODEX_THREAD_ID.' >&2
+    return 1
+  }
+  codex_valid_session_id "$repository_allow_session_id" || {
+    echo 'repository-allow has an invalid session identity.' >&2
+    return 1
+  }
+  repository_allow_session_dir="$(resolve_session_dir)" || {
+    echo "repository-allow has no session directory for $repository_allow_session_id." >&2
+    return 1
+  }
+  [ "${repository_allow_session_dir##*/}" = "$repository_allow_session_id" ] || {
+    echo 'repository-allow resolved a different session than the current identity.' >&2
+    return 1
+  }
+  repository_allow_cwd="$(codex_canonical_cwd "$PWD")"
+  [ -d "$repository_allow_cwd" ] && [ ! -L "$repository_allow_cwd" ] || {
+    echo 'repository-allow requires a real current working directory.' >&2
+    return 1
+  }
+  repository_allow_marker="$(resolve_semantic_direct_marker_for_cwd \
+    "$(codex_proof_root)" "$repository_allow_session_id" "$repository_allow_cwd")" || {
+    echo "repository-allow requires the active marker for this session and cwd: $repository_allow_session_dir/eci_active" >&2
+    return 1
+  }
+}
+
+repository_allow_write_record() {
+  local record="$1" session_id="$2" cwd="$3" repository="$4" reason="$5" tmp
+
+  codex_eci_additional_repository_reason_is_valid "$reason" || return 1
+  tmp="$record.tmp.$$"
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || return 1
+  if ! (
+    umask 077
+    set -C
+    {
+      printf 'schema: %s\n' "$codex_eci_additional_repository_schema"
+      printf 'session_id: %s\n' "$session_id"
+      printf 'cwd: %s\n' "$cwd"
+      printf 'repository: %s\n' "$repository"
+      printf 'reason: %s\n' "$reason"
+      printf 'state: active\n'
+    } >"$tmp"
+  ); then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  chmod 600 -- "$tmp" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  if ! mv -T -- "$tmp" "$record"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  codex_eci_additional_repository_record_is_valid "$session_id" "$cwd" "$repository"
+}
+
+repository_allow_record_path() {
+  repository_allow_record="$(codex_eci_additional_repository_record_path "$repository_allow_session_id")" || {
+    echo 'repository-allow state target is unsafe.' >&2
+    return 1
+  }
+}
+
+repository_allow_status() {
+  local repository reason
+
+  [ "$#" -eq 1 ] || { usage; exit 2; }
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  if [ ! -e "$repository_allow_record" ] && [ ! -L "$repository_allow_record" ]; then
+    printf 'ECI additional repository inactive\n'
+    return 0
+  fi
+  codex_eci_additional_repository_record_is_valid \
+    "$repository_allow_session_id" "$repository_allow_cwd" '' || {
+    echo "ECI additional repository state is invalid: $repository_allow_record" >&2
+    exit 1
+  }
+  repository="$(sed -n 's/^repository: //p' "$repository_allow_record")"
+  reason="$(sed -n 's/^reason: //p' "$repository_allow_record")"
+  printf 'ECI additional repository active: %s\n' "$repository"
+  printf 'reason: %s\n' "$reason"
+}
+
+repository_allow_on() {
+  local requested repository active_repo reason
+
+  [ "$#" -eq 3 ] || { usage; exit 2; }
+  requested="$2"
+  reason="$3"
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  repository="$(codex_eci_additional_repository_canonical_root "$requested" 2>/dev/null || true)"
+  [ -n "$repository" ] || {
+    echo "repository-allow rejected noncanonical or non-repository target: $requested" >&2
+    exit 1
+  }
+  codex_eci_additional_repository_reason_is_valid "$reason" || {
+    echo 'repository-allow requires one nonempty human-readable reason (no control characters, at most 2048 bytes).' >&2
+    exit 1
+  }
+  active_repo="$(codex_git_safe -C "$repository_allow_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+  active_repo="$(realpath -e -- "$active_repo" 2>/dev/null || true)"
+  [ -n "$active_repo" ] && [ "$active_repo" != "$repository" ] || {
+    echo 'repository-allow requires a repository different from the active work repository.' >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  if [ -e "$repository_allow_record" ] || [ -L "$repository_allow_record" ]; then
+    [ -f "$repository_allow_record" ] && [ ! -L "$repository_allow_record" ] || {
+      echo "repository-allow state target is unsafe: $repository_allow_record" >&2
+      exit 1
+    }
+    if codex_eci_additional_repository_record_is_valid "$repository_allow_session_id" \
+      "$repository_allow_cwd" '' 2>/dev/null; then
+      echo "repository-allow is already active; run repository-allow-off first: $repository_allow_record" >&2
+    else
+      echo "repository-allow state target is invalid: $repository_allow_record" >&2
+    fi
+    exit 1
+  fi
+  repository_allow_write_record "$repository_allow_record" "$repository_allow_session_id" \
+    "$repository_allow_cwd" "$repository" "$reason" || {
+    echo "repository-allow could not publish a valid state record: $repository_allow_record" >&2
+    exit 1
+  }
+  printf 'ECI additional repository active: %s\n' "$repository"
+  printf 'reason: %s\n' "$reason"
+}
+
+repository_allow_off() {
+  local requested repository
+
+  [ "$#" -eq 2 ] || { usage; exit 2; }
+  requested="$2"
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  repository="$(codex_eci_additional_repository_canonical_root "$requested" 2>/dev/null || true)"
+  [ -n "$repository" ] || {
+    echo "repository-allow rejected noncanonical or non-repository target: $requested" >&2
+    exit 1
+  }
+  acquire_eci_mutation_lock || exit 1
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  if [ ! -e "$repository_allow_record" ] && [ ! -L "$repository_allow_record" ]; then
+    printf 'ECI additional repository inactive: %s\n' "$repository"
+    return 0
+  fi
+  codex_eci_additional_repository_record_is_valid "$repository_allow_session_id" \
+    "$repository_allow_cwd" "$repository" || {
+    echo "repository-allow state does not match the requested repository: $repository_allow_record" >&2
+    exit 1
+  }
+  rm -f -- "$repository_allow_record" || exit 1
+  printf 'ECI additional repository inactive: %s\n' "$repository"
+}
+
 case "$cmd" in
 --help|-h)
   usage 2>&1
@@ -2424,6 +2593,15 @@ coordinator-edit-on)
     exit 1
   }
   printf 'ECI coordinator edit state active: %s\n' "$coordinator_edit_record"
+  ;;
+repository-allow-status)
+  repository_allow_status "$@"
+  ;;
+repository-allow-on)
+  repository_allow_on "$@"
+  ;;
+repository-allow-off)
+  repository_allow_off "$@"
   ;;
 permissive-status)
   [ "$#" -eq 5 ] || { usage; exit 2; }

@@ -22,6 +22,7 @@ REVIEW="$ROOT/skills/explore-critique-implement/references/review.md"
 COORDINATOR="$ROOT/skills/explore-critique-implement/references/coordinator.md"
 COORDINATOR_RUNTIME="$ROOT/skills/references/workflow-runtime/coordinator-runtime.md"
 REVIEW_POLICY="$ROOT/skills/references/workflow-runtime/review-policy.md"
+GATE_CATALOG="$ROOT/hooks/gate-escape-hatches.md"
 SNITCH="$ROOT/skills/agent-teams-execution/references/snitch.md"
 ATE_ORCHESTRATION="$ROOT/skills/agent-teams-execution/references/orchestration.md"
 ATE_RESEARCH="$ROOT/skills/agent-teams-execution/references/research.md"
@@ -182,6 +183,7 @@ assert_local_links_resolve() {
     "$ROOT/skills/references/workflow-runtime/policy-pressure-tests.md"
     "$ROOT/skills/references/workflow-runtime/review-policy.md"
     "$ROOT/skills/references/workflow-runtime/stop-recovery.md"
+    "$GATE_CATALOG"
   )
 
   for file in "${documents[@]}"; do
@@ -3200,6 +3202,12 @@ assert_least_restriction_contract() {
   require_text "$REVIEW_POLICY" 'Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work.'
   require_text "$PAUSE" 'Pause state is session-local coordination context, not a receipt, hash, or artifact gate.'
   require_text "$POLICY" 'Pressure-test evidence is audit context, never an ordinary-work gate.'
+  require_text "$CODEX" 'Every enabled denial names a documented bounded legitimate-work escape path in [the gate catalog](hooks/gate-escape-hatches.md).'
+  require_text "$GATE_CATALOG" 'Every enabled gate below has a bounded legitimate path.'
+  require_text "$GATE_CATALOG" 'If a future gate has no bounded legitimate path, disable that gate until one exists.'
+  require_text "$GATE_CATALOG" 'owner-scoped dependency work'
+  require_text "$GATE_CATALOG" 'repository-allow-on'
+  require_text "$GATE_CATALOG" '600-second `coordinator-edit-on` hatch'
 
   forbid_text "$ECI_COVERAGE" 'Baseline source SHA-256:'
   forbid_text "$PAUSE" 'fails closed'

@@ -54,4 +54,4 @@ The design-revision batch groups all remaining issues by affected artifact/API/c
 
 ## Independent-review discipline
 
-Review independently before reading sibling findings. Do not praise or rubber-stamp producer/peer output. For multiple non-execution reviewers partition primary lenses (correctness/edge, security, design/semantic/naming) while still reporting real out-of-lens issues. A minority dissent needs counter-evidence to override. Higher evidence tier wins contradiction. Reviewers never edit their target; dispute one evidence-backed exchange, then coordinator adjudicates.
+Review independently before reading sibling findings. Do not praise or rubber-stamp producer/peer output. For multiple non-execution reviewers partition primary lenses (correctness/edge, accidental-harm and resolved-target safety under the non-malicious model, design/semantic/naming) while still reporting real out-of-lens issues. A minority dissent needs counter-evidence to override. Higher evidence tier wins contradiction. Reviewers never edit their target; dispute one evidence-backed exchange, then coordinator adjudicates.

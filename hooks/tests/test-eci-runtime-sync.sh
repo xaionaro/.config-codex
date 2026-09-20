@@ -444,23 +444,20 @@ run_planner_sync planner-apply
 [ "$(awk -F '\t' '$1 == "source_main.go_sha256" { print $2 }' "$planner_codex/$planner_dir/.eci-command-plan.provenance")" = "$planner_edited_main_hash" ]
 cmp -- "$planner_codex/$planner_dir/eci-command-plan" "$planner_kimi/$planner_dir/eci-command-plan"
 
-# Force source churn while the three-file snapshot is being assembled.  The
-# planner must retry the incoherent attempt, then publish one stable snapshot;
-# persistent churn is a maintenance diagnostic, not an ordinary-work gate.
-planner_churn_classifier="$planner_codex/$planner_dir/classifier.go"
-for planner_churn_chunk in $(seq 1 16384); do
-  printf '%s\n' '// planner snapshot churn fixture padding' >>"$planner_churn_classifier"
-done
-planner_churn_output="$planner_root/planner-snapshot-churn.out"
-planner_churn_pid=''
-run_planner_sync planner-apply >"$planner_churn_output" 2>&1 &
-planner_churn_pid=$!
-for planner_churn_attempt in $(seq 1 20); do
-  printf '%s\n' '// planner snapshot churn fixture edit' >>"$planner_churn_classifier"
-  sleep 0.005
-done
-wait "$planner_churn_pid"
-grep -Fq 'planner source changed during coherent snapshot; retrying' "$planner_churn_output"
+# A fixed-purpose one-shot probe mutates one known planner input after the
+# first complete copy. The snapshot must reject that mixed attempt, retry, and
+# publish the stable post-mutation source without an arbitrary test executor.
+planner_probe_classifier="$planner_codex/$planner_dir/classifier.go"
+planner_probe_output="$planner_root/planner-snapshot-probe.out"
+HOME="$planner_root" KIMI_CODE_HOME="$planner_kimi" \
+  ECI_RUNTIME_SYNC_TEST_MUTATE_PLANNER_SOURCE_ONCE=true \
+  "$planner_codex/bin/eci-runtime-sync" planner-apply --target "$planner_kimi" \
+  >"$planner_probe_output" 2>&1
+grep -Fq 'planner source changed during coherent snapshot; retrying' "$planner_probe_output"
+grep -Fq 'runtime-sync one-shot snapshot mutation probe' "$planner_probe_classifier"
+planner_probe_classifier_hash="$(sha256sum -- "$planner_probe_classifier" | awk '{print $1}')"
+[ "$(awk -F '\t' '$1 == "source_classifier.go_sha256" { print $2 }' \
+  "$planner_codex/$planner_dir/.eci-command-plan.provenance")" = "$planner_probe_classifier_hash" ]
 run_planner_sync planner-check
 
 # The installed/deployed copy is only a launcher.  Planner maintenance must

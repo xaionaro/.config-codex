@@ -20,6 +20,8 @@ Check applicable style skills, formatter/linter/config anchors, actual scope, ad
 
 Check correctness, safety, concrete requirements, interfaces, non-style boundaries, and root-cause/regression rationale. Check scope fidelity and least restriction against `exact user source → faithful requested outcome → bounded scope`. Distinguish a repair needed to meet or prove that outcome from an invented separate outcome; report the latter as `REJECT` without treating stale lineage as a work gate. Verify that named functions, types, and interfaces actually provide their claimed behavior.
 
+Assume bots are non-malicious. Check that each control catches a concrete accidental broad, destructive, wrong-target, wrong-owner, or cross-scope effect without treating unfamiliar syntax, wrappers, metadata, receipts, hashes, or shell punctuation as an error by itself. Require every enabled gate to name a bounded legitimate-work escape path; if it has none, recommend disabling it. Preserve the legitimate owner and session; do not recommend rerouting owner-scoped dependency work.
+
 ## Critic C — long-term health
 
 Check maintainability harm from debt, coupling, hidden dependencies, code smells, layer/module fit, naming, abstraction, architecture, and self-explaining intention. If assigned a pre-write intention check, return `reconstructed intention:` followed by 2–4 bullets and stop; a later full-context review remains independent.
