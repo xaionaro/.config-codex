@@ -903,7 +903,7 @@ assert_e2e_policy_consumer_pointers() {
 
 assert_no_direct_configuration_e2e_waivers_in_input() {
   local source="$1" input="$2" line continuation e2e e2e_end configuration_work configuration_target configuration_e2e
-  local primary_configuration_e2e_action configuration_final_pair_action no_waiver_action implementer_e2e_action step4_e2e_action required_e2e_action direct_caveat_suffix
+  local primary_configuration_e2e_action configuration_final_pair_action final_pair_first_waiver_action no_waiver_action implementer_e2e_action step4_e2e_action required_e2e_action direct_caveat_suffix
   local -a direct_waiver_patterns
 
   [ "$#" -ne 3 ] || input="$3"
@@ -914,6 +914,7 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
   configuration_e2e="(^|[^[:alnum:]-])configuration(-only)?([[:space:]]+(changes?|work))?[[:space:]]+${e2e}"
   primary_configuration_e2e_action="((every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes),?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work|including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+(every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes))[[:space:]]*,?[[:space:]]+requires[[:space:]]+${e2e}"
   configuration_final_pair_action='every[[:space:]]+configuration[[:space:]]+change,?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+requires[[:space:]]+the[[:space:]]+final[[:space:]]+implementer-owned[[:space:]]+and[[:space:]]+fresh[[:space:]]+independent[[:space:]]+e2e[[:space:]]+pair'
+  final_pair_first_waiver_action="final[[:space:]]+(required[[:space:]]+)?${e2e}[[:space:]]+pair[[:space:]]+((may|can)[[:space:]]+be[[:space:]]+(omitted|skipped|waived)|is[[:space:]]+optional)[[:space:]]+for[[:space:]]+${configuration_target}${e2e_end}"
   no_waiver_action="(this[[:space:]]+configuration[[:space:]]+${e2e}[[:space:]]+requirement|this[[:space:]]+requirement)[[:space:]]+may[[:space:]]+not[[:space:]]+be[[:space:]]+waived"
   implementer_e2e_action="the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+(that[[:space:]]+${e2e}|it)|performs[[:space:]]+the[[:space:]]+required[[:space:]]+${e2e})[[:space:]]+before[[:space:]]+step[[:space:]]+4"
   step4_e2e_action="step[[:space:]]+4[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+(its|the[[:space:]]+implementer.?s)[[:space:]]+${e2e}"
@@ -928,6 +929,7 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
     "skip[[:space:]]+${e2e}[[:space:]]+for[[:space:]]+${configuration_target}"
     "${configuration_e2e}[[:space:],]+(may|can)[[:space:]]+be[[:space:]]+(omitted|skipped|waived)${e2e_end}"
     "${configuration_e2e}[[:space:]]+is[[:space:]]+optional${e2e_end}"
+    "$final_pair_first_waiver_action"
     "${configuration_work}[[:space:],]+(may|can)[[:space:]]+(omit|skip|waive)[[:space:]]+(the[[:space:]]+)?(required[[:space:]]+)?final[[:space:]]+${e2e}[[:space:]]+pair"
     "final[[:space:]]+${e2e}[[:space:]]+pair[[:space:]]+for[[:space:]]+${configuration_target}[[:space:],]+(may|can)[[:space:]]+be[[:space:]]+(omitted|skipped|waived)${e2e_end}"
     "${required_e2e_action}${direct_caveat_suffix}"
@@ -997,6 +999,12 @@ assert_configuration_e2e_waiver_fixtures() {
     'Configuration changes may skip routine inter-iteration E2E; the required final pair remains.'
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'configuration skips required final pair' \
     'Configuration changes may skip the required final E2E pair.'
+  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'Critic B final pair waiver' \
+    'The final E2E pair may be waived for configuration changes.'
+  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'final pair optional for configuration changes' \
+    'The final E2E pair is optional for configuration changes.'
+  assert_no_direct_configuration_e2e_waivers_in_input "$ECI" 'fixture: final pair waiver for non-configuration changes' \
+    'The final E2E pair may be waived for non-configuration changes.'
   for reverse_modal in may can; do
     for reverse_action in omitted skipped waived; do
       assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "configuration changes E2E $reverse_modal be $reverse_action" \
