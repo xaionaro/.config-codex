@@ -1388,7 +1388,7 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
     'Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
   require_section_pattern "$text" 'separate-outcome findings stay outside current work' \
-    'A separate-outcome finding stays only a post-ECI observation/follow-up and creates no current repair, review, proof, or acceptance work'
+    'A separate-outcome finding stays a post-ECI observation/follow-up and creates no issue-specific repair, review, proof, or acceptance work'
   require_section_pattern "$text" 'Fast-originated hunks stay review context' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization'
   require_active_literal_directive "$text" 'post-Fast scope-screen and source-outcome chain' "$scope_clause"
@@ -1786,7 +1786,7 @@ $step2_line}"
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
     'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated' \
     'Other dispositions require evidence, not implementation' \
-    'separate-outcome finding stays only a post-ECI observation/follow-up' \
+    'separate-outcome finding stays a post-ECI observation/follow-up' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization' \
     'enumerates every finding and changed hunk from the Fast owner and its helpers' \
     'findings with no retained hunk' \
@@ -2281,7 +2281,8 @@ assert_concurrent_task_contract() {
   local input="$1" clause
   for clause in \
     'Admit independent user-requested tasks as separate owned lanes under the active lifecycle' \
-    'Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity' \
+    'Run every ready, independent action concurrently, including independent tool calls' \
+    'Queue or serialize only work with an unmet dependency, a conflict through shared mutable state, or unavailable capacity; name the constraint and continue unaffected ready work' \
     'A discovered separate-outcome concern still needs user authorization' \
     'A task clean pass does not close a root with unfinished sibling tasks' \
     'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
@@ -2305,7 +2306,8 @@ assert_concurrent_tasks() {
   assert_concurrent_task_contract "$input"
   for clause in \
     'Admit independent user-requested tasks as separate owned lanes under the active lifecycle' \
-    'Queue only work with an unmet dependency, conflicting writes, or unavailable agent capacity' \
+    'Run every ready, independent action concurrently, including independent tool calls' \
+    'Queue or serialize only work with an unmet dependency, a conflict through shared mutable state, or unavailable capacity; name the constraint and continue unaffected ready work' \
     'A discovered separate-outcome concern still needs user authorization' \
     'A task clean pass does not close a root with unfinished sibling tasks' \
     'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
@@ -2365,7 +2367,7 @@ assert_concurrency_section_placement() {
     capture && /^##? / { exit }
     capture { print }
   ' "$CODEX")"
-  [[ "$section" == *'Run independent ready tasks concurrently'* ]] || fail 'missing concurrency section'
+  [[ "$section" == *'Run every ready, independent action concurrently, including independent tool calls'* ]] || fail 'missing concurrency section'
   [[ "$section" != *'Without an active ECI/ATE root'* && "$section" != *'Inferred condition'* ]] ||
     fail 'concurrency section contains root workflow selection'
 }
@@ -2865,7 +2867,8 @@ require_primary_scope_fidelity_text() {
 }
 
 assert_primary_scope_fidelity_contract() {
-  local source="$1" input="$2" activation
+  local source="$1" input="$2" activation separate_outcome
+  separate_outcome='for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.'
 
   activation="$(extract_h2_section <(printf '%s\n' "$input") '## Activation and invariants')" ||
     fail "$source lacks a bounded Activation and invariants section"
@@ -2877,7 +2880,7 @@ assert_primary_scope_fidelity_contract() {
   require_primary_scope_fidelity_text "$source" 'necessary repair remains current-lane work' \
     'A repair necessary to meet or prove that outcome stays current-lane work.' "$activation"
   require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
-    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$activation"
+    "$separate_outcome" "$activation"
   if section_has_active_literal_directive "$activation" 'Treat a discovered concern serving a separate outcome as current-lane work.'; then
     fail "$source contradicts primary scope fidelity contract: separate outcome becomes current work"
   fi
@@ -2908,13 +2911,13 @@ assert_primary_scope_fidelity_contract_mutations() {
   [ "$mutation" != "$primary" ] || fail 'primary repair mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'necessary repair becomes a separate lane' "$mutation"
 
-  mutation="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/'A concern serving a separate outcome is current work.'}"
+  mutation="${primary/'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.'/'for a separate-outcome issue, its TODO is only advisory and current work may expand.'}"
   [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
 
   assert_active_literal_directive_fixtures \
     assert_primary_scope_fidelity_contract "$ECI" "$primary" \
-    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' \
+    'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' \
     'Treat a discovered concern serving a separate outcome as current-lane work.' \
     'primary scope fidelity contract'
 
