@@ -27,6 +27,12 @@ Use either path's available results once independently verified and the next act
 
 E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
+### E2E timing and regressions
+
+- Record each E2E run's `started_at_utc`, `finished_at_utc` (RFC 3339 UTC), `elapsed_monotonic_seconds`, command, test scope/coverage, tested revision, and environment identity sufficient for comparison (runner/host class, OS/architecture, relevant tool/runtime versions, and test-service/data configuration). Redact secrets.
+- Compare durations only across runs with matching commands and scope/coverage in materially equivalent environments. Do not compare unlike runs or rerun solely to collect timing.
+- When comparable timing shows a material regression beyond ordinary variance, keep main ECI moving and assign the Fast owner (or a bounded helper it owns) to profile and optimize E2E duration concurrently. Preserve assertions, coverage, real-path evidence, and the independent final E2E at cumulative acceptance.
+
 ## Shared tree and ECI priority
 
 - Both paths use the same checkout and live files. Do not copy the project, branch, stash, or create worktrees to avoid conflicts.
