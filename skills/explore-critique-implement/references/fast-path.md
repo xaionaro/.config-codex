@@ -20,18 +20,12 @@ Use either path's available results once independently verified and the next act
 - Track the root-task outcome as achievable milestones in existing task tracking. Extend them only for in-scope work; report out-of-scope findings without expanding authorization. Keep milestone status, verification evidence, and checkpoints current. Delegated work need not be organized into lanes; delegation alone does not create a lane.
 - Prioritize in-scope paths under [Main ECI quality responsibility](#main-eci-quality-responsibility).
 - Own the whole task while delegating any bounded, in-scope work that can accelerate it. Delegation is highly encouraged. Helpers may advance different lanes or other work; delegation does not transfer root-task accountability or create a separate outcome. Assign clear scope and expected evidence, integrate helper results, and account for every delegated finding and change.
-- Personally advance other bounded work and validate the provisional Fast result end to end, with or without helpers. Iterate without waiting for main ECI Steps 1–4.
+- Personally advance other bounded work and validate the provisional Fast result with focused checks, with or without helpers. Run an early E2E only for a concrete failure or integration uncertainty under the [central ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing). Iterate without waiting for main ECI Steps 1–4.
 - Analysis-only requests authorize analysis and evidence only. Preserve secret-handling, destructive-action, external-mutation, unrelated-dirty-work, and target-reread safeguards. Speed grants no broader or irreversible authority.
-- Defer the main path's design/style/TDD/review sequence for provisional fast work. Run useful focused checks and all applicable configuration/runtime E2E. If unavailable, report the missing resource and attempted evidence; never equate proxy checks with E2E.
+- Defer the main path's design/style/TDD/review sequence for provisional fast work. Run useful focused checks; do not run routine E2E between iterations. Any early E2E follows the central policy's shortest-faithful-scope and timing rules. If an early E2E is needed but unavailable, report the missing resource and attempted evidence; never equate proxy checks with E2E.
 - Promptly send actionable discoveries, failed assumptions, observed behavior, tradeoffs, touched targets, and verification limits to the coordinator for Explorer and Step 2.
 
-E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
-
-### E2E timing and regressions
-
-- Record each E2E run's `started_at_utc`, `finished_at_utc` (RFC 3339 UTC), `elapsed_monotonic_seconds`, command, test scope/coverage, tested revision, and environment identity sufficient for comparison (runner/host class, OS/architecture, relevant tool/runtime versions, and test-service/data configuration). Redact secrets.
-- Compare durations only across runs with matching commands and scope/coverage in materially equivalent environments. Do not compare unlike runs or rerun solely to collect timing.
-- When comparable timing shows a material regression beyond ordinary variance, keep main ECI moving and assign the Fast owner (or a bounded helper it owns) to profile and optimize E2E duration concurrently. Preserve assertions, coverage, real-path evidence, and the independent final E2E at cumulative acceptance.
+Fast-owner E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.
 
 ## Shared tree and ECI priority
 
@@ -68,11 +62,11 @@ Reviewers report only. The assigned implementer authors the TODO within the ordi
 
 - Report fast results as provisional with exact evidence and limits. Fast E2E is producer evidence, not acceptance or independent review.
 - After each issue is resolved, immediately hand off its change and evidence for a separate coordinator-owned checkpoint commit. This includes delegated work. The coordinator independently verifies the scoped change and commits it promptly; do not batch resolved issues or wait for remaining milestones, main-path adoption, or Step 4. The Fast owner never commits. A resolution without file changes needs evidence, not an empty commit.
-- The main implementer inspects retained fast changes in place, adopts or revises them under the selected winner, and runs its required checks/E2E. No copying or redundant rewrite is needed.
+- The main implementer inspects retained fast changes in place, adopts or revises them under the selected winner, and runs focused checks. Required final E2E follows the central policy after post-Fast implementation is complete. No copying or redundant rewrite is needed.
 - Before checkpointing overlapping work, the coordinator obtains a bounded write-yield from both producers and inspects actual scoped changes. It owns checkpoints and preserves unrelated hunks; resume useful work afterward.
 - If a checkpoint cannot safely isolate the resolved change, record it as checkpoint-pending with the concrete conflict. Resolve that boundary promptly while unaffected work continues; never silently treat it as committed or include unrelated/in-flight changes.
 - The coordinator reconciles every Fast finding and Fast-originated changed hunk under [post-Fast completion](#post-fast-completion), then tracks each in-scope inventory item into review. Retained fast hunks are cumulative code targets. When a preceding baseline contains adopted fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
-- Neither producer supplies its own independent acceptance reviews. Step 4 independently repeats or extends required main-implementer E2E.
+- Neither producer supplies its own independent acceptance reviews. Step 4 runs the fresh independent final E2E required by the central policy.
 - Before normal-path completion or final acceptance, satisfy [post-Fast completion](#post-fast-completion). The coordinator stops both producers' task-owned writes, including delegated Fast work, inspects the current cumulative scoped diff, and verifies reviews and checks cover that state. Material late edits require fresh appropriate review and verification.
 - On task cancellation/replacement, the coordinator cancels the Fast owner and its delegated work with the main task and preserves dirty changes/evidence. On task clean pass, it observes both producers' final state. On either closure path, it observes both producers and their task-owned write-capable tools stopped or finished. Root teardown and marker removal follow [concurrent task scheduling](../../../CODEX.md#concurrent-tasks). Fast success alone never closes ECI or outer ATE.
 
@@ -124,12 +118,12 @@ Any Step 4 review that runs concurrently before this restart is intermediate onl
    - Every no-hunk retain or resolved-with-evidence outcome requires evidence.
    - The implementer implements those routed coordinator-applied revise/replace changes and validates retained/revised changes.
    - The implementer supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes.
-   - Run required checks/E2E and checkpoint changed iterations normally.
+   - Run required focused checks and checkpoint changed iterations normally. Reserve triggered final E2E for the stabilized candidate under the central policy.
 4. After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews the final cumulative scoped state even when no further edits are needed.
    - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.
    - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.
    - Separate-outcome observations remain outside acceptance.
-   - Aggregate all required critics and E2E, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task.
+   - Aggregate all required critics and the final E2E pair when triggered, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task.
    - Earlier reviews alone cannot satisfy this sequence.
 
 Resumed Fast writes invalidate this sequence; after Fast finishes again, repeat it. Later main-path or interacting task edits refresh affected review and verification; material design findings return through Steps 1–2. Independent sibling tasks keep advancing.

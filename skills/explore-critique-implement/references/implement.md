@@ -15,15 +15,15 @@ A missing record, receipt, hash, marker, or coordination detail does not deny a 
 
 For code/debug work, load test-driven-development, debugging-discipline, and every matching coding-style skill. Repair the causal mechanism, not timing/visibility/blast radius unless containment was requested. Include a falsifiable root-cause rationale, `regression: yes|no|unknown`, evidence, and why the diff repairs the cause. Every factual submission claim has a T1–T5 tag.
 
-Before submit, perform required unit/proof checks. When E2E is required, build and run the full suite where applicable, exercise the affected actual consumer path, and cite output/state/screenshot as appropriate; proxy evidence alone is insufficient. The implementer owns this E2E. If required E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; do not claim equivalent proof.
+Before each submission, perform the iteration's required focused unit/proof checks. Run early E2E only under the central policy; the implementer owns the required final E2E on the stabilized final cumulative state. If required final E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; do not claim equivalent proof.
 
-E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
+E2E triggers, cadence, scope, and timing: [ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing).
 
 ## Write boundary and submission
 
 Before each durable write, reread the intended target, requested outcome, approved winner, and changed-file context. Route a concrete wrong target or separate outcome before writing. One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.
 
-The submission names changed files, the applied winner/fix, checks run, root-cause rationale where applicable, regression explanation, and factual evidence. If a governed scope changes, report it before the next affected write. Continue unaffected work only; a local correction returns to Step 2 and substantive drift returns to Explore/Step 2. An unsupported load-bearing claim, missing required E2E, unknown causal link, or symptom-only fix needs correction before acceptance; labels and coordination notes alone never decide it.
+The submission names changed files, the applied winner/fix, checks run, root-cause rationale where applicable, regression explanation, and factual evidence. If a governed scope changes, report it before the next affected write. Continue unaffected work only; a local correction returns to Step 2 and substantive drift returns to Explore/Step 2. An unsupported load-bearing claim, missing required final E2E, unknown causal link, or symptom-only fix needs correction before acceptance; labels and coordination notes alone never decide it.
 
 ## Test and debugging discipline
 

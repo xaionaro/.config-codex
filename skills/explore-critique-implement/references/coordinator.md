@@ -42,15 +42,15 @@ Apply the [fast-path adoption boundary](fast-path.md#adoption-review-and-closure
 Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
 After the Step 2 recommendation, the coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item. Step 2 authority is limited to design-winner selection; it does not apply treatment.
 
-After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C. E2E joins only when an applicable policy requires it.
+After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C for every implementation iteration. E2E follows the [central cadence, scope, and timing policy](../SKILL.md#e2e-cadence-scope-and-timing), including its early-run condition and final independent run.
 
-E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
+E2E triggers: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
 Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.
 
 Before dispatch, verify the assignment still names the right work, current requirements, named review range and exclusions, and supplied evidence. Missing or stale coordination evidence prompts refresh, reassignment, or an additional review; it does not stop ordinary exploration, implementation, or harmless verification.
 
-Wait for all required review and E2E evidence before aggregating. Pre-route every finding with the review policy. Send substantive `now` findings or design/API uncertainty back as one complete Steps 1–2 repair batch; send a trivial `now` finding once to the implementer. Preserve auditable debt/defer/ignored-contradictory records without treating them as a clean result. Use the shared coordinator/runtime policy for repair cycles, clean-pass, and limits.
+Wait for each gate's required reviews and focused proof, plus E2E evidence when the central cadence calls for it. Final acceptance also requires the final E2E pair when a trigger applies. Pre-route every finding with the review policy. Send substantive `now` findings or design/API uncertainty back as one complete Steps 1–2 repair batch; send a trivial `now` finding once to the implementer. Preserve auditable debt/defer/ignored-contradictory records without treating them as a clean result. Use the shared coordinator/runtime policy for repair cycles, clean-pass, and limits.
 
 ## Blockers, bugs, and limits
 
@@ -64,7 +64,7 @@ Use blocker-resolution-protocol only after normal handling cannot resolve a stal
 
 Complete each task's normal path and accept it only after its post-Fast sequence and required evidence pass. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
 
-An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. A clean pass needs every original criterion and applicable proof/E2E, no remaining `now` REJECT/CONDITIONAL, and same-gate proof.
+An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. Each iteration needs focused proof and independent review; E2E follows the central cadence. Final acceptance needs every original criterion, final applicable E2E evidence, and no remaining `now` REJECT/CONDITIONAL.
 
 On root clean pass or root user closure: apply [both-producer closure](fast-path.md#adoption-review-and-closure); write the disengage report; request/observe final implementer confirmation; record role state without closing terminal agents; then run `eci-active off <report>` last. The report contains exactly one `clean-pass:` or `user-closed:` certificate, Stop-checklist walkthrough, and incomplete-compliance analysis. Teardown failure keeps the marker armed.
 

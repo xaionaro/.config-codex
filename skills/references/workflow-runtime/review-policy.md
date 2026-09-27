@@ -32,11 +32,11 @@ Examples: a changed persistence model, ownership rule, public contract, or data/
 
 ## Three-critic review
 
-For governed code, use fresh blind Critic A (style), Critic B (correctness/fidelity), and fresh special Critic C (long-term health) in parallel. Name at least one critic to check that controls prevent accidental mistakes without treating bots as malicious. Add E2E when an applicable policy requires it.
+For governed code, use fresh blind Critic A (style), Critic B (correctness/fidelity), and fresh special Critic C (long-term health) in parallel. Name at least one critic to check that controls prevent accidental mistakes without treating bots as malicious. ECI E2E follows the [router's cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing).
 
-E2E requirements: [Configuration E2E contract](../../explore-critique-implement/SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../../explore-critique-implement/SKILL.md#runtime-e2e-policy).
+ECI E2E triggers: [Configuration E2E contract](../../explore-critique-implement/SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../../explore-critique-implement/SKILL.md#runtime-e2e-policy).
 
-All report only. A/B/C independently classify findings and state impact. Critic A checks applicable style guidance and never lets style downgrade a hard contract. Critic B guards concrete behavior, accidental-harm boundaries, interfaces, tests/proof, and fidelity. Critic C checks long-term health, architecture, actual scope/guidance reconciliation, and final-state clarity. Withhold the gate until all required reports and E2E arrive.
+All report only. A/B/C independently classify findings and state impact. Critic A checks applicable style guidance and never lets style downgrade a hard contract. Critic B guards concrete behavior, accidental-harm boundaries, interfaces, tests/proof, and fidelity. Critic C checks long-term health, architecture, actual scope/guidance reconciliation, and final-state clarity. Withhold each iteration gate until its required reports and focused proof arrive; apply E2E only at the cadence the ECI router specifies.
 
 ## Review packet and finding contract
 
@@ -46,11 +46,11 @@ ECI packets also cover retained fast changes through the [adoption boundary](../
 
 Critic A loads each matching installed style skill and checks actual material adherence. Critic B independently verifies stated purpose and interface fulfillment before quality. Critic C judges final state, not change-history defense, and flags materially harmful coupling, hidden dependencies, wrong layer, unclear names, duplication, missing/premature abstraction, or architectural mismatch. Cosmetic taste is NIT; “would refactor someday” is not a finding without concrete harm.
 
-Required E2E builds and runs the full suite where applicable, exercises the affected actual consumer path, cites output/state/screenshot as appropriate, and checks related regressions. A missing required E2E/rationale returns to the implementer before gate, not to a false approval.
+Required E2E uses the shortest faithful real path that proves the original criteria and checks relevant regressions; run the full suite only when it supplies required coverage. Cite command and output/state/screenshot. A missing required final E2E returns to the implementer before acceptance, not to a false approval.
 
 ## Gate evaluation
 
-After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean gate has no remaining `now` issue and all required same-run proof, including required E2E. A post-ECI observation/follow-up for a separate outcome, valid defer, and ignored contradiction are not clean-pass defects.
+After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean iteration gate has no remaining `now` issue and all required same-run focused proof; final acceptance also needs the final E2E pair when triggered. A post-ECI observation/follow-up for a separate outcome, valid defer, and ignored contradiction are not clean-pass defects.
 
 The design-revision batch groups all remaining issues by affected artifact/API/contract and includes source reviewer, severity, impact, evidence location, exact issue text, relevant debt/defer reference, and acceptance criteria. Never patch substantive gate issues one by one without the design loop. Review caps and loop-breaker/BRP escalation remain owned by the outer workflow.
 

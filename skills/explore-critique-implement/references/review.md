@@ -28,9 +28,9 @@ Check maintainability harm from debt, coupling, hidden dependencies, code smells
 
 ## E2E
 
-For required E2E, independently repeat or extend the implementer-owned E2E: build and run the full suite where applicable, exercise the affected actual consumer path, cite output/state/screenshot as appropriate, and check related regressions. Proxy evidence alone is insufficient. Under a real capacity constraint, use the shortest faithful repro while preserving the required real-path evidence.
+For the final independent E2E, run a fresh check on the stabilized final cumulative revision under the central policy. Use the shortest faithful real path, preserve required criteria and relevant regression coverage, and cite command and output/state/screenshot. Proxy evidence alone is insufficient.
 
-E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
+E2E cadence, scope, timing, and triggers: [ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing).
 
 ## Review red flags
 

@@ -30,13 +30,21 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 
 ## Configuration E2E contract
 
-Every configuration change, including configuration-only work, requires E2E. In normal ECI, the implementer runs it before Step 4.
-
-Normal Step 4 independently repeats or extends the implementer's E2E. This Configuration E2E requirement may not be waived.
+Every configuration change, including configuration-only work, requires the final implementer-owned and fresh independent E2E pair on the stabilized final cumulative state described below. This requirement may not be waived.
 
 ## Runtime E2E policy
 
-Code/debug work affecting runtime behavior reachable through a UI, API, device, or CLI requires E2E. In normal ECI, the implementer runs it before Step 4, which independently repeats or extends it. E2E builds and runs the full suite where applicable, exercises the affected real UI/API/device/CLI path, and cites output, state, or screenshot. Docs, prompts, design-only changes, tests-only changes, and pure refactors do not require E2E under this policy.
+Code/debug work affecting runtime behavior reachable through a UI, API, device, or CLI requires the final E2E pair below. Docs, prompts, design-only changes, tests-only changes, and pure refactors do not require E2E under this policy.
+
+## E2E cadence, scope, and timing
+
+Each implementation iteration still gets focused tests/proof, independent verification of its exact diff, a coordinator checkpoint, and independent code review. Do not run routine E2E between iterations. An early E2E is allowed only to investigate a concrete failure or integration uncertainty; run the shortest faithful real-path scenario that can resolve it. Early evidence does not replace final E2E.
+
+Once main implementation, post-Fast findings/dispositions, and any resulting implementation repairs are complete, run one final pair before acceptance whenever a configuration or runtime trigger applies: the implementer-owned E2E and a fresh independent Step 4 E2E on the same stabilized final cumulative revision. The independent run may repeat or extend the implementer run. A later material edit affecting exercised behavior, assertions, or configuration invalidates the affected E2E evidence; refresh it before acceptance.
+
+Use the shortest faithful real path that proves the original criteria and checks relevant regressions. Run the full suite only when it supplies coverage required for that proof. Cite the command and actual output/state/screenshot; proxy evidence alone is insufficient.
+
+Every early, Fast, implementer-final, and independent-final E2E report records `started_at_utc` and `finished_at_utc` (RFC 3339 UTC), `elapsed_monotonic_seconds`, command, scope/coverage, tested revision, and environment identity sufficient for comparison (runner/host class, OS/architecture, relevant tool/runtime versions, and test-service/data configuration). Redact secrets. Compare duration only for matching commands and scope/coverage in materially equivalent environments; do not rerun solely to collect timing. A comparable material regression beyond ordinary variance triggers a Fast owner or bounded helper to profile and optimize E2E duration in parallel while main ECI continues. Preserve assertions, coverage, real-path evidence, and the independent final E2E.
 
 ## Module routing
 
@@ -48,8 +56,8 @@ Coordinator routes begin with [coordinator runtime](../references/workflow-runti
 | `explorer` | [explore](references/explore.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned bug investigation; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned governed source discovery |
 | `critic-step2` | [critique](references/critique.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for independent admission |
 | `implementer` | [implement](references/implement.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned code/debug work; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
-| `fast-owner` | [ECI fast path](references/fast-path.md) | Applicable E2E from the contracts above |
-| Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E as required by the [Configuration E2E contract](#configuration-e2e-contract) or [Runtime E2E policy](#runtime-e2e-policy). |
+| `fast-owner` | [ECI fast path](references/fast-path.md) | Early E2E only under [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing) |
+| Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E follows [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing). |
 
 ## Step handoffs
 
@@ -57,7 +65,7 @@ Coordinator routes begin with [coordinator runtime](../references/workflow-runti
 2. Fresh special Step 2 critic independently baselines, admits scope, rejects bad options, and selects concrete winner text or returns bounded re-exploration.
 3. Reusable implementer applies only the winner and `treatment: now` corrections with causal/proof evidence.
 After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule. Step 4 receives the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions; a `pre-existing baseline` remains context outside the iteration range.
-4. Fresh A/B/C critics review in parallel; E2E joins as required by the [Configuration E2E contract](#configuration-e2e-contract) or [Runtime E2E policy](#runtime-e2e-policy). Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
+4. Fresh A/B/C critics review in parallel on every iteration; E2E follows [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing). Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
 
 ## Relationship to other skills
 

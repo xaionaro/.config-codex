@@ -48,7 +48,7 @@ The coordinator keeps the current review state visible while the direct marker i
 
 For each target, record its path or scope, current diff/revision when useful, assigned reviewers, required verification, and current verdict. Keep enough context to notice that the target changed; do not require a prescribed header, hashes, or artifact paths before work can proceed.
 
-At review and final acceptance, obtain the independent checks and E2E that the task actually needs. A changed target or missing review routes fresh review before claiming acceptance; it does not freeze exploration, implementation, ordinary verification, or targeted commits behind row schemas, receipts, or hashes.
+At review and final acceptance, obtain the independent checks and E2E that the task actually needs. For ECI, use the [router's E2E cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing). A changed target or missing review routes fresh review before claiming acceptance; it does not freeze exploration, implementation, ordinary verification, or targeted commits behind row schemas, receipts, or hashes.
 
 At acceptance, compare the actual current target and diff with the review scope. A meaningful change triggers fresh appropriate review. Preserve historical notes when useful, but missing or malformed ledgers, receipts, hashes, or anchors are repairable coordination gaps, not a reason to reject normal work.
 
