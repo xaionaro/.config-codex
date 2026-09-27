@@ -323,6 +323,9 @@ trust_level = "trusted"
 [projects."/mnt/nvme0n1/home/pheona/tmp"]
 trust_level = "trusted"
 
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/AndroidGoLab/jni-proxy"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:0:0"]
