@@ -13,6 +13,7 @@ Pressure-test evidence is audit context, never an ordinary-work gate.
 | scope fidelity | A user-requested repair and proof stay current work; a separate discovered outcome stays a post-ECI suggestion. |
 | quality | Style, test, interface, ownership, and E2E findings remain hard only when they are needed to meet or prove the requested outcome. |
 | role routing | Use fresh independent critics where required; do not substitute a producer's own review. |
+| ready ECI actions | Within ECI (including bounded ECI nested under ATE), all independent ready actions/tool calls start concurrently; delay work only for an unmet dependency, a conflict through shared mutable state, or unavailable capacity, while continuing unaffected ready work. Direct work and ATE outside nested ECI retain their existing scheduling rules. |
 | unchanged unit-only ECI iteration | Focused checks, exact-diff verification, checkpointing, and independent code review still happen; routine E2E is skipped between iterations. |
 | ECI E2E applicability | Configuration changes and runtime UI/API/device/CLI behavior retain final E2E; docs, prompts, design-only, tests-only, and pure-refactor work remain excluded. |
 | early ECI E2E | For an applicable trigger, a concrete failure or integration uncertainty may get the shortest faithful early E2E; the task still gets the final implementer and fresh independent pair. |
