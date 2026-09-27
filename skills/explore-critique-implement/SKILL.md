@@ -48,21 +48,21 @@ Use the shortest faithful real path that proves the original criteria and checks
 
 Every early, Fast, implementer-final, and independent-final E2E report records `started_at_utc` and `finished_at_utc` (RFC 3339 UTC), `elapsed_monotonic_seconds`, command, scope/coverage, tested revision, and environment identity sufficient for comparison (runner/host class, OS/architecture, relevant tool/runtime versions, and test-service/data configuration). Redact secrets. Compare duration only for matching commands and scope/coverage in materially equivalent environments; do not rerun solely to collect timing. A comparable material regression beyond ordinary variance triggers a Fast owner or bounded helper to profile and optimize E2E duration in parallel while main ECI continues. Preserve assertions, coverage, real-path evidence, and the independent final E2E.
 
-## Module routing
-
-Coordinator routes begin with [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md). Use [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for governed writing/admission, [review policy](../references/workflow-runtime/review-policy.md) only for review/impact routing, [pause-all-work](../references/workflow-runtime/pause-all-work.md) only for its exact direct-user predicate, [stop recovery](../references/workflow-runtime/stop-recovery.md) only for recognized Stop diagnostics, and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only for workflow-policy changes.
-
 ## Model selection
 
-At each new spawn, read `~/.codex/model-selection.yaml` and pass both `model` and `reasoning_effort` explicitly. Existing agents keep their launch settings. Treat the file as a routing reference; it does not configure automatic loading or provide effective-model telemetry. An unavailable selector is nonblocking: continue with an available selector and report the limitation. Profile selection does not change role authority or reviewer independence.
+At each new spawn, read `~/.codex/model-selection.yaml` and pass both `model` and `reasoning_effort` explicitly with `fork_turns: "none"`. Keep existing launch settings and reusable owners. If a new activity needs another profile, assign a correctly configured helper. Keep independent reviewer assignments self-contained and blind to producer findings. If a requested model or selector is unavailable, record the limitation and continue with the available provider. Treat the file as a routing reference; do not assume native auto-loading or effective-model telemetry. Profile selection does not change role authority or reviewer independence.
 
 Choose by assigned activity; mixed assignments use the highest applicable profile.
 
 | Profile | Activities |
 | --- | --- |
-| `max` | Solution design; unresolved RCA; design review, including Step 2; long-term health review, including Critic C. |
-| `higher` | Other independent reviews, including Critics A/B and independent Step 4 E2E. |
+| `max` | Solution design; unresolved RCA work; design review, including Step 2; long-term health review, including Critic C. |
+| `higher` | Other independent reviews, including Critics A/B, settled RCA review, and independent Step 4 E2E. |
 | `default` | Implementation; routine work; producer E2E. |
+
+## Module routing
+
+Coordinator routes begin with [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md). Use [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for governed writing/admission, [review policy](../references/workflow-runtime/review-policy.md) only for review/impact routing, [pause-all-work](../references/workflow-runtime/pause-all-work.md) only for its exact direct-user predicate, [stop recovery](../references/workflow-runtime/stop-recovery.md) only for recognized Stop diagnostics, and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only for workflow-policy changes.
 
 | Role | Required module | Conditional module/predicate |
 | --- | --- | --- |
