@@ -52,6 +52,18 @@ Every early, Fast, implementer-final, and independent-final E2E report records `
 
 Coordinator routes begin with [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md). Use [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for governed writing/admission, [review policy](../references/workflow-runtime/review-policy.md) only for review/impact routing, [pause-all-work](../references/workflow-runtime/pause-all-work.md) only for its exact direct-user predicate, [stop recovery](../references/workflow-runtime/stop-recovery.md) only for recognized Stop diagnostics, and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only for workflow-policy changes.
 
+## Model selection
+
+At each new spawn, read `~/.codex/model-selection.yaml` and pass both `model` and `reasoning_effort` explicitly. Existing agents keep their launch settings. Treat the file as a routing reference; it does not configure automatic loading or provide effective-model telemetry. An unavailable selector is nonblocking: continue with an available selector and report the limitation. Profile selection does not change role authority or reviewer independence.
+
+Choose by assigned activity; mixed assignments use the highest applicable profile.
+
+| Profile | Activities |
+| --- | --- |
+| `max` | Solution design; unresolved RCA; design review, including Step 2; long-term health review, including Critic C. |
+| `higher` | Other independent reviews, including Critics A/B and independent Step 4 E2E. |
+| `default` | Implementation; routine work; producer E2E. |
+
 | Role | Required module | Conditional module/predicate |
 | --- | --- | --- |
 | coordinator | [coordinator](references/coordinator.md), [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md), [review policy](../references/workflow-runtime/review-policy.md) | [pause-all-work](../references/workflow-runtime/pause-all-work.md), [stop recovery](../references/workflow-runtime/stop-recovery.md), and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only by their predicates |
