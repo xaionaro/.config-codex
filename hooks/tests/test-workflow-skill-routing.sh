@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="${WORKFLOW_SKILL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
 CODEX="$ROOT/CODEX.md"
 ECI="$ROOT/skills/explore-critique-implement/SKILL.md"
+TESTING_DISCIPLINE="$ROOT/skills/testing-discipline/SKILL.md"
 DEBUGGING="$ROOT/skills/debugging-discipline/SKILL.md"
 STATUS_REPORT="$ROOT/skills/writing-status-reports/SKILL.md"
 LEDGER="$ROOT/skills/maintaining-context-ledger/SKILL.md"
@@ -342,7 +343,7 @@ assert_reviewer_role_split() {
 
   for required in \
     '## Step 4 — Review coordination' \
-    'Wait for all required review and E2E evidence before aggregating.' \
+    "Wait for each gate's required reviews and focused proof, plus E2E evidence when the central cadence calls for it. Final acceptance also requires the final E2E pair when a trigger applies." \
     'Pre-route every finding with the review policy.' \
     'Use the shared coordinator/runtime policy for repair cycles, clean-pass, and limits.'; do
     require_text "$COORDINATOR" "$required"
@@ -816,20 +817,15 @@ require_section_pattern() {
 }
 
 assert_configuration_e2e_contract() {
-  local section e2e
+  local section
 
   require_line "$ECI" '## Configuration E2E contract'
   section="$(extract_h2_section "$ECI" '## Configuration E2E contract')" ||
     fail "$ECI lacks a bounded Configuration E2E section"
-  e2e='(e2e|\*e2e\*|\*\*e2e\*\*|_e2e_|__e2e__)'
-  require_section_pattern "$section" 'all configuration changes, including configuration-only work, require E2E' \
-    "((every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes),?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work|including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+(every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes))[[:space:]]*,?[[:space:]]+requires[[:space:]]+${e2e}([[:space:].,;:!?]|$)"
-  require_section_pattern "$section" 'the implementer runs E2E before Step 4' \
-    "the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+(that[[:space:]]+${e2e}|it)|performs[[:space:]]+the[[:space:]]+required[[:space:]]+${e2e})[[:space:]]+before[[:space:]]+step[[:space:]]+4"
-  require_section_pattern "$section" 'Step 4 independently repeats or extends the implementer E2E' \
-    "step[[:space:]]+4[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+the[[:space:]]+implementer.?s[[:space:]]+${e2e}([[:space:].,;:!?]|$)"
-  require_section_pattern "$section" 'the Configuration E2E requirement may not be waived' \
-    "this[[:space:]]+configuration[[:space:]]+${e2e}[[:space:]]+requirement[[:space:]]+may[[:space:]]+not[[:space:]]+be[[:space:]]+waived"
+  require_section_pattern "$section" 'configuration changes require the final implementer and independent E2E pair' \
+    'every[[:space:]]+configuration[[:space:]]+change,?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+requires[[:space:]]+the[[:space:]]+final[[:space:]]+implementer-owned[[:space:]]+and[[:space:]]+fresh[[:space:]]+independent[[:space:]]+e2e[[:space:]]+pair'
+  require_section_pattern "$section" 'the configuration final E2E pair may not be waived' \
+    'this[[:space:]]+requirement[[:space:]]+may[[:space:]]+not[[:space:]]+be[[:space:]]+waived'
 }
 
 assert_runtime_e2e_policy() {
@@ -839,30 +835,75 @@ assert_runtime_e2e_policy() {
   section="$(extract_h2_section "$ECI" '## Runtime E2E policy')" ||
     fail "$ECI lacks a bounded Runtime E2E section"
   require_section_pattern "$section" 'runtime-facing code/debug work requires E2E' \
-    'code/debug[[:space:]]+work.*runtime[[:space:]]+behavior.*requires[[:space:]]+e2e'
-  require_section_pattern "$section" 'the runtime implementer runs E2E before Step 4' \
-    'implementer[[:space:]]+runs[[:space:]]+it[[:space:]]+before[[:space:]]+step[[:space:]]+4'
-  require_section_pattern "$section" 'Step 4 independently repeats or extends runtime E2E' \
-    '(step[[:space:]]+4|which)[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+it'
-  require_section_pattern "$section" 'runtime E2E exercises the relevant real path' \
-    'full[[:space:]]+suite[[:space:]]+where[[:space:]]+applicable.*affected[[:space:]]+real[[:space:]]+ui/api/device/cli[[:space:]]+path'
+    'code/debug[[:space:]]+work.*runtime[[:space:]]+behavior.*requires[[:space:]]+the[[:space:]]+final[[:space:]]+e2e[[:space:]]+pair'
+  require_section_pattern "$section" 'runtime E2E trigger covers UI/API/device/CLI behavior' \
+    'reachable[[:space:]]+through[[:space:]]+a[[:space:]]+ui,[[:space:]]+api,[[:space:]]+device,[[:space:]]+or[[:space:]]+cli'
+  require_section_pattern "$section" 'docs, prompts, design-only, tests-only, and pure refactors remain excluded' \
+    'docs,[[:space:]]+prompts,[[:space:]]+design-only[[:space:]]+changes,[[:space:]]+tests-only[[:space:]]+changes,[[:space:]]+and[[:space:]]+pure[[:space:]]+refactors[[:space:]]+do[[:space:]]+not[[:space:]]+require[[:space:]]+e2e'
+}
+
+assert_eci_e2e_cadence_contract() {
+  local section
+
+  require_line "$ECI" '## E2E cadence, scope, and timing'
+  section="$(extract_h2_section "$ECI" '## E2E cadence, scope, and timing')" ||
+    fail "$ECI lacks a bounded E2E cadence/timing section"
+  require_section_pattern "$section" 'focused checks, diff verification, checkpoints, and independent reviews remain per iteration' \
+    'each implementation iteration.*focused tests/proof.*independent verification.*exact diff.*coordinator checkpoint.*independent code review'
+  require_text "$ECI" 'Do not run routine E2E between iterations.'
+  require_section_pattern "$section" 'only concrete failures or integration uncertainty permit early E2E' \
+    'early e2e is allowed only.*concrete failure or integration uncertainty.*shortest faithful real-path scenario.*early evidence does not replace final e2e'
+  require_section_pattern "$section" 'a stable final cumulative candidate gets implementer and independent E2E' \
+    'once main implementation, post-fast findings/dispositions, and any resulting implementation repairs are complete, run one final pair before acceptance whenever a configuration or runtime trigger applies.*implementer-owned e2e.*fresh independent step 4 e2e.*same stabilized final cumulative revision'
+  require_section_pattern "$section" 'scope preserves the shortest faithful real path and only runs a full suite for required coverage' \
+    'shortest faithful real path.*original criteria.*relevant regressions.*full suite only when it supplies coverage required'
+  require_section_pattern "$section" 'E2E output cites the command and real-path evidence' \
+    'cite the command and actual output/state/screenshot.*proxy evidence alone is insufficient'
+  require_section_pattern "$section" 'all E2E types record timestamps and comparison context' \
+    'every early, fast, implementer-final, and independent-final e2e report records.*started_at_utc.*finished_at_utc.*elapsed_monotonic_seconds.*command.*scope/coverage.*tested revision.*environment identity'
+  for field in 'runner/host class' 'OS/architecture' 'relevant tool/runtime versions' 'test-service/data configuration' 'Redact secrets.'; do
+    require_text "$ECI" "$field"
+  done
+  require_section_pattern "$section" 'duration comparisons require materially comparable runs and are not collected by rerunning' \
+    'compare duration only for matching commands and scope/coverage in materially equivalent environments; do not rerun solely to collect timing'
+  require_section_pattern "$section" 'comparable material regressions launch parallel optimization while main ECI continues' \
+    'comparable material regression beyond ordinary variance triggers a fast owner or bounded helper to profile and optimize e2e duration in parallel while main eci continues'
+  require_section_pattern "$section" 'optimization preserves assertions, coverage, real path, and independent final E2E' \
+    'preserve assertions, coverage, real-path evidence, and the independent final e2e'
+  require_section_pattern "$section" 'later relevant edits invalidate affected E2E evidence' \
+    'later material edit affecting exercised behavior, assertions, or configuration invalidates the affected e2e evidence; refresh it before acceptance'
+}
+
+assert_eci_testing_discipline_precedence() {
+  local source relationship
+
+  source="$(<"$ECI")"
+  relationship='For active ECI, this router controls E2E applicability and cadence within ECI iterations. `testing-discipline` still governs focused-check and required-E2E quality, but its generic per-modification E2E default does not add routine E2E between ECI iterations.'
+  [[ "$source" == *"$relationship"* ]] ||
+    fail 'ECI/testing-discipline precedence contract is missing or contradicted'
+  require_text "$TESTING_DISCIPLINE" 'Test every modification before reporting done: unit checks plus E2E when a framework exists.'
+  require_text "$ECI" 'This ECI-local cadence does not replace separately applicable outer-workflow acceptance evidence, such as ATE root gates.'
+  require_text "$ATE" 'root aggregate review follows root proof.'
+  require_text "$ATE" '5. Testing/QA obtain direct evidence for every criterion, then report a verdict to the user and wait for explicit closure.'
 }
 
 assert_e2e_policy_consumer_pointers() {
-  local eci_pointer review_policy_pointer
+  local file
 
-  eci_pointer='E2E requirements: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).'
-  review_policy_pointer='E2E requirements: [Configuration E2E contract](../../explore-critique-implement/SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../../explore-critique-implement/SKILL.md#runtime-e2e-policy).'
-  require_line "$IMPLEMENT" "$eci_pointer"
-  require_line "$REVIEW" "$eci_pointer"
-  require_line "$COORDINATOR" "$eci_pointer"
-  require_line "$FAST_PATH" "$eci_pointer"
-  require_line "$REVIEW_POLICY" "$review_policy_pointer"
+  require_line "$IMPLEMENT" 'E2E triggers, cadence, scope, and timing: [ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing).'
+  require_line "$REVIEW" 'E2E cadence, scope, timing, and triggers: [ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing).'
+  require_line "$COORDINATOR" 'After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C for every implementation iteration. E2E follows the [central cadence, scope, and timing policy](../SKILL.md#e2e-cadence-scope-and-timing), including its early-run condition and final independent run.'
+  require_line "$FAST_PATH" 'Fast-owner E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.'
+  require_text "$REVIEW_POLICY" 'cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing)'
+  require_text "$COORDINATOR_RUNTIME" 'E2E cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing)'
+  for file in "$IMPLEMENT" "$REVIEW" "$COORDINATOR" "$FAST_PATH" "$REVIEW_POLICY" "$COORDINATOR_RUNTIME"; do
+    require_text "$file" '#e2e-cadence-scope-and-timing'
+  done
 }
 
 assert_no_direct_configuration_e2e_waivers_in_input() {
   local source="$1" input="$2" line continuation e2e e2e_end configuration_work configuration_target configuration_e2e
-  local primary_configuration_e2e_action no_waiver_action implementer_e2e_action step4_e2e_action required_e2e_action direct_caveat_suffix
+  local primary_configuration_e2e_action configuration_final_pair_action no_waiver_action implementer_e2e_action step4_e2e_action required_e2e_action direct_caveat_suffix
   local -a direct_waiver_patterns
 
   [ "$#" -ne 3 ] || input="$3"
@@ -872,10 +913,11 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
   configuration_target='configuration(-only)?([[:space:]]+(changes?|work))?'
   configuration_e2e="(^|[^[:alnum:]-])configuration(-only)?([[:space:]]+(changes?|work))?[[:space:]]+${e2e}"
   primary_configuration_e2e_action="((every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes),?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work|including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+(every[[:space:]]+configuration[[:space:]]+change|all[[:space:]]+configuration[[:space:]]+changes))[[:space:]]*,?[[:space:]]+requires[[:space:]]+${e2e}"
-  no_waiver_action="this[[:space:]]+configuration[[:space:]]+${e2e}[[:space:]]+requirement[[:space:]]+may[[:space:]]+not[[:space:]]+be[[:space:]]+waived"
+  configuration_final_pair_action='every[[:space:]]+configuration[[:space:]]+change,?[[:space:]]+including[[:space:]]+configuration-only[[:space:]]+work,?[[:space:]]+requires[[:space:]]+the[[:space:]]+final[[:space:]]+implementer-owned[[:space:]]+and[[:space:]]+fresh[[:space:]]+independent[[:space:]]+e2e[[:space:]]+pair'
+  no_waiver_action="(this[[:space:]]+configuration[[:space:]]+${e2e}[[:space:]]+requirement|this[[:space:]]+requirement)[[:space:]]+may[[:space:]]+not[[:space:]]+be[[:space:]]+waived"
   implementer_e2e_action="the[[:space:]]+implementer[[:space:]]+(runs[[:space:]]+(that[[:space:]]+${e2e}|it)|performs[[:space:]]+the[[:space:]]+required[[:space:]]+${e2e})[[:space:]]+before[[:space:]]+step[[:space:]]+4"
   step4_e2e_action="step[[:space:]]+4[[:space:]]+independently[[:space:]]+repeats[[:space:]]+or[[:space:]]+extends[[:space:]]+(its|the[[:space:]]+implementer.?s)[[:space:]]+${e2e}"
-  required_e2e_action="(${primary_configuration_e2e_action}|${no_waiver_action}|${implementer_e2e_action}|${step4_e2e_action})"
+  required_e2e_action="(${primary_configuration_e2e_action}|${configuration_final_pair_action}|${no_waiver_action}|${implementer_e2e_action}|${step4_e2e_action})"
   direct_caveat_suffix='[[:space:],;:()]*(except|unless)([[:space:]]|$)'
   direct_waiver_patterns=(
     "${configuration_work}[[:space:],]+((may|can)[[:space:]]+(omit|skip|waive)|do(es)?[[:space:]]+not[[:space:]]+(need|require|run|perform)|need[[:space:]]+not[[:space:]]+(require|run|perform))[[:space:]]+${e2e}${e2e_end}"
@@ -886,6 +928,8 @@ assert_no_direct_configuration_e2e_waivers_in_input() {
     "skip[[:space:]]+${e2e}[[:space:]]+for[[:space:]]+${configuration_target}"
     "${configuration_e2e}[[:space:],]+(may|can)[[:space:]]+be[[:space:]]+(omitted|skipped|waived)${e2e_end}"
     "${configuration_e2e}[[:space:]]+is[[:space:]]+optional${e2e_end}"
+    "${configuration_work}[[:space:],]+(may|can)[[:space:]]+(omit|skip|waive)[[:space:]]+(the[[:space:]]+)?(required[[:space:]]+)?final[[:space:]]+${e2e}[[:space:]]+pair"
+    "final[[:space:]]+${e2e}[[:space:]]+pair[[:space:]]+for[[:space:]]+${configuration_target}[[:space:],]+(may|can)[[:space:]]+be[[:space:]]+(omitted|skipped|waived)${e2e_end}"
     "${required_e2e_action}${direct_caveat_suffix}"
   )
 
@@ -942,15 +986,17 @@ fast_path_fixture() {
 }
 
 assert_configuration_e2e_waiver_fixtures() {
-  local primary_configuration_contract no_waiver_contract implementer_contract step4_contract
+  local primary_configuration_contract no_waiver_contract
   local reverse_action reverse_modal
 
-  primary_configuration_contract='Every configuration change, including configuration-only work, requires E2E'
-  no_waiver_contract='This Configuration E2E requirement may not be waived'
-  implementer_contract='The implementer runs that E2E before Step 4'
-  step4_contract='Step 4 independently repeats or extends its E2E'
+  primary_configuration_contract='Every configuration change, including configuration-only work, requires the final implementer-owned and fresh independent E2E pair'
+  no_waiver_contract='This requirement may not be waived'
   assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'configuration reverse waiver' \
     "$(fast_path_fixture 'Configuration E2E may be waived.' 'ordinary operational text.')"
+  assert_no_direct_configuration_e2e_waivers_in_input "$ECI" 'fixture: routine inter-iteration E2E skip preserves final pair' \
+    'Configuration changes may skip routine inter-iteration E2E; the required final pair remains.'
+  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'configuration skips required final pair' \
+    'Configuration changes may skip the required final E2E pair.'
   for reverse_modal in may can; do
     for reverse_action in omitted skipped waived; do
       assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" "configuration changes E2E $reverse_modal be $reverse_action" \
@@ -996,10 +1042,6 @@ assert_configuration_e2e_waiver_fixtures() {
     "$(fast_path_fixture 'Skip E2E for configuration.' 'ordinary operational text.')"
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'no-waiver comma-soft-wrap except caveat' \
     "$no_waiver_contract,"$'\n''except for late changes.'
-  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'implementer comma-soft-wrap unless caveat' \
-    "$implementer_contract,"$'\n''unless a manager says otherwise.'
-  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'Step 4 comma-soft-wrap except caveat' \
-    "$step4_contract,"$'\n''except a review is delayed.'
 
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'primary contract except caveat' \
     "$primary_configuration_contract, except for late changes."
@@ -1007,10 +1049,6 @@ assert_configuration_e2e_waiver_fixtures() {
     "$primary_configuration_contract unless a manager says otherwise."
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'no-waiver contract except caveat' \
     "$no_waiver_contract except for late changes."
-  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'implementer contract unless caveat' \
-    "$implementer_contract unless a manager says otherwise."
-  assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'Step 4 contract except caveat' \
-    "$step4_contract except a review is delayed."
   assert_direct_configuration_e2e_waiver_is_rejected "$ECI" 'singular configuration waiver' \
     'Configuration change does not require E2E.'
   assert_direct_configuration_e2e_waiver_is_rejected "$FAST_PATH" 'fast-path prose primary contract except caveat' \
@@ -1188,8 +1226,8 @@ assert_fast_path_routes() {
     fail 'obsolete emergency module remains'
   require_pattern "$FAST_PATH" 'both paths launch for every ECI task' \
     'Start one Fast owner alongside Step 1 for every new ECI task'
-  require_pattern "$FAST_PATH" 'existing authorization bounds solo solving' \
-    'quickest bounded solution within existing authorization'
+  require_pattern "$FAST_PATH" 'in-scope paths receive priority' \
+    'Prioritize in-scope paths under'
   require_pattern "$FAST_PATH" 'shared live files' 'same checkout and live files'
   require_pattern "$FAST_PATH" 'each in-scope inventory item enters review' \
     'tracks each in-scope inventory item into review'
@@ -1310,12 +1348,12 @@ assert_post_fast_completion_observation_contract() {
   local text="$1"
 
   require_section_pattern "$text" 'completion observation identifies stopped Fast tools' \
-    'The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped'
+    'The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped'
   require_section_pattern "$text" 'owner report enumerates all findings and hunks' \
-    'The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
+    'The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers'
   require_order "$text" \
-    'The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped' \
-    'The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' ||
+    'The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped' \
+    'The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers' ||
     fail 'Fast completion observation must precede the owner report'
 }
 
@@ -1535,7 +1573,7 @@ assert_post_fast_inventory_contract() {
   assert_post_fast_scope_and_disposition_contract "$text"
 
   require_section_pattern "$text" 'Fast completion reports every finding and changed hunk' \
-    'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
+    'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers'
   require_section_pattern "$text" 'inventory includes no-hunk findings and every change outcome' \
     'Include findings with no retained hunk and changes that are retained, revised, non-retained, superseded, or reverted'
   require_section_pattern "$text" 'inventory states are provenance, not dispositions' "$provenance"
@@ -1566,9 +1604,9 @@ assert_post_fast_inventory_contract() {
     'final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence'
   require_section_pattern "$text" 'final Step 4 leaves no unresolved in-scope item' \
     'no unresolved in-scope `treatment: now` finding'
-  require_order "$text" 'The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped' \
-    'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' &&
-    require_order "$text" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk' \
+  require_order "$text" 'The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped' \
+    'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers' &&
+    require_order "$text" 'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers' \
       'The coordinator reconciles the report with shared state' &&
     require_order "$text" 'The coordinator reconciles the report with shared state' \
       "$scope_clause" &&
@@ -1608,7 +1646,7 @@ assert_post_fast_completion_contract() {
   assert_post_fast_transition_contract "$text"
   assert_post_fast_inventory_contract "$text"
   require_section_pattern "$text" 'Fast must actually finish before final exploration' \
-    'Fast owner has finished its assigned work and its task-owned write-capable tools have stopped'
+    'Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped'
   require_section_pattern "$text" 'yield, labels, or cancellation cannot stand in for completion' \
     'write-yield, idle label, timeout, or cancellation is not Fast completion'
   require_section_pattern "$text" 'fresh exploration inspects final shared code' \
@@ -1742,7 +1780,7 @@ $step2_line}"
     'Other dispositions require evidence, not implementation' \
     'separate-outcome finding stays only a post-ECI observation/follow-up' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization' \
-    'enumerates every Fast finding and every Fast-originated changed hunk' \
+    'enumerates every finding and changed hunk from the Fast owner and its helpers' \
     'findings with no retained hunk' \
     'retained, revised, non-retained, superseded, or reverted' \
     'reconciles the report with shared state' \
@@ -1902,8 +1940,8 @@ $step2_line}"
   fi
   [[ "$output" == *'workflow routing assertion failed:'* ]] ||
     fail "unexpected disposition suffix pressure failure: $output"
-  observation='The coordinator observes that the Fast owner has finished its assigned work and its task-owned write-capable tools have stopped.'
-  report='The Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk.'
+  observation='The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped.'
+  report='The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers.'
   pressure="${text/"$observation"/REMOVED}"
   pressure="${pressure/"$report"/"$report $observation"}"
   if output="$(assert_post_fast_completion_observation_contract "$pressure" 2>&1)"; then
@@ -1955,7 +1993,7 @@ $step2_line}"
     fail "unexpected critique stale three-choice failure: $output"
   for file in "$ECI" "$COORDINATOR" "$COORDINATOR_RUNTIME" "$ECI_CRITIQUE" \
     "$ROOT/skills/explore-critique-implement/references/explore.md" "$IMPLEMENT" "$REVIEW"; do
-    forbid_text "$file" 'Fast owner completion report enumerates every Fast finding and every Fast-originated changed hunk'
+    forbid_text "$file" 'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers'
     forbid_text "$file" 'The fresh Step 2 critic gives each inventory item exactly one disposition'
     forbid_text "$file" 'final cumulative Step 4 verifies every inventory item has a disposition and final evidence'
   done
@@ -3331,6 +3369,8 @@ assert_compaction_provenance
 assert_reviewer_role_split
 assert_configuration_e2e_contract
 assert_runtime_e2e_policy
+assert_eci_e2e_cadence_contract
+assert_eci_testing_discipline_precedence
 assert_e2e_policy_consumer_pointers
 assert_no_direct_configuration_e2e_waivers
 assert_configuration_e2e_waiver_fixtures
