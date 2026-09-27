@@ -64,6 +64,10 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - Handle explicit cases; error on unknowns. Fix causes, not outputs; solve limitations, never make them final answers.
 - Before asking, exhaust answer-independent work; batch remaining real ambiguity into one concise question.
 
+### ECI scope admission
+
+Before adding work to ECI scope because something appears broken or making that concern blocking, state a concrete practical use case tied to the requested outcome: user action or input, current failure, and expected result. Apply this wherever discovered, including main ECI and Fast. Without a case, keep the concern nonblocking and record only as a post-ECI follow-up. A case does not authorize a separate outcome. Preserve explicit requirements and their acceptance criteria.
+
 ### Concurrent tasks
 
 These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Direct work and ATE outside ECI retain their existing lifecycle and wait rules.
@@ -79,6 +83,7 @@ These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Dire
 - Never expose secrets or credentials in code, commits, logs, prompts, or final output.
 - The stop hook enforces commit hygiene. Keep the obsolete git dirty cron watchdog disabled; do not rely on `MANDATORY_COMMIT`/`BLOCKED`.
 - Before each commit, run available fitting static checks.
+- Add a concise `Test Plan` section to each commit message. When possible, show a compact before/after demonstration of the intended behavior; prefer copy-pasteable terminal output or logs. Otherwise list the checks run and their observed results, or state why no useful check applies.
 - Before the coordinator stops after edits, commit completed coordinator-owned changes unless unrelated user work would mix; otherwise name blocker/paths. Workers hand off their tested changes instead of performing acceptance-sensitive commits. Never commit unrelated user changes.
 - Workers/implementers prepare and test changes for coordinator review; acceptance-sensitive commits are coordinator-owned. For requested dirty preservation, the coordinator may make a WIP/checkpoint commit through the normal reviewed boundary.
 - Before a destructive Git action, inspect `git status` and the affected paths. Stop and explain a safe narrower action only when the resolved target is broad, unresolved, or would discard unrelated user work. Examples: an unscoped `reset --hard`, `clean -fdx` without an agreed target, or removing an unrelated worktree.
@@ -105,6 +110,7 @@ While an ECI marker is active:
 - Diagnose commands by their resolved effect and target. Stop only a concrete broad, unresolved, cross-scope, or destructive effect; name that effect and offer the narrow safe route. Treat parser or metadata uncertainty as advisory and continue harmless work.
 - Keep each worker within its assigned scope. Route or clarify a scope mismatch before execution. Deny only a resolved operation that would damage another scope, name that target, and offer the narrow safe route.
 - Every enabled denial names a documented bounded legitimate-work escape path in [the gate catalog](hooks/gate-escape-hatches.md). If no such path exists, keep that gate disabled until one is implemented. Preserve the legitimate owner and session; do not reroute owner-scoped dependency work.
+- When a denial names its gate, resolved effect and target, and bounded route, check that the route belongs to the current legitimate actor. If it does, take that route as the next applicable action in the same task and session; do not repeat the denied operation or investigate unrelated gates first. If the route belongs to another owner, hand the denial and route directly to that owner. If the route, effect, or target is missing or inconsistent, inspect only the relevant catalog entry and resolve that mismatch.
 - Treat the gate catalog as an audit of concrete effects, not a permission system. Do not add an approval artifact, hash, receipt, generated plan, parser ceremony, or special command spelling as a prerequisite for ordinary work.
 
 ### Hook-system contract
@@ -121,7 +127,7 @@ in sync when a gate changes.
 | Gate design | Enable a gate only when it catches a concrete accidental broad, destructive, wrong-target, wrong-owner, or cross-scope effect and has a documented bounded legitimate-work hatch. Disable any gate lacking such a hatch. Preserve the legitimate owner/session; never reroute merely because work touches a dependency repository. |
 | Dependency repositories | The owning worker may declare one additional canonical repository with a human-readable reason, then inspect and repair it itself. Other workers and undeclared repositories remain outside that worker's scope. |
 | Edit ownership | Coordinators delegate ordinary repository-code edits to implementers. They may edit ledgers/status/plans/proof directly. A genuine coordinator code edge case uses a session-scoped 600-second self-edit hatch; reactivation replaces the window and never stacks. |
-| Review | Run at least one Critic B check per ECI round for the non-malicious accidental-deviation model, least restriction, scope fidelity, and available hatches. Trace every active task from exact user requirement to faithful outcome to bounded scope. A separate discovered concern is a post-ECI suggestion; a defect required to meet the requested outcome is in scope. |
+| Review | Run at least one Critic B check per ECI round for the non-malicious accidental-deviation model, least restriction, scope fidelity, and available hatches. Trace every active task from exact user requirement to faithful outcome to bounded scope. |
 | Iterations and acceptance | After every implementer iteration, independently verify the exact diff and make one narrow coordinator checkpoint commit. Validate the implementer's result E2E before other independent checks; configuration changes also require E2E. Keep the repository clean and exclude disposable artifacts from tracking. |
 | Emergency bridge | A user-managed `exit 0` hook bypass is an extraordinary temporary bridge only. Re-enable hooks after the repair and verification; it is not a normal route or a replacement for a bounded hatch. |
 | Stop behavior | A valid active marker means resume work or perform normal teardown. Give one unchanged-condition reminder, then continuation metadata rather than a denial loop. Do not claim Stop can retract already-rendered output. Quota pauses do not close work. |

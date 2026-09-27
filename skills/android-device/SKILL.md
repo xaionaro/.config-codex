@@ -20,10 +20,10 @@ Pipeline: health-check -> remediate -> re-check -> baseline snapshot -> run -> v
 ### 1. Health Check And Remediate
 
 Check each row. If fail: apply fix, re-check, repeat until every row passes.
+Treat Android load averages as diagnostic context only, never as a health gate. Never block work or kill processes based on a load average alone or a fixed load-average threshold; assess actual CPU activity (`top`) and pressure (`/proc/pressure/cpu`, when available), alongside thermal, battery, and the other checks.
 
 | Check          | Command                                                                         | Pass                         | Fix on fail                                                                                          |
 | -------------- | ------------------------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
-| CPU load       | `adb shell uptime`                                                              | 1-min load < about 0.5/core  | Find culprit via `top -n1 -b -m5`; kill with `am force-stop <pkg>` or `kill <pid>`; wait             |
 | Hot procs      | `adb shell top -n1 -b -m5`                                                      | No non-test app > 5%         | `am force-stop <pkg>`; disable sync/updates                                                          |
 | Thermal        | `adb shell dumpsys thermalservice \| grep -i status`                            | `THROTTLING_NONE`            | Cool down: screen off, idle >=60s, re-poll until clear                                               |
 | Battery temp   | `adb shell dumpsys battery \| grep temp`                                        | < 50C                        | Wait; unplug if charging                                                                             |

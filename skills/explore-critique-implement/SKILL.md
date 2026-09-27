@@ -15,7 +15,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 - Apply [concurrent task scheduling](../../CODEX.md#concurrent-tasks) to new user requests, independent progress, task-local gates, and root closure. Each task keeps its own scope and main/Fast ownership.
 - For material ECI work, keep `exact user source → faithful requested outcome →
   bounded scope`. A repair necessary to meet or prove that outcome stays current-lane work.
-  A concern serving a separate outcome is only a post-ECI user follow-up, never current work.
+  For each already-discovered lower-priority code issue that remains unfixed, add the TODO defined by [Main ECI quality responsibility](references/fast-path.md#main-eci-quality-responsibility). It does not change an in-scope disposition or replace its required repair; for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.
   Missing or stale lineage never blocks known in-scope work.
 - Every ECI task starts main ECI and one [Fast owner](references/fast-path.md) concurrently. That module owns launch, lifetime, shared-tree priority, evidence feedback, adoption, and closure rules.
 - Follow the normative [post-Fast completion sequence](references/fast-path.md#post-fast-completion).
@@ -23,6 +23,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 - Record `Stage: normal` for ECI; show main and fast progress within the same task, not as separate stages or automatic lanes.
 - A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 - Every normal ECI worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.
+- Own your assigned outcome through successful completion, required evidence, and complete handoff. Resolve recoverable obstacles with safe, authorized in-scope actions; use and verify available recovery paths before asking for help (for example, use authorized ADB recovery to unlock the task device). If no authorized in-scope path is available, or attempted recovery leaves the outcome blocked, report why, what you tried (where possible), and the exact missing input, access, or approval. Keep scope bounded; the coordinator retains ECI lifecycle and final acceptance.
 - Coordinator/lead alone load lifecycle, blocker, pause, stop, required-critic, teardown, and pressure-policy modules. Workers never infer those duties.
 - Each normal iteration is Explore → Critique → Implement → parallel Review. A producer never acts as critic.
 - Main-path bugs with hard uncertainty or a material competing diagnosis/approach use `debugging-discipline`; the Fast owner follows its assigned module.

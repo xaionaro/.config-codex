@@ -22,12 +22,30 @@ const (
 	maxArguments                = 128
 	maxArgumentBytes            = 4 * 1024
 	maxWrapperDepth             = 8
+	maxReachableStates          = 128
 	maxProofAnchors             = 128
 	maxActiveControlEntries     = 128
 	timeoutProbeTimeout         = 150 * time.Millisecond
 	timeoutProbeWaitDelay       = 25 * time.Millisecond
 	timeoutProbeChild           = "/usr/bin/printf"
 	timeoutProbeAcknowledgement = "eci-timeout-child-launch-v1"
+	// segmentReachable marks a segment that has a concrete reachable branch.
+	//
+	// Example: `if true; then printf ok; fi` marks its body reachable.
+	segmentReachable SegmentReachability = "reachable"
+	// segmentUnreachable marks a segment proven dead by literal shell status.
+	//
+	// Example: `if false; then printf skipped; fi` marks its body unreachable.
+	segmentUnreachable SegmentReachability = "unreachable"
+	// segmentReachabilityUnknown marks a segment that may execute.
+	//
+	// Example: `if test -e flag; then printf maybe; fi` remains unknown.
+	segmentReachabilityUnknown SegmentReachability = "unknown"
+	// executePermission is the POSIX X_OK access mode used to verify a
+	// directory before modeling a shell transition into it.
+	//
+	// Example: syscall.Access(path, executePermission) checks search access.
+	executePermission = 1
 )
 
 // Provider identifies the provider adapter requesting command-plan admission.
@@ -209,6 +227,8 @@ type Request struct {
 	CommandPath         string          `json:"command_path,omitempty"`
 	CommandPathSet      bool            `json:"command_path_set"`
 	CommandPathExported *bool           `json:"command_path_exported,omitempty"`
+	CDPath              string          `json:"cd_path,omitempty"`
+	CDPathSet           bool            `json:"cd_path_set"`
 	TimeoutReplay       bool            `json:"timeout_replay,omitempty"`
 	TimeoutReplays      []TimeoutReplay `json:"timeout_replays,omitempty"`
 	Marker              Marker          `json:"marker"`
@@ -216,6 +236,24 @@ type Request struct {
 	Command             string          `json:"command"`
 	ActiveMarkers       []string        `json:"active_markers"`
 	ApprovedRoots       []string        `json:"approved_roots"`
+	// SegmentCWD and SegmentCWDKnown are an internal adapter handoff for a
+	// recursively validated compound segment. The outer callback CWD remains
+	// the marker-ownership anchor while this verified planner fact resolves
+	// relative segment effects.
+	SegmentCWD                   string   `json:"segment_cwd,omitempty"`
+	SegmentCWDKnown              *bool    `json:"segment_cwd_known,omitempty"`
+	SegmentCWDUnknown            *bool    `json:"segment_cwd_unknown,omitempty"`
+	SegmentCWDCandidates         []string `json:"segment_cwd_candidates,omitempty"`
+	SegmentCWDPhysical           string   `json:"segment_cwd_physical,omitempty"`
+	SegmentCWDPhysicalCandidates []string `json:"segment_cwd_physical_candidates,omitempty"`
+	CWDCandidates                []string `json:"-"`
+	CWDPhysical                  string   `json:"-"`
+	CWDPhysicalCandidates        []string `json:"-"`
+	// CWDKnown is derived by Classify from the verified callback or segment
+	// directory. The Bash adapter authenticates SegmentCWDKnown before
+	// forwarding that internal handoff to a recursive planner callback.
+	CWDKnown   bool `json:"-"`
+	CWDUnknown bool `json:"-"`
 }
 
 // TimeoutReplayDisposition describes whether a direct timeout prefix was
@@ -251,6 +289,7 @@ type TimeoutReplay struct {
 	ParentSegment       int                      `json:"parent_segment"`
 	Prefix              []string                 `json:"prefix"`
 	CWD                 string                   `json:"cwd"`
+	CWDPhysical         string                   `json:"cwd_physical,omitempty"`
 	CommandPath         string                   `json:"command_path"`
 	CommandPathSet      bool                     `json:"command_path_set"`
 	CommandPathExported bool                     `json:"command_path_exported"`
@@ -296,8 +335,42 @@ type HookSpecificOutput struct {
 //
 // Example: the middle segment of `sed && printf ok` is ` printf ok`.
 type PlanSegment struct {
-	Command string `json:"command"`
+	Command               string              `json:"command"`
+	CWD                   string              `json:"cwd"`
+	CWDPhysical           string              `json:"cwd_physical"`
+	CWDKnown              bool                `json:"cwd_known"`
+	CWDUnknown            bool                `json:"cwd_unknown"`
+	CWDCandidates         []string            `json:"cwd_candidates"`
+	CWDPhysicalCandidates []string            `json:"cwd_physical_candidates"`
+	Reachability          SegmentReachability `json:"reachability"`
+	GitWorktreeEffect     GitWorktreeEffect   `json:"git_worktree_effect"`
 }
+
+// GitWorktreeEffect identifies a planner-derived Git executable role that
+// must remain on the concrete Git ownership route.
+//
+// Example: `git rm file.txt` has a worktree mutation effect, while `printf
+// git rm` has no Git executable role.
+type GitWorktreeEffect string
+
+const (
+	// GitWorktreeEffectNone marks a segment without a supported Git worktree role.
+	//
+	// Example: `git status` has no worktree mutation effect.
+	GitWorktreeEffectNone GitWorktreeEffect = ""
+	// GitWorktreeEffectMutation marks a direct Git worktree mutation role.
+	//
+	// Example: `git restore file.txt` has a worktree mutation effect.
+	GitWorktreeEffectMutation GitWorktreeEffect = "worktree-mutation"
+)
+
+// SegmentReachability records whether a lossless compound segment can execute.
+// Unknown keeps conservative candidate effects visible; only unreachable skips
+// planner effect inspection.
+//
+// Example: a `false` branch body is `unreachable`, while `test -e flag` is
+// `unknown` and remains subject to target checks.
+type SegmentReachability string
 
 // ReviewedScriptTraceTopology records the complete literal grammar for the
 // one reviewed-test trace diagnostic. Command keeps the original bytes while
@@ -388,10 +461,14 @@ type lifecycleLexicalWord struct {
 }
 
 type segment struct {
-	argv      []token
-	redirects []outputRedirect
-	offset    int
-	command   string
+	argv            []token
+	redirects       []outputRedirect
+	inputRedirects  []token
+	offset          int
+	command         string
+	groupOpens      []compoundGroupKind
+	groupCloses     []compoundGroupKind
+	groupSyntaxSafe bool
 }
 
 type plan struct {
@@ -404,13 +481,30 @@ type plan struct {
 //
 // Example: a direct argv has no topology, while `left && right` has two
 // command slices and one operator.
-func compoundPlanTopology(parsed plan) *PlanTopology {
+func compoundPlanTopology(
+	parsed plan,
+	segmentStates []compoundSegmentState,
+) *PlanTopology {
 	if len(parsed.operators) == 0 {
 		return nil
 	}
 	segments := make([]PlanSegment, 0, len(parsed.segments))
-	for _, current := range parsed.segments {
-		segments = append(segments, PlanSegment{Command: current.command})
+	for index, current := range parsed.segments {
+		state := compoundSegmentState{}
+		if index < len(segmentStates) {
+			state = segmentStates[index]
+		}
+		segments = append(segments, PlanSegment{
+			Command:               current.command,
+			CWD:                   state.cwd.cwd,
+			CWDPhysical:           state.cwd.physical,
+			CWDKnown:              state.cwd.known,
+			CWDUnknown:            state.cwd.unknown,
+			CWDCandidates:         append([]string{}, state.cwd.candidates...),
+			CWDPhysicalCandidates: append([]string{}, state.cwd.physicalCandidates...),
+			Reachability:          state.reachability,
+			GitWorktreeEffect:     compoundGitWorktreeEffect(current),
+		})
 	}
 	return &PlanTopology{
 		Segments:  segments,
@@ -423,9 +517,38 @@ func compoundPlanTopology(parsed plan) *PlanTopology {
 //
 // Example: a denial in segment two still returns the complete two-segment
 // topology so an adapter can preserve parser diagnostic precedence.
-func withCompoundPlan(result Result, parsed plan) Result {
-	result.Plan = compoundPlanTopology(parsed)
+func withCompoundPlan(
+	result Result,
+	parsed plan,
+	segmentStates []compoundSegmentState,
+) Result {
+	result.Plan = compoundPlanTopology(parsed, segmentStates)
 	return result
+}
+
+// compoundGitWorktreeEffect derives the concrete Git worktree role for one
+// parsed segment without searching command text or operands for substrings.
+//
+// Example: `env -- git mv old new` selects a mutation role, while `printf
+// git mv` remains role-free.
+func compoundGitWorktreeEffect(current segment) GitWorktreeEffect {
+	if len(current.argv) == 0 {
+		return GitWorktreeEffectNone
+	}
+	unwrapped, diagnostic := unwrapWithMetadata(current.argv, 1, nil)
+	if diagnostic != nil || len(unwrapped.argv) == 0 || filepath.Base(unwrapped.argv[0].value) != "git" {
+		return GitWorktreeEffectNone
+	}
+	subcommandIndex := gitSubcommandIndex(unwrapped.argv)
+	if subcommandIndex >= len(unwrapped.argv) {
+		return GitWorktreeEffectNone
+	}
+	switch unwrapped.argv[subcommandIndex].value {
+	case "checkout", "mv", "restore", "rm", "worktree":
+		return GitWorktreeEffectMutation
+	default:
+		return GitWorktreeEffectNone
+	}
 }
 
 type proofSession struct {
@@ -762,6 +885,38 @@ func boundedTraceLineCount(value string) bool {
 
 // Classify parses and admits one bounded command plan.
 func Classify(request Request) Result {
+	request.CWDUnknown = false
+	request.CWDPhysical = ""
+	request.CWDPhysicalCandidates = nil
+	if request.SegmentCWDKnown != nil {
+		var overflow bool
+		request.CWDCandidates, overflow = verifiedUniqueDirectoriesBounded(request.SegmentCWDCandidates)
+		if request.SegmentCWDUnknown != nil {
+			request.CWDUnknown = *request.SegmentCWDUnknown
+		}
+		request.CWDUnknown = request.CWDUnknown || overflow
+		if *request.SegmentCWDKnown && !request.CWDUnknown && isVerifiedAbsoluteTimeoutCWD(request.SegmentCWD) {
+			request.CWD = request.SegmentCWD
+			request.CWDCandidates = verifiedUniqueDirectories(append(request.CWDCandidates, request.SegmentCWD))
+			request.CWDPhysical, _ = verifiedPhysicalCWD(request.CWD)
+		} else {
+			request.CWD = ""
+		}
+	}
+	request.CWDKnown = isVerifiedAbsoluteTimeoutCWD(request.CWD)
+	if request.CWDKnown {
+		var overflow bool
+		request.CWDCandidates, overflow = verifiedUniqueDirectoriesBounded(append(request.CWDCandidates, request.CWD))
+		request.CWDUnknown = request.CWDUnknown || overflow
+		request.CWDPhysical, _ = verifiedPhysicalCWD(request.CWD)
+		for _, candidate := range request.CWDCandidates {
+			if physical, ok := verifiedPhysicalCWD(candidate); ok {
+				request.CWDPhysicalCandidates = append(request.CWDPhysicalCandidates, physical)
+			}
+		}
+	} else if request.SegmentCWDKnown == nil {
+		request.CWDUnknown = true
+	}
 	if request.Provider == ProviderCodex {
 		if _, verb, candidate := classifyCodexLifecycleTargetCandidate(request.Command); candidate &&
 			(isLifecycleReadOnlyVerb(verb) || request.Marker == MarkerActive && request.Role == RoleCoordinator) {
@@ -815,23 +970,44 @@ func Classify(request Request) Result {
 	}
 
 	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
+	segmentStates := compoundSegmentStates(request, parsed)
 	var timeoutLaunches []TimeoutLaunch
 	var timeoutReplays []TimeoutReplay
-	timeoutState := timeoutReplayStateForRequest(request)
 	decision := DecisionAllow
 	ledgerRedirectAppend := false
 	for index, current := range parsed.segments {
 		segmentRequest := request
-		if request.Marker == MarkerActive {
+		segmentState := segmentStates[index]
+		segmentCWD := segmentState.cwd
+		if segmentCWD.known {
+			segmentRequest.CWD = segmentCWD.cwd
+			segmentRequest.CWDPhysical = segmentCWD.physical
+			segmentRequest.CWDKnown = true
+		} else {
+			// An unknown segment directory must not inherit the callback CWD.
+			// Relative target checks defer to the provider adapter, while
+			// absolute target checks remain available to the planner.
+			segmentRequest.CWD = ""
+			segmentRequest.CWDKnown = false
+		}
+		segmentRequest.CWDUnknown = segmentCWD.unknown
+		segmentRequest.CWDCandidates = append([]string(nil), segmentCWD.candidates...)
+		segmentRequest.CWDPhysicalCandidates = append([]string(nil), segmentCWD.physicalCandidates...)
+		if request.Marker == MarkerActive && segmentState.reachability != segmentUnreachable &&
+			segmentCWD.known && !segmentCWD.unknown &&
+			len(segmentCWD.candidates) == 1 && segmentState.replayKnown {
 			// Observe this segment only after all earlier segments have had a
 			// chance to return their concrete diagnostic.
-			replay, recorded := timeoutReplayForSegment(request, current, index+1, timeoutState)
+			replay, recorded := timeoutReplayForSegment(request, current, index+1, segmentState.replayState)
 			if recorded {
 				timeoutReplays = append(timeoutReplays, replay)
 				if replay.Disposition == TimeoutReplayObserved {
 					// Preserve the callback request as the outer scope anchor while
 					// resolving this observed child from timeout's effective CWD.
 					segmentRequest.CWD = replay.CWD
+					segmentRequest.CWDPhysical = replay.CWDPhysical
+					segmentRequest.CWDKnown = true
+					segmentRequest.CWDCandidates = []string{replay.CWD}
 					timeoutLaunches = append(timeoutLaunches, TimeoutLaunch{
 						Segment: index + 1,
 						Prefix:  append([]string(nil), replay.Prefix...),
@@ -839,9 +1015,16 @@ func Classify(request Request) Result {
 				}
 			}
 		}
+		if segmentState.reachability == segmentUnreachable {
+			continue
+		}
+		inspectionSegment, inspect := conditionalEffectSegment(current)
+		if !inspect {
+			continue
+		}
 		segmentDecision, diagnostic := inspectSegment(
 			segmentRequest,
-			current,
+			inspectionSegment,
 			index+1,
 			wholeSingleSegmentPlan,
 			timeoutLaunches,
@@ -858,16 +1041,13 @@ func Classify(request Request) Result {
 				decision = DecisionDefer
 				continue
 			}
-			result := withCompoundPlan(deniedResult(request, *diagnostic), parsed)
+			result := withCompoundPlan(deniedResult(request, *diagnostic), parsed, segmentStates)
 			result.TimeoutLaunches = timeoutLaunches
 			result.TimeoutReplays = timeoutReplays
 			return result
 		}
 		if segmentDecision == DecisionDefer {
 			decision = DecisionDefer
-		}
-		if index < len(parsed.operators) {
-			timeoutState = advanceTimeoutReplayState(timeoutState, current, parsed.operators[index])
 		}
 	}
 	if request.Marker == MarkerActive && request.Role == RoleCoordinator &&
@@ -886,7 +1066,7 @@ func Classify(request Request) Result {
 		LedgerRedirectAppend: ledgerRedirectAppend,
 		TimeoutLaunches:      timeoutLaunches,
 		TimeoutReplays:       timeoutReplays,
-		Plan:                 compoundPlanTopology(parsed),
+		Plan:                 compoundPlanTopology(parsed, segmentStates),
 	}
 }
 
@@ -1235,6 +1415,7 @@ func parsePlan(command string) (plan, *planError) {
 	var parsed plan
 	var current []token
 	var redirects []outputRedirect
+	var inputRedirects []token
 	var value strings.Builder
 	var sourceOffsets []int
 	segmentStart := 0
@@ -1243,6 +1424,11 @@ func parsePlan(command string) (plan, *planError) {
 	tokenQuoted := false
 	var redirectTargetPending *outputRedirect
 	inputRedirectTargetPending := false
+	var groupStack []compoundGroupKind
+	var segmentGroupOpens []compoundGroupKind
+	var segmentGroupCloses []compoundGroupKind
+	segmentGroupSyntaxSafe := true
+	groupClosePending := false
 	quote := byte(0)
 	escaped := false
 
@@ -1271,8 +1457,9 @@ func parsePlan(command string) (plan, *planError) {
 				redirects = append(redirects, redirect)
 			}
 			redirectTargetPending = nil
+		} else if inputRedirectTargetPending {
+			inputRedirects = append(inputRedirects, parsedToken)
 		} else {
-			parsedToken.inputRedirectTarget = inputRedirectTargetPending
 			current = append(current, parsedToken)
 		}
 		inputRedirectTargetPending = false
@@ -1288,6 +1475,11 @@ func parsePlan(command string) (plan, *planError) {
 			return err
 		}
 		if len(current) == 0 {
+			if groupClosePending && len(parsed.segments) > 0 {
+				segmentStart = offset + len(operator)
+				groupClosePending = false
+				return nil
+			}
 			return newPlanError(
 				CodePlanSyntaxDenied,
 				"a command-plan operator has an empty adjacent segment",
@@ -1313,14 +1505,22 @@ func parsePlan(command string) (plan, *planError) {
 		}
 		copied := append([]token(nil), current...)
 		parsed.segments = append(parsed.segments, segment{
-			argv:      copied,
-			redirects: append([]outputRedirect(nil), redirects...),
-			offset:    copied[0].offset,
-			command:   command[segmentStart:offset],
+			argv:            copied,
+			redirects:       append([]outputRedirect(nil), redirects...),
+			inputRedirects:  append([]token(nil), inputRedirects...),
+			offset:          copied[0].offset,
+			command:         command[segmentStart:offset],
+			groupOpens:      append([]compoundGroupKind(nil), segmentGroupOpens...),
+			groupCloses:     append([]compoundGroupKind(nil), segmentGroupCloses...),
+			groupSyntaxSafe: segmentGroupSyntaxSafe && len(groupStack) >= len(segmentGroupOpens),
 		})
 		parsed.operators = append(parsed.operators, operator)
 		current = current[:0]
 		redirects = redirects[:0]
+		inputRedirects = inputRedirects[:0]
+		segmentGroupOpens = segmentGroupOpens[:0]
+		segmentGroupCloses = segmentGroupCloses[:0]
+		segmentGroupSyntaxSafe = true
 		redirectTargetPending = nil
 		inputRedirectTargetPending = false
 		segmentStart = offset + len(operator)
@@ -1474,6 +1674,27 @@ func parsePlan(command string) (plan, *planError) {
 				if err := flushToken(); err != nil {
 					return plan{}, err
 				}
+				if character == '(' {
+					if inputRedirectTargetPending || len(current) != 0 {
+						segmentGroupSyntaxSafe = false
+					} else {
+						segmentGroupOpens = append(segmentGroupOpens, compoundGroupParenthesized)
+						groupStack = append(groupStack, compoundGroupParenthesized)
+					}
+				} else {
+					if len(groupStack) == 0 || groupStack[len(groupStack)-1] != compoundGroupParenthesized {
+						segmentGroupSyntaxSafe = false
+					} else {
+						groupStack = groupStack[:len(groupStack)-1]
+						if len(current) == 0 && len(parsed.segments) > 0 {
+							last := len(parsed.segments) - 1
+							parsed.segments[last].groupCloses = append(parsed.segments[last].groupCloses, compoundGroupParenthesized)
+							groupClosePending = true
+						} else {
+							segmentGroupCloses = append(segmentGroupCloses, compoundGroupParenthesized)
+						}
+					}
+				}
 				inputRedirectTargetPending = false
 				continue
 			}
@@ -1483,6 +1704,27 @@ func parsePlan(command string) (plan, *planError) {
 				// retains its visible target without interpreting `${name}`.
 				if err := flushToken(); err != nil {
 					return plan{}, err
+				}
+				if character == '{' {
+					if inputRedirectTargetPending || len(current) != 0 {
+						segmentGroupSyntaxSafe = false
+					} else {
+						segmentGroupOpens = append(segmentGroupOpens, compoundGroupBrace)
+						groupStack = append(groupStack, compoundGroupBrace)
+					}
+				} else {
+					if len(groupStack) == 0 || groupStack[len(groupStack)-1] != compoundGroupBrace {
+						segmentGroupSyntaxSafe = false
+					} else {
+						groupStack = groupStack[:len(groupStack)-1]
+						if len(current) == 0 && len(parsed.segments) > 0 {
+							last := len(parsed.segments) - 1
+							parsed.segments[last].groupCloses = append(parsed.segments[last].groupCloses, compoundGroupBrace)
+							groupClosePending = true
+						} else {
+							segmentGroupCloses = append(segmentGroupCloses, compoundGroupBrace)
+						}
+					}
 				}
 				inputRedirectTargetPending = false
 				continue
@@ -1542,10 +1784,14 @@ func parsePlan(command string) (plan, *planError) {
 		)
 	}
 	parsed.segments = append(parsed.segments, segment{
-		argv:      append([]token(nil), current...),
-		redirects: append([]outputRedirect(nil), redirects...),
-		offset:    current[0].offset,
-		command:   command[segmentStart:],
+		argv:            append([]token(nil), current...),
+		redirects:       append([]outputRedirect(nil), redirects...),
+		inputRedirects:  append([]token(nil), inputRedirects...),
+		offset:          current[0].offset,
+		command:         command[segmentStart:],
+		groupOpens:      append([]compoundGroupKind(nil), segmentGroupOpens...),
+		groupCloses:     append([]compoundGroupKind(nil), segmentGroupCloses...),
+		groupSyntaxSafe: segmentGroupSyntaxSafe && len(groupStack) == 0,
 	})
 	argumentCount := 0
 	for _, currentSegment := range parsed.segments {
@@ -1597,17 +1843,1359 @@ func isFileDescriptorDuplicationTarget(value string) bool {
 	return value == "-" || isDecimalFileDescriptor(value)
 }
 
-// timeoutReplayState is the deliberately narrow literal shell state that can
-// influence a later direct timeout lookup or probe environment.
+// compoundGroupKind identifies a bounded shell group whose directory state is
+// either restored or retained when the group closes.
 //
-// Example: PATH=/tools; export -n PATH retains a set PATH for lookup while
-// marking that PATH must be absent from the probe child environment.
+// Example: `(cd /tmp; printf ok)` uses a parenthesized group while `{ cd /tmp;
+// printf ok; }` uses a brace group.
+type compoundGroupKind string
+
+const (
+	// compoundGroupParenthesized restores directory state after a subshell group.
+	//
+	// Example: `(cd /tmp; printf ok); pwd` restores the outer directory for pwd.
+	compoundGroupParenthesized compoundGroupKind = "parenthesized"
+	// compoundGroupBrace retains directory state after a brace group.
+	//
+	// Example: `{ cd /tmp; }; pwd` keeps /tmp as pwd's modeled directory.
+	compoundGroupBrace compoundGroupKind = "brace"
+)
+
+// compoundGroupFrame stores the state needed when a bounded group closes.
+//
+// Example: a parenthesized frame restores both the current directory and the
+// directory stack, while a brace frame only tracks matching delimiters.
+type compoundGroupFrame struct {
+	kind           compoundGroupKind
+	cwd            string
+	cwdPhysical    string
+	commandPath    string
+	pathSet        bool
+	pathExported   bool
+	cdPath         string
+	cdPathSet      bool
+	known          bool
+	directoryStack []string
+}
+
+// timeoutReplayState is the shared bounded shell transition state used by
+// compound CWD facts and direct timeout replay.
+//
+// Example: PATH=/tools; cd /tmp; timeout 5 git status carries both the PATH
+// lookup state and /tmp CWD into the timeout record.
 type timeoutReplayState struct {
-	cwd          string
-	commandPath  string
-	pathSet      bool
-	pathExported bool
-	known        bool
+	cwd            string
+	cwdPhysical    string
+	commandPath    string
+	pathSet        bool
+	pathExported   bool
+	cdPath         string
+	cdPathSet      bool
+	known          bool
+	skipped        bool
+	directoryStack []string
+	groupStack     []compoundGroupFrame
+}
+
+// compoundSegmentCWDState is the planner-owned directory fact attached to one
+// parsed compound segment. Unknown is explicit: the Bash adapter must not
+// substitute the outer callback CWD when this fact is unavailable.
+//
+// Example: a failed or conditional `cd` produces `{known:false}` for the
+// following segment instead of reusing the callback directory.
+type compoundSegmentCWDState struct {
+	cwd                string
+	physical           string
+	known              bool
+	unknown            bool
+	candidates         []string
+	physicalCandidates []string
+}
+
+// compoundSegmentState joins the planner-owned CWD fact with the typed
+// reachability fact that controls effect inspection and adapter replay.
+//
+// Example: a dead `if false` body keeps its CWD metadata but is marked
+// `unreachable` so its writer is not rechecked by the Bash adapter.
+type compoundSegmentState struct {
+	cwd          compoundSegmentCWDState
+	reachability SegmentReachability
+	replayState  timeoutReplayState
+	replayKnown  bool
+}
+
+// compoundReachableCWDState keeps the bounded set of shell states that may
+// reach the next compound segment. Unknown is separate from an empty set so a
+// known candidate can still be checked when another branch is unsupported.
+//
+// Example: a redirected `cd /tmp` carries both the pre-redirect and
+// post-redirect directories as reachable candidates.
+type compoundReachableCWDState struct {
+	states  []timeoutReplayState
+	unknown bool
+}
+
+// compoundSegmentStates derives bounded CWD and reachability facts for each
+// parsed segment. The initial callback directory must be verified, and only
+// bounded direct builtins with literal reachable operands can advance it.
+// Conditional branches, pipelines, wrappers, redirects, or dynamic spellings
+// retain concrete candidates while carrying an explicit unknown fact.
+//
+// Example: `cd /tmp; printf ok` records `/tmp` for the second segment.
+func compoundSegmentStates(
+	request Request,
+	parsed plan,
+) []compoundSegmentState {
+	states := make([]compoundSegmentState, len(parsed.segments))
+	reachable := initialCompoundReachableCWDState(request)
+	conditionalStack := []compoundConditionalCWDFrame{}
+	for index, current := range parsed.segments {
+		operator := ";"
+		if index < len(parsed.operators) {
+			operator = parsed.operators[index]
+		}
+		segmentState := compoundSegmentState{
+			cwd:          describeCompoundSegmentCWDState(reachable),
+			reachability: compoundReachabilityOf(reachable),
+		}
+		if !reachable.unknown && len(reachable.states) == 1 && !reachable.states[0].skipped {
+			segmentState.replayState = cloneTimeoutReplayState(reachable.states[0])
+			segmentState.replayKnown = true
+		}
+		states[index] = segmentState
+		if next, handled := advanceCompoundConditionalState(
+			reachable,
+			current,
+			conditionalStack,
+			operator,
+		); handled {
+			reachable = next.reachable
+			conditionalStack = next.stack
+			states[index].reachability = next.reachability
+			continue
+		}
+		if index < len(parsed.operators) {
+			reachable = advanceCompoundReachableCWDState(reachable, current, operator)
+		}
+	}
+	return states
+}
+
+// compoundReachabilityOf reports the typed fact for an ordinary segment whose
+// shell operator may have made every concrete state skip the next command.
+//
+// Example: `false && rm target` marks the rm segment unreachable without
+// turning an unknown status into a denial.
+func compoundReachabilityOf(reachable compoundReachableCWDState) SegmentReachability {
+	if reachable.unknown || len(reachable.states) == 0 {
+		return segmentReachabilityUnknown
+	}
+	for _, state := range reachable.states {
+		if !state.skipped {
+			return segmentReachable
+		}
+	}
+	return segmentUnreachable
+}
+
+// compoundConditionalCWDFrame tracks one bounded if/then/elif/else branch
+// join, including which conditions remain reachable.
+//
+// Example: an `if` frame retains its condition exits until an elif, else, or
+// closing fi supplies the reachable join.
+type compoundConditionalCWDFrame struct {
+	conditionState    compoundReachableCWDState
+	exits             compoundReachableCWDState
+	activeState       compoundReachableCWDState
+	remainingPossible bool
+	branchCanRun      bool
+	branchStarted     bool
+	hasThen           bool
+	sawElse           bool
+	suppressed        bool
+}
+
+// compoundConditionalCWDResult carries the updated branch state and stack.
+//
+// Example: processing `else cd /tmp` returns a joined state for the following
+// `fi` segment.
+type compoundConditionalCWDResult struct {
+	reachable    compoundReachableCWDState
+	stack        []compoundConditionalCWDFrame
+	reachability SegmentReachability
+}
+
+// advanceCompoundConditionalState handles the supported literal if grammar
+// emitted by the bounded parser. Unsupported control flow returns unknown
+// rather than preserving a stale branch directory.
+//
+// Example: `if false; then cd /tmp; else cd /work; fi` joins both exits.
+func advanceCompoundConditionalState(
+	reachable compoundReachableCWDState,
+	current segment,
+	stack []compoundConditionalCWDFrame,
+	operator string,
+) (compoundConditionalCWDResult, bool) {
+	trimmed := strings.TrimSpace(current.command)
+	keyword, body, hasKeyword := conditionalSegmentKeyword(trimmed)
+	if !hasKeyword {
+		if len(stack) == 0 {
+			return compoundConditionalCWDResult{}, false
+		}
+		frameIndex := len(stack) - 1
+		updatedStack := append([]compoundConditionalCWDFrame(nil), stack...)
+		frame := updatedStack[frameIndex]
+		if isConditionalReservedSegment(trimmed) {
+			return compoundConditionalCWDResult{
+				reachable:    compoundReachableCWDState{unknown: true},
+				stack:        updatedStack,
+				reachability: segmentReachabilityUnknown,
+			}, true
+		}
+		if !frame.branchStarted {
+			return compoundConditionalCWDResult{
+				reachable:    compoundReachableCWDState{unknown: true},
+				stack:        updatedStack,
+				reachability: segmentReachabilityUnknown,
+			}, true
+		}
+		if frame.suppressed || !frame.branchCanRun {
+			return compoundConditionalCWDResult{
+				reachable:    frame.activeState,
+				stack:        updatedStack,
+				reachability: segmentUnreachable,
+			}, true
+		}
+		frame.activeState = advanceCompoundReachableCWDState(frame.activeState, current, operator)
+		updatedStack[frameIndex] = frame
+		return compoundConditionalCWDResult{
+			reachable:    frame.activeState,
+			stack:        updatedStack,
+			reachability: conditionalBranchReachability(frame, frame.activeState),
+		}, true
+	}
+	updatedStack := append([]compoundConditionalCWDFrame(nil), stack...)
+	switch keyword {
+	case "if":
+		if !conditionalParentCanRun(updatedStack) {
+			updatedStack = append(updatedStack, compoundConditionalCWDFrame{
+				conditionState: reachable,
+				activeState:    reachable,
+				suppressed:     true,
+			})
+			return compoundConditionalCWDResult{
+				reachable:    reachable,
+				stack:        updatedStack,
+				reachability: segmentUnreachable,
+			}, true
+		}
+		condition := current
+		condition.argv = append([]token(nil), current.argv[1:]...)
+		condition.command = body
+		condition.groupOpens = nil
+		condition.groupCloses = nil
+		condition.groupSyntaxSafe = true
+		conditionReachable := advanceCompoundReachableCWDState(reachable, condition, operator)
+		conditionStatus, conditionKnown := literalSegmentStatus(condition)
+		updatedStack = append(updatedStack, compoundConditionalCWDFrame{
+			conditionState:    conditionReachable,
+			activeState:       conditionReachable,
+			remainingPossible: !conditionKnown || !conditionStatus,
+			branchCanRun:      !conditionKnown || conditionStatus,
+		})
+		return compoundConditionalCWDResult{
+			reachable:    conditionReachable,
+			stack:        updatedStack,
+			reachability: compoundReachabilityOf(reachable),
+		}, true
+	case "then":
+		if len(updatedStack) == 0 || updatedStack[len(updatedStack)-1].hasThen || updatedStack[len(updatedStack)-1].sawElse {
+			return compoundConditionalCWDResult{
+				reachable:    compoundReachableCWDState{unknown: true},
+				stack:        updatedStack,
+				reachability: segmentReachabilityUnknown,
+			}, true
+		}
+		frameIndex := len(updatedStack) - 1
+		frame := updatedStack[frameIndex]
+		branchExit := frame.conditionState
+		if !frame.suppressed && frame.branchCanRun && body != "" {
+			branch := conditionalBranchSegment(current, body)
+			branchExit = advanceCompoundReachableCWDState(branchExit, branch, operator)
+		}
+		frame.activeState = branchExit
+		frame.branchStarted = true
+		frame.hasThen = true
+		updatedStack[frameIndex] = frame
+		reachability := conditionalBranchReachability(frame, branchExit)
+		return compoundConditionalCWDResult{
+			reachable:    branchExit,
+			stack:        updatedStack,
+			reachability: reachability,
+		}, true
+	case "elif":
+		if len(updatedStack) == 0 || !updatedStack[len(updatedStack)-1].hasThen || updatedStack[len(updatedStack)-1].sawElse {
+			return compoundConditionalCWDResult{
+				reachable:    compoundReachableCWDState{unknown: true},
+				stack:        updatedStack,
+				reachability: segmentReachabilityUnknown,
+			}, true
+		}
+		frameIndex := len(updatedStack) - 1
+		frame := updatedStack[frameIndex]
+		if frame.branchStarted && frame.branchCanRun && !frame.suppressed {
+			frame.exits = joinCompoundReachableCWDStates(frame.exits, frame.activeState)
+		}
+		condition := conditionalBranchSegment(current, body)
+		conditionReachable := frame.conditionState
+		conditionStatus, conditionKnown := literalSegmentStatus(condition)
+		canEvaluate := frame.remainingPossible && !frame.suppressed
+		if canEvaluate {
+			conditionReachable = advanceCompoundReachableCWDState(frame.conditionState, condition, operator)
+		}
+		frame.branchCanRun = canEvaluate && (!conditionKnown || conditionStatus)
+		frame.remainingPossible = canEvaluate && (!conditionKnown || !conditionStatus)
+		frame.conditionState = conditionReachable
+		frame.activeState = conditionReachable
+		frame.branchStarted = false
+		frame.hasThen = false
+		updatedStack[frameIndex] = frame
+		reachability := compoundReachabilityOf(conditionReachable)
+		if !canEvaluate {
+			reachability = segmentUnreachable
+		}
+		return compoundConditionalCWDResult{
+			reachable:    conditionReachable,
+			stack:        updatedStack,
+			reachability: reachability,
+		}, true
+	case "else":
+		if len(updatedStack) == 0 || !updatedStack[len(updatedStack)-1].hasThen || updatedStack[len(updatedStack)-1].sawElse {
+			return compoundConditionalCWDResult{
+				reachable:    compoundReachableCWDState{unknown: true},
+				stack:        updatedStack,
+				reachability: segmentReachabilityUnknown,
+			}, true
+		}
+		frameIndex := len(updatedStack) - 1
+		frame := updatedStack[frameIndex]
+		if frame.branchStarted && frame.branchCanRun && !frame.suppressed {
+			frame.exits = joinCompoundReachableCWDStates(frame.exits, frame.activeState)
+		}
+		elseExit := frame.conditionState
+		possibleElse := frame.remainingPossible
+		canRun := possibleElse && !frame.suppressed
+		if canRun && body != "" {
+			branch := conditionalBranchSegment(current, body)
+			elseExit = advanceCompoundReachableCWDState(elseExit, branch, operator)
+		}
+		frame.activeState = elseExit
+		frame.branchStarted = true
+		frame.branchCanRun = canRun
+		frame.hasThen = true
+		frame.sawElse = true
+		frame.remainingPossible = false
+		updatedStack[frameIndex] = frame
+		reachability := segmentUnreachable
+		if canRun {
+			reachability = compoundReachabilityOf(elseExit)
+			if possibleElse {
+				reachability = segmentReachabilityUnknown
+			}
+		}
+		return compoundConditionalCWDResult{
+			reachable:    elseExit,
+			stack:        updatedStack,
+			reachability: reachability,
+		}, true
+	case "fi":
+		if len(updatedStack) == 0 {
+			return compoundConditionalCWDResult{
+				reachable:    compoundReachableCWDState{unknown: true},
+				stack:        updatedStack,
+				reachability: segmentReachabilityUnknown,
+			}, true
+		}
+		frame := updatedStack[len(updatedStack)-1]
+		updatedStack = updatedStack[:len(updatedStack)-1]
+		if frame.suppressed {
+			return compoundConditionalCWDResult{
+				reachable:    reachable,
+				stack:        updatedStack,
+				reachability: segmentReachable,
+			}, true
+		}
+		if frame.branchStarted && frame.branchCanRun {
+			frame.exits = joinCompoundReachableCWDStates(frame.exits, frame.activeState)
+		}
+		result := frame.exits
+		if frame.remainingPossible {
+			result = joinCompoundReachableCWDStates(result, frame.conditionState)
+		}
+		if len(updatedStack) > 0 {
+			parentIndex := len(updatedStack) - 1
+			parent := updatedStack[parentIndex]
+			if parent.branchStarted && parent.branchCanRun && !parent.suppressed {
+				parent.activeState = result
+				updatedStack[parentIndex] = parent
+			}
+			if parent.branchStarted && (!parent.branchCanRun || parent.suppressed) {
+				result = parent.activeState
+			}
+		}
+		return compoundConditionalCWDResult{
+			reachable:    result,
+			stack:        updatedStack,
+			reachability: segmentReachable,
+		}, true
+	default:
+		return compoundConditionalCWDResult{
+			reachable:    compoundReachableCWDState{unknown: true},
+			stack:        updatedStack,
+			reachability: segmentReachabilityUnknown,
+		}, true
+	}
+}
+
+// conditionalParentCanRun reports whether every enclosing conditional body is
+// reachable before a nested `if` is interpreted.
+//
+// Example: a nested conditional under `if false; then` is retained in raw
+// topology but its effect-bearing segments remain unreachable.
+func conditionalParentCanRun(stack []compoundConditionalCWDFrame) bool {
+	for _, frame := range stack {
+		if frame.suppressed {
+			return false
+		}
+		if frame.branchStarted && !frame.branchCanRun {
+			return false
+		}
+	}
+	return true
+}
+
+// conditionalBranchReachability distinguishes a known live branch from one
+// that may or may not execute. A possible branch is never treated as dead.
+//
+// Example: an unknown `if test` marks both branch bodies `unknown`, while
+// `if true` marks its body `reachable`.
+func conditionalBranchReachability(
+	frame compoundConditionalCWDFrame,
+	state compoundReachableCWDState,
+) SegmentReachability {
+	if frame.suppressed || !frame.branchCanRun {
+		return segmentUnreachable
+	}
+	if frame.remainingPossible {
+		return segmentReachabilityUnknown
+	}
+	return compoundReachabilityOf(state)
+}
+
+// conditionalSegmentKeyword splits the parser's lossless segment around one
+// shell conditional keyword.
+//
+// Example: ` then cd /tmp` returns then and `cd /tmp`.
+func conditionalSegmentKeyword(command string) (string, string, bool) {
+	words := strings.Fields(command)
+	if len(words) == 0 {
+		return "", "", false
+	}
+	switch words[0] {
+	case "if", "then", "elif", "else", "fi":
+		body := strings.TrimSpace(strings.TrimPrefix(command, words[0]))
+		return words[0], body, true
+	default:
+		return "", "", false
+	}
+}
+
+// conditionalEffectSegment removes only a recognized leading conditional
+// prefix for effect inspection while retaining the original segment bytes in
+// PlanTopology. Condition bodies remain visible; a bare `fi` has no effect.
+//
+// Example: ` then rm eci_active` is inspected as `rm eci_active`, while the
+// topology still serializes the original leading space and `then` keyword.
+func conditionalEffectSegment(current segment) (segment, bool) {
+	keyword, body, ok := conditionalSegmentKeyword(strings.TrimSpace(current.command))
+	if !ok {
+		return current, true
+	}
+	if keyword == "fi" || body == "" {
+		return segment{}, false
+	}
+	return conditionalBranchSegment(current, body), true
+}
+
+// isConditionalReservedSegment detects an unsupported control-flow marker
+// whose stale CWD fact must not be carried into a later segment.
+//
+// Example: a `while` segment invalidates the bounded compound CWD state.
+func isConditionalReservedSegment(command string) bool {
+	words := strings.Fields(command)
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "case", "while", "until", "for", "function", "coproc":
+		return true
+	default:
+		return false
+	}
+}
+
+// conditionalBranchSegment removes then/else syntax before applying one
+// branch's direct state transition.
+//
+// Example: `then cd /tmp` becomes the direct `cd /tmp` segment.
+func conditionalBranchSegment(current segment, body string) segment {
+	branch := current
+	branch.command = body
+	branch.argv = append([]token(nil), current.argv[1:]...)
+	branch.groupOpens = nil
+	branch.groupCloses = nil
+	branch.groupSyntaxSafe = true
+	return branch
+}
+
+// joinCompoundReachableCWDStates joins branch states without losing an
+// explicit unknown branch.
+//
+// Example: joining /tmp and /work produces two CWD candidates.
+func joinCompoundReachableCWDStates(
+	left compoundReachableCWDState,
+	right compoundReachableCWDState,
+) compoundReachableCWDState {
+	states, overflow := boundedTimeoutReplayStates(append(append([]timeoutReplayState(nil), left.states...), right.states...))
+	return compoundReachableCWDState{
+		states:  states,
+		unknown: left.unknown || right.unknown || overflow,
+	}
+}
+
+// initialCompoundReachableCWDState builds the first bounded shell state from
+// verified callback metadata and never substitutes an unverified directory.
+//
+// Example: a compound handoff with two verified candidates starts with both
+// candidates while retaining an explicit unknown branch when supplied.
+func initialCompoundReachableCWDState(request Request) compoundReachableCWDState {
+	base := timeoutReplayState{
+		commandPath: request.CommandPath,
+		pathSet:     request.CommandPathSet,
+		cdPath:      request.CDPath,
+		cdPathSet:   request.CDPathSet,
+		known:       true,
+	}
+	if request.CommandPathExported != nil {
+		base.pathExported = request.CommandPathSet && *request.CommandPathExported
+	} else {
+		base.pathExported = request.CommandPathSet
+	}
+	candidates := append([]string(nil), request.CWDCandidates...)
+	if request.CWDKnown && isVerifiedAbsoluteTimeoutCWD(request.CWD) {
+		candidates = append(candidates, request.CWD)
+	}
+	candidates, overflow := verifiedUniqueDirectoriesBounded(candidates)
+	if len(candidates) == 0 {
+		return compoundReachableCWDState{unknown: true}
+	}
+	states := make([]timeoutReplayState, 0, len(candidates))
+	for _, candidate := range candidates {
+		state := base
+		state.cwd = candidate
+		state.cwdPhysical, _ = verifiedPhysicalCWD(candidate)
+		states = append(states, state)
+	}
+	return compoundReachableCWDState{states: states, unknown: overflow || request.CWDUnknown}
+}
+
+// describeCompoundSegmentCWDState converts reachable shell states into the
+// adapter-facing exact-or-candidate directory fact.
+//
+// Example: one reachable directory is exact; two directories are candidates
+// and therefore leave CWDKnown false.
+func describeCompoundSegmentCWDState(
+	reachable compoundReachableCWDState,
+) compoundSegmentCWDState {
+	candidates := make([]string, 0, len(reachable.states))
+	physicalCandidates := make([]string, 0, len(reachable.states))
+	for _, state := range reachable.states {
+		if state.known && isVerifiedAbsoluteTimeoutCWD(state.cwd) {
+			candidates = append(candidates, state.cwd)
+			physical, ok := verifiedPhysicalCWD(state.cwd)
+			if ok {
+				physicalCandidates = append(physicalCandidates, physical)
+			}
+		}
+	}
+	candidates, overflow := verifiedUniqueDirectoriesBounded(candidates)
+	if len(physicalCandidates) > maxReachableStates {
+		physicalCandidates = physicalCandidates[:maxReachableStates]
+		overflow = true
+	}
+	state := compoundSegmentCWDState{
+		candidates:         candidates,
+		physicalCandidates: physicalCandidates,
+	}
+	state.unknown = reachable.unknown || overflow
+	if !state.unknown && len(candidates) == 1 {
+		state.cwd = candidates[0]
+		state.physical, _ = verifiedPhysicalCWD(state.cwd)
+		state.known = true
+	}
+	return state
+}
+
+// verifiedUniqueDirectories retains only bounded absolute searchable
+// directories while preserving their first-seen order.
+//
+// Example: duplicate CWD candidates collapse before being forwarded to Bash.
+func verifiedUniqueDirectories(candidates []string) []string {
+	seen := make(map[string]struct{}, len(candidates))
+	result := make([]string, 0, minInt(len(candidates), maxReachableStates))
+	for _, candidate := range candidates {
+		if !isVerifiedAbsoluteTimeoutCWD(candidate) {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if len(result) >= maxReachableStates {
+			continue
+		}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+// verifiedUniqueDirectoriesBounded retains verified directory candidates and
+// reports whether the reachable-state cap discarded another distinct value.
+//
+// Example: 129 verified candidates return the first 128 plus overflow=true.
+func verifiedUniqueDirectoriesBounded(candidates []string) ([]string, bool) {
+	seen := make(map[string]struct{}, len(candidates))
+	result := make([]string, 0, minInt(len(candidates), maxReachableStates))
+	overflow := false
+	for _, candidate := range candidates {
+		if !isVerifiedAbsoluteTimeoutCWD(candidate) {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if len(result) >= maxReachableStates {
+			overflow = true
+			continue
+		}
+		result = append(result, candidate)
+	}
+	return result, overflow
+}
+
+// minInt keeps state-cap arithmetic local to the planner's bounded model.
+//
+// Example: minInt(200, maxReachableStates) limits a candidate buffer without
+// changing the caller's reachability decision.
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+// advanceCompoundReachableCWDState advances each reachable shell state and
+// joins bounded pre/post states when a state-changing command has a redirect
+// whose success cannot be established statically.
+//
+// Example: `cd /tmp > log; pwd` checks both the outer directory and /tmp.
+func advanceCompoundReachableCWDState(
+	reachable compoundReachableCWDState,
+	current segment,
+	operator string,
+) compoundReachableCWDState {
+	result := compoundReachableCWDState{unknown: reachable.unknown}
+	for _, state := range reachable.states {
+		if state.skipped {
+			state.skipped = false
+			result.states = append(result.states, state)
+			continue
+		}
+		transitioned := current
+		if len(current.redirects) > 0 || len(current.inputRedirects) > 0 {
+			transitioned.redirects = nil
+			transitioned.inputRedirects = nil
+		}
+		post, ok := advanceCompoundTransitionStateExact(state, transitioned, operator)
+		if !ok {
+			// An unresolved effect does not erase concrete pre-transition
+			// candidates. It only records that another branch/state may exist.
+			result.states = append(result.states, state)
+			result.unknown = true
+			continue
+		}
+		preState := state
+		if segmentHasRedirect(current) && stateTransitionChangesState(state, post) {
+			preState = state
+		}
+		result.states = append(result.states, reachableOperatorExits(
+			preState,
+			post,
+			current,
+			operator,
+			segmentHasRedirect(current) && stateTransitionChangesState(state, post),
+		)...)
+		if operator != ";" && operator != "\n" && operator != "&&" && operator != "||" && operator != "|" && operator != "&" {
+			result.unknown = true
+		}
+		if operator == "|" || operator == "&" {
+			result.unknown = true
+		}
+	}
+	var overflow bool
+	result.states, overflow = boundedTimeoutReplayStates(result.states)
+	result.unknown = result.unknown || overflow
+	if len(result.states) == 0 && !result.unknown {
+		result.unknown = true
+	}
+	return result
+}
+
+// segmentHasRedirect reports parser-owned input or output redirection without
+// treating its operand as a command argv effect.
+//
+// Example: `cd /tmp > log` has an ambiguous transition boundary.
+func segmentHasRedirect(current segment) bool {
+	return len(current.redirects) > 0 || len(current.inputRedirects) > 0
+}
+
+// stateTransitionChangesState compares complete bounded shell state, not only
+// CWD, so redirect ambiguity also covers PATH, CDPATH, exports, and stacks.
+//
+// Example: `export PATH=/tools > log` joins the pre/post environment states.
+func stateTransitionChangesState(left, right timeoutReplayState) bool {
+	return timeoutReplayStateKey(left) != timeoutReplayStateKey(right)
+}
+
+// reachableOperatorExits selects states that can reach the next segment for
+// the finite shell operators. Unknown statuses retain both pre/post exits;
+// only literal-known true/false statuses prune one side.
+//
+// Example: `false && cd /tmp` leaves the pre-state, while `true && cd /tmp`
+// leaves the post-state.
+func reachableOperatorExits(
+	pre timeoutReplayState,
+	post timeoutReplayState,
+	current segment,
+	operator string,
+	redirectAmbiguous bool,
+) []timeoutReplayState {
+	markSkipped := func(state timeoutReplayState) timeoutReplayState {
+		state.skipped = true
+		return state
+	}
+	preAndPost := func() []timeoutReplayState {
+		if redirectAmbiguous {
+			return []timeoutReplayState{pre, post}
+		}
+		return []timeoutReplayState{post}
+	}
+	status, known := literalSegmentStatus(current)
+	switch operator {
+	case ";", "\n":
+		return preAndPost()
+	case "&&":
+		if !known {
+			return append([]timeoutReplayState{markSkipped(pre)}, preAndPost()...)
+		}
+		if status {
+			return preAndPost()
+		}
+		return []timeoutReplayState{markSkipped(pre)}
+	case "||":
+		if !known {
+			return append([]timeoutReplayState{markSkipped(pre)}, preAndPost()...)
+		}
+		if status {
+			return []timeoutReplayState{markSkipped(pre)}
+		}
+		return preAndPost()
+	case "|", "&":
+		// Pipelines and background lists execute their children outside the
+		// parent shell. Keep the parent state and mark the fact unknown at
+		// the caller; a concrete pre-state remains useful for target checks.
+		return []timeoutReplayState{pre}
+	default:
+		return []timeoutReplayState{pre}
+	}
+}
+
+// literalSegmentStatus recognizes only shell literals whose exit status is
+// fixed without running a command. All other commands retain both branches.
+//
+// Example: `:` is known true, while `printf ok` has an unknown status.
+func literalSegmentStatus(current segment) (bool, bool) {
+	_, argv := splitLeadingAssignments(current.argv)
+	if len(argv) != 1 || argv[0].quoted {
+		return false, false
+	}
+	switch argv[0].value {
+	case "true", ":":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// deduplicateTimeoutReplayStates removes duplicate reachable states without
+// collapsing distinct directory, PATH, or stack facts.
+//
+// Example: a branch that returns to the same CWD contributes one state.
+func deduplicateTimeoutReplayStates(states []timeoutReplayState) []timeoutReplayState {
+	seen := make(map[string]struct{}, len(states))
+	result := make([]timeoutReplayState, 0, minInt(len(states), maxReachableStates))
+	for _, state := range states {
+		key := timeoutReplayStateKey(state)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(result) >= maxReachableStates {
+			continue
+		}
+		result = append(result, state)
+	}
+	return result
+}
+
+// boundedTimeoutReplayStates deduplicates complete shell states and reports
+// whether the finite reachable-state cap discarded another state.
+//
+// Example: an expanding branch fan-out keeps 128 states and marks overflow
+// so downstream target checks remain conservative without borrowing a CWD.
+func boundedTimeoutReplayStates(states []timeoutReplayState) ([]timeoutReplayState, bool) {
+	seen := make(map[string]struct{}, len(states))
+	result := make([]timeoutReplayState, 0, minInt(len(states), maxReachableStates))
+	overflow := false
+	for _, state := range states {
+		key := timeoutReplayStateKey(state)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(result) >= maxReachableStates {
+			overflow = true
+			continue
+		}
+		result = append(result, state)
+	}
+	return result, overflow
+}
+
+// timeoutReplayStateKey includes every bounded shell fact that can affect a
+// later transition or replay lookup, including group snapshots.
+//
+// Example: two states with the same CWD but different CDPATH remain distinct.
+func timeoutReplayStateKey(state timeoutReplayState) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%t\x00%s\x00%t\x00%t\x00%t\x00%v\x00%v",
+		state.cwd,
+		state.cwdPhysical,
+		state.commandPath,
+		state.pathSet,
+		state.pathExported,
+		state.cdPath,
+		state.cdPathSet,
+		state.known,
+		state.skipped,
+		state.directoryStack,
+		state.groupStack,
+	)
+}
+
+// advanceCompoundTransitionState advances one unconditional shell segment
+// while sharing directory, directory-stack, and PATH semantics with timeout
+// replay. Unsupported or conditional transitions return an explicit unknown
+// state instead of reusing a stale callback fact.
+//
+// Example: `pushd /tmp; printf ok; popd; pwd` records /tmp for the middle
+// segments and the original directory for pwd.
+func advanceCompoundTransitionState(
+	state timeoutReplayState,
+	current segment,
+	operator string,
+) timeoutReplayState {
+	if (len(current.redirects) > 0 || len(current.inputRedirects) > 0) && segmentChangesDirectory(current) {
+		return timeoutReplayState{}
+	}
+	next, ok := advanceCompoundTransitionStateExact(state, current, operator)
+	if !ok {
+		return timeoutReplayState{}
+	}
+	return next
+}
+
+// advanceCompoundTransitionStateExact applies one direct transition after
+// redirect ambiguity has been removed by its caller.
+//
+// Example: `cd /tmp; printf ok` returns the verified /tmp state.
+func advanceCompoundTransitionStateExact(
+	state timeoutReplayState,
+	current segment,
+	operator string,
+) (timeoutReplayState, bool) {
+	if !state.known || (operator != ";" && operator != "\n" && operator != "&&" && operator != "||" && operator != "|" && operator != "&") || !current.groupSyntaxSafe ||
+		!compoundTransitionSegmentIsLiteral(current) {
+		return timeoutReplayState{}, false
+	}
+	next := cloneTimeoutReplayState(state)
+	for _, kind := range current.groupOpens {
+		next.groupStack = append(next.groupStack, compoundGroupFrame{
+			kind:           kind,
+			cwd:            next.cwd,
+			cwdPhysical:    next.cwdPhysical,
+			commandPath:    next.commandPath,
+			pathSet:        next.pathSet,
+			pathExported:   next.pathExported,
+			known:          next.known,
+			directoryStack: append([]string(nil), next.directoryStack...),
+			cdPath:         next.cdPath,
+			cdPathSet:      next.cdPathSet,
+		})
+	}
+
+	var transitionOK bool
+	next, transitionOK = applyStateTransition(next, current.argv)
+	if !transitionOK {
+		return timeoutReplayState{}, false
+	}
+
+	for _, kind := range current.groupCloses {
+		if len(next.groupStack) == 0 || next.groupStack[len(next.groupStack)-1].kind != kind {
+			return timeoutReplayState{}, false
+		}
+		frame := next.groupStack[len(next.groupStack)-1]
+		next.groupStack = next.groupStack[:len(next.groupStack)-1]
+		if kind == compoundGroupParenthesized {
+			next.cwd = frame.cwd
+			next.cwdPhysical = frame.cwdPhysical
+			next.commandPath = frame.commandPath
+			next.pathSet = frame.pathSet
+			next.pathExported = frame.pathExported
+			next.cdPath = frame.cdPath
+			next.cdPathSet = frame.cdPathSet
+			next.known = frame.known
+			next.directoryStack = append([]string(nil), frame.directoryStack...)
+		}
+	}
+	return next, true
+}
+
+// segmentChangesDirectory reports whether a direct segment has a supported
+// directory builtin identity, without treating arbitrary arguments as effects.
+//
+// Example: `helper cd /tmp` is ordinary, while `cd /tmp` changes directory.
+func segmentChangesDirectory(current segment) bool {
+	_, argv := splitLeadingAssignments(current.argv)
+	_, _, ok := directDirectoryBuiltin(argv)
+	return ok
+}
+
+// directDirectoryBuiltin recognizes only the finite parent-shell identities
+// whose argv is available to the planner. Quoting the command name does not
+// change its shell identity; wrappers such as env remain child-only.
+//
+// Example: `command cd /tmp` returns cd, while `env cd /tmp` returns no
+// parent-shell effect.
+func directDirectoryBuiltin(argv []token) (string, []token, bool) {
+	if len(argv) == 0 || strings.ContainsRune(argv[0].value, filepath.Separator) {
+		return "", nil, false
+	}
+	name := argv[0].value
+	if name == "cd" || name == "pushd" || name == "popd" {
+		return name, argv, true
+	}
+	if name != "builtin" && name != "command" {
+		return "", nil, false
+	}
+	index := 1
+	if index < len(argv) && argv[index].value == "--" && !argv[index].quoted {
+		index++
+	}
+	if index >= len(argv) || strings.ContainsRune(argv[index].value, filepath.Separator) {
+		return "", nil, false
+	}
+	builtin := argv[index].value
+	if builtin != "cd" && builtin != "pushd" && builtin != "popd" {
+		return "", nil, false
+	}
+	return builtin, argv[index:], true
+}
+
+// compoundTransitionSegmentIsLiteral removes parser-owned group delimiters
+// before checking the remaining state command for dynamic shell expansion.
+//
+// Example: `{ cd /tmp` is literal transition syntax, while `cd $TARGET` is
+// dynamic even though both segments came from one parsed compound plan.
+func compoundTransitionSegmentIsLiteral(current segment) bool {
+	value := strings.TrimSpace(current.command)
+	for _, kind := range current.groupOpens {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return false
+		}
+		prefix := "("
+		if kind == compoundGroupBrace {
+			prefix = "{"
+		}
+		if !strings.HasPrefix(value, prefix) {
+			return false
+		}
+		value = value[len(prefix):]
+	}
+	for range current.groupCloses {
+		value = strings.TrimSpace(value)
+		if value != "" && (strings.HasSuffix(value, ")") || strings.HasSuffix(value, "}")) {
+			value = strings.TrimSpace(value[:len(value)-1])
+		}
+	}
+	return timeoutSegmentIsLiteral(value)
+}
+
+// cloneTimeoutReplayState copies transition slices before a segment mutates
+// them, keeping each planner fact independent of later group transitions.
+//
+// Example: a nested parenthesized group receives its own directory-stack copy.
+func cloneTimeoutReplayState(state timeoutReplayState) timeoutReplayState {
+	state.directoryStack = append([]string(nil), state.directoryStack...)
+	state.groupStack = append([]compoundGroupFrame(nil), state.groupStack...)
+	return state
+}
+
+// applyStateTransition applies one direct state-only command after leading
+// shell assignments have been normalized. Ordinary commands preserve state;
+// recognized directory commands update it, and unsupported directory-changing
+// wrappers invalidate it.
+//
+// Example: `TRACE=1 cd /tmp` and `command cd /tmp` change directory, while
+// `env cd /tmp` leaves the parent shell state unchanged.
+func applyStateTransition(
+	state timeoutReplayState,
+	argv []token,
+) (timeoutReplayState, bool) {
+	assignments, commandArgv := splitLeadingAssignments(argv)
+	if len(commandArgv) == 0 {
+		for _, assignment := range assignments {
+			switch assignmentName(assignment) {
+			case "PATH":
+				state.commandPath = strings.TrimPrefix(assignment.value, "PATH=")
+				state.pathSet = true
+			case "CDPATH":
+				state.cdPath = strings.TrimPrefix(assignment.value, "CDPATH=")
+				state.cdPathSet = true
+			}
+		}
+		return state, true
+	}
+	if len(commandArgv) == 0 || len(commandArgv[0].value) == 0 {
+		return timeoutReplayState{}, false
+	}
+	name := commandArgv[0].value
+	if strings.ContainsRune(name, filepath.Separator) {
+		return applyPathBuiltinTransition(state, commandArgv)
+	}
+	if builtin, builtinArgv, ok := directDirectoryBuiltin(commandArgv); ok {
+		if len(assignments) > 0 && builtin != "cd" {
+			return timeoutReplayState{}, false
+		}
+		before := state
+		for _, assignment := range assignments {
+			switch assignmentName(assignment) {
+			case "PATH":
+				state.commandPath = strings.TrimPrefix(assignment.value, "PATH=")
+				state.pathSet = true
+			case "CDPATH":
+				state.cdPath = strings.TrimPrefix(assignment.value, "CDPATH=")
+				state.cdPathSet = true
+			}
+		}
+		next, ok := applyDirectoryTransition(state, builtin, builtinArgv)
+		if !ok {
+			return timeoutReplayState{}, false
+		}
+		// Prefix assignments to a builtin are temporary in the parent shell.
+		next.commandPath = before.commandPath
+		next.pathSet = before.pathSet
+		next.pathExported = before.pathExported
+		next.cdPath = before.cdPath
+		next.cdPathSet = before.cdPathSet
+		return next, true
+	}
+	if commandMayChangeDirectory(name, commandArgv[1:]) {
+		return state, false
+	}
+	if len(assignments) == 0 {
+		return applyPathBuiltinTransition(state, commandArgv)
+	}
+	return state, true
+}
+
+// splitLeadingAssignments separates literal shell assignments from the direct
+// executable that follows them.
+//
+// Example: `PATH=/tools cd /tmp` returns PATH=/tools as an assignment and cd
+// as the executable argv.
+func splitLeadingAssignments(argv []token) ([]token, []token) {
+	index := 0
+	for index < len(argv) && assignmentName(argv[index]) != "" {
+		index++
+	}
+	return argv[:index], argv[index:]
+}
+
+// commandMayChangeDirectory identifies wrappers or nested directory builtins
+// whose CWD effect cannot be bounded from the direct argv.
+//
+// Example: `command cd /tmp` invalidates the transition rather than claiming
+// that /tmp is the next directory.
+func commandMayChangeDirectory(name string, _ []token) bool {
+	switch name {
+	case "exec", "source", ".", "eval":
+		return true
+	}
+	return false
+}
+
+// applyDirectoryTransition models the supported literal cd, pushd, and popd
+// builtins, including their verified filesystem effects and directory stack.
+//
+// Example: `cd -P link` records the physical target while `cd -L link` keeps
+// the verified logical spelling.
+func applyDirectoryTransition(
+	state timeoutReplayState,
+	name string,
+	argv []token,
+) (timeoutReplayState, bool) {
+	switch name {
+	case "cd":
+		if len(argv) != 2 && len(argv) != 3 {
+			return timeoutReplayState{}, false
+		}
+		mode := "-L"
+		pathIndex := 1
+		if len(argv) == 3 {
+			if argv[1].quoted || (argv[1].value != "-L" && argv[1].value != "-P") {
+				return timeoutReplayState{}, false
+			}
+			mode = argv[1].value
+			pathIndex = 2
+		}
+		path, ok := resolveLiteralDirectory(state, argv[pathIndex])
+		if !ok {
+			return timeoutReplayState{}, false
+		}
+		if mode == "-P" {
+			resolved, ok := resolvePhysicalDirectory(path)
+			if !ok {
+				return timeoutReplayState{}, false
+			}
+			path = resolved
+		} else {
+			path = filepath.Clean(path)
+		}
+		state.cwd = path
+		state.known = true
+		state.cwdPhysical, ok = verifiedPhysicalCWD(path)
+		if !ok {
+			return timeoutReplayState{}, false
+		}
+		return state, true
+	case "pushd":
+		if len(argv) != 2 {
+			return timeoutReplayState{}, false
+		}
+		path, ok := resolveLiteralDirectory(state, argv[1])
+		if !ok {
+			return timeoutReplayState{}, false
+		}
+		path = filepath.Clean(path)
+		state.directoryStack = append(state.directoryStack, state.cwd)
+		state.cwd = path
+		state.known = true
+		state.cwdPhysical, ok = verifiedPhysicalCWD(path)
+		if !ok {
+			return timeoutReplayState{}, false
+		}
+		return state, true
+	case "popd":
+		if len(argv) != 1 || len(state.directoryStack) == 0 {
+			return timeoutReplayState{}, false
+		}
+		last := len(state.directoryStack) - 1
+		state.cwd = state.directoryStack[last]
+		state.directoryStack = state.directoryStack[:last]
+		state.known = state.cwd != "" && isVerifiedAbsoluteTimeoutCWD(state.cwd)
+		if !state.known {
+			return timeoutReplayState{}, false
+		}
+		physical, ok := verifiedPhysicalCWD(state.cwd)
+		if !ok {
+			return timeoutReplayState{}, false
+		}
+		state.cwdPhysical = physical
+		return state, true
+	default:
+		return timeoutReplayState{}, false
+	}
+}
+
+// resolveLiteralDirectory resolves one static directory operand against the
+// planner's current verified CWD and rejects dynamic shell spelling.
+//
+// Example: `inner` resolves below the current CWD, while `$TARGET` remains
+// unknown even when an environment variable happens to exist.
+func resolveLiteralDirectory(
+	state timeoutReplayState,
+	argument token,
+) (string, bool) {
+	if argument.value == "" || strings.ContainsAny(argument.value, "$`\\*?[]{}~") || !state.known {
+		return "", false
+	}
+	path := argument.value
+	if !filepath.IsAbs(path) {
+		if cdPath, ok := resolveCDPathDirectory(state, path); ok {
+			return cdPath, true
+		}
+		path = joinLiteralPath(state.cwd, path)
+	}
+	if !isVerifiedAbsoluteTimeoutCWD(filepath.Clean(path)) {
+		return "", false
+	}
+	return path, true
+}
+
+// resolveCDPathDirectory applies the bounded CDPATH search used by a literal
+// relative cd. Entries with a slash remain ordinary relative roots, while an
+// empty entry denotes the current directory.
+//
+// Example: CDPATH=/work; cd project resolves /work/project before ./project.
+func resolveCDPathDirectory(state timeoutReplayState, value string) (string, bool) {
+	if !state.cdPathSet || value == "" || strings.ContainsRune(value, filepath.Separator) ||
+		value == "." || value == ".." {
+		return "", false
+	}
+	for _, entry := range strings.Split(state.cdPath, string(filepath.ListSeparator)) {
+		base := entry
+		if base == "" {
+			base = state.cwd
+		} else if !filepath.IsAbs(base) {
+			base = filepath.Join(state.cwd, base)
+		}
+		candidate := filepath.Clean(joinLiteralPath(base, value))
+		if isVerifiedAbsoluteTimeoutCWD(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// joinLiteralPath joins shell path words without normalizing away a later
+// `..`; physical cd must process that component after resolving symlinks.
+//
+// Example: joining /work/link with .. preserves /work/link/.. for -P.
+func joinLiteralPath(base, value string) string {
+	if base == string(filepath.Separator) {
+		return base + value
+	}
+	return strings.TrimRight(base, string(filepath.Separator)) + string(filepath.Separator) + value
+}
+
+// resolvePhysicalDirectory follows each path component before processing a
+// later `..`, matching Bash's physical cd traversal order.
+//
+// Example: link/.. resolves to the target's parent, not the lexical parent of
+// the symlink spelling.
+func resolvePhysicalDirectory(path string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		return "", false
+	}
+	volume := filepath.VolumeName(path)
+	root := volume + string(filepath.Separator)
+	remainder := strings.TrimPrefix(path, root)
+	lexical := root
+	physical := root
+	for _, component := range strings.Split(remainder, string(filepath.Separator)) {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			lexical = strings.TrimRight(lexical, string(filepath.Separator)) + string(filepath.Separator) + component
+			physical = filepath.Dir(physical)
+		default:
+			if lexical == root {
+				lexical += component
+			} else {
+				lexical += string(filepath.Separator) + component
+			}
+			resolved, err := filepath.EvalSymlinks(lexical)
+			if err != nil {
+				return "", false
+			}
+			physical = filepath.Clean(resolved)
+		}
+	}
+	if !isVerifiedAbsoluteTimeoutCWD(physical) {
+		return "", false
+	}
+	return physical, true
+}
+
+// applyPathBuiltinTransition preserves the existing literal PATH replay rules
+// while allowing the shared transition model to carry directory changes.
+//
+// Example: `export -n PATH; timeout 5 git status` retains lookup PATH but marks
+// the probe child environment as unexported.
+func applyPathBuiltinTransition(
+	state timeoutReplayState,
+	argv []token,
+) (timeoutReplayState, bool) {
+	if len(argv) == 2 && argv[0].value == "export" && !argv[0].quoted && !argv[1].quoted {
+		switch {
+		case argv[1].value == "PATH":
+			state.pathExported = state.pathSet
+			return state, true
+		case assignmentName(argv[1]) == "PATH":
+			state.commandPath = strings.TrimPrefix(argv[1].value, "PATH=")
+			state.pathSet = true
+			state.pathExported = true
+			return state, true
+		case assignmentName(argv[1]) == "CDPATH":
+			state.cdPath = strings.TrimPrefix(argv[1].value, "CDPATH=")
+			state.cdPathSet = true
+			return state, true
+		}
+	}
+	if len(argv) == 3 && argv[0].value == "export" && argv[1].value == "-n" &&
+		argv[2].value == "PATH" && !argv[0].quoted && !argv[1].quoted && !argv[2].quoted {
+		state.pathExported = false
+		return state, true
+	}
+	if len(argv) == 2 && argv[0].value == "unset" && argv[1].value == "PATH" &&
+		!argv[0].quoted && !argv[1].quoted {
+		state.commandPath = ""
+		state.pathSet = false
+		state.pathExported = false
+		return state, true
+	}
+	if len(argv) == 2 && argv[0].value == "unset" && argv[1].value == "CDPATH" &&
+		!argv[0].quoted && !argv[1].quoted {
+		state.cdPath = ""
+		state.cdPathSet = false
+		return state, true
+	}
+	return state, true
 }
 
 // timeoutReplayStateForRequest returns the callback's initial state when its
@@ -1626,16 +3214,19 @@ func timeoutReplayStateForRequest(request Request) timeoutReplayState {
 	}
 	return timeoutReplayState{
 		cwd:          cwd,
+		cwdPhysical:  request.CWDPhysical,
 		commandPath:  request.CommandPath,
 		pathSet:      request.CommandPathSet,
 		pathExported: pathExported,
+		cdPath:       request.CDPath,
+		cdPathSet:    request.CDPathSet,
 		known:        true,
 	}
 }
 
-// advanceTimeoutReplayState advances only an unconditional direct state-only
-// segment. Every other prefix is intentionally opaque so an uncertain shell
-// effect cannot manufacture a timeout observation.
+// advanceTimeoutReplayState advances only a direct sequential state-only
+// segment or a literal-known &&/|| branch. Every other prefix is intentionally
+// opaque so an uncertain shell effect cannot manufacture a timeout observation.
 //
 // Example: cd /tmp; PATH=/tools advances state, while cd /tmp && timeout
 // poisons the state because the conditional may not run.
@@ -1644,72 +3235,17 @@ func advanceTimeoutReplayState(
 	current segment,
 	operator string,
 ) timeoutReplayState {
-	if !state.known || operator != ";" && operator != "\n" {
+	switch operator {
+	case ";", "\n":
+	case "&&", "||":
+		status, known := literalSegmentStatus(current)
+		if !known || (operator == "&&" && !status) || (operator == "||" && status) {
+			return timeoutReplayState{}
+		}
+	default:
 		return timeoutReplayState{}
 	}
-	if !timeoutSegmentIsLiteral(current.command) || len(current.redirects) != 0 {
-		return timeoutReplayState{}
-	}
-	if len(current.argv) == 1 && assignmentName(current.argv[0]) == "PATH" {
-		return timeoutReplayState{
-			cwd:          state.cwd,
-			commandPath:  strings.TrimPrefix(current.argv[0].value, "PATH="),
-			pathSet:      true,
-			pathExported: state.pathExported,
-			known:        true,
-		}
-	}
-	if len(current.argv) == 2 && current.argv[0].value == "cd" &&
-		!current.argv[0].quoted && !current.argv[1].quoted &&
-		isVerifiedAbsoluteTimeoutCWD(current.argv[1].value) {
-		return timeoutReplayState{
-			cwd:          current.argv[1].value,
-			commandPath:  state.commandPath,
-			pathSet:      state.pathSet,
-			pathExported: state.pathExported,
-			known:        true,
-		}
-	}
-	if len(current.argv) == 2 && current.argv[0].value == "export" &&
-		!current.argv[0].quoted && !current.argv[1].quoted {
-		switch {
-		case current.argv[1].value == "PATH":
-			return timeoutReplayState{
-				cwd:          state.cwd,
-				commandPath:  state.commandPath,
-				pathSet:      state.pathSet,
-				pathExported: state.pathSet,
-				known:        true,
-			}
-		case assignmentName(current.argv[1]) == "PATH":
-			return timeoutReplayState{
-				cwd:          state.cwd,
-				commandPath:  strings.TrimPrefix(current.argv[1].value, "PATH="),
-				pathSet:      true,
-				pathExported: true,
-				known:        true,
-			}
-		}
-	}
-	if len(current.argv) == 3 && current.argv[0].value == "export" &&
-		current.argv[1].value == "-n" && current.argv[2].value == "PATH" &&
-		!current.argv[0].quoted && !current.argv[1].quoted && !current.argv[2].quoted {
-		return timeoutReplayState{
-			cwd:          state.cwd,
-			commandPath:  state.commandPath,
-			pathSet:      state.pathSet,
-			pathExported: false,
-			known:        true,
-		}
-	}
-	if len(current.argv) == 2 && current.argv[0].value == "unset" &&
-		current.argv[1].value == "PATH" && !current.argv[0].quoted && !current.argv[1].quoted {
-		return timeoutReplayState{
-			cwd:   state.cwd,
-			known: true,
-		}
-	}
-	return timeoutReplayState{}
+	return advanceCompoundTransitionState(state, current, operator)
 }
 
 // timeoutReplayForSegment records a direct literal timeout from the modeled
@@ -1736,6 +3272,7 @@ func timeoutReplayForSegment(
 		ParentSegment:       segmentIndex,
 		Prefix:              timeoutPrefixValues(prefix),
 		CWD:                 state.cwd,
+		CWDPhysical:         state.cwdPhysical,
 		CommandPath:         state.commandPath,
 		CommandPathSet:      state.pathSet,
 		CommandPathExported: state.pathExported,
@@ -1781,6 +3318,9 @@ func suppliedTimeoutReplayForSegment(
 		!sameTimeoutPrefix(replay.Prefix, prefix) {
 		return TimeoutReplay{}, false
 	}
+	if replay.CWDPhysical == "" {
+		replay.CWDPhysical, _ = verifiedPhysicalCWD(replay.CWD)
+	}
 	return replay, true
 }
 
@@ -1813,6 +3353,10 @@ func validTimeoutReplay(replay TimeoutReplay) bool {
 		replay.ParentSegment < 1 || replay.ParentSegment > maxSegments ||
 		!isVerifiedAbsoluteTimeoutCWD(replay.CWD) || len(replay.Prefix) < 2 ||
 		len(replay.Prefix) > maxArguments {
+		return false
+	}
+	physical, ok := verifiedPhysicalCWD(replay.CWD)
+	if !ok || replay.CWDPhysical != "" && replay.CWDPhysical != physical {
 		return false
 	}
 	for _, value := range replay.Prefix {
@@ -1889,7 +3433,28 @@ func isVerifiedAbsoluteTimeoutCWD(path string) bool {
 		return false
 	}
 	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	return err == nil && info.IsDir() && syscall.Access(path, executePermission) == nil
+}
+
+// verifiedPhysicalCWD returns the canonical searchable identity paired with a
+// verified logical shell directory. Logical spelling remains the basis for
+// shell-relative lookup; this identity is only for ownership and inode checks.
+//
+// Example: a logical symlink `/work/current` returns its real directory while
+// preserving `/work/current` in the planner's CWD field.
+func verifiedPhysicalCWD(path string) (string, bool) {
+	if !isVerifiedAbsoluteTimeoutCWD(path) {
+		return "", false
+	}
+	physical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	physical = filepath.Clean(physical)
+	if !isVerifiedAbsoluteTimeoutCWD(physical) {
+		return "", false
+	}
+	return physical, true
 }
 
 // resolveTimeoutExecutable resolves a direct timeout literal from the original
@@ -2175,7 +3740,11 @@ func inspectSegment(
 			)
 		}
 	}
-	if request.Marker == MarkerActive && isLifecycleScriptCapability(request.CWD, argv) {
+	effectiveCWD := ""
+	if request.CWDKnown {
+		effectiveCWD = request.CWD
+	}
+	if request.Marker == MarkerActive && isLifecycleScriptCapability(effectiveCWD, argv) {
 		// The provider adapter owns canonical lifecycle-script identity,
 		// arguments, and role authorization. Recognize only a visible script
 		// position here so active fast admission cannot bypass that route.
@@ -2209,7 +3778,7 @@ func inspectSegment(
 		}
 	}
 	if request.Marker == MarkerActive {
-		if target, resolved, ok := protectedHookModeMutation(request.CWD, argv); ok {
+		if target, resolved, ok := protectedHookModeMutation(effectiveCWD, argv); ok {
 			switch request.Role {
 			case RoleCoordinator:
 				return DecisionDefer, nil
@@ -2252,7 +3821,7 @@ func inspectSegment(
 	if request.Marker == MarkerActive && gitCloneLaunchVisible {
 		return DecisionDeny, gitCloneLaunchContextDiagnostic(current.argv, segmentIndex)
 	}
-	if isLifecycleScriptPath(request.CWD, argv[0].value) {
+	if isLifecycleScriptPath(effectiveCWD, argv[0].value) {
 		return DecisionDefer, nil
 	}
 	if name == "eci-command-gate-mode" {
@@ -2261,10 +3830,9 @@ func inspectSegment(
 	if diagnostic := inspectBroadDestruction(argv, segmentIndex); diagnostic != nil {
 		return DecisionDeny, diagnostic
 	}
-	if request.Marker == MarkerActive && request.Role == RoleCoordinator && wholeSingleSegmentPlan && name == "find" {
-		// Compound pipelines retain their existing finite-pipeline route. A
-		// direct active find action is the unbounded per-match capability this
-		// guard owns; the pipeline route separately resolves concrete targets.
+	if request.Marker == MarkerActive && request.Role == RoleCoordinator && name == "find" {
+		// Check each parsed segment before a compound plan can reach later
+		// commands; every find action launches an unbounded per-match operation.
 		if action, ok := findDynamicAction(argv); ok {
 			return DecisionDeny, diagnosticForToken(
 				CodePlanDynamicLaunchDenied,
@@ -2323,40 +3891,10 @@ func findDynamicAction(argv []token) (token, bool) {
 		case "-delete":
 			return argv[index], true
 		case "-exec", "-execdir", "-ok", "-okdir":
-			if !findActionIsReadOnly(argv, index) {
-				return argv[index], true
-			}
+			return argv[index], true
 		}
 	}
 	return token{}, false
-}
-
-// findActionIsReadOnly admits only a small, explicit set of per-match
-// metadata readers for find's -exec family.  This is effect-based rather than
-// punctuation-based: a child such as `file --brief {}` only reads each match,
-// while rm, shell interpreters, and unknown children remain dynamic actions.
-func findActionIsReadOnly(argv []token, actionIndex int) bool {
-	if actionIndex+1 >= len(argv) {
-		return false
-	}
-	readers := map[string]struct{}{
-		"file": {}, "realpath": {}, "readlink": {}, "sha256sum": {}, "stat": {}, "wc": {},
-	}
-	child := argv[actionIndex+1].value
-	if _, ok := readers[filepath.Base(child)]; !ok || strings.HasPrefix(child, "-") {
-		return false
-	}
-	for index := actionIndex + 2; index < len(argv); index++ {
-		value := argv[index].value
-		if value == ";" || value == "+" {
-			return true
-		}
-		if value == "|" || value == "&&" || value == "||" || value == ">" || value == ">>" ||
-			value == "<" || value == "<<<" || value == ">&" {
-			return false
-		}
-	}
-	return false
 }
 
 // redirectWriterArgv gives one shell redirect destination the same concrete
@@ -2708,7 +4246,11 @@ func inspectActiveWorkerLifecycleIdentity(
 		return nil
 	}
 
-	candidate := resolveExecutable(argv[0].value, request.CWD)
+	effectiveCWD := ""
+	if request.CWDKnown {
+		effectiveCWD = request.CWD
+	}
+	candidate := resolveExecutable(argv[0].value, effectiveCWD)
 	if candidate == "" {
 		return nil
 	}
@@ -2847,6 +4389,46 @@ func inspectProofPathOwnership(
 	ledgerRedirectAppend *bool,
 	controlIndex activeControlIndex,
 ) (DecisionKind, *Diagnostic) {
+	if request.CWDKnown || len(request.CWDCandidates) == 0 {
+		return inspectProofPathOwnershipExact(request, argv, segmentIndex, redirect, ledgerRedirectAppend, controlIndex)
+	}
+	deferToProvider := false
+	for _, candidate := range verifiedUniqueDirectories(request.CWDCandidates) {
+		candidateRequest := request
+		candidateRequest.CWD = candidate
+		candidateRequest.CWDKnown = true
+		candidateRequest.CWDCandidates = []string{candidate}
+		decision, diagnostic := inspectProofPathOwnershipExact(
+			candidateRequest,
+			argv,
+			segmentIndex,
+			redirect,
+			ledgerRedirectAppend,
+			controlIndex,
+		)
+		if diagnostic != nil {
+			return decision, diagnostic
+		}
+		deferToProvider = deferToProvider || decision == DecisionDefer
+	}
+	if deferToProvider {
+		return DecisionDefer, nil
+	}
+	return DecisionAllow, nil
+}
+
+// inspectProofPathOwnershipExact resolves one concrete CWD candidate. The
+// caller joins multiple planner-reachable candidates before invoking it.
+//
+// Example: a redirected `cd` checks both its pre- and post-redirect paths.
+func inspectProofPathOwnershipExact(
+	request Request,
+	argv []token,
+	segmentIndex int,
+	redirect *outputRedirect,
+	ledgerRedirectAppend *bool,
+	controlIndex activeControlIndex,
+) (DecisionKind, *Diagnostic) {
 	proofSessions := make([]proofSession, 0, len(request.ActiveMarkers))
 	for _, marker := range request.ActiveMarkers {
 		if !filepath.IsAbs(marker) {
@@ -2885,6 +4467,13 @@ func inspectProofPathOwnership(
 		writer := outputWriter || isSourceWriterOperand(argv, argumentIndex)
 		lexical := pathArgument.value
 		if !filepath.IsAbs(lexical) {
+			if !request.CWDKnown {
+				// The segment CWD is unknown. Keep absolute target checks
+				// available, but defer unresolved relative effects to the
+				// provider's targeted ownership boundary.
+				deferToProvider = true
+				continue
+			}
 			lexical = filepath.Join(request.CWD, lexical)
 		}
 		lexical = filepath.Clean(lexical)
@@ -5177,6 +6766,32 @@ func inspectLiveControl(
 	segmentIndex int,
 	controlIndex activeControlIndex,
 ) *Diagnostic {
+	if request.CWDKnown || len(request.CWDCandidates) == 0 {
+		return inspectLiveControlExact(request, argv, segmentIndex, controlIndex)
+	}
+	for _, candidate := range verifiedUniqueDirectories(request.CWDCandidates) {
+		candidateRequest := request
+		candidateRequest.CWD = candidate
+		candidateRequest.CWDKnown = true
+		candidateRequest.CWDCandidates = []string{candidate}
+		if diagnostic := inspectLiveControlExact(candidateRequest, argv, segmentIndex, controlIndex); diagnostic != nil {
+			return diagnostic
+		}
+	}
+	return nil
+}
+
+// inspectLiveControlExact checks one concrete CWD candidate for a worker
+// writer. Reachable candidates are joined by inspectLiveControl.
+//
+// Example: a relative `rm eci_active` is denied if any reachable directory
+// contains the active marker.
+func inspectLiveControlExact(
+	request Request,
+	argv []token,
+	segmentIndex int,
+	controlIndex activeControlIndex,
+) *Diagnostic {
 	// A bounded alias index can be incomplete when a session has many control
 	// records. Its completeness is diagnostic metadata, never a reason to
 	// block a visible concrete write target. Exact marker paths below remain
@@ -5194,6 +6809,9 @@ func inspectLiveControl(
 		}
 		candidate := pathArgument.value
 		if !filepath.IsAbs(candidate) {
+			if !request.CWDKnown {
+				continue
+			}
 			candidate = filepath.Join(request.CWD, candidate)
 		}
 		candidate = filepath.Clean(candidate)
@@ -6049,6 +7667,12 @@ func isSourceWriterOperand(
 	}
 	name := filepath.Base(argv[0].value)
 	if name != "cp" {
+		if name == "sed" {
+			return isSedWriterOperand(argv, argumentIndex)
+		}
+		if name == "truncate" {
+			return isTruncateWriterOperand(argv, argumentIndex)
+		}
 		return isSourceWriter(name, argv)
 	}
 
@@ -6079,6 +7703,77 @@ func isSourceWriterOperand(
 		destinationIndex = index
 	}
 	return operandCount == 2 && argumentIndex == destinationIndex
+}
+
+// isSedWriterOperand recognizes only in-place file operands, skipping script
+// values supplied to -e/--expression and -f/--file.
+//
+// Example: `sed -f script -i output` marks output but not script.
+func isSedWriterOperand(argv []token, argumentIndex int) bool {
+	inPlace := false
+	optionsEnded := false
+	writerOperands := make(map[int]struct{})
+	for index := 1; index < len(argv); index++ {
+		value := argv[index].value
+		if argv[index].inputRedirectTarget {
+			continue
+		}
+		if !optionsEnded {
+			switch {
+			case value == "--":
+				optionsEnded = true
+			case value == "-i" || value == "--in-place" || strings.HasPrefix(value, "-i") || strings.HasPrefix(value, "--in-place="):
+				inPlace = true
+			case value == "-e" || value == "--expression" || value == "-f" || value == "--file":
+				index++
+			case strings.HasPrefix(value, "-e") || strings.HasPrefix(value, "-f") || strings.HasPrefix(value, "--expression=") || strings.HasPrefix(value, "--file="):
+			case strings.HasPrefix(value, "-"):
+				return false
+			default:
+				writerOperands[index] = struct{}{}
+			}
+			continue
+		}
+		writerOperands[index] = struct{}{}
+	}
+	if !inPlace {
+		return false
+	}
+	_, ok := writerOperands[argumentIndex]
+	return ok
+}
+
+// isTruncateWriterOperand excludes finite size-option values from target
+// ownership checks and marks only concrete file operands.
+//
+// Example: `truncate -s SIZE output` writes output, not SIZE.
+func isTruncateWriterOperand(argv []token, argumentIndex int) bool {
+	optionsEnded := false
+	writerOperands := make(map[int]struct{})
+	for index := 1; index < len(argv); index++ {
+		value := argv[index].value
+		if argv[index].inputRedirectTarget {
+			continue
+		}
+		if !optionsEnded {
+			switch {
+			case value == "--":
+				optionsEnded = true
+			case value == "-s" || value == "--size":
+				index++
+			case strings.HasPrefix(value, "-s") && len(value) > 2,
+				strings.HasPrefix(value, "--size="):
+			case strings.HasPrefix(value, "-"):
+				return false
+			default:
+				writerOperands[index] = struct{}{}
+			}
+			continue
+		}
+		writerOperands[index] = struct{}{}
+	}
+	_, ok := writerOperands[argumentIndex]
+	return ok
 }
 
 func isSourceWriter(name string, argv []token) bool {

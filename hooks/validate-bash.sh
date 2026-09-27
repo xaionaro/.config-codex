@@ -15,10 +15,10 @@ set -euo pipefail
 
 unset ECI_READ_ONLY_PIPELINE
 
-# Cross-repository Git checks remain enabled. A worker that owns a legitimate
-# dependency repair may declare exactly one additional repository through the
-# owner-scoped eci-active repository-allow-on route; the record stores its
-# resolved canonical Git root.
+# Cross-repository Git checks remain enabled. The active session owner may
+# declare one additional repository for Git mutations. Worker inspection and
+# script routes still apply their worker-only boundary before using the same
+# session-bound repository record.
 ECI_CROSS_SCOPE_GATE_ENABLED=true
 
 # Determine the hook directory without a PATH lookup: callback PATH may be
@@ -60,17 +60,14 @@ if [[ -v PATH ]]; then
   CODEX_COMMAND_PATH_SET=true
   CODEX_COMMAND_PATH_EXPORTED=true
 fi
-if [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" = true ] &&
-  [[ -v ECI_COMPOUND_COMMAND_PATH ]]; then
-  # Recursive segment validation must preserve the callback's original
-  # executable-resolution context.  The parent hook prepends fixed system
-  # directories to PATH for its own helpers; re-deriving this value in the
-  # child would hide a caller-supplied executable shadowing the trusted one.
-  CODEX_COMMAND_PATH="$ECI_COMPOUND_COMMAND_PATH"
-else
-  CODEX_COMMAND_PATH="${PATH-}"
-fi
+CODEX_COMMAND_PATH="${PATH-}"
 export CODEX_COMMAND_PATH CODEX_COMMAND_PATH_EXPORTED
+CODEX_CD_PATH_SET=false
+if [[ -v CDPATH ]]; then
+  CODEX_CD_PATH_SET=true
+fi
+CODEX_CD_PATH="${CDPATH-}"
+export CODEX_CD_PATH CODEX_CD_PATH_SET
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEX_COMMAND_PATH}"
 export PATH
 codex_init_tmp || true
@@ -689,6 +686,118 @@ fi
 session_id=$(printf '%s' "$input" | jq -r 'if (.session_id? | type) == "string" then .session_id else "" end' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else "" end' 2>/dev/null || true)
 command=$(printf '%s' "$input" | jq -r 'if (.tool_input?.command? | type) == "string" then .tool_input.command else "" end' 2>/dev/null || true)
+hook_original_command="$command"
+
+# Recursive segment state is accepted only when structurally eligible JSON is
+# paired with the per-child token carried on FD9 by the parent planner. A
+# shape-valid callback payload alone never activates this route. Never consume
+# the historical ECI_COMPOUND_* environment variables: inherited values are
+# caller-controlled and may describe a stale CWD or replay context. The
+# callback CWD remains the marker anchor; the planner-owned segment fact is
+# carried separately to target resolvers.
+COMPOUND_SEGMENT_VALIDATION=false
+COMPOUND_SEGMENT_CWD_KNOWN=false
+COMPOUND_SEGMENT_CWD_UNKNOWN=false
+COMPOUND_SEGMENT_CWD=""
+COMPOUND_SEGMENT_CWD_CANDIDATES='[]'
+COMPOUND_SEGMENT_CWD_PHYSICAL=""
+COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES='[]'
+COMPOUND_SEGMENT_REACHABILITY=reachable
+COMPOUND_SEGMENT_COMMAND_PATH=""
+COMPOUND_SEGMENT_COMMAND_PATH_SET=false
+COMPOUND_SEGMENT_COMMAND_PATH_EXPORTED=false
+COMPOUND_HANDOFF_TOKEN=""
+COMPOUND_SEGMENT_METADATA_ELIGIBLE=false
+if jq -e '
+  . as $root |
+  (.eci_compound_segment? | type) == "object" and
+  ((.eci_compound_segment | keys | sort) == [
+    "command_path", "command_path_exported", "command_path_set", "cwd",
+    "cwd_candidates", "cwd_known", "cwd_physical", "cwd_physical_candidates", "cwd_unknown", "handoff_token", "reachability", "validation"
+  ]) and
+  .eci_compound_segment.validation == true and
+  (.eci_compound_segment.handoff_token | type) == "string" and
+  (.eci_compound_segment.handoff_token | length > 0) and
+  (.eci_compound_segment.cwd | type) == "string" and
+  (.eci_compound_segment.cwd_candidates | type == "array" and
+    length <= 128 and all(.[]; type == "string" and test("^/") and length <= 4096)) and
+  (.eci_compound_segment.cwd_physical | type == "string") and
+  (.eci_compound_segment.cwd_physical_candidates | type == "array" and
+    length <= 128 and all(.[]; type == "string" and test("^/") and length <= 4096)) and
+  (.eci_compound_segment.cwd_known | type) == "boolean" and
+  (.eci_compound_segment.cwd_unknown | type) == "boolean" and
+  (.eci_compound_segment.reachability | type == "string" and
+    (. == "reachable" or . == "unreachable" or . == "unknown")) and
+  (if .eci_compound_segment.cwd_known then
+    (.eci_compound_segment.cwd_unknown == false) and
+    (.eci_compound_segment.cwd | test("^/")) and
+    ($root.eci_compound_segment.cwd_candidates |
+      index($root.eci_compound_segment.cwd) != null)
+   else .eci_compound_segment.cwd == "" end) and
+  (if .eci_compound_segment.cwd_known then
+    (.eci_compound_segment.cwd_physical != "") and
+    ($root.eci_compound_segment.cwd_physical_candidates |
+      index($root.eci_compound_segment.cwd_physical) != null)
+   else .eci_compound_segment.cwd_physical == "" end) and
+  (.eci_compound_segment.command_path | type) == "string" and
+  (.eci_compound_segment.command_path_set | type) == "boolean" and
+  (.eci_compound_segment.command_path_exported | type) == "boolean" and
+  (if .eci_compound_segment.command_path_set then true
+   else .eci_compound_segment.command_path == "" and
+        .eci_compound_segment.command_path_exported == false end)
+' <<<"$input" >/dev/null 2>&1; then
+  COMPOUND_SEGMENT_METADATA_ELIGIBLE=true
+  if [ -e "/proc/$$/fd/9" ]; then
+    IFS= read -r COMPOUND_HANDOFF_TOKEN <&9 || COMPOUND_HANDOFF_TOKEN=""
+  fi
+  if [ "$COMPOUND_SEGMENT_METADATA_ELIGIBLE" = true ] &&
+    jq -e --arg handoff_token "$COMPOUND_HANDOFF_TOKEN" \
+    '.eci_compound_segment.handoff_token == $handoff_token' <<<"$input" >/dev/null 2>&1; then
+    COMPOUND_SEGMENT_VALIDATION=true
+    COMPOUND_SEGMENT_CWD_KNOWN="$(jq -r '.eci_compound_segment.cwd_known' <<<"$input")"
+    COMPOUND_SEGMENT_CWD_UNKNOWN="$(jq -r '.eci_compound_segment.cwd_unknown' <<<"$input")"
+    COMPOUND_SEGMENT_CWD="$(jq -r '.eci_compound_segment.cwd' <<<"$input")"
+    COMPOUND_SEGMENT_CWD_CANDIDATES="$(jq -c '.eci_compound_segment.cwd_candidates' <<<"$input")"
+    COMPOUND_SEGMENT_CWD_PHYSICAL="$(jq -r '.eci_compound_segment.cwd_physical' <<<"$input")"
+    COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES="$(jq -c '.eci_compound_segment.cwd_physical_candidates' <<<"$input")"
+    COMPOUND_SEGMENT_REACHABILITY="$(jq -r '.eci_compound_segment.reachability' <<<"$input")"
+    COMPOUND_SEGMENT_COMMAND_PATH="$(jq -r '.eci_compound_segment.command_path' <<<"$input")"
+    COMPOUND_SEGMENT_COMMAND_PATH_SET="$(jq -r '.eci_compound_segment.command_path_set' <<<"$input")"
+    COMPOUND_SEGMENT_COMMAND_PATH_EXPORTED="$(jq -r '.eci_compound_segment.command_path_exported' <<<"$input")"
+    compound_candidate_valid=true
+    while IFS= read -r compound_candidate; do
+      compound_candidate_physical="$(realpath -e -- "$compound_candidate" 2>/dev/null || true)"
+      if [ -z "$compound_candidate" ] || [ -z "$compound_candidate_physical" ] ||
+        [ ! -d "$compound_candidate" ] || [ ! -x "$compound_candidate" ] ||
+        ! jq -e --arg physical "$compound_candidate_physical" 'index($physical) != null' <<<"$COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES" >/dev/null 2>&1; then
+        compound_candidate_valid=false
+        break
+      fi
+    done < <(jq -r '.[]' <<<"$COMPOUND_SEGMENT_CWD_CANDIDATES" 2>/dev/null || true)
+    if [ "$COMPOUND_SEGMENT_CWD_KNOWN" = true ] &&
+      [ "$compound_candidate_valid" = true ] &&
+      [ "$(realpath -e -- "$COMPOUND_SEGMENT_CWD" 2>/dev/null || true)" = "$COMPOUND_SEGMENT_CWD_PHYSICAL" ] &&
+      [ -d "$COMPOUND_SEGMENT_CWD" ] && [ -x "$COMPOUND_SEGMENT_CWD" ]; then
+      :
+    elif [ "$COMPOUND_SEGMENT_CWD_KNOWN" = true ] || [ "$compound_candidate_valid" != true ]; then
+      # A malformed planner handoff is not allowed to fall back to callback CWD.
+      COMPOUND_SEGMENT_CWD_KNOWN=false
+      COMPOUND_SEGMENT_CWD_UNKNOWN=true
+      COMPOUND_SEGMENT_CWD=""
+      COMPOUND_SEGMENT_CWD_CANDIDATES='[]'
+      COMPOUND_SEGMENT_CWD_PHYSICAL=""
+      COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES='[]'
+    fi
+    CODEX_COMMAND_PATH="$COMPOUND_SEGMENT_COMMAND_PATH"
+    CODEX_COMMAND_PATH_SET="$COMPOUND_SEGMENT_COMMAND_PATH_SET"
+    CODEX_COMMAND_PATH_EXPORTED="$COMPOUND_SEGMENT_COMMAND_PATH_EXPORTED"
+    export CODEX_COMMAND_PATH CODEX_COMMAND_PATH_EXPORTED
+    CODEX_CD_PATH_SET=false
+    CODEX_CD_PATH=""
+    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEX_COMMAND_PATH}"
+    export PATH
+  fi
+fi
 
 # Authenticate explicit worker context before malformed-input handling. The
 # bounded transcript parser runs only for a typed payload that supplies a
@@ -715,7 +824,7 @@ fi
 # Recursive compound validation receives only planner-produced timeout replay
 # records. Missing or malformed metadata deliberately selects an empty replay
 # mode so a child cannot re-probe using this hook's stale outer callback state.
-if [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" = true ]; then
+if [ "$COMPOUND_SEGMENT_VALIDATION" = true ]; then
   CODEX_TIMEOUT_REPLAY=true
   CODEX_TIMEOUT_REPLAYS="$(jq -c '
     def exact_keys($expected): (keys | sort) == $expected;
@@ -723,11 +832,13 @@ if [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" = true ]; then
     def bounded_string: type == "string" and length > 0 and length <= 4096;
     def replay_fact:
       type == "object" and
-      exact_keys(["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) and
+      ((keys | sort) == ["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"] or
+       (keys | sort) == ["command_path", "command_path_exported", "command_path_set", "cwd", "cwd_physical", "disposition", "parent_segment", "prefix", "segment"]) and
       (.segment | positive_integer) and
       (.parent_segment | positive_integer) and
       (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; bounded_string)) and
       (.cwd | type == "string" and test("^/")) and
+      (.cwd_physical? // "" | type == "string" and (length == 0 or test("^/"))) and
       (.command_path | type == "string") and
       (.command_path_set | type == "boolean") and
       (.command_path_exported | type == "boolean") and
@@ -1340,13 +1451,22 @@ plan_input="$(
     --arg command_path "$CODEX_COMMAND_PATH" \
     --argjson command_path_set "$CODEX_COMMAND_PATH_SET" \
     --argjson command_path_exported "$CODEX_COMMAND_PATH_EXPORTED" \
+    --arg cd_path "$CODEX_CD_PATH" \
+    --argjson cd_path_set "$CODEX_CD_PATH_SET" \
+    --argjson compound_segment_validation "$COMPOUND_SEGMENT_VALIDATION" \
+    --arg segment_cwd "$COMPOUND_SEGMENT_CWD" \
+    --argjson segment_cwd_known "$COMPOUND_SEGMENT_CWD_KNOWN" \
+    --argjson segment_cwd_unknown "$COMPOUND_SEGMENT_CWD_UNKNOWN" \
+    --argjson segment_cwd_candidates "$COMPOUND_SEGMENT_CWD_CANDIDATES" \
+    --arg segment_cwd_physical "$COMPOUND_SEGMENT_CWD_PHYSICAL" \
+    --argjson segment_cwd_physical_candidates "$COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES" \
     --argjson timeout_replay "$CODEX_TIMEOUT_REPLAY" \
     --argjson timeout_replays "$CODEX_TIMEOUT_REPLAYS" \
     --arg approved_root_1 "$CODEX_APPROVED_REPO_ROOT_1" \
     --arg approved_root_2 "$CODEX_APPROVED_REPO_ROOT_2" \
     --arg approved_root_3 "$CODEX_APPROVED_REPO_ROOT_3" \
     --args \
-    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,command_path_set:$command_path_set,command_path_exported:$command_path_exported,timeout_replay:$timeout_replay,timeout_replays:$timeout_replays,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
+    '{provider:$provider,role:$role,cwd:$cwd,marker:$marker,active_session:$active_session,command:$command,command_path:$command_path,command_path_set:$command_path_set,command_path_exported:$command_path_exported,cd_path:$cd_path,cd_path_set:$cd_path_set,segment_cwd:(if $compound_segment_validation then $segment_cwd else null end),segment_cwd_known:(if $compound_segment_validation then $segment_cwd_known else null end),segment_cwd_unknown:(if $compound_segment_validation then $segment_cwd_unknown else null end),segment_cwd_candidates:(if $compound_segment_validation then $segment_cwd_candidates else null end),segment_cwd_physical:(if $compound_segment_validation then $segment_cwd_physical else null end),segment_cwd_physical_candidates:(if $compound_segment_validation then $segment_cwd_physical_candidates else null end),timeout_replay:$timeout_replay,timeout_replays:$timeout_replays,active_markers:$ARGS.positional,approved_roots:[$approved_root_1,$approved_root_2,$approved_root_3]|map(select(length > 0))}' \
     "${syntax_eci_markers[@]}"
 )"
 
@@ -1542,11 +1662,13 @@ planner_timeout_replays_shape() {
     def bounded_string: type == "string" and length > 0 and length <= 4096;
     def replay_fact:
       type == "object" and
-      exact_keys(["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) and
+      ((keys | sort) == ["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"] or
+       (keys | sort) == ["command_path", "command_path_exported", "command_path_set", "cwd", "cwd_physical", "disposition", "parent_segment", "prefix", "segment"]) and
       (.segment | positive_integer) and
       (.parent_segment | positive_integer) and
       (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; bounded_string)) and
       (.cwd | type == "string" and test("^/")) and
+      (.cwd_physical? // "" | type == "string" and (length == 0 or test("^/"))) and
       (.command_path | type == "string") and
       (.command_path_set | type == "boolean") and
       (.command_path_exported | type == "boolean") and
@@ -1563,6 +1685,30 @@ PLAN_TIMEOUT_REPLAYS='[]'
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && planner_timeout_replays_shape; then
   PLAN_TIMEOUT_REPLAYS="$(jq -c '.timeout_replays // []' <<<"${plan_output:-}")"
 fi
+
+# The regression harness may request one bounded, pre-created trace file to
+# compare the planner's actual FD9 child handoff with an explicit replay. This
+# is diagnostics only: absent that test-only opt-in, the hook never writes a
+# replay artifact.
+eci_test_timeout_replay_trace() {
+  local trace_file="${ECI_TEST_REPLAY_TRACE_FILE:-}"
+  [ -n "$trace_file" ] && [ -f "$trace_file" ] && [ ! -L "$trace_file" ] || return 0
+  jq -c --arg command "$command" --arg outer_cwd "$cwd" \
+    --arg command_path "$CODEX_COMMAND_PATH" \
+    --argjson command_path_set "$CODEX_COMMAND_PATH_SET" \
+    --argjson command_path_exported "$CODEX_COMMAND_PATH_EXPORTED" \
+    --arg compound_cwd "$COMPOUND_SEGMENT_CWD" \
+    --argjson compound_segment "$COMPOUND_SEGMENT_VALIDATION" \
+    --argjson compound_known "$COMPOUND_SEGMENT_CWD_KNOWN" \
+    --argjson compound_unknown "$COMPOUND_SEGMENT_CWD_UNKNOWN" \
+    --argjson compound_candidates "$COMPOUND_SEGMENT_CWD_CANDIDATES" \
+    --arg compound_physical "$COMPOUND_SEGMENT_CWD_PHYSICAL" \
+    --argjson compound_physical_candidates "$COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES" \
+    --arg compound_reachability "$COMPOUND_SEGMENT_REACHABILITY" \
+    '{compound_segment_validation:$compound_segment,command:$command,outer_cwd:$outer_cwd,decision:(.decision // ""),timeout_replays:((.timeout_replays // []) | map({cwd,cwd_physical,prefix,disposition,segment,parent_segment,command_path,command_path_set,command_path_exported})),effective_cwd:((.timeout_replays // [])[0].cwd // $compound_cwd),effective_cwd_physical:((.timeout_replays // [])[0].cwd_physical // $compound_physical),cwd_candidates:$compound_candidates,cwd_physical_candidates:$compound_physical_candidates,cwd_unknown:$compound_unknown,reachability:$compound_reachability,command_path:$command_path,command_path_set:$command_path_set,command_path_exported:$command_path_exported}' \
+    <<<"${plan_output:-}" >>"$trace_file" 2>/dev/null || true
+}
+eci_test_timeout_replay_trace
 
 # planner_current_ledger_append_shape accepts the planner's concrete resolved
 # append result without reconstructing a shell redirect grammar in Bash.
@@ -1596,10 +1742,32 @@ planner_compound_topology_is_valid() {
   jq -e --arg command "$command" '
     def exact_keys($expected): (keys | sort) == $expected;
     def valid_segment:
-      type == "object" and
-      exact_keys(["command"]) and
-      (.command | type == "string") and
-      (.command | length > 0);
+      . as $segment |
+      ($segment | type == "object") and
+      ($segment | exact_keys(["command", "cwd", "cwd_candidates", "cwd_known", "cwd_physical", "cwd_physical_candidates", "cwd_unknown", "git_worktree_effect", "reachability"])) and
+      ($segment.command | type == "string") and
+      ($segment.command | length > 0) and
+      ($segment.cwd | type == "string") and
+      ($segment.cwd_candidates | type == "array" and length <= 128 and
+        all(.[]; type == "string" and test("^/") and length <= 4096)) and
+      ($segment.cwd_physical | type == "string") and
+      ($segment.cwd_physical_candidates | type == "array" and length <= 128 and
+        all(.[]; type == "string" and test("^/") and length <= 4096)) and
+      ($segment.cwd_known | type == "boolean") and
+      ($segment.cwd_unknown | type == "boolean") and
+      ($segment.git_worktree_effect | type == "string" and
+        (. == "" or . == "worktree-mutation")) and
+      ($segment.reachability | type == "string" and
+        (. == "reachable" or . == "unreachable" or . == "unknown")) and
+      (if $segment.cwd_known then
+        ($segment.cwd_unknown == false) and
+        ($segment.cwd | test("^/")) and
+        ($segment.cwd_candidates | index($segment.cwd) != null)
+       else $segment.cwd == "" end) and
+      (if $segment.cwd_known then
+        ($segment.cwd_physical != "") and
+        ($segment.cwd_physical_candidates | index($segment.cwd_physical) != null)
+       else $segment.cwd_physical == "" end);
     def valid_operator:
       type == "string" and
       (. == "&&" or . == "||" or . == ";" or . == "|" or . == "\n");
@@ -1638,11 +1806,8 @@ planner_compound_pipeline_topology_is_valid() {
 planner_compound_git_worktree_candidate() {
   planner_compound_topology_is_valid || return 1
   jq -e '
-    [.plan.segments[]?.command] |
-    any(.[];
-      contains("git") and
-      (contains(" rm") or contains(" mv") or contains(" restore") or contains(" checkout") or
-       startswith("git rm") or startswith("git mv") or startswith("git restore") or startswith("git checkout")))
+    any(.plan.segments[]?;
+      .reachability != "unreachable" and .git_worktree_effect == "worktree-mutation")
   ' <<<"${plan_output:-}" >/dev/null 2>&1
 }
 
@@ -1691,23 +1856,55 @@ compound_segment_pretooluse_denial() {
 }
 
 # validate_planner_compound_segments replays every planner-owned segment
-# through this same hook as one direct callback. That preserves all existing
-# source-write, Git, cleanup, proof/control, lifecycle, script, and
-# environment routes without making a punctuation-only exception.
+# through this same hook as one direct callback. The CWD fact is copied from
+# the validated planner topology into the child JSON; no inherited environment
+# variable can alter segment resolution.
 #
 # Example: `printf ok; rm -f target` cannot inherit printf's allow: rm receives
 # the same named cleanup route it would receive by itself. The recursive hook
 # validates only JSON; it never executes a user command.
 PLANNER_COMPOUND_SEGMENT_DENIAL=""
+new_compound_handoff_token() {
+  local token
+  token="$(/usr/bin/od -An -N24 -tx1 /dev/urandom 2>/dev/null | /usr/bin/tr -d '[:space:]' || true)"
+  if [[ "$token" =~ ^[[:xdigit:]]{48}$ ]]; then
+    printf '%s\n' "$token"
+    return 0
+  fi
+  token="$(printf '%s:%s:%s:%s' "$$" "$BASHPID" "${EPOCHREALTIME:-}" "${RANDOM:-}" |
+    /usr/bin/sha256sum 2>/dev/null | /usr/bin/awk '{print $1}' || true)"
+  [[ "$token" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  printf '%s\n' "$token"
+}
+
 validate_planner_compound_segments() {
-  local segment child_input child_output child_denial child_status self_hook parent_segment replay_records
-  local -a segments=()
+  local segment child_input child_output child_denial child_status self_hook parent_segment replay_records handoff_token
+  local segment_cwd segment_cwd_known segment_cwd_unknown segment_cwd_candidates segment_cwd_physical segment_cwd_physical_candidates segment_reachability segment_index
+  local -a segments=() segment_cwds=() segment_cwd_knowns=() segment_cwd_unknowns=() segment_cwd_candidates=() segment_cwd_physicals=() segment_cwd_physical_candidates=() segment_reachabilities=()
   PLANNER_COMPOUND_SEGMENT_DENIAL=""
   self_hook="${BASH_SOURCE[0]}"
+  if ! handoff_token="$(new_compound_handoff_token)" || [ -z "$handoff_token" ]; then
+    return 2
+  fi
   mapfile -t segments < <(jq -r '.plan.segments[].command' <<<"${plan_output:-}")
+  mapfile -t segment_cwds < <(jq -r '.plan.segments[].cwd' <<<"${plan_output:-}")
+  mapfile -t segment_cwd_knowns < <(jq -r '.plan.segments[].cwd_known' <<<"${plan_output:-}")
+  mapfile -t segment_cwd_unknowns < <(jq -r '.plan.segments[].cwd_unknown' <<<"${plan_output:-}")
+  mapfile -t segment_cwd_candidates < <(jq -c '.plan.segments[].cwd_candidates' <<<"${plan_output:-}")
+  mapfile -t segment_cwd_physicals < <(jq -r '.plan.segments[].cwd_physical' <<<"${plan_output:-}")
+  mapfile -t segment_cwd_physical_candidates < <(jq -c '.plan.segments[].cwd_physical_candidates' <<<"${plan_output:-}")
+  mapfile -t segment_reachabilities < <(jq -r '.plan.segments[].reachability' <<<"${plan_output:-}")
   [ "${#segments[@]}" -ge 2 ] || return 2
-  for parent_segment in "${!segments[@]}"; do
-    segment="${segments[parent_segment]}"
+  [ "${#segment_cwds[@]}" -eq "${#segments[@]}" ] || return 2
+  [ "${#segment_cwd_knowns[@]}" -eq "${#segments[@]}" ] || return 2
+  [ "${#segment_cwd_unknowns[@]}" -eq "${#segments[@]}" ] || return 2
+  [ "${#segment_cwd_candidates[@]}" -eq "${#segments[@]}" ] || return 2
+  [ "${#segment_cwd_physicals[@]}" -eq "${#segments[@]}" ] || return 2
+  [ "${#segment_cwd_physical_candidates[@]}" -eq "${#segments[@]}" ] || return 2
+  [ "${#segment_reachabilities[@]}" -eq "${#segments[@]}" ] || return 2
+  for segment_index in "${!segments[@]}"; do
+    parent_segment="$segment_index"
+    segment="${segments[segment_index]}"
     # The planner preserves the separator whitespace around a compound
     # segment.  It is not part of the segment's argv, and leaving it on the
     # replay command can bypass a target-aware route such as `rm`.  Remove
@@ -1728,17 +1925,56 @@ validate_planner_compound_segments() {
     ' <<<"${PLAN_TIMEOUT_REPLAYS:-[]}" 2>/dev/null)"; then
       return 2
     fi
-    if ! child_input="$(printf '%s' "$input" | jq -c --arg command "$segment" --argjson replay_records "$replay_records" '
+    segment_cwd="${segment_cwds[segment_index]}"
+    segment_cwd_known="${segment_cwd_knowns[segment_index]}"
+    segment_cwd_unknown="${segment_cwd_unknowns[segment_index]}"
+    segment_cwd_candidates="${segment_cwd_candidates[segment_index]}"
+    segment_cwd_physical="${segment_cwd_physicals[segment_index]}"
+    segment_cwd_physical_candidates="${segment_cwd_physical_candidates[segment_index]}"
+    segment_reachability="${segment_reachabilities[segment_index]}"
+    case "$segment_reachability" in
+      reachable|unknown) ;;
+      unreachable) continue ;;
+      *) return 2 ;;
+    esac
+    if ! child_input="$(printf '%s' "$input" | jq -c \
+      --arg command "$segment" \
+      --arg segment_cwd "$segment_cwd" \
+      --argjson segment_cwd_known "$segment_cwd_known" \
+      --argjson segment_cwd_unknown "$segment_cwd_unknown" \
+      --argjson segment_cwd_candidates "$segment_cwd_candidates" \
+      --arg segment_cwd_physical "$segment_cwd_physical" \
+      --argjson segment_cwd_physical_candidates "$segment_cwd_physical_candidates" \
+      --arg segment_reachability "$segment_reachability" \
+      --arg command_path "$CODEX_COMMAND_PATH" \
+      --argjson command_path_set "$CODEX_COMMAND_PATH_SET" \
+      --argjson command_path_exported "$CODEX_COMMAND_PATH_EXPORTED" \
+      --arg handoff_token "$handoff_token" \
+      --argjson replay_records "$replay_records" '
       .tool_input.command = $command |
       .timeout_replay = true |
-      .timeout_replays = $replay_records
+      .timeout_replays = $replay_records |
+      .eci_compound_segment = {
+        validation: true,
+        cwd: $segment_cwd,
+        cwd_known: $segment_cwd_known,
+        cwd_unknown: $segment_cwd_unknown,
+        cwd_candidates: $segment_cwd_candidates,
+        cwd_physical: $segment_cwd_physical,
+        cwd_physical_candidates: $segment_cwd_physical_candidates,
+        reachability: $segment_reachability,
+        command_path: $command_path,
+        command_path_set: $command_path_set,
+        command_path_exported: $command_path_exported,
+        handoff_token: $handoff_token
+      }
     ' 2>/dev/null)"; then
       return 2
     fi
     if child_output="$(
-      ECI_COMPOUND_COMMAND_PATH="$CODEX_COMMAND_PATH" \
-      ECI_COMPOUND_SEGMENT_VALIDATION=true \
-        bash "$self_hook" <<<"$child_input" 2>/dev/null
+      env -u BASH_ENV -u ENV -u CDPATH \
+        -u ECI_COMPOUND_COMMAND_PATH -u ECI_COMPOUND_CWD -u ECI_COMPOUND_SEGMENT_VALIDATION \
+        bash "$self_hook" 9<<<"$handoff_token" <<<"$child_input" 2>/dev/null
     )"; then
       child_status=0
     else
@@ -3719,6 +3955,7 @@ foreign_active_marker_literal_existing_directory() {
   if [[ "$raw" = /* ]]; then
     candidate="$raw"
   else
+    [ -n "$base" ] || return 1
     candidate="$base/$raw"
   fi
   resolved="$(realpath -e -- "$candidate" 2>/dev/null || true)"
@@ -3727,47 +3964,134 @@ foreign_active_marker_literal_existing_directory() {
 }
 
 # Resolve a literal candidate before deriving its owner.  The proof-state
-# validators own the session grammar and direct marker/CWD binding, including
-# valid leading '_' and '-' identities.
+# validators own the Codex session grammar; the small provider-neutral record
+# check below applies the same bounded path, owner, and CWD facts to Kimi's
+# configured proof root.
+foreign_active_marker_provider_metadata_is_valid() {
+  local root="$1" marker="$2" session="$3" line marker_cwd marker_owner scope
+  local session_count=0 cwd_count=0
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  [ "$(realpath -e -- "$root" 2>/dev/null || true)" = "$root" ] || return 1
+  [ "$marker" = "$root/$session/eci_active" ] || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  [ "$(realpath -e -- "$marker" 2>/dev/null || true)" = "$marker" ] || return 1
+  codex_valid_session_id "$session" || return 1
+  IFS= read -r line <"$marker" || return 1
+  case "$line" in
+    'scope: '*)
+      scope="${line#scope: }"
+      [ -n "$scope" ] || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      'scope: '*)
+        scope="${line#scope: }"
+        [ -n "$scope" ] || return 1
+        ;;
+      'session_id: '*)
+        marker_owner="${line#session_id: }"
+        session_count=$((session_count + 1))
+        [ "$marker_owner" = "$session" ] || return 1
+        ;;
+      'cwd: '*)
+        marker_cwd="${line#cwd: }"
+        cwd_count=$((cwd_count + 1))
+        [ -n "$marker_cwd" ] && [[ "$marker_cwd" = /* ]] || return 1
+        [ "$(realpath -e -- "$marker_cwd" 2>/dev/null || true)" = "$marker_cwd" ] || return 1
+        [ -d "$marker_cwd" ] && [ ! -L "$marker_cwd" ] && [ -x "$marker_cwd" ] || return 1
+        ;;
+    esac
+  done <"$marker"
+  [ "$session_count" -eq 1 ] && [ "$cwd_count" -eq 1 ]
+}
+
 foreign_active_marker_candidate_detail() {
-  local raw="$1" base="$2" current_session="$3" candidate proof_root foreign_session foreign_marker
+  local raw="$1" base="$2" current_session="$3" candidate proof_root foreign_session foreign_marker foreign_root root
+  local -a provider_roots=()
 
   [ -n "$raw" ] || return 1
   foreign_active_marker_dynamic_text "$raw" && return 1
   if [[ "$raw" = /* ]]; then
     candidate="$raw"
   else
+    [ -n "$base" ] || return 1
     candidate="$base/$raw"
   fi
   candidate="$(realpath -e -- "$candidate" 2>/dev/null || true)"
   [ -n "$candidate" ] || return 1
   proof_root="$(realpath -e -- "$(codex_proof_root)" 2>/dev/null || true)"
-  [ -n "$proof_root" ] || return 1
-  case "$candidate" in
-    "$proof_root"/*/eci_active) ;;
-    *)
-      # A hardlink retains the marker's device/inode identity even when its
-      # ordinary pathname has no marker spelling. Reuse the bounded marker
-      # candidate list and Bash's native same-file identity comparison.
-      while IFS= read -r foreign_marker; do
-        [ -f "$foreign_marker" ] && [ ! -L "$foreign_marker" ] || continue
-        if [ "$candidate" -ef "$foreign_marker" ]; then
-          candidate="$foreign_marker"
-          break
+  [ -n "$proof_root" ] && provider_roots+=("$proof_root")
+  for root in "${KIMI_PROOF_ROOT:-}" "${KIMI_PROOF_ROOT_CANONICAL:-}" \
+    "${KIMI_PROOF_ROOT_CONFIGURED:-}" "${KIMI_PROOF_ROOT_STABLE_ALIAS:-}"; do
+    [ -n "$root" ] || continue
+    root="$(realpath -e -- "$root" 2>/dev/null || true)"
+    [ -n "$root" ] || continue
+    case " ${provider_roots[*]} " in
+      *" $root "*) continue ;;
+    esac
+    provider_roots+=("$root")
+  done
+  for root in "${provider_roots[@]}"; do
+    case "$candidate" in
+      "$root"/*/eci_active)
+        foreign_session="${candidate#"$root"/}"
+        foreign_session="${foreign_session%/eci_active}"
+        [ "$foreign_session" != "$current_session" ] || return 1
+        if [ "$root" = "$proof_root" ]; then
+          codex_eci_marker_metadata_is_valid "$candidate" || return 1
+          codex_eci_direct_marker_cwd "$candidate" "$foreign_session" >/dev/null || return 1
+        else
+          foreign_active_marker_provider_metadata_is_valid "$root" "$candidate" "$foreign_session" || return 1
         fi
-      done < <(codex_eci_marker_candidates_bounded)
-      case "$candidate" in
-        "$proof_root"/*/eci_active) ;;
-        *) return 1 ;;
-      esac
-      ;;
-  esac
-  foreign_session="${candidate#"$proof_root"/}"
+        printf 'target=%s foreign_session=%s provider_root=%s\n' "$candidate" "$foreign_session" "$root"
+        return 0
+        ;;
+    esac
+  done
+
+  # A hardlink retains the marker's device/inode identity even when its
+  # ordinary pathname has no marker spelling. Reuse the bounded Codex marker
+  # candidate list and Bash's native same-file identity comparison.
+  while IFS= read -r foreign_marker; do
+    [ -f "$foreign_marker" ] && [ ! -L "$foreign_marker" ] || continue
+    if [ "$candidate" -ef "$foreign_marker" ]; then
+      candidate="$foreign_marker"
+      break
+    fi
+  done < <(
+    codex_eci_marker_candidates_bounded
+    for root in "${KIMI_PROOF_ROOT:-}" "${KIMI_PROOF_ROOT_CANONICAL:-}" \
+      "${KIMI_PROOF_ROOT_CONFIGURED:-}" "${KIMI_PROOF_ROOT_STABLE_ALIAS:-}"; do
+      [ -n "$root" ] || continue
+      root="$(realpath -e -- "$root" 2>/dev/null || true)"
+      [ -n "$root" ] && [ -d "$root" ] || continue
+      find "$root" -mindepth 2 -maxdepth 2 -name eci_active -type f -print 2>/dev/null || true
+    done
+  )
+  foreign_root=""
+  for root in "$proof_root" "${KIMI_PROOF_ROOT:-}" "${KIMI_PROOF_ROOT_CANONICAL:-}" \
+    "${KIMI_PROOF_ROOT_CONFIGURED:-}" "${KIMI_PROOF_ROOT_STABLE_ALIAS:-}"; do
+    [ -n "$root" ] || continue
+    root="$(realpath -e -- "$root" 2>/dev/null || true)"
+    case "$candidate" in
+      "$root"/*/eci_active) foreign_root="$root"; break ;;
+    esac
+  done
+  [ -n "$foreign_root" ] || return 1
+  foreign_session="${candidate#"$foreign_root"/}"
   foreign_session="${foreign_session%/eci_active}"
   [ "$foreign_session" != "$current_session" ] || return 1
-  codex_eci_marker_metadata_is_valid "$candidate" || return 1
-  codex_eci_direct_marker_cwd "$candidate" "$foreign_session" >/dev/null || return 1
-  printf 'target=%s foreign_session=%s\n' "$candidate" "$foreign_session"
+  if [ "$foreign_root" = "$proof_root" ]; then
+    codex_eci_marker_metadata_is_valid "$candidate" || return 1
+    codex_eci_direct_marker_cwd "$candidate" "$foreign_session" >/dev/null || return 1
+  else
+    foreign_active_marker_provider_metadata_is_valid "$foreign_root" "$candidate" "$foreign_session" || return 1
+  fi
+  printf 'target=%s foreign_session=%s provider_root=%s\n' "$candidate" "$foreign_session" "$foreign_root"
 }
 
 FOREIGN_ACTIVE_MARKER_WRITER_FORCE=false
@@ -3791,7 +4115,7 @@ foreign_active_marker_writer_operands() {
       case "$flag_mode" in
         rm-cp)
           case "$token" in
-            -f|-r|-R|-v|--force|--recursive|--verbose) continue ;;
+            -f|-r|-R|-v|-a|--force|--recursive|--verbose|--archive) continue ;;
           esac
           if [[ "$token" =~ ^-[frR]+$ ]]; then
             continue
@@ -3820,6 +4144,77 @@ foreign_active_marker_writer_operands() {
     fi
     FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS+=("$token")
   done
+}
+
+foreign_active_marker_touch_targets() {
+  local token options_ended=false skip=0
+  FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS=()
+  for token in "$@"; do
+    if [ "$skip" -gt 0 ]; then
+      skip=0
+      continue
+    fi
+    if [ "$options_ended" = false ]; then
+      case "$token" in
+        --) options_ended=true; continue ;;
+        -a|-m|-c|-h) continue ;;
+        -d|-t|--date|--time) skip=1; continue ;;
+        --date=*|--time=*|-d?*|-t?*) continue ;;
+        -*) return 1 ;;
+      esac
+    fi
+    FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS+=("$token")
+  done
+  [ "$skip" -eq 0 ]
+}
+
+foreign_active_marker_truncate_targets() {
+  local token options_ended=false skip=0
+  FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS=()
+  for token in "$@"; do
+    if [ "$skip" -gt 0 ]; then
+      skip=0
+      continue
+    fi
+    if [ "$options_ended" = false ]; then
+      case "$token" in
+        --) options_ended=true; continue ;;
+        -c|--no-create) continue ;;
+        -s|--size) skip=1; continue ;;
+        -s?*|--size=*) continue ;;
+        -*) return 1 ;;
+      esac
+    fi
+    FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS+=("$token")
+  done
+  [ "$skip" -eq 0 ]
+}
+
+foreign_active_marker_sed_targets() {
+  local token options_ended=false in_place=false script_seen=false skip=0
+  FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS=()
+  for token in "$@"; do
+    if [ "$skip" -gt 0 ]; then
+      skip=0
+      continue
+    fi
+    if [ "$options_ended" = false ]; then
+      case "$token" in
+        --) options_ended=true; continue ;;
+        -i|--in-place|-i?*|--in-place=*) in_place=true; continue ;;
+        -e|--expression|-f|--file) skip=1; script_seen=true; continue ;;
+        -e?*|-f?*|--expression=*|--file=*) script_seen=true; continue ;;
+        -n|--quiet|--silent) continue ;;
+        -*) return 1 ;;
+      esac
+    fi
+    if [ "$script_seen" = false ]; then
+      script_seen=true
+      continue
+    fi
+    FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS+=("$token")
+  done
+  [ "$in_place" = true ] && [ "$script_seen" = true ]
 }
 
 foreign_active_marker_dd_target() {
@@ -3862,8 +4257,20 @@ foreign_active_marker_writer_targets() {
         printf '%s\n' "$target"
       done
       ;;
-    shred|touch)
+    shred)
       foreign_active_marker_writer_operands none "$@" || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
+    touch)
+      foreign_active_marker_touch_targets "$@" || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
+    truncate)
+      foreign_active_marker_truncate_targets "$@" || return 0
       for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
         printf '%s\n' "$target"
       done
@@ -3899,6 +4306,12 @@ foreign_active_marker_writer_targets() {
       [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
       printf '%s\n' "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[1]}"
       ;;
+    sed)
+      foreign_active_marker_sed_targets "$@" || return 0
+      for target in "${FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}"; do
+        printf '%s\n' "$target"
+      done
+      ;;
     mv)
       foreign_active_marker_writer_operands none "$@" || return 0
       [ "${#FOREIGN_ACTIVE_MARKER_WRITER_OPERANDS[@]}" -eq 2 ] || return 0
@@ -3933,11 +4346,13 @@ foreign_active_marker_observed_timeout_child() {
     def bounded_integer: type == "number" and floor == . and . >= 1 and . <= 8;
     def valid_record:
       if type != "object" then false else
-        (keys | sort == ["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) and
+        ((keys | sort == ["command_path", "command_path_exported", "command_path_set", "cwd", "disposition", "parent_segment", "prefix", "segment"]) or
+         (keys | sort == ["command_path", "command_path_exported", "command_path_set", "cwd", "cwd_physical", "disposition", "parent_segment", "prefix", "segment"])) and
         (.segment | bounded_integer) and
         (.parent_segment | bounded_integer) and
         (.prefix | type == "array" and length >= 2 and length <= 128 and all(.[]; type == "string" and length > 0 and length <= 4096)) and
         (.cwd | type == "string" and startswith("/")) and
+        (.cwd_physical? // "" | type == "string" and (length == 0 or startswith("/"))) and
         (.command_path | type == "string") and
         (.command_path_set | type == "boolean") and
         (.command_path_exported | type == "boolean") and
@@ -4174,12 +4589,24 @@ foreign_active_marker_consume_ledger_segment() {
 # session. This stays target-specific: ordinary source files and current
 # session coordination notes do not match it.
 foreign_active_marker_mutation_detail() {
-  FOREIGN_ACTIVE_MARKER_CURRENT_SESSION="$2"
-  FOREIGN_ACTIVE_MARKER_TIMEOUT_REPLAYS="${3:-[]}"
+  local command_text="$1" current_session="$2" timeout_replays="${3:-[]}"
+  local resolution_cwd="${4-$cwd}" saved_cwd direct_status
+
+  FOREIGN_ACTIVE_MARKER_CURRENT_SESSION="$current_session"
+  FOREIGN_ACTIVE_MARKER_TIMEOUT_REPLAYS="$timeout_replays"
   FOREIGN_ACTIVE_MARKER_DETAIL=""
-  if ! direct_ledger_static_records "$1" foreign-marker >/dev/null; then
-    return 1
+  # The foreign-marker walk shares the same planner-owned segment CWD as the
+  # generic worker-control walk. Empty means unknown and deliberately leaves
+  # relative operands unresolved while retaining absolute-target checks.
+  saved_cwd="$cwd"
+  cwd="$resolution_cwd"
+  if direct_ledger_static_records "$command_text" foreign-marker >/dev/null; then
+    direct_status=0
+  else
+    direct_status=$?
   fi
+  cwd="$saved_cwd"
+  [ "$direct_status" -eq 0 ] || return 1
   [ -n "$FOREIGN_ACTIVE_MARKER_DETAIL" ] || return 1
   printf '%s\n' "$FOREIGN_ACTIVE_MARKER_DETAIL"
 }
@@ -4189,10 +4616,27 @@ foreign_active_marker_mutation_detail() {
 # fallback paths use it so unavailable planner protocol data cannot hide a
 # cross-session effect.
 enforce_foreign_active_marker_mutation_boundary() {
-  local detail
+  local detail resolution_cwd
+  local -a resolution_cwds=()
 
   [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 0
-  detail="$(foreign_active_marker_mutation_detail "$command" "$session_id" "$PLAN_TIMEOUT_REPLAYS" 2>/dev/null || true)"
+  if [ "$COMPOUND_SEGMENT_VALIDATION" = true ]; then
+    if [ "$COMPOUND_SEGMENT_CWD_KNOWN" = true ]; then
+      resolution_cwds=("$COMPOUND_SEGMENT_CWD")
+    else
+      mapfile -t resolution_cwds < <(jq -r '.[]' <<<"$COMPOUND_SEGMENT_CWD_CANDIDATES" 2>/dev/null || true)
+    fi
+  else
+    resolution_cwds=("$cwd")
+  fi
+  detail=""
+  if [ "${#resolution_cwds[@]}" -eq 0 ]; then
+    resolution_cwds=("")
+  fi
+  for resolution_cwd in "${resolution_cwds[@]}"; do
+    detail="$(foreign_active_marker_mutation_detail "$command" "$session_id" "$PLAN_TIMEOUT_REPLAYS" "$resolution_cwd" 2>/dev/null || true)"
+    [ -z "$detail" ] || break
+  done
   [ -z "$detail" ] ||
     deny_eci "ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED" "eci-control" \
       "ECI control boundary denied mutation of another session's active marker: ${detail}" \
@@ -6684,19 +7128,56 @@ PY
 WORKER_CONTROL_DETAIL=""
 worker_control_path_detail() {
   [ "$hook_is_subagent" = true ] || return 1
-  local history_pathspec_exception="${1:-false}" detail
+  local history_pathspec_exception="${1:-false}" detail worker_control_cwd="$cwd" worker_control_cwds='[]' worker_control_cwd_physical="" worker_control_cwd_physicals='[]'
   case "$history_pathspec_exception" in
     true|false) ;;
     *) history_pathspec_exception=false ;;
   esac
-  detail="$(python3 - "$command" "$cwd" "$HOOK_DIR" "$history_pathspec_exception" "${syntax_eci_markers[@]}" <<'PY'
+  if [ "$COMPOUND_SEGMENT_VALIDATION" = true ]; then
+    worker_control_cwds="$COMPOUND_SEGMENT_CWD_CANDIDATES"
+    worker_control_cwd_physicals="$COMPOUND_SEGMENT_CWD_PHYSICAL_CANDIDATES"
+    worker_control_cwd_physical="$COMPOUND_SEGMENT_CWD_PHYSICAL"
+    if [ "$COMPOUND_SEGMENT_CWD_KNOWN" = true ]; then
+      worker_control_cwd="$COMPOUND_SEGMENT_CWD"
+    else
+      # Unknown planner state is explicit. Do not resolve relative operands
+      # against the outer callback CWD; the Python adapter still checks
+      # absolute targets and targeted control basenames.
+      worker_control_cwd=""
+    fi
+  else
+    worker_control_cwds="$(jq -cn --arg cwd "$worker_control_cwd" 'if $cwd == "" then [] else [$cwd] end')"
+    worker_control_cwd_physical="$(realpath -e -- "$worker_control_cwd" 2>/dev/null || true)"
+    worker_control_cwd_physicals="$(jq -cn --arg cwd "$worker_control_cwd_physical" 'if $cwd == "" then [] else [$cwd] end')"
+  fi
+  detail="$(python3 - "$command" "$worker_control_cwd" "$worker_control_cwd_physical" "$HOOK_DIR" "$history_pathspec_exception" "$session_id" "$worker_control_cwds" "$worker_control_cwd_physicals" "${syntax_eci_markers[@]}" <<'PY'
 import os
+import json
 import re
 import shlex
 import sys
 
-command, hook_cwd, hook_dir, history_pathspec_exception = sys.argv[1:5]
-active_markers = sys.argv[5:]
+command, hook_cwd, hook_cwd_physical, hook_dir, history_pathspec_exception, current_session, cwd_json, cwd_physical_json = sys.argv[1:9]
+try:
+    cwd_candidates = [value for value in json.loads(cwd_json)
+                      if isinstance(value, str) and os.path.isabs(value)
+                      and os.path.normpath(value) == value]
+except (TypeError, ValueError, json.JSONDecodeError):
+    cwd_candidates = []
+try:
+    cwd_physical_candidates = [value for value in json.loads(cwd_physical_json)
+                               if isinstance(value, str) and os.path.isabs(value)
+                               and os.path.normpath(value) == value]
+except (TypeError, ValueError, json.JSONDecodeError):
+    cwd_physical_candidates = []
+if (hook_cwd and (not hook_cwd_physical or os.path.realpath(hook_cwd) != hook_cwd_physical)):
+    hook_cwd_physical = ""
+if len(cwd_candidates) != len(cwd_physical_candidates) or any(
+        os.path.realpath(logical) != physical
+        for logical, physical in zip(cwd_candidates, cwd_physical_candidates)):
+    cwd_candidates = []
+    cwd_physical_candidates = []
+active_markers = sys.argv[9:]
 history_pathspec_exception = history_pathspec_exception == "true"
 try:
     tokens = shlex.split(command, posix=True)
@@ -6735,6 +7216,62 @@ for name in (
 def in_root(path):
     return any(path == root or path.startswith(root + os.sep) for root in roots)
 
+def nonlive_foreign_marker_path(path):
+    """Exclude only an exact provider marker proven non-live by its record."""
+    if not path or os.path.islink(path):
+        return False
+    physical_path = os.path.realpath(path)
+    reserved_directories = {
+        "activity", "audit", "eci", "history", "pre-reviewer", "reviewer",
+        "reviewer-dumps", "side-stop", "skip-stop", "skills",
+    }
+    for root in roots:
+        try:
+            relative = os.path.relpath(physical_path, root)
+        except ValueError:
+            continue
+        parts = relative.split(os.sep)
+        if (len(parts) != 2 or parts[1] != "eci_active" or
+                not re.fullmatch(r"[A-Za-z0-9_-]+", parts[0]) or
+                parts[0] in reserved_directories or
+                parts[0].startswith("security-warnings-") or
+                parts[0] == current_session):
+            continue
+        marker = os.path.join(root, parts[0], "eci_active")
+        if os.path.realpath(marker) != physical_path:
+            continue
+        if not os.path.isfile(path) or os.path.islink(path):
+            return True
+        try:
+            with open(path, "rb") as stream:
+                raw = stream.read(8193)
+        except OSError:
+            return True
+        if len(raw) > 8192 or not raw.endswith(b"\n"):
+            return True
+        try:
+            lines = raw.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            return True
+        if (not lines or not lines[0].startswith("scope: ") or
+                not lines[0][len("scope: "):]):
+            return True
+        values = {}
+        for line in lines:
+            key, separator, value = line.partition(": ")
+            if separator:
+                values.setdefault(key, value)
+        marker_cwd = values.get("cwd", "")
+        if (values.get("scope", "") == "" or values.get("session_id") != parts[0] or
+                not marker_cwd or not os.path.isabs(marker_cwd) or
+                os.path.normpath(marker_cwd) != marker_cwd or
+                not os.path.isdir(marker_cwd) or os.path.islink(marker_cwd) or
+                os.path.realpath(marker_cwd) != marker_cwd or
+                not os.access(marker_cwd, os.X_OK)):
+            return True
+        return False
+    return False
+
 def containing_root(path):
     for root in roots:
         if path == root or path.startswith(root + os.sep):
@@ -6751,6 +7288,22 @@ if home:
 def in_provider_sessions(path):
     return any(path == root or path.startswith(root + os.sep) for root in provider_session_roots)
 
+def resolve_candidate(path):
+    candidates = resolve_candidates(path)
+    return candidates[0] if candidates else None
+
+def resolve_candidates(path):
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded):
+        return [os.path.normpath(expanded)]
+    return [os.path.normpath(os.path.join(base, expanded))
+            for base in cwd_candidates]
+
+def unresolved_control_target(path):
+    expanded = os.path.expanduser(path)
+    return (bool(expanded) and not os.path.isabs(expanded) and
+            is_control_name(os.path.basename(expanded)))
+
 readable_documents = {"instructions.md", "project-understanding.md", "high_level_log.md", "latest-status-report.md"}
 operators = {";", "&", "&&", "|", "||", "(", ")", ">", ">>", ">|", ">&", "<", "<<", "<<<", "<&"}
 
@@ -6758,7 +7311,9 @@ def canonical_document(path):
     if (not path or path.startswith("-") or any(mark in path for mark in
             ("$", "`", "..", "*", "?", "[", "]", "(", ")"))):
         return False
-    candidate = path if os.path.isabs(path) else os.path.abspath(os.path.join(hook_cwd, path))
+    candidate = resolve_candidate(path)
+    if candidate is None:
+        return False
     return (os.path.normpath(candidate) == candidate and os.path.isfile(candidate)
             and not os.path.islink(candidate) and os.path.realpath(candidate) == candidate
             and os.path.basename(candidate) in readable_documents and in_root(candidate))
@@ -6833,6 +7388,8 @@ def git_read_path_operands(values):
             if index + 1 >= len(args):
                 return ([], base)
             requested = os.path.expanduser(args[index + 1])
+            if not os.path.isabs(requested) and not base:
+                return ([], base)
             base = requested if os.path.isabs(requested) else os.path.abspath(os.path.join(base, requested))
             base = os.path.normpath(base)
             index += 2
@@ -7059,8 +7616,8 @@ def protected_control_path(path):
             os.path.dirname(path) == os.path.dirname(marker)
             for marker in active_markers):
         return True
-    if (in_root(path) and is_control_name(os.path.basename(path))) or (
-            in_root(resolved) and is_control_name(os.path.basename(resolved))):
+    if ((in_root(path) and is_control_name(os.path.basename(path))) or
+            (in_root(resolved) and is_control_name(os.path.basename(resolved)))):
         return True
     return current_control_hardlink(path) is not None
 
@@ -7076,8 +7633,164 @@ def emit(kind, token, resolved):
         print("write token=%s resolved=%s" % (token, resolved))
     raise SystemExit(0)
 
+def finite_operands(values, flags=(), value_options=()):
+    """Return positional paths for one bounded command, or no paths on ambiguity."""
+    operands = []
+    flags = set(flags)
+    value_options = set(value_options)
+    index = 1
+    options_ended = False
+    while index < len(values):
+        token = values[index]
+        if token in operators:
+            if token in {"<", "<<", "<<<", "<&"}:
+                index += 2
+                continue
+            if token in {">", ">>", ">|", ">>", ">&", "&>", "&>>"}:
+                index += 2
+                continue
+            index += 1
+            continue
+        if not options_ended and token == "--":
+            options_ended = True
+            index += 1
+            continue
+        if not options_ended and token.startswith("-"):
+            if (os.path.basename(values[0]) == "sed" and
+                    (token.startswith("-i") or token.startswith("--in-place="))):
+                index += 1
+                continue
+            if token in value_options:
+                if index + 1 >= len(values):
+                    return []
+                index += 2
+                continue
+            if any(token.startswith(option + "=") for option in value_options):
+                index += 1
+                continue
+            if token in flags:
+                index += 1
+                continue
+            if token.startswith("-") and token != "-":
+                return []
+        operands.append(token)
+        index += 1
+    return operands
+
+def command_writer_operands(values):
+    """Return only direct filesystem operands whose command effect writes them."""
+    if not values:
+        return []
+    name = os.path.basename(values[0])
+    if name == "truncate":
+        return finite_operands(
+            values,
+            flags={"-c", "--no-create"},
+            value_options={"-s", "--size"},
+        )
+    if name in {"rm", "unlink", "shred", "srm", "touch", "rmdir"}:
+        return finite_operands(
+            values,
+            flags={"-f", "-r", "-R", "-v", "-a", "-m", "-c", "-p", "-i",
+                   "--force", "--recursive", "--verbose", "--no-create",
+                   "--parents", "--ignore-fail-on-non-empty", "--remove"},
+            value_options={"-d", "-t", "--date", "--time"},
+        )
+    if name == "cp":
+        operands = finite_operands(
+            values,
+            flags={"-f", "-r", "-R", "-v", "-a", "--force", "--recursive", "--verbose", "--archive"},
+        )
+        return [operands[-1]] if len(operands) == 2 else []
+    if name == "mv":
+        return finite_operands(
+            values,
+            flags={"-f", "-i", "-n", "-v", "-T", "--force", "--interactive",
+                   "--no-clobber", "--verbose", "--no-target-directory"},
+        )
+    if name == "ln":
+        operands = finite_operands(
+            values,
+            flags={"-f", "-s", "-n", "-v", "--force", "--symbolic", "--no-dereference", "--verbose"},
+        )
+        return [operands[-1]] if len(operands) == 2 else []
+    if name in {"chmod", "chown", "chgrp"}:
+        operands = finite_operands(
+            values,
+            flags={"-f", "-h", "-R", "-v", "--changes", "--silent", "--quiet",
+                   "--dereference", "--no-dereference", "--recursive", "--verbose"},
+            value_options={"--reference", "--from"},
+        )
+        return operands[1:] if len(operands) >= 2 else []
+    if name == "dd":
+        return [token.split("=", 1)[1] for token in values[1:]
+                if token.startswith("of=") and token != "of="]
+    if name == "install":
+        operands = finite_operands(
+            values,
+            flags={"-b", "-c", "-d", "-D", "-g", "-m", "-o", "-p", "-s", "-S", "-t", "-T", "-v",
+                   "--backup", "--compare", "--directory", "--preserve-timestamps", "--strip", "--verbose"},
+            value_options={"-g", "-m", "-o", "-S", "-t", "--group", "--mode", "--owner", "--suffix",
+                           "--target-directory"},
+        )
+        return [operands[-1]] if len(operands) >= 2 else []
+    if name == "tee":
+        return finite_operands(
+            values,
+            flags={"-a", "-i", "-p", "--append", "--ignore-interrupts", "--output-error"},
+        )
+    if name == "rsync":
+        operands = finite_operands(values, flags={"-a", "-r", "-v", "-n", "--archive", "--recursive", "--verbose", "--dry-run"})
+        return [operands[-1]] if len(operands) >= 2 else []
+    if name == "sed":
+        if not any(token == "-i" or token == "--in-place" or token.startswith("-i") or token.startswith("--in-place=") for token in values[1:]):
+            return []
+        operands = []
+        options_ended = False
+        index = 1
+        while index < len(values):
+            token = values[index]
+            if token in operators:
+                index += 2 if token in {"<", "<<", "<<<", "<", ">", ">>", ">|"} else 1
+                continue
+            if not options_ended and token == "--":
+                options_ended = True
+                index += 1
+                continue
+            if not options_ended:
+                if token in {"-i", "--in-place", "-n", "--quiet", "--silent"} or token.startswith(("-i", "--in-place=")):
+                    index += 1
+                    continue
+                if token in {"-e", "--expression", "-f", "--file"}:
+                    if index + 1 >= len(values):
+                        return []
+                    index += 2
+                    continue
+                if token.startswith(("-e", "-f", "--expression=", "--file=")):
+                    index += 1
+                    continue
+                if token.startswith("-") and token != "-":
+                    return []
+            operands.append(token)
+            index += 1
+        return operands
+    return []
+
+def redirect_writer_operands(values):
+    """Return output-redirection targets while excluding input descriptors."""
+    result = []
+    output_tokens = {">", ">>", ">|", ">&", "&>", "&>>", ">>&"}
+    index = 0
+    while index + 1 < len(values):
+        if values[index] in output_tokens:
+            result.append(values[index + 1])
+            index += 2
+            continue
+        index += 1
+    return result
+
 output_path_options = {"sort": {"--output", "-o"}, "gitleaks": {"--report-path"}}.get(command_name, set())
-output_operands = set()
+writer_tokens = []
 instruction_denied_detail = ""
 for index, raw_token in enumerate(tokens[1:], 1):
     if raw_token == "--":
@@ -7093,91 +7806,36 @@ for index, raw_token in enumerate(tokens[1:], 1):
                 break
         if command_name == "sort" and raw_token.startswith("-o") and not raw_token.startswith("--"):
             path_token = raw_token[2:].removeprefix("=")
-    if not path_token:
-        continue
-    output_operands.add(path_token)
-    candidate = path_token if os.path.isabs(path_token) else os.path.abspath(
-        os.path.join(hook_cwd, path_token)
-    )
-    candidate = os.path.normpath(candidate)
-    resolved = os.path.realpath(candidate)
-    if (in_root(candidate) or in_root(resolved)) and protected_control_path(candidate):
-        emit("write", raw_token if "=" in raw_token else path_token, resolved)
+    if path_token:
+        writer_tokens.append(path_token)
+writer_tokens.extend(command_writer_operands(tokens))
+writer_tokens.extend(redirect_writer_operands(tokens))
 
-for token in tokens[1:]:
+for token in writer_tokens:
     if token.startswith("-") or token in operators:
         continue
-    expanded = os.path.expanduser(token)
-    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(os.path.join(hook_cwd, expanded))
-    candidate = os.path.normpath(candidate)
-    history_pathspec_token = history_pathspec_exception and token in git_instruction_operands
-    if token in instruction_operands and not history_pathspec_token:
-        operand_cwd = git_operand_cwd if token in git_instruction_operands else hook_cwd
-        instruction_detail = instruction_source_detail(token, operand_cwd)
-        if instruction_detail is not None:
-            instruction_state, detail = instruction_detail
-            if instruction_state == "deny":
-                # A missing, foreign, or otherwise malformed *read* operand
-                # has no hook-side effect.  Let the invoked read tool report
-                # its normal result; retain the diagnostic until nested
-                # wrapper inspection has had a chance to find an actual
-                # write target (for example a missing eci_wait created by
-                # `timeout ... bash -c '... > eci_wait'`).
-                if not read_command:
-                    instruction_denied_detail = "instruction-denied " + detail
-                continue
-            control_alias = current_control_hardlink(candidate)
-            if control_alias:
-                if not read_command:
-                    emit("write", token, control_alias)
-            continue
-    resolved = os.path.realpath(candidate)
-    if in_root(candidate):
-        if (not read_command and not os.path.lexists(candidate) and token not in output_operands and
-                not history_pathspec_token):
-            instruction_denied_detail = (
-                "instruction-denied token=%s candidate=%s resolved=%s instruction_root=%s failure=missing-instruction-source" %
-                (token, candidate, resolved, containing_root(candidate))
-            )
-            continue
-        if bounded_control_read(tokens) and canonical_document(token):
-            continue
-        if protected_control_path(candidate):
-            if not read_command:
-                emit("write", token, candidate)
+    candidates = resolve_candidates(token)
+    if not candidates:
+        if unresolved_control_target(token):
+            emit("write", token, "<unknown-cwd>")
         continue
-    if in_provider_sessions(candidate):
-        if not read_command:
-            emit("write", token, candidate)
-        continue
-    if is_control_name(os.path.basename(candidate)) and in_root(candidate):
-        if bounded_control_read(tokens) and canonical_document(token):
-            continue
-        if not read_command:
-            emit("write", token, candidate)
-        continue
-    resolved = os.path.realpath(candidate)
-    if in_root(resolved):
-        if bounded_control_read(tokens) and canonical_document(token):
-            continue
-        if protected_control_path(candidate) or protected_control_path(resolved):
-            if not read_command:
-                emit("write", token, resolved)
-        continue
-    if in_provider_sessions(resolved):
-        if not read_command:
-            emit("write", token, resolved)
-        continue
-    if resolved != candidate and is_control_name(os.path.basename(resolved)) and in_root(resolved):
-        if bounded_control_read(tokens) and canonical_document(token):
-            continue
-        if not read_command:
-            emit("write", token, resolved)
-        continue
-    control_alias = current_control_hardlink(candidate)
-    if control_alias:
-        if not read_command:
+    for candidate in candidates:
+        resolved = os.path.realpath(candidate)
+        control_alias = current_control_hardlink(candidate)
+        if not control_alias:
+            control_alias = current_control_hardlink(resolved)
+        if control_alias:
             emit("write", token, control_alias)
+        if nonlive_foreign_marker_path(candidate):
+            continue
+        if in_root(candidate) and protected_control_path(candidate):
+            emit("write", token, candidate)
+        if in_provider_sessions(candidate):
+            emit("write", token, candidate)
+        if in_root(resolved) and (protected_control_path(candidate) or protected_control_path(resolved)):
+            emit("write", token, resolved)
+        if in_provider_sessions(resolved):
+            emit("write", token, resolved)
 
 # A finite wrapper can hide a concrete write from the top-level argv scanner:
 # `timeout ... bash -c '... > proof/eci_wait'` and `env -S '... > proof/...'
@@ -7206,27 +7864,35 @@ def nested_segments(values):
 def nested_emit_path(token):
     if not token or token.startswith("-") or token in operators:
         return False
-    expanded = os.path.expanduser(token)
-    candidate = expanded if os.path.isabs(expanded) else os.path.abspath(
-        os.path.join(hook_cwd, expanded)
-    )
-    candidate = os.path.normpath(candidate)
-    resolved = os.path.realpath(candidate)
-    if (in_root(candidate) or in_root(resolved)) and protected_control_path(candidate):
-        print("write token=%s resolved=%s" % (token, resolved))
-        raise SystemExit(0)
+    candidates = resolve_candidates(token)
+    if not candidates:
+        if unresolved_control_target(token):
+            print("write token=%s resolved=<unknown-cwd>" % token)
+            raise SystemExit(0)
+        return False
+    for candidate in candidates:
+        resolved = os.path.realpath(candidate)
+        control_alias = current_control_hardlink(candidate)
+        if not control_alias:
+            control_alias = current_control_hardlink(resolved)
+        if control_alias:
+            print("write token=%s resolved=%s" % (token, control_alias))
+            raise SystemExit(0)
+        if nonlive_foreign_marker_path(candidate):
+            continue
+        if (in_root(candidate) or in_root(resolved)) and protected_control_path(candidate):
+            print("write token=%s resolved=%s" % (token, resolved))
+            raise SystemExit(0)
     return False
 
 def nested_shell_payload(payload, depth):
     nested = shell_tokens(payload)
     if nested is None:
         return
-    # Redirection operators are separators in `nested_segments`; inspect the
-    # following operand before splitting so a payload such as
-    # `printf forged > proof/eci_wait` retains its write effect.
-    for index, value in enumerate(nested):
-        if value in {">", ">>", ">|", ">>&"} and index + 1 < len(nested):
-            nested_emit_path(nested[index + 1])
+    # Redirection operators are separators in `nested_segments`; inspect only
+    # output targets so input-only operands remain transparent.
+    for value in redirect_writer_operands(nested):
+        nested_emit_path(value)
     for segment in nested_segments(nested):
         nested_inspect(segment, depth + 1)
 
@@ -7296,13 +7962,8 @@ def nested_inspect(values, depth=0):
                     nested_shell_payload(payload, depth)
                 return
         return
-    if name in {"rm", "unlink", "shred", "srm", "touch", "truncate", "dd", "cp", "mv", "ln", "install", "tee", "rsync"}:
-        for value in values[1:]:
-            nested_emit_path(value.split("=", 1)[1] if "=" in value and value.split("=", 1)[0].startswith("-") else value)
-        return
-    if any(value in {">", ">>", ">|", ">>&"} for value in values):
-        for value in values:
-            nested_emit_path(value)
+    for value in command_writer_operands(values) + redirect_writer_operands(values):
+        nested_emit_path(value)
 
 for segment in nested_segments(tokens):
     nested_inspect(segment)
@@ -7985,19 +8646,23 @@ PY
 }
 
 # A worker may use only the explicit owner-scoped repository declaration
-# lifecycle route.  The CLI validates the active marker and canonical Git
+# lifecycle route. The CLI validates the active marker and canonical Git
 # target; this parser admits the shape without turning other eci-active calls
-# into worker capabilities.
+# into worker capabilities. Resolve the executable identity so an absolute
+# spelling of the same configured Codex binary follows the same route.
 worker_repository_allow_lifecycle_route() {
   [ "${hook_is_subagent:-false}" = true ] || return 1
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$session_id" <<'PY'
 import os
 import re
 import shlex
 import sys
 
+command_text, expected_session = sys.argv[1:3]
 try:
-    tokens = shlex.split(sys.argv[1], posix=True)
+    lexer = shlex.shlex(command_text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
 except ValueError:
     raise SystemExit(1)
 operators = {";", "&", "&&", "|", "||", "(", ")", ">", ">>", "<", "<<", "<<<", ">|", ">&", "<&"}
@@ -8007,9 +8672,22 @@ if tokens and tokens[0] == "env":
     tokens = tokens[1:]
     if tokens and tokens[0] == "--":
         tokens = tokens[1:]
-    while tokens and re.fullmatch(r"CODEX_SESSION_ID=[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", tokens[0]):
+    while tokens and tokens[0].startswith("CODEX_SESSION_ID="):
+        match = re.fullmatch(r"CODEX_SESSION_ID=([A-Za-z0-9][A-Za-z0-9_.-]{0,127})", tokens[0])
+        if not match or match.group(1) != expected_session:
+            raise SystemExit(1)
         tokens = tokens[1:]
-if not tokens or tokens[0] != "$HOME/.codex/bin/eci-active":
+configured_home = os.environ.get("CODEX_CONFIGURED_HOME", "")
+if not configured_home or not os.path.isabs(configured_home) or os.path.islink(configured_home):
+    raise SystemExit(1)
+configured_root = os.path.realpath(configured_home)
+if os.path.normpath(configured_root) != configured_root or not os.path.isdir(configured_root):
+    raise SystemExit(1)
+canonical_executable = os.path.join(configured_root, "bin", "eci-active")
+if not tokens:
+    raise SystemExit(1)
+executable = os.path.expandvars(os.path.expanduser(tokens[0]))
+if not os.path.isabs(executable) or os.path.realpath(executable) != canonical_executable:
     raise SystemExit(1)
 if len(tokens) == 2 and tokens[1] == "repository-allow-status":
     raise SystemExit(0)
@@ -10165,24 +10843,28 @@ worker_git_resolved_inspection_route() {
   [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
 }
 
-worker_additional_repository_allowed() {
-  local repository="$1" marker marker_cwd worker_session
+active_session_additional_repository_allowed() {
+  local repository="$1" marker marker_cwd active_session
 
-  [ "${hook_is_subagent:-false}" = true ] || return 1
   [ "${ECI_CROSS_SCOPE_GATE_ENABLED:-true}" = true ] || return 0
-  worker_session="${session_id:-}"
-  codex_valid_session_id "$worker_session" || return 1
+  active_session="${session_id:-}"
+  codex_valid_session_id "$active_session" || return 1
   marker="${syntax_eci_markers[0]:-}"
   [ -n "$marker" ] || return 1
   marker_cwd="$(codex_state_value "$marker" cwd false 2>/dev/null || true)"
   [ -n "$marker_cwd" ] || return 1
   marker_cwd="$(codex_canonical_cwd "$marker_cwd")"
-  codex_eci_additional_repository_is_allowed "$worker_session" "$marker_cwd" "$repository"
+  codex_eci_additional_repository_is_allowed "$active_session" "$marker_cwd" "$repository"
+}
+
+worker_additional_repository_allowed() {
+  [ "${hook_is_subagent:-false}" = true ] || return 1
+  active_session_additional_repository_allowed "$1"
 }
 
 # A worker may execute a script outside its assigned provider root only when
 # the resolved script belongs to the one additional repository it explicitly
-# declared.  This reuses the same owner/session-bound record as Git cross-scope
+# declared. This reuses the same owner/session-bound record as Git cross-scope
 # work; a path or launcher spelling alone never grants the exception.
 worker_script_target_additional_repository_allowed() {
   local detail="$1" resolved repository
@@ -11374,10 +12056,10 @@ enforce_git_mutation_gate() {
     [ -n "$git_dir" ] && [ -d "$git_dir" ] || continue
     if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] &&
       cross_scope_detail="$(git_mutation_cross_scope_detail "$repo_root")" &&
-      ! worker_additional_repository_allowed "$repo_root"; then
+      ! active_session_additional_repository_allowed "$repo_root"; then
       deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-mutation" \
-        "ECI Git mutation targets a different undeclared repository than this active work scope: ${cross_scope_detail}" \
-        "declare this exact repository once for the owning worker with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git action from its owning session/repository"
+        "ECI Git mutation targets a different repository without a valid declaration for this active session: ${cross_scope_detail}" \
+        "from the active session, declare this exact canonical repository once with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git action from its owning session/repository"
     fi
     if [ "$operation" = output ]; then
       deny_eci "ECI_GIT_OUTPUT_WRITE_DENIED" "git-output" \
@@ -12426,7 +13108,7 @@ PY
 worker_dynamic_find_action_detail() {
   [ "${hook_is_subagent:-false}" = true ] || return 1
   [ "${plan_marker_state:-inactive}" = active ] || return 1
-  [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] || return 1
+  [ "$COMPOUND_SEGMENT_VALIDATION" != true ] || return 1
   # Compound pipelines retain the existing bounded pipeline policy. This
   # guard owns a direct worker find action; its concrete target checks still
   # run for each pipeline segment below.
@@ -12995,6 +13677,9 @@ fi
 # attempting to write the active control records is routed to the coordinator.
 worker_control_detail=""
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  # Resolve a validated foreign active marker for this exact segment before
+  # the generic worker-control ownership check can consume the same writer.
+  enforce_foreign_active_marker_mutation_boundary
   worker_control_detail="$(worker_control_path_detail 2>/dev/null || true)"
   # A bounded read of a missing instruction-like path can report an
   # instruction-denied diagnostic from the shared resolver; it is not a
@@ -15907,6 +16592,21 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   maybe_enforce_git_mutation_gate
 fi
 
+# A worker may use only the explicit owner-scoped repository declaration
+# lifecycle route. Check the full callback command before the read-only return
+# and bind any env session override to the callback session.
+if [ "$hook_is_subagent" = true ] && command_invokes_eci_binary "$hook_original_command"; then
+  if worker_repository_allow_lifecycle_route "$hook_original_command"; then
+    validate_active_marker_binding
+    exit 0
+  fi
+  eci_binary_subject="$(eci_command_identity_subject "$hook_original_command")"
+  eci_binary_detail="$(rejected_command_detail "$hook_original_command" 2>/dev/null || printf 'segment=<unclassified>')"
+  deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
+    "ECI worker boundary denied direct invocation of a canonical Codex/Kimi eci-active binary: ${eci_binary_detail}; literal command=${eci_binary_subject} targets coordinator-owned lifecycle/control state" \
+    "use only the exact owner-scoped repository-allow route for this active session; route other lifecycle/control operations through the main/orchestrator"
+fi
+
 # A typed, literal read-only command never mutates ECI or repository state.
 # Resolve the bounded marker set once so malformed/duplicate active markers
 # still fail closed, enforce the worker Git boundary, then return before Git
@@ -16054,7 +16754,7 @@ fi
 # retains canonical target, role, session, cwd, and marker validation.
 if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" = true ] &&
   [ "$hook_is_subagent" != true ] &&
-  [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] &&
+  [ "$COMPOUND_SEGMENT_VALIDATION" != true ] &&
   [ "$coordinator_compound_mutation" != true ] &&
   ! command_invokes_eci_lifecycle "$command"; then
   coordinator_enforce_script_target "$command"
@@ -16070,7 +16770,7 @@ fi
 
 ECI_LITERAL_ADMITTED=false
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$plan_status" -eq 0 ] &&
-  [ "${ECI_COMPOUND_SEGMENT_VALIDATION:-false}" != true ] &&
+  [ "$COMPOUND_SEGMENT_VALIDATION" != true ] &&
   ! coordinator_script_batch_shape "$command" &&
   ! shell_script_launcher_shape "$command" &&
   ! opaque_launcher_shape "$command" &&
@@ -16096,21 +16796,6 @@ fi
 : "${git_mutation_approved:=false}"
 : "${command_state:=unknown}"
 review_markers=()
-
-if [ "$hook_is_subagent" = true ] && command_invokes_eci_binary "$command"; then
-  if worker_repository_allow_lifecycle_route "$command"; then
-    # The binary itself is the owner-scoped declaration authority.  Keep the
-    # active marker binding in the hook, then let the CLI validate and publish
-    # the persistent repository allowance; no generic lifecycle bypass exists.
-    validate_active_marker_binding
-    exit 0
-  fi
-  eci_binary_subject="$(eci_command_identity_subject "$command")"
-  eci_binary_detail="$(rejected_command_detail "$command" 2>/dev/null || printf 'segment=<unclassified>')"
-  deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
-    "ECI worker boundary denied direct invocation of a canonical Codex/Kimi eci-active binary: ${eci_binary_detail}; literal command=${eci_binary_subject} targets coordinator-owned lifecycle/control state" \
-    "route the provider-matched lifecycle or control operation through the main/orchestrator; workers may report completion or blockers but must not invoke coordinator eci-active binaries"
-fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_off "$command"; then
   deny_eci "ECI_LIFECYCLE_OWNER_REQUIRED" "eci-off" "Only the main thread/orchestrator may disengage ECI with eci-active off. Subagents must report completion or blockers to the orchestrator while ECI remains active." "report completion or blockers to the main/orchestrator"

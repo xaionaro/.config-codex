@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -316,13 +318,14 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 	}
 }
 
-// TestActiveFindActionsUseEffectDiagnostics verifies that direct active find
-// actions are denied by their per-match effect for coordinators, while worker
-// behavior and ordinary inspection remain admitted and broad-root deletion
-// keeps its precedence.
+// TestActiveFindActionsUseEffectDiagnostics verifies that active coordinator
+// find actions are denied in direct and compound plans, while worker behavior
+// and ordinary inspection remain admitted and broad-root deletion keeps its
+// precedence.
 //
 // Example: an active coordinator may inspect with `find /tmp -print`, but
-// `find /tmp -exec rm -f {} \\;` receives the dynamic-action diagnostic.
+// `find /tmp -exec file {} \\; && printf done` receives the dynamic-action
+// diagnostic before the following segment can run.
 func TestActiveFindActionsUseEffectDiagnostics(t *testing.T) {
 	t.Parallel()
 
@@ -349,6 +352,76 @@ func TestActiveFindActionsUseEffectDiagnostics(t *testing.T) {
 			decision:  DecisionDeny,
 			code:      CodePlanDynamicLaunchDenied,
 			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec printf",
+			command:   "find /tmp -maxdepth 1 -type f -exec printf '%s' {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec path-qualified reader aliases",
+			command:   "find /tmp -maxdepth 1 -type f -exec ./file --brief {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec absolute reader alias",
+			command:   "find /tmp -maxdepth 1 -type f -exec /tmp/file --brief {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec parent reader alias",
+			command:   "find /tmp -maxdepth 1 -type f -exec ../file --brief {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec file short compile option",
+			command:   "find /tmp -maxdepth 1 -type f -exec file -C -m /tmp/magic {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator exec file long compile option",
+			command:   "find /tmp -maxdepth 1 -type f -exec file --compile -m /tmp/magic {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator compound exec",
+			command:   "find /tmp -maxdepth 1 -type f -exec printf '%s' {} \\; && printf done",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:      "coordinator compound delete",
+			command:   "find /tmp -maxdepth 1 -type f -delete && printf done",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
+		},
+		{
+			name:     "coordinator safe compound inspection",
+			command:  "find /tmp -maxdepth 1 -type f -print && printf done",
+			role:     RoleCoordinator,
+			decision: DecisionAllow,
 		},
 		{
 			name:      "coordinator execdir",
@@ -381,16 +454,24 @@ func TestActiveFindActionsUseEffectDiagnostics(t *testing.T) {
 			decision: DecisionAllow,
 		},
 		{
+			name:     "worker exec printf behavior preserved",
+			command:  "find /tmp -maxdepth 1 -type f -exec printf '%s' {} \\;",
+			role:     RoleWorker,
+			decision: DecisionAllow,
+		},
+		{
 			name:     "coordinator print inspection",
 			command:  "find /tmp -maxdepth 1 -type f -print",
 			role:     RoleCoordinator,
 			decision: DecisionAllow,
 		},
 		{
-			name:     "coordinator metadata exec inspection",
-			command:  "find /tmp -maxdepth 1 -type f -exec file --brief {} \\;",
-			role:     RoleCoordinator,
-			decision: DecisionAllow,
+			name:      "coordinator metadata exec inspection",
+			command:   "find /tmp -maxdepth 1 -type f -exec file --brief {} \\;",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodePlanDynamicLaunchDenied,
+			predicate: "dynamic-find-action",
 		},
 		{
 			name:     "coordinator find read with temporary output",
@@ -407,6 +488,14 @@ func TestActiveFindActionsUseEffectDiagnostics(t *testing.T) {
 		{
 			name:      "coordinator broad root precedence",
 			command:   "find / -delete",
+			role:      RoleCoordinator,
+			decision:  DecisionDeny,
+			code:      CodeBroadDestructiveDenied,
+			predicate: "broad-destructive-root",
+		},
+		{
+			name:      "coordinator compound broad root precedence",
+			command:   "find / -delete && printf done",
 			role:      RoleCoordinator,
 			decision:  DecisionDeny,
 			code:      CodeBroadDestructiveDenied,
@@ -1237,6 +1326,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 	launchingTimeout := "#!/bin/sh\n[ \"${1-}\" = 5 ] || exit 125\nshift\nexec \"$@\"\n"
 	unexportedTimeout := "#!/bin/sh\n/usr/bin/env | /usr/bin/grep -q '^PATH=' && exit 125\n[ \"${1-}\" = 5 ] || exit 125\nshift\nexec \"$@\"\n"
 	for _, timeoutPath := range []string{
+		filepath.Join(downParent, "timeout"),
 		filepath.Join(downChild, "timeout"),
 		filepath.Join(upParent, "timeout"),
 		filepath.Join(launchDirectory, "timeout"),
@@ -1413,22 +1503,50 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			decision:            DecisionAllow,
 		},
 		{
-			name:                "relative cd stays ordinary",
+			name:                "relative cd carries verified CWD",
 			cwd:                 downParent,
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "cd child; timeout 5 git commit -m note",
-			decision:            DecisionAllow,
+			decision:            DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downChild,
+				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
+			},
 		},
 		{
-			name:                "unmodelled prefix stays ordinary",
+			name:                "ordinary prefix preserves verified state",
 			cwd:                 downParent,
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "printf harmless; timeout 5 git commit -m note",
-			decision:            DecisionAllow,
+			decision:            DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
+				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
+			},
+		},
+		{
+			name:     "true conditional split body carries verified CWD",
+			cwd:      downParent,
+			command:  "if true; then; cd " + downChild + "; fi; ./timeout 5 git commit -m note",
+			decision: DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 5, ParentSegment: 5, Prefix: []string{"./timeout", "5"}, CWD: downChild,
+				Disposition: "observed",
+			},
+		},
+		{
+			name:     "false conditional split body keeps outer CWD",
+			cwd:      downParent,
+			command:  "if false; then; cd " + downChild + "; fi; ./timeout 5 git commit -m note",
+			decision: DecisionDeny,
+			wantReplay: &timeoutReplayFact{
+				Segment: 5, ParentSegment: 5, Prefix: []string{"./timeout", "5"}, CWD: downParent,
+				Disposition: "observed",
+			},
 		},
 	} {
 		testCase := testCase
@@ -4915,13 +5033,13 @@ func TestCurrentControlCopyOperandRoles(t *testing.T) {
 				{name: "flagged destination", command: "cp -f -- " + ordinary + " " + marker, target: marker, argvIndex: 4},
 				{name: "terminator after source", command: "cp " + ordinary + " -- " + marker, target: marker, argvIndex: 3},
 				{name: "finite flags destination", command: "cp -frR -v --force --recursive --verbose " + ordinary + " " + marker, target: marker, argvIndex: 7},
-				{name: "bare redirect before destination", command: "cp " + ordinary + " < " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
-				{name: "attached redirect before destination", command: "cp " + ordinary + "<" + ordinary + "-input " + marker, target: marker, argvIndex: 3},
-				{name: "stdin redirect before destination", command: "cp " + ordinary + " 0< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
-				{name: "stdout input redirect before destination", command: "cp " + ordinary + " 1< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
-				{name: "stderr input redirect before destination", command: "cp " + ordinary + " 2< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
-				{name: "unsupported option-looking input before destination", command: "cp " + ordinary + " < --unknown " + marker, target: marker, argvIndex: 3},
-				{name: "terminator with input before destination", command: "cp -- " + ordinary + " 0< " + ordinary + "-input " + marker, target: marker, argvIndex: 4},
+				{name: "bare redirect before destination", command: "cp " + ordinary + " < " + ordinary + "-input " + marker, target: marker, argvIndex: 2},
+				{name: "attached redirect before destination", command: "cp " + ordinary + "<" + ordinary + "-input " + marker, target: marker, argvIndex: 2},
+				{name: "stdin redirect before destination", command: "cp " + ordinary + " 0< " + ordinary + "-input " + marker, target: marker, argvIndex: 2},
+				{name: "stdout input redirect before destination", command: "cp " + ordinary + " 1< " + ordinary + "-input " + marker, target: marker, argvIndex: 2},
+				{name: "stderr input redirect before destination", command: "cp " + ordinary + " 2< " + ordinary + "-input " + marker, target: marker, argvIndex: 2},
+				{name: "unsupported option-looking input before destination", command: "cp " + ordinary + " < --unknown " + marker, target: marker, argvIndex: 2},
+				{name: "terminator with input before destination", command: "cp -- " + ordinary + " 0< " + ordinary + "-input " + marker, target: marker, argvIndex: 3},
 				{name: "unknown option", command: "cp --unknown " + ordinary + " " + marker},
 				{name: "too many operands", command: "cp " + ordinary + " " + marker + " elsewhere"},
 				{name: "one operand", command: "cp " + marker},
@@ -4938,13 +5056,13 @@ func TestCurrentControlCopyOperandRoles(t *testing.T) {
 				{name: "later copy destination", command: "cp " + marker + " 0< " + ordinary + " " + ordinary + "-two; cp " + ordinary + " " + marker, target: marker, segment: 2, argvIndex: 2},
 				{name: "evidenced output retained", command: "sort --output=" + marker, target: marker, argvIndex: 1},
 				{name: "touch marker redirect input", command: "touch < " + marker + " " + ordinary},
-				{name: "touch marker target after input", command: "touch < " + ordinary + " " + marker, target: marker, argvIndex: 2},
+				{name: "touch marker target after input", command: "touch < " + ordinary + " " + marker, target: marker, argvIndex: 1},
 				{name: "move still mutates source", command: "mv " + marker + " " + ordinary, target: marker, argvIndex: 1},
 				{name: "alias input", command: "cp " + alias + " " + ordinary, workerOnly: true},
 				{name: "alias redirect input", command: "cp " + ordinary + " 0< " + alias + " " + ordinary + "-two", workerOnly: true},
 				{name: "alias destination", command: "cp " + ordinary + " " + alias, target: alias, argvIndex: 2, workerOnly: true},
 				{name: "flagged alias destination", command: "cp -f -- " + ordinary + " " + alias, target: alias, argvIndex: 4, workerOnly: true},
-				{name: "alias destination after input", command: "cp " + ordinary + " 0< " + ordinary + "-input " + alias, target: alias, argvIndex: 3, workerOnly: true},
+				{name: "alias destination after input", command: "cp " + ordinary + " 0< " + ordinary + "-input " + alias, target: alias, argvIndex: 2, workerOnly: true},
 				{name: "invalid alias output", command: "cp --output=" + alias + " ordinary elsewhere", workerOnly: true},
 				{name: "move still mutates alias source", command: "mv " + alias + " " + ordinary, target: alias, argvIndex: 1, workerOnly: true},
 			} {
@@ -4987,6 +5105,57 @@ func TestCurrentControlCopyOperandRoles(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestFiniteWriterOperandPositionsPreserveInputs keeps sed script files and
+// truncate size operands out of the writer target set while retaining the
+// concrete in-place/destination denial.
+//
+// Example: `sed -f eci_active -i ordinary` reads the marker as a script, but
+// `sed -i ordinary eci_active` writes the marker.
+func TestFiniteWriterOperandPositionsPreserveInputs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	marker := filepath.Join(root, "eci_active")
+	ordinary := filepath.Join(t.TempDir(), "ordinary")
+	if err := os.WriteFile(marker, []byte("scope: active\nsession_id: session\ncwd: "+root+"\n"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := os.WriteFile(ordinary, []byte("ordinary\n"), 0o600); err != nil {
+		t.Fatalf("write ordinary: %v", err)
+	}
+	for _, testCase := range []struct {
+		name    string
+		command string
+		want    DecisionKind
+		code    DiagnosticCode
+	}{
+		{name: "sed script file input", command: "sed -f " + marker + " -i " + ordinary, want: DecisionAllow},
+		{name: "sed attached expression input", command: "sed -e's/a/b/' -i " + ordinary, want: DecisionAllow},
+		{name: "sed marker destination", command: "sed -i " + ordinary + " " + marker, want: DecisionDeny, code: CodePlanLiveControlDenied},
+		{name: "truncate size value input", command: "truncate -s " + marker + " " + ordinary, want: DecisionAllow},
+		{name: "truncate marker destination", command: "truncate -s 0 " + marker, want: DecisionDeny, code: CodePlanLiveControlDenied},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			result := Classify(Request{
+				Provider:      ProviderCodex,
+				Role:          RoleWorker,
+				CWD:           root,
+				Marker:        MarkerActive,
+				ActiveSession: "session",
+				Command:       testCase.command,
+				ActiveMarkers: []string{marker},
+			})
+			if result.Decision != testCase.want {
+				t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.want)
+			}
+			if testCase.code != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.code) {
+				t.Fatalf("diagnostic=%#v, want %q", result.Diagnostic, testCase.code)
+			}
+		})
 	}
 }
 
@@ -5344,8 +5513,8 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 						{"touch " + target, 1},
 						{"touch " + filepath.Join(session, "ordinary-output") + " " + target, 2},
 						{"sort -o " + target + " < " + ordinary, 2},
-						{"sort -o < " + ordinary + " " + target, 3},
-						{"sort < " + ordinary + " -o " + target, 3},
+						{"sort -o < " + ordinary + " " + target, 2},
+						{"sort < " + ordinary + " -o " + target, 2},
 						{"sort -o" + target + " < " + ordinary, 1},
 						{"sort --output=" + target + " < " + ordinary, 1},
 						{"sort --output='" + target + "' < " + ordinary, 1},
@@ -5813,6 +5982,262 @@ func TestCompoundPlanTopologyPreservesLosslessOrder(t *testing.T) {
 	}
 }
 
+// TestCompoundPlanSegmentCWDUsesBoundedLiteralState verifies that compound
+// topology carries an explicit, planner-owned CWD fact for every segment.
+// Only a verified literal cd reached after an unconditional semicolon or
+// newline can establish the next segment's directory; uncertain shell state
+// is represented as unknown rather than borrowing the callback CWD.
+//
+// Example: an unsearchable absolute `cd` is unknown even when its directory
+// entry exists.
+func TestCompoundPlanSegmentCWDUsesBoundedLiteralState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner directory: %v", err)
+	}
+	logicalLink := filepath.Join(root, "logical-link")
+	if err := os.Symlink(inner, logicalLink); err != nil {
+		t.Fatalf("create logical directory link: %v", err)
+	}
+	physicalInner, err := filepath.EvalSymlinks(inner)
+	if err != nil {
+		t.Fatalf("resolve physical inner directory: %v", err)
+	}
+	physicalParent := filepath.Join(root, "real")
+	if err := os.Mkdir(physicalParent, 0o700); err != nil {
+		t.Fatalf("create physical parent: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(physicalParent, "child"), filepath.Join(root, "link")); err != nil {
+		t.Fatalf("create physical traversal link: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(physicalParent, "child"), 0o700); err != nil {
+		t.Fatalf("create physical traversal child: %v", err)
+	}
+	physicalParent, err = filepath.EvalSymlinks(physicalParent)
+	if err != nil {
+		t.Fatalf("resolve physical traversal parent: %v", err)
+	}
+	unsearchable := filepath.Join(root, "unsearchable")
+	if err := os.Mkdir(unsearchable, 0o700); err != nil {
+		t.Fatalf("create unsearchable directory: %v", err)
+	}
+	if err := os.Chmod(unsearchable, 0o600); err != nil {
+		t.Fatalf("remove search permission from directory: %v", err)
+	}
+	cdPathRoot := filepath.Join(root, "cdpath")
+	cdPathTarget := filepath.Join(cdPathRoot, "project")
+	if err := os.MkdirAll(cdPathTarget, 0o700); err != nil {
+		t.Fatalf("create CDPATH target: %v", err)
+	}
+	type wantFact struct {
+		cwd        string
+		known      bool
+		candidates []string
+	}
+	testCases := []struct {
+		name      string
+		cwd       string
+		cdPath    string
+		cdPathSet bool
+		command   string
+		want      []wantFact
+	}{
+		{
+			name:    "semicolon literal absolute cd",
+			cwd:     root,
+			command: "cd " + inner + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: inner, known: true, candidates: []string{inner}}},
+		},
+		{
+			name:    "newline literal absolute cd",
+			cwd:     root,
+			command: "cd " + inner + "\nprintf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: inner, known: true, candidates: []string{inner}}},
+		},
+		{
+			name:    "leading assignment literal cd",
+			cwd:     root,
+			command: "ECI_TRACE=present cd " + inner + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: inner, known: true, candidates: []string{inner}}},
+		},
+		{
+			name:    "relative literal cd",
+			cwd:     root,
+			command: "cd inner; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: inner, known: true, candidates: []string{inner}}},
+		},
+		{
+			name:      "CDPATH resolves relative cd",
+			cwd:       root,
+			cdPath:    cdPathRoot,
+			cdPathSet: true,
+			command:   "cd project; printf after",
+			want:      []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: cdPathTarget, known: true, candidates: []string{cdPathTarget}}},
+		},
+		{
+			name:    "logical cd preserves symlink spelling",
+			cwd:     root,
+			command: "cd -L " + logicalLink + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: logicalLink, known: true, candidates: []string{logicalLink}}},
+		},
+		{
+			name:    "physical cd resolves symlink",
+			cwd:     root,
+			command: "cd -P " + logicalLink + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: physicalInner, known: true, candidates: []string{physicalInner}}},
+		},
+		{
+			name:    "physical cd resolves before lexical parent",
+			cwd:     root,
+			command: "cd -P link/..; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: physicalParent, known: true, candidates: []string{physicalParent}}},
+		},
+		{
+			name:    "slash qualified cd is external",
+			cwd:     root,
+			command: "/tmp/cd " + inner + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: root, known: true, candidates: []string{root}}},
+		},
+		{
+			name:    "argument mentioning cd does not change state",
+			cwd:     root,
+			command: "helper cd " + inner + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: root, known: true, candidates: []string{root}}},
+		},
+		{
+			name:    "redirected cd keeps reachable state conservative",
+			cwd:     root,
+			command: "cd " + inner + " > redirect-output; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: "", known: false, candidates: []string{root, inner}}},
+		},
+		{
+			name:    "pushd and popd restore directory stack",
+			cwd:     root,
+			command: "pushd " + inner + "; printf inside; popd; printf outside",
+			want: []wantFact{
+				{cwd: root, known: true},
+				{cwd: inner, known: true},
+				{cwd: inner, known: true},
+				{cwd: root, known: true},
+			},
+		},
+		{
+			name:    "parenthesized directory change restores outer state",
+			cwd:     root,
+			command: "(cd " + inner + "; printf inside); printf outside",
+			want: []wantFact{
+				{cwd: root, known: true},
+				{cwd: inner, known: true},
+				{cwd: root, known: true},
+			},
+		},
+		{
+			name:    "brace directory change keeps outer state",
+			cwd:     root,
+			command: "{ cd " + inner + "; printf inside; }; printf outside",
+			want: []wantFact{
+				{cwd: root, known: true},
+				{cwd: inner, known: true},
+				{cwd: inner, known: true},
+			},
+		},
+		{
+			name:    "conditional cd poisons state",
+			cwd:     root,
+			command: "cd " + inner + " && printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "conditional or cd poisons state",
+			cwd:     root,
+			command: "cd " + inner + " || printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "pipeline cd poisons state",
+			cwd:     root,
+			command: "cd " + inner + " | printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "background cd poisons state",
+			cwd:     root,
+			command: "cd " + inner + " & printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "dynamic cd remains unknown",
+			cwd:     root,
+			command: "cd \"$ECI_TARGET\"; printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "unsupported pushd option remains unknown",
+			cwd:     root,
+			command: "pushd -n " + inner + "; printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "unsearchable literal cd remains unknown",
+			cwd:     root,
+			command: "cd " + unsearchable + "; printf after",
+			want:    []wantFact{{cwd: root, known: true}, {cwd: "", known: false}},
+		},
+		{
+			name:    "command cd remains parent builtin",
+			cwd:     root,
+			command: "command cd " + inner + "; printf after",
+			want:    []wantFact{{cwd: root, known: true, candidates: []string{root}}, {cwd: inner, known: true, candidates: []string{inner}}},
+		},
+		{
+			name:    "skipped prior cd remains unknown",
+			cwd:     root,
+			command: "false && cd " + inner + "; printf after",
+			want: []wantFact{
+				{cwd: root, known: true, candidates: []string{root}},
+				{cwd: root, known: true, candidates: []string{root}},
+				{cwd: root, known: true, candidates: []string{root}},
+			},
+		},
+		{
+			name:    "unknown callback CWD stays unknown",
+			cwd:     filepath.Join(root, "missing"),
+			command: "printf before; printf after",
+			want:    []wantFact{{cwd: "", known: false}, {cwd: "", known: false}},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker(testCase.command)
+			request.CWD = testCase.cwd
+			request.CDPath = testCase.cdPath
+			request.CDPathSet = testCase.cdPathSet
+			result := Classify(request)
+			if result.Decision != DecisionAllow || result.Diagnostic != nil {
+				t.Fatalf("decision=%q diagnostic=%#v, want allow", result.Decision, result.Diagnostic)
+			}
+			if result.Plan == nil {
+				t.Fatal("missing compound plan topology")
+			}
+			if len(result.Plan.Segments) != len(testCase.want) {
+				t.Fatalf("segments=%#v, want %d", result.Plan.Segments, len(testCase.want))
+			}
+			for index, want := range testCase.want {
+				got := result.Plan.Segments[index]
+				if got.CWD != want.cwd || got.CWDKnown != want.known ||
+					want.candidates != nil && !slices.Equal(got.CWDCandidates, want.candidates) {
+					t.Errorf("segment %d CWD=(%q, known=%t, candidates=%#v), want (%q, known=%t, candidates=%#v)", index+1, got.CWD, got.CWDKnown, got.CWDCandidates, want.cwd, want.known, want.candidates)
+				}
+			}
+		})
+	}
+}
+
 // TestCompoundPlanSegmentDecisionsMatchDirectPlans verifies that a coordinator
 // compound preserves every segment that has a standalone planner allow, so
 // the Bash adapter can send each raw segment through the same named route.
@@ -5851,6 +6276,511 @@ func TestCompoundPlanSegmentDecisionsMatchDirectPlans(t *testing.T) {
 		if len(compound.Plan.Segments) != len(directCommands) {
 			t.Fatalf("%s segment count=%d, want %d", role, len(compound.Plan.Segments), len(directCommands))
 		}
+	}
+}
+
+// TestCompoundConditionalCWDJoinsReachableBranchExits verifies that a bounded
+// literal if form prunes a known-false branch before joining the reachable
+// directory exit instead of inventing an unreachable candidate.
+//
+// Example: `if false; then cd inner; else cd outer; fi; printf ok` carries
+// only outer into printf.
+func TestCompoundConditionalCWDJoinsReachableBranchExits(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner directory: %v", err)
+	}
+
+	request := activeWorker("if false; then cd inner; else cd " + root + "; fi; printf after")
+	request.CWD = root
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Diagnostic != nil {
+		t.Fatalf("decision=%q diagnostic=%#v, want allow", result.Decision, result.Diagnostic)
+	}
+	if result.Plan == nil || len(result.Plan.Segments) < 2 {
+		t.Fatalf("plan=%#v, want conditional topology", result.Plan)
+	}
+	last := result.Plan.Segments[len(result.Plan.Segments)-1]
+	if !last.CWDKnown || last.CWD != root || !slices.Equal(last.CWDCandidates, []string{root}) {
+		t.Fatalf("final conditional CWD=(%q, known=%t, candidates=%#v), want exact %q", last.CWD, last.CWDKnown, last.CWDCandidates, root)
+	}
+}
+
+// TestCompoundConditionalSplitBodyCWDTransitions carries state through body
+// segments that follow a standalone `then` or `else` marker. The branch exit
+// cache must receive each actual body transition before `fi` joins it.
+//
+// Example: `if true; then; cd inner; fi; printf after` keeps inner for the
+// final segment, while a false branch keeps the outer directory.
+func TestCompoundConditionalSplitBodyCWDTransitions(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner directory: %v", err)
+	}
+	for _, testCase := range []struct {
+		name       string
+		command    string
+		known      bool
+		cwd        string
+		candidates []string
+	}{
+		{
+			name:    "true split body",
+			command: "if true; then; cd inner; fi; printf after",
+			known:   true,
+			cwd:     inner,
+		},
+		{
+			name:    "false split body with else",
+			command: "if false; then; cd inner; else; cd " + root + "; fi; printf after",
+			known:   true,
+			cwd:     root,
+		},
+		{
+			name:       "unknown split body union",
+			command:    "if test -e flag; then; cd inner; else; cd " + root + "; fi; printf after",
+			candidates: []string{inner, root},
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker(testCase.command)
+			request.CWD = root
+			result := Classify(request)
+			if result.Decision != DecisionAllow || result.Diagnostic != nil || result.Plan == nil {
+				t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow with topology", result.Decision, result.Diagnostic, result.Plan)
+			}
+			last := result.Plan.Segments[len(result.Plan.Segments)-1]
+			if last.CWDKnown != testCase.known || last.CWD != testCase.cwd ||
+				testCase.candidates != nil && !slices.Equal(last.CWDCandidates, testCase.candidates) {
+				t.Fatalf("final segment=%#v, want known=%t cwd=%q candidates=%#v", last, testCase.known, testCase.cwd, testCase.candidates)
+			}
+		})
+	}
+}
+
+// TestCompoundNestedConditionalReachabilityKeepsOuterState verifies that a
+// nested bounded conditional updates its enclosing branch only at the inner
+// `fi`, without leaking a dead inner branch into the outer exit.
+//
+// Example: a true nested branch carries inner through both closing markers.
+func TestCompoundNestedConditionalReachabilityKeepsOuterState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner directory: %v", err)
+	}
+	for _, testCase := range []struct {
+		name    string
+		command string
+		wantCWD string
+	}{
+		{
+			name:    "nested true",
+			command: "if true; then; if true; then; cd inner; fi; fi",
+			wantCWD: inner,
+		},
+		{
+			name:    "nested false",
+			command: "if true; then; if false; then; cd inner; fi; fi",
+			wantCWD: root,
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker(testCase.command)
+			request.CWD = root
+			result := Classify(request)
+			if result.Decision != DecisionAllow || result.Diagnostic != nil || result.Plan == nil {
+				t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow with topology", result.Decision, result.Diagnostic, result.Plan)
+			}
+			last := result.Plan.Segments[len(result.Plan.Segments)-1]
+			if !last.CWDKnown || last.CWD != testCase.wantCWD {
+				t.Fatalf("final segment=%#v, want known CWD %q", last, testCase.wantCWD)
+			}
+		})
+	}
+}
+
+// TestCompoundConditionalCWDRecognizesElifAndLiteralStatus keeps the branch
+// stack bounded while pruning only the literal false/true conditions.
+//
+// Example: false selects the elif condition, true selects its branch, and the
+// unreachable else directory does not become a candidate.
+func TestCompoundConditionalCWDRecognizesElifAndLiteralStatus(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	request := activeWorker("if false; then cd " + inner + "; elif true; then cd " + root + "; else cd " + other + "; fi; printf after")
+	request.CWD = root
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	last := result.Plan.Segments[len(result.Plan.Segments)-1]
+	if !last.CWDKnown || last.CWD != root || !slices.Equal(last.CWDCandidates, []string{root}) {
+		t.Fatalf("final segment=%#v, want exact elif directory %q", last, root)
+	}
+	for index, want := range []SegmentReachability{
+		segmentReachable,
+		segmentUnreachable,
+		segmentReachable,
+		segmentReachable,
+		segmentUnreachable,
+		segmentReachable,
+		segmentReachable,
+	} {
+		if got := result.Plan.Segments[index].Reachability; got != want {
+			t.Errorf("segment %d reachability=%q, want %q", index+1, got, want)
+		}
+	}
+}
+
+// TestCompoundConditionalCWDJoinsUnknownConditionExits keeps both reachable
+// branch directories when the condition status is not a literal constant.
+//
+// Example: `test -e flag` may run either branch, so both exits remain checked.
+func TestCompoundConditionalCWDJoinsUnknownConditionExits(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	request := activeWorker("if test -e flag; then cd " + inner + "; else cd " + root + "; fi; printf after")
+	request.CWD = root
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	last := result.Plan.Segments[len(result.Plan.Segments)-1]
+	if last.CWDKnown || !slices.Equal(last.CWDCandidates, []string{inner, root}) || last.CWDUnknown {
+		t.Fatalf("final segment=%#v, want two known candidates without unknown overflow", last)
+	}
+	if len(result.Plan.Segments) != 5 {
+		t.Fatalf("segments=%#v, want five conditional segments", result.Plan.Segments)
+	}
+	for index, want := range []SegmentReachability{
+		segmentReachable,
+		segmentReachabilityUnknown,
+		segmentReachabilityUnknown,
+		segmentReachable,
+		segmentReachable,
+	} {
+		if got := result.Plan.Segments[index].Reachability; got != want {
+			t.Errorf("segment %d reachability=%q, want %q", index+1, got, want)
+		}
+	}
+}
+
+// TestCompoundConditionalReachabilityControlsInlineEffects verifies that a
+// literal branch status controls the effect-bearing body while preserving the
+// raw conditional topology for later adapter replay.
+//
+// Example: `if true; then rm eci_active; fi` reaches the current marker, while
+// the identical writer under `if false` is structurally retained but inert.
+func TestCompoundConditionalReachabilityControlsInlineEffects(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	session := filepath.Join(root, "session")
+	if err := os.Mkdir(session, 0o700); err != nil {
+		t.Fatalf("create session directory: %v", err)
+	}
+	marker := filepath.Join(session, "eci_active")
+	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
+		t.Fatalf("write active marker: %v", err)
+	}
+
+	for _, testCase := range []struct {
+		name         string
+		command      string
+		decision     DecisionKind
+		reachability []SegmentReachability
+	}{
+		{name: "reachable inline body", command: "if true; then cd session; fi; rm eci_active", decision: DecisionDeny, reachability: []SegmentReachability{segmentReachable, segmentReachable, segmentReachable, segmentReachable}},
+		{name: "dead inline body", command: "if false; then cd session; fi; rm eci_active", decision: DecisionAllow, reachability: []SegmentReachability{segmentReachable, segmentUnreachable, segmentReachable, segmentReachable}},
+		{name: "reachable inline writer", command: "if true; then rm session/eci_active; fi", decision: DecisionDeny, reachability: []SegmentReachability{segmentReachable, segmentReachable, segmentReachable}},
+		{name: "dead inline writer", command: "if false; then rm session/eci_active; fi", decision: DecisionAllow, reachability: []SegmentReachability{segmentReachable, segmentUnreachable, segmentReachable}},
+		{name: "reachable split writer", command: "if true; then; rm session/eci_active; fi", decision: DecisionDeny, reachability: []SegmentReachability{segmentReachable, segmentReachable, segmentReachable, segmentReachable}},
+		{name: "dead split writer", command: "if false; then; rm session/eci_active; fi", decision: DecisionAllow, reachability: []SegmentReachability{segmentReachable, segmentUnreachable, segmentUnreachable, segmentReachable}},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker(testCase.command)
+			request.CWD = root
+			request.ActiveSession = "session"
+			request.ActiveMarkers = []string{marker}
+			result := Classify(request)
+			if result.Decision != testCase.decision {
+				t.Fatalf("command=%q decision=%q diagnostic=%#v, want %q", testCase.command, result.Decision, result.Diagnostic, testCase.decision)
+			}
+			if result.Plan == nil || len(result.Plan.Segments) != len(testCase.reachability) {
+				t.Fatalf("command=%q plan=%#v, want %d lossless segments", testCase.command, result.Plan, len(testCase.reachability))
+			}
+			for index, want := range testCase.reachability {
+				if got := result.Plan.Segments[index].Reachability; got != want {
+					t.Errorf("command=%q segment %d reachability=%q, want %q", testCase.command, index+1, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestCompoundUnknownEffectsRetainConcreteCandidates marks source/eval effects
+// unknown without replacing a verified pre-effect candidate with callback
+// CWD or an empty list.
+//
+// Example: `source script; rm eci_active` keeps root as a candidate while
+// routing the unresolved relative effect conservatively.
+func TestCompoundUnknownEffectsRetainConcreteCandidates(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	request := activeWorker("source script; printf after")
+	request.CWD = root
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	last := result.Plan.Segments[1]
+	if last.CWDKnown || !last.CWDUnknown || !slices.Equal(last.CWDCandidates, []string{root}) {
+		t.Fatalf("segment=%#v, want retained candidate with explicit unknown", last)
+	}
+}
+
+// TestCompoundReachableCWDChecksEachWriterCandidate verifies that a relative
+// writer is checked against every planner-reachable directory, not only the
+// first candidate emitted for a redirected state-changing segment.
+//
+// Example: `cd session > log; rm eci_active` remains denied because session
+// is one reachable post-redirection directory.
+func TestCompoundReachableCWDChecksEachWriterCandidate(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	session := filepath.Join(root, "session")
+	if err := os.Mkdir(session, 0o700); err != nil {
+		t.Fatalf("create session directory: %v", err)
+	}
+	marker := filepath.Join(session, "eci_active")
+	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
+		t.Fatalf("write active marker: %v", err)
+	}
+
+	request := activeWorker("cd session > redirect-output; rm eci_active")
+	request.CWD = root
+	request.ActiveSession = "session"
+	request.ActiveMarkers = []string{marker}
+	result := Classify(request)
+	if result.Decision != DecisionDeny || result.Diagnostic == nil {
+		t.Fatalf("decision=%q diagnostic=%#v, want live-control denial", result.Decision, result.Diagnostic)
+	}
+	if result.Diagnostic.Code != CodePlanLiveControlDenied || result.Diagnostic.Path != marker {
+		t.Fatalf("diagnostic=%#v, want %q for %s", result.Diagnostic, CodePlanLiveControlDenied, marker)
+	}
+}
+
+// TestCompoundPlanAlwaysSerializesCWDUnknownAndCandidateArray keeps the
+// planner/adapter contract explicit for an unresolved callback directory.
+// Unknown state is data, not a denial, and the candidate array is never
+// omitted from a serialized segment.
+//
+// Example: a missing callback directory produces cwd_unknown=true and []
+// rather than borrowing the process CWD.
+func TestCompoundPlanAlwaysSerializesCWDUnknownAndCandidateArray(t *testing.T) {
+	t.Parallel()
+
+	request := activeWorker("printf before; printf after")
+	request.CWD = filepath.Join(t.TempDir(), "missing")
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want ordinary compound allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	encoded, err := json.Marshal(result.Plan.Segments[0])
+	if err != nil {
+		t.Fatalf("marshal segment: %v", err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"cwd_candidates":[]`) {
+		t.Fatalf("serialized segment=%s, want an explicit empty candidate array", text)
+	}
+	if !strings.Contains(text, `"cwd_unknown":true`) {
+		t.Fatalf("serialized segment=%s, want explicit unknown CWD", text)
+	}
+}
+
+// TestCompoundPlanRecognizesBoundedDirectBuiltinEffects verifies that quoted
+// builtin names and the finite command/builtin wrappers retain parent-shell
+// CWD effects, while a child launcher does not mutate its parent.
+//
+// Example: `builtin cd inner; env pwd; command cd root` carries inner through
+// the child launcher and then resolves the final direct command to root.
+func TestCompoundPlanRecognizesBoundedDirectBuiltinEffects(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
+	}
+	result := Classify(func() Request {
+		request := activeWorker("builtin cd inner; env pwd; command cd " + root + "; printf after")
+		request.CWD = root
+		return request
+	}())
+	if result.Decision != DecisionAllow || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	want := []string{root, inner, inner, root}
+	if len(result.Plan.Segments) != len(want) {
+		t.Fatalf("segments=%#v, want %d", result.Plan.Segments, len(want))
+	}
+	for index, expected := range want {
+		segment := result.Plan.Segments[index]
+		if !segment.CWDKnown || segment.CWD != expected || !slices.Equal(segment.CWDCandidates, []string{expected}) {
+			t.Errorf("segment %d=%#v, want known %q", index+1, segment, expected)
+		}
+	}
+}
+
+// TestCompoundPlanCDPATHScopeAndDotNames follows Bash's finite CDPATH rules:
+// a single component, including .hidden, may search CDPATH; explicit slash
+// forms bypass it, and a leading assignment is temporary for that cd.
+//
+// Example: CDPATH=/search; cd .hidden resolves /search/.hidden without
+// persisting CDPATH for the following relative cd.
+func TestCompoundPlanCDPATHScopeAndDotNames(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	search := filepath.Join(root, "search")
+	if err := os.MkdirAll(filepath.Join(search, ".hidden"), 0o700); err != nil {
+		t.Fatalf("create CDPATH directories: %v", err)
+	}
+	localHidden := filepath.Join(root, ".hidden")
+	if err := os.Mkdir(localHidden, 0o700); err != nil {
+		t.Fatalf("create local hidden directory: %v", err)
+	}
+	localHiddenSlash := filepath.Join(root, "hidden")
+	if err := os.Mkdir(localHiddenSlash, 0o700); err != nil {
+		t.Fatalf("create local slash directory: %v", err)
+	}
+	for _, testCase := range []struct {
+		name    string
+		command string
+		want    []string
+	}{
+		{name: "dot hidden searches CDPATH", command: "CDPATH=" + search + " cd .hidden; printf after", want: []string{root, filepath.Join(search, ".hidden")}},
+		{name: "explicit slash bypasses CDPATH", command: "CDPATH=" + search + " cd ./hidden; printf after", want: []string{root, localHiddenSlash}},
+		{name: "prefix assignment is temporary", command: "CDPATH=" + search + " cd .hidden; cd " + root + "; cd .hidden; printf after", want: []string{root, filepath.Join(search, ".hidden"), root, localHidden}},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker(testCase.command)
+			request.CWD = root
+			result := Classify(request)
+			if result.Decision != DecisionAllow || result.Plan == nil {
+				t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want allow", result.Decision, result.Diagnostic, result.Plan)
+			}
+			if len(result.Plan.Segments) != len(testCase.want) {
+				t.Fatalf("segments=%#v, want %d", result.Plan.Segments, len(testCase.want))
+			}
+			for index, expected := range testCase.want {
+				segment := result.Plan.Segments[index]
+				if !segment.CWDKnown || segment.CWD != expected {
+					t.Errorf("segment %d=%#v, want known %q", index+1, segment, expected)
+				}
+			}
+		})
+	}
+}
+
+// TestCompoundPlanBoundsReachableCandidatesWithExplicitOverflow verifies that
+// the 128-state cap produces an unknown fact without dropping known candidate
+// checks or turning ordinary work into a denial.
+//
+// Example: an absolute marker in the retained/absolute target route is still
+// protected even when the compound CWD candidate list overflows.
+func TestCompoundPlanBoundsReachableCandidatesWithExplicitOverflow(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	candidates := make([]string, 0, maxReachableStates+1)
+	for index := 0; index <= maxReachableStates; index++ {
+		candidate := filepath.Join(root, fmt.Sprintf("candidate-%03d", index))
+		if err := os.Mkdir(candidate, 0o700); err != nil {
+			t.Fatalf("create candidate %d: %v", index, err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	request := activeWorker("printf before; printf after")
+	request.CWD = candidates[0]
+	request.CWDKnown = true
+	request.CWDCandidates = candidates
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want ordinary allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	segment := result.Plan.Segments[0]
+	if !segment.CWDUnknown || segment.CWDKnown || len(segment.CWDCandidates) != maxReachableStates {
+		t.Fatalf("segment=%#v, want unknown with %d candidates", segment, maxReachableStates)
+	}
+	marker := filepath.Join(candidates[len(candidates)-1], "eci_active")
+	if err := os.WriteFile(marker, []byte("scope: active\n"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	request.Command = "rm " + marker
+	request.ActiveMarkers = []string{marker}
+	request.CWDCandidates = candidates
+	result = Classify(request)
+	if result.Decision != DecisionDeny || result.Diagnostic == nil || result.Diagnostic.Code != CodePlanLiveControlDenied {
+		t.Fatalf("absolute protected target result: decision=%q diagnostic=%#v, want live-control denial", result.Decision, result.Diagnostic)
+	}
+}
+
+// TestCompoundTimeoutReplayStaysOpaqueForMultipleCWDStates prevents a probe
+// record from borrowing one callback directory when planner reachability has
+// more than one concrete candidate.
+//
+// Example: two verified initial directories keep timeout metadata opaque even
+// though timeout itself is a supported direct prefix.
+func TestCompoundTimeoutReplayStaysOpaqueForMultipleCWDStates(t *testing.T) {
+	t.Parallel()
+
+	first := t.TempDir()
+	second := t.TempDir()
+	request := activeWorker("printf before; timeout 5 printf child")
+	request.CWD = first
+	request.CWDKnown = true
+	request.CWDCandidates = []string{first, second}
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Diagnostic != nil {
+		t.Fatalf("decision=%q diagnostic=%#v, want allow", result.Decision, result.Diagnostic)
+	}
+	if len(result.TimeoutReplays) != 0 {
+		t.Fatalf("timeout replays=%#v, want opaque multi-state handoff", result.TimeoutReplays)
+	}
+	if result.Plan == nil || result.Plan.Segments[1].CWDKnown ||
+		!slices.Equal(result.Plan.Segments[1].CWDCandidates, []string{first, second}) {
+		t.Fatalf("plan=%#v, want both candidate directories", result.Plan)
 	}
 }
 
@@ -7277,6 +8207,133 @@ func TestActiveCoordinatorDirectShellScriptRemainsAllowed(t *testing.T) {
 	})
 	if result.Decision != DecisionAllow || result.Diagnostic != nil {
 		t.Fatalf("decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
+	}
+}
+
+// TestCompoundPlanCarriesLogicalAndPhysicalCWDIdentity verifies that a
+// logical shell directory remains available for relative lookup while the
+// canonical physical directory is carried for ownership checks.
+//
+// Example: `cd -L logical; printf after` keeps logical in cwd and real in
+// cwd_physical.
+func TestCompoundPlanCarriesLogicalAndPhysicalCWDIdentity(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	physical := filepath.Join(root, "physical")
+	logical := filepath.Join(root, "logical")
+	if err := os.Mkdir(physical, 0o700); err != nil {
+		t.Fatalf("create physical directory: %v", err)
+	}
+	if err := os.Symlink(physical, logical); err != nil {
+		t.Fatalf("create logical symlink: %v", err)
+	}
+	physicalIdentity, err := filepath.EvalSymlinks(physical)
+	if err != nil {
+		t.Fatalf("resolve physical directory: %v", err)
+	}
+
+	request := activeWorker("cd -L " + logical + "; printf after")
+	request.CWD = root
+	result := Classify(request)
+	if result.Decision != DecisionAllow || result.Diagnostic != nil || result.Plan == nil {
+		t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want logical compound allow", result.Decision, result.Diagnostic, result.Plan)
+	}
+	if len(result.Plan.Segments) != 2 {
+		t.Fatalf("segments=%#v, want two segments", result.Plan.Segments)
+	}
+	segment := result.Plan.Segments[1]
+	if segment.CWD != logical || !segment.CWDKnown {
+		t.Fatalf("segment cwd=%q known=%t, want logical %q", segment.CWD, segment.CWDKnown, logical)
+	}
+	encoded, err := json.Marshal(segment)
+	if err != nil {
+		t.Fatalf("marshal segment: %v", err)
+	}
+	var identity struct {
+		CWDPhysical string `json:"cwd_physical"`
+	}
+	if err := json.Unmarshal(encoded, &identity); err != nil {
+		t.Fatalf("decode segment identity: %v", err)
+	}
+	if identity.CWDPhysical != physicalIdentity {
+		t.Fatalf("cwd_physical=%q, want %q in %s", identity.CWDPhysical, physicalIdentity, encoded)
+	}
+}
+
+// TestCompoundPlanGitWorktreeRoleUsesExecutableIdentity verifies that the
+// compound routing hint follows an actual Git executable and mutation verb,
+// not incidental path or operand text.
+//
+// Example: `printf git rm; printf done` is ordinary, while `git rm file` has
+// a planner-derived worktree mutation role.
+func TestCompoundPlanGitWorktreeRoleUsesExecutableIdentity(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	testCases := []struct {
+		name       string
+		command    string
+		wantEffect string
+		wantDenied bool
+	}{
+		{
+			name:       "operand text is not a Git role",
+			command:    "printf 'eci-normal-git-admission rm'; printf done",
+			wantEffect: "",
+		},
+		{
+			name:       "ordinary path text is not a Git role",
+			command:    "rm " + filepath.Join(root, "git-worktree-data") + "; printf done",
+			wantEffect: "",
+		},
+		{
+			name:       "direct Git mutation is a role",
+			command:    "git rm file.txt; printf done",
+			wantEffect: "worktree-mutation",
+			wantDenied: true,
+		},
+		{
+			name:       "env Git mutation is a role",
+			command:    "env -- git mv old.txt new.txt; printf done",
+			wantEffect: "worktree-mutation",
+			wantDenied: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			request := activeWorker(testCase.command)
+			request.CWD = root
+			result := Classify(request)
+			if testCase.wantDenied {
+				if result.Decision != DecisionDeny || result.Diagnostic == nil {
+					t.Fatalf("decision=%q diagnostic=%#v, want worker Git denial", result.Decision, result.Diagnostic)
+				}
+				if result.Plan == nil {
+					t.Fatalf("missing plan on Git denial: %#v", result)
+				}
+			} else if result.Decision != DecisionAllow || result.Diagnostic != nil || result.Plan == nil {
+				t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want ordinary compound allow", result.Decision, result.Diagnostic, result.Plan)
+			}
+			if len(result.Plan.Segments) == 0 {
+				t.Fatal("missing compound segments")
+			}
+			encoded, err := json.Marshal(result.Plan.Segments[0])
+			if err != nil {
+				t.Fatalf("marshal first segment: %v", err)
+			}
+			var role struct {
+				GitWorktreeEffect string `json:"git_worktree_effect"`
+			}
+			if err := json.Unmarshal(encoded, &role); err != nil {
+				t.Fatalf("decode Git role: %v", err)
+			}
+			if role.GitWorktreeEffect != testCase.wantEffect {
+				t.Fatalf("git_worktree_effect=%q, want %q in %s", role.GitWorktreeEffect, testCase.wantEffect, encoded)
+			}
+		})
 	}
 }
 

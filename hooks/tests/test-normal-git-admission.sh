@@ -81,6 +81,19 @@ printf '%s\n' \
   'created_utc: 2026-08-28T00:00:00Z' \
   >"$PROOF_ROOT/$SESSION/eci_active"
 
+KIMI_PROOF_ROOT_RAW="$TMP_ROOT/kimi-proof"
+mkdir -p -- "$KIMI_PROOF_ROOT_RAW"
+KIMI_PROOF_ROOT="$(realpath -e -- "$KIMI_PROOF_ROOT_RAW")"
+KIMI_FOREIGN_SESSION='foreign-kimi-session'
+KIMI_FOREIGN_MARKER="$KIMI_PROOF_ROOT/$KIMI_FOREIGN_SESSION/eci_active"
+mkdir -p -- "${KIMI_FOREIGN_MARKER%/*}"
+printf '%s\n' \
+  'scope: foreign Kimi marker regression' \
+  "cwd: $FOREIGN_REPO" \
+  "session_id: $KIMI_FOREIGN_SESSION" \
+  'created_utc: 2026-08-28T00:00:00Z' \
+  >"$KIMI_FOREIGN_MARKER"
+
 # A second valid marker gives timeout replay tests a concrete foreign control
 # target without changing the callback's current-session binding.
 FOREIGN_SESSION='foreign-timeout-session'
@@ -167,7 +180,12 @@ printf '%s\n' \
 chmod 755 -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$FAKE_TIMEOUT_ACCEPT_DIR/timeout" "$FAKE_TIMEOUT_INVALID_DIR/timeout" "$FAKE_TIMEOUT_REQUIRED_DIR/timeout"
 
 run_hook() {
-  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" callback_cwd="${5:-$REPO}" timeout_replays="${6:-[]}" compound_replay="${7:-false}" output="$TMP_ROOT/output.json" stderr=/dev/null
+  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" callback_cwd="${5:-$REPO}" timeout_replays="${6:-[]}" compound_replay="${7:-false}" compound_handoff="${8:-true}" output="$TMP_ROOT/output.json" stderr=/dev/null
+  local compound_cwd="${9:-$callback_cwd}"
+  local compound_physical
+  compound_physical="$(realpath -e -- "$compound_cwd" 2>/dev/null || true)"
+  local compound_handoff_token=normal-git-test-handoff
+  local fd9_mode="${10:-none}" fd9_token="${11:-$compound_handoff_token}"
   local subagent=false
   if [ "$role" = worker ]; then
     subagent=true
@@ -177,13 +195,44 @@ run_hook() {
     runner=(/bin/bash -x)
     stderr="$TMP_ROOT/hook-xtrace.log"
   fi
-  jq -cn --arg session "$SESSION" --arg cwd "$callback_cwd" --arg command "$command" --argjson timeout_replays "$timeout_replays" \
-    '{session_id:$session,cwd:$cwd,timeout_replays:$timeout_replays,tool_input:{command:$command}}' |
+  jq -cn \
+    --arg session "$SESSION" \
+    --arg cwd "$callback_cwd" \
+    --arg compound_cwd "$compound_cwd" \
+    --arg compound_physical "$compound_physical" \
+    --arg handoff_token "$compound_handoff_token" \
+    --arg command "$command" \
+    --arg command_path "$CALLBACK_PATH" \
+    --argjson timeout_replays "$timeout_replays" \
+    --argjson compound_validation "$compound_replay" \
+    '{session_id:$session,cwd:$cwd,timeout_replays:$timeout_replays,tool_input:{command:$command}} |
+      if $compound_validation then
+        .eci_compound_segment = {
+          validation: true,
+          cwd: $compound_cwd,
+          cwd_known: true,
+          cwd_unknown: false,
+          cwd_candidates: [$compound_cwd],
+          cwd_physical: $compound_physical,
+          cwd_physical_candidates: [$compound_physical],
+          reachability: "reachable",
+          command_path: $command_path,
+          command_path_set: true,
+          command_path_exported: true,
+          handoff_token: $handoff_token
+        }
+      else . end' |
     (
-      export HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT"
+      export HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" KIMI_PROOF_ROOT="$KIMI_PROOF_ROOT"
       export CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$subagent"
       export XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state"
-      export ECI_COMPOUND_SEGMENT_VALIDATION="$compound_replay"
+      if [ "$compound_replay" = true ] && [ "$compound_handoff" = true ]; then
+        exec 9<<<"$fd9_token"
+      elif [ "$fd9_mode" = sentinel ]; then
+        exec 9<<<"sentinel"
+      elif [ "$fd9_mode" = blocking ]; then
+        exec 9<"${COMPOUND_FD9_FIFO:?missing blocking FD9 FIFO}"
+      fi
       case "$probe_required" in
         present) export PROBE_REQUIRED=present ;;
         absent) unset PROBE_REQUIRED ;;
@@ -209,9 +258,189 @@ run_hook() {
   printf '%s\n' "$output"
 }
 
+run_compound_handoff_boundary_target() {
+  local inner fifo writer hook_pid status output nonlive_session nonlive_dir nonlive_marker
+
+  inner="$TMP_ROOT/compound-handoff-inner"
+  fifo="$TMP_ROOT/compound-handoff-blocking.fifo"
+  mkdir -p -- "$inner"
+  printf '%s\n' ordinary >"$inner/eci_active"
+  mkfifo -- "$fifo"
+  ln -- "$PROOF_ROOT/$SESSION/eci_active" "$REPO/eci_active"
+
+  foreign_marker="$FOREIGN_TIMEOUT_CONTROL_INNER/eci_active"
+  foreign_goal_state="$FOREIGN_TIMEOUT_CONTROL_INNER/goal_state"
+  foreign_wait="$FOREIGN_TIMEOUT_CONTROL_INNER/eci_wait"
+  printf '%s\n' pending >"$foreign_goal_state"
+  printf '%s\n' pending >"$foreign_wait"
+  printf '%s\n' ordinary >"$TMP_ROOT/ordinary-copy"
+
+  # Source-only operands are inputs, not writes; only destination/effect
+  # positions may route a worker through the control boundary.
+  assert_allowed "cp $foreign_marker $TMP_ROOT/ordinary-copy" worker
+  assert_allowed "ln $foreign_marker $TMP_ROOT/ordinary-link" worker
+  assert_allowed "dd if=$foreign_marker" worker
+  assert_allowed "cat $foreign_goal_state" worker
+  for target in "$foreign_marker" "$foreign_goal_state" "$foreign_wait"; do
+    output="$(run_hook "rm $target" worker configured absent "$REPO")"
+    jq -e --arg target "$target" '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains($target))' "$output" >/dev/null || {
+      printf 'recognized foreign control write was not denied: %s\n' "$(cat -- "$output")" >&2
+      return 1
+    }
+  done
+  assert_allowed "cp $KIMI_FOREIGN_MARKER $TMP_ROOT/kimi-marker-copy" worker
+  output="$(run_hook "rm $KIMI_FOREIGN_MARKER" worker configured absent "$REPO")"
+  jq -e --arg target "$KIMI_FOREIGN_MARKER" '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED")) and (.hookSpecificOutput.permissionDecisionReason | contains($target))' "$output" >/dev/null || {
+    printf 'configured Kimi foreign marker write was not dedicated-denied: %s\n' "$(cat -- "$output")" >&2
+    return 1
+  }
+  KIMI_FOREIGN_HARDLINK="$TMP_ROOT/kimi-foreign-marker-hardlink"
+  ln -- "$KIMI_FOREIGN_MARKER" "$KIMI_FOREIGN_HARDLINK"
+  output="$(run_hook "rm $KIMI_FOREIGN_HARDLINK" worker configured absent "$REPO")"
+  jq -e --arg target "$KIMI_FOREIGN_MARKER" '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED")) and (.hookSpecificOutput.permissionDecisionReason | contains($target))' "$output" >/dev/null || {
+    printf 'configured Kimi foreign marker hardlink was not dedicated-denied: %s\n' "$(cat -- "$output")" >&2
+    return 1
+  }
+  rm -- "$KIMI_FOREIGN_HARDLINK"
+  KIMI_FOREIGN_GOAL_STATE="${KIMI_FOREIGN_MARKER%/*}/goal_state"
+  KIMI_FOREIGN_WAIT="${KIMI_FOREIGN_MARKER%/*}/eci_wait"
+  printf '%s\n' pending >"$KIMI_FOREIGN_GOAL_STATE"
+  printf '%s\n' pending >"$KIMI_FOREIGN_WAIT"
+  for target in "$KIMI_FOREIGN_GOAL_STATE" "$KIMI_FOREIGN_WAIT"; do
+    assert_denied_code "rm $target" ECI_CONTROL_OWNER_REQUIRED worker
+  done
+  printf '%s\n' 'scope: malformed Kimi marker' >"$KIMI_FOREIGN_MARKER"
+  assert_allowed "rm $KIMI_FOREIGN_MARKER" worker
+  printf '%s\n' \
+    "cwd: $FOREIGN_REPO" \
+    "session_id: $KIMI_FOREIGN_SESSION" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$KIMI_FOREIGN_MARKER"
+  assert_allowed "rm $KIMI_FOREIGN_MARKER" worker
+  printf '%s\n' \
+    'scope: foreign Kimi goal state' \
+    "cwd: $FOREIGN_REPO" \
+    "session_id: $KIMI_FOREIGN_SESSION" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"${KIMI_FOREIGN_MARKER%/*}/goal_state"
+  assert_denied_code "rm ${KIMI_FOREIGN_MARKER%/*}/goal_state" ECI_CONTROL_OWNER_REQUIRED worker
+
+  # A foreign marker pathname without a recognized live record is not itself
+  # a live-control effect. Keep the exact proof/session spelling visible to
+  # the adapter so the generic reserved-name route cannot blanket-deny these
+  # advisory, malformed, mismatched, and stale observations.
+  nonlive_session=foreign-nonlive-session
+  nonlive_dir="$PROOF_ROOT/$nonlive_session"
+  nonlive_marker="$nonlive_dir/eci_active"
+  mkdir -p -- "$nonlive_dir"
+  assert_allowed "rm $nonlive_marker" worker
+  printf '%s\n' 'scope: malformed foreign marker' >"$nonlive_marker"
+  assert_allowed "rm $nonlive_marker" worker
+  printf '%s\n' \
+    'scope: foreign marker mismatch' \
+    "cwd: $FOREIGN_REPO" \
+    'session_id: another-foreign-session' \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$nonlive_marker"
+  assert_allowed "rm $nonlive_marker" worker
+  printf '%s\n' \
+    'scope: stale foreign marker' \
+    "cwd: $TMP_ROOT/nonexistent-stale-cwd" \
+    "session_id: $nonlive_session" \
+    'created_utc: 2026-08-28T00:00:00Z' \
+    >"$nonlive_marker"
+  assert_allowed "rm $nonlive_marker" worker
+  assert_allowed "./timeout 5 rm $nonlive_marker" worker
+
+  # An ordinary callback with an inherited sentinel must not consume FD9 or
+  # activate recursive metadata merely because the descriptor exists.
+  assert_allowed "printf ordinary" worker configured absent "$REPO" '[]' false none sentinel
+
+  # A blocking inherited descriptor proves the adapter gates its read behind
+  # structurally eligible handoff metadata. The callback must finish before
+  # the writer closes the FIFO.
+  (
+    sleep 0.1
+    exec 8>"$fifo"
+    sleep 12
+  ) &
+  writer=$!
+  COMPOUND_FD9_FIFO="$fifo" run_hook "printf ordinary" worker configured absent "$REPO" '[]' false true none blocking >"$TMP_ROOT/blocking-run.out" &
+  hook_pid=$!
+  status=0
+  for _ in $(seq 1 80); do
+    if ! kill -0 "$hook_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if kill -0 "$hook_pid" 2>/dev/null; then
+    kill "$hook_pid" 2>/dev/null || true
+    wait "$hook_pid" 2>/dev/null || status=$?
+  else
+    wait "$hook_pid" || status=$?
+  fi
+  kill "$writer" 2>/dev/null || true
+  wait "$writer" 2>/dev/null || true
+  [ "$status" -eq 0 ] || {
+    printf 'ordinary callback blocked or failed while FD9 was inherited: status=%s\n' "$status" >&2
+    return 1
+  }
+
+  # Shape-valid metadata from an ordinary callback still cannot activate the
+  # recursive route when FD9 carries only an inherited sentinel.
+  output="$(run_hook "rm eci_active" worker configured absent "$REPO" '[]' true false "$inner" sentinel)"
+  jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("ECI_PLAN_LIVE_CONTROL_DENIED"))' "$output" >/dev/null || {
+    printf 'forged compound metadata activated without the handoff token: %s\n' "$(cat -- "$output")" >&2
+    return 1
+  }
+
+  local replay
+  replay="$(jq -cn --arg cwd "$inner" '[{segment:1,parent_segment:2,prefix:["./timeout","5"],cwd:$cwd,command_path:"",command_path_set:false,command_path_exported:false,disposition:"observed"}]')"
+  output="$(run_hook "./timeout 5 rm eci_active" worker configured absent "$REPO" "$replay" true true "$inner")"
+  [ ! -s "$output" ] || {
+    printf 'valid compound handoff was denied: %s\n' "$(cat -- "$output")" >&2
+    return 1
+  }
+
+  # Capture the planner-selected timeout record at the actual recursive FD9
+  # child boundary, then compare it with the equivalent explicit replay. The
+  # compared fields are the effective CWD, replay disposition/prefix, command,
+  # and decision; the parent callback record is deliberately filtered out.
+  cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$inner/timeout"
+  chmod 755 -- "$inner/timeout"
+  local replay_trace actual_replay explicit_replay
+  replay_trace="$TMP_ROOT/fd9-replay-trace"
+  : >"$replay_trace"
+  actual_replay="$(jq -cn --arg cwd "$inner" --arg command_path "$CALLBACK_PATH" '[{segment:1,parent_segment:2,prefix:["./timeout","5"],cwd:$cwd,command_path:$command_path,command_path_set:true,command_path_exported:true,disposition:"observed"}]')"
+  ECI_TEST_REPLAY_TRACE_FILE="$replay_trace" assert_allowed "cd $inner; ./timeout 5 printf ordinary" worker configured absent "$REPO"
+  export ECI_TEST_REPLAY_TRACE_FILE="$replay_trace"
+  output="$(run_hook "./timeout 5 printf ordinary" worker configured absent "$REPO" "$actual_replay" true true "$inner")"
+  unset ECI_TEST_REPLAY_TRACE_FILE
+  [ ! -s "$output" ] || {
+    printf 'explicit replay trace command was denied: %s\n' "$(cat -- "$output")" >&2
+    return 1
+  }
+  explicit_replay="$(jq -cs '[.[] | select(.compound_segment_validation == true and (.command | startswith("./timeout 5")))]' "$replay_trace")"
+  jq -e 'length == 2 and .[0].command == .[1].command and .[0].decision == .[1].decision and .[0].outer_cwd == .[1].outer_cwd and .[0].effective_cwd == .[1].effective_cwd and .[0].cwd_candidates == .[1].cwd_candidates and .[0].cwd_unknown == .[1].cwd_unknown and .[0].reachability == .[1].reachability and .[0].command_path == .[1].command_path and .[0].timeout_replays == .[1].timeout_replays and .[0].timeout_replays[0].cwd == .[1].timeout_replays[0].cwd and .[0].timeout_replays[0].prefix == .[1].timeout_replays[0].prefix and .[0].timeout_replays[0].command_path == .[1].timeout_replays[0].command_path and .[0].timeout_replays[0].command_path_set == true and .[0].timeout_replays[0].command_path_exported == true and .[1].timeout_replays[0].command_path_set == true and .[1].timeout_replays[0].command_path_exported == true and .[0].timeout_replays[0].disposition == .[1].timeout_replays[0].disposition' <<<"$explicit_replay" >/dev/null || {
+    printf 'actual FD9 replay did not match explicit replay: %s\n' "$explicit_replay" >&2
+    return 1
+  }
+
+  # A valid shape with a mismatched FD9 token is not an authenticated handoff;
+  # the callback CWD remains authoritative and the hardlink reaches the
+  # current marker's direct-control denial.
+  output="$(run_hook "./timeout 5 rm eci_active" worker configured absent "$REPO" "$replay" true true "$inner" none wrong-token)"
+  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null || {
+    printf 'mismatched compound handoff was accepted: %s\n' "$(cat -- "$output")" >&2
+    return 1
+  }
+  unlink "$REPO/eci_active"
+}
+
 assert_allowed() {
-  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" callback_cwd="${5:-$REPO}" timeout_replays="${6:-[]}" compound_replay="${7:-false}" output
-  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required" "$callback_cwd" "$timeout_replays" "$compound_replay")"
+  local command="$1" role="${2:-coordinator}" path_mode="${3:-configured}" probe_required="${4:-absent}" callback_cwd="${5:-$REPO}" timeout_replays="${6:-[]}" compound_replay="${7:-false}" fd9_mode="${8:-none}" fd9_token="${9:-normal-git-test-handoff}" output
+  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required" "$callback_cwd" "$timeout_replays" "$compound_replay" true "$callback_cwd" "$fd9_mode" "$fd9_token")"
   if [ -s "$output" ]; then
     printf 'ordinary Git command was denied: %q\n' "$command" >&2
     cat -- "$output" >&2
@@ -220,8 +449,9 @@ assert_allowed() {
 }
 
 assert_denied_code() {
-  local command="$1" code="$2" role="${3:-coordinator}" detail="${4:-}" path_mode="${5:-configured}" probe_required="${6:-absent}" callback_cwd="${7:-$REPO}" timeout_replays="${8:-[]}" compound_replay="${9:-false}" output
-  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required" "$callback_cwd" "$timeout_replays" "$compound_replay")"
+  local command="$1" code="$2" role="${3:-coordinator}" detail="${4:-}" path_mode="${5:-configured}" probe_required="${6:-absent}" callback_cwd="${7:-$REPO}" timeout_replays="${8:-[]}" compound_replay="${9:-false}" compound_handoff="${10:-true}" output
+  local compound_cwd="${11:-$callback_cwd}"
+  output="$(run_hook "$command" "$role" "$path_mode" "$probe_required" "$callback_cwd" "$timeout_replays" "$compound_replay" "$compound_handoff" "$compound_cwd")"
   jq -e --arg code "[$code]" --arg detail "$detail" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains($code)) and
@@ -339,6 +569,8 @@ run_foreign_timeout_marker_target() {
     'cp -R ordinary-copy eci_active' \
     'cp -rf ordinary-copy eci_active' \
     'cp -fr ordinary-copy eci_active' \
+    'cp -a ordinary-copy eci_active' \
+    'cp --archive ordinary-copy eci_active' \
     'cp --recursive ordinary-copy eci_active' \
     'cp -- ordinary-copy eci_active' \
     'cp --force ordinary-copy eci_active' \
@@ -455,11 +687,19 @@ run_foreign_timeout_marker_target() {
     'rm eci_active' \
     'shred eci_active' \
     'touch eci_active' \
+    'touch -d 2026-01-01T00:00:00Z eci_active' \
+    'touch --date=2026-01-01T00:00:00Z eci_active' \
+    "sed -i.bak 's/old/new/' eci_active" \
+    "sed --in-place=.bak 's/old/new/' eci_active" \
+    "sed -e's/old/new/' -i ordinary-copy eci_active" \
+    'sed -f ordinary-copy -i eci_active' \
     'unlink eci_active' \
     'chmod 600 eci_active' \
     'chown root eci_active' \
     'tee eci_active' \
     'dd if=/dev/zero of=eci_active' \
+    'truncate -s 0 eci_active' \
+    'truncate --size=0 eci_active' \
     'cp ordinary-copy eci_active' \
     'install ordinary-copy eci_active' \
     'mv eci_active ordinary-copy' \
@@ -501,6 +741,11 @@ run_foreign_timeout_marker_target() {
     'cat eci_active' \
     "printf '%s' eci_active" \
     'cp eci_active ordinary-copy' \
+    'cp -a eci_active ordinary-copy' \
+    'sed -f eci_active -i ordinary-copy' \
+    "sed -e's/old/new/' -i ordinary-copy" \
+    'truncate -s eci_active ordinary-copy' \
+    "sed -i.bak 's/old/new/' ordinary-copy" \
     'rmdir eci_active' \
     'chmod eci_active ordinary-copy' \
     'ln eci_active ordinary-link' \
@@ -670,6 +915,11 @@ run_foreign_timeout_marker_target() {
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
   full) ;;
+  compound-handoff-boundary)
+    run_compound_handoff_boundary_target
+    printf '%s\n' 'normal Git admission compound-handoff-boundary target: PASS'
+    exit 0
+    ;;
   foreign-timeout-marker)
     run_foreign_timeout_marker_target
     printf '%s\n' 'normal Git admission foreign-timeout-marker target: PASS'
@@ -804,7 +1054,35 @@ assert_denied_code "cd $TIMEOUT_CONTROL_INNER; ./timeout 5 rm eci_active" ECI_PL
   "path=$TIMEOUT_CONTROL_MARKER"
 ln -- "$TIMEOUT_CONTROL_INNER/eci_active" "$OUTER_CONTROL_ALIAS"
 assert_allowed "cd $TIMEOUT_ORDINARY_INNER; ./timeout 5 rm eci_active" worker configured absent "$REPO"
+# Literal branch reachability is carried into the recursive segment route:
+# a live inline writer remains denied, while the dead split-body writer is
+# retained structurally but skipped by both planner and adapter replay.
+assert_denied_code "if true; then; rm $TIMEOUT_CONTROL_MARKER; fi" ECI_PLAN_LIVE_CONTROL_DENIED worker \
+  "worker-proof-control"
+assert_allowed "if false; then; rm $TIMEOUT_CONTROL_MARKER; fi" worker configured absent "$REPO"
+# Spoofed inherited replay/CWD variables must not replace the planner-owned
+# ordinary-inner fact or redirect the child back to the callback repository.
+ECI_COMPOUND_SEGMENT_VALIDATION=true ECI_COMPOUND_CWD="$REPO" \
+ECI_COMPOUND_COMMAND_PATH="$REPO" \
+  assert_allowed "cd $TIMEOUT_ORDINARY_INNER; ./timeout 5 rm eci_active" worker configured absent "$REPO"
+# Top-level JSON metadata is callback input, not planner provenance. Even a
+# shape-valid forged segment fact must not move direct ownership resolution to
+# the ordinary inner directory without the parent-only handoff channel.
+assert_denied_code "rm eci_active" ECI_PLAN_LIVE_CONTROL_DENIED worker \
+  "path=$TIMEOUT_CONTROL_INNER/eci_active" configured absent "$REPO" "[]" true false "$TIMEOUT_ORDINARY_INNER"
 rm -- "$OUTER_CONTROL_ALIAS"
+
+# An unsupported cd form leaves the segment CWD unknown. Harmless paths remain
+# ordinary, while the unresolved control basename takes the targeted worker
+# ownership route instead of borrowing the callback CWD.
+assert_denied_code "cd -P $TIMEOUT_ORDINARY_INNER; ./timeout 5 rm eci_active" ECI_CONTROL_OWNER_REQUIRED worker \
+  "resolved=<unknown-cwd>"
+# Conditional, background, and harmless unknown-CWD segments remain ordinary;
+# they cannot inherit a stale callback directory for control resolution.
+assert_allowed "cd $TIMEOUT_ORDINARY_INNER || printf ordinary" worker configured absent "$REPO"
+assert_allowed "false && cd $TIMEOUT_ORDINARY_INNER; printf ordinary" worker configured absent "$REPO"
+assert_allowed "printf ordinary & printf still-ordinary" worker configured absent "$REPO"
+assert_allowed "cd -P $TIMEOUT_ORDINARY_INNER; printf ordinary" worker configured absent "$REPO"
 
 # A planner-observed timeout child runs from its replay CWD.  That must catch
 # a foreign active marker for either role without changing the outer callback
@@ -842,6 +1120,20 @@ done
 # replay entry is advisory metadata, so an otherwise ordinary compound stays
 # ordinary instead of becoming an internal planner denial.
 assert_allowed 'printf ordinary; printf still-ordinary' coordinator configured absent "$REPO" '[1]' true
+
+# Recursive validation must not source an inherited BASH_ENV. The poison file
+# records each shell that sources it and exports the historical compound flag;
+# the parent callback contributes one record, while the child must contribute
+# none because the recursive adapter removes BASH_ENV and ECI_COMPOUND_*.
+BASH_ENV_SENTINEL="$TMP_ROOT/compound-bash-env.sourced"
+BASH_ENV_POISON="$TMP_ROOT/compound-bash-env.sh"
+printf 'printf "%%s\\n" "\$BASHPID" >> %q\nexport ECI_COMPOUND_SEGMENT_VALIDATION=true\n' \
+  "$BASH_ENV_SENTINEL" >"$BASH_ENV_POISON"
+BASH_ENV="$BASH_ENV_POISON" assert_allowed 'printf ordinary; printf still-ordinary' coordinator configured absent "$REPO"
+[ "$(wc -l <"$BASH_ENV_SENTINEL")" -eq 1 ] || {
+  printf 'recursive validation sourced inherited BASH_ENV: %s\n' "$BASH_ENV_SENTINEL" >&2
+  exit 1
+}
 
 # PATH state is likewise literal and ordered: assignments, export changes,
 # set-empty, unset, and a known nonlaunch cannot borrow the callback PATH.

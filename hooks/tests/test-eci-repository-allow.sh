@@ -45,8 +45,10 @@ printf '%s\n' enforcing >"$TMP_ROOT/config/eci/command-gate-mode"
 
 WORK="$TMP_ROOT/work"
 DEPENDENCY="$TMP_ROOT/dependency"
+UNDECLARED_DEPENDENCY="$TMP_ROOT/undeclared-dependency"
 mkdir -p -- "$WORK" "$DEPENDENCY"
-for path in "$WORK" "$DEPENDENCY"; do
+mkdir -p -- "$UNDECLARED_DEPENDENCY"
+for path in "$WORK" "$DEPENDENCY" "$UNDECLARED_DEPENDENCY"; do
   git -C "$path" init -q
   git -C "$path" config user.email repository-allow-test@example.invalid
   git -C "$path" config user.name 'Repository Allow Test'
@@ -58,6 +60,9 @@ done
 WORK="$(realpath -e -- "$WORK")"
 DEPENDENCY_ALIAS="$DEPENDENCY"
 DEPENDENCY="$(realpath -e -- "$DEPENDENCY")"
+WORKER_SCRIPT="$DEPENDENCY/allowance-script.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$WORKER_SCRIPT"
+chmod 755 -- "$WORKER_SCRIPT"
 PROOF_ROOT="$TMP_ROOT/proof"
 SESSION='repository-allow-session'
 mkdir -p -- "$PROOF_ROOT/$SESSION"
@@ -67,15 +72,25 @@ printf '%s\n' \
   "session_id: $SESSION" \
   'created_utc: 2026-09-14T00:00:00Z' \
   >"$PROOF_ROOT/$SESSION/eci_active"
+OTHER_SESSION='other-repository-allow-session'
+mkdir -p -- "$PROOF_ROOT/$OTHER_SESSION"
+printf '%s\n' \
+  'scope: repository allowance other-session test' \
+  "cwd: $WORK" \
+  "session_id: $OTHER_SESSION" \
+  'created_utc: 2026-09-14T00:00:00Z' \
+  >"$PROOF_ROOT/$OTHER_SESSION/eci_active"
 
 run_hook() {
   local command="$1" role="${2:-worker}" session="${3:-$SESSION}" output="$TMP_ROOT/hook-output.json"
+  local is_subagent=true
+  [ "$role" = worker ] || is_subagent=false
 
   jq -cn --arg session "$session" --arg cwd "$WORK" --arg command "$command" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' |
     (
       export HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT"
-      export CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT=true
+      export CODEX_ROLE="$role" CODEX_HOOK_IS_SUBAGENT="$is_subagent"
       export XDG_CONFIG_HOME="$TMP_ROOT/config" XDG_STATE_HOME="$TMP_ROOT/state"
       PATH="$RUNTIME_ROOT/bin:/usr/local/bin:/usr/bin:/bin" \
         /bin/bash -c 'bash "$HOME/.codex/hooks/validate-bash.sh"'
@@ -84,19 +99,47 @@ run_hook() {
 }
 
 assert_denied_foreign() {
-  local command="$1" session="${2:-$SESSION}" output
-  output="$(run_hook "$command" worker "$session")"
+  local command="$1" session="${2:-$SESSION}"
+  assert_denied_foreign_as worker "$command" "$session"
+}
+
+assert_denied_foreign_as() {
+  local role="$1" command="$2" session="${3:-$SESSION}" output
+  output="$(run_hook "$command" "$role" "$session")"
   grep -Fq -- 'ECI_GIT_CROSS_SCOPE_DENIED' <<<"$output" || {
-    printf 'undeclared dependency command was not denied: %s\n%s\n' "$command" "$output" >&2
+    printf 'undeclared dependency command was not denied: role=%s command=%s\n%s\n' "$role" "$command" "$output" >&2
     return 1
   }
 }
 
 assert_allowed_foreign() {
-  local command="$1" session="${2:-$SESSION}" output
-  output="$(run_hook "$command" worker "$session")"
+  local command="$1" session="${2:-$SESSION}"
+  assert_allowed_foreign_as worker "$command" "$session"
+}
+
+assert_allowed_foreign_as() {
+  local role="$1" command="$2" session="${3:-$SESSION}" output
+  output="$(run_hook "$command" "$role" "$session")"
   [ -z "$output" ] || {
-    printf 'declared dependency command was denied: %s\n%s\n' "$command" "$output" >&2
+    printf 'declared dependency command was denied: role=%s command=%s\n%s\n' "$role" "$command" "$output" >&2
+    return 1
+  }
+}
+
+assert_denied_worker_script() {
+  local command="$1" output
+  output="$(run_hook "$command" worker)"
+  grep -Fq -- 'ECI_WORKER_SCRIPT_TARGET_DENIED' <<<"$output" || {
+    printf 'undeclared dependency script was not denied: %s\n%s\n' "$command" "$output" >&2
+    return 1
+  }
+}
+
+assert_allowed_worker_script() {
+  local command="$1" output
+  output="$(run_hook "$command" worker)"
+  [ -z "$output" ] || {
+    printf 'declared dependency script was denied: %s\n%s\n' "$command" "$output" >&2
     return 1
   }
 }
@@ -110,40 +153,96 @@ assert_allowed_lifecycle() {
   }
 }
 
+assert_denied_lifecycle() {
+  local command="$1" output
+  output="$(run_hook "$command")"
+  jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$output" >/dev/null 2>&1 || {
+    printf 'invalid repository-allow lifecycle route was admitted: %s\n' "$command" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+}
+
 assert_denied_foreign "git -C $DEPENDENCY status --short"
+assert_denied_foreign_as coordinator "git -C $DEPENDENCY add -- file.txt"
+assert_denied_foreign_as coordinator 'git -C ../dependency add -- file.txt'
+assert_denied_worker_script "bash $WORKER_SCRIPT"
 
 (
   cd -- "$WORK"
-  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=worker \
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
     "$RUNTIME_ROOT/bin/eci-active" repository-allow-on "$DEPENDENCY_ALIAS" \
-    'worker owns a narrow dependency inspection and repair'
+    'active session owns narrow dependency Git work'
 )
 
 ALLOWANCE="$PROOF_ROOT/$SESSION/eci-additional-repository"
 [ -f "$ALLOWANCE" ] && [ "$(stat -Lc '%a' -- "$ALLOWANCE")" = 600 ]
 grep -Fqx -- "repository: $DEPENDENCY" "$ALLOWANCE"
-grep -Fqx -- 'reason: worker owns a narrow dependency inspection and repair' "$ALLOWANCE"
+grep -Fqx -- 'reason: active session owns narrow dependency Git work' "$ALLOWANCE"
 assert_allowed_lifecycle '"$HOME/.codex/bin/eci-active" repository-allow-status'
 assert_allowed_lifecycle "env CODEX_SESSION_ID=$SESSION \"\$HOME/.codex/bin/eci-active\" repository-allow-status"
+assert_allowed_lifecycle "env CODEX_SESSION_ID=$SESSION \"$RUNTIME_ROOT/bin/eci-active\" repository-allow-status"
 assert_allowed_lifecycle "\"\$HOME/.codex/bin/eci-active\" repository-allow-on $DEPENDENCY \"owner keeps dependency repair local\""
+assert_allowed_lifecycle "\"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on $DEPENDENCY \"owner keeps dependency repair local\""
 assert_allowed_lifecycle "\"\$HOME/.codex/bin/eci-active\" repository-allow-off $DEPENDENCY"
+assert_allowed_lifecycle "\"\$HOME/.codex/bin/eci-active\" repository-allow-on $DEPENDENCY \"dependency; repair remains local\""
+assert_allowed_lifecycle "\"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on $DEPENDENCY 'literal \$(id) stays text'"
+assert_allowed_lifecycle "\"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on $DEPENDENCY \"reason\$(id)\""
+assert_allowed_lifecycle "\"\$HOME/.codex/bin/eci-active\" repository-allow-on $DEPENDENCY \"safe first segment\"; id"
+assert_allowed_lifecycle "\"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on $DEPENDENCY \"safe first segment\" && id"
+assert_denied_lifecycle '"$HOME/.codex/bin/eci-active" repository-allow-on /tmp "x" extra'
+assert_denied_lifecycle "\"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on /tmp \"x\" extra"
+assert_denied_lifecycle "env CODEX_PROOF_ROOT=$PROOF_ROOT \"\$HOME/.codex/bin/eci-active\" repository-allow-status"
+assert_denied_lifecycle "env CODEX_PROOF_ROOT=$PROOF_ROOT \"$RUNTIME_ROOT/bin/eci-active\" repository-allow-status"
+assert_denied_lifecycle "env CODEX_SESSION_ID=$OTHER_SESSION \"\$HOME/.codex/bin/eci-active\" repository-allow-on $DEPENDENCY \"other session\""
+assert_denied_lifecycle "env CODEX_SESSION_ID=$OTHER_SESSION \"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on $DEPENDENCY \"other session\""
+assert_denied_foreign "\"\$HOME/.codex/bin/eci-active\" repository-allow-on $DEPENDENCY \"safe first segment\"; git -C $UNDECLARED_DEPENDENCY add -- file.txt"
+assert_denied_foreign "\"$RUNTIME_ROOT/bin/eci-active\" repository-allow-on $DEPENDENCY \"reason\$(git -C $UNDECLARED_DEPENDENCY add -- file.txt)\""
+assert_denied_lifecycle "\"\$HOME/.codex/bin/eci-active\" repository-allow-on $DEPENDENCY \"safe first segment\"; \"$RUNTIME_ROOT/bin/eci-active\" on \"worker must not activate an ECI session\""
 assert_allowed_foreign "git -C $DEPENDENCY status --short"
 assert_allowed_foreign "git -C $DEPENDENCY diff -- file.txt"
+assert_allowed_foreign "git -C $DEPENDENCY add -- file.txt"
+assert_allowed_foreign_as coordinator "git -C $DEPENDENCY add -- file.txt"
+assert_allowed_foreign_as coordinator 'git -C ../dependency add -- file.txt'
+assert_allowed_worker_script "bash $WORKER_SCRIPT"
+
+worker_commit_output="$(run_hook "git -C $DEPENDENCY commit --allow-empty -m worker-commit" worker)"
+grep -Fq -- 'ECI_WORKER_GIT_OWNERSHIP_DENIED' <<<"$worker_commit_output" || {
+  printf 'declared dependency allowance bypassed worker commit prohibition:\n%s\n' "$worker_commit_output" >&2
+  exit 1
+}
+
+printf '%s\n' \
+  'scope: repository allowance test' \
+  "cwd: $DEPENDENCY" \
+  "session_id: $SESSION" \
+  'created_utc: 2026-09-14T00:00:00Z' \
+  >"$PROOF_ROOT/$SESSION/eci_active"
+cwd_mismatch_output="$(run_hook "git -C $DEPENDENCY add -- file.txt" coordinator)"
+[ -n "$cwd_mismatch_output" ] || {
+  printf 'repository allowance survived an active marker CWD mismatch\n' >&2
+  exit 1
+}
+printf '%s\n' \
+  'scope: repository allowance test' \
+  "cwd: $WORK" \
+  "session_id: $SESSION" \
+  'created_utc: 2026-09-14T00:00:00Z' \
+  >"$PROOF_ROOT/$SESSION/eci_active"
+
+assert_denied_foreign_as coordinator "git -C $UNDECLARED_DEPENDENCY add -- file.txt"
 
 (
   cd -- "$WORK"
-  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=worker \
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
     "$RUNTIME_ROOT/bin/eci-active" repository-allow-status
 )
 
-OTHER_SESSION='other-repository-allow-session'
-mkdir -p -- "$PROOF_ROOT/$OTHER_SESSION"
-printf '%s\n' 'scope: repository allowance other-session test' "cwd: $WORK" "session_id: $OTHER_SESSION" >"$PROOF_ROOT/$OTHER_SESSION/eci_active"
 assert_denied_foreign "git -C $DEPENDENCY status --short" "$OTHER_SESSION"
 
 (
   cd -- "$WORK"
-  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=worker \
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
     "$RUNTIME_ROOT/bin/eci-active" repository-allow-off "$DEPENDENCY_ALIAS"
 )
 assert_denied_foreign "git -C $DEPENDENCY status --short"

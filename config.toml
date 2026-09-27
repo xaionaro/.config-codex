@@ -1,9 +1,11 @@
 #model = "qwen3.8:27b-mlx"
 #model_provider = "ollama"
 #model_reasoning_effort = "xhigh"
-#oss_provider = "ollama"
-model = "gpt-reserve"
-review_model = "gpt-6-astra"
+oss_provider = "ollama"
+model = "gpt-6-luna"
+review_model = "gpt-6-luna"
+#model = "gpt-reserve"
+#review_model = "gpt-6-astra"
 model_reasoning_effort = "max"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
@@ -16,9 +18,7 @@ service_tier = "default"
 [features]
 hooks = true
 image_generation = false
-child_agents_md = true
 multi_agent = true
-sqlite = false
 multi_agent_v2 = true
 
 [agents]
@@ -74,9 +74,13 @@ url = "https://developers.openai.com/mcp"
 [notice]
 hide_rate_limit_model_nudge = true
 
+[notice.model_migrations]
+"hf.co/xaionaro/qwen38-fcf-gguf:Q4_K_M" = "gpt-6-sol"
+
 [tui]
 status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]
 terminal_title = ["activity", "project-name", "task-progress"]
+screen_reader_detection_done = true
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
@@ -109,9 +113,19 @@ name = "Z.AI (GLM) via local responses-bridge proxy"
 base_url = "http://127.0.0.1:8463/v1"
 wire_api = "responses"
 
+[model_providers.ollama_qwen]
+name = "Ollama (qwen3.8-fcf)"
+base_url = "http://192.168.0.171:11434/v1/"
+wire_api = "responses"
+
 [model_providers.deepseek_direct]
 name = "DeepSeek (direct via local proxy)"
 base_url = "http://127.0.0.1:5000/v1"
+wire_api = "responses"
+
+[model_providers.llamacpp]
+name = "llama.cpp (ternary-bonsai-2-27b) via local proxy"
+base_url = "http://127.0.0.1:9914/v1/"
 wire_api = "responses"
 
 [profiles.deepseek-v4-pro]
@@ -301,6 +315,12 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/ndk"]
+trust_level = "trusted"
+
+[projects."/home/pheona/.config/crush"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/tmp"]
 trust_level = "trusted"
 
 [hooks.state]

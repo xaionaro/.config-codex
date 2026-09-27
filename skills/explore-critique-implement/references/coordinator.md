@@ -23,6 +23,10 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - The forecast line itself names the finished outcome; a separate Lane or Next milestone does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
 - Use the two templates above exactly: named lane/task or root outcome and UTC deadline only. Do not append text.
 - For a changed lane or root forecast, restate its current canonical line in the same update, then state Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.
+- For every material ECI forecast update, report a separate base-case and
+  downside-scenario spread block per the [canonical ledger rule](../../maintaining-context-ledger/SKILL.md#eci-scenario-forecasts).
+  Keep the standalone forecast and recalibration lines above exact; the ledger
+  owns scenario selection and stored endpoints.
 - If any forecast is missing or stale, say so and reconcile it alongside safe work without delaying the update.
 - Forecasts are advisory. They never gate work, grant or deny permissions, require artifacts or receipts, create blockers, require parsers, or require per-command ceremony.
 - Use the [`forecast-target-history.tsv` audit contract](../../maintaining-context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.

@@ -342,6 +342,29 @@ if [ "${1:-}" != --git-clone-source-acquisition ]; then
   done
 fi
 
+# Active provider callbacks must forward Go planner classifications through
+# the configured coordinator route. These commands are classified only; the
+# callback never executes submitted argv such as `file -C`.
+for provider in codex kimi; do
+  run_hook "$provider" 'find /tmp -maxdepth 1 -type f -exec ./file --brief {} \;' \
+    deny coordinator-find-reader-alias ECI_PLAN_DYNAMIC_LAUNCH_DENIED coordinator 10000 \
+    'predicate=dynamic-find-action'
+  run_hook "$provider" 'find /tmp -maxdepth 1 -type f -exec file -C -m /tmp/eci-find-compile.magic {} \;' \
+    deny coordinator-find-file-short-compile ECI_PLAN_DYNAMIC_LAUNCH_DENIED coordinator 10000 \
+    'predicate=dynamic-find-action'
+  run_hook "$provider" 'find /tmp -maxdepth 1 -type f -exec file --compile -m /tmp/eci-find-compile.magic {} \;' \
+    deny coordinator-find-file-long-compile ECI_PLAN_DYNAMIC_LAUNCH_DENIED coordinator 10000 \
+    'predicate=dynamic-find-action'
+  run_hook "$provider" 'find /tmp -maxdepth 1 -type f -exec printf %s {} \; && printf done' \
+    deny coordinator-compound-exec ECI_PLAN_DYNAMIC_LAUNCH_DENIED coordinator 10000 \
+    'predicate=dynamic-find-action'
+  run_hook "$provider" 'find /tmp -maxdepth 1 -type f -delete && printf done' \
+    deny coordinator-compound-delete ECI_PLAN_DYNAMIC_LAUNCH_DENIED coordinator 10000 \
+    'predicate=dynamic-find-action'
+  run_hook "$provider" 'find /tmp -maxdepth 1 -type f -print && printf done' \
+    allow coordinator-safe-compound-find
+done
+
 # An active raw Git read is deliberately a status-3 planner result. The
 # provider adapter then resolves its concrete repository effect. A harmless
 # read is admitted; planner deferral is not itself a permission denial.

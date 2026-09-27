@@ -1951,6 +1951,18 @@ run_matrix_parallel worker assert_worker_dynamic_find_action_denied worker-dynam
 run_subagent_matrix_parallel allowed worker-tmp-inspection \
   "find /tmp -maxdepth 1 -type d -print"
 
+run_matrix_parallel coordinator assert_coordinator_dynamic_find_action_denied coordinator-dynamic-find-actions \
+  "find /tmp -maxdepth 1 -type f -exec file --brief {} \\;" \
+  "find /tmp -maxdepth 1 -type f -exec ./file --brief {} \\;" \
+  "find /tmp -maxdepth 1 -type f -exec /tmp/file --brief {} \\;" \
+  "find /tmp -maxdepth 1 -type f -exec ../file --brief {} \\;" \
+  "find /tmp -maxdepth 1 -type f -exec file -C -m $TMP_ROOT/magic-file {} \\;" \
+  "find /tmp -maxdepth 1 -type f -exec file --compile -m $TMP_ROOT/magic-file {} \\;" \
+  "find /tmp -maxdepth 1 -type f -exec printf '%s' {} \\; && printf done" \
+  "find /tmp -maxdepth 1 -type f -delete && printf done"
+run_matrix_parallel coordinator assert_allowed coordinator-safe-compound-find \
+  "find /tmp -maxdepth 1 -type f -print && printf done"
+
 # Coordinator project inspection accepts finite literal lists from the
 # validated companion Kimi root, including bounded find/stat forms.
 kimi_find_a="$kimi_root/.codex-runner-test.0dcfk8kp"

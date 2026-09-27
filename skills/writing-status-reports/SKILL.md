@@ -88,6 +88,27 @@ State dependencies and parallel work. For parallel children, report the single
 critical-path deadline; child deadlines remain parallel; never add or sum
 parallel child deadlines into a parent, root, or mission deadline.
 
+#### ECI forecast scenario spread
+
+For each material ECI forecast update, including nested ECI, add a separate
+report-only block beside the canonical forecast line. Keep the forecast line
+exact. Show the base case and each named evidence-supported downside scenario
+or supported combination; identify the lane or root in each row:
+
+| Lane/root and case | Trigger/evidence | Affected work/dependency | Added duration/range and basis | Endpoint/range |
+| --- | --- | --- | --- | --- |
+| `<lane/root> — base case` | No listed downside scenario | Remaining authorized in-scope critical-path work | No generic buffer | `<UTC>` |
+| `<lane/root> — <scenario or supported combination>` | `<trigger/evidence>` | `<work/dependency>` | `<duration/range; basis>` | `<UTC endpoint/range>` |
+
+For each lane/root, state the finite displayed spread from the base-case
+endpoint through the latest bounded scenario endpoint. Name material
+unknown/unbounded risks without fabricating a duration or endpoint; do not
+describe the finite spread as an absolute worst case. Do not invent
+probabilities. Follow the canonical
+[ledger scenario rule](../maintaining-context-ledger/SKILL.md#eci-scenario-forecasts)
+for duration combinations, mutually exclusive scenarios, overlap, and root
+critical-path endpoints.
+
 Forecasts are advisory. They never gate work, grant or deny permissions, require
 artifacts or receipts, create blockers, require parsers, or require per-command
 ceremony. Missing or stale forecasts are planning-quality defects. Reconcile
@@ -119,6 +140,29 @@ path](../explore-critique-implement/references/fast-path.md) for their relations
 Missing, stale, or unknown stage metadata is reported and reconciled
 without pausing harmless work. Stage records never authorize work or change
 the implementation/test/production status meanings below.
+
+After coordinator-confirmed Fast completion, report one `Root-task status` per
+root task, on a separate line outside the lane-readiness table. Use
+`Root-task status: FOLLOWUP` or `Root-task status: FOLLOWUP_PAUSED`. Omit this
+field before genuine Fast completion and after coordinator acceptance or
+explicit user closure. Keep these root-task statuses separate from the existing
+Implementation, Test, and Prod status columns and their vocabulary.
+For reports covering multiple root tasks, put each status on its own line and
+identify it by task ID or human-readable outcome, e.g.
+`Root-task status [1.2 / checkout flow]: FOLLOWUP_PAUSED`.
+
+| `Root-task status` | Use |
+| --- | --- |
+| `FOLLOWUP` | Genuine Fast completion is confirmed and required post-Fast work remains unaccepted, unless the next required post-Fast action cannot advance because it awaits a named in-scope dependency. |
+| `FOLLOWUP_PAUSED` | The next required post-Fast action cannot advance because it awaits a named in-scope dependency. Report the dependency, impact, owner, and resume condition; return to `FOLLOWUP` when it clears. |
+
+These statuses cover only the mandatory post-Fast sequence, not separate-outcome
+observations. A user input or decision remains `BLOCKED` in the affected lane,
+with the exact input, impact, owner (`user`), unblock action, and target; do not
+use it as the reason for `FOLLOWUP_PAUSED`. While the sequence remains
+unaccepted, keep the root-task status `FOLLOWUP` unless the next required
+post-Fast action cannot advance because it awaits a named in-scope dependency.
+End either root-task status on coordinator acceptance or explicit user closure.
 
 Use a short `Requirements` list near the table only when it makes the report
 clearer. It is a readable projection of the ledger, not an admission artifact.
