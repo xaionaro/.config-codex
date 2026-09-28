@@ -46,6 +46,8 @@ printf '%s\n' enforcing >"$TMP_ROOT/config/eci/command-gate-mode"
 WORK="$TMP_ROOT/work"
 DEPENDENCY="$TMP_ROOT/dependency"
 UNDECLARED_DEPENDENCY="$TMP_ROOT/undeclared-dependency"
+ABSENT_DEPENDENCY="$TMP_ROOT/absent-dependency"
+ABSENT_WRONG_PATH="$TMP_ROOT/wrong-absent-dependency"
 mkdir -p -- "$WORK" "$DEPENDENCY"
 mkdir -p -- "$UNDECLARED_DEPENDENCY"
 for path in "$WORK" "$DEPENDENCY" "$UNDECLARED_DEPENDENCY"; do
@@ -72,6 +74,7 @@ printf '%s\n' \
   "session_id: $SESSION" \
   'created_utc: 2026-09-14T00:00:00Z' \
   >"$PROOF_ROOT/$SESSION/eci_active"
+ALLOWANCE="$PROOF_ROOT/$SESSION/eci-additional-repository"
 OTHER_SESSION='other-repository-allow-session'
 mkdir -p -- "$PROOF_ROOT/$OTHER_SESSION"
 printf '%s\n' \
@@ -110,6 +113,19 @@ assert_denied_foreign_as() {
     printf 'undeclared dependency command was not denied: role=%s command=%s\n%s\n' "$role" "$command" "$output" >&2
     return 1
   }
+}
+
+assert_additional_repository_not_allowed() {
+  local repository="$1"
+  if (
+    export HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT"
+    . "$RUNTIME_ROOT/hooks/lib/codex-proof-state.sh"
+    codex_eci_additional_repository_is_allowed "$SESSION" "$WORK" "$repository"
+  ); then
+    printf 'missing repository target was accepted by the allowance predicate: %s\n' \
+      "$repository" >&2
+    return 1
+  fi
 }
 
 assert_allowed_foreign() {
@@ -168,6 +184,27 @@ assert_denied_foreign_as coordinator "git -C $DEPENDENCY add -- file.txt"
 assert_denied_foreign_as coordinator 'git -C ../dependency add -- file.txt'
 assert_denied_worker_script "bash $WORKER_SCRIPT"
 
+if (
+  cd -- "$WORK"
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
+    "$RUNTIME_ROOT/bin/eci-active" repository-allow-on "$ABSENT_DEPENDENCY" \
+    'missing repositories cannot be granted'
+) >"$TMP_ROOT/absent-grant-output.txt" 2>&1; then
+  printf 'repository-allow-on accepted an absent repository target\n' >&2
+  exit 1
+fi
+[ ! -e "$ALLOWANCE" ] && [ ! -L "$ALLOWANCE" ]
+assert_additional_repository_not_allowed "$ABSENT_DEPENDENCY"
+if (
+  cd -- "$WORK"
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
+    "$RUNTIME_ROOT/bin/eci-active" repository-allow-off "$ABSENT_DEPENDENCY"
+) >"$TMP_ROOT/absent-unbound-revocation-output.txt" 2>&1; then
+  printf 'repository-allow-off accepted an absent path without a stored allowance\n' >&2
+  exit 1
+fi
+[ ! -e "$ALLOWANCE" ] && [ ! -L "$ALLOWANCE" ]
+
 (
   cd -- "$WORK"
   env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
@@ -175,7 +212,6 @@ assert_denied_worker_script "bash $WORKER_SCRIPT"
     'active session owns narrow dependency Git work'
 )
 
-ALLOWANCE="$PROOF_ROOT/$SESSION/eci-additional-repository"
 [ -f "$ALLOWANCE" ] && [ "$(stat -Lc '%a' -- "$ALLOWANCE")" = 600 ]
 grep -Fqx -- "repository: $DEPENDENCY" "$ALLOWANCE"
 grep -Fqx -- 'reason: active session owns narrow dependency Git work' "$ALLOWANCE"
@@ -247,6 +283,51 @@ assert_denied_foreign "git -C $DEPENDENCY status --short" "$OTHER_SESSION"
 )
 assert_denied_foreign "git -C $DEPENDENCY status --short"
 [ ! -e "$ALLOWANCE" ] && [ ! -L "$ALLOWANCE" ]
+
+(
+  cd -- "$WORK"
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
+    "$RUNTIME_ROOT/bin/eci-active" repository-allow-on "$DEPENDENCY" \
+    'active session owns narrow dependency Git work'
+)
+cp -- "$ALLOWANCE" "$TMP_ROOT/allowance-before-absent-revocation"
+cp -- "$PROOF_ROOT/$SESSION/eci_active" "$TMP_ROOT/marker-before-absent-revocation"
+mv -- "$DEPENDENCY" "$TMP_ROOT/dependency-removed"
+
+if (
+  cd -- "$WORK"
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
+    "$RUNTIME_ROOT/bin/eci-active" repository-allow-status
+) >"$TMP_ROOT/absent-status-output.txt" 2>&1; then
+  printf 'repository-allow-status accepted an allowance for a missing target\n' >&2
+  exit 1
+fi
+assert_additional_repository_not_allowed "$DEPENDENCY"
+assert_denied_foreign "git -C $TMP_ROOT/dependency-removed status --short"
+
+if (
+  cd -- "$WORK"
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
+    "$RUNTIME_ROOT/bin/eci-active" repository-allow-off "$ABSENT_WRONG_PATH"
+) >"$TMP_ROOT/wrong-absent-revocation-output.txt" 2>&1; then
+  printf 'repository-allow-off accepted a different absent path\n' >&2
+  exit 1
+fi
+cmp -- "$TMP_ROOT/allowance-before-absent-revocation" "$ALLOWANCE"
+cmp -- "$TMP_ROOT/marker-before-absent-revocation" "$PROOF_ROOT/$SESSION/eci_active"
+
+if exact_revocation_output="$(
+  cd -- "$WORK"
+  env CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_SESSION_ID="$SESSION" CODEX_ROLE=coordinator \
+    "$RUNTIME_ROOT/bin/eci-active" repository-allow-off "$DEPENDENCY" 2>&1
+)"; then
+  [ ! -e "$ALLOWANCE" ] && [ ! -L "$ALLOWANCE" ]
+  cmp -- "$TMP_ROOT/marker-before-absent-revocation" "$PROOF_ROOT/$SESSION/eci_active"
+else
+  printf 'repository-allow-off rejected the exact absent target:\n%s\n' \
+    "$exact_revocation_output" >&2
+  exit 1
+fi
 
 # A worker may not turn the route into a second command or a different owner.
 if output="$(run_hook '"$HOME/.codex/bin/eci-active" repository-allow-on /tmp "x" extra')"; then

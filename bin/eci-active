@@ -2516,13 +2516,17 @@ repository_allow_on() {
 }
 
 repository_allow_off() {
-  local requested repository
+  local requested repository missing_target=false
 
   [ "$#" -eq 2 ] || { usage; exit 2; }
   requested="$2"
   repository_allow_context || exit 1
   repository_allow_record_path || exit 1
   repository="$(codex_eci_additional_repository_canonical_root "$requested" 2>/dev/null || true)"
+  if [ -z "$repository" ]; then
+    repository="$(codex_eci_additional_repository_absent_target "$requested" 2>/dev/null || true)"
+    missing_target=true
+  fi
   [ -n "$repository" ] || {
     echo "repository-allow rejected noncanonical or non-repository target: $requested" >&2
     exit 1
@@ -2530,12 +2534,26 @@ repository_allow_off() {
   acquire_eci_mutation_lock || exit 1
   repository_allow_context || exit 1
   repository_allow_record_path || exit 1
+  repository="$(codex_eci_additional_repository_canonical_root "$requested" 2>/dev/null || true)"
+  missing_target=false
+  if [ -z "$repository" ]; then
+    repository="$(codex_eci_additional_repository_absent_target "$requested" 2>/dev/null || true)"
+    missing_target=true
+  fi
+  [ -n "$repository" ] || {
+    echo "repository-allow rejected noncanonical or non-repository target: $requested" >&2
+    exit 1
+  }
   if [ ! -e "$repository_allow_record" ] && [ ! -L "$repository_allow_record" ]; then
+    [ "$missing_target" = false ] || {
+      echo "repository-allow-off cannot match an absent target without an active allowance: $repository_allow_record" >&2
+      exit 1
+    }
     printf 'ECI additional repository inactive: %s\n' "$repository"
     return 0
   fi
   codex_eci_additional_repository_record_is_valid "$repository_allow_session_id" \
-    "$repository_allow_cwd" "$repository" || {
+    "$repository_allow_cwd" "$repository" "$missing_target" || {
     echo "repository-allow state does not match the requested repository: $repository_allow_record" >&2
     exit 1
   }

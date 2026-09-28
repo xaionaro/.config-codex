@@ -924,10 +924,21 @@ codex_eci_additional_repository_canonical_root() {
   printf '%s\n' "$actual"
 }
 
+codex_eci_additional_repository_absent_target() {
+  local requested="${1-}" resolved
+
+  [ -n "$requested" ] && [[ "$requested" = /* ]] || return 1
+  resolved="$(realpath -m -- "$requested" 2>/dev/null || true)"
+  [ -n "$resolved" ] && [ ! -e "$resolved" ] && [ ! -L "$resolved" ] || return 1
+  printf '%s\n' "$resolved"
+}
+
 codex_eci_additional_repository_record_is_valid() {
-  local session_id="$1" expected_cwd="$2" expected_repo="$3" record marker_cwd repo reason
+  local session_id="$1" expected_cwd="$2" expected_repo="$3"
+  local allow_absent_repository="${4:-false}" record marker_cwd repo reason normalized_repo
   local -a lines=()
 
+  case "$allow_absent_repository" in true|false) ;; *) return 1 ;; esac
   codex_valid_session_id "$session_id" || return 1
   [ -d "$expected_cwd" ] && [ ! -L "$expected_cwd" ] || return 1
   expected_cwd="$(codex_canonical_cwd "$expected_cwd")"
@@ -947,7 +958,12 @@ codex_eci_additional_repository_record_is_valid() {
   [ "$(codex_canonical_cwd "$marker_cwd")" = "$expected_cwd" ] || return 1
   repo="${lines[3]#repository: }"
   [ "${lines[3]}" = "repository: $repo" ] || return 1
-  codex_eci_additional_repository_canonical_root "$repo" >/dev/null || return 1
+  if [ "$allow_absent_repository" = true ] && [ ! -e "$repo" ] && [ ! -L "$repo" ]; then
+    normalized_repo="$(codex_eci_additional_repository_absent_target "$repo" 2>/dev/null || true)"
+    [ -n "$normalized_repo" ] && [ "$repo" = "$normalized_repo" ] || return 1
+  else
+    codex_eci_additional_repository_canonical_root "$repo" >/dev/null || return 1
+  fi
   [ -z "$expected_repo" ] || [ "$repo" = "$expected_repo" ] || return 1
   reason="${lines[4]#reason: }"
   [ "${lines[4]}" = "reason: $reason" ] || return 1
