@@ -138,6 +138,12 @@ A lane is an independently advancing workstream, not an ECI step. Serial impleme
 
 Under `Progress`, store these fields in structured form in `project-understanding.md`. Progress is the source of truth; `latest-status-report.md` projects these fields using `writing-status-reports`.
 
+#### Forecast outcome wording
+
+Write every lane and root forecast `Outcome` as a completed result in plain language: name the affected behavior or artifact and what will work or be delivered. The description must be understandable without a `Lane` heading, `Next milestone`, or transcript. Bare labels such as `UNPRICES` or `WITHDRAWN`, opaque identifiers, and vague phrases such as `forecast cleanup` are insufficient. Retain domain terms when the surrounding words explain the delivered result.
+
+Example: `Outcome: Import validation that identifies unpriced records and explains how to correct them.`
+
 **Project-understanding ledger storage**
 
 - Next milestone: `<named outcome>`
@@ -209,7 +215,7 @@ In a material changed-state report, emit each canonical forecast line once. Keep
 - Dependencies / critical path: `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>`
 - `CLOSED` lane: `Completed: <UTC ISO8601>; no active forecast deadline.`
 
-Every non-`CLOSED` lane names its next milestone and canonical forecast line in the report. For each unrepresented active root-task outcome omitted by lane reports, include the standalone root completion line once. The forecast line itself names the finished outcome; a separate Lane or Next milestone does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
+Every non-`CLOSED` lane names its next milestone and canonical forecast line in the report. For each unrepresented active root-task outcome omitted by lane reports, include the standalone root completion line once. The forecast line itself names the finished outcome using the [forecast outcome wording](#forecast-outcome-wording); a separate `Lane` or `Next milestone` does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
 
 For a changed lane or root forecast, restate its current canonical line in the same report, then record `Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.`
 

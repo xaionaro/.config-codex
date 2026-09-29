@@ -20,7 +20,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
   current work or a forecast.
 - Reconcile missing or stale lineage alongside known work; it does not block progress.
 - If false current scope is discovered, correct the ledger/status and log the correction. Cancel or reassign only unrooted current work; do not destructively revert already-made work without user direction.
-- The forecast line itself names the finished outcome; a separate Lane or Next milestone does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
+- The forecast line itself names the finished outcome using the [canonical forecast outcome wording](../../maintaining-context-ledger/SKILL.md#forecast-outcome-wording); a separate `Lane` or `Next milestone` does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
 - Use the two templates above exactly: named lane/task or root outcome and UTC deadline only. Do not append text.
 - For a changed lane or root forecast, restate its current canonical line in the same update, then state Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.
 - For every material ECI forecast update, report a separate base-case and
