@@ -72,10 +72,16 @@ that update, include this standalone line once:
 
 `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
 
-The forecast line itself names the finished outcome; a separate
-Lane or Next milestone does not substitute, and it never names a critic,
-reviewer, actor, or stage. Root completion is full root completion, not a child
-sum or stage. In that update, emit each lane/root canonical forecast once. For
+The forecast line itself describes the completed result in plain language:
+name the affected behavior or artifact and what will work or be delivered.
+Bare data or status labels such as `UNPRICES` or `WITHDRAWN` are insufficient.
+For example: `Forecast deadline: Import validation that identifies unpriced
+records and explains how to correct them will be finished by <UTC ISO8601>.`
+
+A separate Lane or Next milestone does not substitute for that description,
+and the outcome never names a critic, reviewer, actor, or stage. Root completion
+is full root completion, not a child sum or stage. In that update, emit each
+lane/root canonical forecast once. For
 a changed lane or root forecast, restate its current canonical line, then state
 Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved:
 <why>; supporting evidence: <evidence>.
