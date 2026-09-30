@@ -72,6 +72,7 @@ Before adding work to ECI scope because something appears broken or making that 
 
 These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Direct work and ATE outside ECI retain their existing lifecycle and wait rules.
 
+- Use the [task-orchestrator contract](skills/explore-critique-implement/references/task-orchestrator.md) for active task-outcome counting and conditional task-level ownership.
 - Give each task its own outcome, scope, owner, dependencies, and acceptance evidence. A discovered separate-outcome concern still needs user authorization; a new user request supplies its own scope.
 - Run every ready, independent action concurrently, including independent tool calls. Queue or serialize only work with an unmet dependency, a conflict through shared mutable state, or unavailable capacity; name the constraint and continue unaffected ready work.
 - Serialize conflicting writes and shared Git-index mutations through coordinator ownership handoffs; continue disjoint work, including nonconflicting work in the same file, with target rereads. The coordinator orders cross-task conflicts; main/Fast precedence applies within its own task.

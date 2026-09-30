@@ -5,6 +5,7 @@ This map is an audit index, not an admission inventory. Source versions, hashes,
 | Concern | Destination | Verification |
 | --- | --- | --- |
 | activation, lineage, and worker routing | ECI router | routing test |
+| conditional task ownership, active-outcome count, and handoffs | task-orchestrator + coordinator/Fast pointers | independent policy review |
 | concurrent Fast owner, shared-tree priority, evidence feedback, retained-hunk review, closure | fast-path + owning role pointers | routing checks + independent policy scenarios/review |
 | coordinator lifecycle and teardown | coordinator runtime + ECI coordinator | routing test |
 | direct-user pause behavior | pause-all-work | routing test |

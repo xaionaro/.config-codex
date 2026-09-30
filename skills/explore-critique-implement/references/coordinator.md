@@ -4,7 +4,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 
 ## Engage and route
 
-- Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks): admit independent user requests under the active lifecycle, keep task-owned producer identities, and scope stage/checkpoint waits to the affected task.
+- Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks): admit independent user requests under the active lifecycle, keep task-owned producer identities, and scope stage/checkpoint waits to the affected task. Use the [task-orchestrator contract](task-orchestrator.md) for task-local ownership and handoffs.
 - Follow the [ledger update priority](../../maintaining-context-ledger/SKILL.md#update-points): answer the user, record material events, then coordinate or act. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An active ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer, implementer, and Fast owner producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
@@ -62,7 +62,7 @@ Use blocker-resolution-protocol only after normal handling cannot resolve a stal
 
 ## Clean pass and teardown
 
-Complete each task's normal path and accept it only after its post-Fast sequence and required evidence pass. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
+Complete each task's normal path and accept it only after its post-Fast sequence and required evidence pass. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; apply [task-owner closure and handback](task-orchestrator.md#ownership-handoffs), and run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
 
 An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. Each iteration needs focused proof and independent review; E2E follows the central cadence. Final acceptance needs every original criterion, final applicable E2E evidence, and no remaining `now` REJECT/CONDITIONAL.
 
