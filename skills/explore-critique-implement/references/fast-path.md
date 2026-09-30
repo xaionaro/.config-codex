@@ -25,7 +25,7 @@ Use either path's available results once independently verified and the next act
 - Personally advance other bounded work and validate the provisional Fast result with focused checks, with or without helpers. Run an early E2E only for a concrete failure or integration uncertainty under the [central ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing). Iterate without waiting for main ECI Steps 1–4.
 - Analysis-only requests authorize analysis and evidence only. Preserve secret-handling, destructive-action, external-mutation, unrelated-dirty-work, and target-reread safeguards. Speed grants no broader or irreversible authority.
 - Defer the main path's design/style/TDD/review sequence for provisional fast work. Run useful focused checks; do not run routine E2E between iterations. Any early E2E follows the central policy's shortest-faithful-scope and timing rules. If an early E2E is needed but unavailable, report the missing resource and attempted evidence; never equate proxy checks with E2E.
-- Promptly send actionable discoveries, failed assumptions, observed behavior, tradeoffs, touched targets, and verification limits to the task's current logical owner under the [task-orchestrator handoff rules](task-orchestrator.md#ownership-handoffs), for Explorer and Step 2.
+- Promptly send actionable discoveries, failed assumptions, observed behavior, tradeoffs, touched targets, and verification limits to the task's current logical owner under the [task-orchestrator handoff rules](task-orchestrator.md#publication-and-handoff), for Explorer and Step 2.
 
 Fast-owner E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.
 
@@ -55,8 +55,8 @@ Reviewers report only. The assigned implementer authors the TODO within the ordi
 
 ## Evidence can reopen design
 
-- The coordinator independently verifies material fast discoveries and gives the evidence to Explorer and fresh Step 2.
-- When evidence invalidates a selected premise, obsoletes the design, or demonstrates a materially better in-scope approach, the coordinator returns affected work to Steps 1–2. Suspend only dependent implementation/review; keep independent work moving.
+- The current logical task owner independently verifies material Fast discoveries and gives the evidence to Explorer and fresh Step 2. Main retains cross-task decisions and final acceptance.
+- When evidence invalidates a selected premise, obsoletes the design, or demonstrates a materially better in-scope approach, the current logical task owner returns affected work to Steps 1–2. Suspend only dependent implementation/review; keep independent work moving. Main retains cross-task decisions.
 - ECI priority governs decisions and conflicting writes, never dismissal of contradictory evidence. The Fast owner proposes alternatives; Step 2 selects the authoritative winner.
 - Route minor compatible corrections through the contained-fix path. Unsupported preferences and ordinary fast edits do not restart design.
 
@@ -67,16 +67,18 @@ Reviewers report only. The assigned implementer authors the TODO within the ordi
 - The main implementer inspects retained fast changes in place, adopts or revises them under the selected winner, and runs focused checks. Required final E2E follows the central policy after post-Fast implementation is complete. No copying or redundant rewrite is needed.
 - Before checkpointing overlapping work, the coordinator obtains a bounded write-yield from both producers and inspects actual scoped changes. It owns checkpoints and preserves unrelated hunks; resume useful work afterward.
 - If a checkpoint cannot safely isolate the resolved change, record it as checkpoint-pending with the concrete conflict. Resolve that boundary promptly while unaffected work continues; never silently treat it as committed or include unrelated/in-flight changes.
-- The coordinator reconciles every Fast finding and Fast-originated changed hunk under [post-Fast completion](#post-fast-completion), then tracks each in-scope inventory item into review. Retained fast hunks are cumulative code targets. When a preceding baseline contains adopted fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
+- The current task owner reconciles every Fast finding and Fast-originated changed hunk under [post-Fast completion](#post-fast-completion), then tracks each in-scope inventory item into review and sends reports, evidence, and disposition recommendations to main. Retained fast hunks are cumulative code targets. When a preceding baseline contains adopted fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
 - Neither producer supplies its own independent acceptance reviews. Step 4 runs the fresh independent final E2E required by the central policy.
-- Before normal-path completion or final acceptance, satisfy [post-Fast completion](#post-fast-completion). The coordinator stops both producers' task-owned writes, including delegated Fast work, inspects the current cumulative scoped diff, and verifies reviews and checks cover that state. Material late edits require fresh appropriate review and verification.
-- On task cancellation/replacement, main owns closure, cancels the Fast owner and its delegated work with the main task, and preserves dirty changes/evidence. On task clean pass, it observes both producers' final state. On either closure path, it observes both producers and their task-owned write-capable tools stopped or finished. Root teardown and marker removal follow [concurrent task scheduling](../../../CODEX.md#concurrent-tasks) and [task-owner closure](task-orchestrator.md#ownership-handoffs). Fast success alone never closes ECI or outer ATE.
+- Before normal-path completion or final acceptance, satisfy [post-Fast completion](#post-fast-completion). The current logical task owner coordinates the existing stop for both producers' task-owned writes, including delegated Fast work, inspects the current cumulative scoped diff, verifies reviews and checks cover that state, and sends closure evidence to main. Main retains task and cancellation closure decisions, cross-task decisions, and final acceptance; it verifies closure evidence as needed. Material late edits require fresh appropriate review and verification.
+- On task cancellation/replacement, main owns closure, cancels the Fast owner and its delegated work with the main task, and preserves dirty changes/evidence. On task clean pass, it observes both producers' final state. On either closure path, it observes both producers and their task-owned write-capable tools stopped or finished. Root teardown and marker removal follow [concurrent task scheduling](../../../CODEX.md#concurrent-tasks) and [task-owner closure](task-orchestrator.md#publication-and-handoff). Fast success alone never closes ECI or outer ATE.
 
 ## Post-Fast completion
 
+The published task owner coordinates task-local post-Fast dispatch and evidence under the [task-orchestrator contract](task-orchestrator.md#task-local-review-dispatch). Main retains closed-task evidence, final adjudication, acceptance, and teardown.
+
 Main ECI may advance and review iterations concurrently with Fast.
 
-After the coordinator confirms genuine Fast completion, report root-task status
+After the current task owner confirms genuine Fast completion to main, report root-task status
 `FOLLOWUP` while the required sequence below remains unaccepted. Use
 `FOLLOWUP_PAUSED` only when the next required post-Fast action cannot advance
 because it awaits a named in-scope dependency. Report the dependency, impact,
@@ -90,17 +92,17 @@ A genuine Fast completion restarts the normal path from a fresh Step 1.
 
 Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance. The normal path remains incomplete until this post-Fast sequence passes for the task:
 
-1. The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped. A write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while main ECI performs the following steps; Fast need not wait for main acceptance to finish.
+1. The current task owner observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped, then sends the completion evidence to main. A write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while the main ECI path performs the following steps; Fast need not wait for main acceptance to finish.
    - The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers.
    - Include findings with no retained hunk and changes that are retained, revised, non-retained, superseded, or reverted.
    - Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.
-   - The coordinator reconciles the report with shared state.
+   - The current task owner reconciles task-local findings with shared state and sends reports, evidence, and disposition recommendations to main.
    - This complete inventory is review context, never a manifest, receipt, or admission/write gate.
    - Final acceptance requires every in-scope inventory item to have a disposition and evidence.
 2. Restart main ECI at a fresh Step 1.
    - Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.
    - Keep every Fast-originated hunk in inventory/review context; do not expand authorization. A separate-outcome finding stays a post-ECI observation/follow-up and creates no issue-specific repair, review, proof, or acceptance work. Allow only the TODO comment defined under [Main ECI quality responsibility](#main-eci-quality-responsibility) for an already-discovered code issue; include its hunk in ordinary current-diff review and keep the issue in inventory context only.
-   - Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
+   - Then the current task owner assigns the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
    - The Explorer reviews each in-scope inventory item against original requirements and quality standards, alongside retained main-path changes. Reread current targets and relevant surrounding code. Prior exploration, diffs, and passing tests are context, not this new exploration.
 3. A fresh Step 2 critic independently assesses the current sources and Explorer's options.
    - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).

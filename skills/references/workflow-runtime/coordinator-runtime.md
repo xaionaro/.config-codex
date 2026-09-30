@@ -10,7 +10,7 @@ Coordinator/lead only. Ordinary workers load only the local module named in thei
 - Keep a repair in its current lane when the record shows it is necessary to meet or prove the requested outcome. Do not relabel that repair as a substitute user requirement.
 - Record a discovered concern whose remedy serves a separate outcome as an observation or follow-up suggestion after current ECI. It does not create current lane, assignment, code change, review, deadline, forecast, or proof work.
 - Keep prompts and handoffs as readable coordination records. They may support review, but no proof-directory artifact, hash, receipt, ledger prefix, or serialized field list is a prerequisite for normal spawn, followup, exploration, implementation, or verification.
-- `spawn_agent` creates a role; `followup_task` starts a new turn only for an idle reusable role; `send_message` supplies bounded information to a running turn; `interrupt_agent` cancels exact active work only. Never shell-launch agents or close terminal agents.
+- `spawn_agent` creates a role; `followup_task` starts a new turn when a reusable role is idle and delivers at a message boundary when it is running; `send_message` supplies bounded information to a running turn; `interrupt_agent` cancels exact active work only. Never shell-launch agents or close terminal agents.
 - Name reusable ordinary producers by stable semantic role. Every blind critic and every special role uses a fresh `spawn_agent({fork_turns:"none"})` with a unique transport name. A `followup_task` never upgrades an ordinary role to special.
 - Keep at most one outstanding `wait_agent({timeout_ms:3600000})` per undelivered expected completion. A timeout is non-terminal: do not poll, retry, or infer a crash. Use `list_agents` only for roster maintenance or documented crash recovery.
 - Include this exact Stop-hook rule in every subagent prompt: “Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval.”
@@ -32,7 +32,7 @@ Send exposed selectors when they materially help the assignment. Treat unavailab
 
 ### Closed role map
 
-`fast-owner`→`Fast owner` is a reusable ECI producer governed by [ECI fast path](../../explore-critique-implement/references/fast-path.md), including its scoped shared-tree ownership exception.
+`fast-owner`→`Fast owner` is a reusable ECI producer governed by [ECI fast path](../../explore-critique-implement/references/fast-path.md), including its scoped shared-tree ownership exception. `task-orchestrator`→`ECI task orchestrator` is an ordinary coordination role governed by the [published-owner contract](../../explore-critique-implement/references/task-orchestrator.md); it does not load this coordinator-only runtime.
 
 Common labels include `explorer`→`Explorer`; `researcher`→`researcher`; `brainstormer`→`Brainstormer`; `critic-step2`→`ECI critic-step2`; `critic-A`→`ECI Critic A`; `critic-B`→`ECI Critic B`; `critic-C`→`ECI Critic C`; `e2e-gate`→`E2E gate`; `implementer`→`implementer`; `executor`→`Executor`; `qa`→`QA`; `fdr-reviewer`→`FDR reviewer`; `fdr-meta-reviewer`→`FDR meta-reviewer`; `ate-design-reviewer`→`ATE Design Reviewer`; `ate-meta-reviewer`→`ATE meta-reviewer`; `execution-reviewer-correctness`→`Execution Reviewer: correctness/fidelity`; and `execution-reviewer-long-term-health`→`Execution Reviewer: long-term-health`. Normalize when useful; unknown labels ask for clarification rather than block.
 
@@ -84,7 +84,7 @@ Prompts and selector records aid review. They do not prove effective model behav
 
 ### Stable roles and fresh identities
 
-Use the closed role map above. Reusable ordinary producer slots are Explorer, implementer, Fast owner, ordinary Executor, and ordinary correctness reviewer only where the outer workflow says so. Step-2 critics, Critic A, Critic B, Critic C, E2E, brainstormer, BRP validator, loop-breaker, Design Reviewer, FDR reviewer/meta-reviewer, and every special semantic role are fresh identities as their owning workflow requires. An ordinary followup never upgrades category or model class.
+Use the closed role map above. Reusable ordinary producer slots are Explorer, implementer, Fast owner, ordinary Executor, and ordinary correctness reviewer only where the outer workflow says so. A task-orchestrator identity remains reusable only while main keeps its ownership published; later delegation follows the fresh-candidate rule in the [task-orchestrator contract](../../explore-critique-implement/references/task-orchestrator.md#publication-and-handoff). Step-2 critics, Critic A, Critic B, Critic C, E2E, brainstormer, BRP validator, loop-breaker, Design Reviewer, FDR reviewer/meta-reviewer, and every special semantic role are fresh identities as their owning workflow requires. An ordinary followup never upgrades category or model class.
 
 ## Critic-manifest currentness
 

@@ -32,6 +32,8 @@ Examples: a changed persistence model, ownership rule, public contract, or data/
 
 ## Three-critic review
 
+For ECI task-local review dispatch and evidence coordination, follow the [task-orchestrator contract](../../explore-critique-implement/references/task-orchestrator.md#task-local-review-dispatch). The published task owner dispatches local reviews; main retains final adjudication and acceptance.
+
 For governed code, use fresh blind Critic A (style), Critic B (correctness/fidelity), and fresh special Critic C (long-term health) in parallel. Name at least one critic to check that controls prevent accidental mistakes without treating bots as malicious. ECI E2E follows the [router's cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing).
 
 ECI E2E triggers: [Configuration E2E contract](../../explore-critique-implement/SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../../explore-critique-implement/SKILL.md#runtime-e2e-policy).

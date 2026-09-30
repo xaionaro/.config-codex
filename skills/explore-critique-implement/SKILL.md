@@ -12,7 +12,7 @@ Separate exploration, authoritative critique, implementation, and independent re
 Start only when CODEX selects ECI or active ATE explicitly routes bounded work through it. Loading this router alone does not start ECI. Use ECI for non-mechanical work with uncertainty, future behavior/routing/protocol risk, or two plausible approaches; classify by decision complexity and risk, not diff size. A one-line/local change is still non-trivial when it changes instructions, prompts, routing, protocols, public contracts, security, persistence, concurrency, architecture, or reviewer/agent behavior. Skip only a mechanical answer whose consequences are obvious, directly verifiable, and carry no future behavior or routing risk.
 
 - Maintain requirement lineage and a project-understanding ledger. The active ECI/ATE lifecycle owns normal work; ATE may contain normal ECI.
-- Apply [concurrent task scheduling](../../CODEX.md#concurrent-tasks) to new user requests, independent progress, task-local gates, and root closure. Each task keeps its own scope and main/Fast ownership.
+- Apply [concurrent task scheduling](../../CODEX.md#concurrent-tasks) to new user requests, independent progress, task-local gates, and root closure. Each task keeps its scope and producer identities; conditional logical ownership follows the [task-orchestrator contract](references/task-orchestrator.md).
 - For material ECI work, keep `exact user source → faithful requested outcome →
   bounded scope`. A repair necessary to meet or prove that outcome stays current-lane work.
   For each already-discovered lower-priority code issue that remains unfixed, add the TODO defined by [Main ECI quality responsibility](references/fast-path.md#main-eci-quality-responsibility). It does not change an in-scope disposition or replace its required repair; for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.
@@ -24,7 +24,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 - A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 - Every normal ECI worker reads this router plus the exact module(s) useful to its assignment. An unknown role, predicate, or link is reported to the coordinator and resolved while safe bounded assigned work continues; it does not itself deny or stall normal work.
 - Own your assigned outcome through successful completion, required evidence, and complete handoff. Resolve recoverable obstacles with safe, authorized in-scope actions; use and verify available recovery paths before asking for help (for example, use authorized ADB recovery to unlock the task device). If no authorized in-scope path is available, or attempted recovery leaves the outcome blocked, report why, what you tried (where possible), and the exact missing input, access, or approval. Keep scope bounded; the coordinator retains ECI lifecycle and final acceptance.
-- Coordinator/lead alone load lifecycle, blocker, pause, stop, required-critic, teardown, and pressure-policy modules. Workers never infer those duties.
+- Main alone loads lifecycle, blocker, pause, stop, teardown, and pressure-policy modules. The published task owner loads shared [review policy](../references/workflow-runtime/review-policy.md) only for task-local review dispatch and evidence coordination under the [task-orchestrator contract](references/task-orchestrator.md); it sends findings, evidence, and disposition recommendations to main. Main retains final adjudication, checkpoints, acceptance, and protected operations.
 - Each normal iteration is Explore → Critique → Implement → parallel Review. A producer never acts as critic.
 - Main-path bugs with hard uncertainty or a material competing diagnosis/approach use `debugging-discipline`; the Fast owner follows its assigned module.
 
@@ -70,17 +70,17 @@ Coordinator routes begin with [coordinator runtime](../references/workflow-runti
 | `explorer` | [explore](references/explore.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned bug investigation; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned governed source discovery |
 | `critic-step2` | [critique](references/critique.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for independent admission |
 | `implementer` | [implement](references/implement.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned code/debug work; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
-| `task-orchestrator` | [task-orchestrator](references/task-orchestrator.md) | Only when `N > 1` under that contract |
+| `task-orchestrator` | [task-orchestrator](references/task-orchestrator.md) | Candidate, handoff, or relay by bounded assignment; task dispatch only after main publishes ownership; shared [review policy](../references/workflow-runtime/review-policy.md) only for task-local review/evidence |
 | `fast-owner` | [ECI fast path](references/fast-path.md) | Early E2E only under [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing) |
 | Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E follows [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing). |
 
 ## Step handoffs
 
 1. Explorer ranks tagged, evidence-backed options and required PoC/style-source proposal.
-2. Fresh special Step 2 critic independently baselines, admits scope, rejects bad options, and selects concrete winner text or returns bounded re-exploration.
+2. The current logical task owner dispatches a fresh Step 2 critic, who independently baselines, admits scope, rejects bad options, and selects concrete winner text or returns bounded re-exploration.
 3. Reusable implementer applies only the winner and `treatment: now` corrections with causal/proof evidence.
 After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule. Step 4 receives the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions; a `pre-existing baseline` remains context outside the iteration range.
-4. Fresh A/B/C critics review in parallel on every iteration; E2E follows [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing). Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
+4. The current logical task owner dispatches fresh A/B/C critics in parallel on every iteration and fresh independent E2E when required; E2E follows [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing). Main supplies its named checkpoint and retains final adjudication and acceptance. Substantive findings return as one design batch; contained fixes return once to implementation. Clean pass needs every original criterion, required proof, and no remaining `now` issue.
 
 ## Relationship to other skills
 

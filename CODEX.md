@@ -155,7 +155,7 @@ The coordinator may edit session coordination documents, ledgers, plans, status 
 | Handover or resume notes / status, sitrep, progress, checkpoint | `writing-handovers` / `writing-status-reports` |
 | Project, context, `ECI`, or `ATE` ledgers | `maintaining-context-ledger` |
 
-- Selecting `ECI`/`ATE` activates its full protocol and required spawned agents, never local-only. Use `spawn_agent` for ECI/ATE roles, including the reusable Fast owner, never shell-wrapped Codex agents.
+- Selecting `ECI`/`ATE` activates its full protocol and required spawned agents, never local-only. Use `spawn_agent` for ECI/ATE roles, including reusable Fast owners and conditional task orchestrators, never shell-wrapped Codex agents.
 - Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.
 - Every wait/status/close update uses `<role label> (<runtime name> [type])`, never a bare nickname after labeling.
 - Wait only for evidence or agents needed by the next action when advancing ECI tasks; independently verify available results and continue independent ready work. Preserve all required review/E2E evidence before accepting its target, and all task-owned writer shutdowns before root teardown. Apply this dependency rule across ECI tasks and main/Fast paths, including bounded ECI under ATE.

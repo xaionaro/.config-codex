@@ -7,7 +7,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 - Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks): admit independent user requests under the active lifecycle, keep task-owned producer identities, and scope stage/checkpoint waits to the affected task. Use the [task-orchestrator contract](task-orchestrator.md) for task-local ownership and handoffs.
 - Follow the [ledger update priority](../../maintaining-context-ledger/SKILL.md#update-points): answer the user, record material events, then coordinate or act. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An active ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
-- ECI has reusable Explorer, implementer, and Fast owner producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
+- ECI has reusable Explorer, implementer, and Fast owner producers; conditional task-orchestrator identities follow the [published-owner handoff contract](task-orchestrator.md). Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.
 - Treat records, hashes, receipts, packet shape, and marker spelling as context or audit, never as permission checks. Route only a concrete accidental wrong-target, cross-scope, or destructive effect.
 - For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:
@@ -42,7 +42,7 @@ Apply the [fast-path adoption boundary](fast-path.md#adoption-review-and-closure
 Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
 After the Step 2 recommendation, the coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item. Step 2 authority is limited to design-winner selection; it does not apply treatment.
 
-After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C for every implementation iteration. E2E follows the [central cadence, scope, and timing policy](../SKILL.md#e2e-cadence-scope-and-timing), including its early-run condition and final independent run.
+The current logical task owner alone assigns fresh Step 2, A/B/C, and required independent E2E reviews under the [task-orchestrator contract](task-orchestrator.md#task-local-review-dispatch). Main supplies its named checkpoint and retains final impact/treatment/disposition adjudication, acceptance, and protected operations. E2E follows the [central cadence, scope, and timing policy](../SKILL.md#e2e-cadence-scope-and-timing), including its early-run condition and final independent run.
 
 E2E triggers: [Configuration E2E contract](../SKILL.md#configuration-e2e-contract) and [Runtime E2E policy](../SKILL.md#runtime-e2e-policy).
 
@@ -62,7 +62,7 @@ Use blocker-resolution-protocol only after normal handling cannot resolve a stal
 
 ## Clean pass and teardown
 
-Complete each task's normal path and accept it only after its post-Fast sequence and required evidence pass. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; apply [task-owner closure and handback](task-orchestrator.md#ownership-handoffs), and run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
+Complete each task's normal path and accept it only after its post-Fast sequence and required evidence pass. Keep the root marker and unfinished siblings active after an individual task clean pass or cancellation; apply [task-owner closure and handback](task-orchestrator.md#publication-and-handoff), and run root teardown only when every owned task is accepted or explicitly cancelled and its writers have stopped.
 
 An iteration is Step 1 explore → Step 2 critique → Step 3 implement → Step 4 parallel review. Do not advance the change until its gate is clean. Each iteration needs focused proof and independent review; E2E follows the central cadence. Final acceptance needs every original criterion, final applicable E2E evidence, and no remaining `now` REJECT/CONDITIONAL.
 
@@ -72,7 +72,7 @@ Status uses human-readable role/lane names, parent-child trees for nested work, 
 
 ## Provider adapter and marker
 
-ECI uses only `spawn_agent`, `followup_task`, `send_message`, `wait_agent({timeout_ms:3600000})`, and cancellation-only `interrupt_agent`. If standard tools are unavailable, hard-escalate rather than shell-launch a Codex agent. `spawn_agent` starts a new role; `followup_task` starts a fresh turn only for an idle reusable producer; `send_message` is bounded in-turn delivery only. Label every spawned/resumed role and immediately update the roster as `<role label>: <runtime name> [type]`.
+ECI uses only `spawn_agent`, `followup_task`, `send_message`, `wait_agent({timeout_ms:3600000})`, and cancellation-only `interrupt_agent`. If standard tools are unavailable, hard-escalate rather than shell-launch a Codex agent. `spawn_agent` starts a new role; `followup_task` starts a fresh turn when the reusable role is idle and delivers at a message boundary when it is running; `send_message` is bounded in-turn delivery. Main follows a task owner only under the [published-owner and report-drain rules](task-orchestrator.md#publication-and-handoff). Label every spawned/resumed role and immediately update the roster as `<role label>: <runtime name> [type]`.
 
 Before Step 1 of the first iteration run `eci-active on "<task + scope>"`. While engaged, route ordinary repository-code edits through the implementer assignment above. The coordinator may directly maintain coordination records, and may use the 600-second nonstacking self-edit routing exception for a genuine code-edit edge case. An ATE `ate_active` marker alone is insufficient. Keep ECI active through blocker work, nested paths, review, and acceptance; user cancellation/withdraw/replacement/ATE switch is user closure only after checkpointing successor handoff or scope removal. A PostCompact signal requires the coordinator/lead to reread the full router and then its exact assigned modules before the next decision.
 
