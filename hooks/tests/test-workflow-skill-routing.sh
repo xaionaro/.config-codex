@@ -2834,13 +2834,23 @@ assert_lane_forecast_contract() {
   require_pattern "$STATUS_REPORT" 'review, deploy, and proof remain within a lane' 'Review,[[:space:]]+deploy,[[:space:]]+and[[:space:]]+proof[[:space:]]+are[[:space:]]+current[[:space:]]+work[[:space:]]+within[[:space:]]+a[[:space:]]+lane,[[:space:]]+not[[:space:]]+automatically[[:space:]]+separate[[:space:]]+lanes\.'
   require_pattern "$STATUS_REPORT" 'status requirement covers unrepresented active roots' 'For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+(its[[:space:]]+)?lane[[:space:]]+reports'
   require_pattern "$STATUS_REPORT" 'status checklist covers unrepresented active roots' 'Root[[:space:]]+coverage[[:space:]]*\|[[:space:]]+In[[:space:]]+a[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update,[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
-  require_pattern "$LEDGER" 'Progress source and status projection' 'Progress[[:space:]]+is[[:space:]]+the[[:space:]]+source[[:space:]]+of[[:space:]]+truth;[[:space:]]+`latest-status-report\.md`[[:space:]]+projects[[:space:]]+these[[:space:]]+fields[[:space:]]+using[[:space:]]+`writing-status-reports`\.'
+  require_text "$LEDGER" 'Create `forecasts.md` once when the first forecast applies, then update current records in place.'
+  require_text "$LEDGER" 'Store every current lane/root forecast in `forecasts.md`: named forecast outcome and status, current target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its range and endpoint.'
+  require_text "$LEDGER" 'Keep current project/task facts in `project-understanding.md` and current forecast values in `forecasts.md`.'
+  require_text "$LEDGER" 'The ledger may link to forecast records but never copy their targets, baselines, recalibrations, base-case/downside estimates, scenario ranges, forecast statuses, or endpoints.'
+  require_text "$LEDGER" 'A forecast-only update does not require rewriting `project-understanding.md`.'
+  require_text "$LEDGER" 'For every material forecast update, edit `forecasts.md` in place, append to `high_level_log.md`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.md`.'
+  require_text "$LEDGER" '`latest-status-report.md` projects these values using `writing-status-reports`.'
+  require_text "$LEDGER" '- The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.md` record.'
+  forbid_text "$LEDGER" 'Under `Progress`, store these fields in structured form in `project-understanding.md`.'
+  forbid_text "$LEDGER" "Keep each scenario's endpoint/range in the ledger."
+  require_text "$COORDINATOR" '`forecasts.md` owns current scenario selection and stored endpoints.'
   require_pattern "$LEDGER" 'invalid-ledger rule covers unrepresented active roots' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
   require_pattern "$STATUS_REPORT" 'status forecast checklist' 'Lane[[:space:]]+forecasts[[:space:]]*\|[[:space:]]+A[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update[[:space:]]+names[[:space:]]+each[[:space:]]+active[[:space:]]+lane.?s[[:space:]]+milestone[[:space:]]+and[[:space:]]+one[[:space:]]+named-outcome[[:space:]]+forecast'
-  require_pattern "$LEDGER" 'invalid ledger detects missing active-lane forecasts' 'active[[:space:]]+lane[[:space:]]+lacks.*Lane[[:space:]]+forecasts'
-  require_pattern "$LEDGER" 'invalid ledger detects missing active-root forecasts' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome.*lacks.*Root[[:space:]]+completion[[:space:]]+forecast'
+  require_pattern "$LEDGER" 'invalid ledger detects missing active-lane forecast links' 'active[[:space:]]+lane.*lacks.*rendered[[:space:]]+link.*current[[:space:]]+forecast[[:space:]]+record[[:space:]]+in[[:space:]]+`forecasts\.md`'
+  require_pattern "$LEDGER" 'invalid ledger detects missing active-root forecasts' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome.*lacks.*full[[:space:]]+outcome[[:space:]]+and[[:space:]]+target[[:space:]]+record[[:space:]]+in[[:space:]]+`forecasts\.md`'
   require_pattern "$LEDGER" 'invalid ledger detects stale changed forecasts' 'changed[[:space:]]+lane/root.*current[[:space:]]+canonical[[:space:]]+line.*recalibration'
-  require_pattern "$LEDGER" 'invalid ledger detects closed forecasts' '`CLOSED`[[:space:]]+lane.*retains.*forecast[[:space:]]+deadline/recalibration'
+  require_pattern "$LEDGER" 'invalid ledger detects active closed-lane forecasts' '`CLOSED`[[:space:]]+lane.*forecast[[:space:]]+remains[[:space:]]+active'
 }
 
 assert_lineage_context_contract() {

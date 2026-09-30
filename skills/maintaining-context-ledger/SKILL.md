@@ -5,20 +5,23 @@ description: Use when writing or verifying project-understanding ledgers, contex
 
 # Maintaining Context Ledgers
 
-Three required records and one audit-only history, side by side:
+Three required records, one conditional current forecast record, and one audit-only history:
 
 | File | Role | Edit mode |
 |------|------|-----------|
-| `project-understanding.md` (the ledger) | Current-state snapshot | Rewrite in place; stale entries deleted |
+| `project-understanding.md` (the ledger) | Current project/task facts and rendered links to forecast records | Rewrite in place; stale entries deleted |
 | `high_level_log.md` (the log) | Append-only history of every material change | Append only; never edit, never delete past entries |
-| `latest-status-report.md` (the report) | Latest status report per `writing-status-reports` | Patch only stale or changed lines or sections; preserve unaffected text. Write the whole file only on first creation. |
+| `forecasts.md` | Sole current source for lane/root forecast records; create when a forecast first applies | Update current records in place; never copy their values into the ledger |
+| `latest-status-report.md` (the report) | Latest user-facing status projection per `writing-status-reports` | Patch only stale or changed lines or sections; preserve unaffected text. Write the whole file only on first creation. |
 | `forecast-target-history.tsv` | Audit-only root-task forecast-target history | Append only; corrections add a new target row |
 
-The ledger answers what is true now. The log answers what happened, in order, and why we believe what is now in the ledger. The report answers the most recent status update, ready to relay to the user without recomputation. They are not redundant: the ledger has no history; the log has no synthesis; the report has no detail beyond the status-report categories.
+The ledger answers what is true about the project and task now. `forecasts.md` answers what the current forecasts are. The log answers what changed, in order, and why. The report projects the latest state for the user; it is not another source of truth. The TSV audits root-target transitions and does not define current forecast state.
 
 ## Core Rule
 
-A fresh agent reading only the ledger, without transcript or memory, must reach the same current understanding you have. Record every project/task detail that could affect planning, implementation, risk handling, assignment, command choice, verification, or the final answer.
+A fresh agent reading the ledger and its rendered `forecasts.md` links, without transcript or memory, must reach the same current understanding you have. Record every project/task fact that could affect planning, implementation, risk handling, assignment, command choice, verification, or the final answer.
+
+Keep current project/task facts in `project-understanding.md` and current forecast values in `forecasts.md`. The ledger may link to forecast records but never copy their targets, baselines, recalibrations, base-case/downside estimates, scenario ranges, forecast statuses, or endpoints. Binding user deadlines and actual completion timestamps are project facts and may remain in the ledger where useful; estimated completion dates belong only in `forecasts.md`.
 
 Err on exhaustive useful detail for current state. Do not omit a detail because it seems obvious from transcript, local state, prior agent memory, or project familiarity. Equally, do not retain a detail because it was true earlier. Exhaustive on current state; zero on superseded state.
 
@@ -47,17 +50,18 @@ For ECI/ATE, these records live at:
 ```text
 ~/.cache/codex-proof/$SESSION_ID/project-understanding.md   # the ledger
 ~/.cache/codex-proof/$SESSION_ID/high_level_log.md          # the log
+~/.cache/codex-proof/$SESSION_ID/forecasts.md                # current forecasts, when applicable
 ~/.cache/codex-proof/$SESSION_ID/latest-status-report.md    # the report
 ~/.cache/codex-proof/$SESSION_ID/forecast-target-history.tsv # target history
 ```
 
-Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. The ledger, report, and target history survive across stops by construction; do not place them under any other name.
+Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. The ledger, report, forecasts, and target history survive across stops by construction; do not place them under any other name.
 
-Create the three required files once. Create `forecast-target-history.tsv` with its header at the first `none → A` transition. Then follow each file's edit mode above; never delete or recreate.
+Create `project-understanding.md`, `high_level_log.md`, and `latest-status-report.md` once. Create `forecasts.md` once when the first forecast applies, then update current records in place. Create `forecast-target-history.tsv` with its header at the first `none → A` transition. Follow each file's edit mode above; never delete or recreate these records.
 
 ## High-Level Log
 
-Append-only history. Every material change recorded in the ledger gets a corresponding entry appended to the log in the same turn.
+Append-only history. Every material change to the ledger or `forecasts.md` gets a corresponding entry appended to the log in the same turn.
 
 | Rule | Detail |
 |------|--------|
@@ -65,7 +69,7 @@ Append-only history. Every material change recorded in the ledger gets a corresp
 | Material essence | Lead with what is true now, what to do next, why it matters, and evidence. Add changed-state context or provenance when it explains a material change. |
 | Reflect all details | Capture the change, prior state, new state, reason, source/evidence, and agent/turn. |
 | Chronological | Newest entries at the bottom. Each entry leads with a UTC timestamp. |
-| Same-turn pairing | Every ledger update has at least one log entry from that turn. A ledger diff with no log append is defective. |
+| Same-turn pairing | Every material ledger or forecast update has at least one log entry from that turn. A current-state diff with no log append is defective. |
 | No synthesis | The log records what changed; it does not duplicate the ledger's current-state synthesis. Cross-reference by section/heading instead. |
 
 Treat bytes already present in `high_level_log.md` as immutable; permit only
@@ -98,9 +102,10 @@ Suggested invocation:
 | Same skill, same format | Content follows `writing-status-reports`: state, progress, decisions, blockers/risks, verification, next focus; multi-lane table when applicable. |
 | Lead with UTC timestamp | First line: `# Status - <UTC ISO8601>`. Stale reports without a timestamp are rejected. |
 | Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status. |
+| Forecast projection | Derive current forecast lines and scenario summaries from `forecasts.md`; do not treat the report as a second source of truth. |
 | No copying the ledger | Report changed state plus next focus; do not duplicate ledger structure. Cross-reference instead. |
 
-A ledger update without a matching report refresh is a defect, same as a missing log append.
+A ledger or material forecast update without its required same-turn log entry and report refresh is defective.
 
 ## Current State, Not History
 
@@ -119,7 +124,7 @@ Skip blow-by-blow history unless it prevents recurrence.
 
 ### Log vs Ledger
 
-A given fact lives in one file, not both. Route by edit mode:
+A given current fact lives in one canonical current-state record. Route historical changes to the log; use the linked `forecasts.md` record for current forecast details.
 
 | Content | Ledger | Log |
 |---|---|---|
@@ -136,7 +141,9 @@ Per-ledger-line test: true and load-bearing right now? No -> drop from ledger; i
 
 A lane is an independently advancing workstream, not an ECI step. Serial implement→review→repair→review→implement stays one lane with one critical path. Create distinct lanes only for independently advancing work with separate ownership or synchronization.
 
-Under `Progress`, store these fields in structured form in `project-understanding.md`. Progress is the source of truth; `latest-status-report.md` projects these fields using `writing-status-reports`.
+Record current project/task facts under `Progress` in `project-understanding.md`, including the next milestone, owner, dependencies, binding user deadline, and actual completion timestamp when useful. Link each relevant lane/root to its current forecast record with a rendered link. Do not copy forecast values into the ledger.
+
+Store every current lane/root forecast in `forecasts.md`: named forecast outcome and status, current target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its range and endpoint. Keep current records there in place. `latest-status-report.md` projects these values using `writing-status-reports`.
 
 #### Forecast outcome wording
 
@@ -144,37 +151,29 @@ Write every lane and root forecast `Outcome` as a completed result in plain lang
 
 Example: `Outcome: Import validation that identifies unpriced records and explains how to correct them.`
 
-**Project-understanding ledger storage**
+**Forecast record fields in `forecasts.md`**
 
-- Next milestone: `<named outcome>`
-- Forecast deadline:
+- Lane forecast:
   - Outcome: `<named lane/task outcome>`
-  - Target: `<UTC ISO8601>`
+  - Status: `active` or `inactive`
+  - Target: `<UTC ISO8601>` when active
 - Root completion forecast, when an active root outcome is not represented by lane reports:
   - Outcome: `<full named active root-task outcome>`
-  - Target: `<UTC ISO8601>`
-- Forecast recalibration, when a forecast changes:
+  - Status: `active` or `inactive`
+  - Target: `<UTC ISO8601>` when active
+- Recalibration, when a forecast changes:
   - Prior: `<UTC ISO8601>`
   - Current: `<UTC ISO8601>`
   - Why moved: `<why>`
   - Evidence: `<evidence>`
 - Initial forecast:
   - Status: `unchanged`
-  - Baseline: `<UTC ISO8601>`
+  - Original baseline: `<UTC ISO8601>`
   - Evidence: `<evidence>`
-- Dependencies / critical path:
-  - Dependency: `<none or named dependency>`
-  - Owner: `<owner, if applicable>`
-  - Resume condition: `<condition, if applicable>`
-  - Critical path: `<single critical path>`
-- A `CLOSED` lane records:
-  - Completed: `<UTC ISO8601>`
-  - Forecast deadline: `inactive`
-  - Recalibration: `none`
 
-Every non-`CLOSED` lane records its next milestone and named forecast outcome with target. For each unrepresented active root-task outcome omitted by lane reports, record one root completion forecast with the full root outcome and target. Root completion is not a child sum or stage.
+Every non-`CLOSED` lane has a current forecast record with its named outcome and target. For each unrepresented active root-task outcome omitted by lane reports, keep one root completion forecast with the full root outcome and target. Root completion is not a child sum or stage. Keep task dependencies and critical-path facts in the ledger; use them to calculate the forecast without copying forecast values back into the ledger.
 
-When a lane or root forecast changes, restate its current outcome and target fields, then record the prior target, current target, reason, and evidence. For an initial forecast, record `unchanged`, its baseline, and evidence. A `CLOSED` lane has no active deadline or recalibration.
+When a lane or root forecast changes, update its current record in `forecasts.md` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, and evidence. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
 
 #### ECI scenario forecasts
 
@@ -194,7 +193,7 @@ evidence-supported downside scenario alongside the canonical target:
   parallel lane/dependency endpoint, not a sum of parallel work.
 - The single UTC target is the latest endpoint among the base case and bounded,
   evidence-supported scenarios. Keep each scenario's endpoint/range in the
-  ledger. A material risk without a finite duration basis is `unknown/unbounded`:
+  `forecasts.md` record. A material risk without a finite duration basis is `unknown/unbounded`:
   give it no fabricated endpoint, and do not call the target an absolute worst
   case.
 - `Initial forecast.Baseline` remains the original forecast target; it is not
@@ -203,9 +202,11 @@ evidence-supported downside scenario alongside the canonical target:
 Forecast scenarios describe planning uncertainty only. They do not change
 scope, priority, blocker status, or forecast authority.
 
-**Report-only projection examples — not ledger storage**
+For every material forecast update, edit `forecasts.md` in place, append to `high_level_log.md`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.md`. A forecast-only update does not require rewriting `project-understanding.md`. When first using this procedure, reconcile current forecast records into `forecasts.md` and replace ledger forecast values with rendered links; do not manufacture a target change for this storage move. On root closure, remove the current forecast or mark it inactive and retain history rows.
 
-In a material changed-state report, emit each canonical forecast line once. Keep these lines as report-only examples; do not store them as flat ledger entries.
+**Status-report projection examples — not ledger storage**
+
+In a material changed-state report, emit each canonical forecast line once using `forecasts.md`. Keep these lines as report-only examples; do not copy them into `project-understanding.md`.
 
 - Next milestone: `Next milestone: <named outcome>`
 - Forecast deadline: `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
@@ -225,7 +226,7 @@ State dependencies and parallel work. For parallel children, report the single c
 
 Forecasts are advisory. They never gate work, grant or deny permissions, require artifacts or receipts, create blockers, require parsers, or require per-command ceremony. Missing or stale forecasts are planning-quality defects. Reconcile them alongside safe work without delaying the update.
 
-Coordinator-to-user updates retain the exact standalone lines defined by the ECI coordinator module.
+Coordinator-to-user updates retain the exact standalone lines defined by the ECI coordinator module. Do not use report lines or the audit history as current forecast storage.
 
 ### Forecast target history
 
@@ -291,17 +292,12 @@ Use `### <subject>` subsections when a section grows large enough that a fresh a
 
 Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
 
-Every material ledger refresh applies the same-update recalibration rule to
-each affected changed lane or root forecast.
+Every material forecast change updates its current `forecasts.md` record in place and applies the same-update recalibration rule to that forecast.
 
 Answer the user before ledger maintenance or coordination when a response is due.
-After a material event, update `project-understanding.md`, append its change to
-`high_level_log.md`, and refresh `latest-status-report.md` before dispatching work,
-sending coordination messages, or taking the next project action. Already-running
-independent jobs continue; launch ready work after recording the event. This orders
-coordinator work without adding permission gates, receipts, or per-command checks.
+After a material event, update the affected current-state record: `project-understanding.md` for project/task facts or `forecasts.md` for forecast changes. Append the change to `high_level_log.md` and refresh `latest-status-report.md` before dispatching work, sending coordination messages, or taking the next project action. A forecast-only change does not require rewriting the ledger. Already-running independent jobs continue; launch ready work after recording the event. This orders coordinator work without adding permission gates, receipts, or per-command checks.
 
-Three-pass ledger edit, in order:
+For a project/task fact change, use this three-pass ledger edit:
 
 1. Stale pass. Re-read each section; for every line ask: still current? No -> delete or rewrite.
 2. Omission pass. Add what is missing, checking authoritative sources, user instructions, current diffs/state, and this turn's agent reports.
@@ -309,16 +305,16 @@ Three-pass ledger edit, in order:
 
 Structure must evolve with the project. A frozen schema that no longer fits is defective. A purely additive diff to the ledger is a log-into-ledger defect: rewrite in place.
 
-Then append to `high_level_log.md` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry.
+Then append to `high_level_log.md` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry. For a forecast-only change, update its `forecasts.md` record and log it without rewriting the ledger.
 
-Finally refresh `latest-status-report.md` using the edit mode above and the format in `writing-status-reports`; reflect the updated ledger. Skip only when this turn produced no ledger or log change.
+Finally refresh `latest-status-report.md` using the edit mode above and the format in `writing-status-reports`; reflect the updated ledger and/or forecasts. Skip only when this turn produced no current-state or log change.
 
 ## Invalid Ledger
 
 Reject the ledger if any holds:
 
 - A fresh agent needs the transcript or unstated local memory to recover useful current project/task facts.
-- An authoritative source is named without extracting its relevant current-state details.
+- An authoritative project/task source is named without extracting its relevant current-state facts. Resolve forecast details through the linked `forecasts.md` record; never extract forecast values into `project-understanding.md`.
 - Binding requirements, acceptance criteria, material current-understanding corrections, useful recurrence guards, assumptions, risks, decisions, current state, or evidence are missing.
 - Claims cannot be traced to sources, reports, commands, logs, screenshots, or commits.
 - Obsolete states are retained as if current: stale plans, abandoned hypotheses, finished WIP, resolved blockers, superseded values.
@@ -330,9 +326,10 @@ Reject the ledger if any holds:
 - A section runs as multi-paragraph narrative where a table, bullet list, or labeled lines would scan.
 - A longer factual non-table item (including a bullet, labeled value, or prose paragraph) is compressed into a one-line point instead of one-fact items, with nested bullets for supporting detail when needed.
 - A table cell contains long detail instead of a concise TLDR linked to matching populated structured detail below, or its reference target is missing, broken, empty, unrelated, or unstructured.
-- An active lane lacks its next milestone or named forecast outcome and target in `Lane forecasts`; an affected active lane lacks nested prior/current/why/evidence recalibration fields; or a changed lane/root lacks its restated current canonical line plus recalibration in the report projection.
-- An unrepresented active root-task outcome omitted by lane reports lacks a full outcome and target record in `Root completion forecast`.
-- A `CLOSED` lane lacks completion UTC or inactive-deadline status, including `Completed: <UTC ISO8601>; no active forecast deadline.` in the report projection, or retains a forecast deadline/recalibration.
+- An active lane lacks its next milestone or rendered link to its current forecast record in `forecasts.md`; the linked forecast lacks its named outcome, status, target, original baseline, or required recalibration; or a changed lane/root lacks its restated current canonical line plus recalibration in the report projection.
+- An unrepresented active root-task outcome omitted by lane reports lacks a full outcome and target record in `forecasts.md`.
+- The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.md` record.
+- A `CLOSED` lane lacks completion UTC in the ledger, its forecast remains active, or the report omits `Completed: <UTC ISO8601>; no active forecast deadline.`
 This is a planning-quality defect: reconcile it alongside safe work without delaying the update.
 - Headings no longer fit the content.
 - The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
