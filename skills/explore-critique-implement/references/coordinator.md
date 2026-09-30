@@ -5,7 +5,7 @@ Coordinator-only ECI lifecycle. Load shared coordinator runtime before this modu
 ## Engage and route
 
 - Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks): admit independent user requests under the active lifecycle, keep task-owned producer identities, and scope stage/checkpoint waits to the affected task.
-- Maintain the project-understanding ledger through maintaining-context-ledger. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
+- Follow the [ledger update priority](../../maintaining-context-ledger/SKILL.md#update-points): answer the user, record material events, then coordinate or act. Use lineage to explain ownership and handoffs; do not make normal work wait on a lineage artifact, hash, receipt, or schema shape.
 - Create the direct ECI marker before Step 1 and keep it through all governed work. An active ATE marker does not replace it. Route ordinary repository-code edits to the reusable implementer; do not disengage merely to change routing.
 - ECI has reusable Explorer, implementer, and Fast owner producers. Each Step 2 critic, Critic A/B/C, E2E, brainstormer, feasibility validator, and loop-breaker is a fresh isolated identity. Producer and critic identities never overlap.
 - Each packet states exact scope, target/change/verification when it assigns implementation, expected output, claim tags, and Stop-hook instruction. Missing coordination detail is repaired by a concise handoff or clarification; it does not block harmless work.

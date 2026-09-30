@@ -294,7 +294,12 @@ Update before work starts, after material state changes, after material findings
 Every material ledger refresh applies the same-update recalibration rule to
 each affected changed lane or root forecast.
 
-When independent jobs are ready, launch them first. Update the ledger/log while they run. Documentation must not block parallel work.
+Answer the user before ledger maintenance or coordination when a response is due.
+After a material event, update `project-understanding.md`, append its change to
+`high_level_log.md`, and refresh `latest-status-report.md` before dispatching work,
+sending coordination messages, or taking the next project action. Already-running
+independent jobs continue; launch ready work after recording the event. This orders
+coordinator work without adding permission gates, receipts, or per-command checks.
 
 Three-pass ledger edit, in order:
 
