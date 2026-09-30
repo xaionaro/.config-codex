@@ -49,11 +49,13 @@ Use `followup_task` for reports addressed to a task orchestrator and `send_messa
 
 A non-current task orchestrator—including a former, pending, or withdrawn owner—relays received reports to main without task dispatch, implementation, review, disposition, acceptance, or lifecycle action. A report-only turn returns to idle after relaying; delivery into an already-active preparation or handoff/relay turn preserves that turn until its existing completion condition.
 
-Main processes reports for tasks it directly owns and for closed tasks. Main alone decides whether evidence reopens a closed task; never forward a closed task's report to its retired owner. For another active task, main verifies the published owner and forwards the report with `followup_task`. Repeated delivery is the same evidence, not another assignment or completed gate.
+Main consumes task-owner progress, milestone, review, Fast-completion, and coordination reports, together with requests and evidence for main-owned decisions. Main also processes task-local reports for tasks it directly owns, subject to the handoff hold, and reports for closed tasks. Main alone decides whether evidence reopens a closed task; never forward a closed task’s report to its retired owner.
+
+For another active task, forward with `followup_task` only a task-local report that still needs the published owner’s processing, including reports received through an obsolete route, automatic parent delivery, or handoff relay. Verify the published owner first. A copy already processed or already routed for that current owner’s processing triggers no additional followup. Repeated delivery remains the same evidence, not another assignment or completed gate.
 
 Main stays active in coordination or `wait_agent` until outstanding assignments, handoffs, and already-produced reports are accounted for. Queued delivery is not completed processing. Main may use a report-only `followup_task` to drain a non-current owner when an observed completion or handoff inventory identifies an already-produced report; name the affected assignment. Timeout alone does not trigger a drain.
 
-On 1→2, main continues receiving through the old route until publication and then forwards delayed reports to the published task owner. On 2→1, the former task owner relays delayed reports to main. If a pending transfer is withdrawn, the unchanged published owner continues coordinating and the unused candidate remains report-only for any misdirected reports.
+On 1→2, main continues receiving through the old route until publication; afterward, apply the processing and forwarding rules above to delayed reports. On 2→1, the former task owner relays delayed reports to main. If a pending transfer is withdrawn, the unchanged published owner continues coordinating and the unused candidate remains report-only for any misdirected reports.
 
 ## Task-local review dispatch
 
