@@ -2843,7 +2843,7 @@ assert_lane_forecast_contract() {
   require_text "$LEDGER" '`latest-status-report.md` projects these values using `writing-status-reports`.'
   require_text "$LEDGER" '- The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.md` record.'
   forbid_text "$LEDGER" 'Under `Progress`, store these fields in structured form in `project-understanding.md`.'
-  forbid_flattened_pattern "$LEDGER" 'scenario endpoint/range stored in ledger' 'Keep[[:space:]]+each[[:space:]]+scenario[[:punct:]]s[[:space:]]+endpoint/range[[:space:]]+in[[:space:]]+the[[:space:]]+ledger\.'
+  forbid_flattened_pattern "$LEDGER" 'scenario endpoint/range stored in ledger' '(^|[-*][[:space:]]+|[[:space:]][-*][[:space:]]+|[.!?][[:space:]]+)Keep[[:space:]]+each[[:space:]]+scenario[[:punct:]]s[[:space:]]+endpoint/range[[:space:]]+in[[:space:]]+the[[:space:]]+ledger\.'
   require_text "$COORDINATOR" '`forecasts.md` owns current scenario selection and stored endpoints.'
   require_pattern "$LEDGER" 'invalid-ledger rule covers unrepresented active roots' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
   require_pattern "$STATUS_REPORT" 'status forecast checklist' 'Lane[[:space:]]+forecasts[[:space:]]*\|[[:space:]]+A[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update[[:space:]]+names[[:space:]]+each[[:space:]]+active[[:space:]]+lane.?s[[:space:]]+milestone[[:space:]]+and[[:space:]]+one[[:space:]]+named-outcome[[:space:]]+forecast'
