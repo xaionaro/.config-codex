@@ -334,6 +334,6 @@ Reject the ledger if any holds:
 - A `CLOSED` lane lacks completion UTC in the ledger, its forecast remains active, or the report omits `Completed: <UTC ISO8601>; no active forecast deadline.`
 This is a planning-quality defect: reconcile it alongside safe work without delaying the update.
 - Headings no longer fit the content.
-- The high-level log is missing, was edited or truncated in place, lacks entries for material ledger changes or forecast-only updates made this session, or duplicates current-state synthesis.
+- The high-level log is missing, was edited or truncated in place, lacks entries for material ledger changes or material forecast-only updates made this session, or duplicates current-state synthesis.
 - The latest status report is missing, lacks a UTC timestamp, predates the last ledger update or material forecast-only update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
 - Secrets, credentials, or unnecessary personal data are recorded.
