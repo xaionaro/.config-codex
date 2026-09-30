@@ -122,18 +122,20 @@ A ledger or material forecast update without its required same-turn log entry an
 
 Skip blow-by-blow history unless it prevents recurrence.
 
-### Log vs Ledger
+### Log, Ledger, and Forecasts
 
-A given current fact lives in one canonical current-state record. Route historical changes to the log; use the linked `forecasts.md` record for current forecast details.
+A current fact lives in one canonical record. Keep only a rendered link to a current forecast in the ledger; append material forecast changes to the log.
 
-| Content | Ledger | Log |
-|---|---|---|
-| "14:22 - tried A, failed" | - | append |
-| "Considered X, chose Y because..." | "Using Y. Why: <reason>." | append the consideration + decision event |
-| "Thought bug was in M, found in N" | "Bug: N. Fix: <link>." | append the M->N correction event |
-| "Step 1 done. Step 2 done. Step 3 WIP." | "Current: step 3 - <state>. Done: 1, 2 (links)." | append each step transition |
-| Narrative of what each agent did | Current owner + last verdict + next action | append per-agent action when it produced a material change |
-| Existing ledger fact reaffirmed before action changes state | keep existing current fact | keep log as-is for pure reaffirmation; append material planning, risk, ownership, authority, or verification change |
+| Content | Ledger | Forecasts | Log |
+|---|---|---|---|
+| "14:22 - tried A, failed" | - | - | append |
+| "Considered X, chose Y because..." | "Using Y. Why: <reason>." | - | append the consideration + decision event |
+| "Thought bug was in M, found in N" | "Bug: N. Fix: <link>." | - | append the M->N correction event |
+| "Step 1 done. Step 2 done. Step 3 WIP." | "Current: step 3 - <state>. Done: 1, 2 (links)." | - | append each step transition |
+| Narrative of what each agent did | Current owner + last verdict + next action | - | append per-agent action when it produced a material change |
+| Current lane/root forecast values | Rendered link only | Canonical current values | - |
+| Material forecast update | Do not copy current values | Update current record in place | Append the material change |
+| Existing ledger fact reaffirmed before action changes state | keep existing current fact | - | keep log as-is for pure reaffirmation; append material planning, risk, ownership, authority, or verification change |
 
 Per-ledger-line test: true and load-bearing right now? No -> drop from ledger; if it captures something material that happened, append to the log instead.
 
@@ -196,7 +198,7 @@ evidence-supported downside scenario alongside the canonical target:
   `forecasts.md` record. A material risk without a finite duration basis is `unknown/unbounded`:
   give it no fabricated endpoint, and do not call the target an absolute worst
   case.
-- `Initial forecast.Baseline` remains the original forecast target; it is not
+- `Initial forecast.Original baseline` remains the original forecast target; it is not
   the scenario base-case endpoint.
 
 Forecast scenarios describe planning uncertainty only. They do not change
@@ -332,6 +334,6 @@ Reject the ledger if any holds:
 - A `CLOSED` lane lacks completion UTC in the ledger, its forecast remains active, or the report omits `Completed: <UTC ISO8601>; no active forecast deadline.`
 This is a planning-quality defect: reconcile it alongside safe work without delaying the update.
 - Headings no longer fit the content.
-- The high-level log is missing, was edited or truncated in place, lacks entries for ledger changes made this session, or duplicates the ledger's current-state synthesis.
-- The latest status report is missing, lacks a UTC timestamp, predates the last ledger update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
+- The high-level log is missing, was edited or truncated in place, lacks entries for material ledger changes or forecast-only updates made this session, or duplicates current-state synthesis.
+- The latest status report is missing, lacks a UTC timestamp, predates the last ledger update or material forecast-only update, fails `writing-status-reports` coverage (state, progress, decisions, blockers/risks, verification, next focus), or duplicates ledger structure instead of summarizing changed state.
 - Secrets, credentials, or unnecessary personal data are recorded.
