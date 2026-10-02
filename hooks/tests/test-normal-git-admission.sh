@@ -1273,7 +1273,65 @@ restore_explicit_worktree_pair() {
 }
 
 run_checkout_option_validity_target() {
-  local failures=0 options command path expected_ordinary protected_before index_before
+  local failures=0 options command path expected_ordinary protected_before index_before row_ok
+  git -C "$REPO" checkout -q existing-other-branch
+  git -C "$REPO" checkout -q "${before_branch#refs/heads/}"
+  assert_denied_code 'git checkout -' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  assert_denied_code 'git checkout - --' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  assert_denied_code 'git checkout -b dash-source -' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  assert_denied_code 'git checkout - hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  checkout_invalid_mode_pair '--merge -' explicit
+  checkout_invalid_mode_pair '--ours -' explicit
+  checkout_invalid_mode_pair '--patch --unified=08' explicit
+  checkout_invalid_mode_pair '--patch -U08' explicit
+  checkout_invalid_mode_pair '--patch --inter-hunk-context=08' explicit
+  checkout_invalid_mode_pair '--pathspec-from-file= --pathspec-file-nul' explicit
+  printf '%s\n' hooks/validate-bash.sh >"$TMP_ROOT/cleared-checkout.paths"
+  assert_denied_code "git checkout - --pathspec-from-file=$TMP_ROOT/cleared-checkout.paths" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  for options in \
+    '-U -1' '-U-1' '-U-0x1' '--unified=-0x1' '--inter-hunk-context=-0x1' \
+    '--pathspec-from-file=' '--pathspec-from-file ""' \
+    "--pathspec-from-file=$TMP_ROOT/cleared-checkout.paths --pathspec-from-file=" \
+    '-'; do
+    protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+    index_before="$(git -C "$REPO" ls-files --stage)"
+    row_ok=1
+    assert_denied_code "git checkout $options -- hooks/validate-bash.sh" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+      "effect=overwrite target=$REPO/hooks/validate-bash.sh" || { failures=1; row_ok=0; }
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    command="git checkout $options -- CODEX.md"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || { failures=1; row_ok=0; }
+    else failures=1; row_ok=0; fi
+    [ "$(cat -- "$REPO/CODEX.md")" = 'ordinary base' ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || { failures=1; row_ok=0; }
+    if [ "$row_ok" -eq 1 ]; then printf 'checkout repaired-value restoration/state checks: %s\n' "$options"; fi
+  done
+  printf '%s\n' CODEX.md >"$TMP_ROOT/previous-checkout.paths"
+  for command in 'git checkout - CODEX.md' "git checkout - --pathspec-from-file=$TMP_ROOT/previous-checkout.paths"; do
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    row_ok=1
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || { failures=1; row_ok=0; }
+    else failures=1; row_ok=0; fi
+    [ "$(cat -- "$REPO/CODEX.md")" = 'ordinary base' ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || { failures=1; row_ok=0; }
+    if [ "$row_ok" -eq 1 ]; then printf 'previous-source restored ordinary path and preserved other state: %s\n' "$command"; fi
+  done
+  assert_denied_code "git checkout --pathspec-from-file= --pathspec-from-file=$TMP_ROOT/cleared-checkout.paths" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  assert_denied_code 'git checkout --pathspec-from-file= existing-other-branch' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  printf 'changed dash\n' >"$REPO/-"
+  command='git checkout -- -'
+  if assert_allowed "$command" worker; then
+    (cd -- "$REPO"; bash -c "$command") || failures=1
+    [ "$(cat -- "$REPO/-")" = 'literal short path' ] || failures=1
+  else failures=1; fi
   for options in \
     '--patch --merge' \
     '--patch --force' \
@@ -1320,6 +1378,7 @@ run_checkout_option_validity_target() {
   expected_ordinary="$(git -C "$REPO" rev-parse HEAD:CODEX.md)"
   for options in \
     '--patch' \
+    '--patch -U8' \
     '--patch --merge --no-merge' \
     '--patch --force --no-force' \
     '--patch --overlay --no-overlay' \
@@ -1327,19 +1386,20 @@ run_checkout_option_validity_target() {
     printf '\n# Fixture patch edit\n' >>"$REPO/hooks/validate-bash.sh"
     protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
     index_before="$(git -C "$REPO" ls-files --stage)"
+    row_ok=1
     assert_denied_code "git checkout $options -- hooks/validate-bash.sh" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-      "effect=overwrite target=$REPO/hooks/validate-bash.sh" || failures=1
-    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || failures=1
+      "effect=overwrite target=$REPO/hooks/validate-bash.sh" || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || { failures=1; row_ok=0; }
     printf 'ordinary changed\n' >"$REPO/CODEX.md"
     command="git checkout $options -- CODEX.md"
     if assert_allowed "$command" worker; then
-      (cd -- "$REPO"; printf 'y\n' | bash -c "$command") >"$TMP_ROOT/valid-patch.out" 2>&1 || failures=1
-      [ "$(git -C "$REPO" hash-object CODEX.md)" = "$expected_ordinary" ] || failures=1
-      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || failures=1
-      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || failures=1
-      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
-      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
-      printf 'valid-patch affirmative restoration/state checks: %s\n' "$options"
+      (cd -- "$REPO"; printf 'y\n' | bash -c "$command") >"$TMP_ROOT/valid-patch.out" 2>&1 || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" hash-object CODEX.md)" = "$expected_ordinary" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || { failures=1; row_ok=0; }
+      if [ "$row_ok" -eq 1 ]; then printf 'valid-patch affirmative restoration/state checks: %s\n' "$options"; fi
     else failures=1; fi
     git -C "$REPO" restore --source=HEAD --worktree -- hooks/validate-bash.sh
   done
@@ -1359,9 +1419,10 @@ run_effect_aware_git_target() {
   printf 'ordinary base\n' >"$REPO/CODEX.md"
   printf 'literal short path\n' >"$REPO/-z"
   printf 'literal short path\n' >"$REPO/-h"
+  printf 'literal short path\n' >"$REPO/-"
   printf '%s\n' 'scope: effect-aware Git regression' "cwd: $REPO" \
     "session_id: $SESSION" 'created_utc: 2026-08-28T00:00:00Z' >"$PROOF_ROOT/$SESSION/eci_active"
-  git -C "$REPO" add -- hooks/validate-bash.sh hooks.json CODEX.md file.txt -z -h
+  git -C "$REPO" add -- hooks/validate-bash.sh hooks.json CODEX.md file.txt -z -h -
   git -C "$REPO" commit -qm 'effect fixture'
   protected_base="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
   git -C "$REPO" branch hooks/validate-bash.sh

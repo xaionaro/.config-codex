@@ -7091,6 +7091,8 @@ def checkout_revision(
     object_type: str = "tree",
     git_options: tuple[str, ...] | None = (),
 ) -> bool | None:
+    if value == "-":
+        value = "@{-1}"
     if not value or value.startswith("-") or not base or not os.path.isabs(base):
         return False
     if git_options is None:
@@ -7107,24 +7109,26 @@ def checkout_revision(
     return result.returncode == 0
 
 
-def checkout_context_value_valid(value: str) -> bool:
-    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
+def checkout_context_value(value: str) -> int | None:
+    # Git uses signed base-0 conversion: a leading zero selects octal.
+    match = re.fullmatch(r"[ \t\n\r\v\f]*([+-]?)(0[xX][0-9a-fA-F]+|[0-9]+)([kKmMgG]?)", value)
     if not match:
-        return False
+        return None
     sign, digits, suffix = match.groups()
-    if sign == "-" and suffix:
-        return False
+    base = 16 if digits.lower().startswith("0x") else 8 if digits.startswith("0") else 10
     try:
-        number = int(digits)
-    except (TypeError, ValueError):
-        return False
-    if sign == "-" and number not in {0, 1}:
-        return False
+        number = int(digits, base)
+    except ValueError:
+        return None
     number *= {"": 1, "k": 1024, "K": 1024, "m": 1024 ** 2,
                "M": 1024 ** 2, "g": 1024 ** 3, "G": 1024 ** 3}[suffix]
     if sign == "-":
         number = -number
-    return -(1 << 31) <= number <= (1 << 31) - 1
+    return number if -(1 << 31) <= number <= (1 << 31) - 1 else None
+
+
+def checkout_context_value_valid(value: str) -> bool:
+    return checkout_context_value(value) is not None
 
 
 def checkout_context_value_has_unpatched_effect(value: str) -> bool:
@@ -7132,10 +7136,7 @@ def checkout_context_value_has_unpatched_effect(value: str) -> bool:
     # restore a path. Other valid context values require --patch, while
     # negative zero is invalid without it, so those commands remain
     # transparent.
-    if not checkout_context_value_valid(value):
-        return False
-    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
-    return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) == 1
+    return checkout_context_value(value) == -1
 
 
 def checkout_option_state(
@@ -7170,7 +7171,6 @@ def checkout_option_state(
     tracking_specified = reflog = patch_mode = False
     unified_context_option = unified_context_unpatched_effect = False
     inter_hunk_context_option = inter_hunk_context_unpatched_effect = False
-    pathspec_file_empty = False
     orphan_name = None
     role_unknown = False
     after_separator = False
@@ -7207,20 +7207,21 @@ def checkout_option_state(
             index += 1
             continue
         if value == "--no-pathspec-from-file":
-            pathspec_file_option = pathspec_file_empty = False
+            pathspec_file_option = False
             index += 1
             continue
         option, attached, argument = value.partition("=")
         if option == "--pathspec-from-file":
             pathspec_file_option = True
-            pathspec_file_empty = attached and argument == ""
+            if attached:
+                pathspec_file_option = argument != ""
             if not attached:
                 if index + 1 >= len(normalized):
                     return invalid()
                 if index + 1 in unknown or index + 1 in variable_cardinality:
                     role_unknown = True
                 else:
-                    pathspec_file_empty = normalized[index + 1] == ""
+                    pathspec_file_option = normalized[index + 1] != ""
                 index += 2
             else:
                 index += 1
@@ -7258,7 +7259,7 @@ def checkout_option_state(
                 inter_hunk_context_option = True
                 inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
             continue
-        if value.startswith("-") and not value.startswith("--"):
+        if value != "-" and value.startswith("-") and not value.startswith("--"):
             flags = value[1:]
             short_index = 0
             while short_index < len(flags):
@@ -7276,7 +7277,7 @@ def checkout_option_state(
                             break
                         argument = normalized[index + 1]
                         index += 1
-                    if argument.startswith("-"):
+                    if flag in {"b", "B"} and argument.startswith("-"):
                         return invalid()
                     if flag == "U":
                         if not checkout_context_value_valid(argument):
@@ -7334,7 +7335,7 @@ def checkout_option_state(
             orphan_mode = False
         elif value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
             pathspec_file_nul = value == "--pathspec-file-nul"
-        elif not value.startswith("-"):
+        elif value == "-" or not value.startswith("-"):
             if source_value is None:
                 source_value = value
             else:
@@ -7358,7 +7359,7 @@ def checkout_option_state(
             return invalid()
     if orphan_mode and orphan_name is None:
         return invalid()
-    if pathspec_file_empty or pathspec_file_nul and not pathspec_file_option:
+    if pathspec_file_nul and not pathspec_file_option:
         return invalid()
     if not patch_mode:
         if unified_context_option and not unified_context_unpatched_effect:
@@ -7383,7 +7384,7 @@ def checkout_option_state(
         (detach_state is True and has_path_destinations)
     )
     if separator_index is None and source_value is not None and source_is_tree:
-        candidate = source_value
+        candidate = "@{-1}" if source_value == "-" else source_value
         if not candidate.startswith(":") and base and os.path.isabs(base):
             source_file = os.path.lexists(candidate if os.path.isabs(candidate) else os.path.join(base, candidate))
             ambiguous_source = bool(destinations or pathspec_file_option) and source_file
@@ -12533,7 +12534,7 @@ def collect_pathspecs(
                 paths.clear()  # Operands before checkout's separator are sources.
                 checkout_source = None
             continue
-        if not after_separator and value.startswith("-"):
+        if not after_separator and value.startswith("-") and not (verb == "checkout" and value == "-"):
             is_file, operand = pathspec_from_file_argument(value)
             if is_file:
                 value_unknown = offset in unknown
