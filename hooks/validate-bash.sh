@@ -2282,8 +2282,8 @@ direct_ledger_prefix_effect_check() {
       ;;
     class=worker-git\ *)
       deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied an acceptance-sensitive Git operation: ${prefix_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls repository acceptance/history and is coordinator-owned while ECI is active" \
-        "route the reported Git verb through the main/orchestrator coordinator; workers may use finite read-only Git inspection and history commands"
+        "ECI worker ownership gate denied a protected Git operation: ${prefix_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls protected repository state and is coordinator-owned while ECI is active; ordinary scoped Producer commits use the separate repository/effect route" \
+        "route the reported protected Git operation through the main/orchestrator coordinator; ordinary scoped Producer commits use the resolved repository/effect checks"
       ;;
   esac
 
@@ -13279,8 +13279,8 @@ worker_read_only_pipeline_route() {
         ;;
       class=worker-git\ *)
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker ownership gate denied acceptance-sensitive Git segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership" \
-          "route the reported Git verb through the main/orchestrator coordinator"
+          "ECI worker ownership gate denied protected Git segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership; ordinary scoped Producer commits use the separate repository/effect route" \
+          "route the reported protected Git operation through the main/orchestrator coordinator; ordinary scoped Producer commits use the resolved repository/effect checks"
         ;;
     esac
     detail="$(command_invokes_git_branch_remote_mutation "$segment" 2>/dev/null || true)"
@@ -16817,8 +16817,8 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       ;;
     class=worker-git\ *)
       deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied an acceptance-sensitive Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls repository acceptance/history and is coordinator-owned while ECI is active" \
-        "route the reported Git verb through the main/orchestrator coordinator; workers may use finite read-only Git inspection and history commands"
+        "ECI worker ownership gate denied a protected Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls protected repository state and is coordinator-owned while ECI is active; ordinary scoped Producer commits use the separate repository/effect route" \
+        "route the reported protected Git operation through the main/orchestrator coordinator; ordinary scoped Producer commits use the resolved repository/effect checks"
       ;;
     class=worker-hook-mode\ *)
       # The compiled planner normally reports this ownership-sensitive source
@@ -16922,7 +16922,7 @@ if [ "$hook_is_subagent" = true ] && command_invokes_eci_wait_or_resume "$comman
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
-  deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a history or reference mutation. Producers may make ordinary scoped checkpoint commits; history and reference changes remain coordinator-owned." "route this history or reference mutation through the main/orchestrator"
+  deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a Git history, explicit reference, or patch-application mutation. Producers may make ordinary scoped checkpoint commits through the resolved repository/effect checks; amendments, other history changes, explicit reference changes, and git apply remain coordinator-owned." "route this history, reference, or patch-application operation through the main/orchestrator"
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "$command"; then
