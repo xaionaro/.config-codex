@@ -10386,6 +10386,98 @@ def observed_timeout_command_index(tokens, index, segment_index):
     return matches[0] if len(matches) == 1 else (None, None)
 
 
+def commit_effect(arguments: list[str]) -> str | None:
+    # Git v2.51.0 builtin/commit.c defines this option inventory. Resolve
+    # abbreviations before arity so --mes --dry-run consumes a message.
+    required_values = {
+        "file", "author", "date", "message", "reedit-message", "reuse-message",
+        "fixup", "squash", "trailer", "template", "cleanup", "unified",
+        "inter-hunk-context", "pathspec-from-file",
+    }
+    optional_values = {"gpg-sign", "untracked-files"}
+    nonnegatable = {"trailer", "unified", "inter-hunk-context"}
+    negative_names = {"verify", "post-rewrite"}
+    selection_options = {"include", "only", "interactive", "patch", "pathspec-from-file"}
+    state = dict.fromkeys(selection_options | {"all", "amend", "dry-run", "null"}, False)
+    format_options = {"short", "porcelain", "long"}
+    long_options = required_values | optional_values | state.keys() | format_options | {
+        "quiet", "verbose", "reset-author", "signoff", "edit", "status",
+        "branch", "ahead-behind", "pathspec-file-nul", "allow-empty",
+        "allow-empty-message",
+    } | negative_names
+    short_effects = {"a": "all", "i": "include", "o": "only", "p": "patch", "z": "null"}
+    format_preview = False
+    path_operands = False
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        index += 1
+        if argument in {"--", "--end-of-options"}:
+            path_operands = path_operands or index < len(arguments)
+            break
+        if argument == "-" or not argument.startswith("-"):
+            path_operands = True
+            continue
+        if argument.startswith("--"):
+            name, separator, _ = argument[2:].partition("=")
+            negated = name.startswith("no-")
+            candidates = long_options
+            if negated:
+                name = name[3:]
+                candidates = candidates - nonnegatable
+                # Git accepts double negation only for names declared with
+                # no-: no-verify and no-post-rewrite (parse-options.c).
+                if name.startswith("no-"):
+                    name = name[3:]
+                    candidates = negative_names
+            matches = {name} if name in candidates else {
+                option for option in candidates if option.startswith(name)
+            }
+            if len(matches) != 1:
+                return None  # Git rejects unknown or ambiguous options.
+            name = next(iter(matches))
+            takes_value = name in required_values | optional_values
+            if separator and (negated or not takes_value):
+                return None
+            if not negated and name in required_values and not separator:
+                if index == len(arguments):
+                    return None
+                index += 1
+            if name in state:
+                state[name] = not negated
+            elif name in format_options:
+                # These options share status_format; every negation sets
+                # it to NONE, even if a different format set it earlier.
+                format_preview = not negated
+            continue
+        for option_index, option in enumerate(argument[1:], 1):
+            if option in {"m", "F", "C", "c", "t", "U"}:
+                if option_index == len(argument) - 1:
+                    if index == len(arguments):
+                        return None
+                    index += 1
+                break
+            if option in {"S", "u"}:  # Optional values consume only the suffix.
+                break
+            if option in short_effects:
+                state[short_effects[option]] = True
+            elif option not in {"q", "v", "s", "e", "n"}:
+                return None  # Help or an invalid option cannot commit.
+
+    # finalize_deferred_config and parse_and_validate_options in commit.c
+    # make final status format/null output imply preview independently of
+    # the final explicit dry-run flag. Negated flags must not stay latched.
+    if state["dry-run"] or format_preview or state["null"]:
+        return None
+    if state["all"]:
+        return "commit-all"
+    if path_operands or any(state[option] for option in selection_options):
+        return "commit-stage"
+    if state["amend"]:
+        return "commit-amend"
+    return "commit"
+
+
 def segment_spec(tokens, segment_index):
     if not tokens:
         return None
@@ -10704,60 +10796,8 @@ def segment_spec(tokens, segment_index):
         # it resolves to an actual worktree target.
         return "prep", repo_dir
     if verb == "commit":
-        # Resolve effects before ownership: message operands may themselves
-        # be strings such as --amend, while -a also stages unrelated work.
-        arguments = tokens[index + 1:]
-        value_options = {
-            "-m", "--message", "-F", "--file", "-C", "--reuse-message",
-            "-c", "--reedit-message", "-t", "--template", "--author",
-            "--date", "--cleanup", "--fixup", "--squash", "--trailer",
-            "--pathspec-from-file",
-        }
-        amend = False
-        stage_all = False
-        stage_selection = False
-        preview = False
-        argument_index = 0
-        while argument_index < len(arguments):
-            argument = arguments[argument_index]
-            if argument == "--":
-                stage_selection = stage_selection or argument_index + 1 < len(arguments)
-                break
-            if argument in {"--only", "--include", "--interactive", "--patch", "--pathspec-from-file"} or argument.startswith("--pathspec-from-file="):
-                stage_selection = True
-            if argument in value_options:
-                argument_index += 2
-                continue
-            if argument == "--amend":
-                amend = True
-            if argument == "--all":
-                stage_all = True
-            if argument in {"--dry-run", "--short", "--porcelain", "--long"} or argument.startswith("--porcelain="):
-                preview = True
-            if argument.startswith("-") and not argument.startswith("--"):
-                for option_index, option in enumerate(argument[1:], 1):
-                    if option in {"m", "F", "C", "c", "t"}:
-                        if option_index == len(argument) - 1:
-                            argument_index += 1
-                        break
-                    if option in {"S", "u"}:
-                        break
-                    if option == "a":
-                        stage_all = True
-                    if option in {"o", "i", "p"}:
-                        stage_selection = True
-            if not argument.startswith("-"):
-                stage_selection = True
-            argument_index += 1
-        if preview:
-            return None
-        if stage_all:
-            return "commit-all", repo_dir
-        if stage_selection:
-            return "commit-stage", repo_dir
-        if amend:
-            return "commit-amend", repo_dir
-        return "commit", repo_dir
+        effect = commit_effect(tokens[index + 1:])
+        return (effect, repo_dir) if effect else None
     if verb == "worktree":
         if index + 1 < len(tokens) and tokens[index + 1] in MUTATING_WORKTREE:
             return "worktree", repo_dir
