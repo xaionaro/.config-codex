@@ -3746,7 +3746,7 @@ func inspectSegment(
 					segmentIndex,
 					originalTokenIndex(current.argv, argv[optionIndex]),
 					argv[optionIndex],
-					"route this exact Git fsck writer through the main/orchestrator coordinator acceptance path",
+					"route this exact Git fsck writer through the ECI Supervisor to an assigned Producer",
 					"worker-git-ownership",
 				)
 			}
@@ -6551,7 +6551,7 @@ func inspectGit(
 				segmentIndex,
 				mutationIndex,
 				argv[mutationIndex],
-				"route this exact Git mutation through the main/orchestrator coordinator acceptance path",
+				"route this exact Git mutation through the ECI Supervisor to the assigned Producer",
 				"worker-git-ownership",
 			)
 		}
@@ -6572,7 +6572,7 @@ func inspectGit(
 			segmentIndex,
 			mutationIndex,
 			argv[mutationIndex],
-			"route this exact Git mutation through the main/orchestrator coordinator acceptance path",
+			"route this exact Git mutation through the ECI Supervisor to the assigned Producer",
 			"worker-git-ownership",
 		)
 	}

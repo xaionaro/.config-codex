@@ -12928,8 +12928,8 @@ enforce_git_mutation_gate() {
           "route the protected hook operation to the Supervisor, or use the assigned Producer route for ordinary scoped implementation changes"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=ordinary active-hook source edits follow the assigned Producer route, with the bounded Supervisor self-edit hatch for genuine Supervisor code-edit edge cases" \
-          "assign the exact hook edit to a Producer, or use the session-scoped 600-second Supervisor self-edit hatch (coordinator-edit-on) for a genuine Supervisor code-edit edge case"
+          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
+          "assign the exact tracked hook edit to a Producer, or route the provider/control operation through the Supervisor's canonical control route"
       fi
     fi
     return 0
@@ -13037,8 +13037,8 @@ enforce_git_mutation_gate() {
           "route the protected hook operation to the Supervisor, or use the assigned Producer route for ordinary scoped implementation changes"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=ordinary active-hook source edits follow the assigned Producer route, with the bounded Supervisor self-edit hatch for genuine Supervisor code-edit edge cases" \
-          "assign the exact hook edit to a Producer, or use the session-scoped 600-second Supervisor self-edit hatch (coordinator-edit-on) for a genuine Supervisor code-edit edge case"
+          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
+          "assign the exact tracked hook edit to a Producer, or route the provider/control operation through the Supervisor's canonical control route"
       fi
     fi
   done
