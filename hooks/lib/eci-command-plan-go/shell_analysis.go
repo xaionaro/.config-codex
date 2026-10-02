@@ -442,15 +442,18 @@ func sourceBackedShellArgv(
 type shellOptionState uint8
 
 const (
+	// shellOptionUnknown carries no supported proof of the effective setting.
 	shellOptionUnknown shellOptionState = iota
+	// shellOptionOff records an explicitly disabled effective option.
 	shellOptionOff
+	// shellOptionOn records an explicitly enabled effective option.
 	shellOptionOn
 )
 
 // shellExpansionState carries supported shell options and persistent attribute
 // uncertainty into child scopes without inferring defaults from missing metadata.
 //
-// Example: bash -f passes known noglob to its inline command source.
+// Example: a command substitution inherits source-established noglob state.
 type shellExpansionState struct {
 	nullglob          shellOptionState
 	failglob          shellOptionState
@@ -469,8 +472,9 @@ type shellExpansionFacts struct {
 }
 
 // shellExpansionSegments tracks direct shell options and assignment-only scalar
-// bindings within a simple sequential scope. Unsupported scope or state discards
-// evidence; no inherited IFS, variable values, or conditional effects are assumed.
+// bindings within a simple sequential scope. Compound scopes retain incoming
+// options only when every command preserves them; no inherited IFS, variable
+// values, or conditional effects are assumed.
 //
 // Example: unset IFS; msg=foo; git commit -m $msg -a retains the -a option role.
 func shellExpansionSegments(
@@ -489,7 +493,24 @@ func shellExpansionSegments(
 	for _, statement := range file.Stmts {
 		call, simple := statement.Cmd.(*syntax.CallExpr)
 		if !simple || len(call.Args) == 0 && len(call.Assigns) == 0 {
-			state = shellExpansionState{attributesUnknown: true}
+			proof := shellOptionPreservation{Source: source, Preserved: true}
+			syntax.Walk(statement, proof.Visit)
+			state.attributesUnknown = true
+			if !proof.Preserved {
+				state = shellExpansionState{attributesUnknown: true}
+			}
+			// No branch effects are inferred. Only a whole-scope invariant can
+			// carry the same incoming option facts to its executable descendants.
+			for _, offset := range proof.Offsets {
+				for index, current := range segments {
+					if offset >= current.sourceStart && offset < current.sourceStart+len(current.command) {
+						result[index] = shellExpansionFacts{
+							state:    state,
+							nullglob: state.nullglob == shellOptionOn && state.failglob == shellOptionOff && state.noglob == shellOptionOff,
+						}
+					}
+				}
+			}
 			clear(bindings)
 			ifsKnown = false
 			continue
@@ -596,11 +617,143 @@ func shellExpansionSegments(
 			default:
 				state = shellExpansionState{attributesUnknown: true}
 			}
-		case "eval", ".", "source", "builtin", "command", "exec", "declare", "typeset", "local", "readonly", "export", "nameref", "let", "read", "mapfile", "readarray":
+		case "declare", "typeset", "local", "readonly", "export", "nameref", "let", "read", "mapfile", "readarray":
+			state.attributesUnknown = true
+			if !literal || !shellVariableBuiltinPreservesOptions(values) {
+				state = shellExpansionState{attributesUnknown: true}
+			}
+		case "eval", ".", "source", "builtin", "command", "exec":
 			state = shellExpansionState{attributesUnknown: true}
 		}
 	}
 	return result
+}
+
+// shellOptionPreservation proves a whole supported statement leaves shell
+// options unchanged. It records executable offsets only for transporting the
+// same incoming facts, without deriving branch, loop, or assignment outcomes.
+//
+// Example: true && git add -A -- file* preserves incoming glob facts; a set
+// command anywhere in that statement prevents this invariant from being used.
+type shellOptionPreservation struct {
+	Source    string
+	Preserved bool
+	Offsets   []int
+}
+
+// Visit admits only supported commands whose parent-shell option effects are
+// known. Substitutions execute in child scopes and receive separate analysis.
+//
+// Example: a literal declaration taints variables but cannot turn on failglob.
+func (proof *shellOptionPreservation) Visit(node syntax.Node) bool {
+	if !proof.Preserved || node == nil {
+		return false
+	}
+	switch node := node.(type) {
+	case *syntax.CmdSubst, *syntax.ProcSubst:
+		return false
+	case *syntax.CallExpr:
+		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
+		if len(node.Args) == 0 {
+			return true
+		}
+		name, literal := literalSyntaxWord(proof.Source, node.Args[0])
+		if !literal {
+			proof.Preserved = false
+			return false
+		}
+		switch name {
+		case "git", "true", "false", ":", "printf", "echo", "test", "[", "env":
+			return true
+		case "read", "mapfile", "readarray", "let":
+			values := make([]string, len(node.Args))
+			for index, word := range node.Args {
+				var known bool
+				values[index], known = literalSyntaxWord(proof.Source, word)
+				if !known {
+					proof.Preserved = false
+					return false
+				}
+			}
+			proof.Preserved = shellVariableBuiltinPreservesOptions(values)
+		default:
+			proof.Preserved = false
+		}
+	case *syntax.DeclClause:
+		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
+		for _, assignment := range node.Args {
+			if assignment.Index != nil || assignment.Array != nil {
+				proof.Preserved = false
+				return false
+			}
+			if assignment.Value != nil {
+				if _, literal := literalSyntaxWord(proof.Source, assignment.Value); !literal {
+					proof.Preserved = false
+					return false
+				}
+			}
+		}
+	case *syntax.LetClause:
+		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
+	case *syntax.BinaryCmd, *syntax.IfClause, *syntax.Block, *syntax.Subshell:
+		// Inspect every arm before retaining any incoming option fact.
+	case syntax.Command:
+		proof.Preserved = false
+	}
+	return proof.Preserved
+}
+
+// shellVariableBuiltinPreservesOptions recognizes bounded variable-only
+// builtin forms. Callback-bearing or unsupported forms cannot borrow this
+// proof even when their ordinary purpose is reading or assigning variables.
+//
+// Example: read -r answer preserves options; mapfile -C callback does not.
+func shellVariableBuiltinPreservesOptions(values []string) bool {
+	if len(values) == 0 {
+		return false
+	}
+	switch values[0] {
+	case "declare", "typeset", "local", "readonly", "export", "nameref", "let":
+		return true
+	case "read":
+		for _, value := range values[1:] {
+			if value != "-r" && value != "--" && !isIdentifier(value) {
+				return false
+			}
+		}
+		return true
+	case "mapfile", "readarray":
+		for index := 1; index < len(values); index++ {
+			value := values[index]
+			if value == "--" {
+				return index+1 == len(values) || index+2 == len(values) && isIdentifier(values[index+1])
+			}
+			if !strings.HasPrefix(value, "-") {
+				return index+1 == len(values) && isIdentifier(value)
+			}
+			if len(value) < 2 {
+				return false
+			}
+			for offset := 1; offset < len(value); offset++ {
+				switch value[offset] {
+				case 't':
+				case 'd', 'n', 'O', 's', 'u', 'c':
+					if offset+1 == len(value) {
+						index++
+						if index >= len(values) {
+							return false
+						}
+					}
+					offset = len(value)
+				default:
+					return false
+				}
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // shellExactScalar recognizes a plain unquoted scalar with proven one-field
@@ -1237,14 +1390,9 @@ func isShellName(value string) bool {
 func literalShellInvocation(argv []shellArgument) shellPayload {
 	commandMode, stdinMode := false, false
 	noExecution, interactive := false, false
-	expansion := shellExpansionState{}
-	optionsKnown := true
 	index := 1
 	for index < len(argv) {
 		option := argv[index].Value
-		if !argv[index].Literal {
-			optionsKnown = false
-		}
 		if !argv[index].singleField() {
 			return shellPayload{handled: true, incomplete: true}
 		}
@@ -1259,7 +1407,6 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 			if index+1 >= len(argv) || !argv[index+1].singleField() {
 				return shellPayload{handled: true, incomplete: true}
 			}
-			expansion.attributesUnknown = true
 			index += 2
 			continue
 		}
@@ -1276,11 +1423,6 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 				commandMode = true
 			case 's':
 				stdinMode = true
-			case 'f':
-				expansion.noglob = shellOptionOff
-				if option[0] == '-' {
-					expansion.noglob = shellOptionOn
-				}
 			case 'n':
 				noExecution = option[0] == '-'
 			case 'i':
@@ -1292,31 +1434,22 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 						return shellPayload{handled: true, incomplete: true}
 					}
 					if !argv[index].Literal {
-						optionsKnown = false
 						continue
 					}
-					setting := shellOptionOff
-					if option[0] == '-' {
-						setting = shellOptionOn
-					}
-					switch {
-					case flag == 'o' && argv[index].Value == "noexec":
+					if flag == 'o' && argv[index].Value == "noexec" {
 						noExecution = option[0] == '-'
-					case flag == 'o' && argv[index].Value == "noglob":
-						expansion.noglob = setting
-					case flag == 'O' && argv[index].Value == "nullglob":
-						expansion.nullglob = setting
-					case flag == 'O' && argv[index].Value == "failglob":
-						expansion.failglob = setting
 					}
 				}
 			}
 		}
 		index++
 	}
-	if !optionsKnown {
-		expansion = shellExpansionState{attributesUnknown: true}
-	}
+	// Startup code runs after invocation flags. This handoff has no complete
+	// startup environment, so rc/profile, BASH_ENV, ENV, and remote-startup
+	// execution cannot be excluded by --norc or --noprofile alone. Do not carry
+	// launcher option or attribute proof across that boundary. Direct option
+	// commands in the child source may establish fresh facts afterward.
+	expansion := shellExpansionState{attributesUnknown: true}
 	if noExecution && !interactive {
 		return shellPayload{handled: true, noExecution: true}
 	}
