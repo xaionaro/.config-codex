@@ -12139,6 +12139,7 @@ import os
 import re
 import shlex
 import sys
+from typing import NamedTuple
 
 exec(compile(sys.argv[7], "git-effect-library", "exec"))
 
@@ -12854,15 +12855,26 @@ def checkout_context_value_has_unpatched_effect(value):
     match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
     return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) == 1
 
-def checkout_detach_state(
+class CheckoutOptionState(NamedTuple):
+    detach_state: bool | None
+    branch_mode: bool
+    branch_startpoint: bool
+    separator_index: int | None
+    pathspec_file_option: bool
+    invalid: bool
+    invalid_path_mode: bool
+
+
+def checkout_option_state(
     args: list[str],
     unknown: frozenset[int],
-) -> tuple[bool | None, bool, bool, int | None, bool, bool, bool]:
+) -> CheckoutOptionState:
     """Return reference state, separator, file validity, and path-mode validity."""
     state = None
     stage = 0
     force = False
     merge = -1
+    overlay_mode = -1
     conflict_style = False
     tracking_specified = False
     reflog = False
@@ -12879,13 +12891,12 @@ def checkout_detach_state(
     patch_mode = False
     pathspec_file_option = False
     pathspec_file_empty = False
-    pathspec_dash_consumed = False
     separator_index = None
     index = 0
 
-    def invalid_result():
-        return (None, branch_mode or orphan_mode, branch_startpoint, separator_index,
-                pathspec_file_option, True, False)
+    def invalid_result() -> CheckoutOptionState:
+        return CheckoutOptionState(None, branch_mode or orphan_mode, branch_startpoint,
+                                   separator_index, pathspec_file_option, True, False)
 
     while index < len(args):
         value = args[index]
@@ -12898,7 +12909,6 @@ def checkout_detach_state(
         if value == "--no-pathspec-from-file":
             pathspec_file_option = False
             pathspec_file_empty = False
-            pathspec_dash_consumed = False
             index += 1
             continue
         is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
@@ -12907,15 +12917,12 @@ def checkout_detach_state(
             # validity. Consumed values never become options or separators.
             pathspec_file_option = True
             pathspec_file_empty = pathspec_file == ""
-            pathspec_dash_consumed = False
             # This option consumes the following token even when it starts
             # with a dash.  Do not mistake a pathspec filename named
             # --detach for a later detach toggle.
             if pathspec_file is None:
-                if index + 1 >= len(args) or args[index + 1] == "--":
-                    if index + 1 >= len(args):
-                        return invalid_result()
-                    pathspec_dash_consumed = True
+                if index + 1 >= len(args):
+                    return invalid_result()
                 index += 2
             else:
                 index += 1
@@ -12972,7 +12979,6 @@ def checkout_detach_state(
             continue
         if value.startswith("-") and not value.startswith("--"):
             short_options = value[1:]
-            short_options_recognized = True
             short_index = 0
             while short_index < len(short_options):
                 short_option = short_options[short_index]
@@ -13016,13 +13022,8 @@ def checkout_detach_state(
                 elif short_option == "q":
                     pass
                 else:
-                    short_options_recognized = False
+                    return invalid_result()
                 short_index += 1
-            if pathspec_dash_consumed and not short_options_recognized:
-                # After a literal `--` has been consumed as the pathspec
-                # filename, an unrecognized short option is Git-invalid
-                # rather than a second protected pathspec.
-                return invalid_result()
             index += 1
             continue
         # Long option identity and attached-value validity belong to the
@@ -13035,6 +13036,8 @@ def checkout_detach_state(
             force = value == "--force"
         elif value in {"--merge", "--no-merge"}:
             merge = 1 if value == "--merge" else 0
+        elif value in {"--overlay", "--no-overlay"}:
+            overlay_mode = 1 if value == "--overlay" else 0
         elif value == "--no-conflict":
             conflict_style = False
         if not value.startswith("-") and not source_seen:
@@ -13064,17 +13067,17 @@ def checkout_detach_state(
             return invalid_result()
         if inter_hunk_context_option and not inter_hunk_context_unpatched_effect:
             return invalid_result()
-    if patch_mode and pathspec_file_option:
-        return invalid_result()
     effective_merge = merge == 1 or (merge == -1 and conflict_style)
+    if patch_mode and (pathspec_file_option or force or effective_merge or overlay_mode == 1):
+        return invalid_result()
     # Git rejects incompatible path modes before restoring any destination.
     invalid_path_mode = (
         sum((stage != 0, force, effective_merge)) > 1 or
         (verified_source and (stage != 0 or effective_merge)) or
         tracking_specified or reflog
     )
-    return (state, branch_mode or orphan_mode, branch_startpoint, separator_index,
-            pathspec_file_option, False, invalid_path_mode)
+    return CheckoutOptionState(state, branch_mode or orphan_mode, branch_startpoint,
+                               separator_index, pathspec_file_option, False, invalid_path_mode)
 
 def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
     args = git_checkout_arguments(args, "checkout", unknown)
@@ -13086,28 +13089,27 @@ def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str 
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
-    (detach_state, branch_mode, branch_startpoint, separator_index,
-     pathspec_file_option, invalid, invalid_path_mode) = checkout_detach_state(args, unknown)
-    if invalid or detach_state is True:
+    options = checkout_option_state(args, unknown)
+    if options.invalid or options.detach_state is True:
         return None
-    explicit_paths = separator_index is not None
-    if branch_mode:
-        if explicit_paths or not branch_startpoint:
+    explicit_paths = options.separator_index is not None
+    if options.branch_mode:
+        if explicit_paths or not options.branch_startpoint:
             return None
     # Git rejects a pathspec-file option combined with explicit pathspecs;
     # leave that ordinary invalid command transparent even when the file
     # itself names a protected path.
-    if pathspec_file_option and explicit_paths and args[separator_index + 1:]:
+    if options.pathspec_file_option and explicit_paths and args[options.separator_index + 1:]:
         return None
     # Scan the complete option region so a pathspec file placed before the
-    # actual separator cannot be discarded.  `separator_index` comes from
+    # actual separator cannot be discarded.  `options.separator_index` comes from
     # the option-state parser, so a `--` consumed as an option value is not
     # mistaken for the pathspec separator.
     paths = collect_pathspecs(args, base, unknown, "checkout")
-    if not paths or invalid_path_mode:
+    if not paths or options.invalid_path_mode:
         return None
     for position, value in enumerate(paths):
-        if position == 0 and not explicit_paths and not pathspec_file_option:
+        if position == 0 and not explicit_paths and not options.pathspec_file_option:
             revision = checkout_revision(value)
             if revision is True:
                 continue

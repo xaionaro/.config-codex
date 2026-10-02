@@ -924,6 +924,112 @@ run_foreign_timeout_marker_target() {
   done
 }
 
+checkout_invalid_mode_pair() {
+  local options="$1" input="${2:-file}" path command protected_before ordinary_before index_before raw_before index_path native_status row_preserved
+  for path in hooks/validate-bash.sh CODEX.md; do
+    printf '%s\n' "$path" >"$REPO/--"
+    case "$input" in
+      explicit) command="git checkout $options -- $path" ;;
+      explicit-file) command="git checkout --pathspec-from-file=$REPO/-- $options -- $path" ;;
+      ordinary-file) command="git checkout --pathspec-from-file=$REPO/-- $options" ;;
+      file) command="git checkout --pathspec-from-file -- $options" ;;
+    esac
+    protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+    ordinary_before="$(git -C "$REPO" hash-object CODEX.md)"
+    index_before="$(git -C "$REPO" ls-files --stage)"
+    index_path="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index)"
+    raw_before="$(sha256sum "$index_path")"
+    assert_allowed "$command" worker || failures=1
+    native_status=0
+    (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/mode-invalid.out" 2>&1 || native_status=$?
+    if [ "$native_status" -eq 0 ]; then
+      printf 'native-invalid checkout mode unexpectedly succeeded: %s\n' "$command" >&2
+      failures=1
+    fi
+    row_preserved=1
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || row_preserved=0
+    [ "$(git -C "$REPO" hash-object CODEX.md)" = "$ordinary_before" ] || row_preserved=0
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || row_preserved=0
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || row_preserved=0
+    [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || row_preserved=0
+    [ "$(sha256sum "$index_path")" = "$raw_before" ] || row_preserved=0
+    if [ "$row_preserved" -eq 1 ]; then
+      printf 'invalid-mode native_exit=%s destination=%s full-state-preserved options=%s\n' "$native_status" "$path" "$options"
+    else
+      printf 'invalid-mode state preservation failed: %s\n' "$command" >&2
+      failures=1
+    fi
+  done
+}
+
+run_checkout_option_validity_target() {
+  local failures=0 options command path expected_ordinary protected_before index_before
+  for options in \
+    '--patch --merge' \
+    '--patch --force' \
+    '--patch --overlay' \
+    '--patch --conflict=diff3' \
+    '--patch --merge --no-merge --merge' \
+    '--patch --force --no-force --force' \
+    '--patch --overlay --no-overlay --overlay'; do
+    checkout_invalid_mode_pair "$options" explicit
+    checkout_invalid_mode_pair "$options" explicit-file
+  done
+  for options in '-z' '-h'; do
+    checkout_invalid_mode_pair "$options" explicit
+    checkout_invalid_mode_pair "$options" ordinary-file
+  done
+  # Option values and destinations after the actual separator stay data.
+  for path in -z -h; do
+    for command in "git checkout --pathspec-from-file $path" "git checkout --pathspec-from-file=$path"; do
+      printf '%s\n' hooks/validate-bash.sh >"$REPO/$path"
+      assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+        "effect=overwrite target=$REPO/hooks/validate-bash.sh" || failures=1
+      printf '%s\n' CODEX.md >"$REPO/$path"
+      printf 'ordinary changed\n' >"$REPO/CODEX.md"
+      if assert_allowed "$command" worker; then
+        (cd -- "$REPO"; bash -c "$command") || failures=1
+        [ "$(cat -- "$REPO/CODEX.md")" = 'ordinary base' ] || failures=1
+      else failures=1; fi
+    done
+    assert_denied_code "git checkout -- hooks/validate-bash.sh $path" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+      "effect=overwrite target=$REPO/hooks/validate-bash.sh" || failures=1
+    command="git checkout -- $path"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || failures=1
+      [ "$(cat -- "$REPO/$path")" = 'literal short path' ] || failures=1
+    else failures=1; fi
+  done
+  expected_ordinary="$(git -C "$REPO" rev-parse HEAD:CODEX.md)"
+  for options in \
+    '--patch' \
+    '--patch --merge --no-merge' \
+    '--patch --force --no-force' \
+    '--patch --overlay --no-overlay' \
+    '--patch --conflict=diff3 --no-merge'; do
+    printf '\n# Fixture patch edit\n' >>"$REPO/hooks/validate-bash.sh"
+    protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+    index_before="$(git -C "$REPO" ls-files --stage)"
+    assert_denied_code "git checkout $options -- hooks/validate-bash.sh" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+      "effect=overwrite target=$REPO/hooks/validate-bash.sh" || failures=1
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || failures=1
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    command="git checkout $options -- CODEX.md"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; printf 'y\n' | bash -c "$command") >"$TMP_ROOT/valid-patch.out" 2>&1 || failures=1
+      [ "$(git -C "$REPO" hash-object CODEX.md)" = "$expected_ordinary" ] || failures=1
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || failures=1
+      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      printf 'valid-patch affirmative restoration/state checks: %s\n' "$options"
+    else failures=1; fi
+    git -C "$REPO" restore --source=HEAD --worktree -- hooks/validate-bash.sh
+  done
+  git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+  [ "$failures" -eq 0 ]
+}
+
 run_effect_aware_git_target() {
   local command failures=0 before_head before_branch protected_base protected_changed
   # Protection binds to the configured runtime, so make that complete copied
@@ -934,9 +1040,11 @@ run_effect_aware_git_target() {
   git -C "$REPO" config user.name 'Normal Git Test'
   printf 'base\n' >"$REPO/file.txt"
   printf 'ordinary base\n' >"$REPO/CODEX.md"
+  printf 'literal short path\n' >"$REPO/-z"
+  printf 'literal short path\n' >"$REPO/-h"
   printf '%s\n' 'scope: effect-aware Git regression' "cwd: $REPO" \
     "session_id: $SESSION" 'created_utc: 2026-08-28T00:00:00Z' >"$PROOF_ROOT/$SESSION/eci_active"
-  git -C "$REPO" add -- hooks/validate-bash.sh hooks.json CODEX.md file.txt
+  git -C "$REPO" add -- hooks/validate-bash.sh hooks.json CODEX.md file.txt -z -h
   git -C "$REPO" commit -qm 'effect fixture'
   protected_base="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
   git -C "$REPO" branch hooks/validate-bash.sh
@@ -948,6 +1056,11 @@ run_effect_aware_git_target() {
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
   assert_denied_code 'git restore -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || return 1
+  if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-option-validity ]; then
+    run_checkout_option_validity_target
+    return $?
+  fi
+  run_checkout_option_validity_target || failures=1
 
   # A verified checkout tree source is not an explicit destination and must
   # not prevent loading file-selected destinations. Protected forms are
@@ -1134,32 +1247,7 @@ run_effect_aware_git_target() {
   # Effective checkout modes are validated by Git before any path restore.
   # Invalid rows remain advisory for both destinations and preserve raw as
   # well as semantic index state in this private runtime.
-  checkout_invalid_mode_pair() {
-    local options="$1" path command protected_before ordinary_before index_before raw_before index_path native_status
-    for path in hooks/validate-bash.sh CODEX.md; do
-      printf '%s\n' "$path" >"$REPO/--"
-      command="git checkout --pathspec-from-file -- $options"
-      protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
-      ordinary_before="$(git -C "$REPO" hash-object CODEX.md)"
-      index_before="$(git -C "$REPO" ls-files --stage)"
-      index_path="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index)"
-      raw_before="$(sha256sum "$index_path")"
-      assert_allowed "$command" worker || failures=1
-      native_status=0
-      (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/mode-invalid.out" 2>&1 || native_status=$?
-      if [ "$native_status" -eq 0 ]; then
-        printf 'native-invalid checkout mode unexpectedly succeeded: %s\n' "$command" >&2
-        failures=1
-      fi
-      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || failures=1
-      [ "$(git -C "$REPO" hash-object CODEX.md)" = "$ordinary_before" ] || failures=1
-      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
-      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
-      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || failures=1
-      [ "$(sha256sum "$index_path")" = "$raw_before" ] || failures=1
-      printf 'invalid-mode native_exit=%s destination=%s full-state-preserved options=%s\n' "$native_status" "$path" "$options"
-    done
-  }
+
   for options in \
     '-2 HEAD' \
     "-3 'HEAD^{tree}'" \
@@ -1367,7 +1455,7 @@ run_effect_aware_git_target() {
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
   full) ;;
-  effect-aware-git)
+  effect-aware-git|checkout-option-validity)
     run_effect_aware_git_target
     printf '%s\n' 'normal Git admission effect-aware-git target: PASS'
     exit 0
