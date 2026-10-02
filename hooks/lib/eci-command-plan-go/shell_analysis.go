@@ -93,17 +93,11 @@ func inspectShellAnalysis(
 				continue
 			}
 			if payload.contextUnknown {
+				// Environment uncertainty does not change the process CWD.
+				// Retain inherited or explicitly resolved directory evidence.
 				analysis.Incomplete = true
-				childRequest.SegmentCWD = ""
-				unknown := true
-				known := false
-				childRequest.SegmentCWDKnown = &known
-				childRequest.SegmentCWDUnknown = &unknown
-				childRequest.SegmentCWDCandidates = nil
-				childRequest.SegmentCWDPhysical = ""
-				childRequest.SegmentCWDPhysicalCandidates = nil
 			}
-			if !payload.contextUnknown && payload.cwdSet {
+			if payload.cwdSet {
 				childRequest.SegmentCWD = payload.cwd
 				known := payload.cwdKnown
 				childRequest.SegmentCWDKnown = &known
@@ -123,10 +117,11 @@ func inspectShellAnalysis(
 			}
 			if payload.stdin {
 				input, found := matchingShellInput(parsed.projection, current)
-				if !found || !input.Literal {
+				if !found {
 					analysis.Incomplete = true
 					continue
 				}
+				analysis.Incomplete = analysis.Incomplete || !input.Literal
 				payload.command = input.Command
 			}
 			childRequest.Command = payload.command

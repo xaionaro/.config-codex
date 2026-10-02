@@ -601,9 +601,9 @@ func shellStdinHeredoc(statement *syntax.Stmt) *syntax.Redirect {
 	return input
 }
 
-// shellHeredocInput constructs a statically known stdin value. An unquoted body
-// containing expansion remains unknown; its executable substitutions are still
-// analyzed independently before the receiving command starts.
+// shellHeredocInput retains script source and identifies statically known stdin.
+// Expanded input keeps its visible source with Literal false, so shell consumers
+// can inspect concrete commands without claiming to know expansion results.
 //
 // Example: a literal quoted body is shell source only when its consumer is a shell.
 func shellHeredocInput(
@@ -622,6 +622,7 @@ func shellHeredocInput(
 		}
 		body = stripped.String()
 	}
+	input.Command = strings.Repeat(" ", start) + body
 	if !quoted {
 		word, err := syntax.NewParser().Document(strings.NewReader(body))
 		if err != nil {
