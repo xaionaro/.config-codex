@@ -1,25 +1,25 @@
 # ECI fast path
 
-This is the normative contract for the Fast owner and its integration with main ECI. Each role follows its assigned duties; lifecycle and acceptance remain coordinator-owned.
+This is the normative contract for the Fast Producer and its integration with main ECI. Each role follows its assigned duties; the Supervisor retains lifecycle and acceptance authority.
 
 ## Start and lifetime
 
-- Start one Fast owner alongside Step 1 for every new ECI task, including bounded ECI under ATE. Neither path waits for the other's solution.
+- Start one Fast Producer alongside Step 1 for every new ECI task, including bounded ECI under ATE. Neither path waits for the other's solution.
 - Additive extensions update the existing owner's scope. A distinct new ECI task gets its own owner; iterations, reviews, repairs, and re-exploration reuse that identity.
 - Preserve root workflow and markers. Direct work and ATE outside nested ECI do not acquire this protocol by loading it.
-- Assign original requirements, authorized targets, dirty-work exclusions, current ECI decisions, verification, and shared-tree rules. The Fast owner owns the whole root-task outcome, not a lane; it is a reusable ordinary implementation producer, distinct from the main implementer and all independent critics.
-- Task-local dispatch and reporting follow the [task-orchestrator contract](task-orchestrator.md); a Fast owner remains one producer within its task outcome.
-- Follow [outcome continuation and completion](#outcome-continuation-and-completion) through task-appropriate execution, verification, and the Fast owner's scoped commits. Milestones do not shorten this ownership.
+- Assign original requirements, authorized targets, dirty-work exclusions, current ECI decisions, verification, and shared-tree rules. The Fast Producer is a Worker who owns the whole root-task outcome, not a lane; it is distinct from the main-path Implementer and all independent critics.
+- Task-local dispatch and reporting follow the [task-orchestrator contract](task-orchestrator.md); the Fast Producer remains one Producer within its assigned outcome.
+- Follow [outcome continuation and completion](#outcome-continuation-and-completion) through task-appropriate execution, verification, and the Fast Producer's scoped commits. Milestones do not shorten this ownership.
 - Reserve launch capacity for both paths. If constrained, name the action lacking capacity, queue it for the next slot, and report actual concurrency. Retain Fast ownership and continue independent ready work; main process or review capacity alone does not suspend Fast execution. Do not merge producer/reviewer identities or add compensating artifacts.
 
 ## Outcome continuation and completion
 
 - Advance the next authorized action until task-appropriate evidence demonstrates the whole requested outcome, such as implementing features, modifying and validating configuration, diagnosing and repairing defects, or delivering analysis. Use progress messages for audits, milestones, helper results, and partial work; continue working instead of returning a final handoff at those boundaries.
 - Main ECI explores and reviews concurrently. A pending main design or review alone does not block provisional Fast work. Preserve current ECI decisions and yield only actual conflicting writes under [shared-tree priority](#shared-tree-and-eci-priority).
-- The current logical task owner checks incomplete reports against the remaining outcome. If Fast has returned early, immediately use `followup_task` to resume that retained identity with the next action. A promise to route later, a retained owner label, or `send_message` to an idle agent does not start work. Preserve the published report route and existing active assignments; avoid duplicate dispatch.
+- The current Job owner checks incomplete reports against the remaining outcome. If the Fast Producer has returned early, immediately use `followup_task` to resume that retained Worker with the next action. A promise to route later, a retained owner label, or `send_message` to an idle Worker does not start work. Preserve the published report route and existing active assignments; avoid duplicate dispatch.
 - For a concrete dependency, capacity constraint, or write conflict, name the affected action, dependency owner, and resume condition. Continue unaffected ready work and resume the blocked action when the condition clears. A blocked commit remains unfinished work; preserve the authorized owner and resolve its bounded route. Explicit user cancellation follows normal closure.
-- Genuine Fast completion requires evidence that the original requested result is provisionally achieved, helper work is integrated, required producer verification passes, and the Fast owner has committed each completed, verified Fast-produced repository change within its exact scope. Analysis or other outcomes with no file changes need appropriate evidence, not empty commits. Unmet criteria, unfinished execution, missing verification, and pending scoped commits are incomplete.
-- Then finish Fast's delegated work and stop Fast's own and its helpers' write-capable tools, deliver the findings, changes, verification, and commit references, and keep the reusable identity idle for [post-Fast completion](#post-fast-completion). Main-path work continues. Independent review and final acceptance remain main-owned; new evidence may reactivate Fast.
+- Genuine Fast completion requires evidence that the original requested result is provisionally achieved, Helper work is integrated, required Producer verification passes, and the Fast Producer has committed each completed, checked Fast-produced issue within its exact scope. Analysis or other outcomes with no file changes need appropriate evidence, not empty commits. Unmet criteria, unfinished execution, missing verification, and pending scoped commits are incomplete.
+- Then finish delegated Fast work and stop the Fast Producer's and its Helpers' write-capable tools, deliver the findings, changes, verification, and commit references, and keep the reusable Worker idle for [post-Fast completion](#post-fast-completion). Main-path work continues. Independent review and final acceptance remain Supervisor-owned; new evidence may reactivate the Fast Producer.
 
 Use the [continuation pressure cases](fast-continuation-cases.md) to check these boundaries.
 
@@ -31,21 +31,21 @@ Use either path's available results once independently verified and the next act
 
 - Track the root-task outcome as achievable milestones in existing task tracking. Extend them only for in-scope work; report out-of-scope findings without expanding authorization. Keep milestone status, verification evidence, and checkpoints current. Delegated work need not be organized into lanes; delegation alone does not create a lane.
 - Prioritize in-scope paths under [Main ECI quality responsibility](#main-eci-quality-responsibility).
-- Own the whole task while delegating any bounded, in-scope work that can accelerate it. Delegation is highly encouraged. Helpers may advance different lanes or other work; delegation does not transfer root-task accountability or create a separate outcome. Assign clear scope and expected evidence, integrate helper results, and account for every delegated finding and change.
-- Choose each helper's model and reasoning effort under [Model selection](../SKILL.md#model-selection) for its assigned activity, independently of the Fast owner's profile.
-- Personally advance other bounded work and validate the provisional Fast result with focused checks, with or without helpers. Run an early E2E only for a concrete failure or integration uncertainty under the [central ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing). Iterate without waiting for main ECI Steps 1–4.
+- Own the whole task while delegating any bounded, in-scope work that can accelerate it. Delegation is highly encouraged. Helpers may advance different lanes or other work; delegation does not transfer root-task accountability or create a separate outcome. Assign clear scope and expected evidence, integrate Helper results, and account for every delegated finding and change.
+- Choose each Helper's model and reasoning effort under [Model selection](../SKILL.md#model-selection) for its assigned activity, independently of the Fast Producer's profile.
+- Personally advance other bounded work and validate the provisional Fast result with focused checks, with or without Helpers. Run an early E2E only for a concrete failure or integration uncertainty under the [central ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing). Iterate without waiting for main ECI Steps 1–4.
 - Analysis-only requests authorize analysis and evidence only. Preserve secret-handling, destructive-action, external-mutation, unrelated-dirty-work, and target-reread safeguards. Speed grants no broader or irreversible authority.
 - Defer the main path's design/style/TDD/review sequence for provisional fast work. Run useful focused checks; do not run routine E2E between iterations. Any early E2E follows the central policy's shortest-faithful-scope and timing rules. If an early E2E is needed but unavailable, report the missing resource and attempted evidence; never equate proxy checks with E2E.
-- Promptly send actionable discoveries, failed assumptions, observed behavior, tradeoffs, touched targets, and verification limits to the task's current logical owner under the [task-orchestrator handoff rules](task-orchestrator.md#publication-and-handoff), for Explorer and Step 2.
+- Promptly send actionable discoveries, failed assumptions, observed behavior, tradeoffs, touched targets, and verification limits to the task's current Job owner under the [task-orchestrator handoff rules](task-orchestrator.md#publication-transfer-and-report-drain), for Explorer and Step 2.
 
-Fast-owner E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.
+Fast Producer E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.
 
 ## Shared tree and ECI priority
 
 - Both paths use the same checkout and live files. Do not copy the project, branch, stash, or create worktrees to avoid conflicts.
-- ECI's selected design and changes take priority within the authorized task. The main implementer may change or replace provisional fast work; unrelated user and other-task work remains protected.
+- Apply the selected ECI design across both paths. Within one outcome, the main-path Implementer has priority over the Fast Producer for overlapping work. Across outcomes, no automatic main/Fast priority applies. Protect unrelated user and other-Job work.
 - Before each write, reread the current target and edit narrowly. If concurrent changes invalidate the edit, reread and adapt; never force a stale whole-file replacement.
-- When ECI needs an overlapping target, the Fast owner yields affected writes, preserves ECI changes, and adapts its solution and checks. Continue unaffected useful work; ECI does not wait for the fast solution.
+- When Producers need an overlapping target, they compare intended and actual changes and directly decide whether to separate the work or combine inseparable contributions. They agree who stages and commits when under [shared-index coordination](task-orchestrator.md#active-writer-rows-and-shared-index-coordination). Apply the within-outcome precedence above; across outcomes or Jobs, neither path gets automatic priority. The Supervisor and any published Orchestrator relay exact identities and scope/index facts only; they do not allocate contested content or Git turns. Producers proceed from their agreement without waiting for user direction. Continue unaffected work; ECI does not wait for the Fast result.
 - Attribute results to the state exercised. A relevant concurrent change makes affected results stale; rerun them.
 
 ## Main ECI quality responsibility
@@ -62,40 +62,42 @@ After scope-screening and priority ranking, maintain one concise, actionable `TO
 
 A separate-outcome issue remains post-ECI; its TODO is the only code change directed at that issue. Do not investigate or repair it, or create a separate issue-specific lane, blocker, deadline, forecast, proof, or review. Remove the TODO when the issue is fixed.
 
-Reviewers report only. The assigned implementer authors the TODO within the ordinary implementation, full current-diff review, independent verification, and checkpoint flow; review the complete diff, not only the TODO hunk. If no current assignment covers it, the coordinator routes a bounded TODO-only implementer assignment and independently verifies the producer's checkpoint under [coordinator repository-edit routing](coordinator.md#engage-and-route). The coordinator edits directly only under that section's narrow exception for genuine code-edit edge cases.
+Reviewers report only. The assigned Implementer authors the TODO within the ordinary implementation, full current-diff review, independent verification, and checkpoint flow; review the complete diff, not only the TODO hunk. If no current assignment covers it, the published Job owner routes a bounded TODO-only Implementer assignment under [repository-edit routing](coordinator.md#engage-and-route), and the Supervisor independently verifies the Producer's checkpoint. The Supervisor edits directly only under that section's narrow exception for genuine code-edit edge cases.
 
 ## Evidence can reopen design
 
-- The current logical task owner independently verifies material Fast discoveries and gives the evidence to Explorer and fresh Step 2. Main retains cross-task decisions and final acceptance.
-- When evidence invalidates a selected premise, obsoletes the design, or demonstrates a materially better in-scope approach, the current logical task owner returns affected work to Steps 1–2. Suspend only dependent implementation/review; keep independent work moving. Main retains cross-task decisions.
-- ECI priority governs decisions and conflicting writes, never dismissal of contradictory evidence. The Fast owner proposes alternatives; Step 2 selects the authoritative winner.
+- The current Job owner independently verifies material Fast discoveries and gives the evidence to Explorer and fresh Step 2. The Supervisor retains cross-Job decisions and final acceptance.
+- When evidence invalidates a selected premise, obsoletes the design, or demonstrates a materially better in-scope approach, the current Job owner returns affected work to Steps 1–2. Suspend only dependent implementation/review; keep independent work moving. The Supervisor retains cross-Job decisions.
+- The selected ECI design controls quality, and the within-outcome precedence above controls overlapping main/Fast edits. Neither rule dismisses contradictory evidence. The Fast Producer proposes alternatives; Step 2 selects the authoritative winner.
 - Route minor compatible corrections through the contained-fix path. Unsupported preferences and ordinary fast edits do not restart design.
 
 ## Adoption, review, and closure
 
 - Report fast results as provisional with exact evidence and limits. Fast E2E is producer evidence, not acceptance or independent review.
-- After each bounded repository change is complete and verified, the Fast owner makes its own exact scoped checkpoint commit, including integrated helper changes, then sends the commit and evidence to the current task owner for independent verification. Commit each completed change promptly; do not wait for remaining milestones, main-path adoption, or Step 4. Stage only owned paths or hunks, preserve unrelated work, and include a concise `Test Plan`. A checkpoint is provisional evidence, not acceptance. Outcomes without file changes need evidence, not empty commits.
-- The main implementer inspects retained fast changes in place, adopts or revises them under the selected winner, and runs focused checks. Required final E2E follows the central policy after post-Fast implementation is complete. No copying or redundant rewrite is needed.
-- Before checkpointing overlapping work, the coordinator orders a bounded write-yield and shared Git-index turn for the affected producers. The Fast owner inspects and commits only its verified scoped change; the coordinator independently verifies that checkpoint. Preserve unrelated hunks and resume useful work afterward.
-- If a checkpoint cannot safely isolate the resolved change, record it as checkpoint-pending with the concrete conflict. Resolve that boundary promptly while unaffected work continues; never silently treat it as committed or include unrelated/in-flight changes.
-- The current task owner reconciles every Fast finding and Fast-originated changed hunk under [post-Fast completion](#post-fast-completion), then tracks each in-scope inventory item into review and sends reports, evidence, and disposition recommendations to main. Retained fast hunks are cumulative code targets. When a preceding baseline contains adopted fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
+- After each changed Fast issue is complete and checked, the Fast Producer makes its own exact scoped checkpoint commit, including integrated Helper changes. Keep distinct Fast issues in separate checkpoints; only contributing Producers may agree that inseparable work shares one joint checkpoint. Commit each issue promptly; do not wait for remaining milestones, main-path adoption, or Step 4. Outcomes without file changes need evidence, not empty commits.
+- Before staging or committing, follow [shared-index coordination](task-orchestrator.md#active-writer-rows-and-shared-index-coordination). Stage only owned paths or hunks, inspect the complete staged result against the intended parent and exact agreed scope, preserve unrelated work, and include a concise `Test Plan`.
+- Send the commit ID, immutable parent-to-commit range, contribution scope, exclusions, focused checks, and limitations through the published Job owner to the Supervisor. Before dependent review or work, the Supervisor independently verifies that exact range. A Producer checkpoint is provisional evidence, not acceptance.
+- The main-path Implementer inspects retained Fast changes in place, adopts or revises them under the selected winner, and runs focused checks. Required final E2E follows the central policy after post-Fast implementation is complete. No copying or redundant rewrite is needed.
+- For overlapping work, the involved Producers compare actual edits and directly agree whether to separate or combine contributions and the shared-index order. Within one outcome, preserve main-path-over-Fast precedence; across outcomes or Jobs, apply no automatic priority. The Supervisor and Orchestrator relay peer identities and scope/index facts only; neither assigns contested content or Git turns. Producers resolve conflicts without waiting for user direction. If contributions are inseparable, every contributing author agrees the exact joint scope and a contributing Producer to commit it. Helpers' changes remain integrated by their responsible Producer; Helpers never commit. Preserve separate checkpoints for distinct Fast issues except that agreed inseparable joint checkpoint; exclude unrelated and in-flight changes.
+- If the involved Producers have not agreed the exact boundary or order, keep that issue checkpoint-pending, name the overlap, and continue unaffected work. Resume when the authors resolve it directly; never silently treat it as committed or include unrelated/in-flight changes.
+- The current Job owner reconciles every Fast finding and Fast-originated changed hunk under [post-Fast completion](#post-fast-completion), then tracks each in-scope inventory item into review and sends reports, evidence, and disposition recommendations to the Supervisor. Retained Fast hunks are cumulative code targets. When a preceding baseline contains adopted Fast changes, add its unreviewed hunks as an explicit cumulative review target alongside the narrow iteration checkpoint; never exclude them as predecessor context.
 - Neither producer supplies its own independent acceptance reviews. Step 4 runs the fresh independent final E2E required by the central policy.
-- Before normal-path completion or final acceptance, satisfy [post-Fast completion](#post-fast-completion). The current logical task owner coordinates the existing stop for both producers' task-owned writes, including delegated Fast work, inspects the current cumulative scoped diff, verifies reviews and checks cover that state, and sends closure evidence to main. Main retains task and cancellation closure decisions, cross-task decisions, and final acceptance; it verifies closure evidence as needed. Material late edits require fresh appropriate review and verification.
-- On task cancellation/replacement, main owns closure, cancels the Fast owner and its delegated work with the main task, and preserves dirty changes/evidence. On task clean pass, it observes both producers' final state. On either closure path, it observes both producers and their task-owned write-capable tools stopped or finished. Root teardown and marker removal follow [concurrent task scheduling](../../../CODEX.md#concurrent-tasks) and [task-owner closure](task-orchestrator.md#publication-and-handoff). Fast success alone never closes ECI or outer ATE.
+- Before normal-path completion or final acceptance, satisfy [post-Fast completion](#post-fast-completion). The current Job owner coordinates the existing stop for both Producers' task-owned writes, including delegated Fast work, inspects the current cumulative scoped diff, verifies reviews and checks cover that state, and sends closure evidence to the Supervisor. The Supervisor retains task and cancellation closure decisions, cross-Job decisions, and final acceptance; it verifies closure evidence as needed. Material late edits require fresh appropriate review and verification.
+- On task cancellation/replacement, the Supervisor owns closure, cancels the Fast Producer and its delegated work with the main task, and preserves dirty changes/evidence. On task clean pass, it observes both Producers' final state. On either closure path, it observes both Producers and their task-owned write-capable tools stopped or finished. Root teardown and marker removal follow [concurrent task scheduling](../../../CODEX.md#concurrent-tasks) and [Job-owner closure](task-orchestrator.md#publication-transfer-and-report-drain). Fast success alone never closes ECI or outer ATE.
 
 ## Post-Fast completion
 
-The published task owner coordinates task-local post-Fast dispatch and evidence under the [task-orchestrator contract](task-orchestrator.md#task-local-review-dispatch). Main retains closed-task evidence, final adjudication, acceptance, and teardown.
+The published Job owner coordinates task-local post-Fast dispatch and evidence under the [task-orchestrator contract](task-orchestrator.md#authority-and-reporting). The Supervisor retains closed-Job evidence, final adjudication, acceptance, and teardown.
 
 Main ECI may advance and review iterations concurrently with Fast.
 
-After the current task owner confirms genuine Fast completion to main, report root-task status
+After the current Job owner confirms genuine Fast completion to the Supervisor, report root-task status
 `FOLLOWUP` while the required sequence below remains unaccepted. Use
 `FOLLOWUP_PAUSED` only when the next required post-Fast action cannot advance
 because it awaits a named in-scope dependency. Report the dependency, impact,
 owner, and resume condition; return to `FOLLOWUP` when it clears. A user input
 or decision remains `BLOCKED` in the affected lane, never `FOLLOWUP_PAUSED`.
-End either root-task status on coordinator acceptance or explicit user closure.
+End either root-task status on Supervisor acceptance or explicit user closure.
 Keep these statuses outside lane Implementation/Test/Prod readiness; see
 [status guidance](../../writing-status-reports/SKILL.md#multi-lane-mission-status).
 
@@ -103,38 +105,38 @@ A genuine Fast completion restarts the normal path from a fresh Step 1.
 
 Any Step 4 review that runs concurrently before this restart is intermediate only and never acceptance. The normal path remains incomplete until this post-Fast sequence passes for the task:
 
-1. The current task owner verifies [genuine Fast completion](#outcome-continuation-and-completion), including the full provisional outcome, producer verification, the Fast owner's scoped commits, finished and integrated Fast helper work, and stopped Fast/helper write-capable tools, then sends the evidence to main. Main-path writers may continue. A completed audit, milestone, agent turn, write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while the main ECI path performs the following steps; Fast need not wait for main acceptance to finish.
-   - The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers.
+1. The current Job owner verifies [genuine Fast completion](#outcome-continuation-and-completion), including the full provisional outcome, producer verification, the Fast Producer's scoped commits, finished and integrated Fast Helper work, and stopped Fast/Helper write-capable tools. If the Job owner is an Orchestrator, it sends this evidence to the Supervisor. Main-path writers may continue. A completed audit, milestone, agent turn, write-yield, idle label, timeout, or cancellation is not Fast completion. Keep Fast idle while the main ECI path performs the following steps; Fast need not wait for Supervisor acceptance to finish.
+   - The Fast Producer's completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers.
    - Include findings with no retained hunk and changes that are retained, revised, non-retained, superseded, or reverted.
    - Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.
-   - The current task owner reconciles task-local findings with shared state and sends reports, evidence, and disposition recommendations to main.
+   - The current Job owner reconciles task-local findings with shared state and sends reports, evidence, and disposition recommendations to the Supervisor.
    - This complete inventory is review context, never a manifest, receipt, or admission/write gate.
    - Final acceptance requires every in-scope inventory item to have a disposition and evidence.
 2. Restart main ECI at a fresh Step 1.
    - Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.
    - Keep every Fast-originated hunk in inventory/review context; do not expand authorization. A separate-outcome finding stays a post-ECI observation/follow-up and creates no issue-specific repair, review, proof, or acceptance work. Allow only the TODO comment defined under [Main ECI quality responsibility](#main-eci-quality-responsibility) for an already-discovered code issue; include its hunk in ordinary current-diff review and keep the issue in inventory context only.
-   - Then the current task owner assigns the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
+   - Then the current Job owner assigns the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.
    - The Explorer reviews each in-scope inventory item against original requirements and quality standards, alongside retained main-path changes. Reread current targets and relevant surrounding code. Prior exploration, diffs, and passing tests are context, not this new exploration.
 3. A fresh Step 2 critic independently assesses the current sources and Explorer's options.
    - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).
    - Step 2 authority is limited to design-winner selection; it does not apply treatment.
-   - The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.
+   - The Supervisor owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.
    - Apply impact-proportional routing before implementation.
    - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.
    - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.
-   - A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.
+   - A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.
    - Other dispositions require evidence, not implementation.
    - Carry the resulting disposition and evidence into Step 4; never leave it unresolved.
    - Use policy-valid deferred-with-reason only where [review-policy.md#impact-proportional-routing](../../references/workflow-runtime/review-policy.md#impact-proportional-routing) permits.
    - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.
    - Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work.
-   - Preserve qualifying code; make only justified changes through the main implementer.
-   - The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.
+   - Preserve qualifying code; make only justified changes through the main-path Implementer.
+   - The Implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.
    - Every no-hunk retain or resolved-with-evidence outcome requires evidence.
-   - The implementer implements those routed coordinator-applied revise/replace changes and validates retained/revised changes.
-   - The implementer supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes.
+   - The Implementer implements those routed Supervisor-applied revise/replace changes and validates retained/revised changes.
+   - The Implementer supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes.
    - Run required focused checks and checkpoint changed iterations normally. Reserve triggered final E2E for the stabilized candidate under the central policy.
-4. After the fresh Step 1, Step 2, and implementer disposition, the final cumulative Step 4 independently reviews the final cumulative scoped state even when no further edits are needed.
+4. After the fresh Step 1, Step 2, and Implementer disposition, the final cumulative Step 4 independently reviews the final cumulative scoped state even when no further edits are needed.
    - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.
    - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.
    - Separate-outcome observations remain outside acceptance.
