@@ -83,7 +83,8 @@ func inspectShellAnalysis(
 			continue
 		}
 		var payload shellPayload
-		if needed || strings.Contains(effect.command, "<<") {
+		if needed || strings.Contains(effect.command, "<<") ||
+			strings.Contains(effect.command, "-S") || strings.Contains(effect.command, "--split-string") {
 			payload = literalShellPayload(effect.argv, effect.command, state.cwd.cwd, state.cwd.known)
 		}
 		if payload.handled {
@@ -152,7 +153,13 @@ func inspectShellAnalysis(
 	return analysis, nil
 }
 
-func matchingShellInput(projection *shellProjection, current segment) (shellInput, bool) {
+// matchingShellInput finds the inline stdin belonging to this source segment.
+//
+// Example: a shell header receives its own heredoc, not a later command's input.
+func matchingShellInput(
+	projection *shellProjection,
+	current segment,
+) (shellInput, bool) {
 	if projection == nil {
 		return shellInput{}, false
 	}
@@ -168,7 +175,10 @@ func matchingShellInput(projection *shellProjection, current segment) (shellInpu
 // verified incoming context of the statement that expands the redirection.
 //
 // Example: cd other <<EOF expands its body before cd can change directories.
-func shellChildRequest(request Request, state compoundSegmentState) Request {
+func shellChildRequest(
+	request Request,
+	state compoundSegmentState,
+) Request {
 	child := request
 	child.ShellDepth++
 	child.CollectShellCommands = true
@@ -187,7 +197,10 @@ func shellChildRequest(request Request, state compoundSegmentState) Request {
 // directory transitions with the parent or another substitution.
 //
 // Example: two substitutions retain two separate initial directory states.
-func appendShellAnalysis(analysis *ShellAnalysis, child *ShellAnalysis) {
+func appendShellAnalysis(
+	analysis *ShellAnalysis,
+	child *ShellAnalysis,
+) {
 	if child == nil {
 		analysis.Incomplete = true
 		return
@@ -201,7 +214,12 @@ func appendShellAnalysis(analysis *ShellAnalysis, child *ShellAnalysis) {
 // dynamic words never become guessed argv or command context.
 //
 // Example: bash -c 'git status' selects the quoted command for recursion.
-func literalShellPayload(argv []token, source, cwd string, cwdKnown bool) shellPayload {
+func literalShellPayload(
+	argv []token,
+	source string,
+	cwd string,
+	cwdKnown bool,
+) shellPayload {
 	if len(argv) == 0 {
 		return shellPayload{}
 	}
@@ -217,7 +235,13 @@ func literalShellPayload(argv []token, source, cwd string, cwdKnown bool) shellP
 	return literalShellPayloadWords(words, cwd, cwdKnown, 0)
 }
 
-func sourceBackedShellArgv(source string, argv []token) ([]string, bool) {
+// sourceBackedShellArgv decodes a single static call from its original syntax.
+//
+// Example: quoted shell payloads retain literal quotes after outer quote removal.
+func sourceBackedShellArgv(
+	source string,
+	argv []token,
+) ([]string, bool) {
 	parser := syntax.NewParser()
 	file, err := parser.Parse(strings.NewReader(source), "")
 	if err != nil || file == nil || len(file.Stmts) != 1 {
@@ -251,7 +275,13 @@ func sourceBackedShellArgv(source string, argv []token) ([]string, bool) {
 	return words, true
 }
 
-func literalSyntaxWord(source string, word *syntax.Word) (string, bool) {
+// literalSyntaxWord removes quotes only after every word part is proven static.
+//
+// Example: a quoted command string is decoded without evaluating a variable.
+func literalSyntaxWord(
+	source string,
+	word *syntax.Word,
+) (string, bool) {
 	if word == nil {
 		return "", false
 	}
@@ -265,7 +295,13 @@ func literalSyntaxWord(source string, word *syntax.Word) (string, bool) {
 	return value, err == nil
 }
 
-func literalSyntaxPart(part syntax.WordPart, quoted bool) (string, bool) {
+// literalSyntaxPart recognizes literals whose value requires no shell expansion.
+//
+// Example: quoted text is static, while parameter expansion remains unresolved.
+func literalSyntaxPart(
+	part syntax.WordPart,
+	quoted bool,
+) (string, bool) {
 	switch part := part.(type) {
 	case *syntax.Lit:
 		if !quoted && strings.ContainsAny(part.Value, "*?[") {
@@ -298,7 +334,15 @@ func literalSyntaxPart(part syntax.WordPart, quoted bool) (string, bool) {
 	}
 }
 
-func literalShellPayloadWords(argv []string, cwd string, cwdKnown bool, depth int) shellPayload {
+// literalShellPayloadWords follows supported literal launchers to a shell child.
+//
+// Example: command env bash -c selects the same payload with inherited context.
+func literalShellPayloadWords(
+	argv []string,
+	cwd string,
+	cwdKnown bool,
+	depth int,
+) shellPayload {
 	if len(argv) == 0 || depth >= maxWrapperDepth {
 		return shellPayload{}
 	}
@@ -332,41 +376,25 @@ func literalShellPayloadWords(argv []string, cwd string, cwdKnown bool, depth in
 	}
 }
 
-func literalEnvShellPayload(argv []string, cwd string, cwdKnown bool, depth int) shellPayload {
+// literalEnvShellPayload resolves env options before selecting its child argv.
+//
+// Example: env -C repo -S 'sh -s' changes the directory before shell startup.
+func literalEnvShellPayload(
+	argv []string,
+	cwd string,
+	cwdKnown bool,
+	depth int,
+) shellPayload {
 	if depth >= maxWrapperDepth {
 		return shellPayload{handled: true, incomplete: true}
 	}
 	values := append([]string(nil), argv...)
 	hasSplit := false
-	for index := 1; index < len(values); index++ {
-		argument := values[index]
-		var split string
-		var consumed int
-		switch {
-		case argument == "-S" || argument == "--split-string":
-			if index+1 >= len(values) {
-				return shellPayload{handled: true, incomplete: true}
-			}
-			split, consumed = values[index+1], 1
-		case strings.HasPrefix(argument, "--split-string="):
-			split, consumed = strings.TrimPrefix(argument, "--split-string="), 0
-		case strings.HasPrefix(argument, "-S") && len(argument) > 2:
-			split, consumed = argument[2:], 0
-		default:
-			continue
-		}
-		parts, ok := splitEnvString(split)
-		if !ok {
-			return shellPayload{handled: true, incomplete: true}
-		}
-		values = append(append(append([]string{}, values[:index]...), parts...), values[index+1+consumed:]...)
-		hasSplit = true
-		break
-	}
-	if !hasSplit && len(values) < 2 {
+	if len(values) < 2 {
 		return shellPayload{}
 	}
 	index := 1
+	splits := 0
 	var assignments []string
 	contextUnknown := false
 	for index < len(values) {
@@ -380,6 +408,32 @@ func literalEnvShellPayload(argv []string, cwd string, cwdKnown bool, depth int)
 			index++
 		case value == "-v" || value == "--debug" || value == "-0" || value == "--null":
 			index++
+		case value == "-S" || value == "--split-string" ||
+			strings.HasPrefix(value, "--split-string=") || strings.HasPrefix(value, "-S"):
+			// Split only the current option. A preceding option may consume
+			// a spelling such as -S as its operand, and -- ends option parsing.
+			if splits >= maxWrapperDepth {
+				return shellPayload{handled: true, incomplete: true}
+			}
+			split, consumed := "", 1
+			switch {
+			case value == "-S" || value == "--split-string":
+				if index+1 >= len(values) {
+					return shellPayload{handled: true, incomplete: true}
+				}
+				split, consumed = values[index+1], 2
+			case strings.HasPrefix(value, "--split-string="):
+				split = strings.TrimPrefix(value, "--split-string=")
+			default:
+				split = value[2:]
+			}
+			parts, ok := splitEnvString(split)
+			if !ok {
+				return shellPayload{handled: true, incomplete: true}
+			}
+			values = append(append(append([]string{}, values[:index]...), parts...), values[index+consumed:]...)
+			hasSplit = true
+			splits++
 		case value == "-C" || value == "--chdir":
 			if index+1 >= len(values) {
 				return shellPayload{handled: hasSplit, incomplete: hasSplit}
@@ -441,13 +495,22 @@ optionsDone:
 	child.handled = true
 	child.environment = append(assignments, child.environment...)
 	child.contextUnknown = child.contextUnknown || contextUnknown
-	child.cwd = cwd
-	child.cwdKnown = cwdKnown
-	child.cwdSet = true
+	if !child.cwdSet {
+		child.cwd = cwd
+		child.cwdKnown = cwdKnown
+		child.cwdSet = true
+	}
 	return child
 }
 
-func resolveShellCWD(base string, baseKnown bool, path string) (string, bool) {
+// resolveShellCWD resolves a literal chdir only from a known base or absolute path.
+//
+// Example: env -C subdir inherits a verified parent directory for resolution.
+func resolveShellCWD(
+	base string,
+	baseKnown bool,
+	path string,
+) (string, bool) {
 	if !filepath.IsAbs(path) {
 		if !baseKnown {
 			return "", false
@@ -461,18 +524,25 @@ func resolveShellCWD(base string, baseKnown bool, path string) (string, bool) {
 	return path, true
 }
 
+// splitEnvString decodes bounded env split-string syntax without expanding values.
+//
+// Example: quoted spaces stay in one argument; an unescaped variable is unknown.
 func splitEnvString(value string) ([]string, bool) {
 	var words []string
 	var word strings.Builder
 	quote := byte(0)
 	started := false
-	flush := func() {
-		if started {
-			words = append(words, word.String())
-			word.Reset()
-			started = false
+	flush :=
+		// flush appends a completed word, including a deliberately empty quoted word.
+		//
+		// Example: two separators after one word append that word only once.
+		func() {
+			if started {
+				words = append(words, word.String())
+				word.Reset()
+				started = false
+			}
 		}
-	}
 	for index := 0; index < len(value); index++ {
 		character := value[index]
 		if quote == '\'' {
@@ -560,10 +630,16 @@ func splitEnvString(value string) ([]string, bool) {
 	return words, true
 }
 
+// isEnvSplitWhitespace recognizes env split-string argument separators.
+//
+// Example: a tab separates unquoted arguments just as a space does.
 func isEnvSplitWhitespace(value byte) bool {
 	return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\v' || value == '\f'
 }
 
+// isShellName identifies the shell launchers supported by child analysis.
+//
+// Example: bash selects shell payload semantics, while cat retains ordinary data.
 func isShellName(value string) bool {
 	switch value {
 	case "bash", "sh", "dash", "zsh":
@@ -573,11 +649,18 @@ func isShellName(value string) bool {
 	}
 }
 
-func literalShellInvocation(argv []string, cwd string, cwdKnown bool) shellPayload {
+// literalShellInvocation selects inline command text or stdin from shell options.
+//
+// Example: bash -s reads stdin, while bash script.sh leaves script-file analysis separate.
+func literalShellInvocation(
+	argv []string,
+	cwd string,
+	cwdKnown bool,
+) shellPayload {
 	for index := 1; index < len(argv); index++ {
 		option := argv[index]
 		if option == "--" {
-			if index+1 < len(argv) && argv[index+1] == "-" {
+			if index+1 == len(argv) || argv[index+1] == "-" {
 				return shellPayload{stdin: true, handled: true, cwd: cwd, cwdKnown: cwdKnown, cwdSet: true}
 			}
 			return shellPayload{}

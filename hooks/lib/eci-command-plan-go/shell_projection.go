@@ -22,25 +22,23 @@ type shellProjection struct {
 	Changed       bool
 }
 
-// shellSubstitution contains one here-document command substitution, prefixed
-// with Offset spaces so its statements retain their original source offsets.
+// shellSubstitution contains executable substitution source, prefixed with
+// spaces so retained statements keep their original source offsets.
 // OwnerOffset identifies the AST statement whose redirection expands the body.
 //
 // Example: $(cd repo; git status) is one child with independent directory state.
 type shellSubstitution struct {
 	Command     string
 	OwnerOffset int
-	Offset      int
 }
 
-// shellInput identifies the last here-document supplying a statement's stdin.
+// shellInput identifies the last document or here-string supplying stdin.
 // Literal records whether its contents can be determined without shell expansion.
 //
 // Example: sh <<'EOF' consumes its literal document as a separate shell program.
 type shellInput struct {
 	Command     string
 	OwnerOffset int
-	Offset      int
 	Literal     bool
 }
 
@@ -68,6 +66,14 @@ type shellHeredoc struct {
 	Owner    *syntax.Stmt
 }
 
+// shellHereString binds one here-string operand to its owning statement.
+//
+// Example: sh <<< 'git status' receives that word, followed by a newline.
+type shellHereString struct {
+	Redirect *syntax.Redirect
+	Owner    *syntax.Stmt
+}
+
 // shellProjectionCollector records here-documents and ordinary lexical spans
 // without descending into here-document bodies.
 //
@@ -75,6 +81,7 @@ type shellHeredoc struct {
 type shellProjectionCollector struct {
 	Source               string
 	Heredocs             []shellHeredoc
+	HereStrings          []shellHereString
 	Words                []shellSourceSpan
 	Comments             []shellSourceSpan
 	Substitutions        []shellCommandSubstitution
@@ -83,17 +90,8 @@ type shellProjectionCollector struct {
 	ancestors            []syntax.Node
 }
 
-// projectShellHeredocs masks here-document syntax and inert text for the existing
-// command planner. Parse errors accompany any useful projection from the partial
-// AST; they never discard already recognized commands or body boundaries.
-//
-// Example: an apostrophe in a quoted body cannot swallow a following git command.
-func projectShellHeredocs(command string) (shellProjection, error) {
-	return projectShellCommands(command, false)
-}
-
-// projectShellCommands additionally isolates ordinary substitutions while
-// analyzing an executable child, so nested expansions retain independent state.
+// projectShellCommands masks inline input data and isolates executable children.
+// Partial AST projections retain recognized commands and original source offsets.
 //
 // Example: a substitution inside a here-document substitution is inspected next.
 func projectShellCommands(
@@ -114,14 +112,14 @@ func projectShellCommands(
 
 		collector := shellProjectionCollector{Source: command, AnalyzeSubstitutions: substitutions}
 		syntax.Walk(file, collector.Collect)
-		if !substitutions && len(collector.Heredocs) > 0 {
+		if !substitutions && (len(collector.Heredocs) > 0 || len(collector.HereStrings) > 0) {
 			// An ordinary substitution enclosing a document is its own shell
 			// scope. Extract it before projecting documents within that child.
 			collector = shellProjectionCollector{Source: command, AnalyzeSubstitutions: true}
 			syntax.Walk(file, collector.Collect)
 		}
 		parseErrors = append(parseErrors, collector.Errors...)
-		if len(collector.Heredocs) == 0 && len(collector.Substitutions) == 0 {
+		if len(collector.Heredocs) == 0 && len(collector.HereStrings) == 0 && len(collector.Substitutions) == 0 {
 			if (projection.Changed || substitutions) && len(collector.Comments) > 0 {
 				masked := []byte(projection.Command)
 				for _, comment := range collector.Comments {
@@ -172,7 +170,7 @@ func projectShellCommands(
 			maskShellSpan(masked, headerStart, headerEnd)
 			maskShellSpan(masked, bodyStart, bodyEnd)
 			changed = true
-			if shellStdinHeredoc(heredoc.Owner) == redirect {
+			if shellStdinSource(heredoc.Owner) == redirect {
 				input, inputErr := shellHeredocInput(command, bodyStart, contentEnd, heredoc, quoted)
 				projection.Inputs = append(projection.Inputs, input)
 				if inputErr != nil {
@@ -200,6 +198,31 @@ func projectShellCommands(
 				projection.Substitutions = append(projection.Substitutions, extractor.Substitutions...)
 				parseErrors = append(parseErrors, extractor.Errors...)
 			}
+		}
+		for _, hereString := range collector.HereStrings {
+			redirect := hereString.Redirect
+			if redirect.Word == nil || shellOffsetInSpans(int(redirect.Pos().Offset()), bodies) {
+				continue
+			}
+			if shellStdinSource(hereString.Owner) == redirect {
+				input, inputErr := shellHereStringInput(command, hereString)
+				projection.Inputs = append(projection.Inputs, input)
+				if inputErr != nil {
+					parseErrors = append(parseErrors, inputErr)
+				}
+			}
+			extractor := shellSubstitutionCollector{
+				Source: command, OwnerOffset: int(hereString.Owner.Pos().Offset()),
+			}
+			syntax.Walk(redirect.Word, extractor.Collect)
+			projection.Substitutions = append(projection.Substitutions, extractor.Substitutions...)
+			parseErrors = append(parseErrors, extractor.Errors...)
+			start, end := int(redirect.Pos().Offset()), int(redirect.Word.End().Offset())
+			maskShellSpan(masked, start, end)
+			if hereString.Owner.Cmd == nil {
+				placeholders[hereString.Owner] = start
+			}
+			changed = true
 		}
 		for _, substitution := range collector.Substitutions {
 			if shellOffsetInSpans(int(substitution.Node.Pos().Offset()), bodies) {
@@ -267,6 +290,9 @@ func (c *shellProjectionCollector) Collect(node syntax.Node) bool {
 				}
 				c.Heredocs = append(c.Heredocs, shellHeredoc{Redirect: redirect, Owner: node})
 			}
+			if redirect.Op == syntax.WordHdoc {
+				c.HereStrings = append(c.HereStrings, shellHereString{Redirect: redirect, Owner: node})
+			}
 			if redirect.Word == nil {
 				// Walk asks Stmt.End for comment placement, which requires
 				// mandatory redirection words absent from some partial ASTs.
@@ -277,7 +303,7 @@ func (c *shellProjectionCollector) Collect(node syntax.Node) bool {
 		if node == nil || node.Word == nil {
 			return false
 		}
-		if node.Op == syntax.Hdoc || node.Op == syntax.DashHdoc {
+		if node.Op == syntax.Hdoc || node.Op == syntax.DashHdoc || node.Op == syntax.WordHdoc {
 			if len(node.Word.Parts) > 0 {
 				c.Words = append(c.Words, shellSourceSpan{
 					Start: int(node.Word.Pos().Offset()), End: int(node.Word.End().Offset()),
@@ -576,11 +602,11 @@ func shellHeredocDelimiter(
 	return delimiter.String(), quoted, nil
 }
 
-// shellStdinHeredoc selects the last redirection affecting descriptor zero.
-// Later file, duplicate-descriptor, or here-string inputs override earlier docs.
+// shellStdinSource selects the last inline input affecting descriptor zero.
+// Later files or duplicate descriptors override document and here-string inputs.
 //
 // Example: sh <<FIRST <<SECOND consumes SECOND as its script input.
-func shellStdinHeredoc(statement *syntax.Stmt) *syntax.Redirect {
+func shellStdinSource(statement *syntax.Stmt) *syntax.Redirect {
 	var input *syntax.Redirect
 	for _, redirect := range statement.Redirs {
 		stdin := redirect.N != nil && redirect.N.Value == "0"
@@ -594,11 +620,31 @@ func shellStdinHeredoc(statement *syntax.Stmt) *syntax.Redirect {
 			continue
 		}
 		input = nil
-		if redirect.Op == syntax.Hdoc || redirect.Op == syntax.DashHdoc {
+		if redirect.Op == syntax.Hdoc || redirect.Op == syntax.DashHdoc || redirect.Op == syntax.WordHdoc {
 			input = redirect
 		}
 	}
 	return input
+}
+
+// shellHereStringInput removes operand quotes while retaining visible expansion
+// syntax as uncertain source. Only a shell consumer interprets the result as code.
+//
+// Example: bash -s <<< 'git status' analyzes git, while cat keeps the same data inert.
+func shellHereStringInput(
+	command string,
+	hereString shellHereString,
+) (shellInput, error) {
+	word := hereString.Redirect.Word
+	start := int(word.Pos().Offset())
+	input := shellInput{OwnerOffset: int(hereString.Owner.Pos().Offset())}
+	value, _, err := shellHeredocDelimiter(command, word.Parts, false)
+	if err != nil {
+		return input, err
+	}
+	_, input.Literal = literalSyntaxWord(command, word)
+	input.Command = strings.Repeat(" ", start) + value + "\n"
+	return input, nil
 }
 
 // shellHeredocInput retains script source and identifies statically known stdin.
@@ -613,7 +659,7 @@ func shellHeredocInput(
 	heredoc shellHeredoc,
 	quoted bool,
 ) (shellInput, error) {
-	input := shellInput{OwnerOffset: int(heredoc.Owner.Pos().Offset()), Offset: start}
+	input := shellInput{OwnerOffset: int(heredoc.Owner.Pos().Offset())}
 	body := command[start:end]
 	if heredoc.Redirect.Op == syntax.DashHdoc {
 		var stripped strings.Builder
@@ -712,7 +758,6 @@ func (c *shellSubstitutionCollector) Collect(node syntax.Node) bool {
 		c.Substitutions = append(c.Substitutions, shellSubstitution{
 			Command:     strings.Repeat(" ", start) + command,
 			OwnerOffset: c.OwnerOffset,
-			Offset:      start,
 		})
 	}
 	return false
