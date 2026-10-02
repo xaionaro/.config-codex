@@ -681,18 +681,8 @@ func (proof *shellOptionPreservation) Visit(node syntax.Node) bool {
 		}
 	case *syntax.DeclClause:
 		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
-		for _, assignment := range node.Args {
-			if assignment.Index != nil || assignment.Array != nil {
-				proof.Preserved = false
-				return false
-			}
-			if assignment.Value != nil {
-				if _, literal := literalSyntaxWord(proof.Source, assignment.Value); !literal {
-					proof.Preserved = false
-					return false
-				}
-			}
-		}
+		// Declaration values and attributes do not change shell options.
+		// Scalar uncertainty is retained separately by the scope tracker.
 	case *syntax.LetClause:
 		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
 	case *syntax.BinaryCmd, *syntax.IfClause, *syntax.Block, *syntax.Subshell:
