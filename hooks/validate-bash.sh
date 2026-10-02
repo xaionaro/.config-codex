@@ -8065,7 +8065,7 @@ def inspect(segment, depth=0):
                 if option_index + 1 >= len(segment):
                     return True
                 nested = tokenize(segment[option_index + 1])
-                return nested is None or any(inspect(part, depth + 1) for part in split(nested))
+                return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
         return False
     if name == "eval":
         # Evaluate only the literal payload for a concrete acceptance-sensitive
@@ -8085,7 +8085,7 @@ def inspect(segment, depth=0):
             if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"} and index + 1 < len(segment):
                 if token in {"-S", "--split-string"}:
                     nested = tokenize(segment[index + 1])
-                    return nested is None or any(inspect(part, depth + 1) for part in split(nested))
+                    return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
                 index += 2
                 continue
             if token.startswith("-"):
@@ -8123,7 +8123,9 @@ def inspect(segment, depth=0):
     return False
 
 parsed = tokenize(text)
-found = parsed is None or any(inspect(part) for part in split(parsed))
+# Unparsed text, including quotes inside a heredoc body, does not establish
+# a Git mutation. Only a resolved command effect belongs to this gate.
+found = parsed is not None and any(inspect(part) for part in split(parsed))
 sys.exit(0 if found else 1)
 PY
 }
@@ -10419,7 +10421,7 @@ def commit_effect(arguments: list[str]) -> str | None:
             path_operands = True
             continue
         if argument.startswith("--"):
-            name, separator, _ = argument[2:].partition("=")
+            name, separator, value = argument[2:].partition("=")
             negated = name.startswith("no-")
             candidates = long_options
             if negated:
@@ -10442,8 +10444,13 @@ def commit_effect(arguments: list[str]) -> str | None:
             if not negated and name in required_values and not separator:
                 if index == len(arguments):
                     return None
+                value = arguments[index]
                 index += 1
-            if name in state:
+            if name == "pathspec-from-file":
+                # Git's OPT_FILENAME treats an empty value as NULL, clearing
+                # any earlier pathspec file just as negation does.
+                state[name] = not negated and bool(value)
+            elif name in state:
                 state[name] = not negated
             elif name in format_options:
                 # These options share status_format; every negation sets
