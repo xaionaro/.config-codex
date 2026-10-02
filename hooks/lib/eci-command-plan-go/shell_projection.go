@@ -42,11 +42,11 @@ type shellInput struct {
 	Literal     bool
 }
 
-// shellCommandSubstitution binds a normal expansion to its direct AST owner.
+// shellCommandSubstitution binds a command or process expansion to its AST owner.
 //
 // Example: printf "$(git status)" expands in printf's incoming directory.
 type shellCommandSubstitution struct {
-	Node  *syntax.CmdSubst
+	Node  syntax.Node
 	Owner *syntax.Stmt
 }
 
@@ -236,8 +236,15 @@ func projectShellCommands(
 			parseErrors = append(parseErrors, extractor.Errors...)
 			start := int(substitution.Node.Pos().Offset())
 			end := int(substitution.Node.End().Offset())
-			if !substitution.Node.Right.IsValid() {
-				end = len(masked)
+			switch node := substitution.Node.(type) {
+			case *syntax.CmdSubst:
+				if !node.Right.IsValid() {
+					end = len(masked)
+				}
+			case *syntax.ProcSubst:
+				if !node.Rparen.IsValid() {
+					end = len(masked)
+				}
 			}
 			maskShellSpan(masked, start, end)
 			// Keep an explicitly dynamic word in the analysis command. An
@@ -311,7 +318,7 @@ func (c *shellProjectionCollector) Collect(node syntax.Node) bool {
 			}
 			return false
 		}
-	case *syntax.CmdSubst:
+	case *syntax.CmdSubst, *syntax.ProcSubst:
 		if c.AnalyzeSubstitutions {
 			for index := len(c.ancestors) - 1; index >= 0; index-- {
 				if owner, ok := c.ancestors[index].(*syntax.Stmt); ok {
@@ -588,7 +595,7 @@ func shellHeredocDelimiter(
 			}
 			delimiter.WriteString(value)
 			quoted = true
-		case *syntax.ParamExp, *syntax.CmdSubst, *syntax.ArithmExp:
+		case *syntax.ParamExp, *syntax.CmdSubst, *syntax.ArithmExp, *syntax.ProcSubst:
 			// Expansions are literal syntax in heredoc delimiter words.
 			start, end := int(part.Pos().Offset()), int(part.End().Offset())
 			if start > end || end > len(command) {
@@ -627,8 +634,8 @@ func shellStdinSource(statement *syntax.Stmt) *syntax.Redirect {
 	return input
 }
 
-// shellHereStringInput removes operand quotes while retaining visible expansion
-// syntax as uncertain source. Only a shell consumer interprets the result as code.
+// shellHereStringInput removes operand quotes and represents expansion results
+// as unknown data. Expansion source is analyzed in the owning command's context.
 //
 // Example: bash -s <<< 'git status' analyzes git, while cat keeps the same data inert.
 func shellHereStringInput(
@@ -638,7 +645,11 @@ func shellHereStringInput(
 	word := hereString.Redirect.Word
 	start := int(word.Pos().Offset())
 	input := shellInput{OwnerOffset: int(hereString.Owner.Pos().Offset())}
-	value, _, err := shellHeredocDelimiter(command, word.Parts, false)
+	masked, _, err := maskShellInputExpansions(command, word)
+	if err != nil {
+		return input, err
+	}
+	value, _, err := shellHeredocDelimiter(masked, word.Parts, false)
 	if err != nil {
 		return input, err
 	}
@@ -647,9 +658,9 @@ func shellHereStringInput(
 	return input, nil
 }
 
-// shellHeredocInput retains script source and identifies statically known stdin.
-// Expanded input keeps its visible source with Literal false, so shell consumers
-// can inspect concrete commands without claiming to know expansion results.
+// shellHeredocInput retains literal script text and identifies statically known
+// stdin. Expansion results remain unknown without replaying their source inside
+// the receiving shell, whose directory may differ from the expanding command's.
 //
 // Example: a literal quoted body is shell source only when its consumer is a shell.
 func shellHeredocInput(
@@ -660,6 +671,7 @@ func shellHeredocInput(
 	quoted bool,
 ) (shellInput, error) {
 	input := shellInput{OwnerOffset: int(heredoc.Owner.Pos().Offset())}
+	var parseErrors []error
 	body := command[start:end]
 	if heredoc.Redirect.Op == syntax.DashHdoc {
 		var stripped strings.Builder
@@ -668,19 +680,18 @@ func shellHeredocInput(
 		}
 		body = stripped.String()
 	}
-	input.Command = strings.Repeat(" ", start) + body
+	input.Literal = quoted
 	if !quoted {
 		word, err := syntax.NewParser().Document(strings.NewReader(body))
 		if err != nil {
-			return input, err
+			parseErrors = append(parseErrors, err)
 		}
-		if word != nil {
-			for _, part := range word.Parts {
-				if _, literal := part.(*syntax.Lit); !literal {
-					return input, nil
-				}
-			}
+		masked, dynamic, err := maskShellInputExpansions(body, word)
+		if err != nil {
+			parseErrors = append(parseErrors, err)
 		}
+		body = masked
+		input.Literal = !dynamic && len(parseErrors) == 0
 		var decoded strings.Builder
 		for offset := 0; offset < len(body); offset++ {
 			character := body[offset]
@@ -696,8 +707,53 @@ func shellHeredocInput(
 		body = decoded.String()
 	}
 	input.Command = strings.Repeat(" ", start) + body
-	input.Literal = true
-	return input, nil
+	return input, errors.Join(parseErrors...)
+}
+
+// shellInputExpansionMask replaces expansion source with unknown output markers
+// while retaining literal surrounding script text and its original byte offsets.
+//
+// Example: $(git status) becomes unknown stdin data after its parent-side analysis.
+type shellInputExpansionMask struct {
+	Source  []byte
+	Dynamic bool
+	Errors  []error
+}
+
+// maskShellInputExpansions separates expansion syntax from the bytes it produces.
+// The caller still decodes literal quoting and escapes after expansion masking.
+//
+// Example: a literal git command after $(printf text) remains visible to a shell.
+func maskShellInputExpansions(
+	source string,
+	word *syntax.Word,
+) (string, bool, error) {
+	mask := shellInputExpansionMask{Source: []byte(source)}
+	if word != nil {
+		syntax.Walk(word, mask.Collect)
+	}
+	return string(mask.Source), mask.Dynamic, errors.Join(mask.Errors...)
+}
+
+// Collect masks an entire outer expansion, including any nested syntax already
+// owned by that expansion, without turning its source into a child input script.
+//
+// Example: an env -C consumer cannot execute its parent's $(git status) twice.
+func (m *shellInputExpansionMask) Collect(node syntax.Node) bool {
+	switch node.(type) {
+	case *syntax.CmdSubst, *syntax.ProcSubst, *syntax.ParamExp, *syntax.ArithmExp:
+		start, end := int(node.Pos().Offset()), int(node.End().Offset())
+		m.Dynamic = true
+		if start > end || end > len(m.Source) {
+			m.Errors = append(m.Errors, fmt.Errorf("incomplete shell input expansion at byte %d", start))
+			return false
+		}
+		maskShellSpan(m.Source, start, end)
+		copy(m.Source[start:end], "$?")
+		return false
+	default:
+		return true
+	}
 }
 
 // maskShellSpan replaces all bytes, including body newlines, with spaces. The
@@ -714,8 +770,8 @@ func maskShellSpan(
 	}
 }
 
-// shellSubstitutionCollector extracts outermost executable substitutions from
-// an expandable body; nested documents remain available for recursive analysis.
+// shellSubstitutionCollector extracts outermost executable command and process
+// substitutions; nested documents remain available for recursive analysis.
 //
 // Example: two independent substitutions produce two independently scoped children.
 type shellSubstitutionCollector struct {
@@ -730,25 +786,34 @@ type shellSubstitutionCollector struct {
 //
 // Example: $(cd repo && git status) keeps the && dependency inside one child.
 func (c *shellSubstitutionCollector) Collect(node syntax.Node) bool {
-	substitution, ok := node.(*syntax.CmdSubst)
-	if !ok {
+	var statements []*syntax.Stmt
+	var last []syntax.Comment
+	var closing syntax.Pos
+	backquotes := false
+	switch node := node.(type) {
+	case *syntax.CmdSubst:
+		statements, last, closing = node.Stmts, node.Last, node.Right
+		backquotes = node.Backquotes
+	case *syntax.ProcSubst:
+		statements, last, closing = node.Stmts, node.Last, node.Rparen
+	default:
 		return true
 	}
-	if len(substitution.Stmts) == 0 {
+	if len(statements) == 0 {
 		return false
 	}
-	start := int(substitution.Stmts[0].Pos().Offset())
+	start := int(statements[0].Pos().Offset())
 	end := len(c.Source)
-	if substitution.Right.IsValid() {
-		end = int(substitution.Right.Offset())
+	if closing.IsValid() {
+		end = int(closing.Offset())
 	}
 	if start <= end && end <= len(c.Source) {
 		command := c.Source[start:end]
-		if substitution.Backquotes {
+		if backquotes {
 			// The parser has already removed legacy backquote escape levels.
 			// Printing its statements preserves those executable semantics.
 			var printed bytes.Buffer
-			file := &syntax.File{Stmts: substitution.Stmts, Last: substitution.Last}
+			file := &syntax.File{Stmts: statements, Last: last}
 			if err := syntax.NewPrinter().Print(&printed, file); err != nil {
 				c.Errors = append(c.Errors, err)
 				return false
