@@ -41,6 +41,7 @@ type ShellCommandRecord struct {
 type shellPayload struct {
 	command        string
 	commandDynamic bool
+	launchState    *shellExpansionState
 	argv           []shellArgument
 	arguments      []shellArgument
 	stdin          bool
@@ -98,13 +99,14 @@ func inspectShellAnalysis(
 	}
 	analysis := &ShellAnalysis{Commands: []ShellCommandRecord{}, Incomplete: parsed.projectionIncomplete}
 	needed := request.CollectShellCommands || parsed.projection != nil
-	expansionFacts := shellExpansionSegments(request.Command, parsed.segments)
+	expansionFacts := shellExpansionSegments(request.Command, parsed.segments, request.ShellExpansion)
 	for index, current := range parsed.segments {
 		state := states[index]
 		if state.reachability == segmentUnreachable {
 			continue
 		}
 		childRequest := shellChildRequest(request, state)
+		childRequest.ShellExpansion = expansionFacts[index].state
 		if parsed.projection != nil {
 			for _, child := range parsed.projection.Substitutions {
 				if child.OwnerOffset < current.sourceStart || child.OwnerOffset >= current.sourceStart+len(current.command) {
@@ -179,6 +181,9 @@ func inspectShellAnalysis(
 				payload.commandDynamic = !input.Literal
 			}
 			childRequest.Command = payload.command
+			if payload.launchState != nil {
+				childRequest.ShellExpansion = *payload.launchState
+			}
 			childRequest.ShellEnvironment = payload.environment
 			childRequest.ShellInputDynamic = request.ShellInputDynamic || payload.commandDynamic
 			result := Classify(childRequest)
@@ -431,11 +436,34 @@ func sourceBackedShellArgv(
 	return decoded, true
 }
 
+// shellOptionState distinguishes explicit option evidence from missing state.
+//
+// Example: an omitted -f is unknown, while +f establishes pathname expansion.
+type shellOptionState uint8
+
+const (
+	shellOptionUnknown shellOptionState = iota
+	shellOptionOff
+	shellOptionOn
+)
+
+// shellExpansionState carries supported shell options and persistent attribute
+// uncertainty into child scopes without inferring defaults from missing metadata.
+//
+// Example: bash -f passes known noglob to its inline command source.
+type shellExpansionState struct {
+	nullglob          shellOptionState
+	failglob          shellOptionState
+	noglob            shellOptionState
+	attributesUnknown bool
+}
+
 // shellExpansionFacts carries only source-established expansion bounds.
 // Scalar values are not substituted into commands or treated as resolved paths.
 //
 // Example: explicit IFS plus msg=foo proves one field for a later plain $msg.
 type shellExpansionFacts struct {
+	state        shellExpansionState
 	nullglob     bool
 	exactScalars map[string]bool
 }
@@ -448,25 +476,26 @@ type shellExpansionFacts struct {
 func shellExpansionSegments(
 	source string,
 	segments []segment,
+	incoming shellExpansionState,
 ) []shellExpansionFacts {
 	result := make([]shellExpansionFacts, len(segments))
 	file, err := syntax.NewParser().Parse(strings.NewReader(source), "")
 	if err != nil || file == nil {
 		return result
 	}
-	nullglob, failglob, disabled, unknown := false, false, false, false
+	state := incoming
 	bindings := map[string]string{}
 	ifs, ifsKnown := "", false
 	for _, statement := range file.Stmts {
 		call, simple := statement.Cmd.(*syntax.CallExpr)
 		if !simple || len(call.Args) == 0 && len(call.Assigns) == 0 {
-			unknown = true
+			state = shellExpansionState{attributesUnknown: true}
 			clear(bindings)
 			ifsKnown = false
 			continue
 		}
 		exactScalars := map[string]bool{}
-		if ifsKnown {
+		if ifsKnown && !state.attributesUnknown {
 			for name, value := range bindings {
 				if value != "" && !strings.ContainsAny(value, ifs) && !strings.ContainsAny(value, "*?[") {
 					exactScalars[name] = true
@@ -477,7 +506,8 @@ func shellExpansionSegments(
 		for index, current := range segments {
 			if offset >= current.sourceStart && offset < current.sourceStart+len(current.command) {
 				result[index] = shellExpansionFacts{
-					nullglob:     nullglob && !failglob && !disabled && !unknown,
+					state:        state,
+					nullglob:     state.nullglob == shellOptionOn && state.failglob == shellOptionOff && state.noglob == shellOptionOff,
 					exactScalars: exactScalars,
 				}
 			}
@@ -513,12 +543,12 @@ func shellExpansionSegments(
 		clear(bindings)
 		ifsKnown = false
 		if len(call.Args) == 0 {
-			unknown = true
+			state = shellExpansionState{attributesUnknown: true}
 			continue
 		}
 		name, literal := literalSyntaxWord(source, call.Args[0])
 		if !literal {
-			unknown = true
+			state = shellExpansionState{attributesUnknown: true}
 			continue
 		}
 		values := make([]string, len(call.Args))
@@ -534,26 +564,40 @@ func shellExpansionSegments(
 		switch name {
 		case "shopt", "set":
 			if len(statement.Redirs) != 0 || len(call.Assigns) != 0 {
-				unknown = true
+				state = shellExpansionState{attributesUnknown: true}
 				continue
 			}
 			switch {
 			case literal && name == "shopt" && len(values) == 3 && (values[1] == "-s" || values[1] == "-u"):
 				switch values[2] {
 				case "nullglob":
-					nullglob = values[1] == "-s"
+					state.nullglob = shellOptionOff
+					if values[1] == "-s" {
+						state.nullglob = shellOptionOn
+					}
 				case "failglob":
-					failglob = values[1] == "-s"
+					state.failglob = shellOptionOff
+					if values[1] == "-s" {
+						state.failglob = shellOptionOn
+					}
 				default:
-					unknown = true
+					state = shellExpansionState{attributesUnknown: true}
 				}
 			case literal && name == "set" && len(values) == 2 && (values[1] == "-f" || values[1] == "+f"):
-				disabled = values[1] == "-f"
+				state.noglob = shellOptionOff
+				if values[1] == "-f" {
+					state.noglob = shellOptionOn
+				}
+			case literal && name == "set" && len(values) == 3 && (values[1] == "-o" || values[1] == "+o") && values[2] == "noglob":
+				state.noglob = shellOptionOff
+				if values[1] == "-o" {
+					state.noglob = shellOptionOn
+				}
 			default:
-				unknown = true
+				state = shellExpansionState{attributesUnknown: true}
 			}
-		case "eval", ".", "source", "builtin", "command", "exec":
-			unknown = true
+		case "eval", ".", "source", "builtin", "command", "exec", "declare", "typeset", "local", "readonly", "export", "nameref", "let", "read", "mapfile", "readarray":
+			state = shellExpansionState{attributesUnknown: true}
 		}
 	}
 	return result
@@ -1193,9 +1237,14 @@ func isShellName(value string) bool {
 func literalShellInvocation(argv []shellArgument) shellPayload {
 	commandMode, stdinMode := false, false
 	noExecution, interactive := false, false
+	expansion := shellExpansionState{}
+	optionsKnown := true
 	index := 1
 	for index < len(argv) {
 		option := argv[index].Value
+		if !argv[index].Literal {
+			optionsKnown = false
+		}
 		if !argv[index].singleField() {
 			return shellPayload{handled: true, incomplete: true}
 		}
@@ -1210,6 +1259,7 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 			if index+1 >= len(argv) || !argv[index+1].singleField() {
 				return shellPayload{handled: true, incomplete: true}
 			}
+			expansion.attributesUnknown = true
 			index += 2
 			continue
 		}
@@ -1226,6 +1276,11 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 				commandMode = true
 			case 's':
 				stdinMode = true
+			case 'f':
+				expansion.noglob = shellOptionOff
+				if option[0] == '-' {
+					expansion.noglob = shellOptionOn
+				}
 			case 'n':
 				noExecution = option[0] == '-'
 			case 'i':
@@ -1236,13 +1291,31 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 					if !argv[index].singleField() {
 						return shellPayload{handled: true, incomplete: true}
 					}
-					if flag == 'o' && argv[index].Value == "noexec" {
+					if !argv[index].Literal {
+						optionsKnown = false
+						continue
+					}
+					setting := shellOptionOff
+					if option[0] == '-' {
+						setting = shellOptionOn
+					}
+					switch {
+					case flag == 'o' && argv[index].Value == "noexec":
 						noExecution = option[0] == '-'
+					case flag == 'o' && argv[index].Value == "noglob":
+						expansion.noglob = setting
+					case flag == 'O' && argv[index].Value == "nullglob":
+						expansion.nullglob = setting
+					case flag == 'O' && argv[index].Value == "failglob":
+						expansion.failglob = setting
 					}
 				}
 			}
 		}
 		index++
+	}
+	if !optionsKnown {
+		expansion = shellExpansionState{attributesUnknown: true}
 	}
 	if noExecution && !interactive {
 		return shellPayload{handled: true, noExecution: true}
@@ -1253,10 +1326,10 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 		if index >= len(argv) || !argv[index].singleField() {
 			return shellPayload{handled: true, incomplete: true}
 		}
-		return shellPayload{command: argv[index].Value, commandDynamic: !argv[index].Literal, handled: true}
+		return shellPayload{command: argv[index].Value, commandDynamic: !argv[index].Literal, launchState: &expansion, handled: true}
 	}
 	if !stdinMode && index < len(argv) && argv[index].Value != "-" {
 		return shellPayload{}
 	}
-	return shellPayload{stdin: true, handled: true}
+	return shellPayload{stdin: true, launchState: &expansion, handled: true}
 }

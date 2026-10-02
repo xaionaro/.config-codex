@@ -6898,13 +6898,22 @@ def git_pathspec_entries(
         return None
     if len(data) > 65536 or not nul and b"\0" in data:
         return None
-    parts = data.split(b"\0" if nul else b"\n")
-    if not nul:
-        parts = [part.removesuffix(b"\r") for part in parts]
-        # Git C-quoted records need a separate decoder; don't invent paths.
-        if any(part.startswith(b'"') for part in parts):
+    if not data:
+        return []
+    separator = b"\0" if nul else b"\n"
+    parts = data.split(separator)
+    terminated_count = len(parts) - 1
+    if data.endswith(separator):
+        parts.pop()  # Only the synthetic suffix is not a real record.
+    entries = []
+    for index, part in enumerate(parts):
+        if not nul and index < terminated_count:
+            part = part.removesuffix(b"\r")
+        # An actual blank record is invalid, not absence of selection. Keep
+        # unsupported C-quoting advisory without using later file records.
+        if not part or not nul and part.startswith(b'"'):
             return None
-    entries = [os.fsdecode(part) for part in parts if part]
+        entries.append(os.fsdecode(part))
     return entries if len(entries) <= 1024 else None
 
 
@@ -6975,16 +6984,23 @@ def git_reset_effect(
         if selectors or operands or roles_unknown:
             return "reset-option-unresolved", []
         if filename is None:
-            return "pathspec-selection-unresolved", []
+            return "reset-option-unresolved", []
         entries = git_pathspec_entries(filename, base, file_nul)
         if entries is None:
-            return "pathspec-selection-unresolved", []
+            return "reset-option-unresolved", []
         selectors = [(len(arguments) + offset, value, True) for offset, value in enumerate(entries)]
     elif file_nul:
         return "reset-option-unresolved", []
-    if selectors and mode not in {"", "--mixed"}:
-        return "reset-option-unresolved", []  # Git rejects these path/mode pairs.
     known_selectors = [(value, literal) for _, value, literal in selectors]
+    disappearing_scope = selectors and not roles_unknown and all(
+        offset in may_disappear and offset not in cardinality_unknown
+        for offset, _, _ in selectors)
+    # A path/mode combination is not proven invalid when every established
+    # selector may vanish, leaving the broad no-path reset form.
+    if disappearing_scope:
+        return "reset-unresolved", known_selectors
+    if selectors and mode not in {"", "--mixed"}:
+        return "reset-option-unresolved", []  # Git rejects guaranteed paths.
     if mode in {"--hard", "--merge", "--keep"}:
         return "reset-working-tree", known_selectors
     if not paths_only and not filename and any(offset in unknown for offset, _ in operands):
@@ -6993,9 +7009,6 @@ def git_reset_effect(
         return "reset-option-unresolved", known_selectors
     if any(literal and value in {":/", ":(top)"} for _, value, literal in selectors):
         return "reset-index", known_selectors
-    if selectors and all(offset in may_disappear and offset not in cardinality_unknown
-                         for offset, _, _ in selectors):
-        return "reset-unresolved", known_selectors
     if selectors:
         return "reset", known_selectors
     return "reset-index", []
@@ -7012,7 +7025,7 @@ def git_add_effect(
     """Resolve each add record's final modes and supported selector contents."""
     variable = may_disappear | may_multiply | cardinality_unknown
     all_mode = update_mode = refresh = interactive = False
-    preview = preview_proven = roles_unknown = all_proven = False
+    preview = preview_proven = roles_unknown = all_proven = update_proven = False
     option_unknown = False
     shape_known = True
     paths_only = False
@@ -7065,12 +7078,13 @@ def git_add_effect(
         if value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
             file_nul = value == "--pathspec-file-nul"
             continue
-        if value in {"-A", "--all", "--no-all"}:
-            all_mode = value != "--no-all"
+        if value in {"-A", "--all", "--no-all", "--ignore-removal", "--no-ignore-removal"}:
+            all_mode = value not in {"--no-all", "--ignore-removal"}
             all_proven = not roles_unknown
             continue
         if value in {"-u", "--update", "--no-update"}:
             update_mode = value != "--no-update"
+            update_proven = not roles_unknown
             continue
         if value in {"--refresh", "--no-refresh"}:
             refresh = value == "--refresh"
@@ -7083,7 +7097,7 @@ def git_add_effect(
             interactive = True
             continue
         if value.startswith("-"):
-            if value not in {"-v", "-f", "-N", "--verbose", "--no-verbose", "--force", "--no-force", "--intent-to-add", "--no-intent-to-add", "--sparse", "--ignore-errors", "--ignore-missing", "--ignore-removal", "--no-ignore-removal"}:
+            if value not in {"-v", "-f", "-N", "--verbose", "--no-verbose", "--force", "--no-force", "--intent-to-add", "--no-intent-to-add", "--sparse", "--ignore-errors", "--ignore-missing"}:
                 shape_known = False
             continue
         selectors.append((offset, value, True))
@@ -7097,19 +7111,20 @@ def git_add_effect(
         if selectors or roles_unknown:
             return "add-option-unresolved", []  # Mixed or unproved selector roles.
         if filename is None:
-            return "pathspec-selection-unresolved", []
+            return "add-option-unresolved", []
         entries = git_pathspec_entries(filename, base, file_nul)
         if entries is None:
-            return "pathspec-selection-unresolved", []
+            return "add-option-unresolved", []
         selectors = [(len(arguments) + offset, value, True) for offset, value in enumerate(entries)]
     elif file_nul:
         return "add-option-unresolved", []
     known_selectors = [(value, literal) for _, value, literal in selectors]
     if any(literal and value in {":/", ":(top)"} for _, value, literal in selectors):
         return "whole-worktree-staging", known_selectors
-    if (all_mode and all_proven or update_mode and not roles_unknown) and not selectors and not option_unknown:
+    broad_without_selectors = (all_mode and all_proven or update_mode and update_proven) and not option_unknown
+    if broad_without_selectors and not selectors:
         return "whole-worktree-staging", []
-    if all_mode and all_proven and selectors and not option_unknown and all(
+    if broad_without_selectors and selectors and all(
             offset in may_disappear and offset not in cardinality_unknown for offset, _, _ in selectors):
         return "add-target-unresolved", known_selectors
     if option_unknown:
@@ -11818,7 +11833,7 @@ for record in records:
             unavailable |= unknown
         if verb == "reset":
             effect, selectors = git_reset_effect(arguments, unknown, disappearing, multiplying, unavailable, repo_dir)
-            if effect in {"reset-working-tree", "reset-index", "reset-unresolved", "pathspec-selection-unresolved"}:
+            if effect in {"reset-working-tree", "reset-index", "reset-unresolved"}:
                 print("effect=%s target=%s" % (effect, repo))
                 raise SystemExit(0)
             if effect == "reset" and any(literal and value and os.path.realpath(resolve(value, repo_dir)) == repo
@@ -12925,7 +12940,7 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|reset-index|reset-working-tree|pathspec-selection-unresolved|reset-unresolved|reset-option-unresolved|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
+    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
@@ -12937,11 +12952,6 @@ enforce_git_mutation_gate() {
         "ECI Git mutation has a broad destructive effect: effect=$operation target=$repo_dir" \
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
     fi
-    if [ "$operation" = pathspec-selection-unresolved ]; then
-      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
-        "ECI Git selection has an unresolved pathspec-file target: effect=$operation repository=$repo_dir" \
-        "supply the exact owned paths as preserved arguments, or use a readable bounded regular pathspec file with supported contents"
-    fi
     if [ "$operation" = reset-unresolved ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
         "ECI Git reset has an unresolved revision-or-path target or a path selection that may disappear: operation=$operation target=$repo_dir" \
@@ -12949,7 +12959,7 @@ enforce_git_mutation_gate() {
     fi
     if [ "$operation" = add-target-unresolved ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
-        "ECI Git add --all has no guaranteed narrowing path because every selector may disappear: operation=$operation target=$repo_dir" \
+        "ECI Git add has no guaranteed narrowing path because every selector may disappear: operation=$operation target=$repo_dir" \
         "stage the exact nonempty owned paths as preserved arguments or stage their owned hunks separately"
     fi
     if [ "$operation" = commit-all ]; then
