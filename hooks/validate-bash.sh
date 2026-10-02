@@ -7073,6 +7073,7 @@ def git_checkout_effect(
     operands = []
     index = 0
     pathspec_file = detached = orphan = False
+    pathspec_file_nul = False
     explicit_reference = False
     guess = None
     while index < len(arguments):
@@ -7081,6 +7082,8 @@ def git_checkout_effect(
             return "repository-unresolved"
         index += 1
         if value == "--":
+            if pathspec_file_nul and not pathspec_file:
+                return "repository-unresolved"  # Git rejects NUL mode without a file.
             if detached or orphan:
                 return "repository"
             if index < len(arguments) or pathspec_file:
@@ -7105,13 +7108,20 @@ def git_checkout_effect(
         if value in {"--guess", "--no-guess"}:
             guess = value == "--guess"
             continue
+        if value == "--no-pathspec-from-file":
+            pathspec_file = False
+            continue
+        if value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
+            pathspec_file_nul = value == "--pathspec-file-nul"
+            continue
         option, attached, operand = value.partition("=")
         if option in {"--pathspec-from-file", "--conflict", "--unified", "--inter-hunk-context"} or value in {"-U"}:
             if not attached:
                 if index >= len(arguments) or index in unknown or index in variable_cardinality:
                     return "repository-unresolved"
                 index += 1
-            pathspec_file = pathspec_file or option == "--pathspec-from-file"
+            if option == "--pathspec-from-file":
+                pathspec_file = True
             continue
         if value.startswith("-"):
             if not value.startswith("--"):
@@ -7123,6 +7133,8 @@ def git_checkout_effect(
                     detached = detached or flag == "d"
             continue
         operands.append(value)
+    if pathspec_file_nul and not pathspec_file:
+        return "repository-unresolved"  # Final NUL mode has no destination file.
     if detached or orphan:
         return "repository"
     if pathspec_file or len(operands) > 1:
@@ -7173,7 +7185,7 @@ def git_checkout_effect(
             remote = key[len("remote."):-len(".fetch")]
             remote_mappings.setdefault(remote, []).append(refspec.removeprefix("+"))
 
-        def map_pattern(pattern, replacement, query):
+        def map_pattern(pattern: str, replacement: str, query: str) -> str | None:
             if "*" not in pattern:
                 return replacement if pattern == query else None
             prefix, suffix = pattern.split("*")
@@ -12858,6 +12870,7 @@ def checkout_detach_state(
     inter_hunk_context_unpatched_effect = False
     patch_mode = False
     pathspec_file_option = False
+    pathspec_file_empty = False
     pathspec_dash_consumed = False
     pathspec_dash_trailing_path = False
     separator_index = None
@@ -12875,9 +12888,21 @@ def checkout_detach_state(
         if value == "--":
             separator_index = index
             break
+        if value == "--no-pathspec-from-file":
+            pathspec_file_option = False
+            pathspec_file_empty = False
+            pathspec_dash_consumed = False
+            pathspec_dash_trailing_path = False
+            index += 1
+            continue
         is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
         if is_pathspec_file:
+            # Only the surviving assignment supplies filename-dependent
+            # validity. Consumed values never become options or separators.
             pathspec_file_option = True
+            pathspec_file_empty = pathspec_file == ""
+            pathspec_dash_consumed = False
+            pathspec_dash_trailing_path = False
             # This option consumes the following token even when it starts
             # with a dash.  Do not mistake a pathspec filename named
             # --detach for a later detach toggle.
@@ -12887,8 +12912,6 @@ def checkout_detach_state(
                         return invalid_result()
                     pathspec_dash_consumed = True
                 index += 2
-            elif not pathspec_file:
-                return invalid_result()
             else:
                 index += 1
             continue
@@ -13046,7 +13069,7 @@ def checkout_detach_state(
     # cancellation; callback-validated option values still reject above.
     if orphan_mode and orphan_name is not None and orphan_name.startswith("-"):
         return invalid_result()
-    if pathspec_dash_trailing_path:
+    if pathspec_file_empty or pathspec_dash_trailing_path:
         return invalid_result()
     if not patch_mode:
         if unified_context_option and not unified_context_unpatched_effect:

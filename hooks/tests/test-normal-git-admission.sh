@@ -991,6 +991,61 @@ run_effect_aware_git_target() {
     git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
   else failures=1; fi
 
+  # Pathspec-file assignment, cancellation and replacement use final state.
+  # Option-looking filenames remain consumed values, including a literal --.
+  for filename in --no-pathspec-from-file --detach --; do
+    printf '%s\n' hooks/validate-bash.sh >"$REPO/$filename"
+  done
+  for command in \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths --no-pathspec-from-file existing-other-branch" \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths --no-pathspec-from-file existing-other-branch --" \
+    'git checkout --pathspec-from-file= --no-pathspec-from-file existing-other-branch' \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths --pathspec-file-nul --no-pathspec-from-file --no-pathspec-file-nul existing-other-branch" \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths --no-pathspec-from-file -- hooks/validate-bash.sh" \
+    'git checkout --pathspec-from-file= --no-pathspec-from-file -- hooks/validate-bash.sh' \
+    'git checkout --pathspec-from-file -- --no-pathspec-from-file -- hooks/validate-bash.sh' \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/protected-checkout.paths" \
+    "git checkout --pathspec-from-file= --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/protected-checkout.paths" \
+    "git checkout --pathspec-from-file -- --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/protected-checkout.paths" \
+    'git checkout --pathspec-from-file --no-pathspec-from-file' \
+    'git checkout --pathspec-from-file --detach' \
+    'git checkout --pathspec-from-file --'; do
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  done
+  for command in \
+    "git checkout --pathspec-from-file=$TMP_ROOT/protected-checkout.paths --no-pathspec-from-file -- CODEX.md" \
+    'git checkout --pathspec-from-file= --no-pathspec-from-file -- CODEX.md' \
+    'git checkout --pathspec-from-file -- --no-pathspec-from-file -- CODEX.md' \
+    "git checkout --pathspec-from-file=$TMP_ROOT/protected-checkout.paths --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths" \
+    "git checkout --pathspec-from-file= --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths" \
+    "git checkout --pathspec-from-file -- --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths"; do
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || failures=1
+      [ "$(cat -- "$REPO/CODEX.md")" = 'ordinary base' ] || failures=1
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      git -C "$REPO" diff --cached --quiet || failures=1
+    else failures=1; fi
+  done
+  # NUL mode without a surviving file is native-invalid. A surviving file
+  # combined with actual explicit paths is likewise invalid and transparent.
+  for command in \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths --pathspec-file-nul --no-pathspec-from-file existing-other-branch" \
+    "git checkout --pathspec-from-file=$TMP_ROOT/protected-checkout.paths --no-pathspec-from-file --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths -- hooks/validate-bash.sh"; do
+    if assert_allowed "$command" worker; then
+      if (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/final-file-invalid.out" 2>&1; then
+        printf 'native-invalid final file state unexpectedly succeeded: %s\n' "$command" >&2
+        failures=1
+      fi
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+    else failures=1; fi
+  done
+
   # Git's negative prepass uses reverse candidates. Standard wildcard
   # mappings still permit guessing even with a matching source negative.
   git -C "$REPO" config --add remote.origin.fetch '^refs/heads/wip/*'
