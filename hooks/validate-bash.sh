@@ -13067,7 +13067,7 @@ if [ "$PLAN_SHELL_ANALYSIS" != null ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; 
   if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
     deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" \
       "ECI worker boundary denied a resolved Git history, explicit reference, or patch-application mutation in shell command analysis" \
-      "route this history, reference, or patch-application operation through the main/orchestrator"
+      "route this history, reference, or patch-application operation through the ECI Supervisor"
   fi
 fi
 
@@ -17127,8 +17127,8 @@ fi
 if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" = true ] &&
   [[ "$command" == mktemp || "$command" == mktemp\ * ]]; then
   deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" \
-    "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the main/orchestrator through the bounded literal route; rejected command=$(eci_command_identity_subject "$command"); reason=temporary-directory creation is coordinator-owned" \
-    "route mktemp -d setup through the main/orchestrator using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
+    "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the ECI Supervisor through the bounded literal route; rejected command=$(eci_command_identity_subject "$command"); reason=temporary-directory creation is coordinator-owned" \
+    "route mktemp -d setup through the ECI Supervisor using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
 fi
 
 COORDINATOR_CLEANUP_ROUTE_DETAIL=""
@@ -17769,7 +17769,7 @@ if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$c
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "$command"; then
-  deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the main/orchestrator through the bounded literal route." "route mktemp -d setup through the main/orchestrator using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
+  deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the ECI Supervisor through the bounded literal route." "route mktemp -d setup through the ECI Supervisor using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
 fi
 
 # A deferred, capability-free planner result for one direct env-prefixed Git
