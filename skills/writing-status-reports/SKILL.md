@@ -72,7 +72,7 @@ that update, include this standalone line once:
 
 `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`
 
-The forecast line itself names the finished outcome using the [canonical forecast outcome wording](../maintaining-context-ledger/SKILL.md#forecast-outcome-wording). A separate `Lane` or `Next milestone` does not substitute, and the outcome never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage. In that update, emit each
+The forecast line itself names the finished outcome using the [canonical forecast outcome wording](../context-ledger/SKILL.md#forecast-outcome-wording). A separate `Lane` or `Next milestone` does not substitute, and the outcome never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage. In that update, emit each
 lane/root canonical forecast once. For
 a changed lane or root forecast, restate its current canonical line, then state
 Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved:
@@ -103,7 +103,7 @@ endpoint through the latest bounded scenario endpoint. Name material
 unknown/unbounded risks without fabricating a duration or endpoint; do not
 describe the finite spread as an absolute worst case. Do not invent
 probabilities. Follow the canonical
-[ledger scenario rule](../maintaining-context-ledger/SKILL.md#eci-scenario-forecasts)
+[ledger scenario rule](../context-ledger/SKILL.md#eci-scenario-forecasts)
 for duration combinations, mutually exclusive scenarios, overlap, and root
 critical-path endpoints.
 

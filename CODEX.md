@@ -154,7 +154,7 @@ The Supervisor may edit session-local coordination records, ledgers, plans, stat
 | Skills/prompts/global instructions/`CODEX.md`/`AGENTS.md`/`SKILL.md` | `harness-tuning` |
 | UI / cross-project porting | `ui-design` / `code-porting` |
 | Handover or resume notes / status, sitrep, progress, checkpoint | `writing-handovers` / `writing-status-reports` |
-| Project, context, `ECI`, or `ATE` ledgers | `maintaining-context-ledger` |
+| Project, context, `ECI`, or `ATE` ledgers | `context-ledger` |
 
 - Selecting `ECI`/`ATE` activates its full protocol and required spawned agents, never local-only. Use `spawn_agent` for ECI/ATE roles, including reusable Fast Owner Producers and one conditional Orchestrator per active Job when J > 1, never shell-wrapped Codex agents.
 - Label every spawned/resumed agent. Immediately print/update the roster after spawn/resume/reassignment/scope change: `<role label>: <runtime name> [type]`.

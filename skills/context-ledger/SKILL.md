@@ -1,9 +1,9 @@
 ---
-name: maintaining-context-ledger
+name: context-ledger
 description: Use when writing or verifying project-understanding ledgers, context ledgers, ECI/ATE session ledgers, handoff context, or stop-hook ledger updates — keeps the ledger a current-state snapshot and the high-level log an append-only history, side by side
 ---
 
-# Maintaining Context Ledgers
+# Context Ledger
 
 Three required records, one conditional current forecast record, and one audit-only history:
 
