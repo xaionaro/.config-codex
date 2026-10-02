@@ -27,7 +27,7 @@ The handoff names changed files, the applied winner/fix, checks run, root-cause 
 
 ## Producer, Worker, and Helper boundaries
 
-Use the active-writer, direct conflict-agreement, pending-index, complete staged-result, and joint-checkpoint rules in the [Job Orchestrator contract](task-orchestrator.md#active-writer-rows-and-shared-index-coordination). Commit only your own checked contribution. The Supervisor supplies matching identity/scope/index facts but does not assign contested content or commit order.
+Use the active-writer, direct conflict-agreement, pending-index, and complete staged-result rules in [active-writer rows and shared-index coordination](task-orchestrator.md#active-writer-rows-and-shared-index-coordination), plus the [Producer handoff and joint-checkpoint rules](task-orchestrator.md#producer-handoff-commits-and-joint-checkpoints). Commit only your own checked contribution. The Supervisor supplies matching identity/scope/index facts but does not assign contested content or commit order.
 
 You may delegate bounded support recursively to Helpers within your inherited assignment, authorization, and read/write limits. Keep each Helper’s exact runtime identity paired with its write scope in your active-writer row. Helpers return changes and evidence through their parent; integrate and check their work before including it in your commit. Helpers do not commit.
 
