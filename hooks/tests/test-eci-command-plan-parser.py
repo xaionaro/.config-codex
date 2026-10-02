@@ -49,18 +49,18 @@ def main() -> None:
         )
         assert outcome == "ADMIT"
 
-    inactive_git_outcome = module.inspect_segment(
-        module.parse("git commit -m inactive").segments[0],
+    worker_checkpoint_outcome = module.inspect_segment(
+        module.parse("git commit -m checkpoint").segments[0],
         1,
         "codex",
         "worker",
-        False,
+        True,
         "/tmp",
         set(),
         set(),
         [],
     )
-    assert inactive_git_outcome == "DEFER"
+    assert worker_checkpoint_outcome == "DEFER"
 
     worker_archive_outcome = module.inspect_segment(
         module.parse("git archive HEAD").segments[0],
@@ -76,7 +76,7 @@ def main() -> None:
     assert worker_archive_outcome == "DEFER"
 
     for git_mutation in (
-        "git commit -m nope",
+        "git rebase topic",
         "git reset --hard HEAD",
         "git worktree add /tmp/eci-worker-tree HEAD",
         "git branch feature",
@@ -134,7 +134,7 @@ def main() -> None:
         assert ordinary_outcome == "ADMIT"
         try:
             module.inspect_segment(
-                module.parse(f"{wrapper} git commit -m nope").segments[0],
+                module.parse(f"{wrapper} git rebase topic").segments[0],
                 1,
                 "codex",
                 "worker",
@@ -150,7 +150,7 @@ def main() -> None:
             raise AssertionError(f"wrapped worker Git mutation was admitted: {wrapper}")
 
     for command, code in (
-        ("git commit -m nope", "ECI_WORKER_GIT_OWNERSHIP_DENIED"),
+        ("git rebase topic", "ECI_WORKER_GIT_OWNERSHIP_DENIED"),
         ("rm -rf /", "ECI_BROAD_DESTRUCTIVE_DENIED"),
     ):
         try:

@@ -4845,7 +4845,7 @@ if is_worker == "true" and name == "git":
             continue
         if token.startswith("-"):
             break
-        if token in {"commit", "config", "reset", "worktree"}:
+        if token in {"config", "reset", "worktree"}:
             print("class=worker-git executable=%s token=%s kind=acceptance-sensitive-git" %
                   (argv[0], token))
             raise SystemExit(0)
@@ -7991,7 +7991,7 @@ import sys
 text = sys.argv[1]
 operators = {";", "&", "&&", "|", "||", "(", ")"}
 git_mutators = {
-    "commit", "merge", "rebase", "cherry-pick", "revert", "am", "apply",
+    "merge", "rebase", "cherry-pick", "revert", "am", "apply",
     "tag",
 }
 branch_mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
@@ -10704,6 +10704,59 @@ def segment_spec(tokens, segment_index):
         # it resolves to an actual worktree target.
         return "prep", repo_dir
     if verb == "commit":
+        # Resolve effects before ownership: message operands may themselves
+        # be strings such as --amend, while -a also stages unrelated work.
+        arguments = tokens[index + 1:]
+        value_options = {
+            "-m", "--message", "-F", "--file", "-C", "--reuse-message",
+            "-c", "--reedit-message", "-t", "--template", "--author",
+            "--date", "--cleanup", "--fixup", "--squash", "--trailer",
+            "--pathspec-from-file",
+        }
+        amend = False
+        stage_all = False
+        stage_selection = False
+        preview = False
+        argument_index = 0
+        while argument_index < len(arguments):
+            argument = arguments[argument_index]
+            if argument == "--":
+                stage_selection = stage_selection or argument_index + 1 < len(arguments)
+                break
+            if argument in {"--only", "--include", "--interactive", "--patch", "--pathspec-from-file"} or argument.startswith("--pathspec-from-file="):
+                stage_selection = True
+            if argument in value_options:
+                argument_index += 2
+                continue
+            if argument == "--amend":
+                amend = True
+            if argument == "--all":
+                stage_all = True
+            if argument in {"--dry-run", "--short", "--porcelain", "--long"} or argument.startswith("--porcelain="):
+                preview = True
+            if argument.startswith("-") and not argument.startswith("--"):
+                for option_index, option in enumerate(argument[1:], 1):
+                    if option in {"m", "F", "C", "c", "t"}:
+                        if option_index == len(argument) - 1:
+                            argument_index += 1
+                        break
+                    if option in {"S", "u"}:
+                        break
+                    if option == "a":
+                        stage_all = True
+                    if option in {"o", "i", "p"}:
+                        stage_selection = True
+            if not argument.startswith("-"):
+                stage_selection = True
+            argument_index += 1
+        if preview:
+            return None
+        if stage_all:
+            return "commit-all", repo_dir
+        if stage_selection:
+            return "commit-stage", repo_dir
+        if amend:
+            return "commit-amend", repo_dir
         return "commit", repo_dir
     if verb == "worktree":
         if index + 1 < len(tokens) and tokens[index + 1] in MUTATING_WORKTREE:
@@ -12037,7 +12090,7 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|worktree|commit|prep|repository|output) ;; *) continue ;; esac
+    case "$operation" in reset|worktree|commit|commit-all|commit-stage|commit-amend|prep|repository|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
@@ -12089,12 +12142,28 @@ enforce_git_mutation_gate() {
           "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
       fi
     fi
+    if [ "$operation" = commit-all ]; then
+      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
+        "ECI commit would automatically stage the whole tracked worktree: repository=$repo_root; operation=commit-all" \
+        "stage only the producing worker's exact owned paths or hunks, then make an ordinary commit"
+    fi
+    if [ "$operation" = commit-stage ]; then
+      deny_eci "ECI_GIT_COMMIT_STAGING_DENIED" "git-commit" \
+        "ECI commit would select or stage content outside the prepared index: repository=$repo_root; operation=commit-stage" \
+        "stage the exact owned paths or hunks separately, inspect the staged diff, then commit the prepared index"
+    fi
+    if [[ "$operation" = commit* ]] && [ "${hook_is_subagent:-false}" != true ] &&
+      [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+      deny_eci "ECI_GIT_COMMIT_PRODUCER_REQUIRED" "git-commit" \
+        "ECI coordinator cannot author a producer checkpoint: repository=$repo_root; operation=$operation" \
+        "have the assigned producer commit its exact verified change; independently review that checkpoint"
+    fi
     if [ "${hook_is_subagent:-false}" = true ]; then
       case "$operation" in
-        commit|worktree|repository)
+        commit-amend|worktree|repository)
           deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
             "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
-            "hand the tested change to the coordinator for normal review and commit"
+            "route this history or reference mutation to the coordinator; producers make ordinary scoped checkpoint commits"
           ;;
       esac
     fi
@@ -16806,7 +16875,7 @@ if [ "$hook_is_subagent" = true ] && command_invokes_eci_wait_or_resume "$comman
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
-  deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied acceptance-sensitive Git mutation. Subagents must not commit or alter reviewed Git history; route the acceptance command through the main/orchestrator." "route the acceptance command through the main/orchestrator after the required review"
+  deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a history or reference mutation. Producers may make ordinary scoped checkpoint commits; history and reference changes remain coordinator-owned." "route this history or reference mutation through the main/orchestrator"
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "$command"; then

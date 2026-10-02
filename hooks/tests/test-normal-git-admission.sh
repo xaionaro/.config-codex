@@ -931,14 +931,14 @@ case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
     ;;
 esac
 
-# Normal commits must not need an approval artifact or a review receipt.
-assert_allowed "git commit -m 'ordinary commit'"
+# Producers' normal commits need no approval artifact or review receipt.
+assert_allowed "git commit -qm --all" worker
 
 # Command spelling, `-C`, environment setup, and punctuation are not an
 # accidental mistake by themselves.  The target remains this active repo.
-assert_allowed "git -C $REPO commit -am 'ordinary commit'"
-assert_allowed "env GIT_EDITOR=true /usr/bin/git -C $REPO commit --allow-empty -m 'ordinary commit'"
-assert_allowed "printf prepare && git -C $REPO commit -m 'ordinary commit'"
+assert_denied_code "git -C $REPO commit -am 'ordinary commit'" ECI_BROAD_DESTRUCTIVE_DENIED worker
+assert_allowed "env GIT_EDITOR=true /usr/bin/git -C $REPO commit --allow-empty -m 'ordinary commit'" worker
+assert_denied_code "printf prepare && git -C $REPO commit -m 'ordinary commit' -- file.txt" ECI_GIT_COMMIT_STAGING_DENIED worker
 [ ! -e "$REPO/.git-commit-approved-once" ]
 [ ! -e "$PROOF_ROOT/$SESSION/eci-required-critics.json" ]
 [ ! -e "$PROOF_ROOT/$SESSION/eci-commit-admitted" ]
@@ -1009,8 +1009,8 @@ done
 assert_allowed "printf prepare && timeout --signal TERM 5 git add ." worker
 # Timeout does not turn history acceptance into local index work after a
 # positive launch observation.
-assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-  "token=commit"
+assert_denied_code "timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=rebase"
 
 # State-only semicolon prefixes carry the actual shell CWD and PATH into the
 # observed timeout record. The copied launcher must preserve the outer callback
@@ -1159,9 +1159,9 @@ CALLBACK_PATH="$FAKE_TIMEOUT_LAUNCH_DIR:$BASE_CALLBACK_PATH"
 # PWD and PATH. A fake timeout requiring this variable distinguishes an actual
 # child launch from an executable that merely accepts the timeout prefix.
 CALLBACK_PATH="$FAKE_TIMEOUT_REQUIRED_DIR:$BASE_CALLBACK_PATH"
-assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-  "token=commit" configured present
-assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker configured absent
+assert_denied_code "timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=rebase" configured present
+assert_allowed "timeout --signal TERM 5 git rebase topic" worker configured absent
 
 # Shell PATH lookup retains callback-CWD empty and relative components. The
 # test invokes the copied hook through /bin/bash so the raw callback PATH is
@@ -1171,23 +1171,23 @@ cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$REPO/timeout"
 cp -- "$FAKE_TIMEOUT_LAUNCH_DIR/timeout" "$REPO/bin/timeout"
 chmod 755 -- "$REPO/timeout" "$REPO/bin/timeout"
 for CALLBACK_PATH in "$TMP_ROOT/missing:bin" : . bin; do
-  assert_denied_code "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-    "token=commit" raw
+  assert_denied_code "timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+    "token=rebase" raw
 done
 
 # Explicitly empty PATH differs from an empty component: bare timeout remains
 # opaque when PATH is empty or unset, while a direct absolute or ./timeout
 # spelling launches because the replacement child is an absolute executable.
-assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker empty
-assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker unset
-assert_denied_code "$FAKE_TIMEOUT_LAUNCH_DIR/timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-  "token=commit" empty
-assert_denied_code "$FAKE_TIMEOUT_LAUNCH_DIR/timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-  "token=commit" unset
-assert_denied_code "./timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-  "token=commit" empty
-assert_denied_code "./timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
-  "token=commit" unset
+assert_allowed "timeout --signal TERM 5 git rebase topic" worker empty
+assert_allowed "timeout --signal TERM 5 git rebase topic" worker unset
+assert_denied_code "$FAKE_TIMEOUT_LAUNCH_DIR/timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=rebase" empty
+assert_denied_code "$FAKE_TIMEOUT_LAUNCH_DIR/timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=rebase" unset
+assert_denied_code "./timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=rebase" empty
+assert_denied_code "./timeout --signal TERM 5 git rebase topic" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+  "token=rebase" unset
 
 # An executable that accepts the same prefix but does not start its child must
 # leave foreign and broad Git forms ordinary. This is an E2E A/B check against
@@ -1202,7 +1202,7 @@ for role in coordinator worker; do
 done
 # A nonlaunching timeout is opaque to each worker recognizer. It must not
 # reconstruct a direct Git child or a piped branch mutation from argv alone.
-assert_allowed "timeout --signal TERM 5 git commit --allow-empty -m 'worker commit'" worker
+assert_allowed "timeout --signal TERM 5 git rebase topic" worker
 assert_allowed "timeout --signal TERM 5 git merge topic" worker
 assert_allowed "printf prepare | timeout --signal TERM 5 git branch --delete topic" worker
 

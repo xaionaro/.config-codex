@@ -6461,10 +6461,10 @@ func inspectGit(
 		return DecisionAllow, nil
 	}
 	mutationIndex, action := gitMutation(argv, subcommandIndex)
-	if action == "add" || action == "reset" {
-		// Staging and reset effects depend on the resolved repository and path
-		// selector. Let the provider distinguish a local index operation from
-		// a foreign target or a broad working-tree effect.
+	if action == "add" || action == "reset" || action == "commit" {
+		// Resolve the repository and actual index/history effect in the provider.
+		// A producer checkpoint differs from amendment or whole-tree staging;
+		// the Git verb alone cannot establish the intended ownership boundary.
 		return DecisionDefer, nil
 	}
 	if repositoryContext {

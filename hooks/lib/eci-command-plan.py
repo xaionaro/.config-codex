@@ -1450,6 +1450,9 @@ def inspect_segment(
         raise mode_error
 
     def protected_git_result(token_index: int, action: str) -> str:
+        if action == "commit":
+            # The provider resolves producer ownership, amendment, and staging.
+            return "DEFER"
         if active and role == "worker":
             raise error_for_token(
                 "ECI_WORKER_GIT_OWNERSHIP_DENIED",

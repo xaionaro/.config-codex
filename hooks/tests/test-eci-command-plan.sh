@@ -478,8 +478,7 @@ for provider in codex kimi; do
   assert_denied "$provider" worker active \
     "$worker_control_target status" ECI_CONTROL_OWNER_REQUIRED
   assert_denied "$provider" worker active 'env' ECI_ENVIRONMENT_ENUMERATION_DENIED
-  assert_denied "$provider" worker active 'git commit -m worker-fast-path' \
-    ECI_WORKER_GIT_OWNERSHIP_DENIED
+  assert_allowed "$provider" worker active 'git commit -m worker-fast-path'
   assert_denied "$provider" worker active \
     "bash -c 'printf protected-wrapper'" ECI_PLAN_DYNAMIC_LAUNCH_DENIED
   assert_allowed "$provider" worker active './tools/eci-review-gate.sh verify'
@@ -505,7 +504,7 @@ for provider in codex kimi; do
     "ps -eo pid,ppid,etimes,stat,args | rg validate-bash"
   assert_gate_denied "$provider" worker active 'git archive HEAD'
   for git_mutation in \
-    'git commit -m nope' \
+    'git rebase topic' \
     'git worktree add /tmp/eci-worker-tree HEAD' \
     'git branch feature' \
     'git remote set-url origin https://example.invalid/repo.git'; do

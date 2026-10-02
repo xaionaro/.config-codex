@@ -200,7 +200,7 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 		},
 		{
 			name:      "wrapped git mutation",
-			request:   activeWorker("timeout 5 git commit -m nope"),
+			request:   activeWorker("timeout 5 git rebase topic"),
 			decision:  DecisionDeny,
 			code:      CodeWorkerGitOwnershipDenied,
 			segment:   1,
@@ -208,7 +208,7 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 		},
 		{
 			name:      "transparent wrapped git mutations",
-			request:   activeWorker("nohup git commit -m nope"),
+			request:   activeWorker("nohup git rebase topic"),
 			decision:  DecisionDeny,
 			code:      CodeWorkerGitOwnershipDenied,
 			segment:   1,
@@ -614,8 +614,8 @@ func TestGitBranchInspectionOptionGrammar(t *testing.T) {
 // that timeout exposes a Git child only after its duration-bearing launch
 // grammar is concrete and valid.
 //
-// Example: timeout -p 5 git commit reaches the worker Git diagnostic, while
-// timeout not-a-duration git commit remains an ordinary timeout failure.
+// Example: timeout -p 5 git rebase reaches the worker Git diagnostic, while
+// timeout not-a-duration git rebase remains an ordinary timeout failure.
 func TestTimeoutPrefixRequiresValidDurationsBeforeClassifyingGitChild(t *testing.T) {
 	t.Parallel()
 
@@ -627,37 +627,37 @@ func TestTimeoutPrefixRequiresValidDurationsBeforeClassifyingGitChild(t *testing
 	}{
 		{
 			name:     "plain duration",
-			command:  "timeout 5 git commit -m note",
+			command:  "timeout 5 git rebase topic",
 			decision: DecisionDeny,
 			code:     CodeWorkerGitOwnershipDenied,
 		},
 		{
 			name:     "positive signed duration",
-			command:  "timeout +5 git commit -m note",
+			command:  "timeout +5 git rebase topic",
 			decision: DecisionDeny,
 			code:     CodeWorkerGitOwnershipDenied,
 		},
 		{
 			name:     "preserve status short",
-			command:  "timeout -p 5 git commit -m note",
+			command:  "timeout -p 5 git rebase topic",
 			decision: DecisionDeny,
 			code:     CodeWorkerGitOwnershipDenied,
 		},
 		{
 			name:     "foreground short",
-			command:  "timeout -f 5 git commit -m note",
+			command:  "timeout -f 5 git rebase topic",
 			decision: DecisionDeny,
 			code:     CodeWorkerGitOwnershipDenied,
 		},
 		{
 			name:     "preserve status long",
-			command:  "timeout --preserve-status 5 git commit -m note",
+			command:  "timeout --preserve-status 5 git rebase topic",
 			decision: DecisionDeny,
 			code:     CodeWorkerGitOwnershipDenied,
 		},
 		{
 			name:     "foreground long",
-			command:  "timeout --foreground 5 git commit -m note",
+			command:  "timeout --foreground 5 git rebase topic",
 			decision: DecisionDeny,
 			code:     CodeWorkerGitOwnershipDenied,
 		},
@@ -668,17 +668,17 @@ func TestTimeoutPrefixRequiresValidDurationsBeforeClassifyingGitChild(t *testing
 		},
 		{
 			name:     "invalid primary duration",
-			command:  "timeout not-a-duration git commit -m note",
+			command:  "timeout not-a-duration git rebase topic",
 			decision: DecisionAllow,
 		},
 		{
 			name:     "invalid kill after duration",
-			command:  "timeout --kill-after=not-a-duration 5 git commit -m note",
+			command:  "timeout --kill-after=not-a-duration 5 git rebase topic",
 			decision: DecisionAllow,
 		},
 		{
 			name:     "unknown option",
-			command:  "timeout --unrecognized-timeout-option 5 git commit -m note",
+			command:  "timeout --unrecognized-timeout-option 5 git rebase topic",
 			decision: DecisionAllow,
 		},
 		{
@@ -802,7 +802,7 @@ esac
 	}{
 		{
 			name:        "launches replacement child",
-			command:     "timeout --signal TERM 5 git commit -m note",
+			command:     "timeout --signal TERM 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionDeny,
 			code:        CodeWorkerGitOwnershipDenied,
@@ -813,7 +813,7 @@ esac
 		},
 		{
 			name:        "slash qualified literal resolves from cwd",
-			command:     "./timeout --signal TERM 5 git commit -m note",
+			command:     "./timeout --signal TERM 5 git rebase topic",
 			cwd:         timeoutDirectory,
 			commandPath: timeoutDirectory,
 			decision:    DecisionDeny,
@@ -825,7 +825,7 @@ esac
 		},
 		{
 			name:           "probe does not run original redirects",
-			command:        "timeout --signal TERM 5 git commit -m note > " + redirectOutput,
+			command:        "timeout --signal TERM 5 git rebase topic > " + redirectOutput,
 			commandPath:    timeoutDirectory,
 			decision:       DecisionDeny,
 			code:           CodeWorkerGitOwnershipDenied,
@@ -837,61 +837,61 @@ esac
 		},
 		{
 			name:        "unresolved relative callback path stays opaque",
-			command:     "timeout --signal TERM 5 git commit -m note",
+			command:     "timeout --signal TERM 5 git rebase topic",
 			commandPath: "relative",
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "slash literal with relative cwd stays opaque",
-			command:     "./timeout --signal TERM 5 git commit -m note",
+			command:     "./timeout --signal TERM 5 git rebase topic",
 			cwd:         "relative-cwd",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:     "missing callback path stays opaque",
-			command:  "timeout --signal TERM 5 git commit -m note",
+			command:  "timeout --signal TERM 5 git rebase topic",
 			decision: DecisionAllow,
 		},
 		{
 			name:        "signal zero accepts without launch",
-			command:     "timeout --signal 0 5 git commit -m note",
+			command:     "timeout --signal 0 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "invalid signal does not launch",
-			command:     "timeout --signal invalid-signal 5 git commit -m note",
+			command:     "timeout --signal invalid-signal 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "environment wrapper stays opaque",
-			command:     "env timeout --signal TERM 5 git commit -m note",
+			command:     "env timeout --signal TERM 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "assignment stays opaque",
-			command:     "TIMEOUT_MODE=test timeout --signal TERM 5 git commit -m note",
+			command:     "TIMEOUT_MODE=test timeout --signal TERM 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "transparent wrapper stays opaque",
-			command:     "nice timeout --signal TERM 5 git commit -m note",
+			command:     "nice timeout --signal TERM 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "dynamic signal stays opaque",
-			command:     "timeout --signal '$TIMEOUT_SIGNAL' 5 git commit -m note",
+			command:     "timeout --signal '$TIMEOUT_SIGNAL' 5 git rebase topic",
 			commandPath: timeoutDirectory,
 			decision:    DecisionAllow,
 		},
 		{
 			name:        "accepting timeout does not launch",
-			command:     "timeout --signal TERM 5 git commit -m note",
+			command:     "timeout --signal TERM 5 git rebase topic",
 			commandPath: nonLaunchingDirectory,
 			decision:    DecisionAllow,
 		},
@@ -976,7 +976,7 @@ func TestInactiveTimeoutDoesNotProbeCallbackExecutable(t *testing.T) {
 // TestTimeoutProbeUsesVerifiedCallbackContext verifies that an observed launch
 // executes the replacement child with the callback's verified CWD and PATH.
 //
-// Example: a callback-selected timeout can expose a worker Git commit only
+// Example: a callback-selected timeout can expose a worker Git rebase only
 // when its probe receives the same temporary CWD and PATH as the callback.
 func TestTimeoutProbeUsesVerifiedCallbackContext(t *testing.T) {
 	t.Parallel()
@@ -990,7 +990,7 @@ func TestTimeoutProbeUsesVerifiedCallbackContext(t *testing.T) {
 		t.Fatalf("write context timeout: %v", err)
 	}
 
-	request := activeWorker("timeout 5 git commit -m note")
+	request := activeWorker("timeout 5 git rebase topic")
 	request.CWD = callbackCWD
 	request.CommandPath = timeoutDirectory
 	result := Classify(request)
@@ -1032,14 +1032,14 @@ exec "$@"
 	}
 
 	t.Setenv("PROBE_REQUIRED", "present")
-	result := classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git commit -m note")
+	result := classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git rebase topic")
 	if result.Decision != DecisionDeny || result.Diagnostic == nil ||
 		result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
 		t.Fatalf("present inherited variable result=%#v, want observed worker Git denial", result)
 	}
 
 	t.Setenv("PROBE_REQUIRED", "wrong")
-	result = classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git commit -m note")
+	result = classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git rebase topic")
 	if result.Decision != DecisionAllow || result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
 		t.Fatalf("wrong inherited variable result=%#v, want ordinary opaque timeout", result)
 	}
@@ -1047,7 +1047,7 @@ exec "$@"
 	if err := os.Unsetenv("PROBE_REQUIRED"); err != nil {
 		t.Fatalf("unset required environment: %v", err)
 	}
-	result = classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git commit -m note")
+	result = classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git rebase topic")
 	if result.Decision != DecisionAllow || result.Diagnostic != nil || len(result.TimeoutLaunches) != 0 {
 		t.Fatalf("absent inherited variable result=%#v, want ordinary opaque timeout", result)
 	}
@@ -1101,7 +1101,7 @@ exec "$@"
 	} {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
-			result := classifyTimeoutJSONRequest(t, callbackCWD, testCase.path, true, "timeout 5 git commit -m note")
+			result := classifyTimeoutJSONRequest(t, callbackCWD, testCase.path, true, "timeout 5 git rebase topic")
 			if result.Decision != testCase.decision {
 				t.Fatalf("PATH=%q decision=%q diagnostic=%#v, want %q", testCase.path, result.Decision, result.Diagnostic, testCase.decision)
 			}
@@ -1122,8 +1122,8 @@ exec "$@"
 // absolute and slash-qualified timeout literals need only a valid callback
 // CWD, while a bare timeout remains opaque for empty or unset PATH.
 //
-// Example: ./timeout 5 git commit can launch with PATH unset, but bare timeout
-// 5 git commit cannot select a callback executable without a nonempty PATH.
+// Example: ./timeout 5 git rebase can launch with PATH unset, but bare timeout
+// 5 git rebase cannot select a callback executable without a nonempty PATH.
 func TestTimeoutDirectLiteralsIgnoreEmptyOrUnsetCallbackPath(t *testing.T) {
 	t.Parallel()
 
@@ -1145,12 +1145,12 @@ exec "$@"
 		commandPathSet bool
 		decision       DecisionKind
 	}{
-		{name: "absolute explicit empty PATH", command: timeoutPath + " 5 git commit -m note", commandPathSet: true, decision: DecisionDeny},
-		{name: "absolute unset PATH", command: timeoutPath + " 5 git commit -m note", decision: DecisionDeny},
-		{name: "slash explicit empty PATH", command: "./timeout 5 git commit -m note", commandPathSet: true, decision: DecisionDeny},
-		{name: "slash unset PATH", command: "./timeout 5 git commit -m note", decision: DecisionDeny},
-		{name: "bare explicit empty PATH", command: "timeout 5 git commit -m note", commandPathSet: true, decision: DecisionAllow},
-		{name: "bare unset PATH", command: "timeout 5 git commit -m note", decision: DecisionAllow},
+		{name: "absolute explicit empty PATH", command: timeoutPath + " 5 git rebase topic", commandPathSet: true, decision: DecisionDeny},
+		{name: "absolute unset PATH", command: timeoutPath + " 5 git rebase topic", decision: DecisionDeny},
+		{name: "slash explicit empty PATH", command: "./timeout 5 git rebase topic", commandPathSet: true, decision: DecisionDeny},
+		{name: "slash unset PATH", command: "./timeout 5 git rebase topic", decision: DecisionDeny},
+		{name: "bare explicit empty PATH", command: "timeout 5 git rebase topic", commandPathSet: true, decision: DecisionAllow},
+		{name: "bare unset PATH", command: "timeout 5 git rebase topic", decision: DecisionAllow},
 	} {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1296,7 +1296,7 @@ func classifyTimeoutReplayJSONRequest(
 // direct timeout child is classified from the literal CWD and PATH state
 // reached through semicolon-only state prefixes.
 //
-// Example: cd /work/subdir; ./timeout 5 git commit uses /work/subdir rather
+// Example: cd /work/subdir; ./timeout 5 git rebase uses /work/subdir rather
 // than the callback's outer working directory.
 func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 	t.Parallel()
@@ -1366,7 +1366,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 		{
 			name:     "cd into child resolves dot timeout from child",
 			cwd:      downParent,
-			command:  "cd " + downChild + "; ./timeout 5 git commit -m note",
+			command:  "cd " + downChild + "; ./timeout 5 git rebase topic",
 			decision: DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"./timeout", "5"}, CWD: downChild,
@@ -1376,7 +1376,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 		{
 			name:     "cd back to parent resolves dot timeout from parent",
 			cwd:      upChild,
-			command:  "cd " + upParent + "; ./timeout 5 git commit -m note",
+			command:  "cd " + upParent + "; ./timeout 5 git rebase topic",
 			decision: DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"./timeout", "5"}, CWD: upParent,
@@ -1389,7 +1389,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         nonLaunchingDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=" + launchDirectory + "; timeout 5 git commit -m note",
+			command:             "PATH=" + launchDirectory + "; timeout 5 git rebase topic",
 			decision:            DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1402,7 +1402,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=" + nonLaunchingDirectory + "; timeout 5 git commit -m note",
+			command:             "PATH=" + nonLaunchingDirectory + "; timeout 5 git rebase topic",
 			decision:            DecisionAllow,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1415,7 +1415,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         nonLaunchingDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=" + launchDirectory + "\ntimeout 5 git commit -m note",
+			command:             "PATH=" + launchDirectory + "\ntimeout 5 git rebase topic",
 			decision:            DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1425,7 +1425,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 		{
 			name:     "export assignment creates exported PATH",
 			cwd:      downParent,
-			command:  "export PATH=" + launchDirectory + "; timeout 5 git commit -m note",
+			command:  "export PATH=" + launchDirectory + "; timeout 5 git rebase topic",
 			decision: DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1438,7 +1438,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         nonLaunchingDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=" + unexportedDirectory + "; export -n PATH; timeout 5 git commit -m note",
+			command:             "PATH=" + unexportedDirectory + "; export -n PATH; timeout 5 git rebase topic",
 			decision:            DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 3, ParentSegment: 3, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1451,7 +1451,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         nonLaunchingDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=" + launchDirectory + "; export -n PATH; export PATH; timeout 5 git commit -m note",
+			command:             "PATH=" + launchDirectory + "; export -n PATH; export PATH; timeout 5 git rebase topic",
 			decision:            DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 4, ParentSegment: 4, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1464,7 +1464,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=; timeout 5 git commit -m note",
+			command:             "PATH=; timeout 5 git rebase topic",
 			decision:            DecisionAllow,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1477,7 +1477,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "unset PATH; timeout 5 git commit -m note",
+			command:             "unset PATH; timeout 5 git rebase topic",
 			decision:            DecisionAllow,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1490,7 +1490,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=" + nonLaunchingDirectory + " && timeout 5 git commit -m note",
+			command:             "PATH=" + nonLaunchingDirectory + " && timeout 5 git rebase topic",
 			decision:            DecisionAllow,
 		},
 		{
@@ -1499,7 +1499,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "PATH=$TIMEOUT_PATH; timeout 5 git commit -m note",
+			command:             "PATH=$TIMEOUT_PATH; timeout 5 git rebase topic",
 			decision:            DecisionAllow,
 		},
 		{
@@ -1508,7 +1508,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "cd child; timeout 5 git commit -m note",
+			command:             "cd child; timeout 5 git rebase topic",
 			decision:            DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downChild,
@@ -1521,7 +1521,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPath:         launchDirectory,
 			commandPathSet:      true,
 			commandPathExported: true,
-			command:             "printf harmless; timeout 5 git commit -m note",
+			command:             "printf harmless; timeout 5 git rebase topic",
 			decision:            DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
@@ -1531,7 +1531,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 		{
 			name:     "true conditional split body carries verified CWD",
 			cwd:      downParent,
-			command:  "if true; then; cd " + downChild + "; fi; ./timeout 5 git commit -m note",
+			command:  "if true; then; cd " + downChild + "; fi; ./timeout 5 git rebase topic",
 			decision: DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 5, ParentSegment: 5, Prefix: []string{"./timeout", "5"}, CWD: downChild,
@@ -1541,7 +1541,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 		{
 			name:     "false conditional split body keeps outer CWD",
 			cwd:      downParent,
-			command:  "if false; then; cd " + downChild + "; fi; ./timeout 5 git commit -m note",
+			command:  "if false; then; cd " + downChild + "; fi; ./timeout 5 git rebase topic",
 			decision: DecisionDeny,
 			wantReplay: &timeoutReplayFact{
 				Segment: 5, ParentSegment: 5, Prefix: []string{"./timeout", "5"}, CWD: downParent,
@@ -1668,7 +1668,7 @@ func TestTimeoutReplayMissingOrMalformedDataStaysOrdinary(t *testing.T) {
 	} {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
-			request := activeWorker("timeout 5 git commit -m note")
+			request := activeWorker("timeout 5 git rebase topic")
 			request.CWD = cwd
 			request.CommandPath = timeoutDirectory
 			request.TimeoutReplay = true
@@ -2471,7 +2471,7 @@ func TestRawGitPlansHaveNoGenericCapability(t *testing.T) {
 				command string
 				code    DiagnosticCode
 			}{
-				{command: "git commit -m forbidden", code: CodeWorkerGitOwnershipDenied},
+				{command: "git rebase topic", code: CodeWorkerGitOwnershipDenied},
 				{command: "git checkout -- hooks/validate-bash.sh", code: CodeWorkerGitOwnershipDenied},
 				{command: "git branch feature", code: CodeWorkerGitOwnershipDenied},
 			} {
@@ -3912,15 +3912,14 @@ func TestActiveGitDefersToProviderAdapters(t *testing.T) {
 			allRoles: true,
 		},
 		{
-			name:     "worker Git mutation is denied",
+			name:     "worker checkpoint defers to repository effect checks",
 			marker:   MarkerActive,
 			role:     RoleWorker,
-			command:  "git commit -m nope",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			command:  "git commit -qm --amend",
+			decision: DecisionDefer,
 		},
 		{
-			name:     "coordinator Git mutation defers",
+			name:     "coordinator checkpoint defers to producer ownership checks",
 			marker:   MarkerActive,
 			role:     RoleCoordinator,
 			command:  "git commit -m nope",
@@ -4450,7 +4449,7 @@ var directPathGitStatusCapabilityCases = []directPathGitStatusCapabilityCase{
 	},
 	{
 		name:               "mutation",
-		command:            "/tmp/task/git commit -m nope",
+		command:            "/tmp/task/git rebase topic",
 		wantDecision:       DecisionDeny,
 		wantDiagnosticCode: CodeWorkerGitOwnershipDenied,
 	},
@@ -4657,14 +4656,14 @@ func TestTransparentWrappersPreserveChildClassification(t *testing.T) {
 				}
 			}
 			for _, command := range []string{
-				"nohup git commit -m nope",
-				"setsid --wait git commit -m nope",
-				"sudo -n git commit -m nope",
-				"doas -n git commit -m nope",
-				"systemd-run --unit eci git commit -m nope",
-				"time --format %E git commit -m nope",
-				"prlimit --nofile=1024 git commit -m nope",
-				"chronic -- git commit -m nope",
+				"nohup git rebase topic",
+				"setsid --wait git rebase topic",
+				"sudo -n git rebase topic",
+				"doas -n git rebase topic",
+				"systemd-run --unit eci git rebase topic",
+				"time --format %E git rebase topic",
+				"prlimit --nofile=1024 git rebase topic",
+				"chronic -- git rebase topic",
 			} {
 				result := Classify(Request{Provider: provider, Role: RoleWorker, CWD: "/tmp", Marker: MarkerActive, ActiveSession: "test", Command: command})
 				if result.Decision != DecisionDeny || result.Diagnostic == nil {
@@ -4940,7 +4939,7 @@ func TestProtectedOperationsRouteByRole(t *testing.T) {
 		decision DecisionKind
 		code     DiagnosticCode
 	}{
-		{name: "worker Git mutation", role: RoleWorker, command: "git commit -m nope", decision: DecisionDeny, code: CodeWorkerGitOwnershipDenied},
+		{name: "worker checkpoint", role: RoleWorker, command: "git commit -m checkpoint", decision: DecisionDefer},
 		{name: "worker lifecycle state discovery", role: RoleWorker, command: "eci-active status", decision: DecisionDefer},
 		{name: "coordinator lifecycle control", role: RoleCoordinator, command: "eci-active status", decision: DecisionDefer},
 		{name: "worker source write", role: RoleWorker, command: "touch source.txt", decision: DecisionAllow},
@@ -5314,7 +5313,7 @@ func TestGitArchiveOutputsDeferToProvider(t *testing.T) {
 				CWD:           temporaryRoot,
 				Marker:        MarkerActive,
 				ActiveSession: "session",
-				Command:       "git commit -m nope",
+				Command:       "git rebase topic",
 				ActiveMarkers: []string{marker},
 			})
 			if mutation.Decision != DecisionDeny || mutation.Diagnostic == nil {

@@ -133,16 +133,14 @@ measure_provider kimi "$KIMI_COMPOUND_INPUT" compound-read-only
 for provider in codex kimi; do
   if [ "$provider" = codex ]; then
     root="$CODEX_ROOT"; session="$CODEX_SESSION"; proof="$CODEX_PROOF_ROOT"
-    mutation_code=ECI_COMMIT_ADMISSION_REQUIRED
+    mutation_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
     context_code=ECI_GIT_EXECUTION_CONTEXT_DENIED
-    compound_code=ECI_GIT_MUTATION_DENIED
+    compound_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
   else
     root="$KIMI_ROOT"; session="$KIMI_SESSION"; proof="$KIMI_PROOF_ROOT"
-    # Kimi's provider-owned legacy route intentionally emits its current
-    # route-specific acceptance-boundary code for these near misses.
-    mutation_code=ECI_COMMAND_NOT_ALLOWLISTED
+    mutation_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
     context_code=ECI_COMMAND_NOT_ALLOWLISTED
-    compound_code=ECI_COMMAND_NOT_ALLOWLISTED
+    compound_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
   fi
   assert_denied "$provider" "$root" "$session" "$proof" 'git commit -m benchmark-forbidden' "$mutation_code"
   assert_denied "$provider" "$root" "$session" "$proof" "git -C $FOREIGN_REPO status --short" "$context_code"

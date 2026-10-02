@@ -242,11 +242,7 @@ assert_allowed_foreign_as coordinator "git -C $DEPENDENCY add -- file.txt"
 assert_allowed_foreign_as coordinator 'git -C ../dependency add -- file.txt'
 assert_allowed_worker_script "bash $WORKER_SCRIPT"
 
-worker_commit_output="$(run_hook "git -C $DEPENDENCY commit --allow-empty -m worker-commit" worker)"
-grep -Fq -- 'ECI_WORKER_GIT_OWNERSHIP_DENIED' <<<"$worker_commit_output" || {
-  printf 'declared dependency allowance bypassed worker commit prohibition:\n%s\n' "$worker_commit_output" >&2
-  exit 1
-}
+assert_allowed_foreign "git -C $DEPENDENCY commit --allow-empty -m worker-commit"
 
 printf '%s\n' \
   'scope: repository allowance test' \

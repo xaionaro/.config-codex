@@ -1629,9 +1629,9 @@ run_hook_matrix_parallel allowed ordinary-coordinator-opaque \
   "go test \$(printf ./...)" \
   $'go test ./...\nprintf done'
 
-# A coordinator may commit its reviewed current-scope changes through the
-# ordinary Git route; broad destructive reset remains denied by its effect.
-run_hook_matrix_parallel allowed coordinator-git-commit \
+# A coordinator routes checkpoints to the producer; broad destructive reset
+# remains denied by its effect.
+run_hook_matrix_parallel unknown coordinator-git-commit \
   "git commit -m 'checkpoint'"
 run_hook_matrix_parallel unknown protected-coordinator-git-mutation \
   "git reset --hard"
@@ -2113,11 +2113,11 @@ assert_commit() {
   local command="$1" runner="${2:-run_hook}" output
   output="$("$runner" "$command")"
   case "$command" in
-    "git commit -c prior-message")
+    "git commit -a --amend --no-verify --signoff")
       jq -e '
         .hookSpecificOutput.permissionDecision == "deny" and
-        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_GIT_EXECUTION_CONTEXT_DENIED]")) and
-        (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-execution-context")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_BROAD_DESTRUCTIVE_DENIED]")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("operation=git-mutation")) and
         (.hookSpecificOutput.permissionDecisionReason | contains("remediation:")) and
         (.hookSpecificOutput.permissionDecisionReason | contains("unrecognized command form") | not)
       ' "$output" >/dev/null
@@ -2125,7 +2125,7 @@ assert_commit() {
     *)
       jq -e '
         .hookSpecificOutput.permissionDecision == "deny" and
-        (.hookSpecificOutput.permissionDecisionReason | contains("ECI commit boundary denied")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_GIT_COMMIT_PRODUCER_REQUIRED]")) and
         (.hookSpecificOutput.permissionDecisionReason | contains("unrecognized command form") | not)
       ' "$output" >/dev/null
       ;;
@@ -2177,13 +2177,13 @@ run_hook_matrix_parallel allowed fake-git-coordinator \
 # this must not fall through to a lexical Git parser or a foreign-repo denial.
 run_subagent_matrix_parallel allowed fake-git-worker \
   "$fake_bin/git status"
-fake_git_commit_output="$(run_subagent_hook "$fake_bin/git commit -m nope")"
+fake_git_history_output="$(run_subagent_hook "$fake_bin/git rebase topic")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
   (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
-  (.hookSpecificOutput.permissionDecisionReason | contains("token=commit"))
-' "$fake_git_commit_output" >/dev/null
+  (.hookSpecificOutput.permissionDecisionReason | contains("token=rebase"))
+' "$fake_git_history_output" >/dev/null
 
 assert_subagent_lifecycle_denied() {
   local command="$1" runner="${2:-run_subagent_hook}" output
@@ -2239,27 +2239,11 @@ assert_worker_wrapped_git_ownership_denied() {
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("git commit -m nope")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("token=commit")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("git rebase topic")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("token=rebase")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("coordinator"))
   ' "$output" >/dev/null || {
     printf 'wrapped worker Git ownership denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
-    [ ! -e "$output" ] || cat -- "$output" >&2
-    return 1
-  }
-}
-
-assert_worker_git_commit_denied() {
-  local command="$1" runner="${2:-run_subagent_hook}" output
-  output="$("$runner" "$command")"
-  jq -e '
-    .hookSpecificOutput.permissionDecision == "deny" and
-    (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("token=commit")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("coordinator"))
-  ' "$output" >/dev/null || {
-    printf 'worker Git commit denial mismatch: command=%q output=%s\n' "$command" "$output" >&2
     [ ! -e "$output" ] || cat -- "$output" >&2
     return 1
   }
@@ -2272,13 +2256,13 @@ assert_chronic_worker_route_case() {
     "chronic /tmp/eci-escape.sh")
       [ ! -s "$output" ]
       ;;
-    "chronic git commit -m nope")
+    "chronic git rebase topic")
       jq -e '
         .hookSpecificOutput.permissionDecision == "deny" and
         (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
         (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
-        (.hookSpecificOutput.permissionDecisionReason | contains("git commit -m nope")) and
-        (.hookSpecificOutput.permissionDecisionReason | contains("token=commit")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("git rebase topic")) and
+        (.hookSpecificOutput.permissionDecisionReason | contains("token=rebase")) and
         (.hookSpecificOutput.permissionDecisionReason | contains("coordinator"))
       ' "$output" >/dev/null
       ;;
@@ -2345,7 +2329,7 @@ assert_worker_dynamic_interpreter_or_git_denied() {
       (
         (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_GIT_OWNERSHIP_DENIED]")) and
         (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-git-ownership")) and
-        (.hookSpecificOutput.permissionDecisionReason | contains("token=commit"))
+        (.hookSpecificOutput.permissionDecisionReason | contains("token=rebase"))
       )
     )
   ' "$output" >/dev/null || {
@@ -2955,7 +2939,7 @@ run_matrix_parallel worker assert_allowed renamed-lifecycle \
 run_subagent_matrix_parallel denied worker-eval-indirection \
   "eval '$subagent_codex_home/bin/eci-active ledger-append one-line-entry'" \
   "eval '$subagent_codex_home/bin/eci-active nested-enter 1 2 t00-session'" \
-  "eval 'git commit'"
+  "eval 'git rebase topic'"
 run_subagent_matrix_parallel allowed worker-eval-transparent \
   "eval 'printf ordinary'" \
   "eval 'git status'"
@@ -2985,31 +2969,31 @@ run_matrix_parallel worker assert_allowed transparent-wrapper-scripts \
   "nice" \
   "prlimit --cpu=1"
 run_matrix_parallel worker assert_worker_wrapped_git_ownership_denied transparent-wrapper-git \
-  "env FOO=bar git commit -m nope" \
-  "env -- git commit -m nope" \
-  "env FOO=bar timeout 5 git commit -m nope" \
-  "exec git commit -m nope" \
-  "nohup git commit -m nope" \
-  "setsid git commit -m nope" \
-  "sudo git commit -m nope" \
-  "doas git commit -m nope" \
-  "systemd-run --unit eci git commit -m nope" \
-  "timeout 5 git commit -m nope" \
-  "time git commit -m nope" \
-  "nice git commit -m nope" \
-  "prlimit --cpu=1 git commit -m nope"
+  "env FOO=bar git rebase topic" \
+  "env -- git rebase topic" \
+  "env FOO=bar timeout 5 git rebase topic" \
+  "exec git rebase topic" \
+  "nohup git rebase topic" \
+  "setsid git rebase topic" \
+  "sudo git rebase topic" \
+  "doas git rebase topic" \
+  "systemd-run --unit eci git rebase topic" \
+  "timeout 5 git rebase topic" \
+  "time git rebase topic" \
+  "nice git rebase topic" \
+  "prlimit --cpu=1 git rebase topic"
 
 # A direct ordinary path remains distinct from an env-wrapped launcher.
 assert_allowed "/var/eci-escape.sh" run_subagent_hook
 assert_allowed "./worker-wrapper-probe" run_subagent_hook
 run_matrix_parallel worker assert_worker_wrapped_git_ownership_denied single-wrapped-worker-git \
-  "env FOO=bar git commit -m nope"
+  "env FOO=bar git rebase topic"
 
 # chronic is transparent when its script target is unresolved; a concrete
 # acceptance-sensitive Git child still reaches the worker Git ownership route.
 run_matrix_parallel worker assert_chronic_worker_route_case chronic-worker-routes \
   "chronic /tmp/eci-escape.sh" \
-  "chronic git commit -m nope"
+  "chronic git rebase topic"
 
 # Lifecycle ownership is based on the visible mutation verb, not successful
 # CLI arity.  Extra arguments and `on` must not become worker escape routes.
@@ -3019,13 +3003,12 @@ run_matrix_parallel worker assert_subagent_lifecycle_denied worker-visible-lifec
   "source $subagent_codex_home/bin/eci-active off $TMP_ROOT/disengage.md extra" \
   "env -u CODEX_ROLE bash -c 'source $subagent_codex_home/bin/eci-active on worker-scope extra'"
 
-# Acceptance-sensitive Git history mutations remain main/orchestrator-only;
-# this is independent of the ordinary worker edit route.
-run_matrix_parallel worker assert_worker_git_commit_denied worker-git-commit \
-  "git commit" \
-  "env -u CODEX_ROLE git commit"
+# Producers make their own checkpoints, including wrapped ordinary commits.
+run_matrix_parallel worker assert_allowed worker-git-commit \
+  "git commit -qm --amend" \
+  "env -u CODEX_ROLE git commit -qm --dry-run"
 run_matrix_parallel worker assert_worker_dynamic_interpreter_or_git_denied worker-git-interpreter \
-  "bash -c 'git commit'"
+  "bash -c 'git rebase topic'"
 
 # Unsupported shell launchers must not hide lifecycle mutation from the
 # subagent ownership gate. These strings are parsed as control commands, not
@@ -3353,7 +3336,7 @@ run_matrix_parallel worker assert_instruction_read_denied worker-instruction-fai
   "cat $subagent_codex_home/skills/escape/SKILL.md" \
   "cat $subagent_codex_home/skills/test/not-a-source.fifo"
 run_matrix_parallel worker assert_diagnostic_denied worker-protected-git \
-  "git commit -m forbidden" \
+  "git commit --amend -m checkpoint" \
   "git config user.name worker" \
   "git reset --hard HEAD" \
   "git checkout -- hooks/validate-bash.sh" \
@@ -3616,7 +3599,7 @@ run_matrix_parallel coordinator assert_commit coordinator-git-commit \
   "git commit -m 'bounded message'" \
   "git commit --message=bounded" \
   "git commit -a --amend --no-verify --signoff" \
-  "git commit --allow-empty" \
+  "git commit --amend" \
   "git commit -c prior-message"
 run_hook_matrix_parallel unknown coordinator-git-environment-context \
   "env GIT_EXTERNAL_DIFF=/tmp/evil git diff --stat" \

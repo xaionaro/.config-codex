@@ -1307,7 +1307,7 @@ class CommandGateModeTest(unittest.TestCase):
             )
             marker = self.root / f"{provider}-proof" / session_id / "eci_active"
             cases = (
-                ("worker", "git commit -m sample"),
+                ("worker", "git rebase topic"),
                 ("worker", "git reset --hard"),
                 ("worker", "git worktree add /tmp/eci-mode-worktree"),
                 ("worker", f"cat {marker}"),
