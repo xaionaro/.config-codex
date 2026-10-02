@@ -2473,7 +2473,7 @@ func TestRawGitPlansHaveNoGenericCapability(t *testing.T) {
 			}{
 				{command: "git rebase topic", code: CodeWorkerGitOwnershipDenied},
 				{command: "git checkout -- hooks/validate-bash.sh"},
-				{command: "git branch feature", code: CodeWorkerGitOwnershipDenied},
+				{command: "git branch feature"},
 			} {
 				request := activeWorker(testCase.command)
 				request.Provider = provider

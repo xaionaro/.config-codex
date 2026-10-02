@@ -1081,11 +1081,11 @@ func Classify(request Request) Result {
 	deferredRoute := deferredRouteForPlan(request, parsed, decision, capabilities)
 	if shellAnalysis != nil {
 		// Provider effect readers consume typed argv/context records. The raw
-		// topology stays separate and cannot transport projected multiline text.
+		// lossless compound topology retains Git routing hints independently;
+		// compoundPlanTopology already excludes projected multiline text.
 		decision = DecisionDefer
 		capabilities = nil
 		gitCloneLaunch = nil
-		topology = nil
 		deferredRoute = ""
 	}
 	return Result{
