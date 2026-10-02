@@ -6709,7 +6709,10 @@ PY
 # This literal library is source from this hook, not command-supplied Python.
 git_effect_python() {
   cat <<'PY'
+import re
 import stat
+import subprocess
+from typing import NamedTuple
 
 
 def git_branch_effect(
@@ -7005,6 +7008,7 @@ def git_checkout_arguments(
     arguments: list[str],
     verb: str,
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> list[str] | None:
     """Expand supported long options without changing operand positions."""
     # Git v2.51.0 builtin/checkout.c shares these option definitions between
@@ -7049,6 +7053,10 @@ def git_checkout_arguments(
                 return None
             result[offset] = "--" + ("no-" if negated else "") + name + ("=" + operand if attached else "")
             if name in required and not negated and not attached:
+                if index + 1 < len(arguments) and (
+                    index + 1 in unknown or index + 1 in variable_cardinality
+                ):
+                    return None
                 index += 1
         elif value.startswith("-"):
             for position, flag in enumerate(value[1:], 1):
@@ -7059,6 +7067,329 @@ def git_checkout_arguments(
     return result
 
 
+class SharedCheckoutOptionState(NamedTuple):
+    validity: str
+    detach_state: bool | None
+    branch_mode: bool
+    orphan_mode: bool
+    branch_startpoint: bool
+    separator_index: int | None
+    pathspec_file_option: bool
+    pathspec_file_nul: bool
+    invalid_path_mode: bool
+    source_value: str | None
+    source_is_tree: bool | None
+    source_is_commit: bool | None
+    destination_operands: tuple[str, ...]
+    ambiguous_source: bool
+    guess_state: bool | None
+
+
+def checkout_revision(
+    value: str,
+    base: str | None,
+    object_type: str = "tree",
+    git_options: tuple[str, ...] | None = (),
+) -> bool | None:
+    if not value or value.startswith("-") or not base or not os.path.isabs(base):
+        return False
+    if git_options is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", base, *git_options,
+             "rev-parse", "--verify", "--quiet", value + "^{" + object_type + "}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.returncode == 0
+
+
+def checkout_context_value_valid(value: str) -> bool:
+    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
+    if not match:
+        return False
+    sign, digits, suffix = match.groups()
+    if sign == "-" and suffix:
+        return False
+    try:
+        number = int(digits)
+    except (TypeError, ValueError):
+        return False
+    if sign == "-" and number not in {0, 1}:
+        return False
+    number *= {"": 1, "k": 1024, "K": 1024, "m": 1024 ** 2,
+               "M": 1024 ** 2, "g": 1024 ** 3, "G": 1024 ** 3}[suffix]
+    if sign == "-":
+        number = -number
+    return -(1 << 31) <= number <= (1 << 31) - 1
+
+
+def checkout_context_value_has_unpatched_effect(value: str) -> bool:
+    # Git's checkout path mode accepts -1 without --patch and can still
+    # restore a path. Other valid context values require --patch, while
+    # negative zero is invalid without it, so those commands remain
+    # transparent.
+    if not checkout_context_value_valid(value):
+        return False
+    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
+    return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) == 1
+
+
+def checkout_option_state(
+    args: list[str],
+    unknown: frozenset[int],
+    base: str | None,
+    variable_cardinality: frozenset[int] = frozenset(),
+    git_options: tuple[str, ...] | None = (),
+) -> SharedCheckoutOptionState:
+    """Resolve validity, final modes, source, and destination roles once."""
+    normalized = git_checkout_arguments(args, "checkout", unknown, variable_cardinality)
+    detach_state = None
+    branch_mode = orphan_mode = False
+    branch_startpoint = False
+    separator_index = None
+    pathspec_file_option = pathspec_file_nul = False
+    invalid_path_mode = False
+    source_value = None
+    source_is_tree = source_is_commit = None
+    destinations = []
+    ambiguous_source = False
+    guess_state = None
+    if normalized is None:
+        return SharedCheckoutOptionState("unknown", None, False, False, False, None,
+                                         False, False, False, None, None, None, (), False, None)
+
+    stage = 0
+    force = False
+    merge = -1
+    overlay_mode = -1
+    conflict_style = False
+    tracking_specified = reflog = patch_mode = False
+    unified_context_option = unified_context_unpatched_effect = False
+    inter_hunk_context_option = inter_hunk_context_unpatched_effect = False
+    pathspec_file_empty = False
+    orphan_name = None
+    role_unknown = False
+    after_separator = False
+    index = 0
+
+    def result(validity: str = "supported") -> SharedCheckoutOptionState:
+        return SharedCheckoutOptionState(
+            validity, detach_state, branch_mode, orphan_mode, branch_startpoint,
+            separator_index, pathspec_file_option, pathspec_file_nul,
+            invalid_path_mode, source_value, source_is_tree, source_is_commit,
+            tuple(destinations), ambiguous_source, guess_state,
+        )
+
+    def invalid() -> SharedCheckoutOptionState:
+        return result("invalid")
+
+    while index < len(normalized):
+        value = normalized[index]
+        offset = index
+        if after_separator:
+            if offset not in unknown and offset not in variable_cardinality:
+                destinations.append(value)
+            else:
+                role_unknown = True
+            index += 1
+            continue
+        if offset in unknown or offset in variable_cardinality:
+            role_unknown = True
+            index += 1
+            continue
+        if value == "--":
+            separator_index = offset
+            after_separator = True
+            index += 1
+            continue
+        if value == "--no-pathspec-from-file":
+            pathspec_file_option = pathspec_file_empty = False
+            index += 1
+            continue
+        option, attached, argument = value.partition("=")
+        if option == "--pathspec-from-file":
+            pathspec_file_option = True
+            pathspec_file_empty = attached and argument == ""
+            if not attached:
+                if index + 1 >= len(normalized):
+                    return invalid()
+                if index + 1 in unknown or index + 1 in variable_cardinality:
+                    role_unknown = True
+                else:
+                    pathspec_file_empty = normalized[index + 1] == ""
+                index += 2
+            else:
+                index += 1
+            continue
+        if option in {"--orphan", "--conflict", "--unified", "--inter-hunk-context"}:
+            if attached:
+                context_value = argument
+                index += 1
+            else:
+                if index + 1 >= len(normalized):
+                    return invalid()
+                if index + 1 in unknown or index + 1 in variable_cardinality:
+                    role_unknown = True
+                    index += 2
+                    continue
+                context_value = normalized[index + 1]
+                index += 2
+            if option == "--orphan":
+                orphan_mode = True
+                orphan_name = context_value
+            elif option == "--conflict":
+                if context_value not in {"merge", "diff3", "zdiff3"}:
+                    return invalid()
+                conflict_style = True
+                if merge == 0:
+                    merge = -1
+            elif option == "--unified":
+                if not checkout_context_value_valid(context_value):
+                    return invalid()
+                unified_context_option = True
+                unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
+            else:
+                if not checkout_context_value_valid(context_value):
+                    return invalid()
+                inter_hunk_context_option = True
+                inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
+            continue
+        if value.startswith("-") and not value.startswith("--"):
+            flags = value[1:]
+            short_index = 0
+            while short_index < len(flags):
+                flag = flags[short_index]
+                if flag in {"b", "B", "U"}:
+                    if flag in {"b", "B"}:
+                        branch_mode = True
+                    argument = flags[short_index + 1:]
+                    if not argument:
+                        if index + 1 >= len(normalized):
+                            return invalid()
+                        if index + 1 in unknown or index + 1 in variable_cardinality:
+                            role_unknown = True
+                            index += 2
+                            break
+                        argument = normalized[index + 1]
+                        index += 1
+                    if argument.startswith("-"):
+                        return invalid()
+                    if flag == "U":
+                        if not checkout_context_value_valid(argument):
+                            return invalid()
+                        unified_context_option = True
+                        unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
+                    break
+                if flag == "d":
+                    detach_state = True
+                elif flag == "p":
+                    patch_mode = True
+                elif flag in {"2", "3"}:
+                    stage = int(flag)
+                elif flag == "f":
+                    force = True
+                elif flag == "m":
+                    merge = 1
+                elif flag == "t":
+                    tracking_specified = True
+                elif flag == "l":
+                    reflog = True
+                elif flag == "q":
+                    pass
+                else:
+                    return invalid()
+                short_index += 1
+            index += 1
+            continue
+
+        if option in {"--track", "--no-track"}:
+            tracking_specified = True
+            if option == "--track" and attached and argument not in {"direct", "inherit"}:
+                return invalid()
+        if value in {"--ours", "--theirs"}:
+            stage = 2 if value == "--ours" else 3
+        elif value in {"--force", "--no-force"}:
+            force = value == "--force"
+        elif value in {"--merge", "--no-merge"}:
+            merge = 1 if value == "--merge" else 0
+        elif value in {"--overlay", "--no-overlay"}:
+            overlay_mode = 1 if value == "--overlay" else 0
+        elif value == "--no-conflict":
+            conflict_style = False
+        elif value in {"--guess", "--no-guess"}:
+            guess_state = value == "--guess"
+        elif value == "--detach":
+            detach_state = True
+        elif value == "--no-detach":
+            detach_state = False
+        elif value == "--patch":
+            patch_mode = True
+        elif value == "--no-patch":
+            patch_mode = False
+        elif value == "--no-orphan":
+            orphan_mode = False
+        elif value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
+            pathspec_file_nul = value == "--pathspec-file-nul"
+        elif not value.startswith("-"):
+            if source_value is None:
+                source_value = value
+            else:
+                destinations.append(value)
+        index += 1
+
+    if role_unknown:
+        return result("unknown")
+    if orphan_mode and orphan_name is not None:
+        if not base or not os.path.isabs(base):
+            return result("unknown")
+        try:
+            checked_name = subprocess.run(
+                ["/usr/bin/git", "-C", base or "", "check-ref-format", "--branch", orphan_name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=1,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return result("unknown")
+        if checked_name.returncode != 0:
+            return invalid()
+    if orphan_mode and orphan_name is None:
+        return invalid()
+    if pathspec_file_empty or pathspec_file_nul and not pathspec_file_option:
+        return invalid()
+    if not patch_mode:
+        if unified_context_option and not unified_context_unpatched_effect:
+            return invalid()
+        if inter_hunk_context_option and not inter_hunk_context_unpatched_effect:
+            return invalid()
+    effective_merge = merge == 1 or (merge == -1 and conflict_style)
+    if patch_mode and (pathspec_file_option or force or effective_merge or overlay_mode == 1):
+        return invalid()
+    if source_value is not None:
+        source_is_tree = checkout_revision(source_value, base, "tree", git_options)
+        source_is_commit = checkout_revision(source_value, base, "commit", git_options)
+        if source_is_tree is None or source_is_commit is None:
+            return result("unknown")
+        branch_startpoint = (branch_mode or orphan_mode) and source_is_commit
+    has_path_destinations = bool(destinations or pathspec_file_option)
+    invalid_path_mode = (
+        sum((stage != 0, force, effective_merge)) > 1 or
+        (source_is_tree and (stage != 0 or effective_merge)) or
+        ((tracking_specified or reflog) and has_path_destinations) or
+        ((branch_mode or orphan_mode) and has_path_destinations) or
+        (detach_state is True and has_path_destinations)
+    )
+    if separator_index is None and source_value is not None and source_is_tree:
+        candidate = source_value
+        if not candidate.startswith(":") and base and os.path.isabs(base):
+            source_file = os.path.lexists(candidate if os.path.isabs(candidate) else os.path.join(base, candidate))
+            ambiguous_source = bool(destinations or pathspec_file_option) and source_file
+    return result("supported")
+
+
 def git_checkout_effect(
     arguments: list[str],
     unknown: frozenset[int] = frozenset(),
@@ -7067,91 +7398,30 @@ def git_checkout_effect(
     git_options: tuple[str, ...] | None = (),
 ) -> str:
     """Separate scoped path checkout from branch, HEAD, and ref transitions."""
-    arguments = git_checkout_arguments(arguments, "checkout", unknown)
-    if arguments is None:
-        return "repository-unresolved"
-    operands = []
-    index = 0
-    pathspec_file = detached = orphan = False
-    pathspec_file_nul = False
-    explicit_reference = False
-    guess = None
-    while index < len(arguments):
-        value = arguments[index]
-        if index in unknown or index in variable_cardinality:
-            return "repository-unresolved"
-        index += 1
-        if value == "--":
-            if pathspec_file_nul and not pathspec_file:
-                return "repository-unresolved"  # Git rejects NUL mode without a file.
-            if detached or orphan:
-                return "repository"
-            if index < len(arguments) or pathspec_file:
-                return "prep"
-            if not operands:
-                return "repository-unresolved"
-            explicit_reference = True
-            break
-        if value == "--orphan" or value.startswith("--orphan="):
-            orphan = True
-            if value == "--orphan":
-                if index >= len(arguments) or index in unknown or index in variable_cardinality:
-                    return "repository-unresolved"
-                index += 1
-            continue
-        if value == "--no-orphan":
-            orphan = False
-            continue
-        if value in {"--detach", "-d", "--no-detach"}:
-            detached = value != "--no-detach"
-            continue
-        if value in {"--guess", "--no-guess"}:
-            guess = value == "--guess"
-            continue
-        if value == "--no-pathspec-from-file":
-            pathspec_file = False
-            continue
-        if value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
-            pathspec_file_nul = value == "--pathspec-file-nul"
-            continue
-        option, attached, operand = value.partition("=")
-        if option in {"--pathspec-from-file", "--conflict", "--unified", "--inter-hunk-context"} or value in {"-U"}:
-            if not attached:
-                if index >= len(arguments) or index in unknown or index in variable_cardinality:
-                    return "repository-unresolved"
-                index += 1
-            if option == "--pathspec-from-file":
-                pathspec_file = True
-            continue
-        if value.startswith("-"):
-            if not value.startswith("--"):
-                for flag in value[1:]:
-                    if flag in {"b", "B"}:
-                        return "repository"
-                    if flag == "U":
-                        break  # The remainder is a consumed context value.
-                    detached = detached or flag == "d"
-            continue
-        operands.append(value)
-    if pathspec_file_nul and not pathspec_file:
-        return "repository-unresolved"  # Final NUL mode has no destination file.
-    if detached or orphan:
+    options = checkout_option_state(arguments, unknown, base, variable_cardinality, git_options)
+    if options.validity != "supported" or options.invalid_path_mode or options.ambiguous_source:
+        return "inspection"
+    if options.detach_state is True or options.orphan_mode or options.branch_mode:
         return "repository"
-    if pathspec_file or len(operands) > 1:
+    if options.pathspec_file_option or options.destination_operands:
         return "prep"
-    if not operands or operands == ["-"]:
+    operands = [options.source_value] if options.source_value is not None else []
+    if not operands:
+        return "inspection"
+    if operands == ["-"]:
         return "repository"
+    explicit_reference = options.separator_index is not None
+    guess = options.guess_state
+    if options.source_is_commit is True:
+        return "repository"
+    if options.source_is_commit is not False:
+        return "repository-unresolved"
+    if explicit_reference:
+        return "inspection"
     if not base or not os.path.isabs(base):
         return "repository-unresolved"
     try:
         import subprocess
-        result = subprocess.run(
-            ["/usr/bin/git", "-C", base, "rev-parse", "--verify", "--quiet", operands[0] + "^{commit}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=1,
-        )
-        if result.returncode == 0:
-            return "repository"
         if guess is None:
             if git_options is None:
                 return "repository-unresolved"
@@ -12240,6 +12510,7 @@ def collect_pathspecs(
     base: str,
     unknown: frozenset[int] = frozenset(),
     verb: str = "",
+    checkout_source_is_tree: bool = False,
 ) -> list[str]:
     paths = []
     filename = ""
@@ -12297,7 +12568,7 @@ def collect_pathspecs(
     if filename is None or filename:
         # Git removes one established tree source before checking whether
         # actual explicit destinations conflict with file-selected paths.
-        if checkout_source is not None and paths and checkout_revision(checkout_source) is True:
+        if checkout_source_is_tree and checkout_source is not None and paths:
             paths = paths[1:]
         if paths:
             return []  # Git rejects simultaneous file and explicit paths.
@@ -12549,7 +12820,7 @@ def git_command(
     initial_base: str | None = None,
     unknown: frozenset[int] = frozenset(),
     variable_cardinality: frozenset[int] = frozenset(),
-) -> tuple[str, list[str], str, frozenset[int]] | None:
+) -> tuple[str, list[str], str, frozenset[int], frozenset[int]] | None:
     original_length = len(segment)
     segment, unknown = strip_structural_prefix(segment, unknown)
     removed = original_length - len(segment)
@@ -12625,8 +12896,13 @@ def git_command(
         if parent == current or os.path.lexists(os.path.join(current, ".git")):
             return None
         current = parent
-    return segment[index], segment[index + 1:], base, frozenset(
-        value - index - 1 for value in unknown if value > index)
+    return (
+        segment[index],
+        segment[index + 1:],
+        base,
+        frozenset(value - index - 1 for value in unknown if value > index),
+        frozenset(value - index - 1 for value in variable_cardinality if value > index),
+    )
 
 def rm_detail(
     args: list[str],
@@ -12758,9 +13034,8 @@ def restore_detail(
     args = git_checkout_arguments(args, "restore", unknown)
     if args is None:
         return None
-    # TODO: distinguish explicit --no-staged from an unspecified staged
-    # destination; native Git rejects --no-staged alone without a write.
     staged = False
+    staged_option_seen = False
     worktree = None
     after_separator = False
     index = 0
@@ -12778,6 +13053,7 @@ def restore_detail(
             continue
         if not after_separator and value in {"--staged", "--no-staged"}:
             staged = value == "--staged"
+            staged_option_seen = True
         elif not after_separator and value in {"--worktree", "--no-worktree"}:
             worktree = value == "--worktree"
         elif not after_separator and value.startswith("-") and not value.startswith("--"):
@@ -12787,13 +13063,16 @@ def restore_detail(
                     if position == len(value) - 1:
                         index += 1
                     break
-                staged = staged or flag == "S"
+                if flag == "S":
+                    staged = True
+                    staged_option_seen = True
                 if flag == "W":
                     worktree = True
-    # Both destinations are independent; either option order and -SW keep
-    # the worktree effect. Only an unspecified destination defaults to the
-    # worktree; explicit --no-worktree without --staged is Git-invalid.
-    if worktree is False or (staged and worktree is None):
+    # Both destinations are independent. An explicit --no-staged suppresses
+    # only the implicit worktree default; an explicit --worktree still wins
+    # in either order, and -S remains a staged-only restore.
+    if (worktree is False or (staged and worktree is None) or
+            (staged_option_seen and not staged and worktree is None)):
         return None
     for value in collect_pathspecs(args, base, unknown, "restore"):
         candidates, _ = pathspec_candidates(value, base)
@@ -12805,297 +13084,25 @@ def restore_detail(
                 return detail
     return None
 
-def checkout_revision(value):
-    # Establish a checkout tree source, including a tree object. Failed or
-    # ambiguous probing stays on path inspection; only a positive result
-    # exempts the leading source operand from destination inspection.
-    if not value or value.startswith("-"):
-        return False
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["/usr/bin/git", "-C", target_repo, "rev-parse", "--verify", "--quiet", value + "^{tree}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=1,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.returncode == 0
-
-def checkout_context_value_valid(value):
-    # Git accepts a nonnegative 32-bit integer with an optional k/m/g suffix,
-    # plus signed zero and -1, for checkout's context options. Keep malformed
-    # and out-of-range values transparent because Git rejects them before
-    # touching the worktree.
-    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
-    if not match:
-        return False
-    sign, digits, suffix = match.groups()
-    if sign == "-" and suffix:
-        return False
-    try:
-        number = int(digits)
-    except (TypeError, ValueError):
-        return False
-    if sign == "-" and number not in {0, 1}:
-        return False
-    number *= {"": 1, "k": 1024, "K": 1024, "m": 1024 ** 2,
-               "M": 1024 ** 2, "g": 1024 ** 3, "G": 1024 ** 3}[suffix]
-    if sign == "-":
-        number = -number
-    return -(1 << 31) <= number <= (1 << 31) - 1
-
-def checkout_context_value_has_unpatched_effect(value):
-    # Git's checkout path mode accepts -1 without --patch and can still
-    # restore a path. Other valid context values require --patch, while
-    # negative zero is invalid without it, so those commands remain
-    # transparent.
-    if not checkout_context_value_valid(value):
-        return False
-    match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
-    return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) == 1
-
-class CheckoutOptionState(NamedTuple):
-    detach_state: bool | None
-    branch_mode: bool
-    branch_startpoint: bool
-    separator_index: int | None
-    pathspec_file_option: bool
-    invalid: bool
-    invalid_path_mode: bool
-
-
-def checkout_option_state(
+def checkout_detail(
     args: list[str],
+    base: str,
     unknown: frozenset[int],
-) -> CheckoutOptionState:
-    """Return reference state, separator, file validity, and path-mode validity."""
-    state = None
-    stage = 0
-    force = False
-    merge = -1
-    overlay_mode = -1
-    conflict_style = False
-    tracking_specified = False
-    reflog = False
-    source_seen = False
-    verified_source = False
-    branch_mode = False
-    orphan_mode = False
-    orphan_name = None
-    branch_startpoint = False
-    unified_context_option = False
-    unified_context_unpatched_effect = False
-    inter_hunk_context_option = False
-    inter_hunk_context_unpatched_effect = False
-    patch_mode = False
-    pathspec_file_option = False
-    pathspec_file_empty = False
-    separator_index = None
-    index = 0
-
-    def invalid_result() -> CheckoutOptionState:
-        return CheckoutOptionState(None, branch_mode or orphan_mode, branch_startpoint,
-                                   separator_index, pathspec_file_option, True, False)
-
-    while index < len(args):
-        value = args[index]
-        if index in unknown:
-            index += 1
-            continue
-        if value == "--":
-            separator_index = index
-            break
-        if value == "--no-pathspec-from-file":
-            pathspec_file_option = False
-            pathspec_file_empty = False
-            index += 1
-            continue
-        is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
-        if is_pathspec_file:
-            # Only the surviving assignment supplies filename-dependent
-            # validity. Consumed values never become options or separators.
-            pathspec_file_option = True
-            pathspec_file_empty = pathspec_file == ""
-            # This option consumes the following token even when it starts
-            # with a dash.  Do not mistake a pathspec filename named
-            # --detach for a later detach toggle.
-            if pathspec_file is None:
-                if index + 1 >= len(args):
-                    return invalid_result()
-                index += 2
-            else:
-                index += 1
-            continue
-        option, separator, argument = value.partition("=")
-        if option in {"--source", "--conflict", "--orphan", "--unified", "--inter-hunk-context"}:
-            if separator:
-                if option in {"--unified", "--inter-hunk-context"}:
-                    if not checkout_context_value_valid(argument):
-                        return invalid_result()
-                elif option != "--orphan" and argument.startswith("-"):
-                    return invalid_result()
-                if option == "--orphan":
-                    orphan_name = argument
-                if option == "--conflict":
-                    if argument not in {"merge", "diff3", "zdiff3"}:
-                        return invalid_result()
-                    conflict_style = True
-                    if merge == 0:
-                        merge = -1
-                orphan_mode = orphan_mode or option == "--orphan"
-                if option == "--unified":
-                    unified_context_option = True
-                    unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
-                elif option == "--inter-hunk-context":
-                    inter_hunk_context_option = True
-                    inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
-                index += 1
-                continue
-            if index + 1 >= len(args):
-                return invalid_result()
-            context_value = args[index + 1]
-            if option in {"--unified", "--inter-hunk-context"}:
-                if not checkout_context_value_valid(context_value):
-                    return invalid_result()
-            elif option != "--orphan" and context_value.startswith("-"):
-                return invalid_result()
-            if option == "--orphan":
-                orphan_name = context_value
-            if option == "--conflict":
-                if context_value not in {"merge", "diff3", "zdiff3"}:
-                    return invalid_result()
-                conflict_style = True
-                if merge == 0:
-                    merge = -1
-            orphan_mode = orphan_mode or option == "--orphan"
-            if option == "--unified":
-                unified_context_option = True
-                unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
-            elif option == "--inter-hunk-context":
-                inter_hunk_context_option = True
-                inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
-            index += 2
-            continue
-        if value.startswith("-") and not value.startswith("--"):
-            short_options = value[1:]
-            short_index = 0
-            while short_index < len(short_options):
-                short_option = short_options[short_index]
-                if short_option in {"b", "B", "U"}:
-                    branch_mode = branch_mode or short_option in {"b", "B"}
-                    if short_option == "U":
-                        unified_context_option = True
-                    argument = short_options[short_index + 1:]
-                    if argument:
-                        if short_option == "U":
-                            if not checkout_context_value_valid(argument):
-                                return invalid_result()
-                            unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
-                        elif argument.startswith("-"):
-                            return invalid_result()
-                        break
-                    if index + 1 >= len(args):
-                        return invalid_result()
-                    if short_option == "U":
-                        if not checkout_context_value_valid(args[index + 1]):
-                            return invalid_result()
-                        unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(args[index + 1])
-                    elif args[index + 1].startswith("-"):
-                        return invalid_result()
-                    index += 1
-                    break
-                if short_option == "d":
-                    state = True
-                elif short_option == "p":
-                    patch_mode = True
-                elif short_option in {"2", "3"}:
-                    stage = int(short_option)
-                elif short_option == "f":
-                    force = True
-                elif short_option == "m":
-                    merge = 1
-                elif short_option == "t":
-                    tracking_specified = True
-                elif short_option == "l":
-                    reflog = True
-                elif short_option == "q":
-                    pass
-                else:
-                    return invalid_result()
-                short_index += 1
-            index += 1
-            continue
-        # Long option identity and attached-value validity belong to the
-        # shared normalizer; retain only the effective mode reductions here.
-        if option in {"--track", "--no-track"}:
-            tracking_specified = True
-        if value in {"--ours", "--theirs"}:
-            stage = 2 if value == "--ours" else 3
-        elif value in {"--force", "--no-force"}:
-            force = value == "--force"
-        elif value in {"--merge", "--no-merge"}:
-            merge = 1 if value == "--merge" else 0
-        elif value in {"--overlay", "--no-overlay"}:
-            overlay_mode = 1 if value == "--overlay" else 0
-        elif value == "--no-conflict":
-            conflict_style = False
-        if not value.startswith("-") and not source_seen:
-            source_seen = True
-            verified_source = checkout_revision(value) is True
-        if value == "--no-orphan":
-            orphan_mode = False
-        elif value == "--no-detach":
-            state = False
-        elif value == "--no-patch":
-            patch_mode = False
-        elif value == "--detach":
-            state = True
-        elif value == "--patch":
-            patch_mode = True
-        index += 1
-        if (branch_mode or orphan_mode) and not value.startswith("-") and checkout_revision(value) is True:
-            branch_startpoint = True
-    # OPTION_STRING orphan names are validated only if they survive
-    # cancellation; callback-validated option values still reject above.
-    if orphan_mode and orphan_name is not None and orphan_name.startswith("-"):
-        return invalid_result()
-    if pathspec_file_empty:
-        return invalid_result()
-    if not patch_mode:
-        if unified_context_option and not unified_context_unpatched_effect:
-            return invalid_result()
-        if inter_hunk_context_option and not inter_hunk_context_unpatched_effect:
-            return invalid_result()
-    effective_merge = merge == 1 or (merge == -1 and conflict_style)
-    if patch_mode and (pathspec_file_option or force or effective_merge or overlay_mode == 1):
-        return invalid_result()
-    # Git rejects incompatible path modes before restoring any destination.
-    invalid_path_mode = (
-        sum((stage != 0, force, effective_merge)) > 1 or
-        (verified_source and (stage != 0 or effective_merge)) or
-        tracking_specified or reflog
-    )
-    return CheckoutOptionState(state, branch_mode or orphan_mode, branch_startpoint,
-                               separator_index, pathspec_file_option, False, invalid_path_mode)
-
-def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
-    args = git_checkout_arguments(args, "checkout", unknown)
-    if args is None:
-        return None
+    variable_cardinality: frozenset[int] = frozenset(),
+) -> str | None:
+    options = checkout_option_state(args, unknown, base, variable_cardinality)
     # With `--`, every following token is a worktree pathspec. Without it,
     # only the first operand can be a tree source; later operands are paths
     # even when their names also resolve as revisions.
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
-    options = checkout_option_state(args, unknown)
-    if options.invalid or options.detach_state is True:
+    if (options.validity != "supported" or options.invalid_path_mode or
+            options.ambiguous_source or options.detach_state is True):
         return None
     explicit_paths = options.separator_index is not None
-    if options.branch_mode:
-        if explicit_paths or not options.branch_startpoint:
-            return None
+    if options.branch_mode or options.orphan_mode:
+        return None
     # Git rejects a pathspec-file option combined with explicit pathspecs;
     # leave that ordinary invalid command transparent even when the file
     # itself names a protected path.
@@ -13105,14 +13112,15 @@ def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str 
     # actual separator cannot be discarded.  `options.separator_index` comes from
     # the option-state parser, so a `--` consumed as an option value is not
     # mistaken for the pathspec separator.
-    paths = collect_pathspecs(args, base, unknown, "checkout")
+    paths = collect_pathspecs(
+        args, base, unknown, "checkout", options.source_is_tree is True,
+    )
     if not paths or options.invalid_path_mode:
         return None
     for position, value in enumerate(paths):
-        if position == 0 and not explicit_paths and not options.pathspec_file_option:
-            revision = checkout_revision(value)
-            if revision is True:
-                continue
+        if (position == 0 and not explicit_paths and not options.pathspec_file_option and
+                options.source_is_tree is True and value == options.source_value):
+            continue
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -13190,7 +13198,7 @@ def inspect_segment(
     parsed = git_command(segment, base_override, unknown, variable_cardinality)
     if parsed is None:
         return None
-    verb, args, base, argument_unknown = parsed
+    verb, args, base, argument_unknown, argument_variable_cardinality = parsed
     if verb == "rm":
         return rm_detail(args, base, argument_unknown)
     if verb == "mv":
@@ -13198,7 +13206,7 @@ def inspect_segment(
     if verb == "restore":
         return restore_detail(args, base, argument_unknown)
     if verb == "checkout":
-        return checkout_detail(args, base, argument_unknown)
+        return checkout_detail(args, base, argument_unknown, argument_variable_cardinality)
     return None
 
 if analysis is not None:
