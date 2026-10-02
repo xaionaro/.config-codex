@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -21,13 +22,16 @@ type ShellAnalysis struct {
 //
 // Example: a substitution's cd changes its own later records, not its parent.
 type ShellCommandRecord struct {
-	Argv             []string            `json:"argv"`
-	UnknownArguments []int               `json:"unknown_arguments,omitempty"`
-	CWD              string              `json:"cwd"`
-	CWDKnown         bool                `json:"cwd_known"`
-	CWDCandidates    []string            `json:"cwd_candidates"`
-	Reachability     SegmentReachability `json:"reachability"`
-	Segment          int                 `json:"segment"`
+	Argv                        []string            `json:"argv"`
+	UnknownArguments            []int               `json:"unknown_arguments,omitempty"`
+	MayDisappearArguments       []int               `json:"may_disappear_arguments"`
+	MayMultiplyArguments        []int               `json:"may_multiply_arguments"`
+	UnknownCardinalityArguments []int               `json:"unknown_cardinality_arguments,omitempty"`
+	CWD                         string              `json:"cwd"`
+	CWDKnown                    bool                `json:"cwd_known"`
+	CWDCandidates               []string            `json:"cwd_candidates"`
+	Reachability                SegmentReachability `json:"reachability"`
+	Segment                     int                 `json:"segment"`
 }
 
 // shellPayload describes a statically selected child program or argv/context.
@@ -35,6 +39,7 @@ type ShellCommandRecord struct {
 // Example: env -S exposes its split argv without executing generated shell text.
 type shellPayload struct {
 	command        string
+	commandDynamic bool
 	argv           []shellArgument
 	arguments      []shellArgument
 	stdin          bool
@@ -64,8 +69,18 @@ type shellSourceCall struct {
 //
 // Example: a dynamic commit message leaves the adjacent literal -C path known.
 type shellArgument struct {
-	Value   string
-	Literal bool
+	Value              string
+	Literal            bool
+	MayDisappear       bool
+	MayMultiply        bool
+	CardinalityUnknown bool
+}
+
+// singleField reports whether source syntax guarantees exactly one argv field.
+//
+// Example: a quoted scalar stays one field even when its value is unavailable.
+func (a shellArgument) singleField() bool {
+	return !a.MayDisappear && !a.MayMultiply && !a.CardinalityUnknown
 }
 
 // inspectShellAnalysis reuses the ordinary segment classifier for executable
@@ -159,10 +174,14 @@ func inspectShellAnalysis(
 				}
 				analysis.Incomplete = analysis.Incomplete || !input.Literal
 				payload.command = input.Command
+				payload.commandDynamic = !input.Literal
 			}
 			childRequest.Command = payload.command
 			childRequest.ShellEnvironment = payload.environment
 			result := Classify(childRequest)
+			if payload.commandDynamic {
+				markShellInputUnknown(result.ShellAnalysis)
+			}
 			if result.Decision == DecisionDeny {
 				return nil, &result
 			}
@@ -174,7 +193,7 @@ func inspectShellAnalysis(
 				// A failed AST decode supplies no proof that expansion-shaped
 				// values are literal filesystem targets.
 				literal := !strings.ContainsAny(argument.value, "$`*?[~")
-				payload.arguments = append(payload.arguments, shellArgument{Value: argument.value, Literal: literal})
+				payload.arguments = append(payload.arguments, shellArgument{Value: argument.value, Literal: literal, CardinalityUnknown: !literal})
 			}
 			payload.environment = request.ShellEnvironment
 		}
@@ -193,6 +212,31 @@ func inspectShellAnalysis(
 	return analysis, nil
 }
 
+// markShellInputUnknown keeps markers from expanded script text out of literal
+// target resolution. Generated quoting does not establish original word bounds.
+//
+// Example: a parent expansion inserted between child single quotes stays unknown.
+func markShellInputUnknown(analysis *ShellAnalysis) {
+	if analysis == nil {
+		return
+	}
+	analysis.Incomplete = true
+	for recordIndex := range analysis.Commands {
+		record := &analysis.Commands[recordIndex]
+		for index, value := range record.Argv {
+			if !strings.Contains(value, "$?") {
+				continue
+			}
+			if !slices.Contains(record.UnknownArguments, index) {
+				record.UnknownArguments = append(record.UnknownArguments, index)
+			}
+			if !slices.Contains(record.UnknownCardinalityArguments, index) {
+				record.UnknownCardinalityArguments = append(record.UnknownCardinalityArguments, index)
+			}
+		}
+	}
+}
+
 // appendShellArguments publishes words and the indices whose values are unknown.
 //
 // Example: a dynamic -C operand remains distinguishable from a literal directory.
@@ -203,6 +247,15 @@ func appendShellArguments(
 	for _, argument := range arguments {
 		if !argument.Literal {
 			record.UnknownArguments = append(record.UnknownArguments, len(record.Argv))
+		}
+		if argument.MayDisappear {
+			record.MayDisappearArguments = append(record.MayDisappearArguments, len(record.Argv))
+		}
+		if argument.MayMultiply {
+			record.MayMultiplyArguments = append(record.MayMultiplyArguments, len(record.Argv))
+		}
+		if argument.CardinalityUnknown {
+			record.UnknownCardinalityArguments = append(record.UnknownCardinalityArguments, len(record.Argv))
 		}
 		record.Argv = append(record.Argv, argument.Value)
 	}
@@ -331,11 +384,8 @@ func sourceBackedShellArgv(
 		if assignment.Value != nil {
 			value, literal = literalSyntaxWord(source, assignment.Value)
 			if !literal {
-				masked, _, err := maskShellInputExpansions(source, assignment.Value)
-				if err != nil {
-					return shellSourceCall{}, false
-				}
-				value, _, err = shellHeredocDelimiter(masked, assignment.Value.Parts, false)
+				var err error
+				value, err = shellArgumentValue(source, assignment.Value.Parts, false)
 				if err != nil {
 					return shellSourceCall{}, false
 				}
@@ -347,22 +397,98 @@ func sourceBackedShellArgv(
 	for _, word := range call.Args {
 		value, literal := literalSyntaxWord(source, word)
 		if !literal {
-			masked, _, err := maskShellInputExpansions(source, word)
-			if err != nil {
-				return shellSourceCall{}, false
-			}
-			value, _, err = shellHeredocDelimiter(masked, word.Parts, false)
+			var err error
+			value, err = shellArgumentValue(source, word.Parts, false)
 			if err != nil {
 				return shellSourceCall{}, false
 			}
 			decoded.Dynamic = true
 		}
-		decoded.Argv = append(decoded.Argv, shellArgument{Value: value, Literal: literal})
+		argument := shellArgument{Value: value, Literal: literal}
+		argument.MayDisappear, argument.MayMultiply, argument.CardinalityUnknown = shellWordCardinality(word.Parts, false)
+		decoded.Argv = append(decoded.Argv, argument)
 	}
 	if len(decoded.Argv)+len(decoded.Environment) != len(argv) {
 		return shellSourceCall{}, false
 	}
 	return decoded, true
+}
+
+// shellWordCardinality retains source-established field-count bounds without
+// evaluating parameters or substitutions. Quoting preserves empty scalar fields;
+// literal text anchors a field even when an adjacent unquoted expansion vanishes.
+//
+// Example: $path may vanish or split, pre$path cannot vanish, and "$path" stays one.
+func shellWordCardinality(
+	parts []syntax.WordPart,
+	quoted bool,
+) (mayDisappear bool, mayMultiply bool, unknown bool) {
+	guaranteed := false
+	for _, part := range parts {
+		switch part := part.(type) {
+		case *syntax.Lit:
+			guaranteed = guaranteed || part.Value != ""
+			unknown = unknown || !quoted && strings.ContainsAny(part.Value, "*?[")
+		case *syntax.SglQuoted:
+			guaranteed = true
+		case *syntax.DblQuoted:
+			disappears, multiplies, unavailable := shellWordCardinality(part.Parts, true)
+			guaranteed = guaranteed || len(part.Parts) == 0 || !disappears
+			mayMultiply = mayMultiply || multiplies
+			unknown = unknown || unavailable
+		case *syntax.ParamExp:
+			list := part.Param != nil && part.Param.Value == "@" && !part.Length
+			list = list || part.Excl && part.Names == syntax.NamesPrefixWords
+			if index, ok := part.Index.(*syntax.Word); ok && !part.Length {
+				list = list || index.Lit() == "@"
+			}
+			if quoted && !list {
+				guaranteed = true
+			} else {
+				mayMultiply = true
+			}
+		case *syntax.CmdSubst:
+			guaranteed = guaranteed || quoted
+			mayMultiply = mayMultiply || !quoted
+		case *syntax.ArithmExp, *syntax.ProcSubst:
+			guaranteed = true
+		default:
+			unknown = true
+		}
+	}
+	return !guaranteed, mayMultiply, unknown
+}
+
+// shellArgumentValue removes quoting and replaces each expansion with one
+// unknown marker. Offset-preserving masks belong to source analysis; padding
+// them into decoded values would invent separators during env split parsing.
+//
+// Example: --${OPTION}=value remains one unknown option word, --$?=value.
+func shellArgumentValue(
+	source string,
+	parts []syntax.WordPart,
+	insideQuotes bool,
+) (string, error) {
+	var value strings.Builder
+	for _, part := range parts {
+		switch part := part.(type) {
+		case *syntax.ParamExp, *syntax.CmdSubst, *syntax.ArithmExp, *syntax.ProcSubst:
+			value.WriteString("$?")
+		case *syntax.DblQuoted:
+			decoded, err := shellArgumentValue(source, part.Parts, true)
+			if err != nil {
+				return "", err
+			}
+			value.WriteString(decoded)
+		default:
+			decoded, _, err := shellHeredocDelimiter(source, []syntax.WordPart{part}, insideQuotes)
+			if err != nil {
+				return "", err
+			}
+			value.WriteString(decoded)
+		}
+	}
+	return value.String(), nil
 }
 
 // literalSyntaxWord removes quotes only after every word part is proven static.
@@ -448,16 +574,27 @@ func literalShellPayloadWords(
 		for _, argument := range argv[1:] {
 			parts = append(parts, argument.Value)
 		}
-		return shellPayload{command: strings.Join(parts, " "), environment: environment, handled: true}
+		dynamic := slices.ContainsFunc(argv[1:],
+			// A nonliteral eval operand inserts unknown bytes into child syntax.
+			//
+			// Example: eval "$code" cannot prove quoting in the expanded program.
+			func(argument shellArgument) bool { return !argument.Literal })
+		return shellPayload{command: strings.Join(parts, " "), commandDynamic: dynamic, environment: environment, handled: true}
 	case "command", "builtin", "exec":
 		index := 1
 		for index < len(argv) && strings.HasPrefix(argv[index].Value, "-") {
+			if !argv[index].singleField() {
+				return shellPayload{handled: true, incomplete: true}
+			}
 			if argv[index].Value == "--" {
 				index++
 				break
 			}
 			if name == "exec" && argv[index].Value == "-a" {
 				if index+1 >= len(argv) {
+					return shellPayload{handled: true, incomplete: true}
+				}
+				if !argv[index+1].singleField() {
 					return shellPayload{handled: true, incomplete: true}
 				}
 				index += 2
@@ -503,6 +640,9 @@ func literalEnvShellPayload(
 	nullOutput := false
 	for index < len(values) {
 		value := values[index].Value
+		if !values[index].singleField() {
+			return shellPayload{handled: true, incomplete: true}
+		}
 		if len(value) > 2 && value[0] == '-' && value[1] != '-' {
 			// Consume short options at their actual cursor: no-operand
 			// flags leave a group remainder; value options own that remainder.
@@ -514,7 +654,9 @@ func literalEnvShellPayload(
 				remainder = value[2:]
 			}
 			if remainder != "" {
-				parts := []shellArgument{{Value: value[:2], Literal: true}, {Value: remainder, Literal: values[index].Literal}}
+				suffix := values[index]
+				suffix.Value = remainder
+				parts := []shellArgument{{Value: value[:2], Literal: true}, suffix}
 				values = append(append(append([]shellArgument{}, values[:index]...), parts...), values[index+1:]...)
 				value = values[index].Value
 			}
@@ -535,7 +677,7 @@ func literalEnvShellPayload(
 		case value == "-v" || value == "--debug":
 			index++
 		case value == "-a" || value == "--argv0":
-			if index+1 >= len(values) {
+			if index+1 >= len(values) || !values[index+1].singleField() {
 				return shellPayload{handled: true, incomplete: true}
 			}
 			index += 2
@@ -552,7 +694,7 @@ func literalEnvShellPayload(
 			splitLiteral := values[index].Literal
 			switch {
 			case value == "-S" || value == "--split-string":
-				if index+1 >= len(values) {
+				if index+1 >= len(values) || !values[index+1].singleField() {
 					return shellPayload{handled: true, incomplete: true}
 				}
 				split, consumed = values[index+1].Value, 2
@@ -570,18 +712,19 @@ func literalEnvShellPayload(
 			hasSplit = true
 			splits++
 		case value == "-C" || value == "--chdir":
-			if index+1 >= len(values) {
-				return shellPayload{handled: hasSplit, incomplete: hasSplit}
+			if index+1 >= len(values) || !values[index+1].singleField() {
+				return shellPayload{handled: true, incomplete: true}
 			}
 			directory, directorySet = values[index+1], true
 			index += 2
 		case strings.HasPrefix(value, "--chdir="):
-			directory = shellArgument{Value: strings.TrimPrefix(value, "--chdir="), Literal: values[index].Literal}
+			directory = values[index]
+			directory.Value = strings.TrimPrefix(value, "--chdir=")
 			directorySet = true
 			index++
 		case value == "-u" || value == "--unset":
-			if index+1 >= len(values) {
-				return shellPayload{handled: hasSplit, incomplete: hasSplit}
+			if index+1 >= len(values) || !values[index+1].singleField() {
+				return shellPayload{handled: true, incomplete: true}
 			}
 			if isEnvironmentContextName(values[index+1].Value) {
 				contextUnknown = true
@@ -592,7 +735,9 @@ func literalEnvShellPayload(
 			if isEnvironmentContextName(strings.TrimPrefix(value, "--unset=")) {
 				contextUnknown = true
 			}
-			assignments = removeShellAssignment(assignments, shellArgument{Value: strings.TrimPrefix(value, "--unset="), Literal: values[index].Literal})
+			name := values[index]
+			name.Value = strings.TrimPrefix(value, "--unset=")
+			assignments = removeShellAssignment(assignments, name)
 			index++
 		case strings.HasPrefix(value, "-"):
 			if hasSplit {
@@ -622,6 +767,9 @@ optionsDone:
 		name, _, ok := strings.Cut(values[index].Value, "=")
 		if !ok {
 			break
+		}
+		if !values[index].singleField() {
+			return shellPayload{handled: true, incomplete: true}
 		}
 		if isEnvironmentContextName(name) && !strings.HasPrefix(name, "GIT_") {
 			contextUnknown = true
@@ -704,16 +852,22 @@ func splitEnvString(
 	quote := byte(0)
 	started := false
 	wordLiteral := true
+	guaranteed := false
+	cardinalityUnknown := false
 	flush :=
 		// flush appends a completed word, including a deliberately empty quoted word.
 		//
 		// Example: two separators after one word append that word only once.
 		func() {
 			if started {
-				words = append(words, shellArgument{Value: word.String(), Literal: wordLiteral})
+				words = append(words, shellArgument{Value: word.String(), Literal: wordLiteral,
+					MayDisappear: !wordLiteral && !guaranteed, MayMultiply: !wordLiteral,
+					CardinalityUnknown: cardinalityUnknown})
 				word.Reset()
 				started = false
 				wordLiteral = true
+				guaranteed = false
+				cardinalityUnknown = false
 			}
 		}
 	for index := 0; index < len(value); index++ {
@@ -721,11 +875,15 @@ func splitEnvString(
 		if !literal && strings.HasPrefix(value[index:], "$?") {
 			word.WriteString("$?")
 			wordLiteral = false
+			// env reparses quote bytes supplied by the expanded string.
+			// Unknown data inside its quotes cannot prove a scalar bound.
+			cardinalityUnknown = cardinalityUnknown || quote != 0
 			started = true
 			index++
 			continue
 		}
 		if quote == '\'' {
+			guaranteed = true
 			if character == '\'' {
 				quote = 0
 			} else if character == '\\' && index+1 < len(value) && (value[index+1] == '\\' || value[index+1] == '\'') {
@@ -738,6 +896,7 @@ func splitEnvString(
 			continue
 		}
 		if character == '\\' {
+			guaranteed = true
 			if index+1 >= len(value) {
 				return nil, false
 			}
@@ -775,6 +934,7 @@ func splitEnvString(
 			continue
 		}
 		if quote == '"' {
+			guaranteed = true
 			if character == '"' {
 				quote = 0
 			} else if character == '$' {
@@ -788,6 +948,7 @@ func splitEnvString(
 		if character == '\'' || character == '"' {
 			quote = character
 			started = true
+			guaranteed = true
 			continue
 		}
 		if character == '$' {
@@ -802,6 +963,7 @@ func splitEnvString(
 		}
 		word.WriteByte(character)
 		started = true
+		guaranteed = true
 	}
 	if quote != 0 {
 		return nil, false
@@ -838,6 +1000,9 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 	index := 1
 	for index < len(argv) {
 		option := argv[index].Value
+		if !argv[index].singleField() {
+			return shellPayload{handled: true, incomplete: true}
+		}
 		if option == "--" || option == "-" {
 			index++
 			break
@@ -846,7 +1011,7 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 			break
 		}
 		if option == "--rcfile" || option == "--init-file" {
-			if index+1 >= len(argv) {
+			if index+1 >= len(argv) || !argv[index+1].singleField() {
 				return shellPayload{handled: true, incomplete: true}
 			}
 			index += 2
@@ -872,6 +1037,9 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 			case 'o', 'O':
 				if index+1 < len(argv) {
 					index++
+					if !argv[index].singleField() {
+						return shellPayload{handled: true, incomplete: true}
+					}
 					if flag == 'o' && argv[index].Value == "noexec" {
 						noExecution = option[0] == '-'
 					}
@@ -886,10 +1054,10 @@ func literalShellInvocation(argv []shellArgument) shellPayload {
 	// -c selects the first operand after all invocation options. An earlier
 	// -s requests stdin only when no command string is selected.
 	if commandMode {
-		if index >= len(argv) {
+		if index >= len(argv) || !argv[index].singleField() {
 			return shellPayload{handled: true, incomplete: true}
 		}
-		return shellPayload{command: argv[index].Value, handled: true}
+		return shellPayload{command: argv[index].Value, commandDynamic: !argv[index].Literal, handled: true}
 	}
 	if !stdinMode && index < len(argv) && argv[index].Value != "-" {
 		return shellPayload{}

@@ -248,8 +248,16 @@ func projectShellCommands(
 			}
 			maskShellSpan(masked, start, end)
 			// Keep an explicitly dynamic word in the analysis command. An
-			// empty replacement could invent a concrete command or target.
-			copy(masked[start:end], "$?")
+			// offset-width parameter spelling avoids padding becoming argv.
+			// Process substitutions supply one path, unlike command output.
+			width := end - start
+			placeholder := "$" + strings.Repeat("_", width-1)
+			if _, process := substitution.Node.(*syntax.ProcSubst); process && width >= 4 {
+				placeholder = "\"$" + strings.Repeat("_", width-3) + "\""
+			} else if width >= 4 {
+				placeholder = "${" + strings.Repeat("_", width-3) + "}"
+			}
+			copy(masked[start:end], placeholder)
 			changed = true
 		}
 		for _, offset := range placeholders {
@@ -645,11 +653,7 @@ func shellHereStringInput(
 	word := hereString.Redirect.Word
 	start := int(word.Pos().Offset())
 	input := shellInput{OwnerOffset: int(hereString.Owner.Pos().Offset())}
-	masked, _, err := maskShellInputExpansions(command, word)
-	if err != nil {
-		return input, err
-	}
-	value, _, err := shellHeredocDelimiter(masked, word.Parts, false)
+	value, err := shellArgumentValue(command, word.Parts, false)
 	if err != nil {
 		return input, err
 	}
@@ -686,7 +690,7 @@ func shellHeredocInput(
 		if err != nil {
 			parseErrors = append(parseErrors, err)
 		}
-		masked, dynamic, err := maskShellInputExpansions(body, word)
+		masked, dynamic, err := compactShellInputExpansions(body, word)
 		if err != nil {
 			parseErrors = append(parseErrors, err)
 		}
@@ -710,46 +714,55 @@ func shellHeredocInput(
 	return input, errors.Join(parseErrors...)
 }
 
-// shellInputExpansionMask replaces expansion source with unknown output markers
-// while retaining literal surrounding script text and its original byte offsets.
+// shellInputExpansionSpans records expansion ranges in an inline script input.
+// They are compacted only in child source; the outer raw topology stays lossless.
 //
 // Example: $(git status) becomes unknown stdin data after its parent-side analysis.
-type shellInputExpansionMask struct {
-	Source  []byte
+type shellInputExpansionSpans struct {
+	Source  string
+	Spans   [][2]int
 	Dynamic bool
 	Errors  []error
 }
 
-// maskShellInputExpansions separates expansion syntax from the bytes it produces.
-// The caller still decodes literal quoting and escapes after expansion masking.
+// compactShellInputExpansions replaces each expansion with one unknown marker
+// without inserting padding that could split adjacent text into extra argv.
 //
 // Example: a literal git command after $(printf text) remains visible to a shell.
-func maskShellInputExpansions(
+func compactShellInputExpansions(
 	source string,
 	word *syntax.Word,
 ) (string, bool, error) {
-	mask := shellInputExpansionMask{Source: []byte(source)}
+	mask := shellInputExpansionSpans{Source: source}
 	if word != nil {
 		syntax.Walk(word, mask.Collect)
 	}
-	return string(mask.Source), mask.Dynamic, errors.Join(mask.Errors...)
+	var compact strings.Builder
+	end := 0
+	for _, span := range mask.Spans {
+		compact.WriteString(source[end:span[0]])
+		compact.WriteString("$?")
+		end = span[1]
+	}
+	compact.WriteString(source[end:])
+	return compact.String(), mask.Dynamic, errors.Join(mask.Errors...)
 }
 
-// Collect masks an entire outer expansion, including any nested syntax already
-// owned by that expansion, without turning its source into a child input script.
+// Collect records an entire outer expansion, including nested syntax already
+// owned by it, without turning expansion source into a child input script.
 //
 // Example: an env -C consumer cannot execute its parent's $(git status) twice.
-func (m *shellInputExpansionMask) Collect(node syntax.Node) bool {
+func (m *shellInputExpansionSpans) Collect(node syntax.Node) bool {
 	switch node.(type) {
 	case *syntax.CmdSubst, *syntax.ProcSubst, *syntax.ParamExp, *syntax.ArithmExp:
 		start, end := int(node.Pos().Offset()), int(node.End().Offset())
 		m.Dynamic = true
-		if start > end || end > len(m.Source) {
+		if start > end || end > len(m.Source) ||
+			(len(m.Spans) > 0 && start < m.Spans[len(m.Spans)-1][1]) {
 			m.Errors = append(m.Errors, fmt.Errorf("incomplete shell input expansion at byte %d", start))
 			return false
 		}
-		maskShellSpan(m.Source, start, end)
-		copy(m.Source[start:end], "$?")
+		m.Spans = append(m.Spans, [2]int{start, end})
 		return false
 	default:
 		return true

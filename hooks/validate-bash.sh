@@ -1554,6 +1554,10 @@ if jq -e '
       ((.argv | length) as $argc | (.unknown_arguments // []) |
         type == "array" and all(.[];
           type == "number" and . == floor and . >= 0 and . < $argc)) and
+      ((.argv | length) as $argc |
+        [.may_disappear_arguments, .may_multiply_arguments, .unknown_cardinality_arguments] |
+        all(.[]; (. // []) | type == "array" and all(.[];
+          type == "number" and . == floor and . >= 0 and . < $argc))) and
       (.cwd | type == "string") and (.cwd_known | type == "boolean") and
       (.cwd_candidates | type == "array" and all(.[]; type == "string")) and
       (.reachability == "reachable" or .reachability == "unknown" or .reachability == "unreachable") and
@@ -6751,6 +6755,7 @@ def inspect(
     segment: list[str],
     depth: int = 0,
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> bool:
     if depth > 5:
         return False
@@ -6759,7 +6764,7 @@ def inspect(
         index += 1
     if index >= len(segment):
         return False
-    if index in unknown:
+    if index in unknown or any(value < index for value in variable_cardinality):
         return False
     name = os.path.basename(segment[index])
     if name == "env":
@@ -6779,8 +6784,11 @@ def inspect(
                 index += 1
                 continue
             break
+        if any(value < index for value in variable_cardinality):
+            return False
         return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index))
+                       frozenset(value - index for value in unknown if value >= index),
+                       frozenset(value - index for value in variable_cardinality if value >= index))
     if name in {"bash", "sh", "dash", "zsh"}:
         for option_index, option in enumerate(segment[index + 1:], index + 1):
             if option == "-c" or (option.startswith("-") and "c" in option[1:]):
@@ -6793,8 +6801,11 @@ def inspect(
         return False
     if name in {"command", "builtin", "exec", "sudo", "doas", "nohup", "setsid"}:
         index += 1
+        if any(value < index for value in variable_cardinality):
+            return False
         return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index))
+                       frozenset(value - index for value in unknown if value >= index),
+                       frozenset(value - index for value in variable_cardinality if value >= index))
     if name == "timeout":
         return False
     if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
@@ -6809,14 +6820,17 @@ def inspect(
                 index += 1
                 break
             index += 2 if segment[index] in value_options else 1
+        if any(value < index for value in variable_cardinality):
+            return False
         return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index))
+                       frozenset(value - index for value in unknown if value >= index),
+                       frozenset(value - index for value in variable_cardinality if value >= index))
     if name != "git":
         return False
     index += 1
     while index < len(segment) and segment[index].startswith("-"):
         index += 2 if segment[index] in {"-C", "-c", "--git-dir", "--work-tree", "--config-env", "--exec-path"} else 1
-    if index >= len(segment) or index in unknown:
+    if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality):
         return False
     subcommand, args = segment[index], segment[index + 1:]
     if subcommand == "branch":
@@ -6829,6 +6843,12 @@ def inspect(
                 print("executable=git subcommand=branch token=%s argv_index=%d kind=branch-mutation" %
                       (token, offset))
                 return True
+        # A possible list/action option does not establish branch creation.
+        # Explicit mutation options above remain independently actionable.
+        if any((offset in unknown and token.startswith("-")) or
+               (offset not in unknown and token in {"-l", "--list"})
+               for offset, token in enumerate(args, index + 1)):
+            return False
         value_options = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--format", "--sort", "--column", "--color"}
         skip = False
         for offset, token in enumerate(args, index + 1):
@@ -6849,7 +6869,12 @@ def inspect(
 
 analysis = json.loads(sys.argv[2])
 if analysis is not None:
-    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or [])) for record in analysis["commands"]
+    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or []),
+                        variable_cardinality=frozenset(record.get("may_disappear_arguments") or []) |
+                        frozenset(record.get("may_multiply_arguments") or []) |
+                        frozenset(record.get("unknown_cardinality_arguments") or []) |
+                        (frozenset(record.get("unknown_arguments") or [])
+                         if "may_disappear_arguments" not in record else frozenset())) for record in analysis["commands"]
                 if record["reachability"] != "unreachable")
 else:
     parsed = tokenize(text)
@@ -8071,6 +8096,7 @@ def inspect(
     segment: list[str],
     depth: int = 0,
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> bool:
     if depth > 6 or not segment:
         return depth > 6
@@ -8079,7 +8105,7 @@ def inspect(
         index += 1
     if index >= len(segment):
         return False
-    if index in unknown:
+    if index in unknown or any(value < index for value in variable_cardinality):
         return False
     name = os.path.basename(segment[index])
     if name == "git":
@@ -8105,7 +8131,7 @@ def inspect(
             if token.startswith("-"):
                 index += 1
                 continue
-            if index in unknown:
+            if index in unknown or any(value <= index for value in variable_cardinality):
                 return False
             if token in git_mutators:
                 return True
@@ -8156,8 +8182,11 @@ def inspect(
                 index += 1
                 continue
             break
+        if any(value < index for value in variable_cardinality):
+            return False
         return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index))
+                       frozenset(value - index for value in unknown if value >= index),
+                       frozenset(value - index for value in variable_cardinality if value >= index))
     if name == "timeout":
         return False
     if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
@@ -8178,12 +8207,18 @@ def inspect(
                 index += 2
                 continue
             index += 1
+        if any(value < index for value in variable_cardinality):
+            return False
         return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index))
+                       frozenset(value - index for value in unknown if value >= index),
+                       frozenset(value - index for value in variable_cardinality if value >= index))
     if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
         index += 1
+        if any(value < index for value in variable_cardinality):
+            return False
         return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index))
+                       frozenset(value - index for value in unknown if value >= index),
+                       frozenset(value - index for value in variable_cardinality if value >= index))
     if name in {"xargs", "find"}:
         # These launchers receive commands indirectly; a visible Git token is
         # enough to route the whole acceptance-sensitive command to main.
@@ -8193,7 +8228,12 @@ def inspect(
 
 analysis = json.loads(sys.argv[2])
 if analysis is not None:
-    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or [])) for record in analysis["commands"]
+    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or []),
+                        variable_cardinality=frozenset(record.get("may_disappear_arguments") or []) |
+                        frozenset(record.get("may_multiply_arguments") or []) |
+                        frozenset(record.get("unknown_cardinality_arguments") or []) |
+                        (frozenset(record.get("unknown_arguments") or [])
+                         if "may_disappear_arguments" not in record else frozenset())) for record in analysis["commands"]
                 if record["reachability"] != "unreachable")
 else:
     parsed = tokenize(text)
@@ -10468,6 +10508,7 @@ def observed_timeout_command_index(tokens, index, segment_index):
 def commit_effect(
     arguments: list[str],
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> str | None:
     # Git v2.51.0 builtin/commit.c defines this option inventory. Resolve
     # abbreviations before arity so --mes --dry-run consumes a message.
@@ -10490,10 +10531,24 @@ def commit_effect(
     short_effects = {"a": "all", "i": "include", "o": "only", "p": "patch", "z": "null"}
     format_preview = False
     path_operands = False
+    option_unknown = False
+    arity_unknown = False
+    established = None
+    preview_may_change = False
+
+    def lose_arity(can_change_preview: bool = True) -> None:
+        nonlocal arity_unknown, established, preview_may_change
+        if not arity_unknown:
+            established = (state.copy(), path_operands, format_preview)
+        arity_unknown = True
+        preview_may_change = preview_may_change or can_change_preview
+
     index = 0
     while index < len(arguments):
         argument = arguments[index]
         argument_unknown = index in unknown
+        if index in variable_cardinality:
+            lose_arity()
         index += 1
         if argument in {"--", "--end-of-options"}:
             path_operands = path_operands or index < len(arguments)
@@ -10517,9 +10572,15 @@ def commit_effect(
                 option for option in candidates if option.startswith(name)
             }
             if len(matches) != 1:
-                # An unresolved option can change commit effects. Keep it
-                # advisory instead of claiming a prepared-index commit.
-                return "commit-unresolved" if argument_unknown else None
+                if not argument_unknown:
+                    return None
+                # An attached value cannot consume the next option. A bare
+                # unknown option may consume it or end option parsing, so
+                # following argument roles are not established.
+                option_unknown = True
+                if not separator:
+                    lose_arity()
+                continue
             name = next(iter(matches))
             takes_value = name in required_values | optional_values
             if separator and (negated or not takes_value):
@@ -10530,6 +10591,8 @@ def commit_effect(
                     return None
                 value = arguments[index]
                 value_unknown = index in unknown
+                if index in variable_cardinality:
+                    lose_arity()
                 index += 1
             if name == "pathspec-from-file":
                 # Git's OPT_FILENAME treats an empty value as NULL, clearing
@@ -10547,6 +10610,8 @@ def commit_effect(
                 if option_index == len(argument) - 1:
                     if index == len(arguments):
                         return None
+                    if index in variable_cardinality:
+                        lose_arity()
                     index += 1
                 break
             if option in {"S", "u"}:  # Optional values consume only the suffix.
@@ -10554,12 +10619,32 @@ def commit_effect(
             if option in short_effects:
                 state[short_effects[option]] = True
             elif option not in {"q", "v", "s", "e", "n"}:
-                # Dynamic option letters are not ordinary commit evidence.
-                return "commit-unresolved" if argument_unknown else None
+                if not argument_unknown:
+                    return None
+                option_unknown = True
+                # A suffix in this final short-option word cannot negate
+                # an earlier preview; additional argv may still do so.
+                lose_arity(index < len(arguments))
+                break
 
     # finalize_deferred_config and parse_and_validate_options in commit.c
     # make final status format/null output imply preview independently of
     # the final explicit dry-run flag. Negated flags must not stay latched.
+    if arity_unknown:
+        # Later opaque argv cannot invent an effect, but an option whose
+        # role was already established keeps its concrete boundary.
+        prior, prior_paths, prior_format = established
+        if not preview_may_change and (prior["dry-run"] or prior_format or prior["null"]):
+            return None
+        if prior["all"]:
+            return "commit-all"
+        if prior_paths or any(prior[option] for option in selection_options):
+            return "commit-stage"
+        if prior["amend"]:
+            return "commit-amend"
+        if prior["pathspec-from-file"] is None:
+            return "commit-unresolved"
+        return "commit-option-unresolved"
     if state["dry-run"] or format_preview or state["null"]:
         return None
     if state["all"]:
@@ -10570,6 +10655,8 @@ def commit_effect(
         return "commit-amend"
     if state["pathspec-from-file"] is None:
         return "commit-unresolved"
+    if option_unknown:
+        return "commit-option-unresolved"
     return "commit"
 
 
@@ -10577,6 +10664,9 @@ def segment_spec(
     tokens: list[str],
     segment_index: int,
     unknown: frozenset[int] = frozenset(),
+    may_disappear: frozenset[int] = frozenset(),
+    may_multiply: frozenset[int] = frozenset(),
+    cardinality_unknown: frozenset[int] = frozenset(),
 ) -> tuple[str, str | None] | None:
     if not tokens:
         return None
@@ -10907,7 +10997,13 @@ def segment_spec(
                     if resolved_git_dir and os.path.basename(resolved_git_dir) == ".git"
                     else resolved_git_dir)
 
+    variable_cardinality = may_disappear | may_multiply | cardinality_unknown
+    # Variable-width global/wrapper operands do not establish the following
+    # executable, verb, or repository-option alignment.
+    if any(value < index for value in variable_cardinality):
+        return None
     verb = tokens[index]
+    option_unknown = False
     if verb in {"reset", "add"}:
         consume_value = False
         value_options = {"--pathspec-from-file"}
@@ -10922,11 +11018,29 @@ def segment_spec(
             option, separator, _ = argument.partition("=")
             if offset in unknown and argument.startswith("-") and (
                     not separator or "$?" in option):
-                return verb + "-unresolved", repo_dir
+                option_unknown = True
             if option in value_options and not separator:
                 consume_value = True
     if verb == "reset":
         arguments = tokens[index + 1:]
+        path_boundary = next((offset for offset, argument in enumerate(arguments)
+                              if index + offset + 1 not in unknown and argument == "--"),
+                             len(arguments))
+        path_indices = list(range(index + path_boundary + 2, len(tokens)))
+        guaranteed_path = any(value not in may_disappear and value not in cardinality_unknown
+                              for value in path_indices)
+        # The cardinality boundary applies only to the plain reset forms.
+        # Patch/file selectors and unsupported modes do not prove breadth.
+        reset_options = {"-q", "--quiet", "--no-quiet", "--refresh", "--no-refresh",
+                         "-N", "--intent-to-add", "--no-intent-to-add",
+                         "--hard", "--merge", "--keep", "--mixed", "--soft"}
+        if any(offset + index + 1 not in unknown and argument.startswith("-") and
+               argument not in reset_options for offset, argument in enumerate(arguments[:path_boundary])):
+            return "reset-option-unresolved", repo_dir
+        modes = {argument for offset, argument in enumerate(arguments[:path_boundary], index + 1)
+                 if offset not in unknown and argument in {"--hard", "--merge", "--keep", "--mixed", "--soft"}}
+        if len(modes) > 1 or (modes and guaranteed_path):
+            return "reset-option-unresolved", repo_dir
         for offset, argument in enumerate(arguments, index + 1):
             if offset in unknown:
                 continue
@@ -10934,30 +11048,102 @@ def segment_spec(
                 break
             if argument in {"--hard", "--merge", "--keep"}:
                 return "reset-working-tree", repo_dir
+        if option_unknown:
+            return "reset-option-unresolved", repo_dir
+        if path_indices and not guaranteed_path:
+            if all(value in may_disappear and value not in cardinality_unknown for value in path_indices):
+                return "reset-unresolved", repo_dir
+            return "reset-option-unresolved", repo_dir
+        # Without explicit paths, an unknown operand may select a revision
+        # (whole-index reset) or a filename. Do not invent either target.
+        if not arguments[path_boundary + 1:] and any(
+                offset in unknown for offset in range(index + 1, len(tokens))):
+            return "reset-unresolved", repo_dir
         return "reset", repo_dir
     if verb == "add":
         all_selector = False
-        has_paths = False
+        selectors = []
         paths_only = False
+        preview = False
+        preview_proven = False
+        argument_roles_unknown = False
+        all_proven = False
+        alternative = False
+        shape_known = True
+        root_selector = False
+        consume_value = None
         for offset, argument in enumerate(tokens[index + 1:], index + 1):
+            if consume_value is not None:
+                if consume_value == "--pathspec-from-file":
+                    alternative = offset in unknown or bool(argument)
+                option_unknown = option_unknown or offset in variable_cardinality
+                argument_roles_unknown = argument_roles_unknown or offset in variable_cardinality
+                consume_value = None
+                continue
             if offset in unknown:
-                has_paths = True
+                if not paths_only and (offset in variable_cardinality or argument.startswith("$?") or
+                                       (argument.startswith("-") and "=" not in argument)):
+                    argument_roles_unknown = True
+                if not paths_only and argument.startswith("-"):
+                    option, separator, value = argument.partition("=")
+                    if option == "--pathspec-from-file" and separator:
+                        alternative = True
+                    elif option != "--chmod" or not separator:
+                        option_unknown = True
+                else:
+                    selectors.append(offset)
                 continue
             if argument == "--" and not paths_only:
                 paths_only = True
                 continue
             if not paths_only and argument in {"-A", "--all"}:
                 all_selector = True
+                all_proven = not argument_roles_unknown
+                continue
+            if not paths_only and argument == "--no-all":
+                all_selector = False
+                continue
+            if not paths_only and argument in {"-n", "--dry-run", "--no-dry-run"}:
+                preview = argument != "--no-dry-run"
+                preview_proven = not argument_roles_unknown
                 continue
             if not paths_only and argument.startswith("-"):
-                if argument.startswith("--pathspec-from-file"):
-                    has_paths = True
+                if argument in {"--pathspec-from-file", "--chmod"}:
+                    consume_value = argument
+                elif argument.startswith("--pathspec-from-file="):
+                    alternative = bool(argument.split("=", 1)[1])
+                elif argument == "--no-pathspec-from-file":
+                    alternative = False
+                elif argument.startswith("--chmod="):
+                    pass
+                elif argument in {"-p", "-i", "-e", "-u", "--patch", "--interactive", "--edit",
+                                  "--update", "--refresh", "--renormalize", "--ignore-removal",
+                                  "--no-ignore-removal"}:
+                    alternative = True
+                elif argument not in {"-v", "-f", "-N", "--verbose", "--no-verbose", "--force",
+                                      "--no-force", "--intent-to-add", "--no-intent-to-add", "--sparse",
+                                      "--ignore-errors", "--ignore-missing", "--pathspec-file-nul"}:
+                    shape_known = False
                 continue
             if argument == ":/":
-                return "whole-worktree-staging", repo_dir
-            has_paths = True
-        if all_selector and not has_paths:
+                root_selector = not argument_roles_unknown
+            selectors.append(offset)
+        disappearing_scope = all_selector and all_proven and selectors and not option_unknown and all(
+            value in may_disappear and value not in cardinality_unknown for value in selectors)
+        if preview and preview_proven:
+            return "inspection", repo_dir
+        if alternative or not shape_known or consume_value is not None:
+            return "add-option-unresolved", repo_dir
+        if preview:
+            return ("add-target-unresolved" if disappearing_scope else "add-option-unresolved"), repo_dir
+        if root_selector:
             return "whole-worktree-staging", repo_dir
+        if all_selector and all_proven and not selectors and not option_unknown:
+            return "whole-worktree-staging", repo_dir
+        if disappearing_scope:
+            return "add-target-unresolved", repo_dir
+        if option_unknown:
+            return "add-option-unresolved", repo_dir
     if verb in {"add", "rm", "mv", "restore"}:
         return "prep", repo_dir
     if verb == "checkout":
@@ -10967,7 +11153,8 @@ def segment_spec(
         return "prep", repo_dir
     if verb == "commit":
         effect = commit_effect(tokens[index + 1:], frozenset(
-            value - index - 1 for value in unknown if value > index))
+            value - index - 1 for value in unknown if value > index), frozenset(
+            value - index - 1 for value in variable_cardinality if value > index))
         return (effect, repo_dir) if effect else None
     if verb == "worktree":
         if index + 1 < len(tokens) and index + 1 not in unknown and tokens[index + 1] in MUTATING_WORKTREE:
@@ -10986,6 +11173,7 @@ def segment_spec(
             "--points-at", "--format", "--sort",
         }
         list_mode = False
+        action_unknown = False
         values = tokens[index + 1:]
         value_index = 0
         while value_index < len(values):
@@ -10994,8 +11182,10 @@ def segment_spec(
                 if value.startswith("-"):
                     option, separator, _ = value.partition("=")
                     if not separator or "$?" in option:
-                        return "repository-unresolved", repo_dir
-                elif not list_mode:
+                        action_unknown = True
+                elif index + value_index + 1 in variable_cardinality:
+                    action_unknown = True
+                elif not list_mode and not action_unknown:
                     return "repository", repo_dir
                 value_index += 1
                 continue
@@ -11028,11 +11218,11 @@ def segment_spec(
             if value.startswith("-"):
                 value_index += 1
                 continue
-            if list_mode:
+            if list_mode or action_unknown:
                 value_index += 1
                 continue
             return "repository", repo_dir
-        return "inspection", repo_dir
+        return ("repository-unresolved" if action_unknown else "inspection"), repo_dir
     if verb == "remote":
         remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
         if tokens[index + 1:index + 2] and index + 1 in unknown:
@@ -11061,8 +11251,15 @@ if analysis is not None:
         # An absolute Git context can resolve even when the incoming CWD
         # cannot. Never substitute the callback directory for an unknown one.
         for cwd in directories or [""]:
+            unknown = frozenset(record.get("unknown_arguments") or [])
+            cardinality_unknown = frozenset(record.get("unknown_cardinality_arguments") or [])
+            if "may_disappear_arguments" not in record or "may_multiply_arguments" not in record:
+                cardinality_unknown |= unknown
             spec = segment_spec(record["argv"], record["segment"],
-                                frozenset(record.get("unknown_arguments") or []))
+                                unknown,
+                                frozenset(record.get("may_disappear_arguments") or []),
+                                frozenset(record.get("may_multiply_arguments") or []),
+                                cardinality_unknown)
             if spec:
                 print(spec[0])
                 # Transport uncertainty explicitly; never resolve this
@@ -11258,6 +11455,7 @@ def git_record_command(
     segment: list[str],
     segment_index: int,
     unknown: frozenset[int],
+    variable_cardinality: frozenset[int],
 ) -> tuple[str, list[str], frozenset[int], str] | None:
     index = 0
     environment = {}
@@ -11360,7 +11558,7 @@ def git_record_command(
         if token.startswith("-"):
             return None
         break
-    if index >= len(segment) or index in unknown or git_dir is None or work_tree is None:
+    if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality) or git_dir is None or work_tree is None:
         return None
     resolved_git_dir = resolve(git_dir, repo_dir) if git_dir else ""
     resolved_work_tree = resolve(work_tree, repo_dir) if work_tree else ""
@@ -11411,7 +11609,7 @@ def git_add_whole_worktree_selector(
     if all_selector and not selectors:
         return all_selector
     for selector, literal in selectors:
-        if not literal:
+        if not literal or not selector:
             continue
         if selector == ":/":
             return selector
@@ -11421,12 +11619,29 @@ def git_add_whole_worktree_selector(
 
 
 def broad_reset(args: list[str], unknown: frozenset[int]) -> str | None:
-    if any(index not in unknown and option in {"--hard", "--merge", "--keep"}
-           for index, option in enumerate(args)):
-        return "reset-working-tree"
-    if unknown:
+    boundary = next((index for index, option in enumerate(args)
+                     if index not in unknown and option == "--"), len(args))
+    if any(index in unknown and option.startswith("-")
+           for index, option in enumerate(args[:boundary])):
         return None
-    if "--" not in args or not args[args.index("--") + 1:]:
+    supported = {"-q", "--quiet", "--no-quiet", "--refresh", "--no-refresh",
+                 "-N", "--intent-to-add", "--no-intent-to-add",
+                 "--hard", "--merge", "--keep", "--mixed", "--soft"}
+    if any(index not in unknown and option.startswith("-") and option not in supported
+           for index, option in enumerate(args[:boundary])):
+        return None
+    modes = {option for index, option in enumerate(args[:boundary]) if index not in unknown
+             and option in {"--hard", "--merge", "--keep", "--mixed", "--soft"}}
+    if len(modes) > 1 or (modes and args[boundary + 1:]):
+        return None
+    if any(index not in unknown and option in {"--hard", "--merge", "--keep"}
+           for index, option in enumerate(args[:boundary])):
+        return "reset-working-tree"
+    # Git resolves a sole operand as a revision or filename in the repository.
+    # An unknown value leaves that selector unresolved; it does not erase it.
+    if boundary == len(args) or not args[boundary + 1:]:
+        if unknown:
+            return "reset-unresolved"
         return "reset-index"
     return None
 
@@ -11434,7 +11649,12 @@ for record in records:
     directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
     for cwd in directories or [""]:
         parsed = git_record_command(record["argv"], record["segment"],
-                                    frozenset(record.get("unknown_arguments") or []))
+                                    frozenset(record.get("unknown_arguments") or []),
+                                    frozenset(record.get("may_disappear_arguments") or []) |
+                                    frozenset(record.get("may_multiply_arguments") or []) |
+                                    frozenset(record.get("unknown_cardinality_arguments") or []) |
+                                    (frozenset(record.get("unknown_arguments") or [])
+                                     if "may_disappear_arguments" not in record else frozenset()))
         if parsed is None:
             continue
         verb, arguments, unknown, repo_dir = parsed
@@ -11535,6 +11755,9 @@ def parse_pathspec(value, base):
     return value, base, exclude, False
 
 def pathspec_candidates(value, base):
+    # An explicit empty scalar is an invalid Git pathspec, not repository root.
+    if value == "":
+        return [], False
     parsed = parse_pathspec(value, base)
     if parsed is None:
         return [], False
@@ -11880,8 +12103,14 @@ def git_command(
     segment: list[str],
     initial_base: str | None = None,
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> tuple[str, list[str], str, frozenset[int]] | None:
+    original_length = len(segment)
     segment, unknown = strip_structural_prefix(segment, unknown)
+    removed = original_length - len(segment)
+    if any(value < removed for value in variable_cardinality):
+        return None
+    variable_cardinality = frozenset(value - removed for value in variable_cardinality)
     result = unwrap(segment, initial_base, unknown)
     if result is None:
         return None
@@ -11929,7 +12158,7 @@ def git_command(
             index += 1
             continue
         break
-    if index >= len(segment) or index in unknown or work_tree is None or git_dir is None:
+    if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality) or work_tree is None or git_dir is None:
         return None
     resolved_git_dir = lexical_resolve(git_dir, base) if git_dir else ""
     resolved_work_tree = lexical_resolve(work_tree, base) if work_tree else ""
@@ -12388,8 +12617,14 @@ def shell_child_segments(
     segment: list[str],
     initial_base: str | None = None,
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> tuple[list[list[str]], str] | list[list[str]] | None:
+    original_length = len(segment)
     segment, unknown = strip_structural_prefix(segment, unknown)
+    removed = original_length - len(segment)
+    if any(value < removed for value in variable_cardinality):
+        return None
+    variable_cardinality = frozenset(value - removed for value in variable_cardinality)
     result = unwrap(segment, initial_base, unknown)
     if result is None:
         return None
@@ -12404,7 +12639,8 @@ def shell_child_segments(
         )
         if not is_c or shell_index + 1 >= len(shell_args):
             continue
-        if index + shell_index + 1 in unknown or index + shell_index + 2 in unknown:
+        if (index + shell_index + 1 in unknown or index + shell_index + 2 in unknown or
+                any(value <= index + shell_index + 2 for value in variable_cardinality)):
             return []
         try:
             nested_lexer = shlex.shlex(shell_args[shell_index + 1], posix=True, punctuation_chars=True)
@@ -12430,10 +12666,11 @@ def inspect_segment(
     depth: int = 0,
     base_override: str | None = None,
     unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
 ) -> str | None:
     if depth > 4:
         return None
-    nested = shell_child_segments(segment, base_override, unknown)
+    nested = shell_child_segments(segment, base_override, unknown, variable_cardinality)
     if nested is not None:
         nested_segments, nested_base = nested if nested else ([], base_override or command_cwd)
         for nested_segment in nested_segments:
@@ -12441,7 +12678,7 @@ def inspect_segment(
             if detail:
                 return detail
         return None
-    parsed = git_command(segment, base_override, unknown)
+    parsed = git_command(segment, base_override, unknown, variable_cardinality)
     if parsed is None:
         return None
     verb, args, base, argument_unknown = parsed
@@ -12462,7 +12699,12 @@ if analysis is not None:
         directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
         for directory in directories or [""]:
             detail = inspect_segment(record["argv"], base_override=directory,
-                                     unknown=frozenset(record.get("unknown_arguments") or []))
+                                     unknown=frozenset(record.get("unknown_arguments") or []),
+                                     variable_cardinality=frozenset(record.get("may_disappear_arguments") or []) |
+                                                          frozenset(record.get("may_multiply_arguments") or []) |
+                                                          frozenset(record.get("unknown_cardinality_arguments") or []) |
+                                                          (frozenset(record.get("unknown_arguments") or [])
+                                                           if "may_disappear_arguments" not in record else frozenset()))
             if detail:
                 print(detail)
                 raise SystemExit(0)
@@ -12522,7 +12764,7 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|reset-working-tree|reset-unresolved|add-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|prep|repository|repository-unresolved|output) ;; *) continue ;; esac
+    case "$operation" in reset|reset-working-tree|reset-unresolved|reset-option-unresolved|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
@@ -12534,10 +12776,15 @@ enforce_git_mutation_gate() {
         "ECI Git mutation has a broad destructive effect: effect=$operation target=$repo_dir" \
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
     fi
-    if [ "$operation" = reset-unresolved ] || [ "$operation" = add-unresolved ]; then
+    if [ "$operation" = reset-unresolved ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
-        "ECI Git action has unresolved scope-selecting options: operation=$operation target=$repo_dir" \
-        "name the exact intended paths and supply options whose staging/reset effect is resolved, or use a non-destructive targeted Git action"
+        "ECI Git reset has an unresolved revision-or-path target or a path selection that may disappear: operation=$operation target=$repo_dir" \
+        "supply the exact nonempty repository-relative paths after -- as preserved arguments, or use a non-destructive targeted Git action"
+    fi
+    if [ "$operation" = add-target-unresolved ]; then
+      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
+        "ECI Git add --all has no guaranteed narrowing path because every selector may disappear: operation=$operation target=$repo_dir" \
+        "stage the exact nonempty owned paths as preserved arguments or stage their owned hunks separately"
     fi
     if [ "$operation" = commit-all ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
@@ -12549,7 +12796,8 @@ enforce_git_mutation_gate() {
         "ECI commit would select or stage content outside the prepared index: repository=$repo_dir; operation=commit-stage" \
         "stage the exact owned paths or hunks separately, inspect the staged diff, then commit the prepared index"
     fi
-    if [[ "$operation" = commit* ]] && [ "${hook_is_subagent:-false}" != true ] &&
+    if [[ "$operation" = commit* ]] && [ "$operation" != commit-option-unresolved ] &&
+      [ "${hook_is_subagent:-false}" != true ] &&
       [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       deny_eci "ECI_GIT_COMMIT_PRODUCER_REQUIRED" "git-commit" \
         "ECI Supervisor cannot author a Producer checkpoint: repository=$repo_dir; operation=$operation" \
@@ -12557,16 +12805,11 @@ enforce_git_mutation_gate() {
     fi
     if [ "$operation" = commit-unresolved ]; then
       deny_eci "ECI_GIT_COMMIT_STAGING_DENIED" "git-commit" \
-        "ECI commit has unresolved effect-selecting options; prepared-index-only scope is not established: repository=$repo_dir; operation=commit-unresolved" \
-        "stage and inspect the exact owned paths or hunks, then supply resolved commit options for the prepared index; values consumed by known message options may remain dynamic"
+        "ECI commit has an unresolved pathspec-file selector: repository=$repo_dir; operation=commit-unresolved" \
+        "stage and inspect the exact owned paths or hunks separately, then commit the prepared index without commit-time path selection; ordinary message values may remain dynamic"
     fi
     if [ "${hook_is_subagent:-false}" = true ]; then
       case "$operation" in
-        repository-unresolved)
-          deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-            "ECI worker Git reference action has unresolved operation-selecting arguments: operation=$operation; target=$repo_dir; predicate=worker-git-ownership" \
-            "supply resolved read-only branch/remote inspection options, or send the intended history/reference mutation to the Supervisor"
-          ;;
         commit-amend|worktree|repository)
           deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
             "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
@@ -12574,6 +12817,8 @@ enforce_git_mutation_gate() {
           ;;
       esac
     fi
+    # Unknown option/action identity is advisory, not a prohibited effect.
+    # Concrete repository boundaries still apply to retained Git commands.
     # Remaining target uncertainty cannot become an invented repository path.
     [ "$repo_dir" != '<unresolved>' ] || continue
     repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
