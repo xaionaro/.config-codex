@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"mvdan.cc/sh/v3/pattern"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -97,6 +98,7 @@ func inspectShellAnalysis(
 	}
 	analysis := &ShellAnalysis{Commands: []ShellCommandRecord{}, Incomplete: parsed.projectionIncomplete}
 	needed := request.CollectShellCommands || parsed.projection != nil
+	expansionFacts := shellExpansionSegments(request.Command, parsed.segments)
 	for index, current := range parsed.segments {
 		state := states[index]
 		if state.reachability == segmentUnreachable {
@@ -120,7 +122,7 @@ func inspectShellAnalysis(
 		if !inspect {
 			continue
 		}
-		payload := literalShellPayload(effect.argv, effect.command, request.ShellEnvironment, state.cwd.cwd, state.cwd.known)
+		payload := literalShellPayload(effect.argv, effect.command, request.ShellEnvironment, state.cwd.cwd, state.cwd.known, expansionFacts[index])
 		needed = needed || payload.contextUnknown
 		analysis.Incomplete = analysis.Incomplete || payload.contextUnknown
 		for _, substitution := range payload.substitutions {
@@ -178,10 +180,8 @@ func inspectShellAnalysis(
 			}
 			childRequest.Command = payload.command
 			childRequest.ShellEnvironment = payload.environment
+			childRequest.ShellInputDynamic = request.ShellInputDynamic || payload.commandDynamic
 			result := Classify(childRequest)
-			if payload.commandDynamic {
-				markShellInputUnknown(result.ShellAnalysis)
-			}
 			if result.Decision == DecisionDeny {
 				return nil, &result
 			}
@@ -208,6 +208,9 @@ func inspectShellAnalysis(
 	}
 	if !needed {
 		return nil, nil
+	}
+	if request.ShellInputDynamic {
+		markShellInputUnknown(analysis)
 	}
 	return analysis, nil
 }
@@ -328,6 +331,7 @@ func literalShellPayload(
 	environment []shellArgument,
 	cwd string,
 	cwdKnown bool,
+	facts shellExpansionFacts,
 ) shellPayload {
 	if len(argv) == 0 {
 		return shellPayload{}
@@ -338,7 +342,7 @@ func literalShellPayload(
 	}
 	base := filepath.Base(commandArgv[0].value)
 	possible := base == "eval" || base == "env" || base == "command" || base == "builtin" || base == "exec" || isShellName(base)
-	call, ok := sourceBackedShellArgv(source, argv)
+	call, ok := sourceBackedShellArgv(source, argv, facts)
 	if !ok {
 		if possible {
 			return shellPayload{handled: true, incomplete: true}
@@ -360,6 +364,7 @@ func literalShellPayload(
 func sourceBackedShellArgv(
 	source string,
 	argv []token,
+	facts shellExpansionFacts,
 ) (shellSourceCall, bool) {
 	parser := syntax.NewParser()
 	file, err := parser.Parse(strings.NewReader(source), "")
@@ -406,12 +411,192 @@ func sourceBackedShellArgv(
 		}
 		argument := shellArgument{Value: value, Literal: literal}
 		argument.MayDisappear, argument.MayMultiply, argument.CardinalityUnknown = shellWordCardinality(word.Parts, false)
+		if shellExactScalar(word, facts.exactScalars) {
+			argument.MayDisappear = false
+			argument.MayMultiply = false
+			argument.CardinalityUnknown = false
+		}
+		if facts.nullglob && shellLiteralGlob(word) {
+			argument.Literal = false
+			argument.MayDisappear = true
+			argument.MayMultiply = true
+			argument.CardinalityUnknown = false
+			decoded.Dynamic = true
+		}
 		decoded.Argv = append(decoded.Argv, argument)
 	}
 	if len(decoded.Argv)+len(decoded.Environment) != len(argv) {
 		return shellSourceCall{}, false
 	}
 	return decoded, true
+}
+
+// shellExpansionFacts carries only source-established expansion bounds.
+// Scalar values are not substituted into commands or treated as resolved paths.
+//
+// Example: explicit IFS plus msg=foo proves one field for a later plain $msg.
+type shellExpansionFacts struct {
+	nullglob     bool
+	exactScalars map[string]bool
+}
+
+// shellExpansionSegments tracks direct shell options and assignment-only scalar
+// bindings within a simple sequential scope. Unsupported scope or state discards
+// evidence; no inherited IFS, variable values, or conditional effects are assumed.
+//
+// Example: unset IFS; msg=foo; git commit -m $msg -a retains the -a option role.
+func shellExpansionSegments(
+	source string,
+	segments []segment,
+) []shellExpansionFacts {
+	result := make([]shellExpansionFacts, len(segments))
+	file, err := syntax.NewParser().Parse(strings.NewReader(source), "")
+	if err != nil || file == nil {
+		return result
+	}
+	nullglob, failglob, disabled, unknown := false, false, false, false
+	bindings := map[string]string{}
+	ifs, ifsKnown := "", false
+	for _, statement := range file.Stmts {
+		call, simple := statement.Cmd.(*syntax.CallExpr)
+		if !simple || len(call.Args) == 0 && len(call.Assigns) == 0 {
+			unknown = true
+			clear(bindings)
+			ifsKnown = false
+			continue
+		}
+		exactScalars := map[string]bool{}
+		if ifsKnown {
+			for name, value := range bindings {
+				if value != "" && !strings.ContainsAny(value, ifs) && !strings.ContainsAny(value, "*?[") {
+					exactScalars[name] = true
+				}
+			}
+		}
+		offset := int(call.Pos().Offset())
+		for index, current := range segments {
+			if offset >= current.sourceStart && offset < current.sourceStart+len(current.command) {
+				result[index] = shellExpansionFacts{
+					nullglob:     nullglob && !failglob && !disabled && !unknown,
+					exactScalars: exactScalars,
+				}
+			}
+		}
+		if statement.Background || statement.Coprocess {
+			continue
+		}
+		if len(call.Args) == 0 && len(statement.Redirs) == 0 && !statement.Negated {
+			for _, assignment := range call.Assigns {
+				if assignment.Name == nil || assignment.Append || assignment.Naked || assignment.Index != nil || assignment.Array != nil {
+					clear(bindings)
+					ifsKnown = false
+					break
+				}
+				value, literal := "", true
+				if assignment.Value != nil {
+					value, literal = literalSyntaxWord(source, assignment.Value)
+				}
+				if !literal {
+					clear(bindings)
+					ifsKnown = false
+					break
+				}
+				bindings[assignment.Name.Value] = value
+				if assignment.Name.Value == "IFS" {
+					ifs, ifsKnown = value, true
+				}
+			}
+			continue
+		}
+		// Facts are used by the current invocation only. An unmodelled command
+		// may modify shell variables, so it cannot carry scalar proof onward.
+		clear(bindings)
+		ifsKnown = false
+		if len(call.Args) == 0 {
+			unknown = true
+			continue
+		}
+		name, literal := literalSyntaxWord(source, call.Args[0])
+		if !literal {
+			unknown = true
+			continue
+		}
+		values := make([]string, len(call.Args))
+		for index, word := range call.Args {
+			value, known := literalSyntaxWord(source, word)
+			values[index] = value
+			literal = literal && known
+		}
+		if literal && name == "unset" && len(values) == 2 && values[1] == "IFS" && len(statement.Redirs) == 0 && len(call.Assigns) == 0 && !statement.Negated {
+			ifs, ifsKnown = " \t\n", true
+			continue
+		}
+		switch name {
+		case "shopt", "set":
+			if len(statement.Redirs) != 0 || len(call.Assigns) != 0 {
+				unknown = true
+				continue
+			}
+			switch {
+			case literal && name == "shopt" && len(values) == 3 && (values[1] == "-s" || values[1] == "-u"):
+				switch values[2] {
+				case "nullglob":
+					nullglob = values[1] == "-s"
+				case "failglob":
+					failglob = values[1] == "-s"
+				default:
+					unknown = true
+				}
+			case literal && name == "set" && len(values) == 2 && (values[1] == "-f" || values[1] == "+f"):
+				disabled = values[1] == "-f"
+			default:
+				unknown = true
+			}
+		case "eval", ".", "source", "builtin", "command", "exec":
+			unknown = true
+		}
+	}
+	return result
+}
+
+// shellExactScalar recognizes a plain unquoted scalar with proven one-field
+// cardinality. Parameter modifiers, arrays, concatenation, and quoting retain
+// their existing independent analysis rather than borrowing this scalar fact.
+//
+// Example: $msg and ${msg} can use a preceding msg=foo binding plus explicit IFS.
+func shellExactScalar(
+	word *syntax.Word,
+	exactScalars map[string]bool,
+) bool {
+	if len(word.Parts) != 1 {
+		return false
+	}
+	parameter, ok := word.Parts[0].(*syntax.ParamExp)
+	if !ok || parameter.Param == nil || parameter.Excl || parameter.Length || parameter.Width || parameter.Index != nil || parameter.Slice != nil || parameter.Repl != nil || parameter.Names != 0 || parameter.Exp != nil {
+		return false
+	}
+	return exactScalars[parameter.Param.Value]
+}
+
+// shellLiteralGlob recognizes valid unquoted literal pathname patterns without
+// looking at the filesystem. Quoted, dynamic, or invalid patterns stay advisory.
+//
+// Example: file* is eligible, while a quoted star or an unmatched bracket is not.
+func shellLiteralGlob(word *syntax.Word) bool {
+	var value strings.Builder
+	for _, part := range word.Parts {
+		literal, ok := part.(*syntax.Lit)
+		if !ok {
+			return false
+		}
+		value.WriteString(literal.Value)
+	}
+	text := value.String()
+	if !pattern.HasMeta(text, 0) {
+		return false
+	}
+	_, err := pattern.Regexp(text, pattern.Filenames)
+	return err == nil
 }
 
 // shellWordCardinality retains source-established field-count bounds without
@@ -437,6 +622,14 @@ func shellWordCardinality(
 			mayMultiply = mayMultiply || multiplies
 			unknown = unknown || unavailable
 		case *syntax.ParamExp:
+			if !part.Excl && !part.Width && part.Slice == nil && part.Repl == nil && part.Exp == nil && part.Names == 0 &&
+				(part.Length || part.Index == nil && part.Param != nil && strings.Contains("?#$", part.Param.Value) && len(part.Param.Value) == 1) {
+				// Numeric output cannot vanish from an empty scalar value.
+				// Without IFS evidence, unquoted field splitting is unavailable.
+				guaranteed = true
+				unknown = unknown || !quoted
+				continue
+			}
 			list := part.Param != nil && part.Param.Value == "@" && !part.Length
 			list = list || part.Excl && part.Names == syntax.NamesPrefixWords
 			if index, ok := part.Index.(*syntax.Word); ok && !part.Length {
@@ -450,7 +643,10 @@ func shellWordCardinality(
 		case *syntax.CmdSubst:
 			guaranteed = guaranteed || quoted
 			mayMultiply = mayMultiply || !quoted
-		case *syntax.ArithmExp, *syntax.ProcSubst:
+		case *syntax.ArithmExp:
+			guaranteed = true
+			unknown = unknown || !quoted
+		case *syntax.ProcSubst:
 			guaranteed = true
 		default:
 			unknown = true

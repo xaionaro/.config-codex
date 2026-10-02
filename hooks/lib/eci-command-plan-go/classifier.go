@@ -257,6 +257,7 @@ type Request struct {
 	CollectShellCommands bool            `json:"-"`
 	ShellDepth           int             `json:"-"`
 	ShellEnvironment     []shellArgument `json:"-"`
+	ShellInputDynamic    bool            `json:"-"`
 }
 
 // TimeoutReplayDisposition describes whether a direct timeout prefix was
@@ -6485,6 +6486,15 @@ func inspectGit(
 	argv []token,
 	segmentIndex int,
 ) (DecisionKind, *Diagnostic) {
+	if request.ShellInputDynamic {
+		for _, argument := range argv {
+			if strings.Contains(argument.value, "$?") {
+				// Generated input markers are not literal Git options or refs.
+				// The provider retains concrete effects with typed uncertainty.
+				return DecisionDefer, nil
+			}
+		}
+	}
 	repositoryContext := false
 	approvedRepositoryContext := true
 	repositoryContextCount := 0
@@ -6515,6 +6525,11 @@ func inspectGit(
 	subcommandIndex := gitSubcommandIndex(argv)
 	if subcommandIndex >= len(argv) {
 		return DecisionAllow, nil
+	}
+	if argv[subcommandIndex].value == "branch" || argv[subcommandIndex].value == "apply" {
+		// The provider resolves consumed values and final inspection/mutation
+		// modes once for its ref, acceptance, and repository readers.
+		return DecisionDefer, nil
 	}
 	mutationIndex, action := gitMutation(argv, subcommandIndex)
 	if action == "add" || action == "reset" || action == "commit" {
@@ -7623,10 +7638,17 @@ func isGitFsckLostFound(argv []token) bool {
 	return ok
 }
 
-func gitMutation(argv []token, subcommandIndex int) (int, string) {
+// gitMutation identifies concrete effects handled directly by the Go gate.
+// Branch and apply final modes are resolved by the shared provider reducer.
+//
+// Example: git rebase topic retains its direct history-mutation boundary.
+func gitMutation(
+	argv []token,
+	subcommandIndex int,
+) (int, string) {
 	subcommand := argv[subcommandIndex].value
 	switch subcommand {
-	case "add", "am", "apply", "cherry-pick", "checkout", "commit", "config", "gc", "merge", "mv", "push", "rebase", "rename", "replace", "reset", "restore", "revert", "rm", "tag", "update-index", "worktree":
+	case "add", "am", "cherry-pick", "checkout", "commit", "config", "gc", "merge", "mv", "push", "rebase", "rename", "replace", "reset", "restore", "revert", "rm", "tag", "update-index", "worktree":
 		return subcommandIndex, subcommand
 	case "submodule":
 		if subcommandIndex+1 >= len(argv) || argv[subcommandIndex+1].value != "status" {
@@ -7640,70 +7662,8 @@ func gitMutation(argv []token, subcommandIndex int) (int, string) {
 				return subcommandIndex + 1, "remote " + action
 			}
 		}
-	case "branch":
-		listMode := false
-		arguments := argv[subcommandIndex+1:]
-		for index := 0; index < len(arguments); index++ {
-			value := arguments[index].value
-			if isBranchMutationOption(value) {
-				return subcommandIndex + index + 1, "branch " + value
-			}
-			if value == "-l" || value == "--list" || strings.HasPrefix(value, "--list=") {
-				listMode = true
-				continue
-			}
-			if isBranchInspectionValueOption(value) {
-				if index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1].value, "-") {
-					index++
-				}
-				continue
-			}
-			if isBranchInspectionAssignment(value) || isBranchInspectionFlag(value) || strings.HasPrefix(value, "-") {
-				continue
-			}
-			if listMode {
-				continue
-			}
-			return subcommandIndex + index + 1, "branch update"
-		}
 	}
 	return 0, ""
-}
-
-func isBranchInspectionValueOption(value string) bool {
-	switch value {
-	case "--contains", "--format", "--merged", "--no-contains", "--no-merged", "--points-at", "--sort":
-		return true
-	default:
-		return false
-	}
-}
-
-func isBranchInspectionFlag(value string) bool {
-	switch value {
-	case "-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose", "--no-color", "--omit-empty", "--show-current", "--column", "--color", "--abbrev":
-		return true
-	default:
-		return false
-	}
-}
-
-func isBranchInspectionAssignment(value string) bool {
-	for _, option := range []string{"--contains=", "--format=", "--merged=", "--no-contains=", "--no-merged=", "--points-at=", "--sort="} {
-		if strings.HasPrefix(value, option) {
-			return true
-		}
-	}
-	return false
-}
-
-func isBranchMutationOption(value string) bool {
-	switch value {
-	case "-c", "-C", "-d", "-D", "-m", "-M", "--copy", "--delete", "--edit-description", "--move", "--set-upstream-to", "--unset-upstream":
-		return true
-	default:
-		return strings.HasPrefix(value, "--set-upstream-to=")
-	}
 }
 
 // isSourceWriterOperand identifies the mutated operand of a finite copy and

@@ -6718,8 +6718,408 @@ raise SystemExit(0 if tokens and tokens[0] == "mktemp" else 1)
 PY
 }
 
+# Shared supported Git semantics for the existing embedded effect readers.
+# This literal library is source from this hook, not command-supplied Python.
+git_effect_python() {
+  cat <<'PY'
+import stat
+
+
+def git_branch_effect(
+    arguments: list[str],
+    unknown: frozenset[int] = frozenset(),
+    variable: frozenset[int] = frozenset(),
+) -> str:
+    """Resolve supported branch argument roles before selecting the final action."""
+    actions = dict.fromkeys(("delete", "move", "copy", "edit-description", "set-upstream-to", "unset-upstream"), False)
+    short_actions = {"-d": "delete", "-D": "delete", "-m": "move", "-M": "move", "-c": "copy", "-C": "copy"}
+    required = {"--format", "--sort", "--points-at", "--set-upstream-to"}
+    filters = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at"}
+    list_mode = False
+    show_current = False
+    filter_mode = False
+    positional = False
+    paths_only = False
+    action_unknown = False
+    roles_unknown = False
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        uncertain = index in unknown
+        variable_word = index in variable
+        index += 1
+        if paths_only:
+            positional = True
+            continue
+        if uncertain:
+            if variable_word or value.startswith(("$?", "-")):
+                action_unknown = True
+                roles_unknown = roles_unknown or variable_word or "=" not in value
+            else:
+                positional = True
+            continue
+        if roles_unknown:
+            continue
+        if value == "--":
+            paths_only = True
+            continue
+        option, attached, operand = value.partition("=")
+        if option in required:
+            if not attached:
+                if index >= len(arguments):
+                    return "inspection"
+                roles_unknown = roles_unknown or index in variable
+                index += 1
+            if option == "--set-upstream-to":
+                actions["set-upstream-to"] = True
+            if option == "--points-at":
+                filter_mode = True
+            continue
+        if option in filters:
+            filter_mode = True
+            if not attached and index < len(arguments) and not arguments[index].startswith("-"):
+                roles_unknown = roles_unknown or index in variable
+                index += 1
+            continue
+        if value in short_actions:
+            actions[short_actions[value]] = True
+            continue
+        if value.startswith("--"):
+            name = value[2:]
+            negated = name.startswith("no-")
+            normalized = name[3:] if negated else name
+            if normalized in actions:
+                actions[normalized] = not negated
+                continue
+            if normalized == "list":
+                list_mode = not negated
+                continue
+            if normalized == "show-current":
+                show_current = not negated
+                continue
+        if value == "-l":
+            list_mode = True
+            continue
+        if option in {"--color", "--column", "--abbrev"}:
+            continue
+        if value in {"-a", "-r", "-v", "-vv", "-q", "-f", "-i", "--all", "--remotes", "--verbose", "--quiet", "--force", "--ignore-case", "--no-color", "--no-column", "--no-abbrev", "--omit-empty", "--create-reflog", "--no-create-reflog", "--recurse-submodules", "--no-recurse-submodules"}:
+            continue
+        if value.startswith("-"):
+            action_unknown = True
+            continue
+        positional = True
+    list_mode = list_mode or filter_mode
+    if sum(actions.values()) + int(list_mode) + int(show_current) > 1:
+        return "inspection"  # Git rejects conflicting final actions.
+    if any(actions.values()):
+        return "repository"
+    if action_unknown or roles_unknown:
+        return "repository-unresolved"
+    if list_mode or show_current or not positional:
+        return "inspection"
+    return "repository"
+
+
+def git_apply_effect(
+    arguments: list[str],
+    unknown: frozenset[int] = frozenset(),
+    variable: frozenset[int] = frozenset(),
+) -> str:
+    """Retain final check/output modes without exempting actual patch writes."""
+    state = dict.fromkeys(("check", "stat", "numstat", "summary", "apply"), False)
+    values = {"--include", "--exclude", "--directory", "--whitespace", "--build-fake-ancestor", "-p", "-C"}
+    flags = {"--index", "--cached", "--3way", "--ours", "--theirs", "--union", "--reject", "--reverse", "--recount", "--unidiff-zero", "--allow-empty", "--unsafe-paths", "--inaccurate-eof", "--ignore-space-change", "--ignore-whitespace", "--verbose", "--quiet", "-3", "-R", "-N", "-z", "-v", "-q"}
+    output_write = False
+    uncertain = False
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        if index in unknown:
+            uncertain = True
+            index += 1
+            continue
+        index += 1
+        if value == "--":
+            break
+        option, attached, operand = value.partition("=")
+        if option in values:
+            if not attached:
+                if index >= len(arguments):
+                    return "inspection"
+                uncertain = uncertain or index in variable
+                operand = arguments[index]
+                index += 1
+            if option == "--build-fake-ancestor":
+                output_write = bool(operand)
+            continue
+        if value.startswith(("-p", "-C")) and not value.startswith("--"):
+            continue
+        if value == "--no-build-fake-ancestor":
+            output_write = False
+            continue
+        if value.startswith("--"):
+            name = value[2:]
+            negated = name.startswith("no-")
+            normalized = name[3:] if negated else name
+            if normalized in state:
+                if not uncertain:
+                    state[normalized] = not negated
+                continue
+            if value in flags or "--" + normalized in flags:
+                continue
+        if value in flags or not value.startswith("-"):
+            continue
+        uncertain = True
+    if output_write:
+        return "mutation"
+    if uncertain:
+        return "advisory"
+    if not state["apply"] and any(state[name] for name in ("check", "stat", "numstat", "summary")):
+        return "inspection"
+    return "mutation"
+
+
+def git_pathspec_entries(
+    value: str | None,
+    base: str | None,
+    nul: bool,
+) -> list[str] | None:
+    """Read a bounded resolved regular file; None differs from a proven empty list."""
+    if value is None or value == "-" or not base or not os.path.isabs(base):
+        return None
+    path = value if os.path.isabs(value) else os.path.join(base, value)
+    try:
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+            return None
+        with open(path, "rb") as stream:
+            data = stream.read(65537)
+    except (OSError, ValueError):
+        return None
+    if len(data) > 65536 or not nul and b"\0" in data:
+        return None
+    parts = data.split(b"\0" if nul else b"\n")
+    if not nul:
+        parts = [part.removesuffix(b"\r") for part in parts]
+        # Git C-quoted records need a separate decoder; don't invent paths.
+        if any(part.startswith(b'"') for part in parts):
+            return None
+    entries = [os.fsdecode(part) for part in parts if part]
+    return entries if len(entries) <= 1024 else None
+
+
+def git_reset_effect(
+    arguments: list[str],
+    unknown: frozenset[int] = frozenset(),
+    may_disappear: frozenset[int] = frozenset(),
+    may_multiply: frozenset[int] = frozenset(),
+    cardinality_unknown: frozenset[int] = frozenset(),
+    base: str | None = None,
+) -> tuple[str, list[tuple[str, bool]]]:
+    """Keep supported final reset modes and file/path selection on one record."""
+    mode = ""
+    filename = ""
+    file_nul = paths_only = roles_unknown = False
+    selectors = []
+    operands = []
+    variable = may_disappear | may_multiply | cardinality_unknown
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        offset = index
+        index += 1
+        if paths_only:
+            selectors.append((offset, value, offset not in unknown))
+            continue
+        if offset in unknown:
+            option, attached, operand = value.partition("=")
+            if option == "--pathspec-from-file" and attached:
+                filename = None
+                continue
+            roles_unknown = roles_unknown or offset in variable or value.startswith(("$?", "-"))
+            operands.append((offset, value))
+            continue
+        if value == "--":
+            paths_only = True
+            continue
+        option, attached, operand = value.partition("=")
+        if option == "--pathspec-from-file":
+            value_unknown = False
+            if not attached:
+                if index >= len(arguments):
+                    return "reset-option-unresolved", []
+                operand = arguments[index]
+                value_unknown = index in unknown
+                roles_unknown = roles_unknown or index in variable
+                index += 1
+            filename = None if value_unknown else operand
+            continue
+        if value == "--no-pathspec-from-file":
+            filename = ""
+            continue
+        if value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
+            file_nul = value == "--pathspec-file-nul"
+            continue
+        if value in {"--hard", "--merge", "--keep", "--mixed", "--soft"}:
+            if not roles_unknown:
+                mode = value
+            continue
+        if value in {"-q", "--quiet", "--no-quiet", "--refresh", "--no-refresh", "-N", "--intent-to-add", "--no-intent-to-add"}:
+            continue
+        if value.startswith("-"):
+            return "reset-option-unresolved", []
+        operands.append((offset, value))
+    if filename is None or filename:
+        # File plus positional paths is invalid. A revision before -- can be
+        # supported separately; without lookup, do not guess an operand role.
+        if selectors or operands or roles_unknown:
+            return "reset-option-unresolved", []
+        if filename is None:
+            return "pathspec-selection-unresolved", []
+        entries = git_pathspec_entries(filename, base, file_nul)
+        if entries is None:
+            return "pathspec-selection-unresolved", []
+        selectors = [(len(arguments) + offset, value, True) for offset, value in enumerate(entries)]
+    elif file_nul:
+        return "reset-option-unresolved", []
+    if selectors and mode not in {"", "--mixed"}:
+        return "reset-option-unresolved", []  # Git rejects these path/mode pairs.
+    known_selectors = [(value, literal) for _, value, literal in selectors]
+    if mode in {"--hard", "--merge", "--keep"}:
+        return "reset-working-tree", known_selectors
+    if not paths_only and not filename and any(offset in unknown for offset, _ in operands):
+        return "reset-option-unresolved", []
+    if roles_unknown:
+        return "reset-option-unresolved", known_selectors
+    if any(literal and value in {":/", ":(top)"} for _, value, literal in selectors):
+        return "reset-index", known_selectors
+    if selectors and all(offset in may_disappear and offset not in cardinality_unknown
+                         for offset, _, _ in selectors):
+        return "reset-unresolved", known_selectors
+    if selectors:
+        return "reset", known_selectors
+    return "reset-index", []
+
+
+def git_add_effect(
+    arguments: list[str],
+    unknown: frozenset[int] = frozenset(),
+    may_disappear: frozenset[int] = frozenset(),
+    may_multiply: frozenset[int] = frozenset(),
+    cardinality_unknown: frozenset[int] = frozenset(),
+    base: str | None = None,
+) -> tuple[str, list[tuple[str, bool]]]:
+    """Resolve each add record's final modes and supported selector contents."""
+    variable = may_disappear | may_multiply | cardinality_unknown
+    all_mode = update_mode = refresh = interactive = False
+    preview = preview_proven = roles_unknown = all_proven = False
+    option_unknown = False
+    shape_known = True
+    paths_only = False
+    filename = ""
+    file_nul = False
+    selectors = []
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        offset = index
+        index += 1
+        if paths_only:
+            selectors.append((offset, value, offset not in unknown))
+            continue
+        if offset in unknown:
+            if offset in variable or value.startswith("$?") or (value.startswith("-") and "=" not in value):
+                roles_unknown = True
+                preview_proven = False
+            if value.startswith("-"):
+                option, attached, operand = value.partition("=")
+                if option == "--pathspec-from-file" and attached:
+                    filename = None
+                elif option != "--chmod" or not attached:
+                    option_unknown = True
+            else:
+                selectors.append((offset, value, False))
+            continue
+        if value == "--":
+            paths_only = True
+            continue
+        option, attached, operand = value.partition("=")
+        if option in {"--pathspec-from-file", "--chmod"}:
+            value_unknown = False
+            if not attached:
+                if index >= len(arguments):
+                    return "add-option-unresolved", []
+                operand = arguments[index]
+                value_unknown = index in unknown
+                if index in variable:
+                    roles_unknown = True
+                    preview_proven = False
+                    option_unknown = True
+                index += 1
+            if option == "--pathspec-from-file":
+                filename = None if value_unknown else operand
+            continue
+        if value == "--no-pathspec-from-file":
+            filename = ""
+            continue
+        if value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
+            file_nul = value == "--pathspec-file-nul"
+            continue
+        if value in {"-A", "--all", "--no-all"}:
+            all_mode = value != "--no-all"
+            all_proven = not roles_unknown
+            continue
+        if value in {"-u", "--update", "--no-update"}:
+            update_mode = value != "--no-update"
+            continue
+        if value in {"--refresh", "--no-refresh"}:
+            refresh = value == "--refresh"
+            continue
+        if value in {"-n", "--dry-run", "--no-dry-run"}:
+            preview = value != "--no-dry-run"
+            preview_proven = not roles_unknown
+            continue
+        if value in {"-p", "-i", "-e", "--patch", "--interactive", "--edit", "--renormalize"}:
+            interactive = True
+            continue
+        if value.startswith("-"):
+            if value not in {"-v", "-f", "-N", "--verbose", "--no-verbose", "--force", "--no-force", "--intent-to-add", "--no-intent-to-add", "--sparse", "--ignore-errors", "--ignore-missing", "--ignore-removal", "--no-ignore-removal"}:
+                shape_known = False
+            continue
+        selectors.append((offset, value, True))
+    if all_mode and update_mode or interactive or not shape_known:
+        return "add-option-unresolved", []
+    if preview:
+        return ("inspection" if preview_proven else "add-option-unresolved"), []
+    if refresh:
+        return "add-option-unresolved", []
+    if filename is None or filename:
+        if selectors or roles_unknown:
+            return "add-option-unresolved", []  # Mixed or unproved selector roles.
+        if filename is None:
+            return "pathspec-selection-unresolved", []
+        entries = git_pathspec_entries(filename, base, file_nul)
+        if entries is None:
+            return "pathspec-selection-unresolved", []
+        selectors = [(len(arguments) + offset, value, True) for offset, value in enumerate(entries)]
+    elif file_nul:
+        return "add-option-unresolved", []
+    known_selectors = [(value, literal) for _, value, literal in selectors]
+    if any(literal and value in {":/", ":(top)"} for _, value, literal in selectors):
+        return "whole-worktree-staging", known_selectors
+    if (all_mode and all_proven or update_mode and not roles_unknown) and not selectors and not option_unknown:
+        return "whole-worktree-staging", []
+    if all_mode and all_proven and selectors and not option_unknown and all(
+            offset in may_disappear and offset not in cardinality_unknown for offset, _, _ in selectors):
+        return "add-target-unresolved", known_selectors
+    if option_unknown:
+        return "add-option-unresolved", known_selectors
+    return "prep", known_selectors
+PY
+}
+
 command_invokes_git_branch_remote_mutation() {
-  python3 - "$1" "$(planner_shell_analysis_for "$1")" <<'PY'
+  python3 - "$1" "$(planner_shell_analysis_for "$1")" "$(git_effect_python)" <<'PY'
 import json
 import os
 import hashlib
@@ -6727,9 +7127,10 @@ import re
 import shlex
 import sys
 
+exec(compile(sys.argv[3], "git-effect-library", "exec"))
+
 text = sys.argv[1]
 separators = {";", "&", "&&", "|", "||", "(", ")"}
-branch_mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
 remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
 
 def tokenize(value):
@@ -6834,32 +7235,12 @@ def inspect(
         return False
     subcommand, args = segment[index], segment[index + 1:]
     if subcommand == "branch":
-        for offset, token in enumerate(args, index + 1):
-            if offset in unknown:
-                continue
-            if token in branch_mutators or any(
-                    token.startswith(option + "=") for option in branch_mutators
-                    if option.startswith("--")):
-                print("executable=git subcommand=branch token=%s argv_index=%d kind=branch-mutation" %
-                      (token, offset))
-                return True
-        # A possible list/action option does not establish branch creation.
-        # Explicit mutation options above remain independently actionable.
-        if any((offset in unknown and token.startswith("-")) or
-               (offset not in unknown and token in {"-l", "--list"})
-               for offset, token in enumerate(args, index + 1)):
-            return False
-        value_options = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--format", "--sort", "--column", "--color"}
-        skip = False
-        for offset, token in enumerate(args, index + 1):
-            if skip:
-                skip = False
-            elif token in value_options:
-                skip = True
-            elif offset not in unknown and not token.startswith("-"):
-                print("executable=git subcommand=branch token=%s argv_index=%d kind=branch-ref-mutation" %
-                      (token, offset))
-                return True
+        effect = git_branch_effect(args,
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in variable_cardinality if value > index))
+        if effect == "repository":
+            print("executable=git subcommand=branch kind=branch-mutation")
+            return True
         return False
     if subcommand == "remote" and args and index + 1 not in unknown and args[0] in remote_mutators:
         print("executable=git subcommand=remote token=%s argv_index=%d kind=remote-mutation" %
@@ -8054,12 +8435,14 @@ PY
 }
 
 command_invokes_eci_acceptance_mutation() {
-  python3 - "$1" "$(planner_shell_analysis_for "$1")" <<'PY'
+  python3 - "$1" "$(planner_shell_analysis_for "$1")" "$(git_effect_python)" <<'PY'
 import json
 import os
 import re
 import shlex
 import sys
+
+exec(compile(sys.argv[3], "git-effect-library", "exec"))
 
 text = sys.argv[1]
 operators = {";", "&", "&&", "|", "||", "(", ")"}
@@ -8067,7 +8450,6 @@ git_mutators = {
     "merge", "rebase", "cherry-pick", "revert", "am", "apply",
     "tag",
 }
-branch_mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
 remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
 
 def tokenize(value):
@@ -8133,12 +8515,14 @@ def inspect(
                 continue
             if index in unknown or any(value <= index for value in variable_cardinality):
                 return False
+            argument_unknown = frozenset(value - index - 1 for value in unknown if value > index)
+            argument_variable = frozenset(value - index - 1 for value in variable_cardinality if value > index)
+            if token == "apply":
+                return git_apply_effect(segment[index + 1:], argument_unknown, argument_variable) == "mutation"
             if token in git_mutators:
                 return True
             if token == "branch":
-                return any(offset not in unknown and (
-                    arg in branch_mutators or any(arg.startswith(opt + "=") for opt in branch_mutators))
-                    for offset, arg in enumerate(segment[index + 1:], index + 1))
+                return git_branch_effect(segment[index + 1:], argument_unknown, argument_variable) == "repository"
             if token == "remote":
                 return bool(segment[index + 1:] and index + 1 not in unknown and segment[index + 1] in remote_mutators)
             return False
@@ -10450,12 +10834,14 @@ git_mutation_specs() {
   # ordinary repository work into a denial.
   local command_text="${1:-$command}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
   local worker_mode="${hook_is_subagent:-false}"
-  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" "$(planner_shell_analysis_for "$command_text")" <<'PY'
+  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" <<'PY'
 import json
 import os
 import re
 import shlex
 import sys
+
+exec(compile(sys.argv[6], "git-effect-library", "exec"))
 
 command, cwd = sys.argv[1:3]
 worker_mode = len(sys.argv) > 4 and sys.argv[4] == "true"
@@ -10553,6 +10939,12 @@ def commit_effect(
         if argument in {"--", "--end-of-options"}:
             path_operands = path_operands or index < len(arguments)
             break
+        if argument_unknown and argument.startswith("$?"):
+            # A standalone scalar may itself be an option, including a
+            # preview cancellation. Known option values were consumed above.
+            option_unknown = True
+            lose_arity()
+            continue
         if argument == "-" or not argument.startswith("-"):
             path_operands = True
             continue
@@ -10622,9 +11014,9 @@ def commit_effect(
                 if not argument_unknown:
                     return None
                 option_unknown = True
-                # A suffix in this final short-option word cannot negate
-                # an earlier preview; additional argv may still do so.
-                lose_arity(index < len(arguments))
+                # An opaque first option character can produce a long
+                # preview cancellation; later argv may also change state.
+                lose_arity(argument.startswith("-$?") or index < len(arguments))
                 break
 
     # finalize_deferred_config and parse_and_validate_options in commit.c
@@ -10634,8 +11026,9 @@ def commit_effect(
         # Later opaque argv cannot invent an effect, but an option whose
         # role was already established keeps its concrete boundary.
         prior, prior_paths, prior_format = established
-        if not preview_may_change and (prior["dry-run"] or prior_format or prior["null"]):
-            return None
+        if prior["dry-run"] or prior_format or prior["null"]:
+            # Losing proof of preview does not itself prove a mutation.
+            return "commit-option-unresolved" if preview_may_change else None
         if prior["all"]:
             return "commit-all"
         if prior_paths or any(prior[option] for option in selection_options):
@@ -11003,147 +11396,22 @@ def segment_spec(
     if any(value < index for value in variable_cardinality):
         return None
     verb = tokens[index]
-    option_unknown = False
-    if verb in {"reset", "add"}:
-        consume_value = False
-        value_options = {"--pathspec-from-file"}
-        if verb == "add":
-            value_options.add("--chmod")
-        for offset, argument in enumerate(tokens[index + 1:], index + 1):
-            if consume_value:
-                consume_value = False
-                continue
-            if offset not in unknown and argument == "--":
-                break
-            option, separator, _ = argument.partition("=")
-            if offset in unknown and argument.startswith("-") and (
-                    not separator or "$?" in option):
-                option_unknown = True
-            if option in value_options and not separator:
-                consume_value = True
     if verb == "reset":
-        arguments = tokens[index + 1:]
-        path_boundary = next((offset for offset, argument in enumerate(arguments)
-                              if index + offset + 1 not in unknown and argument == "--"),
-                             len(arguments))
-        path_indices = list(range(index + path_boundary + 2, len(tokens)))
-        guaranteed_path = any(value not in may_disappear and value not in cardinality_unknown
-                              for value in path_indices)
-        # The cardinality boundary applies only to the plain reset forms.
-        # Patch/file selectors and unsupported modes do not prove breadth.
-        reset_options = {"-q", "--quiet", "--no-quiet", "--refresh", "--no-refresh",
-                         "-N", "--intent-to-add", "--no-intent-to-add",
-                         "--hard", "--merge", "--keep", "--mixed", "--soft"}
-        if any(offset + index + 1 not in unknown and argument.startswith("-") and
-               argument not in reset_options for offset, argument in enumerate(arguments[:path_boundary])):
-            return "reset-option-unresolved", repo_dir
-        modes = {argument for offset, argument in enumerate(arguments[:path_boundary], index + 1)
-                 if offset not in unknown and argument in {"--hard", "--merge", "--keep", "--mixed", "--soft"}}
-        if len(modes) > 1 or (modes and guaranteed_path):
-            return "reset-option-unresolved", repo_dir
-        for offset, argument in enumerate(arguments, index + 1):
-            if offset in unknown:
-                continue
-            if argument == "--":
-                break
-            if argument in {"--hard", "--merge", "--keep"}:
-                return "reset-working-tree", repo_dir
-        if option_unknown:
-            return "reset-option-unresolved", repo_dir
-        if path_indices and not guaranteed_path:
-            if all(value in may_disappear and value not in cardinality_unknown for value in path_indices):
-                return "reset-unresolved", repo_dir
-            return "reset-option-unresolved", repo_dir
-        # Without explicit paths, an unknown operand may select a revision
-        # (whole-index reset) or a filename. Do not invent either target.
-        if not arguments[path_boundary + 1:] and any(
-                offset in unknown for offset in range(index + 1, len(tokens))):
-            return "reset-unresolved", repo_dir
-        return "reset", repo_dir
+        effect, _ = git_reset_effect(tokens[index + 1:],
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in may_disappear if value > index),
+            frozenset(value - index - 1 for value in may_multiply if value > index),
+            frozenset(value - index - 1 for value in cardinality_unknown if value > index),
+            repo_dir)
+        return effect, repo_dir
     if verb == "add":
-        all_selector = False
-        selectors = []
-        paths_only = False
-        preview = False
-        preview_proven = False
-        argument_roles_unknown = False
-        all_proven = False
-        alternative = False
-        shape_known = True
-        root_selector = False
-        consume_value = None
-        for offset, argument in enumerate(tokens[index + 1:], index + 1):
-            if consume_value is not None:
-                if consume_value == "--pathspec-from-file":
-                    alternative = offset in unknown or bool(argument)
-                option_unknown = option_unknown or offset in variable_cardinality
-                argument_roles_unknown = argument_roles_unknown or offset in variable_cardinality
-                consume_value = None
-                continue
-            if offset in unknown:
-                if not paths_only and (offset in variable_cardinality or argument.startswith("$?") or
-                                       (argument.startswith("-") and "=" not in argument)):
-                    argument_roles_unknown = True
-                if not paths_only and argument.startswith("-"):
-                    option, separator, value = argument.partition("=")
-                    if option == "--pathspec-from-file" and separator:
-                        alternative = True
-                    elif option != "--chmod" or not separator:
-                        option_unknown = True
-                else:
-                    selectors.append(offset)
-                continue
-            if argument == "--" and not paths_only:
-                paths_only = True
-                continue
-            if not paths_only and argument in {"-A", "--all"}:
-                all_selector = True
-                all_proven = not argument_roles_unknown
-                continue
-            if not paths_only and argument == "--no-all":
-                all_selector = False
-                continue
-            if not paths_only and argument in {"-n", "--dry-run", "--no-dry-run"}:
-                preview = argument != "--no-dry-run"
-                preview_proven = not argument_roles_unknown
-                continue
-            if not paths_only and argument.startswith("-"):
-                if argument in {"--pathspec-from-file", "--chmod"}:
-                    consume_value = argument
-                elif argument.startswith("--pathspec-from-file="):
-                    alternative = bool(argument.split("=", 1)[1])
-                elif argument == "--no-pathspec-from-file":
-                    alternative = False
-                elif argument.startswith("--chmod="):
-                    pass
-                elif argument in {"-p", "-i", "-e", "-u", "--patch", "--interactive", "--edit",
-                                  "--update", "--refresh", "--renormalize", "--ignore-removal",
-                                  "--no-ignore-removal"}:
-                    alternative = True
-                elif argument not in {"-v", "-f", "-N", "--verbose", "--no-verbose", "--force",
-                                      "--no-force", "--intent-to-add", "--no-intent-to-add", "--sparse",
-                                      "--ignore-errors", "--ignore-missing", "--pathspec-file-nul"}:
-                    shape_known = False
-                continue
-            if argument == ":/":
-                root_selector = not argument_roles_unknown
-            selectors.append(offset)
-        disappearing_scope = all_selector and all_proven and selectors and not option_unknown and all(
-            value in may_disappear and value not in cardinality_unknown for value in selectors)
-        if preview and preview_proven:
-            return "inspection", repo_dir
-        if alternative or not shape_known or consume_value is not None:
-            return "add-option-unresolved", repo_dir
-        if preview:
-            return ("add-target-unresolved" if disappearing_scope else "add-option-unresolved"), repo_dir
-        if root_selector:
-            return "whole-worktree-staging", repo_dir
-        if all_selector and all_proven and not selectors and not option_unknown:
-            return "whole-worktree-staging", repo_dir
-        if disappearing_scope:
-            return "add-target-unresolved", repo_dir
-        if option_unknown:
-            return "add-option-unresolved", repo_dir
+        effect, _ = git_add_effect(tokens[index + 1:],
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in may_disappear if value > index),
+            frozenset(value - index - 1 for value in may_multiply if value > index),
+            frozenset(value - index - 1 for value in cardinality_unknown if value > index),
+            repo_dir)
+        return effect, repo_dir
     if verb in {"add", "rm", "mv", "restore"}:
         return "prep", repo_dir
     if verb == "checkout":
@@ -11161,68 +11429,14 @@ def segment_spec(
             return "worktree", repo_dir
         return None
     if verb == "branch":
-        branch_mutators = {
-            "-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move",
-            "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream",
-        }
-        # These options take required separate values.  --abbrev,
-        # --column, and --color have optional values only in their attached
-        # --option=value spelling; a following non-option is a branch operand.
-        branch_value_options = {
-            "--contains", "--no-contains", "--merged", "--no-merged",
-            "--points-at", "--format", "--sort",
-        }
-        list_mode = False
-        action_unknown = False
-        values = tokens[index + 1:]
-        value_index = 0
-        while value_index < len(values):
-            value = values[value_index]
-            if index + value_index + 1 in unknown:
-                if value.startswith("-"):
-                    option, separator, _ = value.partition("=")
-                    if not separator or "$?" in option:
-                        action_unknown = True
-                elif index + value_index + 1 in variable_cardinality:
-                    action_unknown = True
-                elif not list_mode and not action_unknown:
-                    return "repository", repo_dir
-                value_index += 1
-                continue
-            if value in branch_mutators or any(
-                value.startswith(option + "=") for option in branch_mutators
-                if option.startswith("--")
-            ):
-                return "repository", repo_dir
-            if value in {"-l", "--list"}:
-                list_mode = True
-                value_index += 1
-                continue
-            if value in branch_value_options:
-                if value_index + 1 < len(values) and not values[value_index + 1].startswith("-"):
-                    value_index += 2
-                else:
-                    # Do not consume another option as a required value: the
-                    # next token may be a concrete branch mutation that the
-                    # ownership route must still see.
-                    value_index += 1
-                continue
-            if any(value.startswith(option + "=") for option in branch_value_options):
-                value_index += 1
-                continue
-            if value in {"-a", "--all", "-r", "--remotes", "-v", "-vv",
-                         "--verbose", "--no-color", "--omit-empty", "--show-current",
-                         "--abbrev", "--column", "--color"}:
-                value_index += 1
-                continue
-            if value.startswith("-"):
-                value_index += 1
-                continue
-            if list_mode or action_unknown:
-                value_index += 1
-                continue
-            return "repository", repo_dir
-        return ("repository-unresolved" if action_unknown else "inspection"), repo_dir
+        return git_branch_effect(tokens[index + 1:],
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in variable_cardinality if value > index)), repo_dir
+    if verb == "apply":
+        effect = git_apply_effect(tokens[index + 1:],
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in variable_cardinality if value > index))
+        return ("inspection" if effect == "inspection" else "apply"), repo_dir
     if verb == "remote":
         remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
         if tokens[index + 1:index + 2] and index + 1 in unknown:
@@ -11377,12 +11591,14 @@ git_mutation_cross_scope_detail() {
 git_mutation_broad_effect_detail() {
   local target_repo="$1" command_text="${2:-$command}" command_cwd="${3:-$cwd}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
 
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_replays" "$(planner_shell_analysis_for "$command_text")" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_replays" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" <<'PY'
 import json
 import os
 import re
 import shlex
 import sys
+
+exec(compile(sys.argv[6], "git-effect-library", "exec"))
 
 command, repo, cwd = sys.argv[1:4]
 try:
@@ -11456,7 +11672,7 @@ def git_record_command(
     segment_index: int,
     unknown: frozenset[int],
     variable_cardinality: frozenset[int],
-) -> tuple[str, list[str], frozenset[int], str] | None:
+) -> tuple[str, list[str], frozenset[int], str, int] | None:
     index = 0
     environment = {}
     while index < len(segment) and assignment.match(segment[index]):
@@ -11579,71 +11795,8 @@ def git_record_command(
             return None
         current = parent
     return (segment[index], segment[index + 1:], frozenset(
-        value - index - 1 for value in unknown if value > index), repo_dir)
+        value - index - 1 for value in unknown if value > index), repo_dir, index)
 
-
-def git_add_whole_worktree_selector(
-    arguments: list[str],
-    unknown: frozenset[int],
-    repo_dir: str,
-) -> str | None:
-    selectors = []
-    all_selector = None
-    paths_only = False
-    for index, token in enumerate(arguments):
-        if paths_only:
-            selectors.append((token, index not in unknown))
-            continue
-        if index in unknown:
-            selectors.append((token, False))
-            continue
-        if token == "--":
-            paths_only = True
-            continue
-        if token in {"-A", "--all"}:
-            all_selector = token
-            continue
-        if token.startswith("-"):
-            continue
-        selectors.append((token, True))
-    if all_selector and not selectors:
-        return all_selector
-    for selector, literal in selectors:
-        if not literal or not selector:
-            continue
-        if selector == ":/":
-            return selector
-        if os.path.realpath(resolve(selector, repo_dir)) == repo:
-            return selector
-    return None
-
-
-def broad_reset(args: list[str], unknown: frozenset[int]) -> str | None:
-    boundary = next((index for index, option in enumerate(args)
-                     if index not in unknown and option == "--"), len(args))
-    if any(index in unknown and option.startswith("-")
-           for index, option in enumerate(args[:boundary])):
-        return None
-    supported = {"-q", "--quiet", "--no-quiet", "--refresh", "--no-refresh",
-                 "-N", "--intent-to-add", "--no-intent-to-add",
-                 "--hard", "--merge", "--keep", "--mixed", "--soft"}
-    if any(index not in unknown and option.startswith("-") and option not in supported
-           for index, option in enumerate(args[:boundary])):
-        return None
-    modes = {option for index, option in enumerate(args[:boundary]) if index not in unknown
-             and option in {"--hard", "--merge", "--keep", "--mixed", "--soft"}}
-    if len(modes) > 1 or (modes and args[boundary + 1:]):
-        return None
-    if any(index not in unknown and option in {"--hard", "--merge", "--keep"}
-           for index, option in enumerate(args[:boundary])):
-        return "reset-working-tree"
-    # Git resolves a sole operand as a revision or filename in the repository.
-    # An unknown value leaves that selector unresolved; it does not erase it.
-    if boundary == len(args) or not args[boundary + 1:]:
-        if unknown:
-            return "reset-unresolved"
-        return "reset-index"
-    return None
 
 for record in records:
     directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
@@ -11657,16 +11810,32 @@ for record in records:
                                      if "may_disappear_arguments" not in record else frozenset()))
         if parsed is None:
             continue
-        verb, arguments, unknown, repo_dir = parsed
-        effect = broad_reset(arguments, unknown) if verb == "reset" else None
-        if effect:
-            print("effect=%s target=%s" % (effect, repo))
-            raise SystemExit(0)
-        selector = (git_add_whole_worktree_selector(arguments, unknown, repo_dir)
-                    if verb == "add" else None)
-        if selector:
-            print("effect=whole-worktree-staging target=%s selector=%s" % (repo, selector))
-            raise SystemExit(0)
+        verb, arguments, unknown, repo_dir, verb_index = parsed
+        disappearing = frozenset(value - verb_index - 1 for value in record.get("may_disappear_arguments") or [] if value > verb_index)
+        multiplying = frozenset(value - verb_index - 1 for value in record.get("may_multiply_arguments") or [] if value > verb_index)
+        unavailable = frozenset(value - verb_index - 1 for value in record.get("unknown_cardinality_arguments") or [] if value > verb_index)
+        if "may_disappear_arguments" not in record or "may_multiply_arguments" not in record:
+            unavailable |= unknown
+        if verb == "reset":
+            effect, selectors = git_reset_effect(arguments, unknown, disappearing, multiplying, unavailable, repo_dir)
+            if effect in {"reset-working-tree", "reset-index", "reset-unresolved", "pathspec-selection-unresolved"}:
+                print("effect=%s target=%s" % (effect, repo))
+                raise SystemExit(0)
+            if effect == "reset" and any(literal and value and os.path.realpath(resolve(value, repo_dir)) == repo
+                                         for value, literal in selectors):
+                print("effect=reset-index target=%s" % repo)
+                raise SystemExit(0)
+        if verb == "add":
+            effect, selectors = git_add_effect(arguments, unknown, disappearing, multiplying, unavailable, repo_dir)
+            if effect in {"whole-worktree-staging", "add-target-unresolved"}:
+                print("effect=%s target=%s" % (effect, repo))
+                raise SystemExit(0)
+            if effect != "prep":
+                continue
+            for selector, literal in selectors:
+                if literal and selector and os.path.realpath(resolve(selector, repo_dir)) == repo:
+                    print("effect=whole-worktree-staging target=%s selector=%s" % (repo, selector))
+                    raise SystemExit(0)
 raise SystemExit(1)
 PY
 }
@@ -11681,13 +11850,15 @@ git_protected_worktree_target_detail() {
   # deliberately follows a concrete Git child through ordinary launch
   # wrappers, and it uses lexical worktree paths: a symlink alias is a
   # different Git entry from the live control file it may point at.
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$include_index" "$(planner_shell_analysis_for "$command_text")" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$include_index" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" <<'PY'
 import glob
 import json
 import os
 import re
 import shlex
 import sys
+
+exec(compile(sys.argv[8], "git-effect-library", "exec"))
 
 command, target_repo, command_cwd, configured_home, hook_dir, include_index = sys.argv[1:7]
 analysis = json.loads(sys.argv[7])
@@ -11773,34 +11944,7 @@ def pathspec_candidates(value, base):
         return glob.glob(candidate, recursive=True), False
     return [candidate], False
 
-def pathspec_file_entries(value, file_nul, base):
-    # Git treats '-' as stdin.  The hook has no command stdin contract for
-    # this callback, so leave that and unreadable/malformed files to Git's
-    # normal result instead of inventing a denial.
-    if value == "-":
-        return []
-    # Git resolves a relative pathspec-file name against the effective
-    # work-tree, not the callback CWD.  This matters when --work-tree points
-    # at the repository while the callback is launched from elsewhere.
-    path = lexical_resolve(value, base)
-    if not path:
-        return []
-    try:
-        with open(path, "rb") as stream:
-            data = stream.read()
-    except (OSError, ValueError):
-        return []
-    if file_nul:
-        if b"\n" in data or b"\r" in data:
-            return []
-        values = data.split(b"\0")
-    else:
-        if b"\0" in data:
-            return []
-        values = data.splitlines()
-    return [os.fsdecode(item) for item in values if item]
-
-def pathspec_from_file_argument(value):
+def pathspec_from_file_argument(value: str) -> tuple[bool, str | None]:
     option, separator, argument = value.partition("=")
     prefix = "--pathspec-fr"
     full = "--pathspec-from-file"
@@ -11814,52 +11958,50 @@ def collect_pathspecs(
     unknown: frozenset[int] = frozenset(),
 ) -> list[str]:
     paths = []
-    pathspec_files = []
+    filename = ""
     file_nul = False
     after_separator = False
     index = 0
     value_options = {
-        "--pathspec-from-file", "--source", "--conflict", "-b", "-B",
-        "--orphan", "--unified", "-U", "--inter-hunk-context",
-        "--recurse-submodules",
+        "--source", "--conflict", "-b", "-B", "--orphan", "--unified", "-U",
+        "--inter-hunk-context", "--recurse-submodules",
     }
     while index < len(args):
         value = args[index]
-        if not after_separator and value.startswith("-"):
-            is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
-            if is_pathspec_file:
-                if pathspec_file is None:
-                    if index + 1 < len(args):
-                        if index + 1 not in unknown:
-                            pathspec_files.append(args[index + 1])
-                        index += 2
-                    else:
-                        index += 1
-                else:
-                    if index not in unknown:
-                        pathspec_files.append(pathspec_file)
-                    index += 1
-                continue
-        if not after_separator and value == "--":
-            after_separator = True
-            index += 1
-            continue
-        if not after_separator and value.startswith("-"):
-            if value == "--pathspec-file-nul":
-                file_nul = True
-            elif value in value_options:
-                if index + 1 < len(args):
-                    index += 1
-            elif value.startswith(("--source=", "--conflict=", "--orphan=", "--unified=", "--inter-hunk-context=", "--recurse-submodules=")):
-                pass
-            index += 1
-            continue
-        if index not in unknown:
-            paths.append(value)
+        offset = index
         index += 1
-    for pathspec_file in pathspec_files:
-        paths.extend(pathspec_file_entries(pathspec_file, file_nul, base))
-    return paths
+        if not after_separator and value == "--" and offset not in unknown:
+            after_separator = True
+            continue
+        if not after_separator and value.startswith("-"):
+            is_file, operand = pathspec_from_file_argument(value)
+            if is_file:
+                value_unknown = offset in unknown
+                if operand is None:
+                    if index >= len(args):
+                        return []
+                    operand = args[index]
+                    value_unknown = index in unknown
+                    index += 1
+                filename = None if value_unknown else operand
+                continue
+            if offset in unknown:
+                continue
+            if value == "--no-pathspec-from-file":
+                filename = ""
+            elif value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
+                file_nul = value == "--pathspec-file-nul"
+            elif value in value_options:
+                index += 1
+            continue
+        if offset not in unknown:
+            paths.append(value)
+    if filename is None or filename:
+        if paths:
+            return []  # Git rejects simultaneous file and explicit paths.
+        entries = git_pathspec_entries(filename, base, file_nul)
+        return entries if entries is not None else []
+    return [] if file_nul else paths
 
 def inside(root, path):
     return path == root or path.startswith(root + os.sep)
@@ -12183,24 +12325,43 @@ def git_command(
     return segment[index], segment[index + 1:], base, frozenset(
         value - index - 1 for value in unknown if value > index)
 
-def rm_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
-    recursive = False
-    cached_or_dry = False
-    after_separator = False
-    for index, value in enumerate(args):
-        if index in unknown:
+def rm_detail(
+    args: list[str],
+    base: str,
+    unknown: frozenset[int],
+) -> str | None:
+    recursive = cached = dry_run = False
+    final_state_unknown = False
+    index = 0
+    while index < len(args):
+        value = args[index]
+        offset = index
+        index += 1
+        if offset in unknown:
+            if value.startswith(("$?", "-")):
+                final_state_unknown = True
             continue
         if value == "--":
-            after_separator = True
+            break
+        is_file, operand = pathspec_from_file_argument(value)
+        if is_file:
+            if operand is None:
+                index += 1
             continue
-        if not after_separator and value.startswith("-"):
-            if value in {"--cached", "--dry-run", "-n"}:
-                cached_or_dry = True
-            if value == "--recursive" or (not value.startswith("--") and "r" in value[1:]):
-                recursive = True
-    # Index-only and dry-run operations have no worktree effect.  Invalid or
-    # missing pathspecs likewise remain Git's ordinary runtime result.
-    if cached_or_dry:
+        if value in {"--cached", "--no-cached"}:
+            cached = value == "--cached"
+        elif value in {"--dry-run", "--no-dry-run", "-n"}:
+            dry_run = value != "--no-dry-run"
+        elif value == "--recursive":
+            recursive = True
+        elif value == "--no-recursive":
+            recursive = False
+        elif value.startswith("-") and not value.startswith("--"):
+            recursive = recursive or "r" in value[1:]
+            dry_run = dry_run or "n" in value[1:]
+    # Resolve both final exemptions independently. Unknown option identity
+    # does not establish removal, and consumed filenames are never options.
+    if cached or dry_run or final_state_unknown:
         return None
     for value in collect_pathspecs(args, base, unknown):
         candidates, _ = pathspec_candidates(value, base)
@@ -12764,17 +12925,22 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|reset-working-tree|reset-unresolved|reset-option-unresolved|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|output) ;; *) continue ;; esac
+    case "$operation" in reset|reset-index|reset-working-tree|pathspec-selection-unresolved|reset-unresolved|reset-option-unresolved|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
     # Known operation boundaries do not depend on a repository path being
     # known. The transport marker below is never a filesystem target.
     command_state="$operation"
-    if [ "$operation" = reset-working-tree ] || [ "$operation" = whole-worktree-staging ]; then
+    if [ "$operation" = reset-working-tree ] || [ "$operation" = reset-index ] || [ "$operation" = whole-worktree-staging ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
         "ECI Git mutation has a broad destructive effect: effect=$operation target=$repo_dir" \
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
+    fi
+    if [ "$operation" = pathspec-selection-unresolved ]; then
+      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
+        "ECI Git selection has an unresolved pathspec-file target: effect=$operation repository=$repo_dir" \
+        "supply the exact owned paths as preserved arguments, or use a readable bounded regular pathspec file with supported contents"
     fi
     if [ "$operation" = reset-unresolved ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
