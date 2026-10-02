@@ -3757,10 +3757,9 @@ func inspectSegment(
 		}
 	}
 	if request.Marker == MarkerActive && name == "mktemp" {
-		// Temporary-directory setup is coordinator-owned capability. Defer
-		// every active invocation to the provider route, which validates the
-		// exact template and rejects workers, rather than encoding a template
-		// allowlist in the planner.
+		// The provider resolves direct worker directory templates against its
+		// protected-control namespace and retains the coordinator template
+		// route. Defer before generic admission so neither target check is lost.
 		return DecisionDefer, nil
 	}
 

@@ -6705,19 +6705,6 @@ raise SystemExit(0 if name in explicit else 1)
 PY
 }
 
-command_invokes_subagent_coordinator_only() {
-  python3 - "$1" <<'PY'
-import shlex
-import sys
-
-try:
-    tokens = shlex.split(sys.argv[1], posix=True)
-except ValueError:
-    raise SystemExit(1)
-raise SystemExit(0 if tokens and tokens[0] == "mktemp" else 1)
-PY
-}
-
 # Shared supported Git semantics for the existing embedded effect readers.
 # This literal library is source from this hook, not command-supplied Python.
 git_effect_python() {
@@ -8145,11 +8132,27 @@ def finite_operands(values, flags=(), value_options=()):
         index += 1
     return operands
 
-def command_writer_operands(values):
+def command_writer_operands(values: list[str]) -> list[str]:
     """Return only direct filesystem operands whose command effect writes them."""
     if not values:
         return []
     name = os.path.basename(values[0])
+    if name == "mktemp":
+        # A direct directory template selects an output namespace even though
+        # mktemp chooses its suffix. Other forms supply no target proof here.
+        if len(values) != 3 or values[1] != "-d":
+            return []
+        template = values[2]
+        if not os.path.isabs(template) or any(
+                mark in template for mark in ("$", "`", "*", "?", "[", "]", "\n", "\r")):
+            return []
+        basename = os.path.basename(template)
+        if not re.fullmatch(r".+\.XXXXXX", basename):
+            return []
+        parent = os.path.realpath(os.path.dirname(template))
+        if not os.path.isdir(parent):
+            return []
+        return [os.path.join(parent, basename)]
     if name == "truncate":
         return finite_operands(
             values,
@@ -17124,12 +17127,6 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" != true ] &&
     "ECI coordinator temporary-directory route denied malformed arguments: ${COORDINATOR_MKTEMP_ROUTE_DETAIL:-command=$(eci_command_identity_subject "$command")}; predicate=coordinator-mktemp; reason=active mktemp capability must use one canonical literal template" \
     "use exactly mktemp -d with one literal template under the home-scoped temporary root or configured non-system TMPDIR"
 fi
-if [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ "$hook_is_subagent" = true ] &&
-  [[ "$command" == mktemp || "$command" == mktemp\ * ]]; then
-  deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" \
-    "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the ECI Supervisor through the bounded literal route; rejected command=$(eci_command_identity_subject "$command"); reason=temporary-directory creation is coordinator-owned" \
-    "route mktemp -d setup through the ECI Supervisor using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
-fi
 
 COORDINATOR_CLEANUP_ROUTE_DETAIL=""
 coordinator_cleanup_route() {
@@ -17766,10 +17763,6 @@ fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
   deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a Git history, explicit reference, or patch-application mutation. Assigned Producers may make ordinary scoped checkpoint commits through the resolved repository/effect checks; amendments, other history changes, explicit reference mutations, and git apply remain denied. Send protected acceptance/history/reference/patch requests to the Supervisor." "send this protected history, reference, or patch request to the Supervisor; the reported mutation remains denied"
-fi
-
-if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "$command"; then
-  deny_eci "ECI_WORKER_COORDINATOR_ROUTE_DENIED" "coordinator-route" "ECI worker boundary denied coordinator-only temporary-directory setup: mktemp -d may be requested only by the ECI Supervisor through the bounded literal route." "route mktemp -d setup through the ECI Supervisor using a literal home-scoped temporary-root or canonical non-system TMPDIR template"
 fi
 
 # A deferred, capability-free planner result for one direct env-prefixed Git
