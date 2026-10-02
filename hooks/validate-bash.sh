@@ -7001,29 +7001,109 @@ def git_reset_effect(
     return "reset-index", []
 
 
+def git_checkout_arguments(
+    arguments: list[str],
+    verb: str,
+    unknown: frozenset[int] = frozenset(),
+) -> list[str] | None:
+    """Expand supported long options without changing operand positions."""
+    # Git v2.51.0 builtin/checkout.c shares these option definitions between
+    # checkout and restore. Optional values stay attached to their option.
+    required = {"conflict", "unified", "inter-hunk-context", "pathspec-from-file"}
+    optional = {"recurse-submodules"}
+    names = required | optional | {
+        "quiet", "progress", "merge", "ours", "theirs", "patch",
+        "ignore-skip-worktree-bits", "pathspec-file-nul", "overlay",
+    }
+    if verb == "restore":
+        required = required | {"source"}
+        names |= {"source", "staged", "worktree", "ignore-unmerged"}
+        short_values = {"s", "U"}
+    else:
+        required = required | {"orphan"}
+        optional = optional | {"track"}
+        names |= {"orphan", "track", "detach", "force", "guess",
+                  "overwrite-ignore", "ignore-other-worktrees"}
+        short_values = {"b", "B", "U"}
+    result = arguments.copy()
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        offset = index
+        index += 1
+        if offset in unknown:
+            continue
+        if value == "--":
+            break
+        if value.startswith("--"):
+            name, attached, operand = value[2:].partition("=")
+            negated = name.startswith("no-")
+            if negated:
+                name = name[3:]
+            candidates = names - {"ours", "theirs", "unified", "inter-hunk-context"} if negated else names
+            matches = {name} if name in candidates else {item for item in candidates if item.startswith(name)}
+            if len(matches) != 1:
+                return None
+            name = next(iter(matches))
+            if attached and (negated or name not in required | optional):
+                return None
+            result[offset] = "--" + ("no-" if negated else "") + name + ("=" + operand if attached else "")
+            if name in required and not negated and not attached:
+                index += 1
+        elif value.startswith("-"):
+            for position, flag in enumerate(value[1:], 1):
+                if flag in short_values:
+                    if position == len(value) - 1:
+                        index += 1
+                    break
+    return result
+
+
 def git_checkout_effect(
     arguments: list[str],
     unknown: frozenset[int] = frozenset(),
     variable_cardinality: frozenset[int] = frozenset(),
     base: str | None = None,
+    git_options: tuple[str, ...] | None = (),
 ) -> str:
     """Separate scoped path checkout from branch, HEAD, and ref transitions."""
+    arguments = git_checkout_arguments(arguments, "checkout", unknown)
+    if arguments is None:
+        return "repository-unresolved"
     operands = []
     index = 0
-    pathspec_file = detached = False
+    pathspec_file = detached = orphan = False
+    explicit_reference = False
+    guess = None
     while index < len(arguments):
         value = arguments[index]
         if index in unknown or index in variable_cardinality:
             return "repository-unresolved"
         index += 1
         if value == "--":
-            if detached:
+            if detached or orphan:
                 return "repository"
-            return "prep" if index < len(arguments) else "repository-unresolved"
+            if index < len(arguments) or pathspec_file:
+                return "prep"
+            if not operands:
+                return "repository-unresolved"
+            explicit_reference = True
+            break
         if value == "--orphan" or value.startswith("--orphan="):
-            return "repository"
+            orphan = True
+            if value == "--orphan":
+                if index >= len(arguments) or index in unknown or index in variable_cardinality:
+                    return "repository-unresolved"
+                index += 1
+            continue
+        if value == "--no-orphan":
+            orphan = False
+            continue
         if value in {"--detach", "-d", "--no-detach"}:
             detached = value != "--no-detach"
+            continue
+        if value in {"--guess", "--no-guess"}:
+            guess = value == "--guess"
             continue
         option, attached, operand = value.partition("=")
         if option in {"--pathspec-from-file", "--conflict", "--unified", "--inter-hunk-context"} or value in {"-U"}:
@@ -7043,7 +7123,7 @@ def git_checkout_effect(
                     detached = detached or flag == "d"
             continue
         operands.append(value)
-    if detached:
+    if detached or orphan:
         return "repository"
     if pathspec_file or len(operands) > 1:
         return "prep"
@@ -7060,16 +7140,69 @@ def git_checkout_effect(
         )
         if result.returncode == 0:
             return "repository"
-        # A unique remote branch can create and switch a local branch even
-        # when the short name does not resolve to a local commit yet.
-        remote_branches = subprocess.run(
-            ["/usr/bin/git", "-C", base, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"],
+        if guess is None:
+            if git_options is None:
+                return "repository-unresolved"
+            configured_guess = subprocess.run(
+                ["/usr/bin/git", "-C", base, *git_options, "config", "--bool", "--get", "checkout.guess"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, check=False, timeout=1,
+            )
+            if configured_guess.returncode not in {0, 1}:
+                return "repository-unresolved"
+            guess = configured_guess.returncode == 1 or configured_guess.stdout.strip() == "true"
+        if not guess:
+            return "prep"
+        if git_options is None:
+            return "repository-unresolved"
+        git_prefix = ["/usr/bin/git", "-C", base, *git_options]
+        # Git's DWIM lookup follows configured fetch mappings. A matching
+        # refs/remotes suffix alone does not establish a tracking branch.
+        fetch_mappings = subprocess.run(
+            [*git_prefix, "config", "--get-regexp", r"^remote\..*\.fetch$"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, check=False, timeout=1,
         )
-        if remote_branches.returncode != 0:
+        if fetch_mappings.returncode not in {0, 1}:
             return "repository-unresolved"
-        if operands[0] in remote_branches.stdout.splitlines():
+        matches = set()
+        source_ref = "refs/heads/" + operands[0]
+        for mapping in fetch_mappings.stdout.splitlines():
+            key, _, refspec = mapping.partition(" ")
+            refspec = refspec.removeprefix("+")
+            source, separator, destination = refspec.partition(":")
+            if not separator or source.startswith("^"):
+                return "repository-unresolved"
+            if "*" in source:
+                if source.count("*") != 1 or destination.count("*") != 1:
+                    return "repository-unresolved"
+                prefix, suffix = source.split("*")
+                if not source_ref.startswith(prefix) or not source_ref.endswith(suffix):
+                    continue
+                matched = source_ref[len(prefix):len(source_ref) - len(suffix) if suffix else None]
+                destination = destination.replace("*", matched)
+            elif source != source_ref:
+                continue
+            remote_ref = subprocess.run(
+                [*git_prefix, "rev-parse", "--verify", "--quiet", destination + "^{commit}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False, timeout=1,
+            )
+            if remote_ref.returncode == 0:
+                matches.add(key[len("remote."):-len(".fetch")])
+        if len(matches) > 1:
+            preferred = subprocess.run(
+                [*git_prefix, "config", "--get", "checkout.defaultRemote"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, check=False, timeout=1,
+            )
+            if preferred.returncode != 0 or preferred.stdout.strip() not in matches:
+                return "repository-unresolved"
+        if matches:
+            # Without `--`, Git rejects a name that is both a filename and
+            # a candidate tracking branch instead of performing a switch.
+            if not explicit_reference and os.path.lexists(os.path.join(base, operands[0])):
+                return "repository-unresolved"
             return "repository"
     except (OSError, subprocess.SubprocessError):
         return "repository-unresolved"
@@ -11419,6 +11552,8 @@ def segment_spec(
 
     git_dir = environment.get("GIT_DIR", "")
     work_tree = environment.get("GIT_WORK_TREE", "")
+    git_options = []
+    git_options_known = True
     value_options = {
         "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix",
         "--source", "--pathspec-from-file",
@@ -11455,9 +11590,18 @@ def segment_spec(
         if token in value_options:
             if index + 1 >= len(tokens):
                 return None
+            if token == "-c":
+                if index + 1 in unknown:
+                    git_options_known = False
+                else:
+                    git_options.extend((token, tokens[index + 1]))
+            elif token == "--config-env":
+                git_options_known = False
             index += 2
             continue
         if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
+            if token.startswith("--config-env="):
+                git_options_known = False
             index += 1
             continue
         if token == "--":
@@ -11513,7 +11657,7 @@ def segment_spec(
         return git_checkout_effect(tokens[index + 1:],
             frozenset(value - index - 1 for value in unknown if value > index),
             frozenset(value - index - 1 for value in variable_cardinality if value > index),
-            repo_dir), repo_dir
+            repo_dir, tuple(git_options) if git_options_known else None), repo_dir
     if verb == "commit":
         effect = commit_effect(tokens[index + 1:], frozenset(
             value - index - 1 for value in unknown if value > index), frozenset(
@@ -12050,6 +12194,7 @@ def collect_pathspecs(
     args: list[str],
     base: str,
     unknown: frozenset[int] = frozenset(),
+    verb: str = "",
 ) -> list[str]:
     paths = []
     filename = ""
@@ -12058,7 +12203,7 @@ def collect_pathspecs(
     index = 0
     value_options = {
         "--source", "--conflict", "-b", "-B", "--orphan", "--unified", "-U",
-        "--inter-hunk-context", "--recurse-submodules",
+        "--inter-hunk-context",
     }
     while index < len(args):
         value = args[index]
@@ -12066,6 +12211,8 @@ def collect_pathspecs(
         index += 1
         if not after_separator and value == "--" and offset not in unknown:
             after_separator = True
+            if verb == "checkout":
+                paths.clear()  # Operands before checkout's separator are sources.
             continue
         if not after_separator and value.startswith("-"):
             is_file, operand = pathspec_from_file_argument(value)
@@ -12087,6 +12234,12 @@ def collect_pathspecs(
                 file_nul = value == "--pathspec-file-nul"
             elif value in value_options:
                 index += 1
+            elif verb == "restore" and not value.startswith("--"):
+                for position, flag in enumerate(value[1:], 1):
+                    if flag in {"s", "U"}:
+                        if position == len(value) - 1:
+                            index += 1
+                        break
             continue
         if offset not in unknown:
             paths.append(value)
@@ -12547,7 +12700,11 @@ def restore_detail(
     base: str,
     unknown: frozenset[int],
 ) -> str | None:
-    staged = worktree = False
+    args = git_checkout_arguments(args, "restore", unknown)
+    if args is None:
+        return None
+    staged = False
+    worktree = None
     after_separator = False
     index = 0
     while index < len(args):
@@ -12574,12 +12731,14 @@ def restore_detail(
                         index += 1
                     break
                 staged = staged or flag == "S"
-                worktree = worktree or flag == "W"
+                if flag == "W":
+                    worktree = True
     # Both destinations are independent; either option order and -SW keep
-    # the worktree effect. With no destination Git defaults to the worktree.
-    if staged and not worktree:
+    # the worktree effect. Only an unspecified destination defaults to the
+    # worktree; explicit --no-worktree without --staged is Git-invalid.
+    if worktree is False or (staged and worktree is None):
         return None
-    for value in collect_pathspecs(args, base, unknown):
+    for value in collect_pathspecs(args, base, unknown, "restore"):
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -12646,6 +12805,7 @@ def checkout_detach_state(
     """Return detach state, branch mode, start point, separator, and flags."""
     state = None
     branch_mode = False
+    orphan_mode = False
     branch_startpoint = False
     unified_context_option = False
     unified_context_unpatched_effect = False
@@ -12659,7 +12819,7 @@ def checkout_detach_state(
     index = 0
 
     def invalid_result():
-        return (None, branch_mode, branch_startpoint, separator_index,
+        return (None, branch_mode or orphan_mode, branch_startpoint, separator_index,
                 pathspec_file_option, True)
 
     while index < len(args):
@@ -12697,7 +12857,7 @@ def checkout_detach_state(
                     return invalid_result()
                 if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
                     return invalid_result()
-                branch_mode = branch_mode or option == "--orphan"
+                orphan_mode = orphan_mode or option == "--orphan"
                 if option == "--unified":
                     unified_context_option = True
                     unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
@@ -12716,7 +12876,7 @@ def checkout_detach_state(
                 return invalid_result()
             if option == "--conflict" and context_value not in {"merge", "diff3", "zdiff3"}:
                 return invalid_result()
-            branch_mode = branch_mode or option == "--orphan"
+            orphan_mode = orphan_mode or option == "--orphan"
             if option == "--unified":
                 unified_context_option = True
                 unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
@@ -12774,7 +12934,10 @@ def checkout_detach_state(
             long_option_recognized = False
             if option.startswith("--no-"):
                 suffix = option[len("--no-"):]
-                if suffix and "detach".startswith(suffix):
+                if option == "--no-orphan" and not separator:
+                    orphan_mode = False
+                    long_option_recognized = True
+                elif suffix and "detach".startswith(suffix):
                     if separator:
                         return invalid_result()
                     state = False
@@ -12828,7 +12991,7 @@ def checkout_detach_state(
             # another positional token is a second pathspec argument.  Git
             # rejects that combination before touching the worktree.
             pathspec_dash_trailing_path = True
-        if branch_mode and not value.startswith("-") and checkout_revision(value) is True:
+        if (branch_mode or orphan_mode) and not value.startswith("-") and checkout_revision(value) is True:
             branch_startpoint = True
     if pathspec_dash_trailing_path:
         return invalid_result()
@@ -12839,13 +13002,16 @@ def checkout_detach_state(
             return invalid_result()
     if patch_mode and pathspec_file_option:
         return invalid_result()
-    return (state, branch_mode, branch_startpoint, separator_index,
+    return (state, branch_mode or orphan_mode, branch_startpoint, separator_index,
             pathspec_file_option, False)
 
 def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
-    # With `--`, every following token is a worktree pathspec.  Without it,
-    # preserve branch/ref inspection and only inspect an existing path that
-    # Git cannot resolve as a revision.
+    args = git_checkout_arguments(args, "checkout", unknown)
+    if args is None:
+        return None
+    # With `--`, every following token is a worktree pathspec. Without it,
+    # only the first operand can be a tree source; later operands are paths
+    # even when their names also resolve as revisions.
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
@@ -12866,9 +13032,9 @@ def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str 
     # actual separator cannot be discarded.  `separator_index` comes from
     # the option-state parser, so a `--` consumed as an option value is not
     # mistaken for the pathspec separator.
-    paths = collect_pathspecs(args, base, unknown)
-    for value in paths:
-        if not explicit_paths:
+    paths = collect_pathspecs(args, base, unknown, "checkout")
+    for position, value in enumerate(paths):
+        if position == 0 and not explicit_paths and not pathspec_file_option:
             revision = checkout_revision(value)
             if revision is True:
                 continue

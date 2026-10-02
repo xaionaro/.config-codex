@@ -4,17 +4,28 @@ set -euo pipefail
 
 SOURCE_ROOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-normal-git-admission.XXXXXX")"
-trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
+TMP_ROOT="$(realpath -e -- "$TMP_ROOT")"
+trap 'chmod -R u+w -- "$TMP_ROOT"; rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 
-# Exercise a complete private runtime, removing a line-2 bypass if present.
+# Exercise a complete private runtime, removing only a leading bypass after
+# the shebang, blank lines, and comments. Never change the live runtime.
 HOME_ROOT="$TMP_ROOT/home"
 RUNTIME_ROOT="$HOME_ROOT/.codex"
 mkdir -p -- "$RUNTIME_ROOT" "$TMP_ROOT/config/eci" "$TMP_ROOT/state"
 cp -a -- "$SOURCE_ROOT/hooks" "$RUNTIME_ROOT"
+if [ -n "${NORMAL_GIT_ADMISSION_HOOK_SOURCE:-}" ]; then
+  cp -- "$NORMAL_GIT_ADMISSION_HOOK_SOURCE" "$RUNTIME_ROOT/hooks/validate-bash.sh"
+fi
 cp -- "$SOURCE_ROOT/hooks.json" "$RUNTIME_ROOT/hooks.json"
 mkdir -p -- "$RUNTIME_ROOT/bin"
 cp -a -- "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
-sed -i '2{/^exit 0$/d;}' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
+awk '
+  BEGIN { prefix = 1 }
+  prefix && /^exit 0$/ { prefix = 0; next }
+  prefix && !/^#/ && !/^[[:space:]]*$/ { prefix = 0 }
+  { print }
+' "$RUNTIME_ROOT/hooks/validate-bash.sh" >"$RUNTIME_ROOT/hooks/validate-bash.sh.tmp"
+mv -- "$RUNTIME_ROOT/hooks/validate-bash.sh.tmp" "$RUNTIME_ROOT/hooks/validate-bash.sh"
 BASH_LAUNCHER="$(jq -er '.hooks.PreToolUse[] | select(.matcher == "^Bash$") | .hooks[] | select(.type == "command") | .command' "$RUNTIME_ROOT/hooks.json")"
 [ "$BASH_LAUNCHER" = 'bash "$HOME/.codex/hooks/validate-bash.sh"' ] || {
   printf 'unexpected copied Bash launcher: %s\n' "$BASH_LAUNCHER" >&2
@@ -913,8 +924,159 @@ run_foreign_timeout_marker_target() {
   done
 }
 
+run_effect_aware_git_target() {
+  local command failures=0 before_head before_branch protected_base protected_changed
+  # Protection binds to the configured runtime, so make that complete copied
+  # runtime the actual repository instead of using a lookalike sibling path.
+  REPO="$(realpath -e -- "$RUNTIME_ROOT")"
+  git -C "$REPO" init -q
+  git -C "$REPO" config user.email normal-git-test@example.invalid
+  git -C "$REPO" config user.name 'Normal Git Test'
+  printf 'base\n' >"$REPO/file.txt"
+  printf 'ordinary base\n' >"$REPO/CODEX.md"
+  printf '%s\n' 'scope: effect-aware Git regression' "cwd: $REPO" \
+    "session_id: $SESSION" 'created_utc: 2026-08-28T00:00:00Z' >"$PROOF_ROOT/$SESSION/eci_active"
+  git -C "$REPO" add -- hooks/validate-bash.sh hooks.json CODEX.md file.txt
+  git -C "$REPO" commit -qm 'effect fixture'
+  protected_base="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  git -C "$REPO" branch hooks/validate-bash.sh
+  git -C "$REPO" branch existing-other-branch
+  git -C "$REPO" update-ref refs/remotes/origin/file.txt HEAD
+  git -C "$REPO" update-ref refs/remotes/origin/remote-topic HEAD
+  git -C "$REPO" config remote.origin.url "$FOREIGN_REPO"
+  git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  before_head="$(git -C "$REPO" rev-parse HEAD)"
+  before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  assert_denied_code 'git restore -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || return 1
+
+  # These operations are checked for denial only, never executed.
+  for command in \
+    'git restore --recurse-submodules hooks/validate-bash.sh' \
+    'git restore --staged --work -- hooks/validate-bash.sh' \
+    'git restore --no-worktree --worktree -- hooks/validate-bash.sh' \
+    'git checkout --orp topic HEAD' \
+    'git checkout --no-orphan --orphan topic HEAD' \
+    'git checkout HEAD hooks/validate-bash.sh' \
+    'git checkout existing-other-branch --' \
+    'git checkout --guess remote-topic' \
+    'git checkout --no-guess --guess remote-topic' \
+    'git -c checkout.guess=true checkout remote-topic' \
+    'git reset -- file.txt' \
+    'git commit --amend --no-edit' \
+    'git branch --delete existing-other-branch'; do
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  done
+
+  # Disabling the default worktree effect leaves a Git-invalid restore, not
+  # a protected overwrite. The actual error must preserve every tracked state.
+  command='git restore --no-worktree -- hooks/validate-bash.sh'
+  if assert_allowed "$command" worker; then
+    if (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/no-worktree.out" 2>&1; then
+      printf 'restore with no destination unexpectedly succeeded\n' >&2
+      failures=1
+    fi
+    rg -Fq "neither '--staged' or '--worktree' is specified" "$TMP_ROOT/no-worktree.out" || failures=1
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+    [ "$(git -C "$REPO" rev-parse :hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+    git -C "$REPO" diff --cached --quiet || failures=1
+  else failures=1; fi
+
+  # A tracked path sharing a branch name is ambiguous without an explicit
+  # separator. Admit Git's own error and prove it has no branch/worktree effect.
+  for command in \
+    'git checkout hooks/validate-bash.sh CODEX.md' \
+    'git checkout --guess file.txt' \
+    'git checkout --no-guess --guess file.txt' \
+    'git -c checkout.guess=true checkout file.txt'; do
+    if assert_allowed "$command" worker; then
+      if (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/ambiguous-checkout.out" 2>&1; then
+        printf 'ambiguous checkout unexpectedly succeeded: %s\n' "$command" >&2
+        failures=1
+      fi
+      if [ "$command" = 'git checkout hooks/validate-bash.sh CODEX.md' ]; then
+        rg -q 'both revision and filename' "$TMP_ROOT/ambiguous-checkout.out" || failures=1
+      else
+        rg -q 'could be both a local file and a tracking branch' "$TMP_ROOT/ambiguous-checkout.out" || failures=1
+      fi
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      [ "$(cat -- "$REPO/file.txt")" = base ] || failures=1
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+      git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+    else failures=1; fi
+  done
+
+  # A protected-looking source revision is an input. Execute admitted forms
+  # and prove the ordinary destination is restored without touching the hook.
+  for command in \
+    'git restore -s hooks/validate-bash.sh -- CODEX.md' \
+    'git restore -qs hooks/validate-bash.sh -- CODEX.md' \
+    'git restore -Wqs hooks/validate-bash.sh -- CODEX.md' \
+    'git restore -qshooks/validate-bash.sh -- CODEX.md' \
+    'git checkout hooks/validate-bash.sh -- CODEX.md' \
+    'git checkout --orphan topic --no-orphan -- CODEX.md'; do
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || failures=1
+      [ "$(cat -- "$REPO/CODEX.md")" = 'ordinary base' ] || failures=1
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+    else
+      failures=1
+    fi
+  done
+
+  git -C "$REPO" config checkout.guess false
+  assert_denied_code 'git checkout --guess remote-topic' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  for command in \
+    'git checkout file.txt' \
+    'git checkout --no-guess file.txt' \
+    'git checkout --guess --no-guess file.txt' \
+    'git -c checkout.guess=false checkout file.txt' \
+    'git -c checkout.guess=true checkout --no-guess file.txt'; do
+    printf 'changed\n' >"$REPO/file.txt"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || failures=1
+      [ "$(cat -- "$REPO/file.txt")" = base ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+    else
+      failures=1
+    fi
+  done
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+
+  # Normal owned staging, index-only restore, and checkpoint commit remain
+  # executable. Index-only restore must preserve the edited protected file.
+  printf '\n# Owned fixture checkpoint\n' >>"$REPO/hooks/validate-bash.sh"
+  protected_changed="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  if assert_allowed 'git add -- hooks/validate-bash.sh' worker; then
+    git -C "$REPO" add -- hooks/validate-bash.sh
+    [ "$(git -C "$REPO" rev-parse :hooks/validate-bash.sh)" = "$protected_changed" ] || failures=1
+  else failures=1; fi
+  if assert_allowed 'git restore --staged -- hooks/validate-bash.sh' worker; then
+    git -C "$REPO" restore --staged -- hooks/validate-bash.sh
+    [ "$(git -C "$REPO" rev-parse :hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_changed" ] || failures=1
+  else failures=1; fi
+  if assert_allowed 'git add -- hooks/validate-bash.sh' worker &&
+     assert_allowed "git commit -qm 'owned checkpoint'" worker; then
+    git -C "$REPO" add -- hooks/validate-bash.sh
+    git -C "$REPO" commit -qm 'owned checkpoint'
+    [ "$(git -C "$REPO" rev-parse HEAD:hooks/validate-bash.sh)" = "$protected_changed" ] || failures=1
+    git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+  else failures=1; fi
+  [ "$failures" -eq 0 ]
+}
+
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
   full) ;;
+  effect-aware-git)
+    run_effect_aware_git_target
+    printf '%s\n' 'normal Git admission effect-aware-git target: PASS'
+    exit 0
+    ;;
   compound-handoff-boundary)
     run_compound_handoff_boundary_target
     printf '%s\n' 'normal Git admission compound-handoff-boundary target: PASS'
@@ -1240,4 +1402,5 @@ assert_denied_code "git add ." ECI_BROAD_DESTRUCTIVE_DENIED worker \
 assert_denied_code "git reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED worker \
   "effect=reset-working-tree target=$REPO"
 
+run_effect_aware_git_target
 printf '%s\n' 'normal Git admission: PASS'
