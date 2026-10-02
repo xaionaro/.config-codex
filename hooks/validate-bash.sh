@@ -7001,6 +7001,81 @@ def git_reset_effect(
     return "reset-index", []
 
 
+def git_checkout_effect(
+    arguments: list[str],
+    unknown: frozenset[int] = frozenset(),
+    variable_cardinality: frozenset[int] = frozenset(),
+    base: str | None = None,
+) -> str:
+    """Separate scoped path checkout from branch, HEAD, and ref transitions."""
+    operands = []
+    index = 0
+    pathspec_file = detached = False
+    while index < len(arguments):
+        value = arguments[index]
+        if index in unknown or index in variable_cardinality:
+            return "repository-unresolved"
+        index += 1
+        if value == "--":
+            if detached:
+                return "repository"
+            return "prep" if index < len(arguments) else "repository-unresolved"
+        if value == "--orphan" or value.startswith("--orphan="):
+            return "repository"
+        if value in {"--detach", "-d", "--no-detach"}:
+            detached = value != "--no-detach"
+            continue
+        option, attached, operand = value.partition("=")
+        if option in {"--pathspec-from-file", "--conflict", "--unified", "--inter-hunk-context"} or value in {"-U"}:
+            if not attached:
+                if index >= len(arguments) or index in unknown or index in variable_cardinality:
+                    return "repository-unresolved"
+                index += 1
+            pathspec_file = pathspec_file or option == "--pathspec-from-file"
+            continue
+        if value.startswith("-"):
+            if not value.startswith("--"):
+                for flag in value[1:]:
+                    if flag in {"b", "B"}:
+                        return "repository"
+                    if flag == "U":
+                        break  # The remainder is a consumed context value.
+                    detached = detached or flag == "d"
+            continue
+        operands.append(value)
+    if detached:
+        return "repository"
+    if pathspec_file or len(operands) > 1:
+        return "prep"
+    if not operands or operands == ["-"]:
+        return "repository"
+    if not base or not os.path.isabs(base):
+        return "repository-unresolved"
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["/usr/bin/git", "-C", base, "rev-parse", "--verify", "--quiet", operands[0] + "^{commit}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=1,
+        )
+        if result.returncode == 0:
+            return "repository"
+        # A unique remote branch can create and switch a local branch even
+        # when the short name does not resolve to a local commit yet.
+        remote_branches = subprocess.run(
+            ["/usr/bin/git", "-C", base, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, check=False, timeout=1,
+        )
+        if remote_branches.returncode != 0:
+            return "repository-unresolved"
+        if operands[0] in remote_branches.stdout.splitlines():
+            return "repository"
+    except (OSError, subprocess.SubprocessError):
+        return "repository-unresolved"
+    return "prep"
+
+
 def git_add_effect(
     arguments: list[str],
     unknown: frozenset[int] = frozenset(),
@@ -11432,11 +11507,13 @@ def segment_spec(
         return effect, repo_dir
     if verb in {"add", "rm", "mv", "restore"}:
         return "prep", repo_dir
+    if verb == "update-index":
+        return "index-unsupported", repo_dir
     if verb == "checkout":
-        # Route every checkout to the concrete effect resolver.  Branch/ref
-        # forms remain transparent there; a path form is admitted only when
-        # it resolves to an actual worktree target.
-        return "prep", repo_dir
+        return git_checkout_effect(tokens[index + 1:],
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in variable_cardinality if value > index),
+            repo_dir), repo_dir
     if verb == "commit":
         effect = commit_effect(tokens[index + 1:], frozenset(
             value - index - 1 for value in unknown if value > index), frozenset(
@@ -11861,14 +11938,13 @@ PY
 
 git_protected_worktree_target_detail() {
   local command_text="${1:-$command}" target_repo="${2:-}" command_cwd="${3:-$cwd}"
-  local include_index="${4:-false}"
   local configured_home="${CODEX_CONFIGURED_HOME:-${CODEX_HOME:-}}"
 
   # This is an effect check for the coordinator's Git preparation route.  It
   # deliberately follows a concrete Git child through ordinary launch
   # wrappers, and it uses lexical worktree paths: a symlink alias is a
   # different Git entry from the live control file it may point at.
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$include_index" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" <<'PY'
 import glob
 import json
 import os
@@ -11876,10 +11952,10 @@ import re
 import shlex
 import sys
 
-exec(compile(sys.argv[8], "git-effect-library", "exec"))
+exec(compile(sys.argv[7], "git-effect-library", "exec"))
 
-command, target_repo, command_cwd, configured_home, hook_dir, include_index = sys.argv[1:7]
-analysis = json.loads(sys.argv[7])
+command, target_repo, command_cwd, configured_home, hook_dir = sys.argv[1:6]
+analysis = json.loads(sys.argv[6])
 
 SEPARATORS = {";", "&", "&&", "|", "||"}
 REDIRECTIONS = {">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
@@ -12040,10 +12116,11 @@ def existing_protected_descendant(path):
     )
 
 def protected_path_detail(path, operation, recursive=False):
+    effect = {"rm": "remove", "mv": "relocate", "restore": "overwrite", "checkout": "overwrite"}[operation]
     if existing_protected_file(path):
-        return "operation=%s target=%s kind=protected-live-hook" % (operation, path)
+        return "operation=%s effect=%s target=%s kind=protected-live-hook" % (operation, effect, path)
     if recursive and existing_protected_descendant(path):
-        return "operation=%s target=%s kind=protected-live-hook-tree" % (operation, path)
+        return "operation=%s effect=%s target=%s kind=protected-live-hook-tree" % (operation, effect, path)
     return None
 
 def split_segments(values):
@@ -12395,7 +12472,6 @@ def mv_detail(
     args: list[str],
     base: str,
     unknown: frozenset[int],
-    include_index: bool = False,
 ) -> str | None:
     dry_run = False
     paths = []
@@ -12436,7 +12512,7 @@ def mv_detail(
     if not inside(target_repo, destination):
         return None
     if any(value is None for value in paths[:-1]) and destination in protected:
-        return "operation=mv target=%s kind=protected-live-hook" % destination
+        return "operation=mv effect=overwrite target=%s kind=protected-live-hook" % destination
     sources = []
     for value in paths[:-1]:
         if value is None:
@@ -12458,37 +12534,50 @@ def mv_detail(
         if not os.path.lexists(source):
             continue
         if source == effective_destination:
-            if include_index:
-                detail = protected_path_detail(source, "mv", True)
-                if detail:
-                    return detail
             continue
         detail = protected_path_detail(source, "mv", True)
         if detail:
             return detail
         if effective_destination in protected:
-            return "operation=mv target=%s kind=protected-live-hook" % effective_destination
+            return "operation=mv effect=overwrite target=%s kind=protected-live-hook" % effective_destination
     return None
 
 def restore_detail(
     args: list[str],
     base: str,
     unknown: frozenset[int],
-    include_index: bool = False,
 ) -> str | None:
-    worktree = True
+    staged = worktree = False
     after_separator = False
-    for index, value in enumerate(args):
-        if index in unknown:
+    index = 0
+    while index < len(args):
+        value = args[index]
+        offset = index
+        index += 1
+        if offset in unknown:
             continue
         if value == "--":
             after_separator = True
             continue
-        if not after_separator and (value in {"--staged", "-S"} or value.startswith("--staged=")):
-            worktree = False
-        elif not after_separator and (value in {"--worktree", "-W"} or value.startswith("--worktree=")):
-            worktree = True
-    if not worktree and not include_index:
+        if not after_separator and value in {"--source", "-s", "--pathspec-from-file", "--conflict", "--unified", "-U", "--inter-hunk-context"}:
+            index += 1
+            continue
+        if not after_separator and value in {"--staged", "--no-staged"}:
+            staged = value == "--staged"
+        elif not after_separator and value in {"--worktree", "--no-worktree"}:
+            worktree = value == "--worktree"
+        elif not after_separator and value.startswith("-") and not value.startswith("--"):
+            # -s consumes the remainder of a short cluster as its source.
+            for position, flag in enumerate(value[1:], 1):
+                if flag in {"s", "U"}:
+                    if position == len(value) - 1:
+                        index += 1
+                    break
+                staged = staged or flag == "S"
+                worktree = worktree or flag == "W"
+    # Both destinations are independent; either option order and -SW keep
+    # the worktree effect. With no destination Git defaults to the worktree.
+    if staged and not worktree:
         return None
     for value in collect_pathspecs(args, base, unknown):
         candidates, _ = pathspec_candidates(value, base)
@@ -12864,9 +12953,9 @@ def inspect_segment(
     if verb == "rm":
         return rm_detail(args, base, argument_unknown)
     if verb == "mv":
-        return mv_detail(args, base, argument_unknown, include_index=(include_index == "true"))
+        return mv_detail(args, base, argument_unknown)
     if verb == "restore":
-        return restore_detail(args, base, argument_unknown, include_index=(include_index == "true"))
+        return restore_detail(args, base, argument_unknown)
     if verb == "checkout":
         return checkout_detail(args, base, argument_unknown)
     return None
@@ -12904,7 +12993,7 @@ PY
 }
 
 enforce_git_mutation_gate() {
-  local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_scope protected_target_token
+  local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_token
 
   if ! specs_text="$(git_mutation_specs)"; then
     return 0
@@ -12919,20 +13008,18 @@ enforce_git_mutation_gate() {
     # CWD itself is a repository.  Keep this narrow fallback target-aware.
     repo_root="$(codex_git_safe -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
-    protected_target_scope=false
-    [ "${hook_is_subagent:-false}" = true ] && protected_target_scope=true
-    protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" "$protected_target_scope" 2>/dev/null || true)"
+    protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" 2>/dev/null || true)"
     if [ -n "$protected_target_detail" ]; then
       if [ "${hook_is_subagent:-false}" = true ]; then
         protected_target_token="${protected_target_detail#operation=}"
         protected_target_token="${protected_target_token%% *}"
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
           "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
-          "route the protected hook operation to the Supervisor, or use the assigned Producer route for ordinary scoped implementation changes"
+          "for the reported remove, relocate, or overwrite effect, the responsible Producer edits the tracked hook source in place and stages exact owned paths or agreed hunks with supported git add; unstage with git restore --staged -- <paths>; the Supervisor owns canonical installer, hook mode, and lifecycle controls; do not retry the same destructive Git operation under another role"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
           "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
-          "assign the exact tracked hook edit to a Producer, or route the provider/control operation through the Supervisor's canonical control route"
+          "for the reported remove, relocate, or overwrite effect, assign the tracked source change to its responsible Producer for an in-place edit and scoped git add; use the Supervisor's canonical installer, hook mode, or lifecycle route only for those controls; do not reroute the same destructive Git operation"
       fi
     fi
     return 0
@@ -12943,7 +13030,7 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
+    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
@@ -12989,6 +13076,16 @@ enforce_git_mutation_gate() {
     fi
     if [ "${hook_is_subagent:-false}" = true ]; then
       case "$operation" in
+        reset*)
+          deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+            "ECI Producer reset is forbidden: effect=$operation target=$repo_dir; predicate=worker-git-ownership" \
+            "the responsible Producer unstages exact owned paths with git restore --staged -- <paths>; correct committed content through a new scoped checkpoint commit; preserve append-only history"
+          ;;
+        index-unsupported)
+          deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+            "ECI Producer update-index is unsupported: effect=$operation target=$repo_dir; predicate=worker-git-ownership" \
+            "the responsible Producer stages exact owned paths or agreed hunks with git add; stages agreed removals with git add -u -- <paths> or git rm --cached -- <paths>; unstages with git restore --staged -- <paths>; preserve unrelated content; these routes do not replace arbitrary index metadata, cache, or mode-only operations"
+          ;;
         commit-amend|worktree|repository)
           deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
             "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
@@ -13027,21 +13124,19 @@ enforce_git_mutation_gate() {
         "ECI Git mutation has a broad destructive effect: ${broad_effect_detail}" \
         "name the intended repository-relative paths, or use a non-destructive targeted Git action"
     fi
-    protected_target_scope=false
-    [ "${hook_is_subagent:-false}" = true ] && protected_target_scope=true
     if [ "$operation" = prep ] &&
-      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" "$protected_target_scope" 2>/dev/null || true)" &&
+      protected_target_detail="$(git_protected_worktree_target_detail "$command" "$repo_root" "$cwd" 2>/dev/null || true)" &&
       [ -n "$protected_target_detail" ]; then
       if [ "${hook_is_subagent:-false}" = true ]; then
         protected_target_token="${protected_target_detail#operation=}"
         protected_target_token="${protected_target_token%% *}"
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
           "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
-          "route the protected hook operation to the Supervisor, or use the assigned Producer route for ordinary scoped implementation changes"
+          "for the reported remove, relocate, or overwrite effect, the responsible Producer edits the tracked hook source in place and stages exact owned paths or agreed hunks with supported git add; unstage with git restore --staged -- <paths>; the Supervisor owns canonical installer, hook mode, and lifecycle controls; do not retry the same destructive Git operation under another role"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
           "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
-          "assign the exact tracked hook edit to a Producer, or route the provider/control operation through the Supervisor's canonical control route"
+          "for the reported remove, relocate, or overwrite effect, assign the tracked source change to its responsible Producer for an in-place edit and scoped git add; use the Supervisor's canonical installer, hook mode, or lifecycle route only for those controls; do not reroute the same destructive Git operation"
       fi
     fi
   done

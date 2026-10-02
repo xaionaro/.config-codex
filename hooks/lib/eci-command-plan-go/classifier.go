@@ -6532,11 +6532,16 @@ func inspectGit(
 		return DecisionDefer, nil
 	}
 	mutationIndex, action := gitMutation(argv, subcommandIndex)
-	if action == "add" || action == "reset" || action == "commit" {
+	if action == "add" || action == "reset" || action == "commit" ||
+		action == "mv" || action == "rm" || action == "restore" || action == "checkout" {
 		// Resolve the repository and actual index/history effect in the provider.
 		// A producer checkpoint differs from amendment or whole-tree staging;
 		// the Git verb alone cannot establish the intended ownership boundary.
 		return DecisionDefer, nil
+	}
+	remediation := "route this protected Git mutation request to the ECI Supervisor; ordinary scoped Producer checkpoint commits use the separate resolved repository/effect checks"
+	if action == "update-index" {
+		remediation = "the responsible Producer stages exact owned paths or agreed hunks with git add; stages agreed removals with git add -u -- <paths> or git rm --cached -- <paths>; unstages with git restore --staged -- <paths>; preserve unrelated content; these routes do not replace arbitrary index metadata, cache, or mode-only operations"
 	}
 	if repositoryContext {
 		// Repository selection is provider-owned capability: the adapter must
@@ -6550,7 +6555,7 @@ func inspectGit(
 				segmentIndex,
 				mutationIndex,
 				argv[mutationIndex],
-				"route this protected Git mutation request to the ECI Supervisor; ordinary scoped Producer checkpoint commits use the separate resolved repository/effect checks",
+				remediation,
 				"worker-git-ownership",
 			)
 		}
@@ -6571,7 +6576,7 @@ func inspectGit(
 			segmentIndex,
 			mutationIndex,
 			argv[mutationIndex],
-			"route this protected Git mutation request to the ECI Supervisor; ordinary scoped Producer checkpoint commits use the separate resolved repository/effect checks",
+			remediation,
 			"worker-git-ownership",
 		)
 	}

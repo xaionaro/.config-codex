@@ -2472,14 +2472,20 @@ func TestRawGitPlansHaveNoGenericCapability(t *testing.T) {
 				code    DiagnosticCode
 			}{
 				{command: "git rebase topic", code: CodeWorkerGitOwnershipDenied},
-				{command: "git checkout -- hooks/validate-bash.sh", code: CodeWorkerGitOwnershipDenied},
+				{command: "git checkout -- hooks/validate-bash.sh"},
 				{command: "git branch feature", code: CodeWorkerGitOwnershipDenied},
 			} {
 				request := activeWorker(testCase.command)
 				request.Provider = provider
 				result := Classify(request)
-				if result.Decision != DecisionDeny || result.Diagnostic == nil || result.Diagnostic.Code != testCase.code {
-					t.Errorf("%q: decision=%q diagnostic=%#v, want deny/%q", testCase.command, result.Decision, result.Diagnostic, testCase.code)
+				wantDecision := DecisionDeny
+				if testCase.code == "" {
+					wantDecision = DecisionDefer
+				}
+				if result.Decision != wantDecision ||
+					(testCase.code == "" && result.Diagnostic != nil) ||
+					(testCase.code != "" && (result.Diagnostic == nil || result.Diagnostic.Code != testCase.code)) {
+					t.Errorf("%q: decision=%q diagnostic=%#v, want %s/%q", testCase.command, result.Decision, result.Diagnostic, wantDecision, testCase.code)
 				}
 				if len(result.Capabilities) != 0 {
 					t.Errorf("%q: capabilities=%v, want none", testCase.command, result.Capabilities)
@@ -8271,32 +8277,34 @@ func TestCompoundPlanGitWorktreeRoleUsesExecutableIdentity(t *testing.T) {
 
 	root := t.TempDir()
 	testCases := []struct {
-		name       string
-		command    string
-		wantEffect string
-		wantDenied bool
+		name         string
+		command      string
+		wantEffect   string
+		wantDecision DecisionKind
 	}{
 		{
-			name:       "operand text is not a Git role",
-			command:    "printf 'eci-normal-git-admission rm'; printf done",
-			wantEffect: "",
+			name:         "operand text is not a Git role",
+			command:      "printf 'eci-normal-git-admission rm'; printf done",
+			wantEffect:   "",
+			wantDecision: DecisionAllow,
 		},
 		{
-			name:       "ordinary path text is not a Git role",
-			command:    "rm " + filepath.Join(root, "git-worktree-data") + "; printf done",
-			wantEffect: "",
+			name:         "ordinary path text is not a Git role",
+			command:      "rm " + filepath.Join(root, "git-worktree-data") + "; printf done",
+			wantEffect:   "",
+			wantDecision: DecisionAllow,
 		},
 		{
-			name:       "direct Git mutation is a role",
-			command:    "git rm file.txt; printf done",
-			wantEffect: "worktree-mutation",
-			wantDenied: true,
+			name:         "direct Git mutation is a role",
+			command:      "git rm file.txt; printf done",
+			wantEffect:   "worktree-mutation",
+			wantDecision: DecisionDefer,
 		},
 		{
-			name:       "env Git mutation is a role",
-			command:    "env -- git mv old.txt new.txt; printf done",
-			wantEffect: "worktree-mutation",
-			wantDenied: true,
+			name:         "env Git mutation is a role",
+			command:      "env -- git mv old.txt new.txt; printf done",
+			wantEffect:   "worktree-mutation",
+			wantDecision: DecisionDefer,
 		},
 	}
 
@@ -8306,15 +8314,8 @@ func TestCompoundPlanGitWorktreeRoleUsesExecutableIdentity(t *testing.T) {
 			request := activeWorker(testCase.command)
 			request.CWD = root
 			result := Classify(request)
-			if testCase.wantDenied {
-				if result.Decision != DecisionDeny || result.Diagnostic == nil {
-					t.Fatalf("decision=%q diagnostic=%#v, want worker Git denial", result.Decision, result.Diagnostic)
-				}
-				if result.Plan == nil {
-					t.Fatalf("missing plan on Git denial: %#v", result)
-				}
-			} else if result.Decision != DecisionAllow || result.Diagnostic != nil || result.Plan == nil {
-				t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want ordinary compound allow", result.Decision, result.Diagnostic, result.Plan)
+			if result.Decision != testCase.wantDecision || result.Diagnostic != nil || result.Plan == nil {
+				t.Fatalf("decision=%q diagnostic=%#v plan=%#v, want %q with compound routing", result.Decision, result.Diagnostic, result.Plan, testCase.wantDecision)
 			}
 			if len(result.Plan.Segments) == 0 {
 				t.Fatal("missing compound segments")
