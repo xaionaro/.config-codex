@@ -7167,21 +7167,53 @@ def git_checkout_effect(
             return "repository-unresolved"
         matches = set()
         source_ref = "refs/heads/" + operands[0]
+        remote_mappings = {}
         for mapping in fetch_mappings.stdout.splitlines():
             key, _, refspec = mapping.partition(" ")
-            refspec = refspec.removeprefix("+")
-            source, separator, destination = refspec.partition(":")
-            if not separator or source.startswith("^"):
-                return "repository-unresolved"
-            if "*" in source:
-                if source.count("*") != 1 or destination.count("*") != 1:
-                    return "repository-unresolved"
-                prefix, suffix = source.split("*")
-                if not source_ref.startswith(prefix) or not source_ref.endswith(suffix):
+            remote = key[len("remote."):-len(".fetch")]
+            remote_mappings.setdefault(remote, []).append(refspec.removeprefix("+"))
+
+        def map_pattern(pattern, replacement, query):
+            if "*" not in pattern:
+                return replacement if pattern == query else None
+            prefix, suffix = pattern.split("*")
+            if (len(query) < len(prefix) + len(suffix) or
+                    not query.startswith(prefix) or not query.endswith(suffix)):
+                return None
+            matched = query[len(prefix):len(query) - len(suffix) if suffix else None]
+            return replacement.replace("*", matched)
+
+        for remote, refspecs in remote_mappings.items():
+            positives, negatives = [], []
+            for refspec in refspecs:
+                if refspec.startswith("^"):
+                    source = refspec[1:]
+                    if not source or ":" in source or source.count("*") > 1:
+                        return "repository-unresolved"
+                    negatives.append(source)
                     continue
-                matched = source_ref[len(prefix):len(source_ref) - len(suffix) if suffix else None]
-                destination = destination.replace("*", matched)
-            elif source != source_ref:
+                source, separator, destination = refspec.partition(":")
+                if not separator or source.count("*") > 1 or destination.count("*") != source.count("*"):
+                    return "repository-unresolved"
+                positives.append((source, destination))
+            # Git 2.51's negative prepass reverses positive wildcard
+            # destinations against the query, even for a source query.
+            # Exact positives instead contribute their matching source.
+            candidates = []
+            for source, destination in positives:
+                candidate = (map_pattern(destination, source, source_ref) if "*" in source
+                             else source if source == source_ref else None)
+                if candidate is not None:
+                    candidates.append(candidate)
+            if any(map_pattern(negative, "", candidate) is not None
+                   for negative in negatives for candidate in candidates):
+                continue
+            destination = None
+            for source, target in positives:
+                destination = map_pattern(source, target, source_ref)
+                if destination is not None:
+                    break  # Native lookup uses the first applicable mapping.
+            if destination is None:
                 continue
             remote_ref = subprocess.run(
                 [*git_prefix, "rev-parse", "--verify", "--quiet", destination + "^{commit}"],
@@ -7189,7 +7221,7 @@ def git_checkout_effect(
                 check=False, timeout=1,
             )
             if remote_ref.returncode == 0:
-                matches.add(key[len("remote."):-len(".fetch")])
+                matches.add(remote)
         if len(matches) > 1:
             preferred = subprocess.run(
                 [*git_prefix, "config", "--get", "checkout.defaultRemote"],
@@ -12200,6 +12232,8 @@ def collect_pathspecs(
     filename = ""
     file_nul = False
     after_separator = False
+    checkout_operand_seen = False
+    checkout_source = None
     index = 0
     value_options = {
         "--source", "--conflict", "-b", "-B", "--orphan", "--unified", "-U",
@@ -12213,6 +12247,7 @@ def collect_pathspecs(
             after_separator = True
             if verb == "checkout":
                 paths.clear()  # Operands before checkout's separator are sources.
+                checkout_source = None
             continue
         if not after_separator and value.startswith("-"):
             is_file, operand = pathspec_from_file_argument(value)
@@ -12241,9 +12276,16 @@ def collect_pathspecs(
                             index += 1
                         break
             continue
+        if verb == "checkout" and not after_separator and not checkout_operand_seen:
+            checkout_operand_seen = True
+            checkout_source = value if offset not in unknown else None
         if offset not in unknown:
             paths.append(value)
     if filename is None or filename:
+        # Git removes one established tree source before checking whether
+        # actual explicit destinations conflict with file-selected paths.
+        if checkout_source is not None and paths and checkout_revision(checkout_source) is True:
+            paths = paths[1:]
         if paths:
             return []  # Git rejects simultaneous file and explicit paths.
         entries = git_pathspec_entries(filename, base, file_nul)
@@ -12703,6 +12745,8 @@ def restore_detail(
     args = git_checkout_arguments(args, "restore", unknown)
     if args is None:
         return None
+    # TODO: distinguish explicit --no-staged from an unspecified staged
+    # destination; native Git rejects --no-staged alone without a write.
     staged = False
     worktree = None
     after_separator = False
@@ -12749,15 +12793,15 @@ def restore_detail(
     return None
 
 def checkout_revision(value):
-    # A path-looking token is a branch/ref when Git can resolve it to a
-    # commit.  Failed/ambiguous probing stays on path inspection; only a
-    # positive revision result exempts an existing protected path.
+    # Establish a checkout tree source, including a tree object. Failed or
+    # ambiguous probing stays on path inspection; only a positive result
+    # exempts the leading source operand from destination inspection.
     if not value or value.startswith("-"):
         return False
     try:
         import subprocess
         result = subprocess.run(
-            ["/usr/bin/git", "-C", target_repo, "rev-parse", "--verify", "--quiet", value + "^{commit}"],
+            ["/usr/bin/git", "-C", target_repo, "rev-parse", "--verify", "--quiet", value + "^{tree}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             check=False, timeout=1,
         )
@@ -12806,6 +12850,7 @@ def checkout_detach_state(
     state = None
     branch_mode = False
     orphan_mode = False
+    orphan_name = None
     branch_startpoint = False
     unified_context_option = False
     unified_context_unpatched_effect = False
@@ -12853,8 +12898,10 @@ def checkout_detach_state(
                 if option in {"--unified", "--inter-hunk-context"}:
                     if not checkout_context_value_valid(argument):
                         return invalid_result()
-                elif argument.startswith("-"):
+                elif option != "--orphan" and argument.startswith("-"):
                     return invalid_result()
+                if option == "--orphan":
+                    orphan_name = argument
                 if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
                     return invalid_result()
                 orphan_mode = orphan_mode or option == "--orphan"
@@ -12872,8 +12919,10 @@ def checkout_detach_state(
             if option in {"--unified", "--inter-hunk-context"}:
                 if not checkout_context_value_valid(context_value):
                     return invalid_result()
-            elif context_value.startswith("-"):
+            elif option != "--orphan" and context_value.startswith("-"):
                 return invalid_result()
+            if option == "--orphan":
+                orphan_name = context_value
             if option == "--conflict" and context_value not in {"merge", "diff3", "zdiff3"}:
                 return invalid_result()
             orphan_mode = orphan_mode or option == "--orphan"
@@ -12993,6 +13042,10 @@ def checkout_detach_state(
             pathspec_dash_trailing_path = True
         if (branch_mode or orphan_mode) and not value.startswith("-") and checkout_revision(value) is True:
             branch_startpoint = True
+    # OPTION_STRING orphan names are validated only if they survive
+    # cancellation; callback-validated option values still reject above.
+    if orphan_mode and orphan_name is not None and orphan_name.startswith("-"):
+        return invalid_result()
     if pathspec_dash_trailing_path:
         return invalid_result()
     if not patch_mode:

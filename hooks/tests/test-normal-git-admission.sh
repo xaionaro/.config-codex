@@ -949,6 +949,72 @@ run_effect_aware_git_target() {
   before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
   assert_denied_code 'git restore -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || return 1
 
+  # A verified checkout tree source is not an explicit destination and must
+  # not prevent loading file-selected destinations. Protected forms are
+  # checked only; admitted ordinary forms execute through real Git.
+  printf '%s\n' hooks/validate-bash.sh >"$TMP_ROOT/protected-checkout.paths"
+  printf '%s\n' CODEX.md >"$TMP_ROOT/ordinary-checkout.paths"
+  for command in \
+    "git checkout HEAD --pathspec-from-file=$TMP_ROOT/protected-checkout.paths" \
+    "git checkout 'HEAD^{tree}' --pathspec-from-file=$TMP_ROOT/protected-checkout.paths" \
+    "git checkout HEAD --pathspec-from-file $TMP_ROOT/protected-checkout.paths" \
+    "git checkout --pathspec-from-file=$TMP_ROOT/protected-checkout.paths HEAD" \
+    "git checkout --pathspec-from-file=$TMP_ROOT/protected-checkout.paths" \
+    'git checkout --orphan=-scratch --no-orphan -- hooks/validate-bash.sh'; do
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  done
+  for command in \
+    "git checkout HEAD --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths" \
+    "git checkout HEAD --pathspec-from-file $TMP_ROOT/ordinary-checkout.paths" \
+    "git checkout 'HEAD^{tree}' --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths" \
+    "git checkout --pathspec-from-file=$TMP_ROOT/ordinary-checkout.paths" \
+    'git checkout --orphan=-scratch --no-orphan -- CODEX.md'; do
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || failures=1
+      [ "$(cat -- "$REPO/CODEX.md")" = 'ordinary base' ] || failures=1
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      git -C "$REPO" diff --cached --quiet || failures=1
+    else failures=1; fi
+  done
+  command="git checkout HEAD CODEX.md --pathspec-from-file=$TMP_ROOT/protected-checkout.paths"
+  if assert_allowed "$command" worker; then
+    if (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/explicit-file-conflict.out" 2>&1; then
+      printf 'checkout with explicit and file destinations unexpectedly succeeded\n' >&2
+      failures=1
+    fi
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+    git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+  else failures=1; fi
+
+  # Git's negative prepass uses reverse candidates. Standard wildcard
+  # mappings still permit guessing even with a matching source negative.
+  git -C "$REPO" config --add remote.origin.fetch '^refs/heads/wip/*'
+  assert_denied_code 'git checkout --guess remote-topic' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  assert_denied_code 'git -c checkout.guess=true checkout remote-topic' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  git -C "$REPO" config --add remote.origin.fetch '^refs/heads/remote-topic'
+  assert_denied_code 'git checkout --guess remote-topic' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  # An exact positive contributes its source to the negative prepass, so
+  # the matching negative prevents native guessing without changing state.
+  git -C "$REPO" config --replace-all remote.origin.fetch 'refs/heads/remote-topic:refs/remotes/origin/remote-topic'
+  git -C "$REPO" config --add remote.origin.fetch '^refs/heads/remote-topic'
+  command='git checkout --guess remote-topic'
+  if assert_allowed "$command" worker; then
+    if (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/excluded-remote.out" 2>&1; then
+      printf 'checkout guessed an excluded remote branch\n' >&2
+      failures=1
+    fi
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+    git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+  else failures=1; fi
+  git -C "$REPO" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+
   # These operations are checked for denial only, never executed.
   for command in \
     'git restore --recurse-submodules hooks/validate-bash.sh' \
