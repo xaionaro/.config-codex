@@ -224,9 +224,9 @@ assert_role_rows_are_local() {
   for marker in \
     '| `explorer` |' \
     '| `critic-step2` |' \
-    '| `implementer` |' \
+    '| Producer (`implementer`) |' \
     '| Critic A/B/C, E2E |' \
-    '| `fast-owner` |'; do
+    '| `fast-owner` (Fast Owner Producer) |'; do
     assert_no_control_routes "$ECI" "$marker"
   done
   for marker in \
@@ -239,7 +239,7 @@ assert_role_rows_are_local() {
     assert_no_control_routes "$ATE" "$marker"
   done
 
-  eci_coordinator_row="$(grep -F -- '| coordinator |' "$ECI")"
+  eci_coordinator_row="$(grep -F -- '| Supervisor |' "$ECI")"
   [[ "$eci_coordinator_row" == *'review-policy.md'* ]] ||
     fail 'ECI coordinator row must retain review-policy routing'
   ate_coordinator_row="$(grep -F -- '| Coordinator, Lead |' "$ATE")"
@@ -263,7 +263,7 @@ assert_debugging_role_routes() {
      "$row" == *'only for assigned bug investigation'* ]] ||
     fail 'ECI explorer row must conditionally route assigned bug investigation to debugging-discipline'
 
-  row="$(grep -F -- '| `implementer` |' "$ECI")"
+  row="$(grep -F -- '| Producer (`implementer`) |' "$ECI")"
   [[ "$row" == *'[debugging-discipline](../debugging-discipline/SKILL.md)'* &&
      "$row" == *'only for assigned code/debug work'* ]] ||
     fail 'ECI implementer row must conditionally route code/debug work to debugging-discipline'
@@ -316,12 +316,13 @@ assert_compaction_provenance() {
 
 assert_reviewer_role_split() {
   local forbidden
+  require_text "$REVIEW" 'The Supervisor retains acceptance.'
 
   for required in \
     '## Critic A — coding style' \
     '## Critic B — correctness and fidelity' \
     '## Critic C — long-term health' \
-    'Report findings only'; do
+    'Report findings to the current Job owner only.'; do
     require_text "$REVIEW" "$required"
   done
 
@@ -333,7 +334,6 @@ assert_reviewer_role_split() {
     'required-critic manifest' \
     'required critic manifest' \
     'aggregate' \
-    'acceptance' \
     'teardown' \
     'loop-breaker'; do
     if grep -Fqi -- "$forbidden" "$REVIEW"; then
@@ -345,7 +345,7 @@ assert_reviewer_role_split() {
     '## Step 4 — Review coordination' \
     "Wait for each gate's required reviews and focused proof, plus E2E evidence when the central cadence calls for it. Final acceptance also requires the final E2E pair when a trigger applies." \
     'Pre-route every finding with the review policy.' \
-    'Use the shared coordinator/runtime policy for repair cycles, clean-pass, and limits.'; do
+    'Use the shared Supervisor/runtime policy for repair cycles, clean-pass, and limits.'; do
     require_text "$COORDINATOR" "$required"
   done
 }
@@ -849,25 +849,25 @@ assert_eci_e2e_cadence_contract() {
   section="$(extract_h2_section "$ECI" '## E2E cadence, scope, and timing')" ||
     fail "$ECI lacks a bounded E2E cadence/timing section"
   require_section_pattern "$section" 'focused checks, diff verification, checkpoints, and independent reviews remain per iteration' \
-    'each implementation iteration.*focused tests/proof.*independent verification.*exact diff.*coordinator checkpoint.*independent code review'
+    'each implementation iteration.*focused tests/proof.*checked scoped producer commit during handoff.*independent supervisor verification.*immutable range.*independent code review'
   require_text "$ECI" 'Do not run routine E2E between iterations.'
   require_section_pattern "$section" 'only concrete failures or integration uncertainty permit early E2E' \
     'early e2e is allowed only.*concrete failure or integration uncertainty.*shortest faithful real-path scenario.*early evidence does not replace final e2e'
   require_section_pattern "$section" 'a stable final cumulative candidate gets implementer and independent E2E' \
-    'once main implementation, post-fast findings/dispositions, and any resulting implementation repairs are complete, run one final pair before acceptance whenever a configuration or runtime trigger applies.*implementer-owned e2e.*fresh independent step 4 e2e.*same stabilized final cumulative revision'
+    'once main-path implementation, post-fast findings/dispositions, and any resulting repairs are complete, run one final pair before acceptance whenever a configuration or runtime trigger applies.*implementer producer.s e2e.*fresh independent step 4 e2e.*same stabilized final cumulative revision'
   require_section_pattern "$section" 'scope preserves the shortest faithful real path and only runs a full suite for required coverage' \
     'shortest faithful real path.*original criteria.*relevant regressions.*full suite only when it supplies coverage required'
   require_section_pattern "$section" 'E2E output cites the command and real-path evidence' \
     'cite the command and actual output/state/screenshot.*proxy evidence alone is insufficient'
   require_section_pattern "$section" 'all E2E types record timestamps and comparison context' \
-    'every early, fast, implementer-final, and independent-final e2e report records.*started_at_utc.*finished_at_utc.*elapsed_monotonic_seconds.*command.*scope/coverage.*tested revision.*environment identity'
+    'every early, fast, producer-final, and independent-final e2e report records.*started_at_utc.*finished_at_utc.*elapsed_monotonic_seconds.*command.*scope/coverage.*tested revision.*environment identity'
   for field in 'runner/host class' 'OS/architecture' 'relevant tool/runtime versions' 'test-service/data configuration' 'Redact secrets.'; do
     require_text "$ECI" "$field"
   done
   require_section_pattern "$section" 'duration comparisons require materially comparable runs and are not collected by rerunning' \
     'compare duration only for matching commands and scope/coverage in materially equivalent environments; do not rerun solely to collect timing'
   require_section_pattern "$section" 'comparable material regressions launch parallel optimization while main ECI continues' \
-    'comparable material regression beyond ordinary variance triggers a fast owner or bounded helper to profile and optimize e2e duration in parallel while main eci continues'
+    'comparable material regression beyond ordinary variance triggers the fast owner producer or a bounded helper to profile and optimize e2e duration in parallel while main-path eci continues'
   require_section_pattern "$section" 'optimization preserves assertions, coverage, real path, and independent final E2E' \
     'preserve assertions, coverage, real-path evidence, and the independent final e2e'
   require_section_pattern "$section" 'later relevant edits invalidate affected E2E evidence' \
@@ -892,8 +892,8 @@ assert_e2e_policy_consumer_pointers() {
 
   require_line "$IMPLEMENT" 'E2E triggers, cadence, scope, and timing: [ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing).'
   require_line "$REVIEW" 'E2E cadence, scope, timing, and triggers: [ECI E2E policy](../SKILL.md#e2e-cadence-scope-and-timing).'
-  require_line "$COORDINATOR" 'After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C for every implementation iteration. E2E follows the [central cadence, scope, and timing policy](../SKILL.md#e2e-cadence-scope-and-timing), including its early-run condition and final independent run.'
-  require_line "$FAST_PATH" 'Fast-owner E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.'
+  require_line "$COORDINATOR" 'The current Job owner alone assigns fresh Step 2, A/B/C, and required independent E2E reviews for each outcome under the [Job Orchestrator contract](task-orchestrator.md#worker-and-helper-boundaries). The Supervisor verifies each Producer range before dependent review/work and retains final impact/treatment/disposition adjudication, acceptance, and protected operations. E2E follows the [central cadence, scope, and timing policy](../SKILL.md#e2e-cadence-scope-and-timing), including its early-run condition and final independent run.'
+  require_line "$FAST_PATH" 'Fast Producer E2E follows the [central ECI policy](../SKILL.md#e2e-cadence-scope-and-timing), including per-run timestamps, comparable-run regression checks, and parallel optimization when a material regression appears.'
   require_text "$REVIEW_POLICY" 'cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing)'
   require_text "$COORDINATOR_RUNTIME" 'E2E cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing)'
   for file in "$IMPLEMENT" "$REVIEW" "$COORDINATOR" "$FAST_PATH" "$REVIEW_POLICY" "$COORDINATOR_RUNTIME"; do
@@ -1222,7 +1222,7 @@ assert_ate_ordinary_role_split() {
 
 assert_fast_path_routes() {
   local file
-  require_text "$ECI" '| `fast-owner` | [ECI fast path](references/fast-path.md) |'
+  require_text "$ECI" '| `fast-owner` (Fast Owner Producer) | [ECI fast path](references/fast-path.md) |'
   require_line "$FAST_PATH" '# ECI fast path'
   for file in "$CODEX" "$ECI" "$COORDINATOR" "$IMPLEMENT" "$REVIEW" \
     "$ECI_CRITIQUE" "$ROOT/skills/explore-critique-implement/references/explore.md" \
@@ -1233,7 +1233,7 @@ assert_fast_path_routes() {
   [ ! -e "$ROOT/skills/explore-critique-implement/references/emergency-unblock.md" ] ||
     fail 'obsolete emergency module remains'
   require_pattern "$FAST_PATH" 'both paths launch for every ECI task' \
-    'Start one Fast owner alongside Step 1 for every new ECI task'
+    'Start one Fast Producer alongside Step 1 for every new ECI task'
   require_pattern "$FAST_PATH" 'in-scope paths receive priority' \
     'Prioritize in-scope paths under'
   require_pattern "$FAST_PATH" 'shared live files' 'same checkout and live files'
@@ -1318,7 +1318,7 @@ assert_post_fast_transition_contract() {
   restart_directive='A genuine Fast completion restarts the normal path from a fresh Step 1.'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
-  explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_directive='Then the current Job owner assigns the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   step2_directive="A fresh Step 2 critic independently assesses the current sources and Explorer's options."
   require_active_literal_directive "$text" 'post-Fast fresh Step 1 restart' "$restart_directive"
   require_section_pattern "$text" 'genuine Fast completion restarts from a fresh Step 1' \
@@ -1355,13 +1355,11 @@ assert_post_fast_transition_contract() {
 assert_post_fast_completion_observation_contract() {
   local text="$1"
 
-  require_section_pattern "$text" 'completion observation identifies stopped Fast tools' \
-    'The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped'
-  require_section_pattern "$text" 'owner report enumerates all findings and hunks' \
-    'The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers'
+  require_text <(printf '%s\n' "$text") 'The current Job owner verifies [genuine Fast completion](#outcome-continuation-and-completion), including the full provisional outcome, producer verification, the Fast Producer'\''s scoped commits, finished and integrated Fast Helper work, and stopped Fast/Helper write-capable tools.'
+  require_text <(printf '%s\n' "$text") 'The Fast Producer'\''s completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers.'
   require_order "$text" \
-    'The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped' \
-    'The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers' ||
+    'The current Job owner verifies [genuine Fast completion](#outcome-continuation-and-completion), including the full provisional outcome, producer verification, the Fast Producer'\''s scoped commits, finished and integrated Fast Helper work, and stopped Fast/Helper write-capable tools.' \
+    'The Fast Producer'\''s completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers.' ||
     fail 'Fast completion observation must precede the owner report'
 }
 
@@ -1372,14 +1370,14 @@ assert_post_fast_scope_and_disposition_contract() {
   local recommendation_directive final_evidence final_now separate_outcome
 
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
-  explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_directive='Then the current Job owner assigns the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   inventory_directive='This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
   final_acceptance_directive='Final acceptance requires every in-scope inventory item to have a disposition and evidence.'
   defer_directive='A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.'
   routing_directive='Apply impact-proportional routing before implementation.'
   repair_batch='Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.'
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
-  revise_replace='A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
+  revise_replace='A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   other_dispositions='Other dispositions require evidence, not implementation.'
   recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   final_evidence='The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
@@ -1388,7 +1386,7 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
     'Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
   require_section_pattern "$text" 'separate-outcome findings stay outside current work' \
-    'A separate-outcome finding stays only a post-ECI observation/follow-up and creates no current repair, review, proof, or acceptance work'
+    'A separate-outcome finding stays a post-ECI observation/follow-up and creates no issue-specific repair, review, proof, or acceptance work'
   require_section_pattern "$text" 'Fast-originated hunks stay review context' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization'
   require_active_literal_directive "$text" 'post-Fast scope-screen and source-outcome chain' "$scope_clause"
@@ -1413,7 +1411,7 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'Step 2 authority is limited to design-winner selection' \
     'Step 2 authority is limited to design-winner selection.*does not apply treatment'
   require_section_pattern "$text" 'coordinator applies one canonical disposition per item' \
-    'The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
+    'The Supervisor owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
   require_section_pattern "$text" 'Step 2 includes every disposition' \
     'retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason'
   require_section_pattern "$text" 'defer disposition points to impact-proportional routing' \
@@ -1423,7 +1421,7 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'defer evidence failure is local and non-gating' \
     'Missing evidence invalidates only that defer conclusion; it never waives criteria or gates unrelated bounded work'
   require_section_pattern "$text" 'retained Fast findings and changes are fixed or justified' \
-    'The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
+    'The Implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   require_section_pattern "$text" 'no-hunk retain and resolved outcomes require evidence' \
     'Every no-hunk retain or resolved-with-evidence outcome requires evidence'
   require_section_pattern "$text" 'final coverage is every in-scope item exactly once' \
@@ -1473,12 +1471,12 @@ assert_post_fast_coordinator_ownership_contract() {
   local text="$1"
 
   require_text <(printf '%s\n' "$text") \
-    'After the Step 2 recommendation, the coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
+    'After the Step 2 recommendation, the Supervisor owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
   require_text <(printf '%s\n' "$text") \
     'Step 2 authority is limited to design-winner selection; it does not apply treatment.'
-  [[ "$text" != *'The coordinator applies multiple canonical dispositions per in-scope inventory item.'* ]] ||
+  [[ "$text" != *'The Supervisor applies multiple canonical dispositions per in-scope inventory item.'* ]] ||
     fail 'coordinator ownership contradiction was admitted'
-  [[ "$text" != *'The coordinator does not own final disposition application/treatment.'* ]] ||
+  [[ "$text" != *'The Supervisor does not own final disposition application/treatment.'* ]] ||
     fail 'coordinator final-treatment contradiction was admitted'
 }
 
@@ -1490,13 +1488,13 @@ assert_post_fast_role_ownership() {
   assert_post_fast_critique_ownership_contract "$critique"
   assert_post_fast_coordinator_ownership_contract "$coordinator"
   require_text "$IMPLEMENT" \
-    "Receive the Step 2 design-winner recommendation and the coordinator's final per-item disposition/treatment."
+    "Receive the Step 2 design-winner recommendation and the Supervisor's final per-item disposition/treatment."
   require_text "$IMPLEMENT" \
-    'Implement only findings routed as `treatment: now`: fix each routed finding and implement coordinator-applied `revise`/`replace` changes.'
+    'Implement only findings routed as `treatment: now`: fix each routed finding and implement Supervisor-applied `revise`/`replace` changes.'
   require_text "$IMPLEMENT" \
     'Provide evidence, not implementation, for other dispositions.'
   require_text "$REVIEW" \
-    'Review the final cumulative scoped state after the coordinator applies exactly one canonical disposition per in-scope inventory item.'
+    'Review the final cumulative scoped state after the Supervisor applies exactly one canonical disposition per in-scope inventory item.'
 
   pressure="$critique"$'\n\n''The Step 2 critic applies treatment.'
   if output="$(assert_post_fast_critique_ownership_contract "$pressure" 2>&1)"; then
@@ -1504,13 +1502,13 @@ assert_post_fast_role_ownership() {
   fi
   [[ "$output" == *'Step 2 critic ownership contradiction'* ]] ||
     fail "unexpected Step 2 critic treatment pressure failure: $output"
-  pressure="$coordinator"$'\n\n''The coordinator applies multiple canonical dispositions per in-scope inventory item.'
+  pressure="$coordinator"$'\n\n''The Supervisor applies multiple canonical dispositions per in-scope inventory item.'
   if output="$(assert_post_fast_coordinator_ownership_contract "$pressure" 2>&1)"; then
     fail 'coordinator multiple-disposition pressure fixture was admitted'
   fi
   [[ "$output" == *'coordinator ownership contradiction'* ]] ||
     fail "unexpected coordinator multiple-disposition pressure failure: $output"
-  pressure="$coordinator"$'\n\n''The coordinator does not own final disposition application/treatment.'
+  pressure="$coordinator"$'\n\n''The Supervisor does not own final disposition application/treatment.'
   if output="$(assert_post_fast_coordinator_ownership_contract "$pressure" 2>&1)"; then
     fail 'coordinator final-treatment pressure fixture was admitted'
   fi
@@ -1572,8 +1570,8 @@ assert_post_fast_inventory_contract() {
   local text="$1" recommendation coordinator_application retained_fix scope_clause provenance
 
   recommendation='recommends exactly one canonical disposition for each in-scope inventory item'
-  coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
-  retained_fix='The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
+  coordinator_application='The Supervisor owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item'
+  retained_fix='The Implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
   provenance='Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.'
 
@@ -1581,13 +1579,13 @@ assert_post_fast_inventory_contract() {
   assert_post_fast_scope_and_disposition_contract "$text"
 
   require_section_pattern "$text" 'Fast completion reports every finding and changed hunk' \
-    'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers'
+    'Fast Producer'\''s completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers'
   require_section_pattern "$text" 'inventory includes no-hunk findings and every change outcome' \
     'Include findings with no retained hunk and changes that are retained, revised, non-retained, superseded, or reverted'
   require_section_pattern "$text" 'inventory states are provenance, not dispositions' "$provenance"
   require_active_literal_directive "$text" 'inventory states are active provenance-only guidance' "$provenance"
   require_section_pattern "$text" 'coordinator reconciles the complete inventory' \
-    'The coordinator reconciles the report with shared state'
+    'The current Job owner reconciles task-local findings with shared state and sends reports, evidence, and disposition recommendations to the Supervisor'
   require_section_pattern "$text" 'inventory is review context and never a gate' \
     'This complete inventory is review context, never a manifest, receipt, or admission/write gate'
   require_section_pattern "$text" 'final acceptance covers every inventory item' \
@@ -1601,7 +1599,7 @@ assert_post_fast_inventory_contract() {
   require_section_pattern "$text" 'contained treatment-now finding routes once' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated'
   require_section_pattern "$text" 'implementer applies selected revise and replace dispositions' \
-    'The implementer implements those routed coordinator-applied revise/replace changes'
+    'The Implementer implements those routed Supervisor-applied revise/replace changes'
   require_section_pattern "$text" 'implementer validates retained and revised changes' \
     'validates retained/revised changes'
   require_section_pattern "$text" 'implementer evidences no-hunk resolutions' \
@@ -1612,11 +1610,11 @@ assert_post_fast_inventory_contract() {
     'final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence'
   require_section_pattern "$text" 'final Step 4 leaves no unresolved in-scope item' \
     'no unresolved in-scope `treatment: now` finding'
-  require_order "$text" 'The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped' \
-    'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers' &&
-    require_order "$text" 'Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers' \
-      'The coordinator reconciles the report with shared state' &&
-    require_order "$text" 'The coordinator reconciles the report with shared state' \
+  require_order "$text" 'The current Job owner verifies [genuine Fast completion](#outcome-continuation-and-completion), including the full provisional outcome, producer verification, the Fast Producer'\''s scoped commits, finished and integrated Fast Helper work, and stopped Fast/Helper write-capable tools.' \
+    'Fast Producer'\''s completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers' &&
+    require_order "$text" 'Fast Producer'\''s completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers' \
+      'The current Job owner reconciles task-local findings with shared state and sends reports, evidence, and disposition recommendations to the Supervisor' &&
+    require_order "$text" 'The current Job owner reconciles task-local findings with shared state and sends reports, evidence, and disposition recommendations to the Supervisor' \
       "$scope_clause" &&
     require_order "$text" "$scope_clause" \
       'The Explorer reviews each in-scope inventory item' &&
@@ -1633,16 +1631,16 @@ assert_post_fast_inventory_contract() {
     require_order "$text" 'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.' \
       'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.' &&
     require_order "$text" 'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.' \
-      'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.' &&
-    require_order "$text" 'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.' \
+      'A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.' &&
+    require_order "$text" 'A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.' \
       'Other dispositions require evidence, not implementation.' &&
     require_order "$text" "$coordinator_application" \
       "$retained_fix" &&
     require_order "$text" 'Other dispositions require evidence, not implementation.' \
       "$retained_fix" &&
     require_order "$text" "$retained_fix" \
-      'The implementer implements those routed coordinator-applied revise/replace changes' &&
-    require_order "$text" 'The implementer implements those routed coordinator-applied revise/replace changes' \
+      'The Implementer implements those routed Supervisor-applied revise/replace changes' &&
+    require_order "$text" 'The Implementer implements those routed Supervisor-applied revise/replace changes' \
       'supplies evidence for no-hunk resolutions' &&
     require_order "$text" 'supplies evidence for no-hunk resolutions' \
       'the final cumulative Step 4 independently reviews' ||
@@ -1654,7 +1652,7 @@ assert_post_fast_completion_contract() {
   assert_post_fast_transition_contract "$text"
   assert_post_fast_inventory_contract "$text"
   require_section_pattern "$text" 'Fast must actually finish before final exploration' \
-    'Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped'
+    'full provisional outcome, producer verification,.*scoped commits, finished and integrated Fast Helper work, and stopped Fast/Helper write-capable tools'
   require_section_pattern "$text" 'yield, labels, or cancellation cannot stand in for completion' \
     'write-yield, idle label, timeout, or cancellation is not Fast completion'
   require_section_pattern "$text" 'fresh exploration inspects final shared code' \
@@ -1669,7 +1667,7 @@ assert_post_fast_completion_contract() {
     'Resumed Fast writes invalidate this sequence; after Fast finishes again, repeat it'
   require_section_pattern "$text" 'cancellation closes without claiming success' \
     'Cancellation uses user closure, never a clean pass or substitute Fast completion'
-  require_order "$text" 'Fast owner has finished' 'new Step 1 exploration' &&
+  require_order "$text" 'The current Job owner verifies' 'new Step 1 exploration' &&
     require_order "$text" 'new Step 1 exploration' 'fresh Step 2 critic' &&
     require_order "$text" 'fresh Step 2 critic' 'Step 4 independently reviews' ||
     fail 'post-Fast completion sequence is out of order'
@@ -1693,14 +1691,14 @@ assert_post_fast_completion() {
   quality_clause='The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   scope_clause='Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`. Keep only repairs necessary to meet or prove that outcome in scope.'
   scope_line='   - '"$scope_clause"
-  explorer_directive='Then assign the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
+  explorer_directive='Then the current Job owner assigns the reusable Explorer a new Step 1 exploration of the final shared scoped code, started after Fast completion. The Explorer reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk for quality.'
   explorer_line='   - '"$explorer_directive"
   inventory_line='   - This complete inventory is review context, never a manifest, receipt, or admission/write gate.'
   final_acceptance_line='   - Final acceptance requires every in-scope inventory item to have a disposition and evidence.'
   routing_line='   - Apply impact-proportional routing before implementation.'
   repair_batch_line='   - Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch.'
   contained_now_line='   - Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
-  revise_replace_line='   - A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
+  revise_replace_line='   - A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   other_dispositions_line='   - Other dispositions require evidence, not implementation.'
   defer_line='   - A policy-valid deferred-with-reason disposition is only for an in-scope, non-hard, impact-trivial, isolated finding; it requires evidence supporting each eligibility condition, plus a technical reason and revisit trigger; it never waives original criteria.'
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
@@ -1736,10 +1734,10 @@ $step2_line}"
     fail "unexpected post-Fast scope-order failure: $output"
   recommendation='recommends exactly one canonical disposition for each in-scope inventory item'
   recommendation_line='   - The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
-  coordinator_application='The coordinator owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
+  coordinator_application='The Supervisor owns final disposition application/treatment and applies exactly one canonical disposition per in-scope inventory item.'
   provenance='Inventory states retained, revised, non-retained, superseded, and reverted are provenance only, not canonical dispositions; no inventory state implies a disposition.'
   provenance_line='   - '"$provenance"
-  retained_fix='The implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.'
+  retained_fix='The Implementer fixes every routed `treatment: now` finding and fixes or justifies every retained Fast finding and every retained Fast-originated change under that selected winner, including no-hunk findings.'
   mutation="${text/"$coordinator_application"/}"
   mutation="${mutation/"$contained_now"/"$contained_now"$'\n   - '"$coordinator_application"}"
   if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
@@ -1773,7 +1771,7 @@ $step2_line}"
       assert_post_fast_completion_contract "$FAST_PATH" "$text" "$active_line" \
       'section is missing active literal directive:'
   done
-  for clause in 'has finished its assigned work' 'write-capable tools have stopped' \
+  for clause in 'full provisional outcome' 'stopped Fast/Helper write-capable tools' \
     'write-yield, idle label, timeout, or cancellation' 'after Fast completion' \
     'fresh Step 2 critic independently assesses' 'even when no further edits are needed' \
     'normal path remains incomplete' 'Resumed Fast writes invalidate this sequence' \
@@ -1784,14 +1782,14 @@ $step2_line}"
     'Apply impact-proportional routing before implementation' \
     'Return substantive `now` findings or design/API uncertainty through one complete fresh Steps 1–2 repair batch' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
-    'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated' \
+    'A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated' \
     'Other dispositions require evidence, not implementation' \
-    'separate-outcome finding stays only a post-ECI observation/follow-up' \
+    'separate-outcome finding stays a post-ECI observation/follow-up' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization' \
-    'enumerates every finding and changed hunk from the Fast owner and its helpers' \
+    'enumerates every finding and changed hunk from the Fast Producer and its Helpers' \
     'findings with no retained hunk' \
     'retained, revised, non-retained, superseded, or reverted' \
-    'reconciles the report with shared state' \
+    'reconciles task-local findings with shared state' \
     'review context, never a manifest, receipt, or admission/write gate' \
     'every in-scope inventory item to have a disposition and evidence' \
     'reviews each in-scope inventory item' \
@@ -1811,7 +1809,7 @@ $step2_line}"
     'including no-hunk findings' \
     'Every no-hunk retain or resolved-with-evidence outcome requires evidence' \
     'Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated' \
-    'implements those routed coordinator-applied revise/replace changes' \
+    'implements those routed Supervisor-applied revise/replace changes' \
     'validates retained/revised changes' \
     'supplies evidence for no-hunk resolutions' \
     'supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes' \
@@ -1902,7 +1900,7 @@ $step2_line}"
     'Final Step 4 may leave an unresolved in-scope now finding.' \
     'Step 2 may assign multiple dispositions to an in-scope inventory item.' \
     'The fresh Step 2 critic applies treatment.' \
-    'The coordinator applies multiple canonical dispositions per in-scope inventory item.' \
+    'The Supervisor applies multiple canonical dispositions per in-scope inventory item.' \
     'A policy-valid deferred-with-reason disposition may apply to a hard finding.'; do
     assert_active_literal_directive_fixtures \
       assert_post_fast_no_active_contradiction "$FAST_PATH" "$text" "$scope_line" \
@@ -1948,8 +1946,8 @@ $step2_line}"
   fi
   [[ "$output" == *'workflow routing assertion failed:'* ]] ||
     fail "unexpected disposition suffix pressure failure: $output"
-  observation='The coordinator observes that the Fast owner has finished its assigned work, including delegated work, and all task-owned write-capable tools have stopped.'
-  report='The Fast owner completion report enumerates every finding and changed hunk from the Fast owner and its helpers.'
+  observation='The current Job owner verifies [genuine Fast completion](#outcome-continuation-and-completion), including the full provisional outcome, producer verification, the Fast Producer'\''s scoped commits, finished and integrated Fast Helper work, and stopped Fast/Helper write-capable tools.'
+  report='The Fast Producer'\''s completion report enumerates every finding and changed hunk from the Fast Producer and its Helpers.'
   pressure="${text/"$observation"/REMOVED}"
   pressure="${pressure/"$report"/"$report $observation"}"
   if output="$(assert_post_fast_completion_observation_contract "$pressure" 2>&1)"; then
@@ -2029,7 +2027,7 @@ assert_fast_path_progress_waits() {
 assert_fast_treatment_now_contract_text() {
   local text="$1" eligibility carry final_guard
 
-  eligibility='A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
+  eligibility='A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now` only when it is in-scope, contained, impact-trivial, and isolated; otherwise return through one complete fresh Steps 1–2 design-repair batch before implementation.'
   carry='Carry the resulting disposition and evidence into Step 4; never leave it unresolved.'
   final_guard='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
 
@@ -2049,7 +2047,7 @@ assert_fast_treatment_now_contract() {
   text="$(<"$FAST_PATH")"
   assert_fast_treatment_now_contract_text "$text"
   for clause in \
-    'A coordinator-applied `revise` or `replace` disposition reaches the implementer as `treatment: now`' \
+    'A Supervisor-applied `revise` or `replace` disposition reaches the Implementer as `treatment: now`' \
     'only when it is in-scope, contained, impact-trivial, and isolated' \
     'one complete fresh Steps 1–2 design-repair batch before implementation' \
     'Carry the resulting disposition and evidence into Step 4' \
@@ -2284,14 +2282,14 @@ assert_concurrent_task_contract() {
     'Run every ready, independent action concurrently, including independent tool calls' \
     'Queue or serialize only work with an unmet dependency, a conflict through shared mutable state, or unavailable capacity; name the constraint and continue unaffected ready work' \
     'A discovered separate-outcome concern still needs user authorization' \
-    'A task clean pass does not close a root with unfinished sibling tasks' \
+    'An outcome clean pass does not close a root with unfinished sibling outcomes or Jobs' \
     'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
     'nonconflicting work in the same file, with target rereads' \
-    'Serialize conflicting writes and shared Git-index mutations through coordinator ownership handoffs' \
-    'continue disjoint work, including nonconflicting work in the same file' \
+    'Route intersecting scopes and same-index pending intents through the published Job owner and Supervisor' \
+    'Continue disjoint work, including nonconflicting work in the same file' \
     'Later interacting changes invalidate affected acceptance evidence; refresh that review and verification before final root closure' \
-    'The coordinator orders cross-task conflicts' \
-    'Preserve all required review/E2E evidence before accepting its target'; do
+    'Responsible Producers agree implementation boundaries directly and agree shared-index order' \
+    'Preserve all required review/E2E evidence before the Supervisor accepts an outcome'; do
     require_section_pattern "$input" "concurrent task contract: $clause" "$clause"
   done
   if [[ "$input" == *'| Unrelated request | Queue a separate root until the active root closes'* ||
@@ -2309,14 +2307,14 @@ assert_concurrent_tasks() {
     'Run every ready, independent action concurrently, including independent tool calls' \
     'Queue or serialize only work with an unmet dependency, a conflict through shared mutable state, or unavailable capacity; name the constraint and continue unaffected ready work' \
     'A discovered separate-outcome concern still needs user authorization' \
-    'A task clean pass does not close a root with unfinished sibling tasks' \
+    'An outcome clean pass does not close a root with unfinished sibling outcomes or Jobs' \
     'Direct work and ATE outside ECI retain their existing lifecycle and wait rules' \
     'nonconflicting work in the same file, with target rereads' \
-    'Serialize conflicting writes and shared Git-index mutations through coordinator ownership handoffs' \
-    'continue disjoint work, including nonconflicting work in the same file' \
+    'Route intersecting scopes and same-index pending intents through the published Job owner and Supervisor' \
+    'Continue disjoint work, including nonconflicting work in the same file' \
     'Later interacting changes invalidate affected acceptance evidence; refresh that review and verification before final root closure' \
-    'The coordinator orders cross-task conflicts' \
-    'Preserve all required review/E2E evidence before accepting its target'; do
+    'Responsible Producers agree implementation boundaries directly and agree shared-index order' \
+    'Preserve all required review/E2E evidence before the Supervisor accepts an outcome'; do
     mutation="${input/"$clause"/}"
     if output="$(assert_concurrent_task_contract "$mutation" 2>&1)"; then
       fail "concurrent task mutation admitted removed rule: $clause"
@@ -2499,7 +2497,7 @@ assert_forecast_source_contract() {
 assert_coordinator_progress_forecast_contract() {
   local source="$1" input="$2" section attached_lane_template attached_root_template
 
-  attached_lane_template='For[[:space:]]+every[[:space:]]+relevant[[:space:]]+coordinator-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line[[:space:]]+for[[:space:]]+each[[:space:]]+executing[[:space:]]+lane:[[:blank:]]*'$'\n''[[:blank:]]*[-*][[:blank:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
+  attached_lane_template='For[[:space:]]+every[[:space:]]+relevant[[:space:]]+Supervisor-to-user[[:space:]]+ECI[[:space:]]+progress[[:space:]]+update,[[:space:]]+report[[:space:]]+this[[:space:]]+standalone[[:space:]]+line[[:space:]]+for[[:space:]]+each[[:space:]]+executing[[:space:]]+lane:[[:blank:]]*'$'\n''[[:blank:]]*[-*][[:blank:]]*`[[:space:]]*Forecast[[:space:]]+deadline:[[:space:]]+<named[[:space:]]+lane/task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
   attached_root_template='For[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports,[[:space:]]+include[[:space:]]+this[[:space:]]+standalone[[:space:]]+line:[[:space:]]+[-*][[:space:]]*`[[:space:]]*Root[[:space:]]+completion[[:space:]]+forecast:[[:space:]]+<named[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome>[[:space:]]+will[[:space:]]+be[[:space:]]+finished[[:space:]]+by[[:space:]]+<UTC[[:space:]]+ISO8601>\.[[:space:]]*`'
 
   section="$(extract_h2_section <(printf '%s\n' "$input") '## Engage and route')" ||
@@ -2596,9 +2594,9 @@ assert_coordinator_progress_forecast_contract_fixtures() {
   local source source_pair soft_wrapped_pair detached_pair history_rehomed soft_wrapped
 
   source="$(<"$COORDINATOR")"
-  source_pair=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`'
-  soft_wrapped_pair=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - `Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
-  detached_pair=$'- For every relevant coordinator-to-user ECI progress update, report this standalone line for each executing lane:\n  - See the historical appendix.\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - See the historical appendix.'
+  source_pair=$'- For every relevant Supervisor-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`'
+  soft_wrapped_pair=$'- For every relevant Supervisor-to-user ECI progress update, report this standalone line for each executing lane:\n  - `Forecast deadline: <named lane/task outcome> will be finished by\n<UTC ISO8601>.`\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - `Root completion forecast: <named active root-task outcome> will be finished by\n<UTC ISO8601>.`'
+  detached_pair=$'- For every relevant Supervisor-to-user ECI progress update, report this standalone line for each executing lane:\n  - See the historical appendix.\n- For each unrepresented active root-task outcome omitted by lane reports, include this standalone line:\n  - See the historical appendix.'
   soft_wrapped="${source/"$source_pair"/"$soft_wrapped_pair"}"
   [ "$soft_wrapped" != "$source" ] || fail 'coordinator soft-wrap fixture did not replace the attached lane template'
   assert_coordinator_progress_forecast_contract 'soft-wrapped coordinator lane binding fixture' "$soft_wrapped"
@@ -2764,7 +2762,7 @@ assert_lane_forecast_contract() {
   advisory_no_gate_pattern='never[[:space:]]+gate[[:space:]]+work'
   advisory_no_permission_pattern='grant.*deny[[:space:]]+permissions'
   advisory_no_blocker_pattern='never.*create[[:space:]]+blockers'
-  closed_lane_pattern='`CLOSED`[[:space:]]+lane.*records[[:space:]]+completion'
+  closed_lane_pattern='`CLOSED`[[:space:]]+lane.*records[[:space:]]+`Completed: <UTC ISO8601>; no active forecast deadline\.`'
   closed_lane_no_forecast_pattern='do[[:space:]]+not.*(invent|revive).*forecast[[:space:]]+deadline.*recalibration'
   parallel_path_pattern='parallel[[:space:]]+children.*single[[:space:]]+critical-path[[:space:]]+deadline'
   parallel_nonadditive_pattern='never.*(add|sum).*parallel[[:space:]]+child[[:space:]]+deadlines.*(parent|root|mission)'
@@ -2889,7 +2887,7 @@ assert_primary_scope_fidelity_contract() {
   require_primary_scope_fidelity_text "$source" 'necessary repair remains current-lane work' \
     'A repair necessary to meet or prove that outcome stays current-lane work.' "$activation"
   require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
-    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' "$activation"
+    'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' "$activation"
   if section_has_active_literal_directive "$activation" 'Treat a discovered concern serving a separate outcome as current-lane work.'; then
     fail "$source contradicts primary scope fidelity contract: separate outcome becomes current work"
   fi
@@ -2920,13 +2918,13 @@ assert_primary_scope_fidelity_contract_mutations() {
   [ "$mutation" != "$primary" ] || fail 'primary repair mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'necessary repair becomes a separate lane' "$mutation"
 
-  mutation="${primary/'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.'/'A concern serving a separate outcome is current work.'}"
+  mutation="${primary/'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.'/'A concern serving a separate outcome is current work.'}"
   [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
 
   assert_active_literal_directive_fixtures \
     assert_primary_scope_fidelity_contract "$ECI" "$primary" \
-    'A concern serving a separate outcome is only a post-ECI user follow-up, never current work.' \
+    'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' \
     'Treat a discovered concern serving a separate outcome as current-lane work.' \
     'primary scope fidelity contract'
 
@@ -3241,7 +3239,14 @@ assert_pause_resume_closure_contract() {
 }
 
 assert_least_restriction_contract() {
-  local review_policy
+  local review_policy critic_b
+
+  critic_b="$(extract_h2_section "$REVIEW" "## Critic B — correctness and fidelity")" ||
+    fail "$REVIEW lacks the bounded Critic B obligation"
+  require_section_pattern "$critic_b" "Critic B owns scope fidelity and least restriction" \
+    "check scope fidelity and least restriction against.*exact user source.*faithful requested outcome.*bounded scope"
+  require_section_pattern "$critic_b" "Critic B requires bounded hatches under the non-malicious model" \
+    "assume bots are non-malicious.*require every enabled gate to name a bounded legitimate-work escape path; if it has none, recommend disabling it"
 
   review_policy="$(<"$REVIEW_POLICY")"
   assert_review_policy_least_restriction_contract "$REVIEW_POLICY" "$review_policy"
@@ -3265,7 +3270,7 @@ assert_least_restriction_contract() {
   require_text "$GATE_CATALOG" 'If a future gate has no bounded legitimate path, disable that gate until one exists.'
   require_text "$GATE_CATALOG" 'owner-scoped dependency work'
   require_text "$GATE_CATALOG" 'repository-allow-on'
-  require_text "$GATE_CATALOG" '600-second `coordinator-edit-on` hatch'
+  require_text "$GATE_CATALOG" 'The session-scoped 600-second self-edit hatch changes routing only; it does not override Producer ownership or authorize new tracked contributions or Git index/commit operations.'
 
   forbid_text "$ECI_COVERAGE" 'Baseline source SHA-256:'
   forbid_text "$PAUSE" 'fails closed'
@@ -3274,54 +3279,53 @@ assert_least_restriction_contract() {
 }
 
 assert_implementer_iteration_checkpoint_contract() {
-  local baseline_contract baseline_exclusions ambiguity_contract
-  local step4_bridge coordinator_sequence
-  local review_range scope_exclusions scope_not_admission policy_checkpoint_packet
+  local handoff verification dispatch clause
+  local orchestrator="$ROOT/skills/explore-critique-implement/references/task-orchestrator.md"
+  handoff='3. The assigned Implementer Producer applies only the winner and `treatment: now` corrections with causal/proof evidence, then commits its checked scope during handoff.'
+  verification='Before Step 4 or dependent work on another implementation iteration, the Supervisor independently verifies the Producer’s immutable parent-to-commit range.'
+  dispatch='4. The current Job owner dispatches fresh A/B/C critics in parallel for every outcome iteration'
 
-  baseline_contract='If Git cannot represent an iteration without earlier uncommitted content in the same target, first commit a separately named `pre-existing baseline` containing only independently verified, already-completed predecessor content currently coordinator-owned for the same lane.'
-  baseline_exclusions='Exclude user-owned, another worker/lane, and in-flight content.'
-  ambiguity_contract='If the baseline boundary remains ambiguous, preserve the worktree and re-explore the exact ambiguity while unrelated safe work continues.'
-  step4_bridge='After the Step 3 handoff and before Step 4 or another implementation iteration, the coordinator applies the `CODEX.md` per-implementer checkpoint commit rule. Step 4 receives the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions; a `pre-existing baseline` remains context outside the iteration range.'
-  coordinator_sequence='After every implementer handoff, independently verify the exact scoped diff and create the one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration. The review packet gives each reviewer the named checkpoint, its parent-to-checkpoint diff, and explicit exclusions. A `pre-existing baseline` is context outside the iteration range. A checkpoint commit is not acceptance.'
-  review_range='The checkpointed `current diff` is the named parent-to-checkpoint range.'
-  scope_exclusions='Respect explicit exclusions and exclude later ambient worktree changes.'
-  scope_not_admission='This is review scope, not admission proof.'
-  policy_checkpoint_packet='For a checkpointed review, the packet names the checkpoint and states explicit exclusions.'
-
-  require_text "$CODEX" 'Implementers never commit.'
-  require_text "$CODEX" 'After every implementer handoff, the coordinator independently verifies the exact scoped diff and creates one narrow coordinator-owned checkpoint commit before Step 4 or another implementation iteration.'
-  require_text "$CODEX" 'A checkpoint commit is not acceptance.'
+  require_text "$CODEX" 'Within ECI, Producers commit their own checked, agreed scope during handoff.'
+  require_text "$CODEX" 'Before dependent review or work, the Supervisor independently verifies that exact range.'
+  require_text "$CODEX" 'A Producer checkpoint is provisional and does not count as acceptance; outer workflows retain their own checkpoint and acceptance rules.'
   require_text "$CODEX" 'Stage only exact iteration paths or hunks. Never stage a whole dirty path or tree merely to capture one hunk.'
-  require_text "$CODEX" "$baseline_contract"
-  require_text "$CODEX" "$baseline_exclusions"
-  require_text "$CODEX" "$ambiguity_contract"
-  forbid_text "$CODEX" 'A pre-existing baseline may include user-owned content.'
-  forbid_text "$CODEX" 'A pre-existing baseline may include another worker/lane content.'
-  forbid_text "$CODEX" 'A pre-existing baseline may include in-flight content.'
+  require_text "$CODEX" 'Exclude user-owned, other-Producer, and in-flight content unless every contributing Producer explicitly includes its own checked contribution in an agreed joint checkpoint.'
+  require_text "$CODEX" 'If an ECI contribution boundary remains ambiguous, preserve the worktree and have the responsible Producers resolve it directly; Helpers report through their parents and follow their Producer’s agreement.'
+  require_text "$CODEX" 'A repair is a separate commit. Do not amend or erase an earlier checkpoint.'
   require_text "$CODEX" 'A later repair is a separate iteration and commit. Do not amend or delay the prior checkpoint.'
   require_text "$CODEX" 'Normal targeted Git coordination needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
+  forbid_text "$CODEX" 'Implementers never commit.'
   forbid_text "$CODEX" 'Hold commits until stable.'
   forbid_text "$CODEX" 'amend a bad original rather than stack a fix commit'
 
-  require_text "$IMPLEMENT" 'Never commit, declare accepted/complete, publish a manifest, or tear down ECI from this role.'
-  require_text "$ECI" "$step4_bridge"
-  require_order "$(<"$ECI")" "$step4_bridge" '4. Fresh A/B/C critics review in parallel;' ||
-    fail 'ECI Step 3-to-4 checkpoint bridge must precede reviewer dispatch'
-  require_text "$COORDINATOR" "$coordinator_sequence"
-  require_order "$(<"$COORDINATOR")" "$coordinator_sequence" 'After this, the coordinator alone assigns fresh Critic A, Critic B, and Critic C.' ||
-    fail 'coordinator checkpoint packet must precede reviewer dispatch'
-  forbid_text "$COORDINATOR" 'Another implementation iteration may begin before the checkpoint.'
-  require_text "$COORDINATOR" 'Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.'
-  require_text "$COORDINATOR_RUNTIME" 'After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration.'
-  for clause in "$review_range" "$scope_exclusions" "$scope_not_admission"; do
+  require_text "$IMPLEMENT" 'Commit your checked scoped work during handoff. Do not declare the outcome accepted/complete, publish a manifest, or tear down ECI.'
+  require_text "$IMPLEMENT" 'Helpers do not commit.'
+  require_text "$orchestrator" 'Helpers do not contact peers or negotiate.'
+  require_text "$orchestrator" 'A Producer commit is a provisional checkpoint, not acceptance. Make repairs in a separate commit; do not amend or erase the earlier checkpoint.'
+  require_text "$ECI" "$handoff"
+  require_text "$ECI" "$verification"
+  require_order "$(<"$ECI")" "$handoff" "$verification" &&
+    require_order "$(<"$ECI")" "$verification" "$dispatch" ||
+    fail 'Producer handoff commit and Supervisor range verification must precede Job-owner review dispatch'
+  require_text "$COORDINATOR" 'Each Producer commits its checked scope during handoff. Before Step 4 or dependent work in another implementation iteration, the Supervisor independently verifies the exact immutable parent-to-commit range.'
+  require_order "$(<"$COORDINATOR")" 'Each Producer commits its checked scope during handoff.' 'The current Job owner alone assigns fresh Step 2, A/B/C, and required independent E2E reviews for each outcome' ||
+    fail 'Supervisor range verification must precede Job-owner reviewer dispatch'
+  require_text "$REVIEW" 'Check scope fidelity and least restriction against `exact user source → faithful requested outcome → bounded scope`.'
+  require_text "$REVIEW" 'Assume bots are non-malicious.'
+  require_text "$REVIEW" 'Require every enabled gate to name a bounded legitimate-work escape path; if it has none, recommend disabling it.'
+  require_text "$COORDINATOR_RUNTIME" 'The ECI Supervisor independently verifies each Producer’s exact immutable parent-to-commit range before dependent review or work.'
+  require_text "$REVIEW" 'The `current diff` is the named immutable parent-to-Producer-commit range verified by the Supervisor.'
+  require_text "$COORDINATOR_RUNTIME" 'Reviewers receive that range and explicit exclusions; exclude later ambient changes.'
+  for clause in 'Respect explicit exclusions and exclude later ambient worktree changes.' 'This is review scope, not admission proof.'; do
     require_text "$REVIEW" "$clause"
-    require_text "$COORDINATOR_RUNTIME" "$clause"
     require_text "$REVIEW_POLICY" "$clause"
   done
+  require_text "$COORDINATOR_RUNTIME" 'This is review scope, not admission proof.'
+  require_text "$REVIEW_POLICY" 'The checkpointed `current diff` is the named parent-to-checkpoint range.'
   require_text "$REVIEW_POLICY" 'Normal reviewer packets contain original user requirements, exact target/diff, objective/criteria, readable lineage context, available evidence, and scrutiny rules.'
-  require_text "$REVIEW_POLICY" "$policy_checkpoint_packet"
+  require_text "$REVIEW_POLICY" 'For a checkpointed review, the packet names the checkpoint and states explicit exclusions.'
   require_text "$COORDINATOR_RUNTIME" 'This reference routes work and review; it is not a permission system.'
-  require_text "$COORDINATOR_RUNTIME" 'Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.'
+  require_text "$COORDINATOR_RUNTIME" 'Preserve unrelated dirty paths as explicit exclusions; never bundle them into a critic target or commit.'
   forbid_text "$COORDINATOR_RUNTIME" 'A checkpoint requires a new receipt, permission, or Git prerequisite.'
 }
 
