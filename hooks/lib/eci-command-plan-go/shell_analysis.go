@@ -459,6 +459,48 @@ type shellExpansionState struct {
 	failglob          shellOptionState
 	noglob            shellOptionState
 	attributesUnknown bool
+	shadowedCommands  []string
+}
+
+// invalidateOptionsAndAttributes drops expansion proofs while retaining known
+// function shadows. Later option assignments cannot restore builtin resolution.
+//
+// Example: shopt can establish nullglob after a function declaration, but a
+// later call to that function still cannot borrow builtin option preservation.
+func (state *shellExpansionState) invalidateOptionsAndAttributes() {
+	state.nullglob = shellOptionUnknown
+	state.failglob = shellOptionUnknown
+	state.noglob = shellOptionUnknown
+	state.attributesUnknown = true
+}
+
+// shellFunctionDeclarations collects names that may shadow ordinary commands
+// in the current scope, without executing or interpreting function bodies.
+//
+// Example: a conditional definition of true invalidates later builtin proofs
+// for true, while a definition inside a substitution stays in that child scope.
+type shellFunctionDeclarations struct {
+	Names []string
+}
+
+// Visit retains source-visible function names without changing earlier state
+// snapshots or carrying child-process definitions into their parent scope.
+//
+// Example: true() { shopt -s failglob; } records true without reading its body.
+func (declarations *shellFunctionDeclarations) Visit(node syntax.Node) bool {
+	switch node := node.(type) {
+	case nil, *syntax.CmdSubst, *syntax.ProcSubst, *syntax.Subshell:
+		return false
+	case *syntax.Stmt:
+		return !node.Background && !node.Coprocess
+	case *syntax.FuncDecl:
+		if node.Name != nil && !slices.Contains(declarations.Names, node.Name.Value) {
+			declarations.Names = append(slices.Clone(declarations.Names), node.Name.Value)
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 // shellExpansionFacts carries only source-established expansion bounds.
@@ -491,13 +533,25 @@ func shellExpansionSegments(
 	bindings := map[string]string{}
 	ifs, ifsKnown := "", false
 	for _, statement := range file.Stmts {
+		declarations := shellFunctionDeclarations{Names: state.shadowedCommands}
+		syntax.Walk(statement, declarations.Visit)
+		state.shadowedCommands = declarations.Names
+		// A rejected whole-scope proof still carries command-resolution
+		// uncertainty into separately inspected executable child payloads.
+		for index, current := range segments {
+			if current.sourceStart < int(statement.End().Offset()) && current.sourceStart+len(current.command) > int(statement.Pos().Offset()) {
+				result[index].state.shadowedCommands = state.shadowedCommands
+			}
+		}
 		call, simple := statement.Cmd.(*syntax.CallExpr)
 		if !simple || len(call.Args) == 0 && len(call.Assigns) == 0 {
-			proof := shellOptionPreservation{Source: source, Preserved: true}
+			proof := shellOptionPreservation{
+				Source: source, Preserved: true, ShadowedCommands: state.shadowedCommands,
+			}
 			syntax.Walk(statement, proof.Visit)
 			state.attributesUnknown = true
 			if !proof.Preserved {
-				state = shellExpansionState{attributesUnknown: true}
+				state.invalidateOptionsAndAttributes()
 			}
 			// No branch effects are inferred. Only a whole-scope invariant can
 			// carry the same incoming option facts to its executable descendants.
@@ -564,12 +618,12 @@ func shellExpansionSegments(
 		clear(bindings)
 		ifsKnown = false
 		if len(call.Args) == 0 {
-			state = shellExpansionState{attributesUnknown: true}
+			state.invalidateOptionsAndAttributes()
 			continue
 		}
 		name, literal := literalSyntaxWord(source, call.Args[0])
-		if !literal {
-			state = shellExpansionState{attributesUnknown: true}
+		if !literal || slices.Contains(state.shadowedCommands, name) {
+			state.invalidateOptionsAndAttributes()
 			continue
 		}
 		values := make([]string, len(call.Args))
@@ -585,7 +639,7 @@ func shellExpansionSegments(
 		switch name {
 		case "shopt", "set":
 			if len(statement.Redirs) != 0 || len(call.Assigns) != 0 {
-				state = shellExpansionState{attributesUnknown: true}
+				state.invalidateOptionsAndAttributes()
 				continue
 			}
 			switch {
@@ -602,7 +656,7 @@ func shellExpansionSegments(
 						state.failglob = shellOptionOn
 					}
 				default:
-					state = shellExpansionState{attributesUnknown: true}
+					state.invalidateOptionsAndAttributes()
 				}
 			case literal && name == "set" && len(values) == 2 && (values[1] == "-f" || values[1] == "+f"):
 				state.noglob = shellOptionOff
@@ -615,15 +669,15 @@ func shellExpansionSegments(
 					state.noglob = shellOptionOn
 				}
 			default:
-				state = shellExpansionState{attributesUnknown: true}
+				state.invalidateOptionsAndAttributes()
 			}
 		case "declare", "typeset", "local", "readonly", "export", "nameref", "let", "read", "mapfile", "readarray":
 			state.attributesUnknown = true
 			if !literal || !shellVariableBuiltinPreservesOptions(values) {
-				state = shellExpansionState{attributesUnknown: true}
+				state.invalidateOptionsAndAttributes()
 			}
 		case "eval", ".", "source", "builtin", "command", "exec":
-			state = shellExpansionState{attributesUnknown: true}
+			state.invalidateOptionsAndAttributes()
 		}
 	}
 	return result
@@ -636,9 +690,10 @@ func shellExpansionSegments(
 // Example: true && git add -A -- file* preserves incoming glob facts; a set
 // command anywhere in that statement prevents this invariant from being used.
 type shellOptionPreservation struct {
-	Source    string
-	Preserved bool
-	Offsets   []int
+	Source           string
+	Preserved        bool
+	Offsets          []int
+	ShadowedCommands []string
 }
 
 // Visit admits only supported commands whose parent-shell option effects are
@@ -658,7 +713,7 @@ func (proof *shellOptionPreservation) Visit(node syntax.Node) bool {
 			return true
 		}
 		name, literal := literalSyntaxWord(proof.Source, node.Args[0])
-		if !literal {
+		if !literal || slices.Contains(proof.ShadowedCommands, name) {
 			proof.Preserved = false
 			return false
 		}
@@ -681,10 +736,12 @@ func (proof *shellOptionPreservation) Visit(node syntax.Node) bool {
 		}
 	case *syntax.DeclClause:
 		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
-		// Declaration values and attributes do not change shell options.
-		// Scalar uncertainty is retained separately by the scope tracker.
+		// Unshadowed declaration values and attributes do not change shell
+		// options. Scalar uncertainty is retained by the scope tracker.
+		proof.Preserved = node.Variant != nil && !slices.Contains(proof.ShadowedCommands, node.Variant.Value)
 	case *syntax.LetClause:
 		proof.Offsets = append(proof.Offsets, int(node.Pos().Offset()))
+		proof.Preserved = !slices.Contains(proof.ShadowedCommands, "let")
 	case *syntax.BinaryCmd, *syntax.IfClause, *syntax.Block, *syntax.Subshell:
 		// Inspect every arm before retaining any incoming option fact.
 	case syntax.Command:
