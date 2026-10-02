@@ -217,7 +217,7 @@ deny() {
   if [[ "$reason" != \[ECI_* ]]; then
     local subject
     subject="tool=Bash,command=$(eci_command_identity_subject "${command:-}"),session=$(eci_diagnostic_value "${session_id:-<missing>}"),cwd=$(eci_diagnostic_value "${cwd:-<missing>}")"
-    reason="$(eci_diagnostic_reason "$(eci_diagnostic_code_for_reason "$reason")" "PreToolUse" "bash-validation" "$subject" "$reason" "correct the reported command or route acceptance-sensitive work through the main/orchestrator, then retry")"
+    reason="$(eci_diagnostic_reason "$(eci_diagnostic_code_for_reason "$reason")" "PreToolUse" "bash-validation" "$subject" "$reason" "correct the reported command or route acceptance-sensitive work to the Supervisor, then retry")"
   fi
   local denial
   denial="$(jq -n --arg reason "$reason" '{
@@ -238,7 +238,7 @@ deny_marker_boundary() {
   case "$code" in
     ECI_MARKER_MISSING_CURRENT)
       detail="active ECI marker is missing for session=$expected_session cwd=$expected_cwd"
-      remediation="recreate the coordinator-owned marker through the ECI lifecycle route, or complete teardown before retrying"
+      remediation="recreate the marker through the Supervisor lifecycle route, or complete teardown before retrying"
       ;;
     ECI_MARKER_UNSAFE_PATH)
       detail="active ECI marker path is outside the validated proof-root layout or is a symlink"
@@ -246,7 +246,7 @@ deny_marker_boundary() {
       ;;
     ECI_MARKER_MALFORMED)
       detail="active ECI marker content is malformed or exceeds the bounded record schema"
-      remediation="rewrite the marker through the coordinator lifecycle route with the required bounded fields"
+      remediation="repair the marker through the Supervisor lifecycle route with the required bounded fields"
       ;;
     ECI_MARKER_SCOPE_MISMATCH)
       detail="active ECI marker owner or cwd does not match session=$expected_session cwd=$expected_cwd"
@@ -254,7 +254,7 @@ deny_marker_boundary() {
       ;;
     ECI_MARKER_OWNERSHIP_INVALID)
       detail="active ECI marker path owner does not match its embedded session identity"
-      remediation="repair marker ownership through the coordinator lifecycle route; do not edit the marker directly"
+      remediation="repair marker ownership through the Supervisor lifecycle route; do not edit the marker directly"
       ;;
     *)
       detail="active ECI marker failed validation for session=$expected_session cwd=$expected_cwd"
@@ -2307,8 +2307,8 @@ direct_ledger_prefix_effect_check() {
       ;;
     class=worker-git\ *)
       deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied a protected Git operation: ${prefix_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls protected repository state and is coordinator-owned while ECI is active; ordinary scoped Producer commits use the separate repository/effect route" \
-        "route the reported protected Git operation through the main/orchestrator coordinator; ordinary scoped Producer commits use the resolved repository/effect checks"
+        "ECI worker ownership gate denied a protected Git operation: ${prefix_detail}; predicate=worker-git-ownership; reason=protected Git operations route through the Supervisor while ECI is active; ordinary assigned Producer commits use the separate repository/effect checks" \
+        "route the reported protected Git operation request to the Supervisor; ordinary assigned Producer commits use the resolved repository/effect checks"
       ;;
   esac
 
@@ -3030,7 +3030,7 @@ direct_ledger_deny_current_control_target() {
   DIRECT_LEDGER_FALLBACK_DECISION=deny
   DIRECT_LEDGER_FALLBACK_CODE=ECI_CONTROL_OWNER_REQUIRED
   DIRECT_LEDGER_FALLBACK_DETAIL="static mutation targets current-session ECI control state: resolved_control_target=$DIRECT_LEDGER_RESOLVED_CONTROL_TARGET"
-  DIRECT_LEDGER_FALLBACK_REMEDIATION="route the resolved ECI control target through the coordinator lifecycle route"
+  DIRECT_LEDGER_FALLBACK_REMEDIATION="route the resolved ECI control target through the Supervisor lifecycle route"
 }
 
 direct_ledger_static_target_is_dynamic() {
@@ -5393,7 +5393,7 @@ coordinator_dynamic_lifecycle_detail="$(coordinator_dynamic_lifecycle_detail_ear
 if [ -n "$coordinator_dynamic_lifecycle_detail" ]; then
   deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
     "ECI coordinator command plan denied dynamic lifecycle indirection: ${coordinator_dynamic_lifecycle_detail}; predicate=dynamic-launch; reason=the resolved lifecycle mutation is hidden behind a shell launcher and cannot use the literal lifecycle admission route" \
-    "invoke the canonical lifecycle executable directly through the coordinator route"
+    "invoke the canonical lifecycle executable directly through the Supervisor route"
 fi
 
 worker_fast_path_candidate=false
@@ -12182,12 +12182,12 @@ enforce_git_mutation_gate() {
         protected_target_token="${protected_target_detail#operation=}"
         protected_target_token="${protected_target_token%% *}"
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control code remains coordinator-owned while task implementation stays worker-owned" \
-          "route the control-hook mutation through the coordinator, or use the documented owner-scoped implementation route"
+          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
+          "route the protected hook operation to the Supervisor, or use the assigned Producer route for ordinary scoped implementation changes"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-          "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
-          "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
+          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=ordinary active-hook source edits follow the assigned Producer route, with the bounded Supervisor self-edit hatch for genuine Supervisor code-edit edge cases" \
+          "assign the exact hook edit to a Producer, or use the session-scoped 600-second Supervisor self-edit hatch (coordinator-edit-on) for a genuine Supervisor code-edit edge case"
       fi
     fi
     return 0
@@ -12242,12 +12242,12 @@ enforce_git_mutation_gate() {
         protected_target_token="${protected_target_detail#operation=}"
         protected_target_token="${protected_target_token%% *}"
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control code remains coordinator-owned while task implementation stays worker-owned" \
-          "route the control-hook mutation through the coordinator, or use the documented owner-scoped implementation route"
+          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
+          "route the protected hook operation to the Supervisor, or use the assigned Producer route for ordinary scoped implementation changes"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-          "ECI coordinator Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=editing active ECI control code belongs to an implementer or the bounded coordinator self-edit hatch" \
-          "route the exact hook edit to an implementer, or activate the 600-second coordinator-edit hatch before retrying"
+          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=ordinary active-hook source edits follow the assigned Producer route, with the bounded Supervisor self-edit hatch for genuine Supervisor code-edit edge cases" \
+          "assign the exact hook edit to a Producer, or use the session-scoped 600-second Supervisor self-edit hatch (coordinator-edit-on) for a genuine Supervisor code-edit edge case"
       fi
     fi
     if [ "$operation" = commit-all ]; then
@@ -12263,15 +12263,15 @@ enforce_git_mutation_gate() {
     if [[ "$operation" = commit* ]] && [ "${hook_is_subagent:-false}" != true ] &&
       [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       deny_eci "ECI_GIT_COMMIT_PRODUCER_REQUIRED" "git-commit" \
-        "ECI coordinator cannot author a producer checkpoint: repository=$repo_root; operation=$operation" \
-        "have the assigned producer commit its exact verified change; independently review that checkpoint"
+        "ECI Supervisor cannot author a Producer checkpoint: repository=$repo_root; operation=$operation" \
+        "have the assigned Producer commit its exact checked scope; the Supervisor verifies the immutable parent-to-commit range before the published Job owner starts dependent review or work"
     fi
     if [ "${hook_is_subagent:-false}" = true ]; then
       case "$operation" in
         commit-amend|worktree|repository)
           deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
             "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
-            "route this history or reference mutation to the coordinator; producers make ordinary scoped checkpoint commits"
+            "this history or reference mutation remains denied; send the protected request to the Supervisor; assigned Producers make ordinary scoped checkpoint commits through the resolved repository/effect checks"
           ;;
       esac
     fi
@@ -13351,21 +13351,21 @@ worker_read_only_pipeline_route() {
         ;;
       class=worker-git\ *)
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker ownership gate denied protected Git segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership; ordinary scoped Producer commits use the separate repository/effect route" \
-          "route the reported protected Git operation through the main/orchestrator coordinator; ordinary scoped Producer commits use the resolved repository/effect checks"
+          "ECI worker ownership gate denied protected Git segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership; ordinary assigned Producer commits use the separate repository/effect checks" \
+          "route the reported protected Git operation request to the Supervisor; ordinary assigned Producer commits use the resolved repository/effect checks"
         ;;
     esac
     detail="$(command_invokes_git_branch_remote_mutation "$segment" 2>/dev/null || true)"
     if [ -n "$detail" ]; then
       deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
         "ECI worker ownership gate denied branch/remote mutation in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership" \
-        "route the reported Git ref or remote mutation through the main/orchestrator coordinator"
+        "send the reported Git ref or remote mutation request to the Supervisor"
     fi
     if command_invokes_eci_binary "$segment"; then
       detail="$(rejected_command_detail "$segment" 2>/dev/null || printf 'segment=<unclassified>')"
       deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
-        "ECI worker boundary denied coordinator-owned control segment=$(eci_command_identity_subject "$segment"): ${detail}; reason=the canonical eci-active target owns lifecycle/control state" \
-        "route the reported lifecycle/control invocation through the main/orchestrator coordinator"
+        "ECI worker boundary denied Supervisor-owned control segment=$(eci_command_identity_subject "$segment"): ${detail}; reason=the canonical eci-active target owns lifecycle/control state" \
+        "route the reported lifecycle/control request to the Supervisor"
     fi
     command="$segment"
     enforce_foreign_active_marker_mutation_boundary
@@ -13593,7 +13593,7 @@ enforce_worker_protected_inspection() {
   if [ -n "$detail" ]; then
     deny_eci "ECI_WORKER_CONTROL_INSPECTION_DENIED" "worker-control" \
       "ECI worker control inspection denied: ${detail}; reason=the worker does not own this provider-control inspection and it could divert work from its task-owned files" \
-      "inspect task-owned project or evidence files, or route provider-control inspection through the coordinator"
+      "inspect task-owned project or evidence files, or route provider-control inspection through the Supervisor"
   fi
 }
 
@@ -13878,7 +13878,7 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
   if [ -n "$worker_control_detail" ]; then
     deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
       "ECI worker ownership gate denied mutation of ECI control state: $worker_control_detail; predicate=worker-control; reason=the resolved target is active ECI control state rather than task-owned project data" \
-      "route the resolved ECI control mutation through the owning coordinator"
+      "route the resolved ECI control mutation through the Supervisor"
   fi
 fi
 
@@ -13886,7 +13886,7 @@ dynamic_interpreter_control_detail="$(dynamic_interpreter_control_detail "$comma
 if [ -n "$dynamic_interpreter_control_detail" ]; then
   deny_eci "ECI_PLAN_DYNAMIC_LAUNCH_DENIED" "plan-segment" \
     "ECI command plan denied a dynamic interpreter launch targeting ECI control state: ${dynamic_interpreter_control_detail}; predicate=dynamic-interpreter-launch; reason=the payload contains a write-like operation whose control target cannot be validated as an ordinary project file" \
-    "invoke a literal script or executable with a resolved task-owned target, or route the control-state mutation through the owning coordinator"
+    "invoke a literal script or executable with a resolved task-owned target, or route the control-state mutation through the Supervisor"
 fi
 
 if [ "$worker_fast_path_candidate" = true ]; then
@@ -14534,7 +14534,7 @@ coordinator_enforce_script_target() {
   coordinator_peer_installer_route "$command_value" && return 0
   deny_eci "ECI_COORDINATOR_SCRIPT_TARGET_DENIED" "coordinator-script-target" \
     "ECI coordinator shell-script target denied: ${detail}; predicate=coordinator-script-target; reason=the resolved script target is outside the selected provider root" \
-    "invoke a script under the selected canonical provider root, or route the concrete dependency-repository work through its owning coordinator"
+    "invoke a script under the selected canonical provider root, or route the concrete dependency-repository work to the current Job owner"
 }
 
 
@@ -16729,8 +16729,8 @@ fi
 if [ -n "$review_gate_identity" ]; then
   if [ "$hook_is_subagent" = true ]; then
     deny_eci "ECI_WORKER_REVIEW_GATE_DENIED" "worker-review-gate" \
-      "ECI worker boundary denied coordinator-owned review-gate invocation: ${review_gate_identity}; segment=1; argv_index=0; byte_offset=0; token=eci-review-gate.sh; path=n/a; predicate=worker-lifecycle-control; reason=the canonical review gate owns acceptance evidence and cannot be invoked by a worker" \
-      "route this exact review-gate phase/session invocation through the main/orchestrator coordinator"
+      "ECI worker boundary denied Supervisor-owned review-gate invocation: ${review_gate_identity}; segment=1; argv_index=0; byte_offset=0; token=eci-review-gate.sh; path=n/a; predicate=worker-lifecycle-control; reason=the canonical review gate records acceptance evidence and cannot be invoked directly by a worker" \
+      "send this phase/session request to the Supervisor; after range verification, the published Job owner starts dependent review and the Supervisor retains acceptance"
   elif [[ "$review_gate_identity" != *" valid_shape=true "* ]]; then
     deny_eci "ECI_REVIEW_GATE_ARGUMENTS_DENIED" "review-gate" \
       "ECI coordinator review-gate route denied malformed arguments: ${review_gate_identity}; segment=1; argv_index=0; byte_offset=0; token=eci-review-gate.sh; path=n/a; predicate=review-gate-arguments; reason=the recognized canonical review gate requires exactly one supported phase and one bounded session id" \
@@ -16742,13 +16742,13 @@ if [ "$hook_is_subagent" = true ] && [ -n "$worker_protected_control_identity" ]
   case "$worker_protected_control_identity" in
     *"install-pre-commit-go-mod.sh"*)
       deny_eci "ECI_WORKER_HOOK_INSTALLER_DENIED" "worker-hook-installer" \
-        "ECI worker boundary denied coordinator-owned hook installer: ${worker_protected_control_identity}; predicate=worker-hook-installer; reason=the canonical installer mutates provider hook state and is coordinator-owned" \
-        "route this exact canonical installer invocation through the owning coordinator"
+        "ECI worker boundary denied Supervisor-owned hook installer: ${worker_protected_control_identity}; predicate=worker-hook-installer; reason=the canonical installer mutates provider hook state and is Supervisor-owned" \
+        "route this exact canonical installer invocation to the Supervisor"
       ;;
     *)
       deny_eci "ECI_WORKER_CONTROL_SCRIPT_DENIED" "worker-control-script" \
-        "ECI worker boundary denied coordinator-owned lifecycle/control script: ${worker_protected_control_identity}; reason=the canonical control script owns ECI admission or stop state" \
-        "route this exact canonical control-script invocation through the main/orchestrator coordinator"
+        "ECI worker boundary denied Supervisor-owned lifecycle/control script: ${worker_protected_control_identity}; reason=the canonical control script owns ECI admission or stop state" \
+        "route this exact canonical control-script request to the Supervisor"
       ;;
   esac
 fi
@@ -16791,8 +16791,8 @@ if [ "$hook_is_subagent" = true ] && command_invokes_eci_binary "$hook_original_
   eci_binary_subject="$(eci_command_identity_subject "$hook_original_command")"
   eci_binary_detail="$(rejected_command_detail "$hook_original_command" 2>/dev/null || printf 'segment=<unclassified>')"
   deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
-    "ECI worker boundary denied direct invocation of a canonical Codex/Kimi eci-active binary: ${eci_binary_detail}; literal command=${eci_binary_subject} targets coordinator-owned lifecycle/control state" \
-    "use only the exact owner-scoped repository-allow route for this active session; route other lifecycle/control operations through the main/orchestrator"
+    "ECI worker boundary denied direct invocation of a canonical Codex/Kimi eci-active binary: ${eci_binary_detail}; literal command=${eci_binary_subject} targets Supervisor-owned lifecycle/control state" \
+    "use only the exact owner-scoped repository-allow route for this active session; send other lifecycle/control requests to the Supervisor"
 fi
 
 # A typed, literal read-only command never mutates ECI or repository state.
@@ -16847,8 +16847,8 @@ coordinator_static_pipeline_route() {
     if [ -n "$review_detail" ] ||
        command_invokes_eci_binary "$segment" || command_invokes_eci_control_mutation "$segment"; then
       deny_eci "ECI_COORDINATOR_CONTROL_PIPELINE_DENIED" "coordinator-static-pipeline" \
-        "ECI coordinator static pipeline denied coordinator-owned lifecycle/control segment=$(eci_command_identity_subject "$segment"); review_gate=${review_detail:-none}; reason=control and acceptance operations require their direct coordinator route" \
-        "invoke the reported lifecycle/control operation through its direct coordinator entrypoint, outside a pipeline"
+        "ECI Supervisor static pipeline denied Supervisor-owned lifecycle/control segment=$(eci_command_identity_subject "$segment"); review_gate=${review_detail:-none}; reason=control and acceptance operations require their direct Supervisor route" \
+        "send the reported lifecycle/control request to the Supervisor for its direct entrypoint, outside a pipeline"
     fi
     git_detail="$(protected_pipeline_git_detail "$segment" 2>/dev/null || true)"
     if [ -n "$git_detail" ]; then
@@ -16889,8 +16889,8 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       ;;
     class=worker-git\ *)
       deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied a protected Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=the reported Git verb changes or controls protected repository state and is coordinator-owned while ECI is active; ordinary scoped Producer commits use the separate repository/effect route" \
-        "route the reported protected Git operation through the main/orchestrator coordinator; ordinary scoped Producer commits use the resolved repository/effect checks"
+        "ECI worker ownership gate denied a protected Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=protected Git operations route through the Supervisor while ECI is active; ordinary assigned Producer commits use the separate repository/effect checks" \
+        "route the reported protected Git operation request to the Supervisor; ordinary assigned Producer commits use the resolved repository/effect checks"
       ;;
     class=worker-hook-mode\ *)
       # The compiled planner normally reports this ownership-sensitive source
@@ -16900,8 +16900,8 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       worker_hook_mode_detail="${protected_literal_detail/#class=worker-hook-mode /class=source }"
       worker_hook_mode_detail="${worker_hook_mode_detail/kind=protected-hook-mode-mutation/kind=coordinator-source-write}"
       deny_eci "ECI_CONTROL_OWNER_REQUIRED" "worker-control" \
-        "ECI worker ownership gate denied coordinator-owned pre-commit hook mode repair: ${worker_hook_mode_detail}; predicate=hook-mode-repair; reason=the canonical hook mode is coordinator-owned while ECI is active" \
-        "route the exact pre-commit hook mode repair through the coordinator"
+        "ECI worker ownership gate denied Supervisor-owned pre-commit hook mode repair: ${worker_hook_mode_detail}; predicate=hook-mode-repair; reason=the canonical provider hook mode is Supervisor-controlled while ECI is active" \
+        "route the exact pre-commit hook mode repair request to the Supervisor"
       ;;
     class=coordinator-peer-hook-mode\ *)
       # A coordinator may repair its own Codex hook mode through the bounded
@@ -16910,8 +16910,8 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       # diagnostic so this is an accidental-wrong-peer denial, not a generic
       # shell or permission-form restriction.
       deny_eci "ECI_COORDINATOR_PEER_CONTROL_DENIED" "coordinator-peer-control" \
-        "ECI coordinator peer-control boundary denied protected Kimi hook mode mutation: ${protected_literal_detail}; predicate=peer-hook-mode-repair; reason=the resolved target belongs to the configured Kimi provider control path rather than the current Codex coordinator" \
-        "route the Kimi hook-mode repair through the Kimi provider's owning coordinator route"
+        "ECI Supervisor peer-control boundary denied protected Kimi hook mode mutation: ${protected_literal_detail}; predicate=peer-hook-mode-repair; reason=the resolved target belongs to the configured Kimi provider control path and provider-hook operations route through the Supervisor" \
+        "route the Kimi hook-mode repair request to the Supervisor"
       ;;
   esac
   if [ "$hook_is_subagent" != true ]; then
@@ -16986,15 +16986,15 @@ fi
 review_markers=()
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_off "$command"; then
-  deny_eci "ECI_LIFECYCLE_OWNER_REQUIRED" "eci-off" "Only the main thread/orchestrator may disengage ECI with eci-active off. Subagents must report completion or blockers to the orchestrator while ECI remains active." "report completion or blockers to the main/orchestrator"
+  deny_eci "ECI_LIFECYCLE_OWNER_REQUIRED" "eci-off" "Only the Supervisor may disengage ECI with eci-active off. Workers report completion or blockers to the Supervisor while ECI remains active." "send completion or blocker reports to the Supervisor"
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_wait_or_resume "$command"; then
-  deny_eci "ECI_LIFECYCLE_OWNER_REQUIRED" "eci-lifecycle" "Only the main/orchestrator may mutate ECI lifecycle state with eci-active wait/resume/ledger-append/nested-enter/nested-accept/nested-exit/manifest-write/aggregate-stage. Subagents must report the BRP result to the orchestrator." "report the requested lifecycle transition to the main/orchestrator"
+  deny_eci "ECI_LIFECYCLE_OWNER_REQUIRED" "eci-lifecycle" "Only the Supervisor may mutate ECI lifecycle state with eci-active wait/resume/ledger-append/nested-enter/nested-accept/nested-exit/manifest-write/aggregate-stage. Workers report the BRP result to the Supervisor." "send the requested lifecycle transition to the Supervisor"
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
-  deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a Git history, explicit reference, or patch-application mutation. Producers may make ordinary scoped checkpoint commits through the resolved repository/effect checks; amendments, other history changes, explicit reference changes, and git apply remain coordinator-owned." "route this history, reference, or patch-application operation through the main/orchestrator"
+  deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a Git history, explicit reference, or patch-application mutation. Assigned Producers may make ordinary scoped checkpoint commits through the resolved repository/effect checks; amendments, other history changes, explicit reference mutations, and git apply remain denied. Send protected acceptance/history/reference/patch requests to the Supervisor." "send this protected history, reference, or patch request to the Supervisor; the reported mutation remains denied"
 fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_subagent_coordinator_only "$command"; then
@@ -17025,7 +17025,7 @@ if worker_env_git_fsck_lost_found_shape; then
   launcher_detail="$(rejected_command_detail "$command" 2>/dev/null || printf 'segment=<unclassified>')"
   deny_eci "ECI_WORKER_LAUNCHER_DENIED" "worker-launcher" \
     "ECI worker boundary denied transparent env Git fsck writer: command=${launcher_identity}; detail=${launcher_detail}; predicate=worker-env-git-fsck-lost-found; reason=the exact --lost-found option writes dangling objects under the repository metadata" \
-    "remove --lost-found or route the Git fsck writer through the main/orchestrator"
+    "remove --lost-found or route the repository-metadata write request to the Supervisor"
 fi
 
 worker_reviewed_script_admitted=false
@@ -17043,7 +17043,7 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   if ! worker_script_target_additional_repository_allowed "$worker_reviewed_script_route_detail"; then
     deny_eci "ECI_WORKER_SCRIPT_TARGET_DENIED" "worker-script-target" \
       "ECI worker boundary denied a script target outside the assigned canonical provider root: ${worker_reviewed_script_route_detail}; predicate=worker-script-target; reason=the resolved script target is outside the worker's assigned root and has no owner-declared additional-repository allowance" \
-      "for an owned dependency repository, first run \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\"; otherwise route the foreign script execution through its owning coordinator"
+      "for an owned dependency repository, first run \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\"; otherwise route the foreign script execution to the current Job owner"
   fi
 fi
 
@@ -17051,8 +17051,8 @@ if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   [[ "$worker_reviewed_script_route_detail" == *"script=hooks/install-pre-commit-go-mod.sh canonical_target="* ]] &&
   [[ "$worker_reviewed_script_route_detail" == *"reason=installer route is coordinator-only"* ]]; then
   deny_eci "ECI_WORKER_HOOK_INSTALLER_DENIED" "worker-hook-installer" \
-    "ECI worker boundary denied coordinator-owned hook installer: ${worker_reviewed_script_route_detail}; predicate=worker-hook-installer; reason=the canonical installer mutates provider hook state and is coordinator-owned" \
-    "route this exact canonical installer invocation through the owning coordinator"
+    "ECI worker boundary denied Supervisor-owned hook installer: ${worker_reviewed_script_route_detail}; predicate=worker-hook-installer; reason=the canonical installer mutates provider hook state and is Supervisor-owned" \
+    "route this exact canonical installer invocation to the Supervisor"
 fi
 
 # An unfamiliar worker launcher, interpreter spelling, or direct utility is
