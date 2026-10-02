@@ -252,10 +252,11 @@ type Request struct {
 	// CWDKnown is derived by Classify from the verified callback or segment
 	// directory. The Bash adapter authenticates SegmentCWDKnown before
 	// forwarding that internal handoff to a recursive planner callback.
-	CWDKnown             bool `json:"-"`
-	CWDUnknown           bool `json:"-"`
-	CollectShellCommands bool `json:"-"`
-	ShellDepth           int  `json:"-"`
+	CWDKnown             bool            `json:"-"`
+	CWDUnknown           bool            `json:"-"`
+	CollectShellCommands bool            `json:"-"`
+	ShellDepth           int             `json:"-"`
+	ShellEnvironment     []shellArgument `json:"-"`
 }
 
 // TimeoutReplayDisposition describes whether a direct timeout prefix was

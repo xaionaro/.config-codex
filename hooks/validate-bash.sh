@@ -1551,6 +1551,9 @@ if jq -e '
     .shell_analysis | type == "object" and
     (.commands | type == "array" and all(.[];
       (.argv | type == "array" and all(.[]; type == "string")) and
+      ((.argv | length) as $argc | (.unknown_arguments // []) |
+        type == "array" and all(.[];
+          type == "number" and . == floor and . >= 0 and . < $argc)) and
       (.cwd | type == "string") and (.cwd_known | type == "boolean") and
       (.cwd_candidates | type == "array" and all(.[]; type == "string")) and
       (.reachability == "reachable" or .reachability == "unknown" or .reachability == "unreachable") and
@@ -6744,13 +6747,19 @@ def split(tokens):
             current.append(token)
     return result
 
-def inspect(segment, depth=0):
+def inspect(
+    segment: list[str],
+    depth: int = 0,
+    unknown: frozenset[int] = frozenset(),
+) -> bool:
     if depth > 5:
         return False
     index = 0
     while index < len(segment) and "=" in segment[index] and not segment[index].startswith("-"):
         index += 1
     if index >= len(segment):
+        return False
+    if index in unknown:
         return False
     name = os.path.basename(segment[index])
     if name == "env":
@@ -6763,25 +6772,29 @@ def inspect(segment, depth=0):
             if token in {"-i", "--ignore-environment"}:
                 index += 1
                 continue
-            if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"} and index + 1 < len(segment):
+            if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0"} and index + 1 < len(segment):
                 index += 2
                 continue
             if token.startswith("-"):
                 index += 1
                 continue
             break
-        return inspect(segment[index:], depth + 1)
+        return inspect(segment[index:], depth + 1,
+                       frozenset(value - index for value in unknown if value >= index))
     if name in {"bash", "sh", "dash", "zsh"}:
         for option_index, option in enumerate(segment[index + 1:], index + 1):
             if option == "-c" or (option.startswith("-") and "c" in option[1:]):
                 if option_index + 1 >= len(segment):
+                    return False
+                if option_index in unknown or option_index + 1 in unknown:
                     return False
                 nested = tokenize(segment[option_index + 1])
                 return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
         return False
     if name in {"command", "builtin", "exec", "sudo", "doas", "nohup", "setsid"}:
         index += 1
-        return inspect(segment[index:], depth + 1)
+        return inspect(segment[index:], depth + 1,
+                       frozenset(value - index for value in unknown if value >= index))
     if name == "timeout":
         return False
     if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
@@ -6796,17 +6809,20 @@ def inspect(segment, depth=0):
                 index += 1
                 break
             index += 2 if segment[index] in value_options else 1
-        return inspect(segment[index:], depth + 1)
+        return inspect(segment[index:], depth + 1,
+                       frozenset(value - index for value in unknown if value >= index))
     if name != "git":
         return False
     index += 1
     while index < len(segment) and segment[index].startswith("-"):
         index += 2 if segment[index] in {"-C", "-c", "--git-dir", "--work-tree", "--config-env", "--exec-path"} else 1
-    if index >= len(segment):
+    if index >= len(segment) or index in unknown:
         return False
     subcommand, args = segment[index], segment[index + 1:]
     if subcommand == "branch":
         for offset, token in enumerate(args, index + 1):
+            if offset in unknown:
+                continue
             if token in branch_mutators or any(
                     token.startswith(option + "=") for option in branch_mutators
                     if option.startswith("--")):
@@ -6820,12 +6836,12 @@ def inspect(segment, depth=0):
                 skip = False
             elif token in value_options:
                 skip = True
-            elif not token.startswith("-"):
+            elif offset not in unknown and not token.startswith("-"):
                 print("executable=git subcommand=branch token=%s argv_index=%d kind=branch-ref-mutation" %
                       (token, offset))
                 return True
         return False
-    if subcommand == "remote" and args and args[0] in remote_mutators:
+    if subcommand == "remote" and args and index + 1 not in unknown and args[0] in remote_mutators:
         print("executable=git subcommand=remote token=%s argv_index=%d kind=remote-mutation" %
               (args[0], index + 1))
         return True
@@ -6833,7 +6849,7 @@ def inspect(segment, depth=0):
 
 analysis = json.loads(sys.argv[2])
 if analysis is not None:
-    found = any(inspect(record["argv"]) for record in analysis["commands"]
+    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or [])) for record in analysis["commands"]
                 if record["reachability"] != "unreachable")
 else:
     parsed = tokenize(text)
@@ -8051,13 +8067,19 @@ def split(tokens):
 def assignment(token):
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
 
-def inspect(segment, depth=0):
+def inspect(
+    segment: list[str],
+    depth: int = 0,
+    unknown: frozenset[int] = frozenset(),
+) -> bool:
     if depth > 6 or not segment:
         return depth > 6
     index = 0
     while index < len(segment) and assignment(segment[index]):
         index += 1
     if index >= len(segment):
+        return False
+    if index in unknown:
         return False
     name = os.path.basename(segment[index])
     if name == "git":
@@ -8083,12 +8105,16 @@ def inspect(segment, depth=0):
             if token.startswith("-"):
                 index += 1
                 continue
+            if index in unknown:
+                return False
             if token in git_mutators:
                 return True
             if token == "branch":
-                return any(arg in branch_mutators or any(arg.startswith(opt + "=") for opt in branch_mutators) for arg in segment[index + 1:])
+                return any(offset not in unknown and (
+                    arg in branch_mutators or any(arg.startswith(opt + "=") for opt in branch_mutators))
+                    for offset, arg in enumerate(segment[index + 1:], index + 1))
             if token == "remote":
-                return bool(segment[index + 1:] and segment[index + 1] in remote_mutators)
+                return bool(segment[index + 1:] and index + 1 not in unknown and segment[index + 1] in remote_mutators)
             return False
         return False
     if name in {"bash", "sh", "dash", "zsh"}:
@@ -8096,6 +8122,8 @@ def inspect(segment, depth=0):
             if option == "-c" or (option.startswith("-") and "c" in option[1:]):
                 if option_index + 1 >= len(segment):
                     return True
+                if option_index in unknown or option_index + 1 in unknown:
+                    return False
                 nested = tokenize(segment[option_index + 1])
                 return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
         return False
@@ -8103,6 +8131,8 @@ def inspect(segment, depth=0):
         # Evaluate only the literal payload for a concrete acceptance-sensitive
         # Git effect.  An ordinary or unresolved payload is not itself a
         # reason to reroute the worker.
+        if any(offset in unknown for offset in range(index + 1, len(segment))):
+            return False
         nested = tokenize(" ".join(segment[index + 1:]))
         return nested is not None and any(
             inspect(part, depth + 1) for part in split(nested)
@@ -8114,8 +8144,10 @@ def inspect(segment, depth=0):
             if assignment(token) or token in {"-i", "--ignore-environment"}:
                 index += 1
                 continue
-            if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"} and index + 1 < len(segment):
+            if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0"} and index + 1 < len(segment):
                 if token in {"-S", "--split-string"}:
+                    if index in unknown or index + 1 in unknown:
+                        return False
                     nested = tokenize(segment[index + 1])
                     return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
                 index += 2
@@ -8124,7 +8156,8 @@ def inspect(segment, depth=0):
                 index += 1
                 continue
             break
-        return any(inspect(part, depth + 1) for part in split(segment[index:]))
+        return inspect(segment[index:], depth + 1,
+                       frozenset(value - index for value in unknown if value >= index))
     if name == "timeout":
         return False
     if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
@@ -8145,18 +8178,22 @@ def inspect(segment, depth=0):
                 index += 2
                 continue
             index += 1
-        return inspect(segment[index:], depth + 1)
+        return inspect(segment[index:], depth + 1,
+                       frozenset(value - index for value in unknown if value >= index))
     if name in {"command", "builtin", "exec", "nohup", "setsid", "sudo", "doas"}:
-        return any(inspect(part, depth + 1) for part in split(segment[index + 1:]))
+        index += 1
+        return inspect(segment[index:], depth + 1,
+                       frozenset(value - index for value in unknown if value >= index))
     if name in {"xargs", "find"}:
         # These launchers receive commands indirectly; a visible Git token is
         # enough to route the whole acceptance-sensitive command to main.
-        return any(os.path.basename(token) == "git" for token in segment[index + 1:])
+        return any(offset not in unknown and os.path.basename(token) == "git"
+                   for offset, token in enumerate(segment[index + 1:], index + 1))
     return False
 
 analysis = json.loads(sys.argv[2])
 if analysis is not None:
-    found = any(inspect(record["argv"]) for record in analysis["commands"]
+    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or [])) for record in analysis["commands"]
                 if record["reachability"] != "unreachable")
 else:
     parsed = tokenize(text)
@@ -10396,10 +10433,14 @@ SEPARATORS = {";", "&", "&&", "|", "||"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$")
 
 
-def resolve(path, base):
+def resolve(path: str | None, base: str | None) -> str | None:
+    if path is None:
+        return None
     path = os.path.expanduser(path)
     if os.path.isabs(path):
         return os.path.normpath(path)
+    if not base or not os.path.isabs(base):
+        return None
     return os.path.normpath(os.path.join(base, path))
 
 
@@ -10424,7 +10465,10 @@ def observed_timeout_command_index(tokens, index, segment_index):
     return matches[0] if len(matches) == 1 else (None, None)
 
 
-def commit_effect(arguments: list[str]) -> str | None:
+def commit_effect(
+    arguments: list[str],
+    unknown: frozenset[int] = frozenset(),
+) -> str | None:
     # Git v2.51.0 builtin/commit.c defines this option inventory. Resolve
     # abbreviations before arity so --mes --dry-run consumes a message.
     required_values = {
@@ -10449,6 +10493,7 @@ def commit_effect(arguments: list[str]) -> str | None:
     index = 0
     while index < len(arguments):
         argument = arguments[index]
+        argument_unknown = index in unknown
         index += 1
         if argument in {"--", "--end-of-options"}:
             path_operands = path_operands or index < len(arguments)
@@ -10472,20 +10517,24 @@ def commit_effect(arguments: list[str]) -> str | None:
                 option for option in candidates if option.startswith(name)
             }
             if len(matches) != 1:
-                return None  # Git rejects unknown or ambiguous options.
+                # An unresolved option can change commit effects. Keep it
+                # advisory instead of claiming a prepared-index commit.
+                return "commit-unresolved" if argument_unknown else None
             name = next(iter(matches))
             takes_value = name in required_values | optional_values
             if separator and (negated or not takes_value):
                 return None
+            value_unknown = argument_unknown
             if not negated and name in required_values and not separator:
                 if index == len(arguments):
                     return None
                 value = arguments[index]
+                value_unknown = index in unknown
                 index += 1
             if name == "pathspec-from-file":
                 # Git's OPT_FILENAME treats an empty value as NULL, clearing
                 # any earlier pathspec file just as negation does.
-                state[name] = not negated and bool(value)
+                state[name] = None if not negated and value_unknown else not negated and bool(value)
             elif name in state:
                 state[name] = not negated
             elif name in format_options:
@@ -10505,7 +10554,8 @@ def commit_effect(arguments: list[str]) -> str | None:
             if option in short_effects:
                 state[short_effects[option]] = True
             elif option not in {"q", "v", "s", "e", "n"}:
-                return None  # Help or an invalid option cannot commit.
+                # Dynamic option letters are not ordinary commit evidence.
+                return "commit-unresolved" if argument_unknown else None
 
     # finalize_deferred_config and parse_and_validate_options in commit.c
     # make final status format/null output imply preview independently of
@@ -10518,10 +10568,16 @@ def commit_effect(arguments: list[str]) -> str | None:
         return "commit-stage"
     if state["amend"]:
         return "commit-amend"
+    if state["pathspec-from-file"] is None:
+        return "commit-unresolved"
     return "commit"
 
 
-def segment_spec(tokens, segment_index):
+def segment_spec(
+    tokens: list[str],
+    segment_index: int,
+    unknown: frozenset[int] = frozenset(),
+) -> tuple[str, str | None] | None:
     if not tokens:
         return None
 
@@ -10550,7 +10606,7 @@ def segment_spec(tokens, segment_index):
         if not assignment:
             break
         name, value = tokens[index].split("=", 1)
-        environment[name] = value
+        environment[name] = None if index in unknown else value
         index += 1
 
     original_index = index
@@ -10569,13 +10625,13 @@ def segment_spec(tokens, segment_index):
     # `env NAME=value git ...` is a normal spelling. Its assignments help
     # resolve a concrete target, but do not themselves require a special
     # route. An observed direct timeout may select this exact env child.
-    def consume_env(index, repo_dir):
+    def consume_env(index: int, repo_dir: str | None) -> tuple[int, str | None] | None:
         index += 1
         while index < len(tokens):
             assignment = ASSIGNMENT.fullmatch(tokens[index])
             if assignment:
                 name, value = tokens[index].split("=", 1)
-                environment[name] = value
+                environment[name] = None if index in unknown else value
                 index += 1
                 continue
             if tokens[index] == "--":
@@ -10584,23 +10640,37 @@ def segment_spec(tokens, segment_index):
                 if index + 1 >= len(tokens):
                     return None
                 return_index = index + 2
-                repo_dir = resolve(tokens[index + 1], repo_dir)
+                repo_dir = resolve(None if index + 1 in unknown else tokens[index + 1], repo_dir)
                 index = return_index
                 continue
             if tokens[index].startswith("--chdir="):
-                repo_dir = resolve(tokens[index].split("=", 1)[1], repo_dir)
+                repo_dir = resolve(None if index in unknown else tokens[index].split("=", 1)[1], repo_dir)
                 index += 1
                 continue
             if tokens[index].startswith("-"):
                 if tokens[index] in {"-i", "--ignore-environment", "-v", "--debug"}:
+                    if tokens[index] in {"-i", "--ignore-environment"}:
+                        environment.clear()
                     index += 1
                     continue
-                if tokens[index] in {"-u", "--unset"}:
+                if tokens[index] in {"-u", "--unset", "-a", "--argv0"}:
                     if index + 1 >= len(tokens):
                         return None
+                    if tokens[index] in {"-u", "--unset"}:
+                        if index + 1 in unknown:
+                            environment.update((name, None) for name in environment)
+                        else:
+                            environment.pop(tokens[index + 1], None)
                     index += 2
                     continue
                 if tokens[index].startswith("--unset="):
+                    if index in unknown:
+                        environment.update((name, None) for name in environment)
+                    else:
+                        environment.pop(tokens[index].split("=", 1)[1], None)
+                    index += 1
+                    continue
+                if tokens[index].startswith("--argv0=") or tokens[index].startswith("-a"):
                     index += 1
                     continue
                 return None
@@ -10617,6 +10687,8 @@ def segment_spec(tokens, segment_index):
     # repository target. Their option values are skipped structurally; no
     # finite wrapper-name allowlist is used as an admission decision.
     while index < len(tokens):
+        if index in unknown:
+            return None
         name = os.path.basename(tokens[index])
         if name == "env":
             result = consume_env(index, repo_dir)
@@ -10681,22 +10753,22 @@ def segment_spec(tokens, segment_index):
                 if name == "systemd-run" and option == "--working-directory":
                     if index + 1 >= len(tokens):
                         return None
-                    repo_dir = resolve(tokens[index + 1], repo_dir)
+                    repo_dir = resolve(None if index + 1 in unknown else tokens[index + 1], repo_dir)
                     index += 2
                 elif name == "systemd-run" and option.startswith("--working-directory="):
-                    repo_dir = resolve(option.split("=", 1)[1], repo_dir)
+                    repo_dir = resolve(None if index in unknown else option.split("=", 1)[1], repo_dir)
                     index += 1
                 elif name == "systemd-run" and option == "--setenv":
                     if index + 1 >= len(tokens):
                         return None
                     name_value = tokens[index + 1].split("=", 1)
                     if len(name_value) == 2 and name_value[0] in {"GIT_DIR", "GIT_WORK_TREE"}:
-                        environment[name_value[0]] = name_value[1]
+                        environment[name_value[0]] = None if index + 1 in unknown else name_value[1]
                     index += 2
                 elif name == "systemd-run" and option.startswith("--setenv="):
                     name_value = option.split("=", 1)[1].split("=", 1)
                     if len(name_value) == 2 and name_value[0] in {"GIT_DIR", "GIT_WORK_TREE"}:
-                        environment[name_value[0]] = name_value[1]
+                        environment[name_value[0]] = None if index in unknown else name_value[1]
                     index += 1
                 elif option in value_options:
                     if index + 1 >= len(tokens):
@@ -10724,11 +10796,11 @@ def segment_spec(tokens, segment_index):
                     # working-directory option.  Only sudo's directory
                     # options alter the child Git worktree context.
                     if option in {"--chdir", "-D"}:
-                        repo_dir = resolve(tokens[index + 1], repo_dir)
+                        repo_dir = resolve(None if index + 1 in unknown else tokens[index + 1], repo_dir)
                     index += 2
                 elif any(option.startswith(value + "=") for value in value_options):
                     if option.startswith(("--chdir=", "-D=")):
-                        repo_dir = resolve(option.split("=", 1)[1], repo_dir)
+                        repo_dir = resolve(None if index in unknown else option.split("=", 1)[1], repo_dir)
                     index += 1
                 else:
                     index += 1
@@ -10744,6 +10816,8 @@ def segment_spec(tokens, segment_index):
             )
             if not is_c or shell_index + 1 >= len(shell_args):
                 continue
+            if index + shell_index + 1 in unknown or index + shell_index + 2 in unknown:
+                return None
             try:
                 nested_lexer = shlex.shlex(shell_args[shell_index + 1], posix=True, punctuation_chars=True)
                 nested_tokens = list(nested_lexer)
@@ -10763,12 +10837,12 @@ def segment_spec(tokens, segment_index):
                     return nested_spec
             return None
         return None
-    if index >= len(tokens) or os.path.basename(tokens[index]) != "git":
+    if index >= len(tokens) or index in unknown or os.path.basename(tokens[index]) != "git":
         return None
     index += 1
 
-    git_dir = environment.get("GIT_DIR")
-    work_tree = environment.get("GIT_WORK_TREE")
+    git_dir = environment.get("GIT_DIR", "")
+    work_tree = environment.get("GIT_WORK_TREE", "")
     value_options = {
         "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix",
         "--source", "--pathspec-from-file",
@@ -10778,28 +10852,28 @@ def segment_spec(tokens, segment_index):
         if token == "-C":
             if index + 1 >= len(tokens):
                 return None
-            repo_dir = resolve(tokens[index + 1], repo_dir)
+            repo_dir = resolve(None if index + 1 in unknown else tokens[index + 1], repo_dir)
             index += 2
             continue
         if token.startswith("-C") and len(token) > 2:
-            repo_dir = resolve(token[2:], repo_dir)
+            repo_dir = resolve(None if index in unknown else token[2:], repo_dir)
             index += 1
             continue
         if token in {"--git-dir", "--work-tree"}:
             if index + 1 >= len(tokens):
                 return None
             if token == "--git-dir":
-                git_dir = tokens[index + 1]
+                git_dir = None if index + 1 in unknown else tokens[index + 1]
             else:
-                work_tree = tokens[index + 1]
+                work_tree = None if index + 1 in unknown else tokens[index + 1]
             index += 2
             continue
         if token.startswith("--git-dir="):
-            git_dir = token.split("=", 1)[1]
+            git_dir = None if index in unknown else token.split("=", 1)[1]
             index += 1
             continue
         if token.startswith("--work-tree="):
-            work_tree = token.split("=", 1)[1]
+            work_tree = None if index in unknown else token.split("=", 1)[1]
             index += 1
             continue
         if token in value_options:
@@ -10820,17 +10894,70 @@ def segment_spec(tokens, segment_index):
             return None
         break
 
-    if index >= len(tokens):
+    if index >= len(tokens) or index in unknown:
         return None
-    if work_tree:
-        repo_dir = resolve(work_tree, repo_dir)
+    resolved_git_dir = resolve(git_dir, repo_dir) if git_dir else git_dir
+    resolved_work_tree = resolve(work_tree, repo_dir) if work_tree else work_tree
+    if resolved_work_tree is None or resolved_git_dir is None:
+        repo_dir = None
+    elif work_tree:
+        repo_dir = resolved_work_tree
     elif git_dir:
-        resolved_git_dir = resolve(git_dir, repo_dir)
-        repo_dir = os.path.dirname(resolved_git_dir) if os.path.basename(resolved_git_dir) == ".git" else resolved_git_dir
+        repo_dir = (os.path.dirname(resolved_git_dir)
+                    if resolved_git_dir and os.path.basename(resolved_git_dir) == ".git"
+                    else resolved_git_dir)
 
     verb = tokens[index]
+    if verb in {"reset", "add"}:
+        consume_value = False
+        value_options = {"--pathspec-from-file"}
+        if verb == "add":
+            value_options.add("--chmod")
+        for offset, argument in enumerate(tokens[index + 1:], index + 1):
+            if consume_value:
+                consume_value = False
+                continue
+            if offset not in unknown and argument == "--":
+                break
+            option, separator, _ = argument.partition("=")
+            if offset in unknown and argument.startswith("-") and (
+                    not separator or "$?" in option):
+                return verb + "-unresolved", repo_dir
+            if option in value_options and not separator:
+                consume_value = True
     if verb == "reset":
+        arguments = tokens[index + 1:]
+        for offset, argument in enumerate(arguments, index + 1):
+            if offset in unknown:
+                continue
+            if argument == "--":
+                break
+            if argument in {"--hard", "--merge", "--keep"}:
+                return "reset-working-tree", repo_dir
         return "reset", repo_dir
+    if verb == "add":
+        all_selector = False
+        has_paths = False
+        paths_only = False
+        for offset, argument in enumerate(tokens[index + 1:], index + 1):
+            if offset in unknown:
+                has_paths = True
+                continue
+            if argument == "--" and not paths_only:
+                paths_only = True
+                continue
+            if not paths_only and argument in {"-A", "--all"}:
+                all_selector = True
+                continue
+            if not paths_only and argument.startswith("-"):
+                if argument.startswith("--pathspec-from-file"):
+                    has_paths = True
+                continue
+            if argument == ":/":
+                return "whole-worktree-staging", repo_dir
+            has_paths = True
+        if all_selector and not has_paths:
+            return "whole-worktree-staging", repo_dir
     if verb in {"add", "rm", "mv", "restore"}:
         return "prep", repo_dir
     if verb == "checkout":
@@ -10839,10 +10966,11 @@ def segment_spec(tokens, segment_index):
         # it resolves to an actual worktree target.
         return "prep", repo_dir
     if verb == "commit":
-        effect = commit_effect(tokens[index + 1:])
+        effect = commit_effect(tokens[index + 1:], frozenset(
+            value - index - 1 for value in unknown if value > index))
         return (effect, repo_dir) if effect else None
     if verb == "worktree":
-        if index + 1 < len(tokens) and tokens[index + 1] in MUTATING_WORKTREE:
+        if index + 1 < len(tokens) and index + 1 not in unknown and tokens[index + 1] in MUTATING_WORKTREE:
             return "worktree", repo_dir
         return None
     if verb == "branch":
@@ -10862,6 +10990,15 @@ def segment_spec(tokens, segment_index):
         value_index = 0
         while value_index < len(values):
             value = values[value_index]
+            if index + value_index + 1 in unknown:
+                if value.startswith("-"):
+                    option, separator, _ = value.partition("=")
+                    if not separator or "$?" in option:
+                        return "repository-unresolved", repo_dir
+                elif not list_mode:
+                    return "repository", repo_dir
+                value_index += 1
+                continue
             if value in branch_mutators or any(
                 value.startswith(option + "=") for option in branch_mutators
                 if option.startswith("--")
@@ -10898,7 +11035,9 @@ def segment_spec(tokens, segment_index):
         return "inspection", repo_dir
     if verb == "remote":
         remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
-        if tokens[index + 1:index + 2] and tokens[index + 1] in remote_mutators:
+        if tokens[index + 1:index + 2] and index + 1 in unknown:
+            return "repository-unresolved", repo_dir
+        if tokens[index + 1:index + 2] and index + 1 not in unknown and tokens[index + 1] in remote_mutators:
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
@@ -10922,10 +11061,13 @@ if analysis is not None:
         # An absolute Git context can resolve even when the incoming CWD
         # cannot. Never substitute the callback directory for an unknown one.
         for cwd in directories or [""]:
-            spec = segment_spec(record["argv"], record["segment"])
-            if spec and os.path.isabs(spec[1]):
+            spec = segment_spec(record["argv"], record["segment"],
+                                frozenset(record.get("unknown_arguments") or []))
+            if spec:
                 print(spec[0])
-                print(spec[1])
+                # Transport uncertainty explicitly; never resolve this
+                # marker as a filesystem path in the shell consumer.
+                print(spec[1] if spec[1] and os.path.isabs(spec[1]) else "<unresolved>")
 else:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -10945,7 +11087,7 @@ else:
         spec = segment_spec(segment, segment_index)
         if spec:
             print(spec[0])
-            print(spec[1])
+            print(spec[1] if spec[1] and os.path.isabs(spec[1]) else "<unresolved>")
 PY
 }
 
@@ -10969,6 +11111,7 @@ worker_git_resolved_inspection_route() {
     # or otherwise writes. Let the normal mutation/control routes inspect the
     # complete command whenever any resolved operation is not an inspection.
     [ "$operation" = inspection ] || return 1
+    [ "$repo_dir" != '<unresolved>' ] || return 1
     repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
     [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
@@ -11079,10 +11222,14 @@ else:
                 "cwd_known": True, "cwd_candidates": []}
                for index, segment in enumerate(segments, 1)]
 
-def resolve(path, base):
+def resolve(path: str | None, base: str | None) -> str | None:
+    if path is None:
+        return None
     path = os.path.expanduser(path)
     if os.path.isabs(path):
         return os.path.normpath(path)
+    if not base or not os.path.isabs(base):
+        return None
     return os.path.normpath(os.path.join(base, path))
 
 
@@ -11107,17 +11254,61 @@ def observed_timeout_command_index(tokens, index, segment_index):
     return matches[0] if len(matches) == 1 else (None, None)
 
 
-def git_add_whole_worktree_selector(segment, segment_index):
+def git_record_command(
+    segment: list[str],
+    segment_index: int,
+    unknown: frozenset[int],
+) -> tuple[str, list[str], frozenset[int], str] | None:
     index = 0
+    environment = {}
     while index < len(segment) and assignment.match(segment[index]):
+        name, value = segment[index].split("=", 1)
+        environment[name] = None if index in unknown else value
         index += 1
     index, timeout_replay = observed_timeout_command_index(segment, index, segment_index)
     if index is None:
         return None
+    repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
     if index < len(segment) and os.path.basename(segment[index]) == "env":
+        if index in unknown:
+            return None
         index += 1
         while index < len(segment):
             if assignment.match(segment[index]):
+                name, value = segment[index].split("=", 1)
+                environment[name] = None if index in unknown else value
+                index += 1
+                continue
+            value = segment[index]
+            if value in {"-i", "--ignore-environment"}:
+                environment.clear()
+                index += 1
+                continue
+            if value in {"-a", "--argv0", "-u", "--unset", "-C", "--chdir"}:
+                if index + 1 >= len(segment):
+                    return None
+                operand = None if index + 1 in unknown else segment[index + 1]
+                if value in {"-C", "--chdir"}:
+                    repo_dir = resolve(operand, repo_dir)
+                elif value in {"-u", "--unset"}:
+                    if operand is None:
+                        environment.update((name, None) for name in environment)
+                    else:
+                        environment.pop(operand, None)
+                index += 2
+                continue
+            if value.startswith(("--chdir=", "--unset=", "--argv0=")):
+                operand = None if index in unknown else value.split("=", 1)[1]
+                if value.startswith("--chdir="):
+                    repo_dir = resolve(operand, repo_dir)
+                elif value.startswith("--unset="):
+                    if operand is None:
+                        environment.update((name, None) for name in environment)
+                    else:
+                        environment.pop(operand, None)
+                index += 1
+                continue
+            if value.startswith("-a") and len(value) > 2:
                 index += 1
                 continue
             if segment[index] == "--":
@@ -11126,29 +11317,38 @@ def git_add_whole_worktree_selector(segment, segment_index):
             if segment[index].startswith("-"):
                 return None
             break
-    if index >= len(segment) or os.path.basename(segment[index]) != "git":
+    if index >= len(segment) or index in unknown or os.path.basename(segment[index]) != "git":
         return None
     index += 1
-    repo_dir = timeout_replay["cwd"] if timeout_replay else cwd
+    git_dir = environment.get("GIT_DIR", "")
+    work_tree = environment.get("GIT_WORK_TREE", "")
     value_options = {"-C", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--git-dir", "--work-tree"}
     while index < len(segment):
         token = segment[index]
         if token == "-C":
             if index + 1 >= len(segment):
                 return None
-            repo_dir = resolve(segment[index + 1], repo_dir)
+            repo_dir = resolve(None if index + 1 in unknown else segment[index + 1], repo_dir)
             index += 2
             continue
         if token.startswith("-C") and len(token) > 2:
-            repo_dir = resolve(token[2:], repo_dir)
+            repo_dir = resolve(None if index in unknown else token[2:], repo_dir)
             index += 1
             continue
         if token in value_options:
             if index + 1 >= len(segment):
                 return None
+            if token == "--git-dir":
+                git_dir = None if index + 1 in unknown else segment[index + 1]
+            elif token == "--work-tree":
+                work_tree = None if index + 1 in unknown else segment[index + 1]
             index += 2
             continue
         if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--git-dir=", "--work-tree=")):
+            if token.startswith("--git-dir="):
+                git_dir = None if index in unknown else token.split("=", 1)[1]
+            elif token.startswith("--work-tree="):
+                work_tree = None if index in unknown else token.split("=", 1)[1]
             index += 1
             continue
         if token == "--":
@@ -11160,15 +11360,44 @@ def git_add_whole_worktree_selector(segment, segment_index):
         if token.startswith("-"):
             return None
         break
-    if index >= len(segment) or segment[index] != "add":
+    if index >= len(segment) or index in unknown or git_dir is None or work_tree is None:
         return None
+    resolved_git_dir = resolve(git_dir, repo_dir) if git_dir else ""
+    resolved_work_tree = resolve(work_tree, repo_dir) if work_tree else ""
+    if resolved_git_dir is None or resolved_work_tree is None:
+        return None
+    if work_tree:
+        repo_dir = resolved_work_tree
+    elif git_dir:
+        repo_dir = resolved_git_dir
+        if repo_dir and os.path.basename(repo_dir) == ".git":
+            repo_dir = os.path.dirname(repo_dir)
+    if not repo_dir or not os.path.isabs(repo_dir):
+        return None
+    current = os.path.realpath(repo_dir)
+    while current != repo:
+        parent = os.path.dirname(current)
+        if parent == current or os.path.lexists(os.path.join(current, ".git")):
+            return None
+        current = parent
+    return (segment[index], segment[index + 1:], frozenset(
+        value - index - 1 for value in unknown if value > index), repo_dir)
 
+
+def git_add_whole_worktree_selector(
+    arguments: list[str],
+    unknown: frozenset[int],
+    repo_dir: str,
+) -> str | None:
     selectors = []
     all_selector = None
     paths_only = False
-    for token in segment[index + 1:]:
+    for index, token in enumerate(arguments):
         if paths_only:
-            selectors.append(token)
+            selectors.append((token, index not in unknown))
+            continue
+        if index in unknown:
+            selectors.append((token, False))
             continue
         if token == "--":
             paths_only = True
@@ -11178,10 +11407,12 @@ def git_add_whole_worktree_selector(segment, segment_index):
             continue
         if token.startswith("-"):
             continue
-        selectors.append(token)
+        selectors.append((token, True))
     if all_selector and not selectors:
         return all_selector
-    for selector in selectors:
+    for selector, literal in selectors:
+        if not literal:
+            continue
         if selector == ":/":
             return selector
         if os.path.realpath(resolve(selector, repo_dir)) == repo:
@@ -11189,60 +11420,30 @@ def git_add_whole_worktree_selector(segment, segment_index):
     return None
 
 
-def broad_reset(segment, segment_index):
-    index = 0
-    while index < len(segment) and assignment.match(segment[index]):
-        index += 1
-    index, _ = observed_timeout_command_index(segment, index, segment_index)
-    if index is None:
-        return False
-    if index < len(segment) and os.path.basename(segment[index]) == "env":
-        index += 1
-        while index < len(segment) and assignment.match(segment[index]):
-            index += 1
-    if index >= len(segment) or os.path.basename(segment[index]) != "git":
-        return False
-    index += 1
-    value_options = {"-C", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--git-dir", "--work-tree"}
-    while index < len(segment):
-        token = segment[index]
-        if token in value_options:
-            if index + 1 >= len(segment):
-                return False
-            index += 2
-            continue
-        if token.startswith("-C") and len(token) > 2:
-            index += 1
-            continue
-        if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--git-dir=", "--work-tree=")):
-            index += 1
-            continue
-        if token == "--":
-            index += 1
-            break
-        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
-            index += 1
-            continue
-        if token.startswith("-"):
-            return False
-        break
-    if index >= len(segment) or segment[index] != "reset":
-        return False
-    args = segment[index + 1:]
-    if any(option in args for option in ("--hard", "--merge", "--keep")):
+def broad_reset(args: list[str], unknown: frozenset[int]) -> str | None:
+    if any(index not in unknown and option in {"--hard", "--merge", "--keep"}
+           for index, option in enumerate(args)):
         return "reset-working-tree"
+    if unknown:
+        return None
     if "--" not in args or not args[args.index("--") + 1:]:
         return "reset-index"
-    return False
+    return None
 
 for record in records:
     directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
-    for cwd in directories:
-        effect = broad_reset(record["argv"], record["segment"])
+    for cwd in directories or [""]:
+        parsed = git_record_command(record["argv"], record["segment"],
+                                    frozenset(record.get("unknown_arguments") or []))
+        if parsed is None:
+            continue
+        verb, arguments, unknown, repo_dir = parsed
+        effect = broad_reset(arguments, unknown) if verb == "reset" else None
         if effect:
             print("effect=%s target=%s" % (effect, repo))
             raise SystemExit(0)
-        selector = git_add_whole_worktree_selector(record["argv"], record["segment"])
+        selector = (git_add_whole_worktree_selector(arguments, unknown, repo_dir)
+                    if verb == "add" else None)
         if selector:
             print("effect=whole-worktree-staging target=%s selector=%s" % (repo, selector))
             raise SystemExit(0)
@@ -11306,10 +11507,14 @@ protected = {
     )
 }
 
-def lexical_resolve(value, base):
+def lexical_resolve(value: str | None, base: str | None) -> str:
+    if value is None:
+        return ""
     expanded = os.path.expanduser(value)
     if os.path.isabs(expanded):
         return os.path.normpath(expanded)
+    if not base or not os.path.isabs(base):
+        return ""
     return os.path.normpath(os.path.join(base, expanded))
 
 def parse_pathspec(value, base):
@@ -11339,6 +11544,8 @@ def pathspec_candidates(value, base):
     if root or not value:
         return [target_repo], False
     candidate = lexical_resolve(value, base)
+    if not candidate:
+        return [], False
     if any(character in value for character in "*?["):
         return glob.glob(candidate, recursive=True), False
     return [candidate], False
@@ -11353,6 +11560,8 @@ def pathspec_file_entries(value, file_nul, base):
     # work-tree, not the callback CWD.  This matters when --work-tree points
     # at the repository while the callback is launched from elsewhere.
     path = lexical_resolve(value, base)
+    if not path:
+        return []
     try:
         with open(path, "rb") as stream:
             data = stream.read()
@@ -11376,7 +11585,11 @@ def pathspec_from_file_argument(value):
         return False, None
     return True, argument if separator else None
 
-def collect_pathspecs(args, base):
+def collect_pathspecs(
+    args: list[str],
+    base: str,
+    unknown: frozenset[int] = frozenset(),
+) -> list[str]:
     paths = []
     pathspec_files = []
     file_nul = False
@@ -11394,12 +11607,14 @@ def collect_pathspecs(args, base):
             if is_pathspec_file:
                 if pathspec_file is None:
                     if index + 1 < len(args):
-                        pathspec_files.append(args[index + 1])
+                        if index + 1 not in unknown:
+                            pathspec_files.append(args[index + 1])
                         index += 2
                     else:
                         index += 1
                 else:
-                    pathspec_files.append(pathspec_file)
+                    if index not in unknown:
+                        pathspec_files.append(pathspec_file)
                     index += 1
                 continue
         if not after_separator and value == "--":
@@ -11416,7 +11631,8 @@ def collect_pathspecs(args, base):
                 pass
             index += 1
             continue
-        paths.append(value)
+        if index not in unknown:
+            paths.append(value)
         index += 1
     for pathspec_file in pathspec_files:
         paths.extend(pathspec_file_entries(pathspec_file, file_nul, base))
@@ -11458,7 +11674,10 @@ def split_segments(values):
             current.append(value)
     return segments
 
-def strip_structural_prefix(segment):
+def strip_structural_prefix(
+    segment: list[str],
+    unknown: frozenset[int],
+) -> tuple[list[str], frozenset[int]]:
     index = 0
     while index < len(segment):
         value = segment[index]
@@ -11468,9 +11687,6 @@ def strip_structural_prefix(segment):
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*:", value):
             index += 1
             continue
-        if ASSIGNMENT.fullmatch(value):
-            index += 1
-            continue
         if value in REDIRECTIONS:
             index += min(2, len(segment) - index)
             continue
@@ -11478,33 +11694,54 @@ def strip_structural_prefix(segment):
             index += 1
             continue
         break
-    return segment[index:]
+    return segment[index:], frozenset(value - index for value in unknown if value >= index)
 
-def consume_env(segment, index, base, environment):
+def consume_env(
+    segment: list[str],
+    index: int,
+    base: str,
+    environment: dict[str, str | None],
+    unknown: frozenset[int],
+) -> tuple[int, str, dict[str, str | None]] | None:
     index += 1
     while index < len(segment):
         value = segment[index]
         if ASSIGNMENT.fullmatch(value):
             name, assigned = value.split("=", 1)
-            environment[name] = assigned
+            environment[name] = None if index in unknown else assigned
             index += 1
             continue
         if value in {"-i", "--ignore-environment", "-v", "--debug"}:
+            if value in {"-i", "--ignore-environment"}:
+                environment.clear()
             index += 1
             continue
-        if value in {"-u", "--unset"}:
+        if value in {"-u", "--unset", "-a", "--argv0"}:
             if index + 1 >= len(segment):
                 return None
+            if value in {"-u", "--unset"}:
+                if index + 1 in unknown:
+                    environment.update((name, None) for name in environment)
+                else:
+                    environment.pop(segment[index + 1], None)
             index += 2
+            continue
+        if value.startswith(("--argv0=", "--unset=")) or (value.startswith("-a") and len(value) > 2):
+            if value.startswith("--unset="):
+                if index in unknown:
+                    environment.update((name, None) for name in environment)
+                else:
+                    environment.pop(value.split("=", 1)[1], None)
+            index += 1
             continue
         if value in {"-C", "--chdir"}:
             if index + 1 >= len(segment):
                 return None
-            base = lexical_resolve(segment[index + 1], base)
+            base = lexical_resolve(None if index + 1 in unknown else segment[index + 1], base)
             index += 2
             continue
         if value.startswith("--chdir="):
-            base = lexical_resolve(value.split("=", 1)[1], base)
+            base = lexical_resolve(None if index in unknown else value.split("=", 1)[1], base)
             index += 1
             continue
         if value == "--":
@@ -11512,8 +11749,11 @@ def consume_env(segment, index, base, environment):
         break
     return index, base, environment
 
-def unwrap(segment, initial_base=None):
-    segment = strip_structural_prefix(segment)
+def unwrap(
+    segment: list[str],
+    initial_base: str | None = None,
+    unknown: frozenset[int] = frozenset(),
+) -> tuple[int, str, dict[str, str | None]] | None:
     index = 0
     base = command_cwd if initial_base is None else initial_base
     environment = {}
@@ -11521,13 +11761,15 @@ def unwrap(segment, initial_base=None):
     while index < len(segment):
         while index < len(segment) and ASSIGNMENT.fullmatch(segment[index]):
             name, assigned = segment[index].split("=", 1)
-            environment[name] = assigned
+            environment[name] = None if index in unknown else assigned
             index += 1
         if index >= len(segment):
             break
+        if index in unknown:
+            return None
         name = os.path.basename(segment[index])
         if name == "env":
-            result = consume_env(segment, index, base, environment)
+            result = consume_env(segment, index, base, environment, unknown)
             if result is None:
                 return None
             index, base, environment = result
@@ -11582,10 +11824,22 @@ def unwrap(segment, initial_base=None):
                 if name == "systemd-run" and option in {"--working-directory", "--chdir"}:
                     if index + 1 >= len(segment):
                         return None
-                    base = lexical_resolve(segment[index + 1], base)
+                    base = lexical_resolve(None if index + 1 in unknown else segment[index + 1], base)
                     index += 2
                 elif name == "systemd-run" and option.startswith(("--working-directory=", "--chdir=")):
-                    base = lexical_resolve(option.split("=", 1)[1], base)
+                    base = lexical_resolve(None if index in unknown else option.split("=", 1)[1], base)
+                    index += 1
+                elif name == "systemd-run" and option == "--setenv":
+                    if index + 1 >= len(segment):
+                        return None
+                    name_value = segment[index + 1].split("=", 1)
+                    if len(name_value) == 2:
+                        environment[name_value[0]] = None if index + 1 in unknown else name_value[1]
+                    index += 2
+                elif name == "systemd-run" and option.startswith("--setenv="):
+                    name_value = option.split("=", 1)[1].split("=", 1)
+                    if len(name_value) == 2:
+                        environment[name_value[0]] = None if index in unknown else name_value[1]
                     index += 1
                 elif option in value_options:
                     if index + 1 >= len(segment):
@@ -11610,11 +11864,11 @@ def unwrap(segment, initial_base=None):
                     if index + 1 >= len(segment):
                         return None
                     if option in {"--chdir", "-D"}:
-                        base = lexical_resolve(segment[index + 1], base)
+                        base = lexical_resolve(None if index + 1 in unknown else segment[index + 1], base)
                     index += 2
                 elif any(option.startswith(value + "=") for value in value_options):
                     if option.startswith(("--chdir=", "-D=")):
-                        base = lexical_resolve(option.split("=", 1)[1], base)
+                        base = lexical_resolve(None if index in unknown else option.split("=", 1)[1], base)
                     index += 1
                 else:
                     index += 1
@@ -11622,43 +11876,47 @@ def unwrap(segment, initial_base=None):
         break
     return index, base, environment
 
-def git_command(segment, initial_base=None):
-    segment = strip_structural_prefix(segment)
-    result = unwrap(segment, initial_base)
+def git_command(
+    segment: list[str],
+    initial_base: str | None = None,
+    unknown: frozenset[int] = frozenset(),
+) -> tuple[str, list[str], str, frozenset[int]] | None:
+    segment, unknown = strip_structural_prefix(segment, unknown)
+    result = unwrap(segment, initial_base, unknown)
     if result is None:
         return None
     index, base, environment = result
-    if index >= len(segment) or os.path.basename(segment[index]) != "git":
+    if index >= len(segment) or index in unknown or os.path.basename(segment[index]) != "git":
         return None
     index += 1
-    work_tree = environment.get("GIT_WORK_TREE")
-    git_dir = environment.get("GIT_DIR")
+    work_tree = environment.get("GIT_WORK_TREE", "")
+    git_dir = environment.get("GIT_DIR", "")
     while index < len(segment):
         value = segment[index]
         if value == "-C":
             if index + 1 >= len(segment):
                 return None
-            base = lexical_resolve(segment[index + 1], base)
+            base = lexical_resolve(None if index + 1 in unknown else segment[index + 1], base)
             index += 2
             continue
         if value.startswith("-C") and len(value) > 2:
-            base = lexical_resolve(value[2:], base)
+            base = lexical_resolve(None if index in unknown else value[2:], base)
             index += 1
             continue
         if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--source", "--pathspec-from-file"}:
             if index + 1 >= len(segment):
                 return None
             if value == "--git-dir":
-                git_dir = segment[index + 1]
+                git_dir = None if index + 1 in unknown else segment[index + 1]
             elif value == "--work-tree":
-                work_tree = segment[index + 1]
+                work_tree = None if index + 1 in unknown else segment[index + 1]
             index += 2
             continue
         if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
             if value.startswith("--git-dir="):
-                git_dir = value.split("=", 1)[1]
+                git_dir = None if index in unknown else value.split("=", 1)[1]
             elif value.startswith("--work-tree="):
-                work_tree = value.split("=", 1)[1]
+                work_tree = None if index in unknown else value.split("=", 1)[1]
             index += 1
             continue
         if value == "--":
@@ -11671,22 +11929,38 @@ def git_command(segment, initial_base=None):
             index += 1
             continue
         break
-    if index >= len(segment):
+    if index >= len(segment) or index in unknown or work_tree is None or git_dir is None:
         return None
+    resolved_git_dir = lexical_resolve(git_dir, base) if git_dir else ""
+    resolved_work_tree = lexical_resolve(work_tree, base) if work_tree else ""
+    if (git_dir and not resolved_git_dir) or (work_tree and not resolved_work_tree):
+        return None
+    repository_base = base
     if work_tree:
-        base = lexical_resolve(work_tree, base)
-    # An explicit --git-dir changes repository identity, not the callback
-    # worktree path. Keep it recorded so the target-root binding remains
-    # visible to the resolver without treating a missing/invalid Git dir as a
-    # permission error.
-    _ = git_dir
-    return segment[index], segment[index + 1:], base
+        base = resolved_work_tree
+        repository_base = base
+    elif git_dir:
+        repository_base = resolved_git_dir
+        if repository_base and os.path.basename(repository_base) == ".git":
+            repository_base = os.path.dirname(repository_base)
+    if not repository_base or not os.path.isabs(repository_base):
+        return None
+    current = os.path.realpath(repository_base)
+    while current != target_repo:
+        parent = os.path.dirname(current)
+        if parent == current or os.path.lexists(os.path.join(current, ".git")):
+            return None
+        current = parent
+    return segment[index], segment[index + 1:], base, frozenset(
+        value - index - 1 for value in unknown if value > index)
 
-def rm_detail(args, base):
+def rm_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
     recursive = False
     cached_or_dry = False
     after_separator = False
-    for value in args:
+    for index, value in enumerate(args):
+        if index in unknown:
+            continue
         if value == "--":
             after_separator = True
             continue
@@ -11699,7 +11973,7 @@ def rm_detail(args, base):
     # missing pathspecs likewise remain Git's ordinary runtime result.
     if cached_or_dry:
         return None
-    for value in collect_pathspecs(args, base):
+    for value in collect_pathspecs(args, base, unknown):
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -11709,11 +11983,19 @@ def rm_detail(args, base):
                 return detail
     return None
 
-def mv_detail(args, base, include_index=False):
+def mv_detail(
+    args: list[str],
+    base: str,
+    unknown: frozenset[int],
+    include_index: bool = False,
+) -> str | None:
     dry_run = False
     paths = []
     after_separator = False
-    for value in args:
+    for index, value in enumerate(args):
+        if index in unknown:
+            paths.append(None)
+            continue
         if not after_separator and value == "--":
             after_separator = True
             continue
@@ -11725,6 +12007,18 @@ def mv_detail(args, base, include_index=False):
     if dry_run or len(paths) < 2:
         return None
     destination_raw = paths[-1]
+    if destination_raw is None:
+        # An unknown opposite endpoint cannot erase a known protected source.
+        for value in paths[:-1]:
+            if value is None:
+                continue
+            candidates, _ = pathspec_candidates(value, base)
+            for source in candidates:
+                if inside(target_repo, source):
+                    detail = protected_path_detail(source, "mv", True)
+                    if detail:
+                        return detail
+        return None
     destination_values, destination_excluded = pathspec_candidates(destination_raw, base)
     if destination_excluded or not destination_values:
         return None
@@ -11733,8 +12027,12 @@ def mv_detail(args, base, include_index=False):
     # that invalid request as transparent rather than blocking it by spelling.
     if not inside(target_repo, destination):
         return None
+    if any(value is None for value in paths[:-1]) and destination in protected:
+        return "operation=mv target=%s kind=protected-live-hook" % destination
     sources = []
     for value in paths[:-1]:
+        if value is None:
+            continue
         candidates, _ = pathspec_candidates(value, base)
         sources.extend(candidates)
     if not sources:
@@ -11764,10 +12062,17 @@ def mv_detail(args, base, include_index=False):
             return "operation=mv target=%s kind=protected-live-hook" % effective_destination
     return None
 
-def restore_detail(args, base, include_index=False):
+def restore_detail(
+    args: list[str],
+    base: str,
+    unknown: frozenset[int],
+    include_index: bool = False,
+) -> str | None:
     worktree = True
     after_separator = False
-    for value in args:
+    for index, value in enumerate(args):
+        if index in unknown:
+            continue
         if value == "--":
             after_separator = True
             continue
@@ -11777,7 +12082,7 @@ def restore_detail(args, base, include_index=False):
             worktree = True
     if not worktree and not include_index:
         return None
-    for value in collect_pathspecs(args, base):
+    for value in collect_pathspecs(args, base, unknown):
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
@@ -11837,7 +12142,10 @@ def checkout_context_value_has_unpatched_effect(value):
     match = re.fullmatch(r"([+-]?)([0-9]+)([kKmMgG]?)", value)
     return match is not None and match.group(1) == "-" and not match.group(3) and int(match.group(2)) == 1
 
-def checkout_detach_state(args):
+def checkout_detach_state(
+    args: list[str],
+    unknown: frozenset[int],
+) -> tuple[bool | None, bool, bool, int | None, bool, bool]:
     """Return detach state, branch mode, start point, separator, and flags."""
     state = None
     branch_mode = False
@@ -11859,6 +12167,9 @@ def checkout_detach_state(args):
 
     while index < len(args):
         value = args[index]
+        if index in unknown:
+            index += 1
+            continue
         if value == "--":
             separator_index = index
             break
@@ -12034,7 +12345,7 @@ def checkout_detach_state(args):
     return (state, branch_mode, branch_startpoint, separator_index,
             pathspec_file_option, False)
 
-def checkout_detail(args, base):
+def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
     # With `--`, every following token is a worktree pathspec.  Without it,
     # preserve branch/ref inspection and only inspect an existing path that
     # Git cannot resolve as a revision.
@@ -12042,7 +12353,7 @@ def checkout_detail(args, base):
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
     (detach_state, branch_mode, branch_startpoint, separator_index,
-     pathspec_file_option, invalid) = checkout_detach_state(args)
+     pathspec_file_option, invalid) = checkout_detach_state(args, unknown)
     if invalid or detach_state is True:
         return None
     explicit_paths = separator_index is not None
@@ -12058,7 +12369,7 @@ def checkout_detail(args, base):
     # actual separator cannot be discarded.  `separator_index` comes from
     # the option-state parser, so a `--` consumed as an option value is not
     # mistaken for the pathspec separator.
-    paths = collect_pathspecs(args, base)
+    paths = collect_pathspecs(args, base, unknown)
     for value in paths:
         if not explicit_paths:
             revision = checkout_revision(value)
@@ -12073,12 +12384,17 @@ def checkout_detail(args, base):
                 return detail
     return None
 
-def shell_child_segments(segment, initial_base=None):
-    result = unwrap(segment, initial_base)
+def shell_child_segments(
+    segment: list[str],
+    initial_base: str | None = None,
+    unknown: frozenset[int] = frozenset(),
+) -> tuple[list[list[str]], str] | list[list[str]] | None:
+    segment, unknown = strip_structural_prefix(segment, unknown)
+    result = unwrap(segment, initial_base, unknown)
     if result is None:
         return None
     index, base, _ = result
-    if index >= len(segment) or os.path.basename(segment[index]) not in {"bash", "sh", "dash", "zsh"}:
+    if index >= len(segment) or index in unknown or os.path.basename(segment[index]) not in {"bash", "sh", "dash", "zsh"}:
         return None
     shell_args = segment[index + 1:]
     for shell_index, shell_value in enumerate(shell_args):
@@ -12088,6 +12404,8 @@ def shell_child_segments(segment, initial_base=None):
         )
         if not is_c or shell_index + 1 >= len(shell_args):
             continue
+        if index + shell_index + 1 in unknown or index + shell_index + 2 in unknown:
+            return []
         try:
             nested_lexer = shlex.shlex(shell_args[shell_index + 1], posix=True, punctuation_chars=True)
             nested_tokens = list(nested_lexer)
@@ -12107,10 +12425,15 @@ def shell_child_segments(segment, initial_base=None):
         return nested_segments, base
     return []
 
-def inspect_segment(segment, depth=0, base_override=None):
+def inspect_segment(
+    segment: list[str],
+    depth: int = 0,
+    base_override: str | None = None,
+    unknown: frozenset[int] = frozenset(),
+) -> str | None:
     if depth > 4:
         return None
-    nested = shell_child_segments(segment, base_override)
+    nested = shell_child_segments(segment, base_override, unknown)
     if nested is not None:
         nested_segments, nested_base = nested if nested else ([], base_override or command_cwd)
         for nested_segment in nested_segments:
@@ -12118,18 +12441,18 @@ def inspect_segment(segment, depth=0, base_override=None):
             if detail:
                 return detail
         return None
-    parsed = git_command(segment, base_override)
+    parsed = git_command(segment, base_override, unknown)
     if parsed is None:
         return None
-    verb, args, base = parsed
+    verb, args, base, argument_unknown = parsed
     if verb == "rm":
-        return rm_detail(args, base)
+        return rm_detail(args, base, argument_unknown)
     if verb == "mv":
-        return mv_detail(args, base, include_index=(include_index == "true"))
+        return mv_detail(args, base, argument_unknown, include_index=(include_index == "true"))
     if verb == "restore":
-        return restore_detail(args, base, include_index=(include_index == "true"))
+        return restore_detail(args, base, argument_unknown, include_index=(include_index == "true"))
     if verb == "checkout":
-        return checkout_detail(args, base)
+        return checkout_detail(args, base, argument_unknown)
     return None
 
 if analysis is not None:
@@ -12137,8 +12460,9 @@ if analysis is not None:
         if record["reachability"] == "unreachable":
             continue
         directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
-        for directory in directories:
-            detail = inspect_segment(record["argv"], base_override=directory)
+        for directory in directories or [""]:
+            detail = inspect_segment(record["argv"], base_override=directory,
+                                     unknown=frozenset(record.get("unknown_arguments") or []))
             if detail:
                 print(detail)
                 raise SystemExit(0)
@@ -12198,14 +12522,60 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    case "$operation" in reset|worktree|commit|commit-all|commit-stage|commit-amend|prep|repository|output) ;; *) continue ;; esac
+    case "$operation" in reset|reset-working-tree|reset-unresolved|add-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|prep|repository|repository-unresolved|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
-    # The effect resolver above has identified the Git operation and
-    # repository. A classifier's inability to recognize harmless spelling
-    # must not override that resolved target with an artifact/grammar denial.
+    # Known operation boundaries do not depend on a repository path being
+    # known. The transport marker below is never a filesystem target.
     command_state="$operation"
+    if [ "$operation" = reset-working-tree ] || [ "$operation" = whole-worktree-staging ]; then
+      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
+        "ECI Git mutation has a broad destructive effect: effect=$operation target=$repo_dir" \
+        "name the intended repository-relative paths, or use a non-destructive targeted Git action"
+    fi
+    if [ "$operation" = reset-unresolved ] || [ "$operation" = add-unresolved ]; then
+      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
+        "ECI Git action has unresolved scope-selecting options: operation=$operation target=$repo_dir" \
+        "name the exact intended paths and supply options whose staging/reset effect is resolved, or use a non-destructive targeted Git action"
+    fi
+    if [ "$operation" = commit-all ]; then
+      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
+        "ECI commit would automatically stage the whole tracked worktree: repository=$repo_dir; operation=commit-all" \
+        "stage only the producing worker's exact owned paths or hunks, then make an ordinary commit"
+    fi
+    if [ "$operation" = commit-stage ]; then
+      deny_eci "ECI_GIT_COMMIT_STAGING_DENIED" "git-commit" \
+        "ECI commit would select or stage content outside the prepared index: repository=$repo_dir; operation=commit-stage" \
+        "stage the exact owned paths or hunks separately, inspect the staged diff, then commit the prepared index"
+    fi
+    if [[ "$operation" = commit* ]] && [ "${hook_is_subagent:-false}" != true ] &&
+      [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+      deny_eci "ECI_GIT_COMMIT_PRODUCER_REQUIRED" "git-commit" \
+        "ECI Supervisor cannot author a Producer checkpoint: repository=$repo_dir; operation=$operation" \
+        "have the assigned Producer commit its exact checked scope; the Supervisor verifies the immutable parent-to-commit range before the published Job owner starts dependent review or work"
+    fi
+    if [ "$operation" = commit-unresolved ]; then
+      deny_eci "ECI_GIT_COMMIT_STAGING_DENIED" "git-commit" \
+        "ECI commit has unresolved effect-selecting options; prepared-index-only scope is not established: repository=$repo_dir; operation=commit-unresolved" \
+        "stage and inspect the exact owned paths or hunks, then supply resolved commit options for the prepared index; values consumed by known message options may remain dynamic"
+    fi
+    if [ "${hook_is_subagent:-false}" = true ]; then
+      case "$operation" in
+        repository-unresolved)
+          deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+            "ECI worker Git reference action has unresolved operation-selecting arguments: operation=$operation; target=$repo_dir; predicate=worker-git-ownership" \
+            "supply resolved read-only branch/remote inspection options, or send the intended history/reference mutation to the Supervisor"
+          ;;
+        commit-amend|worktree|repository)
+          deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+            "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
+            "this history or reference mutation remains denied; send the protected request to the Supervisor; assigned Producers make ordinary scoped checkpoint commits through the resolved repository/effect checks"
+          ;;
+      esac
+    fi
+    # Remaining target uncertainty cannot become an invented repository path.
+    [ "$repo_dir" != '<unresolved>' ] || continue
     repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
     # A non-repository or otherwise unresolved Git target is Git's normal
@@ -12249,31 +12619,6 @@ enforce_git_mutation_gate() {
           "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=ordinary active-hook source edits follow the assigned Producer route, with the bounded Supervisor self-edit hatch for genuine Supervisor code-edit edge cases" \
           "assign the exact hook edit to a Producer, or use the session-scoped 600-second Supervisor self-edit hatch (coordinator-edit-on) for a genuine Supervisor code-edit edge case"
       fi
-    fi
-    if [ "$operation" = commit-all ]; then
-      deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
-        "ECI commit would automatically stage the whole tracked worktree: repository=$repo_root; operation=commit-all" \
-        "stage only the producing worker's exact owned paths or hunks, then make an ordinary commit"
-    fi
-    if [ "$operation" = commit-stage ]; then
-      deny_eci "ECI_GIT_COMMIT_STAGING_DENIED" "git-commit" \
-        "ECI commit would select or stage content outside the prepared index: repository=$repo_root; operation=commit-stage" \
-        "stage the exact owned paths or hunks separately, inspect the staged diff, then commit the prepared index"
-    fi
-    if [[ "$operation" = commit* ]] && [ "${hook_is_subagent:-false}" != true ] &&
-      [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-      deny_eci "ECI_GIT_COMMIT_PRODUCER_REQUIRED" "git-commit" \
-        "ECI Supervisor cannot author a Producer checkpoint: repository=$repo_root; operation=$operation" \
-        "have the assigned Producer commit its exact checked scope; the Supervisor verifies the immutable parent-to-commit range before the published Job owner starts dependent review or work"
-    fi
-    if [ "${hook_is_subagent:-false}" = true ]; then
-      case "$operation" in
-        commit-amend|worktree|repository)
-          deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-            "ECI worker Git mutation controls repository acceptance or references: operation=${operation}; token=${operation}; predicate=worker-git-ownership" \
-            "this history or reference mutation remains denied; send the protected request to the Supervisor; assigned Producers make ordinary scoped checkpoint commits through the resolved repository/effect checks"
-          ;;
-      esac
     fi
   done
   # Normal commits, refs, remotes, pushes, and targeted repository actions
@@ -12951,8 +13296,8 @@ PY
 }
 
 protected_pipeline_git_detail() {
-  # A pipeline is ordinary shell composition. Only retain the concrete broad
-  # reset check for a Git segment whose repository target can be resolved.
+  # A pipeline is ordinary shell composition. Preserve a known broad reset
+  # independently of target uncertainty; other reset effects need resolution.
   local segment="$1" specs=() specs_text operation repo_dir repo_root
 
   specs_text="$(git_mutation_specs "$segment" 2>/dev/null || true)"
@@ -12961,7 +13306,12 @@ protected_pipeline_git_detail() {
   [ "${#specs[@]}" -eq 2 ] || return 1
   operation="${specs[0]}"
   repo_dir="${specs[1]}"
+  if [ "$operation" = reset-working-tree ]; then
+    printf 'effect=%s target=%s\n' "$operation" "$repo_dir"
+    return 0
+  fi
   [ "$operation" = reset ] || return 1
+  [ "$repo_dir" != '<unresolved>' ] || return 1
   repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
   repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
   [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1

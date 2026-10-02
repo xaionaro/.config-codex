@@ -16,17 +16,18 @@ type ShellAnalysis struct {
 	Incomplete bool                 `json:"incomplete"`
 }
 
-// ShellCommandRecord binds literal arguments to incoming directory/reachability
-// facts. It is analysis data, never a replacement command to execute.
+// ShellCommandRecord binds arguments and per-word uncertainty to incoming
+// directory/reachability facts. It is analysis data, never executable input.
 //
 // Example: a substitution's cd changes its own later records, not its parent.
 type ShellCommandRecord struct {
-	Argv          []string            `json:"argv"`
-	CWD           string              `json:"cwd"`
-	CWDKnown      bool                `json:"cwd_known"`
-	CWDCandidates []string            `json:"cwd_candidates"`
-	Reachability  SegmentReachability `json:"reachability"`
-	Segment       int                 `json:"segment"`
+	Argv             []string            `json:"argv"`
+	UnknownArguments []int               `json:"unknown_arguments,omitempty"`
+	CWD              string              `json:"cwd"`
+	CWDKnown         bool                `json:"cwd_known"`
+	CWDCandidates    []string            `json:"cwd_candidates"`
+	Reachability     SegmentReachability `json:"reachability"`
+	Segment          int                 `json:"segment"`
 }
 
 // shellPayload describes a statically selected child program or argv/context.
@@ -34,15 +35,37 @@ type ShellCommandRecord struct {
 // Example: env -S exposes its split argv without executing generated shell text.
 type shellPayload struct {
 	command        string
-	argv           []string
+	argv           []shellArgument
+	arguments      []shellArgument
 	stdin          bool
 	handled        bool
 	incomplete     bool
+	noExecution    bool
+	substitutions  []shellSubstitution
 	cwd            string
 	cwdKnown       bool
 	cwdSet         bool
-	environment    []string
+	environment    []shellArgument
 	contextUnknown bool
+}
+
+// shellSourceCall separates executable arguments from its prefix environment.
+// Dynamic marks unevaluated values without discarding the concrete argv around them.
+//
+// Example: X=$RANDOM bash -s retains bash while the assignment stays unresolved.
+type shellSourceCall struct {
+	Argv          []shellArgument
+	Environment   []shellArgument
+	Dynamic       bool
+	Substitutions []shellSubstitution
+}
+
+// shellArgument retains one word's value separately from expansion uncertainty.
+//
+// Example: a dynamic commit message leaves the adjacent literal -C path known.
+type shellArgument struct {
+	Value   string
+	Literal bool
 }
 
 // inspectShellAnalysis reuses the ordinary segment classifier for executable
@@ -82,9 +105,23 @@ func inspectShellAnalysis(
 		if !inspect {
 			continue
 		}
-		payload := literalShellPayload(effect.argv, effect.command, state.cwd.cwd, state.cwd.known)
+		payload := literalShellPayload(effect.argv, effect.command, request.ShellEnvironment, state.cwd.cwd, state.cwd.known)
+		needed = needed || payload.contextUnknown
+		analysis.Incomplete = analysis.Incomplete || payload.contextUnknown
+		for _, substitution := range payload.substitutions {
+			needed = true
+			childRequest.Command = substitution.Command
+			result := Classify(childRequest)
+			if result.Decision == DecisionDeny {
+				return nil, &result
+			}
+			appendShellAnalysis(analysis, result.ShellAnalysis)
+		}
 		if payload.handled {
 			needed = true
+			if payload.noExecution {
+				continue
+			}
 			if payload.incomplete {
 				analysis.Incomplete = true
 				continue
@@ -104,12 +141,14 @@ func inspectShellAnalysis(
 				childRequest.SegmentCWDPhysicalCandidates = nil
 			}
 			if len(payload.argv) > 0 {
-				analysis.Commands = append(analysis.Commands, ShellCommandRecord{
-					Argv: append(append([]string{}, payload.environment...), payload.argv...),
-					CWD:  childRequest.SegmentCWD, CWDKnown: *childRequest.SegmentCWDKnown,
+				record := ShellCommandRecord{
+					CWD: childRequest.SegmentCWD, CWDKnown: *childRequest.SegmentCWDKnown,
 					CWDCandidates: append([]string{}, childRequest.SegmentCWDCandidates...),
 					Reachability:  state.reachability, Segment: index + 1,
-				})
+				}
+				appendShellArguments(&record, payload.environment)
+				appendShellArguments(&record, payload.argv)
+				analysis.Commands = append(analysis.Commands, record)
 				continue
 			}
 			if payload.stdin {
@@ -122,31 +161,51 @@ func inspectShellAnalysis(
 				payload.command = input.Command
 			}
 			childRequest.Command = payload.command
-			before := len(analysis.Commands)
+			childRequest.ShellEnvironment = payload.environment
 			result := Classify(childRequest)
 			if result.Decision == DecisionDeny {
 				return nil, &result
 			}
 			appendShellAnalysis(analysis, result.ShellAnalysis)
-			for record := before; record < len(analysis.Commands); record++ {
-				analysis.Commands[record].Argv = append(append([]string{}, payload.environment...), analysis.Commands[record].Argv...)
-			}
 			continue
 		}
-		argv := make([]string, 0, len(effect.argv))
-		for _, argument := range effect.argv {
-			argv = append(argv, argument.value)
+		if len(payload.arguments) == 0 {
+			for _, argument := range effect.argv {
+				// A failed AST decode supplies no proof that expansion-shaped
+				// values are literal filesystem targets.
+				literal := !strings.ContainsAny(argument.value, "$`*?[~")
+				payload.arguments = append(payload.arguments, shellArgument{Value: argument.value, Literal: literal})
+			}
+			payload.environment = request.ShellEnvironment
 		}
-		analysis.Commands = append(analysis.Commands, ShellCommandRecord{
-			Argv: argv, CWD: state.cwd.cwd, CWDKnown: state.cwd.known,
+		record := ShellCommandRecord{
+			CWD: state.cwd.cwd, CWDKnown: state.cwd.known,
 			CWDCandidates: append([]string{}, state.cwd.candidates...),
 			Reachability:  state.reachability, Segment: index + 1,
-		})
+		}
+		appendShellArguments(&record, payload.environment)
+		appendShellArguments(&record, payload.arguments)
+		analysis.Commands = append(analysis.Commands, record)
 	}
 	if !needed {
 		return nil, nil
 	}
 	return analysis, nil
+}
+
+// appendShellArguments publishes words and the indices whose values are unknown.
+//
+// Example: a dynamic -C operand remains distinguishable from a literal directory.
+func appendShellArguments(
+	record *ShellCommandRecord,
+	arguments []shellArgument,
+) {
+	for _, argument := range arguments {
+		if !argument.Literal {
+			record.UnknownArguments = append(record.UnknownArguments, len(record.Argv))
+		}
+		record.Argv = append(record.Argv, argument.Value)
+	}
 }
 
 // matchingShellInput finds the inline stdin belonging to this source segment.
@@ -207,12 +266,13 @@ func appendShellAnalysis(
 
 // literalShellPayload finds source-backed command text that a known wrapper
 // passes to a nested shell. Shell words are decoded from mvdan's syntax AST;
-// dynamic words never become guessed argv or command context.
+// dynamic values retain uncertainty beside the visible command arguments.
 //
 // Example: bash -c 'git status' selects the quoted command for recursion.
 func literalShellPayload(
 	argv []token,
 	source string,
+	environment []shellArgument,
 	cwd string,
 	cwdKnown bool,
 ) shellPayload {
@@ -225,15 +285,18 @@ func literalShellPayload(
 	}
 	base := filepath.Base(commandArgv[0].value)
 	possible := base == "eval" || base == "env" || base == "command" || base == "builtin" || base == "exec" || isShellName(base)
-	words, assignments, ok := sourceBackedShellArgv(source, argv)
+	call, ok := sourceBackedShellArgv(source, argv)
 	if !ok {
 		if possible {
 			return shellPayload{handled: true, incomplete: true}
 		}
 		return shellPayload{}
 	}
-	payload := literalShellPayloadWords(words, cwd, cwdKnown, 0)
-	payload.environment = append(assignments, payload.environment...)
+	inherited := append(append([]shellArgument{}, environment...), call.Environment...)
+	payload := literalShellPayloadWords(call.Argv, inherited, cwd, cwdKnown, 0)
+	payload.arguments = call.Argv
+	payload.contextUnknown = payload.contextUnknown || call.Dynamic
+	payload.substitutions = call.Substitutions
 	return payload
 }
 
@@ -244,39 +307,62 @@ func literalShellPayload(
 func sourceBackedShellArgv(
 	source string,
 	argv []token,
-) ([]string, []string, bool) {
+) (shellSourceCall, bool) {
 	parser := syntax.NewParser()
 	file, err := parser.Parse(strings.NewReader(source), "")
 	if err != nil || file == nil || len(file.Stmts) != 1 {
-		return nil, nil, false
+		return shellSourceCall{}, false
 	}
 	call, ok := file.Stmts[0].Cmd.(*syntax.CallExpr)
 	if !ok || call == nil {
-		return nil, nil, false
+		return shellSourceCall{}, false
 	}
-	assignments := make([]string, 0, len(call.Assigns))
+	decoded := shellSourceCall{}
+	extractor := shellSubstitutionCollector{Source: source}
+	syntax.Walk(call, extractor.Collect)
+	decoded.Substitutions = extractor.Substitutions
+	decoded.Dynamic = len(extractor.Errors) > 0
 	for _, assignment := range call.Assigns {
-		if assignment == nil || assignment.Name == nil || assignment.Value == nil {
-			return nil, nil, false
+		if assignment == nil || assignment.Name == nil {
+			return shellSourceCall{}, false
 		}
-		value, ok := literalSyntaxWord(source, assignment.Value)
-		if !ok {
-			return nil, nil, false
+		value := ""
+		literal := true
+		if assignment.Value != nil {
+			value, literal = literalSyntaxWord(source, assignment.Value)
+			if !literal {
+				masked, _, err := maskShellInputExpansions(source, assignment.Value)
+				if err != nil {
+					return shellSourceCall{}, false
+				}
+				value, _, err = shellHeredocDelimiter(masked, assignment.Value.Parts, false)
+				if err != nil {
+					return shellSourceCall{}, false
+				}
+				decoded.Dynamic = true
+			}
 		}
-		assignments = append(assignments, assignment.Name.Value+"="+value)
+		decoded.Environment = append(decoded.Environment, shellArgument{Value: assignment.Name.Value + "=" + value, Literal: literal})
 	}
-	words := make([]string, 0, len(call.Args))
 	for _, word := range call.Args {
-		value, ok := literalSyntaxWord(source, word)
-		if !ok {
-			return nil, nil, false
+		value, literal := literalSyntaxWord(source, word)
+		if !literal {
+			masked, _, err := maskShellInputExpansions(source, word)
+			if err != nil {
+				return shellSourceCall{}, false
+			}
+			value, _, err = shellHeredocDelimiter(masked, word.Parts, false)
+			if err != nil {
+				return shellSourceCall{}, false
+			}
+			decoded.Dynamic = true
 		}
-		words = append(words, value)
+		decoded.Argv = append(decoded.Argv, shellArgument{Value: value, Literal: literal})
 	}
-	if len(words)+len(assignments) != len(argv) {
-		return nil, nil, false
+	if len(decoded.Argv)+len(decoded.Environment) != len(argv) {
+		return shellSourceCall{}, false
 	}
-	return words, assignments, true
+	return decoded, true
 }
 
 // literalSyntaxWord removes quotes only after every word part is proven static.
@@ -316,9 +402,7 @@ func literalSyntaxPart(
 		}
 		return part.Value, true
 	case *syntax.SglQuoted:
-		if part.Dollar {
-			return "", false
-		}
+		// ANSI-C quoting is static; shellHeredocDelimiter decodes its escapes.
 		return part.Value, true
 	case *syntax.DblQuoted:
 		if part.Dollar {
@@ -342,7 +426,8 @@ func literalSyntaxPart(
 //
 // Example: command env bash -c selects the same payload with inherited context.
 func literalShellPayloadWords(
-	argv []string,
+	argv []shellArgument,
+	environment []shellArgument,
 	cwd string,
 	cwdKnown bool,
 	depth int,
@@ -350,21 +435,28 @@ func literalShellPayloadWords(
 	if len(argv) == 0 || depth >= maxWrapperDepth {
 		return shellPayload{}
 	}
-	name := filepath.Base(argv[0])
+	if !argv[0].Literal {
+		return shellPayload{environment: environment, contextUnknown: true}
+	}
+	name := filepath.Base(argv[0].Value)
 	switch name {
 	case "eval":
 		if len(argv) < 2 {
 			return shellPayload{handled: true, incomplete: true}
 		}
-		return shellPayload{command: strings.Join(argv[1:], " "), handled: true}
+		var parts []string
+		for _, argument := range argv[1:] {
+			parts = append(parts, argument.Value)
+		}
+		return shellPayload{command: strings.Join(parts, " "), environment: environment, handled: true}
 	case "command", "builtin", "exec":
 		index := 1
-		for index < len(argv) && strings.HasPrefix(argv[index], "-") {
-			if argv[index] == "--" {
+		for index < len(argv) && strings.HasPrefix(argv[index].Value, "-") {
+			if argv[index].Value == "--" {
 				index++
 				break
 			}
-			if name == "exec" && argv[index] == "-a" {
+			if name == "exec" && argv[index].Value == "-a" {
 				if index+1 >= len(argv) {
 					return shellPayload{handled: true, incomplete: true}
 				}
@@ -373,13 +465,15 @@ func literalShellPayloadWords(
 			}
 			index++
 		}
-		return literalShellPayloadWords(argv[index:], cwd, cwdKnown, depth+1)
+		return literalShellPayloadWords(argv[index:], environment, cwd, cwdKnown, depth+1)
 	case "env":
-		return literalEnvShellPayload(argv, cwd, cwdKnown, depth+1)
+		return literalEnvShellPayload(argv, environment, cwd, cwdKnown, depth+1)
 	case "bash", "sh", "dash", "zsh":
-		return literalShellInvocation(argv, cwd, cwdKnown)
+		payload := literalShellInvocation(argv)
+		payload.environment = environment
+		return payload
 	default:
-		return shellPayload{}
+		return shellPayload{environment: environment}
 	}
 }
 
@@ -387,7 +481,8 @@ func literalShellPayloadWords(
 //
 // Example: env -C repo -S 'sh -s' changes the directory before shell startup.
 func literalEnvShellPayload(
-	argv []string,
+	argv []shellArgument,
+	environment []shellArgument,
 	cwd string,
 	cwdKnown bool,
 	depth int,
@@ -395,18 +490,19 @@ func literalEnvShellPayload(
 	if depth >= maxWrapperDepth {
 		return shellPayload{handled: true, incomplete: true}
 	}
-	values := append([]string(nil), argv...)
+	values := append([]shellArgument(nil), argv...)
 	hasSplit := false
 	if len(values) < 2 {
 		return shellPayload{}
 	}
 	index := 1
 	splits := 0
-	var assignments []string
+	assignments := append([]shellArgument{}, environment...)
 	contextUnknown := false
-	directory, directorySet := "", false
+	directory, directorySet := shellArgument{}, false
+	nullOutput := false
 	for index < len(values) {
-		value := values[index]
+		value := values[index].Value
 		if len(value) > 2 && value[0] == '-' && value[1] != '-' {
 			// Consume short options at their actual cursor: no-operand
 			// flags leave a group remainder; value options own that remainder.
@@ -414,12 +510,13 @@ func literalEnvShellPayload(
 			switch value[1] {
 			case 'i', 'v', '0':
 				remainder = "-" + value[2:]
-			case 'C', 'S', 'u':
+			case 'C', 'S', 'u', 'a':
 				remainder = value[2:]
 			}
 			if remainder != "" {
-				values = append(append(append([]string{}, values[:index]...), value[:2], remainder), values[index+1:]...)
-				value = values[index]
+				parts := []shellArgument{{Value: value[:2], Literal: true}, {Value: remainder, Literal: values[index].Literal}}
+				values = append(append(append([]shellArgument{}, values[:index]...), parts...), values[index+1:]...)
+				value = values[index].Value
 			}
 		}
 		switch {
@@ -427,9 +524,22 @@ func literalEnvShellPayload(
 			index++
 			goto optionsDone
 		case value == "-i" || value == "--ignore-environment" || value == "-":
+			assignments = nil
 			contextUnknown = true
 			index++
-		case value == "-v" || value == "--debug" || value == "-0" || value == "--null":
+		case value == "--help" || value == "--version":
+			return shellPayload{handled: true, noExecution: true}
+		case value == "-0" || value == "--null":
+			nullOutput = true
+			index++
+		case value == "-v" || value == "--debug":
+			index++
+		case value == "-a" || value == "--argv0":
+			if index+1 >= len(values) {
+				return shellPayload{handled: true, incomplete: true}
+			}
+			index += 2
+		case strings.HasPrefix(value, "--argv0="):
 			index++
 		case value == "-S" || value == "--split-string" ||
 			strings.HasPrefix(value, "--split-string=") || strings.HasPrefix(value, "-S"):
@@ -439,22 +549,24 @@ func literalEnvShellPayload(
 				return shellPayload{handled: true, incomplete: true}
 			}
 			split, consumed := "", 1
+			splitLiteral := values[index].Literal
 			switch {
 			case value == "-S" || value == "--split-string":
 				if index+1 >= len(values) {
 					return shellPayload{handled: true, incomplete: true}
 				}
-				split, consumed = values[index+1], 2
+				split, consumed = values[index+1].Value, 2
+				splitLiteral = values[index+1].Literal
 			case strings.HasPrefix(value, "--split-string="):
 				split = strings.TrimPrefix(value, "--split-string=")
 			default:
 				split = value[2:]
 			}
-			parts, ok := splitEnvString(split)
+			parts, ok := splitEnvString(split, splitLiteral)
 			if !ok {
 				return shellPayload{handled: true, incomplete: true}
 			}
-			values = append(append(append([]string{}, values[:index]...), parts...), values[index+consumed:]...)
+			values = append(append(append([]shellArgument{}, values[:index]...), parts...), values[index+consumed:]...)
 			hasSplit = true
 			splits++
 		case value == "-C" || value == "--chdir":
@@ -464,20 +576,23 @@ func literalEnvShellPayload(
 			directory, directorySet = values[index+1], true
 			index += 2
 		case strings.HasPrefix(value, "--chdir="):
-			directory, directorySet = strings.TrimPrefix(value, "--chdir="), true
+			directory = shellArgument{Value: strings.TrimPrefix(value, "--chdir="), Literal: values[index].Literal}
+			directorySet = true
 			index++
 		case value == "-u" || value == "--unset":
 			if index+1 >= len(values) {
 				return shellPayload{handled: hasSplit, incomplete: hasSplit}
 			}
-			if isEnvironmentContextName(values[index+1]) {
+			if isEnvironmentContextName(values[index+1].Value) {
 				contextUnknown = true
 			}
+			assignments = removeShellAssignment(assignments, values[index+1])
 			index += 2
 		case strings.HasPrefix(value, "--unset="):
 			if isEnvironmentContextName(strings.TrimPrefix(value, "--unset=")) {
 				contextUnknown = true
 			}
+			assignments = removeShellAssignment(assignments, shellArgument{Value: strings.TrimPrefix(value, "--unset="), Literal: values[index].Literal})
 			index++
 		case strings.HasPrefix(value, "-"):
 			if hasSplit {
@@ -490,42 +605,66 @@ func literalEnvShellPayload(
 	}
 
 optionsDone:
+	if nullOutput {
+		// GNU env rejects --null when a command operand is supplied.
+		return shellPayload{handled: true, noExecution: true}
+	}
 	if directorySet {
 		// env stores the final -C operand, then changes directory once.
 		// Relative operands therefore resolve from the incoming directory.
-		cwd, cwdKnown = resolveShellCWD(cwd, cwdKnown, directory)
+		if directory.Literal {
+			cwd, cwdKnown = resolveShellCWD(cwd, cwdKnown, directory.Value)
+		} else {
+			cwd, cwdKnown = "", false
+		}
 	}
 	for index < len(values) {
-		name, value, ok := strings.Cut(values[index], "=")
+		name, _, ok := strings.Cut(values[index].Value, "=")
 		if !ok {
 			break
 		}
-		if isEnvironmentContextName(name) {
-			if strings.HasPrefix(name, "GIT_") {
-				assignments = append(assignments, values[index])
-			} else {
-				contextUnknown = true
-			}
+		if isEnvironmentContextName(name) && !strings.HasPrefix(name, "GIT_") {
+			contextUnknown = true
 		}
-		_ = value
+		assignments = append(assignments, values[index])
 		index++
 	}
 	if index >= len(values) {
 		return shellPayload{handled: hasSplit, incomplete: hasSplit}
 	}
-	child := literalShellPayloadWords(values[index:], cwd, cwdKnown, depth+1)
+	child := literalShellPayloadWords(values[index:], assignments, cwd, cwdKnown, depth+1)
 	if !child.handled {
-		child.argv = append([]string{}, values[index:]...)
+		child.argv = append([]shellArgument{}, values[index:]...)
 	}
 	child.handled = true
-	child.environment = append(assignments, child.environment...)
 	child.contextUnknown = child.contextUnknown || contextUnknown
-	if !child.cwdSet {
+	if directorySet && !child.cwdSet {
 		child.cwd = cwd
 		child.cwdKnown = cwdKnown
 		child.cwdSet = true
 	}
 	return child
+}
+
+// removeShellAssignment applies an env unset to the explicitly inherited values.
+//
+// Example: env -u GIT_DIR removes a prefix GIT_DIR before resolving its child.
+func removeShellAssignment(
+	assignments []shellArgument,
+	name shellArgument,
+) []shellArgument {
+	var retained []shellArgument
+	for _, assignment := range assignments {
+		if !name.Literal {
+			// An unknown unset may remove any binding. Retain its identity,
+			// but do not claim the earlier value is still the effective target.
+			assignment.Literal = false
+			retained = append(retained, assignment)
+		} else if !strings.HasPrefix(assignment.Value, name.Value+"=") {
+			retained = append(retained, assignment)
+		}
+	}
+	return retained
 }
 
 // resolveShellCWD resolves a literal chdir only from a known base or absolute path.
@@ -553,26 +692,39 @@ func resolveShellCWD(
 }
 
 // splitEnvString decodes bounded env split-string syntax without expanding values.
+// Masked dynamic spans taint only their resulting argument, not adjacent words.
 //
-// Example: quoted spaces stay in one argument; an unescaped variable is unknown.
-func splitEnvString(value string) ([]string, bool) {
-	var words []string
+// Example: git -C $? keeps the command literal and the directory unknown.
+func splitEnvString(
+	value string,
+	literal bool,
+) ([]shellArgument, bool) {
+	var words []shellArgument
 	var word strings.Builder
 	quote := byte(0)
 	started := false
+	wordLiteral := true
 	flush :=
 		// flush appends a completed word, including a deliberately empty quoted word.
 		//
 		// Example: two separators after one word append that word only once.
 		func() {
 			if started {
-				words = append(words, word.String())
+				words = append(words, shellArgument{Value: word.String(), Literal: wordLiteral})
 				word.Reset()
 				started = false
+				wordLiteral = true
 			}
 		}
 	for index := 0; index < len(value); index++ {
 		character := value[index]
+		if !literal && strings.HasPrefix(value[index:], "$?") {
+			word.WriteString("$?")
+			wordLiteral = false
+			started = true
+			index++
+			continue
+		}
 		if quote == '\'' {
 			if character == '\'' {
 				quote = 0
@@ -680,15 +832,12 @@ func isShellName(value string) bool {
 // literalShellInvocation selects inline command text or stdin from shell options.
 //
 // Example: bash -s reads stdin, while bash script.sh leaves script-file analysis separate.
-func literalShellInvocation(
-	argv []string,
-	cwd string,
-	cwdKnown bool,
-) shellPayload {
+func literalShellInvocation(argv []shellArgument) shellPayload {
 	commandMode, stdinMode := false, false
+	noExecution, interactive := false, false
 	index := 1
 	for index < len(argv) {
-		option := argv[index]
+		option := argv[index].Value
 		if option == "--" || option == "-" {
 			index++
 			break
@@ -703,6 +852,9 @@ func literalShellInvocation(
 			index += 2
 			continue
 		}
+		if option == "--help" || option == "--version" {
+			return shellPayload{handled: true, noExecution: true}
+		}
 		if strings.HasPrefix(option, "--") {
 			index++
 			continue
@@ -713,13 +865,23 @@ func literalShellInvocation(
 				commandMode = true
 			case 's':
 				stdinMode = true
+			case 'n':
+				noExecution = option[0] == '-'
+			case 'i':
+				interactive = option[0] == '-'
 			case 'o', 'O':
 				if index+1 < len(argv) {
 					index++
+					if flag == 'o' && argv[index].Value == "noexec" {
+						noExecution = option[0] == '-'
+					}
 				}
 			}
 		}
 		index++
+	}
+	if noExecution && !interactive {
+		return shellPayload{handled: true, noExecution: true}
 	}
 	// -c selects the first operand after all invocation options. An earlier
 	// -s requests stdin only when no command string is selected.
@@ -727,10 +889,10 @@ func literalShellInvocation(
 		if index >= len(argv) {
 			return shellPayload{handled: true, incomplete: true}
 		}
-		return shellPayload{command: argv[index], handled: true, cwd: cwd, cwdKnown: cwdKnown, cwdSet: true}
+		return shellPayload{command: argv[index].Value, handled: true}
 	}
-	if !stdinMode && index < len(argv) && argv[index] != "-" {
+	if !stdinMode && index < len(argv) && argv[index].Value != "-" {
 		return shellPayload{}
 	}
-	return shellPayload{stdin: true, handled: true, cwd: cwd, cwdKnown: cwdKnown, cwdSet: true}
+	return shellPayload{stdin: true, handled: true}
 }
