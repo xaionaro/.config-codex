@@ -12857,9 +12857,17 @@ def checkout_context_value_has_unpatched_effect(value):
 def checkout_detach_state(
     args: list[str],
     unknown: frozenset[int],
-) -> tuple[bool | None, bool, bool, int | None, bool, bool]:
-    """Return detach state, branch mode, start point, separator, and flags."""
+) -> tuple[bool | None, bool, bool, int | None, bool, bool, bool]:
+    """Return reference state, separator, file validity, and path-mode validity."""
     state = None
+    stage = 0
+    force = False
+    merge = -1
+    conflict_style = False
+    tracking_specified = False
+    reflog = False
+    source_seen = False
+    verified_source = False
     branch_mode = False
     orphan_mode = False
     orphan_name = None
@@ -12877,7 +12885,7 @@ def checkout_detach_state(
 
     def invalid_result():
         return (None, branch_mode or orphan_mode, branch_startpoint, separator_index,
-                pathspec_file_option, True)
+                pathspec_file_option, True, False)
 
     while index < len(args):
         value = args[index]
@@ -12922,8 +12930,12 @@ def checkout_detach_state(
                     return invalid_result()
                 if option == "--orphan":
                     orphan_name = argument
-                if option == "--conflict" and argument not in {"merge", "diff3", "zdiff3"}:
-                    return invalid_result()
+                if option == "--conflict":
+                    if argument not in {"merge", "diff3", "zdiff3"}:
+                        return invalid_result()
+                    conflict_style = True
+                    if merge == 0:
+                        merge = -1
                 orphan_mode = orphan_mode or option == "--orphan"
                 if option == "--unified":
                     unified_context_option = True
@@ -12943,8 +12955,12 @@ def checkout_detach_state(
                 return invalid_result()
             if option == "--orphan":
                 orphan_name = context_value
-            if option == "--conflict" and context_value not in {"merge", "diff3", "zdiff3"}:
-                return invalid_result()
+            if option == "--conflict":
+                if context_value not in {"merge", "diff3", "zdiff3"}:
+                    return invalid_result()
+                conflict_style = True
+                if merge == 0:
+                    merge = -1
             orphan_mode = orphan_mode or option == "--orphan"
             if option == "--unified":
                 unified_context_option = True
@@ -12987,7 +13003,17 @@ def checkout_detach_state(
                     state = True
                 elif short_option == "p":
                     patch_mode = True
-                elif short_option in {"f", "l", "m", "q", "t", "2", "3"}:
+                elif short_option in {"2", "3"}:
+                    stage = int(short_option)
+                elif short_option == "f":
+                    force = True
+                elif short_option == "m":
+                    merge = 1
+                elif short_option == "t":
+                    tracking_specified = True
+                elif short_option == "l":
+                    reflog = True
+                elif short_option == "q":
                     pass
                 else:
                     short_options_recognized = False
@@ -13001,6 +13027,19 @@ def checkout_detach_state(
             continue
         # Long option identity and attached-value validity belong to the
         # shared normalizer; retain only the effective mode reductions here.
+        if option in {"--track", "--no-track"}:
+            tracking_specified = True
+        if value in {"--ours", "--theirs"}:
+            stage = 2 if value == "--ours" else 3
+        elif value in {"--force", "--no-force"}:
+            force = value == "--force"
+        elif value in {"--merge", "--no-merge"}:
+            merge = 1 if value == "--merge" else 0
+        elif value == "--no-conflict":
+            conflict_style = False
+        if not value.startswith("-") and not source_seen:
+            source_seen = True
+            verified_source = checkout_revision(value) is True
         if value == "--no-orphan":
             orphan_mode = False
         elif value == "--no-detach":
@@ -13027,8 +13066,15 @@ def checkout_detach_state(
             return invalid_result()
     if patch_mode and pathspec_file_option:
         return invalid_result()
+    effective_merge = merge == 1 or (merge == -1 and conflict_style)
+    # Git rejects incompatible path modes before restoring any destination.
+    invalid_path_mode = (
+        sum((stage != 0, force, effective_merge)) > 1 or
+        (verified_source and (stage != 0 or effective_merge)) or
+        tracking_specified or reflog
+    )
     return (state, branch_mode or orphan_mode, branch_startpoint, separator_index,
-            pathspec_file_option, False)
+            pathspec_file_option, False, invalid_path_mode)
 
 def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str | None:
     args = git_checkout_arguments(args, "checkout", unknown)
@@ -13041,7 +13087,7 @@ def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str 
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
     (detach_state, branch_mode, branch_startpoint, separator_index,
-     pathspec_file_option, invalid) = checkout_detach_state(args, unknown)
+     pathspec_file_option, invalid, invalid_path_mode) = checkout_detach_state(args, unknown)
     if invalid or detach_state is True:
         return None
     explicit_paths = separator_index is not None
@@ -13058,6 +13104,8 @@ def checkout_detail(args: list[str], base: str, unknown: frozenset[int]) -> str 
     # the option-state parser, so a `--` consumed as an option value is not
     # mistaken for the pathspec separator.
     paths = collect_pathspecs(args, base, unknown, "checkout")
+    if not paths or invalid_path_mode:
+        return None
     for position, value in enumerate(paths):
         if position == 0 and not explicit_paths and not pathspec_file_option:
             revision = checkout_revision(value)

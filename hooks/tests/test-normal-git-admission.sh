@@ -1131,6 +1131,69 @@ run_effect_aware_git_target() {
   literal_checkout_pair 'git checkout --pathspec-from-file -- -2' line 2
   literal_checkout_pair 'git checkout --pathspec-from-file -- -3' line 3
 
+  # Effective checkout modes are validated by Git before any path restore.
+  # Invalid rows remain advisory for both destinations and preserve raw as
+  # well as semantic index state in this private runtime.
+  checkout_invalid_mode_pair() {
+    local options="$1" path command protected_before ordinary_before index_before raw_before index_path native_status
+    for path in hooks/validate-bash.sh CODEX.md; do
+      printf '%s\n' "$path" >"$REPO/--"
+      command="git checkout --pathspec-from-file -- $options"
+      protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+      ordinary_before="$(git -C "$REPO" hash-object CODEX.md)"
+      index_before="$(git -C "$REPO" ls-files --stage)"
+      index_path="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index)"
+      raw_before="$(sha256sum "$index_path")"
+      assert_allowed "$command" worker || failures=1
+      native_status=0
+      (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/mode-invalid.out" 2>&1 || native_status=$?
+      if [ "$native_status" -eq 0 ]; then
+        printf 'native-invalid checkout mode unexpectedly succeeded: %s\n' "$command" >&2
+        failures=1
+      fi
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || failures=1
+      [ "$(git -C "$REPO" hash-object CODEX.md)" = "$ordinary_before" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || failures=1
+      [ "$(sha256sum "$index_path")" = "$raw_before" ] || failures=1
+      printf 'invalid-mode native_exit=%s destination=%s full-state-preserved options=%s\n' "$native_status" "$path" "$options"
+    done
+  }
+  for options in \
+    '-2 HEAD' \
+    "-3 'HEAD^{tree}'" \
+    '-2 -f' \
+    '-3 --merge' \
+    '-2 --conflict=diff3' \
+    '--force --merge' \
+    '--merge HEAD' \
+    '--conflict=diff3 HEAD' \
+    '-l' \
+    '-l HEAD' \
+    '-t' \
+    '--track' \
+    '--no-track' \
+    '--track=direct' \
+    '--track=inherit' \
+    '--track=bogus' \
+    '--track HEAD' \
+    '--track=direct HEAD' \
+    '--track --no-track' \
+    '--no-merge --conflict=diff3 HEAD' \
+    '--merge --conflict=diff3 --no-conflict HEAD' \
+    '--force --no-force --force -2'; do
+    checkout_invalid_mode_pair "$options"
+  done
+  literal_checkout_pair 'git checkout --pathspec-from-file -- -23' line 3
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --theirs --ours' line 2
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --ours --theirs' line 3
+  literal_checkout_pair 'git checkout --pathspec-from-file -- -q -2' line 2
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --force --no-force -2' line 2
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --merge --no-merge -2' line 2
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --conflict=diff3 --no-conflict -2' line 2
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --conflict=diff3 --no-merge HEAD' line
+
   # Unknown short flags retain the target reader's validity guard; the
   # shared normalizer owns long identity. Native-invalid mode/value/conflict
   # forms remain advisory and preserve the complete tracked state.
