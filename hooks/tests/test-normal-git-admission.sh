@@ -1046,6 +1046,117 @@ run_effect_aware_git_target() {
     else failures=1; fi
   done
 
+  # The literal filename -- is a consumed value, not an option boundary.
+  # Each row checks registered protection separately from native effects in
+  # this disposable runtime, then exercises an admitted ordinary counterpart.
+  literal_checkout_pair() {
+    local command="$1" format="$2" stage="${3:-}" path mode base second third
+    local expected_hook expected_ordinary index_before hook_before native_status
+    if [ -n "$stage" ]; then
+      for path in hooks/validate-bash.sh CODEX.md; do
+        base="$(git -C "$REPO" rev-parse "HEAD:$path")"
+        if [ "$path" = hooks/validate-bash.sh ]; then
+          mode=100755
+          second="$base"
+          third="$( { git -C "$REPO" show "HEAD:$path"; printf '\n# Fixture stage three\n'; } | git -C "$REPO" hash-object -w --stdin)"
+        else
+          mode=100644
+          second="$(printf 'ordinary stage two\n' | git -C "$REPO" hash-object -w --stdin)"
+          third="$(printf 'ordinary stage three\n' | git -C "$REPO" hash-object -w --stdin)"
+        fi
+        printf '0 %040d\t%s\n%s %s 1\t%s\n%s %s 2\t%s\n%s %s 3\t%s\n' \
+          0 "$path" "$mode" "$base" "$path" "$mode" "$second" "$path" "$mode" "$third" "$path" |
+          git -C "$REPO" update-index --index-info
+      done
+      expected_hook="$(git -C "$REPO" rev-parse ":$stage:hooks/validate-bash.sh")"
+      expected_ordinary="$(git -C "$REPO" rev-parse ":$stage:CODEX.md")"
+    else
+      expected_hook="$protected_base"
+      expected_ordinary="$(git -C "$REPO" rev-parse HEAD:CODEX.md)"
+    fi
+    index_before="$(git -C "$REPO" ls-files --stage)"
+    if [ "$format" = nul ]; then
+      printf 'hooks/validate-bash.sh\0' >"$REPO/--"
+    else
+      printf '%s\n' hooks/validate-bash.sh >"$REPO/--"
+    fi
+    printf '\n# Fixture owned temporary edit\n' >>"$REPO/hooks/validate-bash.sh"
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+      "effect=overwrite target=$REPO/hooks/validate-bash.sh" || failures=1
+    # This deliberate native overwrite is confined to the disposable fixture;
+    # it does not execute an admitted production command or touch live source.
+    native_status=0
+    (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/literal-native.out" 2>&1 || native_status=$?
+    [ "$native_status" -eq 0 ] || { cat -- "$TMP_ROOT/literal-native.out" >&2; failures=1; }
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$expected_hook" ] || failures=1
+    [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || failures=1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+    printf 'literal-file protected native_exit=%s restored_hash=%s stage=%s command=%s\n' \
+      "$native_status" "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" "${stage:-0}" "$command"
+    hook_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+    if [ "$format" = nul ]; then
+      printf 'CODEX.md\0' >"$REPO/--"
+    else
+      printf '%s\n' CODEX.md >"$REPO/--"
+    fi
+    printf 'ordinary changed\n' >"$REPO/CODEX.md"
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; bash -c "$command") || failures=1
+      [ "$(git -C "$REPO" hash-object CODEX.md)" = "$expected_ordinary" ] || failures=1
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$hook_before" ] || failures=1
+      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      printf 'literal-file ordinary restored_hash=%s index/head/branch/protected-preserved command=%s\n' \
+        "$(git -C "$REPO" hash-object CODEX.md)" "$command"
+    else failures=1; fi
+    if [ -n "$stage" ]; then
+      git -C "$REPO" restore --source=HEAD --staged --worktree -- hooks/validate-bash.sh CODEX.md
+    fi
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+    git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+  }
+  for command in \
+    'git checkout --pathspec-from-file --' \
+    'git checkout --pathspec-from-file -- --no-pathspec-file-nul' \
+    'git checkout --pathspec-from-file -- --pathspec-file-nul --no-pathspec-file-nul' \
+    'git checkout --pathspec-from-file -- HEAD' \
+    'git checkout --pathspec-from-file -- HEAD --' \
+    "git checkout --pathspec-from-file -- 'HEAD^{tree}'" \
+    'git checkout HEAD --pathspec-from-file --'; do
+    literal_checkout_pair "$command" line
+  done
+  literal_checkout_pair 'git checkout --pathspec-from-file -- --pathspec-file-nul --no-pathspec-file-nul --pathspec-file-nul' nul
+  literal_checkout_pair 'git checkout --pathspec-from-file -- -2' line 2
+  literal_checkout_pair 'git checkout --pathspec-from-file -- -3' line 3
+
+  # Unknown short flags retain the target reader's validity guard; the
+  # shared normalizer owns long identity. Native-invalid mode/value/conflict
+  # forms remain advisory and preserve the complete tracked state.
+  printf '%s\n' hooks/validate-bash.sh >"$REPO/--"
+  for command in \
+    'git checkout --pathspec-from-file -- --bogus' \
+    'git checkout --pathspec-from-file -- -z' \
+    'git checkout --pathspec-from-file -- --patch' \
+    'git checkout --pathspec-from-file -- --detach=bogus' \
+    'git checkout --pathspec-from-file -- --unified=bogus' \
+    'git checkout --pathspec-from-file -- --unified=1' \
+    'git checkout --pathspec-from-file -- --conflict=bogus' \
+    'git checkout --pathspec-from-file -- CODEX.md' \
+    'git checkout --pathspec-from-file -- HEAD -- CODEX.md'; do
+    if assert_allowed "$command" worker; then
+      if (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/literal-invalid.out" 2>&1; then
+        printf 'literal-file native-invalid control unexpectedly succeeded: %s\n' "$command" >&2
+        failures=1
+      fi
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || failures=1
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || failures=1
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || failures=1
+      git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet || failures=1
+    else failures=1; fi
+  done
+
   # Git's negative prepass uses reverse candidates. Standard wildcard
   # mappings still permit guessing even with a matching source negative.
   git -C "$REPO" config --add remote.origin.fetch '^refs/heads/wip/*'

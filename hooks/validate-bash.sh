@@ -12872,7 +12872,6 @@ def checkout_detach_state(
     pathspec_file_option = False
     pathspec_file_empty = False
     pathspec_dash_consumed = False
-    pathspec_dash_trailing_path = False
     separator_index = None
     index = 0
 
@@ -12892,7 +12891,6 @@ def checkout_detach_state(
             pathspec_file_option = False
             pathspec_file_empty = False
             pathspec_dash_consumed = False
-            pathspec_dash_trailing_path = False
             index += 1
             continue
         is_pathspec_file, pathspec_file = pathspec_from_file_argument(value)
@@ -12902,7 +12900,6 @@ def checkout_detach_state(
             pathspec_file_option = True
             pathspec_file_empty = pathspec_file == ""
             pathspec_dash_consumed = False
-            pathspec_dash_trailing_path = False
             # This option consumes the following token even when it starts
             # with a dash.  Do not mistake a pathspec filename named
             # --detach for a later detach toggle.
@@ -12990,7 +12987,7 @@ def checkout_detach_state(
                     state = True
                 elif short_option == "p":
                     patch_mode = True
-                elif short_option in {"f", "l", "m", "q", "t"}:
+                elif short_option in {"f", "l", "m", "q", "t", "2", "3"}:
                     pass
                 else:
                     short_options_recognized = False
@@ -13002,74 +12999,26 @@ def checkout_detach_state(
                 return invalid_result()
             index += 1
             continue
-        if value.startswith("--"):
-            long_option_recognized = False
-            if option.startswith("--no-"):
-                suffix = option[len("--no-"):]
-                if option == "--no-orphan" and not separator:
-                    orphan_mode = False
-                    long_option_recognized = True
-                elif suffix and "detach".startswith(suffix):
-                    if separator:
-                        return invalid_result()
-                    state = False
-                    long_option_recognized = True
-                elif len(suffix) >= len("patc") and "patch".startswith(suffix):
-                    if separator:
-                        return invalid_result()
-                    patch_mode = False
-                    long_option_recognized = True
-                elif suffix and len(suffix) < len("patc") and "patch".startswith(suffix):
-                    return invalid_result()
-                elif option in {
-                    "--no-force", "--no-guess", "--no-ignore-other-worktrees",
-                    "--no-ignore-skip-worktree-bits", "--no-merge",
-                    "--no-overlay", "--no-overwrite-ignore", "--no-progress",
-                    "--no-quiet", "--no-recurse-submodules", "--no-track",
-                } and not separator:
-                    long_option_recognized = True
-            elif option != "--" and "--detach".startswith(option):
-                if separator:
-                    return invalid_result()
-                state = True
-                long_option_recognized = True
-            elif len(option) >= len("--patc") and "--patch".startswith(option):
-                if separator:
-                    return invalid_result()
-                patch_mode = True
-                long_option_recognized = True
-            elif len(option) < len("--patc") and "--patch".startswith(option):
-                return invalid_result()
-            elif option in {
-                "--force", "--guess", "--ignore-other-worktrees",
-                "--ignore-skip-worktree-bits", "--merge", "--no-force",
-                "--no-guess", "--no-ignore-other-worktrees",
-                "--no-ignore-skip-worktree-bits", "--no-merge",
-                "--no-overlay", "--no-overwrite-ignore", "--no-progress",
-                "--no-quiet", "--no-recurse-submodules", "--no-track",
-                "--ours", "--overlay", "--overwrite-ignore", "--progress",
-                "--quiet", "--recurse-submodules", "--theirs", "--track",
-                "--pathspec-file-nul",
-            } and not separator:
-                long_option_recognized = True
-            if pathspec_dash_consumed and not long_option_recognized:
-                # After a literal `--` has been consumed as the pathspec
-                # filename, an unrecognized option is Git-invalid rather
-                # than a second protected pathspec.
-                return invalid_result()
+        # Long option identity and attached-value validity belong to the
+        # shared normalizer; retain only the effective mode reductions here.
+        if value == "--no-orphan":
+            orphan_mode = False
+        elif value == "--no-detach":
+            state = False
+        elif value == "--no-patch":
+            patch_mode = False
+        elif value == "--detach":
+            state = True
+        elif value == "--patch":
+            patch_mode = True
         index += 1
-        if pathspec_dash_consumed and not value.startswith("-"):
-            # Once a literal `--` was consumed as the pathspec filename,
-            # another positional token is a second pathspec argument.  Git
-            # rejects that combination before touching the worktree.
-            pathspec_dash_trailing_path = True
         if (branch_mode or orphan_mode) and not value.startswith("-") and checkout_revision(value) is True:
             branch_startpoint = True
     # OPTION_STRING orphan names are validated only if they survive
     # cancellation; callback-validated option values still reject above.
     if orphan_mode and orphan_name is not None and orphan_name.startswith("-"):
         return invalid_result()
-    if pathspec_file_empty or pathspec_dash_trailing_path:
+    if pathspec_file_empty:
         return invalid_result()
     if not patch_mode:
         if unified_context_option and not unified_context_unpatched_effect:
