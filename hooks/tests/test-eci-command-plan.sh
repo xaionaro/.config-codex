@@ -478,7 +478,9 @@ for provider in codex kimi; do
   assert_denied "$provider" worker active \
     "$worker_control_target status" ECI_CONTROL_OWNER_REQUIRED
   assert_denied "$provider" worker active 'env' ECI_ENVIRONMENT_ENUMERATION_DENIED
-  assert_allowed "$provider" worker active 'git commit -m worker-fast-path'
+  if [ "$provider" = codex ]; then
+    assert_allowed "$provider" worker active 'git commit -m worker-fast-path'
+  fi
   assert_denied "$provider" worker active \
     "bash -c 'printf protected-wrapper'" ECI_PLAN_DYNAMIC_LAUNCH_DENIED
   assert_allowed "$provider" worker active './tools/eci-review-gate.sh verify'

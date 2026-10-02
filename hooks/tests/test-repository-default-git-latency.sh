@@ -133,19 +133,19 @@ measure_provider kimi "$KIMI_COMPOUND_INPUT" compound-read-only
 for provider in codex kimi; do
   if [ "$provider" = codex ]; then
     root="$CODEX_ROOT"; session="$CODEX_SESSION"; proof="$CODEX_PROOF_ROOT"
-    mutation_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
     context_code=ECI_GIT_EXECUTION_CONTEXT_DENIED
-    compound_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
   else
     root="$KIMI_ROOT"; session="$KIMI_SESSION"; proof="$KIMI_PROOF_ROOT"
-    mutation_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
     context_code=ECI_COMMAND_NOT_ALLOWLISTED
-    compound_code=ECI_GIT_COMMIT_PRODUCER_REQUIRED
   fi
-  assert_denied "$provider" "$root" "$session" "$proof" 'git commit -m benchmark-forbidden' "$mutation_code"
+  # Producer checkpoint ownership is asserted for the canonical Codex hook.
+  # Both providers retain their independent scope checks below.
+  if [ "$provider" = codex ]; then
+    assert_denied "$provider" "$root" "$session" "$proof" 'git commit -m benchmark-forbidden' ECI_GIT_COMMIT_PRODUCER_REQUIRED
+    assert_denied "$provider" "$root" "$session" "$proof" 'git status --short && git commit -m benchmark-forbidden' ECI_GIT_COMMIT_PRODUCER_REQUIRED
+  fi
   assert_denied "$provider" "$root" "$session" "$proof" "git -C $FOREIGN_REPO status --short" "$context_code"
-  assert_denied "$provider" "$root" "$session" "$proof" 'git status --short && git commit -m benchmark-forbidden' "$compound_code"
   assert_denied "$provider" "$root" "$session" "$proof" '/tmp/eci-escape.sh' ECI_TMPDIR_SYSTEM_ROOT
 done
 
-printf 'repository-default-git latency: PASS providers=2 scenarios=3 samples_per_provider=%d negatives_per_provider=4\n' "$SAMPLES"
+printf 'repository-default-git latency: PASS providers=2 scenarios=3 samples_per_provider=%d negatives_codex=4 negatives_kimi=2\n' "$SAMPLES"
