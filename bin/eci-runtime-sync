@@ -71,6 +71,8 @@ PLANNER_RECEIPT_NAME='.eci-command-plan.provenance'
 PLANNER_LOCK_NAME='.eci-command-plan.publish.lock'
 PLANNER_KNOWN_STALE_ROOT='hooks'
 PLANNER_SNAPSHOT_ATTEMPTS=3
+PLANNER_SOURCE_FILES=(go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go)
+readonly -a PLANNER_SOURCE_FILES
 readonly PLANNER_GO PLANNER_GOROOT PLANNER_GO_TOOL_DIR PLANNER_TARGET PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME \
   PLANNER_KNOWN_STALE_ROOT PLANNER_SNAPSHOT_ATTEMPTS
 
@@ -158,7 +160,7 @@ planner_validate_source_layout() {
   while IFS= read -r -d '' entry; do
     name="${entry##*/}"
     case "$name" in
-      go.mod|main.go|classifier.go|*_test.go)
+      go.mod|go.sum|main.go|classifier.go|shell_analysis.go|shell_projection.go|*_test.go)
         planner_validate_source_file "$entry" "$uid"
         ;;
       eci-command-plan)
@@ -194,7 +196,7 @@ planner_cleanup_known_stale_nested_hooks() {
     return 0
   fi
   # A name alone is not enough evidence that a directory is disposable. It
-  # cannot affect the three selected Go build inputs, so retain it and report
+  # cannot affect the selected Go build inputs, so retain it and report
   # it rather than deleting ordinary source during maintenance.
   printf 'ECI runtime maintenance advisory: ignored non-build planner residue: %s\n' "$stale_root" >&2
 }
@@ -232,7 +234,7 @@ planner_hash_source_inputs() {
 
   source_dir="$(planner_source_dir "$source_root")"
   planner_validate_go_mod "$source_dir/go.mod"
-  for source_file in go.mod main.go classifier.go; do
+  for source_file in "${PLANNER_SOURCE_FILES[@]}"; do
     source_path="$source_dir/$source_file"
     planner_validate_source_file "$source_path" "$uid"
     source_hash="$(hash_file "$source_path")" ||
@@ -275,7 +277,7 @@ planner_snapshot_source_inputs() {
   local source_hash snapshot_hash stable attempt
   local -A before_hashes=() after_hashes=()
 
-  # Copying three live files one-by-one can otherwise produce a source mix
+  # Copying live files one-by-one can otherwise produce a source mix
   # that never existed.  Take a bounded coherent snapshot: source hashes must
   # be unchanged for the whole copy and each frozen file must match its
   # corresponding pre-copy hash.  Churn is a maintenance diagnostic and is
@@ -284,7 +286,7 @@ planner_snapshot_source_inputs() {
     stable=true
     before_hashes=()
     after_hashes=()
-    for source_file in go.mod main.go classifier.go; do
+    for source_file in "${PLANNER_SOURCE_FILES[@]}"; do
       source_path="$source_dir/$source_file"
       if [ ! -f "$source_path" ] || [ -L "$source_path" ] ||
         ! source_hash="$(hash_file "$source_path" 2>/dev/null)"; then
@@ -295,7 +297,7 @@ planner_snapshot_source_inputs() {
     done
 
     if [ "$stable" = true ]; then
-      for source_file in go.mod main.go classifier.go; do
+      for source_file in "${PLANNER_SOURCE_FILES[@]}"; do
         source_path="$source_dir/$source_file"
         snapshot_path="$transaction/source/$source_file"
         /usr/bin/rm -f -- "$snapshot_path"
@@ -321,7 +323,7 @@ planner_snapshot_source_inputs() {
         printf '%s\n' '// runtime-sync one-shot snapshot mutation probe' \
           >>"$source_dir/classifier.go"
       fi
-      for source_file in go.mod main.go classifier.go; do
+      for source_file in "${PLANNER_SOURCE_FILES[@]}"; do
         source_path="$source_dir/$source_file"
         if ! after_hashes["$source_file"]="$(hash_file "$source_path" 2>/dev/null)" ||
           [ "${after_hashes[$source_file]}" != "${before_hashes[$source_file]}" ]; then
@@ -332,7 +334,7 @@ planner_snapshot_source_inputs() {
     fi
 
     if [ "$stable" = true ]; then
-      for source_file in go.mod main.go classifier.go; do
+      for source_file in "${PLANNER_SOURCE_FILES[@]}"; do
         planner_source_hashes["$source_file"]="${before_hashes[$source_file]}"
       done
       return 0
@@ -548,7 +550,7 @@ planner_collect_binary_metadata() {
 }
 
 planner_write_receipt() {
-  local receipt="$1"
+  local receipt="$1" source_file
 
   if ! {
     printf 'contract\tclosed-go-build/v1\n'
@@ -559,9 +561,9 @@ planner_write_receipt() {
     printf 'go_tool_path\t%s\n' "$PLANNER_GO_TOOL_DIR"
     printf 'go_tool_sha256\t%s\n' "$planner_toolchain_sha256"
     printf 'target\t%s\n' "$PLANNER_TARGET"
-    printf 'source_go.mod_sha256\t%s\n' "${planner_source_hashes[go.mod]}"
-    printf 'source_main.go_sha256\t%s\n' "${planner_source_hashes[main.go]}"
-    printf 'source_classifier.go_sha256\t%s\n' "${planner_source_hashes[classifier.go]}"
+    for source_file in "${PLANNER_SOURCE_FILES[@]}"; do
+      printf 'source_%s_sha256\t%s\n' "$source_file" "${planner_source_hashes[$source_file]}"
+    done
     printf 'binary_sha256\t%s\n' "$planner_binary_sha256"
     printf 'binary_size\t%s\n' "$planner_binary_size"
     printf 'binary_mode\t755\n'

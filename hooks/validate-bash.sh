@@ -1334,7 +1334,7 @@ codex_plan_provenance_is_current() {
   local selected_root="${HOME:?HOME must be set}/.codex"
   local root_real planner_dir planner_dir_real binary receipt binary_mtime source_mtime
   local recorded_binary_sha actual_binary_sha
-  local -a mtimes=()
+  local -a mtimes=() sources=()
 
   # Select the planner authority lexically from HOME.  Both registered
   # provider callbacks consume this canonical source, so a Kimi callback does
@@ -1355,8 +1355,9 @@ codex_plan_provenance_is_current() {
   fi
 
   binary="$planner_dir/eci-command-plan"
-  for source in go.mod main.go classifier.go; do
-    [ -f "$planner_dir/$source" ] && [ ! -L "$planner_dir/$source" ] || {
+  sources=("$planner_dir/go.mod" "$planner_dir/go.sum" "$planner_dir"/*.go)
+  for source in "${sources[@]}"; do
+    [ -f "$source" ] && [ ! -L "$source" ] || {
       codex_plan_provenance_fail "planner source file is missing or unsafe: $source"
       return 1
     }
@@ -1386,12 +1387,11 @@ codex_plan_provenance_is_current() {
   # Source freshness is a cheap advisory selector.  It keeps an older binary
   # from silently classifying a callback after a local source edit, while a
   # missing/malformed receipt never blocks ordinary work.
-  if ! mapfile -t mtimes < <(/usr/bin/stat -c '%Y' -- "$binary" \
-      "$planner_dir/go.mod" "$planner_dir/main.go" "$planner_dir/classifier.go" 2>/dev/null); then
+  if ! mapfile -t mtimes < <(/usr/bin/stat -c '%Y' -- "$binary" "${sources[@]}" 2>/dev/null); then
     codex_plan_provenance_fail 'planner freshness metadata is unavailable'
     return 1
   fi
-  [ "${#mtimes[@]}" -eq 4 ] || {
+  [ "${#mtimes[@]}" -eq "$(( ${#sources[@]} + 1 ))" ] || {
     codex_plan_provenance_fail 'planner freshness metadata is malformed'
     return 1
   }
@@ -1541,6 +1541,31 @@ if [ "$CODEX_PLAN_TRANSPARENT_FALLBACK" != true ] &&
   ! planner_response_matches_status "$plan_status" "$plan_output"; then
   planner_mark_transparent_fallback
 fi
+
+# The optional shell projection carries argv/context separately from the raw,
+# lossless plan. Inert heredoc bytes must never be fed back into shlex by an
+# effect reader. Missing analysis remains advisory, as with the ordinary plan.
+PLAN_SHELL_ANALYSIS=null
+PLAN_SHELL_ANALYSIS_COMMAND="$command"
+if jq -e '
+    .shell_analysis | type == "object" and
+    (.commands | type == "array" and all(.[];
+      (.argv | type == "array" and all(.[]; type == "string")) and
+      (.cwd | type == "string") and (.cwd_known | type == "boolean") and
+      (.cwd_candidates | type == "array" and all(.[]; type == "string")) and
+      (.reachability == "reachable" or .reachability == "unknown" or .reachability == "unreachable") and
+      (.segment | type == "number")))
+  ' <<<"${plan_output:-}" >/dev/null 2>&1; then
+  PLAN_SHELL_ANALYSIS="$(jq -c '.shell_analysis' <<<"$plan_output")"
+fi
+
+planner_shell_analysis_for() {
+  if [ "$1" = "$PLAN_SHELL_ANALYSIS_COMMAND" ]; then
+    printf '%s\n' "$PLAN_SHELL_ANALYSIS"
+  else
+    printf 'null\n'
+  fi
+}
 
 # A current planner result normally selects the lifecycle adapter. During a
 # source-build gap the adapter itself remains the existing bounded parser, so
@@ -6687,7 +6712,8 @@ PY
 }
 
 command_invokes_git_branch_remote_mutation() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$(planner_shell_analysis_for "$1")" <<'PY'
+import json
 import os
 import hashlib
 import re
@@ -6805,8 +6831,13 @@ def inspect(segment, depth=0):
         return True
     return False
 
-parsed = tokenize(text)
-found = parsed is not None and any(inspect(part) for part in split(parsed))
+analysis = json.loads(sys.argv[2])
+if analysis is not None:
+    found = any(inspect(record["argv"]) for record in analysis["commands"]
+                if record["reachability"] != "unreachable")
+else:
+    parsed = tokenize(text)
+    found = parsed is not None and any(inspect(part) for part in split(parsed))
 sys.exit(0 if found else 1)
 PY
 }
@@ -7982,7 +8013,8 @@ PY
 }
 
 command_invokes_eci_acceptance_mutation() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$(planner_shell_analysis_for "$1")" <<'PY'
+import json
 import os
 import re
 import shlex
@@ -8122,10 +8154,14 @@ def inspect(segment, depth=0):
         return any(os.path.basename(token) == "git" for token in segment[index + 1:])
     return False
 
-parsed = tokenize(text)
-# Unparsed text, including quotes inside a heredoc body, does not establish
-# a Git mutation. Only a resolved command effect belongs to this gate.
-found = parsed is not None and any(inspect(part) for part in split(parsed))
+analysis = json.loads(sys.argv[2])
+if analysis is not None:
+    found = any(inspect(record["argv"]) for record in analysis["commands"]
+                if record["reachability"] != "unreachable")
+else:
+    parsed = tokenize(text)
+    # Unparsed text does not establish a Git mutation.
+    found = parsed is not None and any(inspect(part) for part in split(parsed))
 sys.exit(0 if found else 1)
 PY
 }
@@ -10337,7 +10373,7 @@ git_mutation_specs() {
   # ordinary repository work into a denial.
   local command_text="${1:-$command}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
   local worker_mode="${hook_is_subagent:-false}"
-  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" <<'PY'
+  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" "$(planner_shell_analysis_for "$command_text")" <<'PY'
 import json
 import os
 import re
@@ -10877,34 +10913,39 @@ def segment_spec(tokens, segment_index):
     return None
 
 
-try:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-except ValueError:
-    raise SystemExit(0)
-
-if not tokens:
-    raise SystemExit(0)
-
-# Shell topology is not a permission boundary. Inspect independently visible
-# command segments even when they contain a redirection or conditional; only
-# an unresolved command child remains advisory.
-segments = []
-current = []
-for token in tokens + [";"]:
-    if token in SEPARATORS:
-        if current:
-            segments.append(current)
-            current = []
-    else:
-        current.append(token)
-
-for segment_index, segment in enumerate(segments, 1):
-    spec = segment_spec(segment, segment_index)
-    if spec:
-        print(spec[0])
-        print(spec[1])
+analysis = json.loads(sys.argv[5])
+if analysis is not None:
+    for record in analysis["commands"]:
+        if record["reachability"] == "unreachable":
+            continue
+        directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
+        # An absolute Git context can resolve even when the incoming CWD
+        # cannot. Never substitute the callback directory for an unknown one.
+        for cwd in directories or [""]:
+            spec = segment_spec(record["argv"], record["segment"])
+            if spec and os.path.isabs(spec[1]):
+                print(spec[0])
+                print(spec[1])
+else:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        raise SystemExit(0)
+    segments, current = [], []
+    for token in tokens + [";"]:
+        if token in SEPARATORS:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    for segment_index, segment in enumerate(segments, 1):
+        spec = segment_spec(segment, segment_index)
+        if spec:
+            print(spec[0])
+            print(spec[1])
 PY
 }
 
@@ -10996,7 +11037,7 @@ git_mutation_cross_scope_detail() {
 git_mutation_broad_effect_detail() {
   local target_repo="$1" command_text="${2:-$command}" command_cwd="${3:-$cwd}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
 
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_replays" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$timeout_replays" "$(planner_shell_analysis_for "$command_text")" <<'PY'
 import json
 import os
 import re
@@ -11008,30 +11049,35 @@ try:
     timeout_replays = json.loads(sys.argv[4])
 except (IndexError, TypeError, ValueError):
     raise SystemExit(1)
-try:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-except ValueError:
-    raise SystemExit(1)
-
 separators = {";", "&", "&&", "|", "||"}
 opaque = {"(", ")", ">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
 assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-if any(token in opaque for token in tokens):
-    raise SystemExit(1)
-
 repo = os.path.realpath(repo)
 cwd = os.path.realpath(os.path.abspath(cwd))
-
-segments, current = [], []
-for token in tokens + [";"]:
-    if token in separators:
-        if current:
-            segments.append(current)
-            current = []
-    else:
-        current.append(token)
+analysis = json.loads(sys.argv[5])
+if analysis is not None:
+    records = [record for record in analysis["commands"]
+               if record["reachability"] != "unreachable"]
+else:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        raise SystemExit(1)
+    if any(token in opaque for token in tokens):
+        raise SystemExit(1)
+    segments, current = [], []
+    for token in tokens + [";"]:
+        if token in separators:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    records = [{"argv": segment, "segment": index, "cwd": cwd,
+                "cwd_known": True, "cwd_candidates": []}
+               for index, segment in enumerate(segments, 1)]
 
 def resolve(path, base):
     path = os.path.expanduser(path)
@@ -11189,15 +11235,17 @@ def broad_reset(segment, segment_index):
         return "reset-index"
     return False
 
-for segment_index, segment in enumerate(segments, 1):
-    effect = broad_reset(segment, segment_index)
-    if effect:
-        print("effect=%s target=%s" % (effect, repo))
-        raise SystemExit(0)
-    selector = git_add_whole_worktree_selector(segment, segment_index)
-    if selector:
-        print("effect=whole-worktree-staging target=%s selector=%s" % (repo, selector))
-        raise SystemExit(0)
+for record in records:
+    directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
+    for cwd in directories:
+        effect = broad_reset(record["argv"], record["segment"])
+        if effect:
+            print("effect=%s target=%s" % (effect, repo))
+            raise SystemExit(0)
+        selector = git_add_whole_worktree_selector(record["argv"], record["segment"])
+        if selector:
+            print("effect=whole-worktree-staging target=%s selector=%s" % (repo, selector))
+            raise SystemExit(0)
 raise SystemExit(1)
 PY
 }
@@ -11212,20 +11260,16 @@ git_protected_worktree_target_detail() {
   # deliberately follows a concrete Git child through ordinary launch
   # wrappers, and it uses lexical worktree paths: a symlink alias is a
   # different Git entry from the live control file it may point at.
-  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$include_index" <<'PY'
+  python3 - "$command_text" "$target_repo" "$command_cwd" "$configured_home" "$HOOK_DIR" "$include_index" "$(planner_shell_analysis_for "$command_text")" <<'PY'
 import glob
+import json
 import os
 import re
 import shlex
 import sys
 
-command, target_repo, command_cwd, configured_home, hook_dir, include_index = sys.argv[1:]
-try:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-except ValueError:
-    raise SystemExit(1)
+command, target_repo, command_cwd, configured_home, hook_dir, include_index = sys.argv[1:7]
+analysis = json.loads(sys.argv[7])
 
 SEPARATORS = {";", "&", "&&", "|", "||"}
 REDIRECTIONS = {">", ">>", "<", "<<", ">|", "<<<", "<&", ">&"}
@@ -12088,11 +12132,28 @@ def inspect_segment(segment, depth=0, base_override=None):
         return checkout_detail(args, base)
     return None
 
-for segment in split_segments(tokens):
-    detail = inspect_segment(segment)
-    if detail:
-        print(detail)
-        raise SystemExit(0)
+if analysis is not None:
+    for record in analysis["commands"]:
+        if record["reachability"] == "unreachable":
+            continue
+        directories = [record["cwd"]] if record["cwd_known"] else record["cwd_candidates"]
+        for directory in directories:
+            detail = inspect_segment(record["argv"], base_override=directory)
+            if detail:
+                print(detail)
+                raise SystemExit(0)
+else:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        raise SystemExit(1)
+    for segment in split_segments(tokens):
+        detail = inspect_segment(segment)
+        if detail:
+            print(detail)
+            raise SystemExit(0)
 raise SystemExit(1)
 PY
 }
@@ -12232,6 +12293,17 @@ maybe_enforce_git_mutation_gate() {
     *git*|*reset*|*worktree*) enforce_git_mutation_gate ;;
   esac
 }
+
+# Projected records have already separated executable statements from body
+# data. Resolve their Git effects before any generic allow route can exit.
+if [ "$PLAN_SHELL_ANALYSIS" != null ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+  enforce_git_mutation_gate
+  if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
+    deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" \
+      "ECI worker boundary denied a resolved Git history, explicit reference, or patch-application mutation in shell command analysis" \
+      "route this history, reference, or patch-application operation through the main/orchestrator"
+  fi
+fi
 
 detect_uncapped_make() {
   [ -n "${command:-}" ] || return 0

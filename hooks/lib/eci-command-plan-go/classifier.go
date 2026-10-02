@@ -252,8 +252,10 @@ type Request struct {
 	// CWDKnown is derived by Classify from the verified callback or segment
 	// directory. The Bash adapter authenticates SegmentCWDKnown before
 	// forwarding that internal handoff to a recursive planner callback.
-	CWDKnown   bool `json:"-"`
-	CWDUnknown bool `json:"-"`
+	CWDKnown             bool `json:"-"`
+	CWDUnknown           bool `json:"-"`
+	CollectShellCommands bool `json:"-"`
+	ShellDepth           int  `json:"-"`
 }
 
 // TimeoutReplayDisposition describes whether a direct timeout prefix was
@@ -414,6 +416,7 @@ type Result struct {
 	TimeoutLaunches      []TimeoutLaunch     `json:"timeout_launches,omitempty"`
 	TimeoutReplays       []TimeoutReplay     `json:"timeout_replays,omitempty"`
 	Plan                 *PlanTopology       `json:"plan,omitempty"`
+	ShellAnalysis        *ShellAnalysis      `json:"shell_analysis,omitempty"`
 }
 
 type token struct {
@@ -465,6 +468,7 @@ type segment struct {
 	redirects       []outputRedirect
 	inputRedirects  []token
 	offset          int
+	sourceStart     int
 	command         string
 	groupOpens      []compoundGroupKind
 	groupCloses     []compoundGroupKind
@@ -472,8 +476,10 @@ type segment struct {
 }
 
 type plan struct {
-	segments  []segment
-	operators []string
+	segments             []segment
+	operators            []string
+	projection           *shellProjection
+	projectionIncomplete bool
 }
 
 // compoundPlanTopology copies the lossless ordered parser output for an
@@ -485,7 +491,7 @@ func compoundPlanTopology(
 	parsed plan,
 	segmentStates []compoundSegmentState,
 ) *PlanTopology {
-	if len(parsed.operators) == 0 {
+	if parsed.projection != nil || len(parsed.operators) == 0 {
 		return nil
 	}
 	segments := make([]PlanSegment, 0, len(parsed.segments))
@@ -939,7 +945,13 @@ func Classify(request Request) Result {
 		}
 	}
 
-	parsed, err := parsePlan(request.Command)
+	parsed, err := parseShellPlan(request.Command, request.CollectShellCommands)
+	if err != nil && parsed.projection != nil && len(parsed.segments) > 0 {
+		// Retain completed source-grounded commands from a partial projection.
+		// Parser uncertainty is advisory, not proof of another executable.
+		parsed.projectionIncomplete = true
+		err = nil
+	}
 	if err != nil {
 		if err.diagnostic.Code == CodePlanLimitDenied {
 			// Parser capacity is not a command boundary. An active callback
@@ -971,6 +983,10 @@ func Classify(request Request) Result {
 
 	wholeSingleSegmentPlan := len(parsed.segments) == 1 && len(parsed.operators) == 0
 	segmentStates := compoundSegmentStates(request, parsed)
+	shellAnalysis, shellDenial := inspectShellAnalysis(request, parsed, segmentStates)
+	if shellDenial != nil {
+		return *shellDenial
+	}
 	var timeoutLaunches []TimeoutLaunch
 	var timeoutReplays []TimeoutReplay
 	decision := DecisionAllow
@@ -1058,15 +1074,27 @@ func Classify(request Request) Result {
 	}
 	gitCloneLaunch := gitCloneSourceAcquisitionLaunchForPlan(request, parsed, decision, timeoutLaunches)
 	capabilities := capabilitiesForPlan(request, parsed, decision, gitCloneLaunch, timeoutLaunches)
+	topology := compoundPlanTopology(parsed, segmentStates)
+	deferredRoute := deferredRouteForPlan(request, parsed, decision, capabilities)
+	if shellAnalysis != nil {
+		// Provider effect readers consume typed argv/context records. The raw
+		// topology stays separate and cannot transport projected multiline text.
+		decision = DecisionDefer
+		capabilities = nil
+		gitCloneLaunch = nil
+		topology = nil
+		deferredRoute = ""
+	}
 	return Result{
 		Decision:             decision,
 		Capabilities:         capabilities,
 		GitCloneLaunch:       gitCloneLaunch,
-		DeferredRoute:        deferredRouteForPlan(request, parsed, decision, capabilities),
+		DeferredRoute:        deferredRoute,
 		LedgerRedirectAppend: ledgerRedirectAppend,
 		TimeoutLaunches:      timeoutLaunches,
 		TimeoutReplays:       timeoutReplays,
-		Plan:                 compoundPlanTopology(parsed, segmentStates),
+		Plan:                 topology,
+		ShellAnalysis:        shellAnalysis,
 	}
 }
 
@@ -1375,6 +1403,17 @@ func knownHomeExpansion(command string, offset int) (string, int, bool) {
 }
 
 func parsePlan(command string) (plan, *planError) {
+	return parseShellPlan(command, false)
+}
+
+// parseShellPlan preserves the bounded plan parser while separating heredoc
+// data and, for recursive children, executable substitution expansions.
+//
+// Example: a heredoc child containing another $(...) retains both commands.
+func parseShellPlan(
+	command string,
+	substitutions bool,
+) (plan, *planError) {
 	if !utf8.ValidString(command) {
 		return plan{}, newPlanError(
 			CodePlanSyntaxDenied,
@@ -1413,6 +1452,14 @@ func parsePlan(command string) (plan, *planError) {
 	}
 
 	var parsed plan
+	if substitutions || strings.Contains(command, "<<") {
+		projection, projectionErr := projectShellCommands(command, substitutions)
+		if projection.Changed {
+			parsed.projection = &projection
+			parsed.projectionIncomplete = projectionErr != nil
+			command = projection.Command
+		}
+	}
 	var current []token
 	var redirects []outputRedirect
 	var inputRedirects []token
@@ -1437,7 +1484,7 @@ func parsePlan(command string) (plan, *planError) {
 			return nil
 		}
 		argument := value.String()
-		if len(argument) > maxArgumentBytes {
+		if !substitutions && parsed.projection == nil && len(argument) > maxArgumentBytes {
 			return newPlanError(
 				CodePlanLimitDenied,
 				fmt.Sprintf("argv element is larger than %d bytes", maxArgumentBytes),
@@ -1475,6 +1522,12 @@ func parsePlan(command string) (plan, *planError) {
 			return err
 		}
 		if len(current) == 0 {
+			if (substitutions || parsed.projection != nil) && operator == "\n" {
+				// Blank lines do not end projected analysis before a later
+				// concrete command. Raw source remains bounded by command bytes.
+				segmentStart = offset + len(operator)
+				return nil
+			}
 			if groupClosePending && len(parsed.segments) > 0 {
 				segmentStart = offset + len(operator)
 				groupClosePending = false
@@ -1491,7 +1544,7 @@ func parsePlan(command string) (plan, *planError) {
 				"empty-segment",
 			)
 		}
-		if len(parsed.segments) >= maxSegments {
+		if !substitutions && parsed.projection == nil && len(parsed.segments) >= maxSegments {
 			return newPlanError(
 				CodePlanLimitDenied,
 				fmt.Sprintf("command plan exceeds %d segments", maxSegments),
@@ -1509,6 +1562,7 @@ func parsePlan(command string) (plan, *planError) {
 			redirects:       append([]outputRedirect(nil), redirects...),
 			inputRedirects:  append([]token(nil), inputRedirects...),
 			offset:          copied[0].offset,
+			sourceStart:     segmentStart,
 			command:         command[segmentStart:offset],
 			groupOpens:      append([]compoundGroupKind(nil), segmentGroupOpens...),
 			groupCloses:     append([]compoundGroupKind(nil), segmentGroupCloses...),
@@ -1557,7 +1611,7 @@ func parsePlan(command string) (plan, *planError) {
 			escaped = true
 			continue
 		}
-		if character == '\'' {
+		if character == '\'' && quote == 0 {
 			if !tokenStarted {
 				tokenOffset = index
 			}
@@ -1583,14 +1637,14 @@ func parsePlan(command string) (plan, *planError) {
 		inDoubleQuote := quote == '"'
 		if !inDoubleQuote && (character == ' ' || character == '\t') {
 			if err := flushToken(); err != nil {
-				return plan{}, err
+				return parsed, err
 			}
 			continue
 		}
 		if !inDoubleQuote {
 			if character == '&' && index+1 < len(command) && command[index+1] == '>' {
 				if err := flushToken(); err != nil {
-					return plan{}, err
+					return parsed, err
 				}
 				inputRedirectTargetPending = false
 				effect := outputRedirectOverwrite
@@ -1617,7 +1671,7 @@ func parsePlan(command string) (plan, *planError) {
 			}
 			if operator != "" {
 				if err := flushSegment(operator, index); err != nil {
-					return plan{}, err
+					return parsed, err
 				}
 				index += len(operator) - 1
 				continue
@@ -1633,7 +1687,7 @@ func parsePlan(command string) (plan, *planError) {
 					tokenStarted = false
 					tokenQuoted = false
 				} else if err := flushToken(); err != nil {
-					return plan{}, err
+					return parsed, err
 				}
 				inputRedirectTargetPending = false
 				if character == '<' {
@@ -1672,7 +1726,7 @@ func parsePlan(command string) (plan, *planError) {
 				// action. Their word boundary lets visible nested direct targets
 				// remain available to the ordinary target checks.
 				if err := flushToken(); err != nil {
-					return plan{}, err
+					return parsed, err
 				}
 				if character == '(' {
 					if inputRedirectTargetPending || len(current) != 0 {
@@ -1703,7 +1757,7 @@ func parsePlan(command string) (plan, *planError) {
 				// started '$' word. Split only the former so `{ rm -rf /; }`
 				// retains its visible target without interpreting `${name}`.
 				if err := flushToken(); err != nil {
-					return plan{}, err
+					return parsed, err
 				}
 				if character == '{' {
 					if inputRedirectTargetPending || len(current) != 0 {
@@ -1759,7 +1813,7 @@ func parsePlan(command string) (plan, *planError) {
 		tokenQuoted = true
 	}
 	if err := flushToken(); err != nil {
-		return plan{}, err
+		return parsed, err
 	}
 	if len(current) == 0 {
 		if len(parsed.segments) > 0 {
@@ -1772,7 +1826,7 @@ func parsePlan(command string) (plan, *planError) {
 		if len(parsed.operators) > 0 {
 			tokenValue = parsed.operators[len(parsed.operators)-1]
 		}
-		return plan{}, newPlanError(
+		return parsed, newPlanError(
 			CodePlanSyntaxDenied,
 			"command plan has no final literal argv",
 			len(command),
@@ -1788,6 +1842,7 @@ func parsePlan(command string) (plan, *planError) {
 		redirects:       append([]outputRedirect(nil), redirects...),
 		inputRedirects:  append([]token(nil), inputRedirects...),
 		offset:          current[0].offset,
+		sourceStart:     segmentStart,
 		command:         command[segmentStart:],
 		groupOpens:      append([]compoundGroupKind(nil), segmentGroupOpens...),
 		groupCloses:     append([]compoundGroupKind(nil), segmentGroupCloses...),
@@ -1797,8 +1852,8 @@ func parsePlan(command string) (plan, *planError) {
 	for _, currentSegment := range parsed.segments {
 		argumentCount += len(currentSegment.argv)
 	}
-	if len(parsed.segments) > maxSegments || argumentCount > maxArguments {
-		return plan{}, newPlanError(
+	if !substitutions && parsed.projection == nil && (len(parsed.segments) > maxSegments || argumentCount > maxArguments) {
+		return parsed, newPlanError(
 			CodePlanLimitDenied,
 			fmt.Sprintf(
 				"command plan contains %d segments and %d argv elements; limits are %d and %d",
