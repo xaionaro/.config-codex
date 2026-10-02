@@ -1,6 +1,6 @@
 # Coordinator Runtime
 
-Coordinator/lead only. Ordinary workers load only the local module named in their assignment. This reference routes work and review; it is not a permission system. Assume bots are not malicious. Prevent concrete accidental target or scope damage. Do not stop normal work for an artifact, receipt, hash, allowlist, raw command spelling, parser shape, model label, or missing coordination field. When a lower rule appears stricter without a concrete resolved accidental effect, this rule wins.
+Use this module as the ECI Supervisor or the owning outer-workflow Coordinator/Lead. Ordinary Workers load only the local module named in their assignment. This reference routes work and review; it is not a permission system. Assume bots are not malicious. Prevent concrete accidental target or scope damage. Do not stop normal work for an artifact, receipt, hash, allowlist, raw command spelling, parser shape, model label, or missing coordination field. When a lower rule appears stricter without a concrete resolved accidental effect, this rule wins.
 
 ## Admission and agent lifecycle
 
@@ -24,7 +24,7 @@ Every assignment and roster entry names one category and one semantic role. Stat
 | `exploration-only` | non-authoritative / ordinary | Fact gathering, options, evidence; never authoritative design/admission. |
 | `design` | authoritative / special | Designers, design reviewers, ECI Step 2/Critic C, ATE long-term-health reviewers. |
 | `mixed` | combined / special | Only explicit `combined fact-and-authority`; never infer it. |
-| `implementation` | non-authoritative / ordinary | Implementers, Fast owners, executors, test/QA, Critic A/B, correctness reviewers. |
+| `implementation` | non-authoritative / ordinary | Producers (Implementers and Fast Owners), Helpers, executors, test/QA, Critic A/B, correctness reviewers. |
 
 Use stable role labels where available. An unfamiliar label or changed profile prompts a quick clarification or a reasonable available assignment; it does not block normal work or require profile hashing. Request the intended model and effort when the provider exposes them, and record unavailable selector fields plainly.
 
@@ -32,9 +32,11 @@ Send exposed selectors when they materially help the assignment. Treat unavailab
 
 ### Closed role map
 
-`fast-owner`→`Fast owner` is a reusable ECI producer governed by [ECI fast path](../../explore-critique-implement/references/fast-path.md), including its scoped shared-tree ownership exception. `task-orchestrator`→`ECI task orchestrator` is an ordinary coordination role governed by the [published-owner contract](../../explore-critique-implement/references/task-orchestrator.md); it does not load this coordinator-only runtime.
+`fast-owner`→`Fast Owner Producer` is a reusable ECI Producer governed by [ECI fast path](../../explore-critique-implement/references/fast-path.md), including its scoped shared-tree ownership exception. `task-orchestrator`→`Orchestrator` is an ordinary coordination role governed by the [Job-owner contract](../../explore-critique-implement/references/task-orchestrator.md); it does not load this Supervisor-only runtime.
 
-Common labels include `explorer`→`Explorer`; `researcher`→`researcher`; `brainstormer`→`Brainstormer`; `critic-step2`→`ECI critic-step2`; `critic-A`→`ECI Critic A`; `critic-B`→`ECI Critic B`; `critic-C`→`ECI Critic C`; `e2e-gate`→`E2E gate`; `implementer`→`implementer`; `executor`→`Executor`; `qa`→`QA`; `fdr-reviewer`→`FDR reviewer`; `fdr-meta-reviewer`→`FDR meta-reviewer`; `ate-design-reviewer`→`ATE Design Reviewer`; `ate-meta-reviewer`→`ATE meta-reviewer`; `execution-reviewer-correctness`→`Execution Reviewer: correctness/fidelity`; and `execution-reviewer-long-term-health`→`Execution Reviewer: long-term-health`. Normalize when useful; unknown labels ask for clarification rather than block.
+Within ECI, the global lifecycle role is the **Supervisor**. At J > 1, exactly one published **Orchestrator** coordinates each active **Job**; at J ≤ 1, the Supervisor coordinates directly. N counts outcomes for lifecycle and acceptance only and never publishes Orchestrators. Each Worker assignment names its Job, outcome, Supervisor, and current Job owner.
+
+Common labels include `explorer`→`Explorer`; `researcher`→`researcher`; `brainstormer`→`Brainstormer`; `critic-step2`→`ECI critic-step2`; `critic-A`→`ECI Critic A`; `critic-B`→`ECI Critic B`; `critic-C`→`ECI Critic C`; `e2e-gate`→`E2E gate`; `implementer`→`Implementer Producer`; `executor`→`Executor`; `qa`→`QA`; `fdr-reviewer`→`FDR reviewer`; `fdr-meta-reviewer`→`FDR meta-reviewer`; `ate-design-reviewer`→`ATE Design Reviewer`; `ate-meta-reviewer`→`ATE meta-reviewer`; `execution-reviewer-correctness`→`Execution Reviewer: correctness/fidelity`; and `execution-reviewer-long-term-health`→`Execution Reviewer: long-term-health`. Normalize when useful; unknown labels ask for clarification rather than block.
 
 - Use role categories as routing defaults: exploration gathers facts; design reviews consequential design choices; implementation changes and tests code. If the exact role is unavailable, use a reasonable available role and schedule independent review where it matters. Do not make a special model, field shape, or role label a normal-work gate.
 
@@ -44,23 +46,23 @@ If work needs a different role, reassign it clearly and use a fresh reviewer whe
 
 ## Required-critic runtime
 
-The coordinator keeps the current review state visible while the direct marker is active. A manifest is a useful summary, not a publication or command-admission monopoly; workers may provide ordinary reports and the coordinator reconciles them.
+The Supervisor keeps global review state visible while the direct marker is active. A manifest is a useful summary, not a publication or command-admission monopoly; Workers may provide ordinary reports and the current Job owner reconciles outcome-local evidence.
 
 For each target, record its path or scope, current diff/revision when useful, assigned reviewers, required verification, and current verdict. Keep enough context to notice that the target changed; do not require a prescribed header, hashes, or artifact paths before work can proceed.
 
-At review and final acceptance, obtain the independent checks and E2E that the task actually needs. For ECI, use the [router's E2E cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing). A changed target or missing review routes fresh review before claiming acceptance; it does not freeze exploration, implementation, ordinary verification, or targeted commits behind row schemas, receipts, or hashes.
+At review and final acceptance, obtain the independent checks and E2E each outcome needs. For ECI, the current Job owner dispatches required reviews under the [Job Orchestrator contract](../../explore-critique-implement/references/task-orchestrator.md); the Supervisor retains acceptance. Use the [router's E2E cadence, scope, and timing policy](../../explore-critique-implement/SKILL.md#e2e-cadence-scope-and-timing). A changed target or missing review routes fresh review before claiming acceptance; it does not freeze exploration, implementation, ordinary verification, or targeted commits behind row schemas, receipts, or hashes.
 
 At acceptance, compare the actual current target and diff with the review scope. A meaningful change triggers fresh appropriate review. Preserve historical notes when useful, but missing or malformed ledgers, receipts, hashes, or anchors are repairable coordination gaps, not a reason to reject normal work.
 
-**Adjudication:** Preserve each critic's substantive verdict and explain any coordinator disagreement. Use readable reports; do not make terminal markers, byte format, bounded text rules, or report hashes prerequisites for progress.
+**Adjudication:** The Supervisor preserves each critic's substantive verdict and explains any disagreement. Use readable reports; do not make terminal markers, byte format, bounded text rules, or report hashes prerequisites for progress.
 
 The optional Critic C prewrite note may help a selected skip-design route, and a post-write reconciliation can improve final review. Neither is a prerequisite for the first production write. Nested ECI never removes the outer ATE marker.
 
 ## Acceptance and Git boundary
 
-Only governed target paths need the assigned review; leave unrelated changes out of that review. The coordinator maintains the review summary through the ordinary coordination path. A document path, writer spelling, redirection, or generic file operation is not a permission boundary; protect only real active control records and other sessions' control state.
+Only governed target paths need assigned review; leave unrelated changes out. The Supervisor maintains global review state, and the current Job owner maintains outcome-local evidence. A document path, writer spelling, redirection, or generic file operation is not a permission boundary; protect only real active control records and other sessions' control state.
 
-Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route. After each implementer handoff, independently verify the exact iteration diff and make its narrow coordinator-owned checkpoint commit before review or another implementation iteration. The checkpointed `current diff` is the named parent-to-checkpoint range. Respect explicit exclusions and exclude later ambient worktree changes. This is review scope, not admission proof. Use normal targeted Git coordination: preserve unrelated dirty paths as exclusions. It needs no approval artifact, receipt, hash, canonical spelling, or command-shape prerequisite.
+Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route. Each Producer commits its own checked, agreed scope during handoff. The Supervisor independently verifies the exact immutable parent-to-commit range before dependent review or work. Reviewers receive that range and explicit exclusions; exclude later ambient worktree changes. This is review scope, not admission proof. Producers follow the [active-writer, shared-index, staged-result, and joint-checkpoint rules](../../explore-critique-implement/references/task-orchestrator.md). Keep other authors' staged and unstaged content intact. The Supervisor and Orchestrators provide matching identity/scope/index facts; exact authors agree content and index-mutation/commit order directly. Coordination ownership gives no authority to assign contested edits or schedule Git turns.
 
 For ECI fast contributions, apply the [adoption boundary](../../explore-critique-implement/references/fast-path.md#adoption-review-and-closure), including cumulative review beyond the iteration range and both-producer closure. Normal-path completion requires the post-Fast sequence, even after a clean intermediate review.
 Follow the normative [post-Fast completion sequence](../../explore-critique-implement/references/fast-path.md#post-fast-completion).
@@ -84,7 +86,7 @@ Prompts and selector records aid review. They do not prove effective model behav
 
 ### Stable roles and fresh identities
 
-Use the closed role map above. Reusable ordinary producer slots are Explorer, implementer, Fast owner, ordinary Executor, and ordinary correctness reviewer only where the outer workflow says so. A task-orchestrator identity remains reusable only while main keeps its ownership published; later delegation follows the fresh-candidate rule in the [task-orchestrator contract](../../explore-critique-implement/references/task-orchestrator.md#publication-and-handoff). Step-2 critics, Critic A, Critic B, Critic C, E2E, brainstormer, BRP validator, loop-breaker, Design Reviewer, FDR reviewer/meta-reviewer, and every special semantic role are fresh identities as their owning workflow requires. An ordinary followup never upgrades category or model class.
+Use the closed role map above. Reusable ordinary producer slots are Explorer, Implementer Producer, Fast Owner Producer, ordinary Executor, and ordinary correctness reviewer only where the outer workflow says so. An Orchestrator identity remains reusable only while the Supervisor keeps its Job ownership published; later delegation follows the fresh-candidate rule in the [Job Orchestrator contract](../../explore-critique-implement/references/task-orchestrator.md#publication-transfer-and-report-drain). Step-2 critics, Critic A, Critic B, Critic C, E2E, brainstormer, BRP validator, loop-breaker, Design Reviewer, FDR reviewer/meta-reviewer, and every special semantic role are fresh identities as their owning workflow requires. An ordinary followup never upgrades category or model class.
 
 ## Critic-manifest currentness
 
@@ -104,4 +106,4 @@ Nested ECI records outer owner/session/target and does not remove the outer ATE 
 
 Evaluate commands by their resolved effect and target. Unknown syntax, interpreters, Make, aliases, options, substitutions, wrappers, environment expansion, parser limitations, or shell punctuation are not reasons to deny normal work. Resolve and stop only an actual broad, unresolved, cross-scope, or destructive effect; explain the concrete mistake and offer a narrow safe route. Locks and records coordinate concurrent work but never become proof or a prerequisite for harmless work.
 
-Before coordinator completion, independently re-read changed lines, run relevant checks, inspect current diff/status, and verify every original requirement. A worker handoff is an unreviewed PR: no acceptance claim, commit, teardown, or user success statement depends on it until the coordinator verifies it. Preserve unrelated dirty paths as explicit exclusions; never bundle them into a critic target or commit.
+Before ECI Supervisor or outer Coordinator/Lead completion, independently re-read changed lines, run relevant checks, inspect current diff/status, and verify every original requirement. A Producer handoff is an unreviewed PR: the Supervisor verifies its immutable range before dependent review/work or acceptance. Preserve unrelated dirty paths as explicit exclusions; never bundle them into a critic target or commit.

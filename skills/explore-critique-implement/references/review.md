@@ -1,16 +1,18 @@
 # ECI Step 4 — Review
 
-This module is for one independent reviewer. The checkpointed `current diff` is the named parent-to-checkpoint range. Respect explicit exclusions and exclude later ambient worktree changes. This is review scope, not admission proof. Work only from the assigned original requirements, intended scope, and supplied evidence. Do not read sibling reports before submitting your own. Report findings only: do not edit, dispatch work, decide a gate, or perform lifecycle actions.
+This module is for one independent reviewer. The `current diff` is the named immutable parent-to-Producer-commit range verified by the Supervisor. Respect explicit exclusions and exclude later ambient worktree changes. This is review scope, not admission proof. Work only from the assigned original requirements, intended scope, and supplied evidence. Do not read sibling reports before submitting your own. Report findings to the current Job owner only. Do not edit the reviewed target, decide a gate, or perform lifecycle actions. Bounded Helper support is permitted under the Worker and Helper boundaries below, but it does not transfer required review responsibility.
 
-Also review any cumulative retained-fast target supplied under the [adoption boundary](fast-path.md#adoption-review-and-closure). Report uncovered retained hunks or material late changes to the coordinator, including discoveries relevant to [design reopening](fast-path.md#evidence-can-reopen-design).
+Also review any cumulative retained-fast target supplied under the [adoption boundary](fast-path.md#adoption-review-and-closure). Report uncovered retained hunks or material late changes to the current Job owner, including discoveries relevant to [design reopening](fast-path.md#evidence-can-reopen-design).
 
 Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): assess retained Fast work with the same correctness, style, and maintainability scrutiny as main-path changes; passing producer tests or an existing checkpoint does not resolve quality findings.
 
 Follow the normative [post-Fast completion sequence](fast-path.md#post-fast-completion).
-Review the final cumulative scoped state after the coordinator applies exactly one canonical disposition per in-scope inventory item.
+Review the final cumulative scoped state after the Supervisor applies exactly one canonical disposition per in-scope inventory item.
 For post-Fast completion, independently review the final cumulative scoped state after the new exploration and design disposition, including unchanged retained code. Report missing final-state coverage; earlier reviews alone do not satisfy this assignment.
 
 Tag every factual claim. An untagged claim or unpromoted T5 is not review evidence. For every finding, state one disposition (`REJECT`, `CONDITIONAL`, `NIT`, or `PASS`), its impact, exact location, concrete evidence or repro/test output, and the condition that would resolve uncertainty. A behavior/interface mismatch is a hard finding, never a style deviation.
+
+The current Job owner—its Orchestrator when J > 1, or the Supervisor when J ≤ 1—assigns required workflow reviews for each outcome. The Supervisor retains acceptance. A reviewer may use Helpers for bounded support, but personally establishes its independent baseline, verifies evidence, supplies its required verdict, and performs its assigned required E2E run. A Helper cannot replace any of those duties or carry conclusions into another independent review.
 
 ## Critic A — coding style
 
