@@ -3746,7 +3746,7 @@ func inspectSegment(
 					segmentIndex,
 					originalTokenIndex(current.argv, argv[optionIndex]),
 					argv[optionIndex],
-					"route this exact Git fsck writer through the ECI Supervisor to an assigned Producer",
+					"remove --lost-found or route the repository-metadata write request to the ECI Supervisor",
 					"worker-git-ownership",
 				)
 			}
@@ -6550,7 +6550,7 @@ func inspectGit(
 				segmentIndex,
 				mutationIndex,
 				argv[mutationIndex],
-				"route this exact Git mutation through the ECI Supervisor to the assigned Producer",
+				"route this protected Git mutation request to the ECI Supervisor; ordinary scoped Producer checkpoint commits use the separate resolved repository/effect checks",
 				"worker-git-ownership",
 			)
 		}
@@ -6571,7 +6571,7 @@ func inspectGit(
 			segmentIndex,
 			mutationIndex,
 			argv[mutationIndex],
-			"route this exact Git mutation through the ECI Supervisor to the assigned Producer",
+			"route this protected Git mutation request to the ECI Supervisor; ordinary scoped Producer checkpoint commits use the separate resolved repository/effect checks",
 			"worker-git-ownership",
 		)
 	}
