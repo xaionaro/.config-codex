@@ -1332,7 +1332,10 @@ previous_revision = namespace["checkout_revision"]
 namespace["checkout_revision"] = lambda *args, **kwargs: None
 try:
     assert namespace["git_checkout_effect"](["-"], base=repository) == "repository-unresolved"
-    assert "reason=source-lookup" in namespace["checkout_detail"](["HEAD", "--", "CODEX.md"], repository, frozenset(), context=context)
+    completed = namespace["completed_checkout"](["HEAD", "--", "CODEX.md"], frozenset(), frozenset(), context)
+    assert completed.options.source_lookup_unknown
+    assert namespace["checkout_detail"](["HEAD", "--", "CODEX.md"], repository, frozenset(), context=context) is None
+    assert "reason=source-lookup-protected-target" in namespace["checkout_detail"](["HEAD", "--", "hooks/validate-bash.sh"], repository, frozenset(), context=context)
 finally:
     namespace["checkout_revision"] = previous_revision
 assert Path(index).read_bytes() == raw_before, "read-only matcher changed the index"
@@ -1539,7 +1542,7 @@ run_checkout_native_selection_target() {
 }
 
 run_checkout_completed_selection_target() {
-  local failures=0 options template path command row_ok protected_before index_before expected_ordinary native_status
+  local failures=0 options template path command row_ok protected_before protected_clean index_before expected_ordinary native_status
   for options in \
     '--patch -U-2' '--patch --unified=-2' '--patch --inter-hunk-context=-2' \
     '--patch -U-1 -U-2' '--patch --inter-hunk-context=-1 --inter-hunk-context=-2' \
@@ -1564,6 +1567,10 @@ run_checkout_completed_selection_target() {
     'git checkout --unified=-2 --unified=-1 -- __PATH__' \
     'git checkout --patch --inter-hunk-context=-2 --inter-hunk-context=1 -- __PATH__'; do
     row_ok=1
+    protected_clean="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+    case "$template" in
+      *' --patch '*) printf '\n# completed-selection patch dirty\n' >>"$REPO/hooks/validate-bash.sh" ;;
+    esac
     protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
     index_before="$(git -C "$REPO" ls-files --stage)"
     expected_ordinary="$(git -C "$REPO" rev-parse HEAD:CODEX.md)"
@@ -1600,6 +1607,18 @@ run_checkout_completed_selection_target() {
       [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || { printf 'completed-selection failed HEAD: %s\n' "$command" >&2; failures=1; row_ok=0; }
       [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || { printf 'completed-selection failed branch: %s\n' "$command" >&2; failures=1; row_ok=0; }
     done
+    case "$template" in
+      *' --patch '*)
+        git -C "$REPO" restore --worktree -- hooks/validate-bash.sh
+        [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_clean" ] || { failures=1; row_ok=0; }
+        command="${template//__PATH__/hooks/validate-bash.sh}"
+        assert_allowed "$command" worker || { failures=1; row_ok=0; }
+        (cd -- "$REPO"; printf 'y\n' | bash -c "$command") >"$TMP_ROOT/completed-clean-patch.out" 2>&1 || { failures=1; row_ok=0; }
+        rg -q '^No changes\.$' "$TMP_ROOT/completed-clean-patch.out" || { failures=1; row_ok=0; }
+        [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_clean" ] || { failures=1; row_ok=0; }
+        [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || { failures=1; row_ok=0; }
+        ;;
+    esac
     if [ "$row_ok" -eq 1 ]; then printf 'completed-selection restored ordinary path and preserved other state: %s\n' "$template"; fi
   done
   [ "$failures" -eq 0 ]
@@ -1741,6 +1760,308 @@ run_checkout_option_validity_target() {
   [ "$failures" -eq 0 ]
 }
 
+checkout_context_mode_membership_pair() {
+  local failures=0 blob tree mode command native_repo protected_hash index_tree head branch large_tree number redirect padding inventory_bytes
+  protected_hash="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  index_tree="$(git -C "$REPO" write-tree)"
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  blob="$(printf 'replacement entry\n' | git -C "$REPO" hash-object -w --stdin)"
+  for mode in 100644 120000 160000; do
+    {
+      git -C "$REPO" ls-tree HEAD | awk '$4 != "hooks"'
+      if [ "$mode" = 160000 ]; then
+        printf '160000 commit %s\thooks\n' "$head"
+      else
+        printf '%s blob %s\thooks\n' "$mode" "$blob"
+      fi
+    } >"$TMP_ROOT/context-mode-tree"
+    tree="$(git -C "$REPO" mktree <"$TMP_ROOT/context-mode-tree")"
+    command="git checkout $tree -- hooks"
+    if [ "$mode" = 160000 ]; then
+      assert_allowed "$command" worker || failures=1
+    else
+      assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+    fi
+    # A minimal tracked clone establishes native descendant replacement
+    # independently of the private launcher's untracked runtime helpers.
+    native_repo="$TMP_ROOT/context-native-$mode"
+    git clone -q --no-hardlinks "$REPO" "$native_repo"
+    git -C "$native_repo" checkout "$tree" -- hooks >"$TMP_ROOT/context-mode-$mode.log" 2>&1 || failures=1
+    if [ "$mode" = 160000 ]; then
+      [ "$(git -C "$native_repo" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || failures=1
+    else
+      [ ! -e "$native_repo/hooks/validate-bash.sh" ] || failures=1
+    fi
+    printf 'ordinary mode control dirty\n' >"$REPO/file.txt"
+    command="git checkout $tree -- file.txt"
+    if assert_allowed "$command" worker; then
+      git -C "$REPO" checkout "$tree" -- file.txt >"$TMP_ROOT/context-mode-ordinary.log" 2>&1 || failures=1
+      [ "$(git -C "$REPO" hash-object file.txt)" = "$(git -C "$REPO" rev-parse HEAD:file.txt)" ] || failures=1
+    else failures=1; fi
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || failures=1
+  done
+  # Selection cost depends on selected names, not unrelated source-tree size.
+  printf -v padding '%0180d' 0
+  {
+    git -C "$REPO" ls-tree -z HEAD
+    for ((number = 0; number < 17000; number++)); do
+      printf '100644 blob %s\tordinary-budget-%05d%s\0' "$blob" "$number" "$padding"
+    done
+    printf '100644 blob %s\tliteral[star]*:name\0' "$blob"
+    printf '100644 blob %s\t:literal[star]*\0' "$blob"
+    printf '100644 blob %s\tline\nname\0' "$blob"
+  } >"$TMP_ROOT/context-large-tree"
+  large_tree="$(git -C "$REPO" mktree -z <"$TMP_ROOT/context-large-tree")"
+  inventory_bytes="$(git -C "$REPO" ls-tree -r --name-only -z "$large_tree" | wc -c)"
+  [ "$inventory_bytes" -gt 1048576 ] || failures=1
+  assert_denied_code "git checkout $large_tree -- hooks/validate-bash.sh" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  printf 'line\nname\0' >"$TMP_ROOT/context-literal-nul.paths"
+  for command in "git checkout $large_tree -- file.txt" "git --icase-pathspecs checkout $large_tree -- ':(literal)literal[star]*:name'" \
+    "git --literal-pathspecs checkout $large_tree -- ':literal[star]*'" \
+    "git checkout $large_tree --pathspec-from-file=$TMP_ROOT/context-literal-nul.paths --pathspec-file-nul"; do
+    if assert_allowed "$command" worker; then
+      (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-large-native.log" 2>&1 || failures=1
+    else failures=1; fi
+  done
+  [ "$(git -C "$REPO" hash-object 'literal[star]*:name')" = "$blob" ] || failures=1
+  [ "$(git -C "$REPO" hash-object ':literal[star]*')" = "$blob" ] || failures=1
+  [ "$(git -C "$REPO" hash-object $'line\nname')" = "$blob" ] || failures=1
+  git -C "$REPO" --literal-pathspecs rm -q -f -- 'literal[star]*:name' ':literal[star]*' $'line\nname'
+  # Persisted core.worktree maps the invocation repository's Git directory
+  # to this actual configured runtime, which deliberately has no .git now.
+  redirect="$TMP_ROOT/context-invocation"
+  mkdir -p -- "$redirect"
+  mv -- "$REPO/.git" "$redirect/.git"
+  git -C "$redirect" config core.worktree "$REPO"
+  printf '\n# redirected dirty\n' >>"$REPO/hooks/validate-bash.sh"
+  assert_denied_code 'git checkout HEAD -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker '' configured absent "$redirect" || failures=1
+  git -C "$redirect" checkout HEAD -- hooks/validate-bash.sh >"$TMP_ROOT/context-redirect-protected.log" 2>&1 || failures=1
+  [ "$(git -C "$redirect" hash-object "$REPO/hooks/validate-bash.sh")" = "$protected_hash" ] || failures=1
+  printf 'redirected ordinary dirty\n' >"$REPO/file.txt"
+  if assert_allowed 'git checkout HEAD -- file.txt' worker configured absent "$redirect"; then
+    git -C "$redirect" checkout HEAD -- file.txt >"$TMP_ROOT/context-redirect-ordinary.log" 2>&1 || failures=1
+    [ "$(git -C "$redirect" hash-object "$REPO/file.txt")" = "$(git -C "$redirect" rev-parse HEAD:file.txt)" ] || failures=1
+  else failures=1; fi
+  [ "$(git -C "$redirect" write-tree)" = "$index_tree" ] || failures=1
+  [ "$(git -C "$redirect" rev-parse HEAD)" = "$head" ] || failures=1
+  [ "$(git -C "$redirect" symbolic-ref HEAD)" = "$branch" ] || failures=1
+  git -C "$redirect" config --unset core.worktree
+  mv -- "$redirect/.git" "$REPO/.git"
+  [ "$failures" -eq 0 ] || return 1
+  printf '%s\n' 'checkout ancestor/membership/persisted worktree: PASS'
+}
+
+checkout_context_failed() {
+  printf 'checkout-context failed predicate=%s command=%q native_status=%s\n' \
+    "$1" "${command:-none}" "${native_status:-not-recorded}" >&2
+  failures=1
+}
+
+checkout_context_prefix_pair() {
+  local failures=0 command native_status=0 protected_hash ordinary_hash index_tree head branch native_source
+  protected_hash="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  ordinary_hash="$(git -C "$REPO" hash-object file.txt)"
+  index_tree="$(git -C "$REPO" write-tree)"
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  native_source="$TMP_ROOT/prefix-native"
+  git clone -q --no-hardlinks "$REPO" "$native_source"
+  for command in 'git -C hooks restore -- validate-bash.sh' 'git restore -- validate-bash.sh'; do
+    printf '\n# native prefix dirty\n' >>"$native_source/hooks/validate-bash.sh"
+    native_status=0
+    if [ "$command" = 'git restore -- validate-bash.sh' ]; then
+      assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker '' configured absent "$REPO/hooks" || checkout_context_failed prefix-protected-admission
+      (cd -- "$native_source/hooks"; /bin/bash -c "$command") >"$TMP_ROOT/prefix-native.log" 2>&1 || native_status=$?
+    else
+      assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || checkout_context_failed prefix-protected-admission
+      (cd -- "$native_source"; /bin/bash -c "$command") >"$TMP_ROOT/prefix-native.log" 2>&1 || native_status=$?
+    fi
+    [ "$native_status" -eq 0 ] || checkout_context_failed prefix-protected-native
+    [ "$(git -C "$native_source" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed prefix-protected-native-restored
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed prefix-protected-preserved
+  done
+  command='git -C hooks restore -- ../file.txt'
+  printf 'prefix ordinary dirty\n' >"$REPO/file.txt"
+  assert_allowed "$command" worker || checkout_context_failed prefix-ordinary-admission
+  native_status=0
+  (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/prefix-ordinary-native.log" 2>&1 || native_status=$?
+  [ "$native_status" -eq 0 ] || checkout_context_failed prefix-ordinary-native
+  [ "$(git -C "$REPO" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed prefix-ordinary-restored
+  [ "$(git -C "$REPO" write-tree)" = "$index_tree" ] || checkout_context_failed prefix-index
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ] || checkout_context_failed prefix-head
+  [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$branch" ] || checkout_context_failed prefix-branch
+  [ "$failures" -eq 0 ] || return 1
+  printf '%s\n' 'checkout retained invocation prefix: PASS'
+}
+
+run_checkout_context_validity_target() {
+  local failures=0 command protected_hash ordinary_hash index_tree head branch native_source patch_hash left right merge_left merge_right native_status fault_hash codex_hash source_ref
+  protected_hash="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  ordinary_hash="$(git -C "$REPO" hash-object file.txt)"
+  index_tree="$(git -C "$REPO" write-tree)"
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  native_source="$TMP_ROOT/context-source-native"
+  git clone -q --no-hardlinks "$REPO" "$native_source"
+  # Resolve source and selection through the registered gate, with the same
+  # effective config/environment and native merge-base semantics as Git.
+  for command in \
+    'env CHECKOUT_CONTEXT_VALUE=false git --config-env=checkout.guess=CHECKOUT_CONTEXT_VALUE checkout HEAD -- hooks/validate-bash.sh' \
+    'git checkout HEAD...HEAD -- hooks/validate-bash.sh' \
+    'git checkout HEAD... -- hooks/validate-bash.sh' \
+    'git checkout ...HEAD -- hooks/validate-bash.sh'; do
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || checkout_context_failed protected-source-admission
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed protected-source-preserved
+    printf '\n# native protected source dirty\n' >>"$native_source/hooks/validate-bash.sh"
+    native_status=0
+    (cd -- "$native_source"; /bin/bash -c "$command") >"$TMP_ROOT/context-protected-native.log" 2>&1 || { native_status=$?; checkout_context_failed protected-source-native; }
+    [ "$(git -C "$native_source" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed protected-source-native-restored
+    [ "$(git -C "$native_source" write-tree)" = "$index_tree" ] || checkout_context_failed protected-source-native-index
+    [ "$(git -C "$native_source" rev-parse HEAD)" = "$head" ] || checkout_context_failed protected-source-native-head
+  done
+  for command in \
+    'env CHECKOUT_CONTEXT_VALUE=false git --config-env=checkout.guess=CHECKOUT_CONTEXT_VALUE checkout HEAD -- file.txt' \
+    'git checkout HEAD...HEAD -- file.txt' \
+    'git checkout HEAD... -- file.txt' \
+    'git checkout ...HEAD -- file.txt'; do
+    printf 'ordinary dirty\n' >"$REPO/file.txt"
+    if assert_allowed "$command" worker; then
+      native_status=0
+      (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-native.log" 2>&1 || { native_status=$?; checkout_context_failed ordinary-source-native; }
+      [ "$(git -C "$REPO" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed ordinary-source-native-restored
+    else checkout_context_failed ordinary-source-admission; fi
+    git -C "$REPO" restore --worktree -- file.txt
+  done
+  left="$(printf 'left base\n' | git -C "$REPO" commit-tree "$index_tree" -p "$head")"
+  right="$(printf 'right base\n' | git -C "$REPO" commit-tree "$index_tree" -p "$head")"
+  merge_left="$(printf 'left merge\n' | git -C "$REPO" commit-tree "$index_tree" -p "$left" -p "$right")"
+  merge_right="$(printf 'right merge\n' | git -C "$REPO" commit-tree "$index_tree" -p "$right" -p "$left")"
+  for command in \
+    "git checkout $merge_left...$merge_right -- hooks/validate-bash.sh" \
+    'env -u CHECKOUT_CONTEXT_ABSENT git --config-env=checkout.guess=CHECKOUT_CONTEXT_ABSENT checkout HEAD -- hooks/validate-bash.sh'; do
+    assert_allowed "$command" worker || checkout_context_failed invalid-source-admission
+    native_status=0
+    (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-invalid-native.log" 2>&1 || native_status=$?
+    [ "$native_status" -ne 0 ] && [ -s "$TMP_ROOT/context-invalid-native.log" ] || checkout_context_failed invalid-source-native-rejection
+    [ "$(git -C "$REPO" write-tree)" = "$index_tree" ] || checkout_context_failed invalid-source-index
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed invalid-source-protected
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ] || checkout_context_failed invalid-source-head
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$branch" ] || checkout_context_failed invalid-source-branch
+  done
+  # Inject only the source reader in the disposable registered hook. The
+  # real native command still succeeds; target selection and admission must
+  # distinguish known protected and ordinary destinations under that fault.
+  cp -- "$RUNTIME_ROOT/hooks/validate-bash.sh" "$TMP_ROOT/context-hook-before-fault"
+  awk '
+    /^def checkout_source\(/ { source_reader = 1 }
+    source_reader && /^    if value is None:/ {
+      print "    if value in {\"HEAD\", \"hooks/validate-bash.sh\", \"CODEX.md\"}:"
+      print "        return CheckoutSource(\"unresolved\", value, None, True)"
+      source_reader = 0
+    }
+    { print }
+  ' "$TMP_ROOT/context-hook-before-fault" >"$RUNTIME_ROOT/hooks/validate-bash.sh"
+  rg -q 'return CheckoutSource\("unresolved", value, None, True\)' "$RUNTIME_ROOT/hooks/validate-bash.sh" || {
+    printf '%s\n' 'source-reader fault injection unavailable on selected source' >&2
+    checkout_context_failed source-fault-injection
+  }
+  assert_denied_code 'git checkout HEAD -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker source-lookup-protected-target || checkout_context_failed source-fault-protected-admission
+  printf 'source-fault ordinary dirty\n' >"$REPO/file.txt"
+  if assert_allowed 'git checkout HEAD -- file.txt' worker; then
+    native_status=0
+    git -C "$REPO" checkout HEAD -- file.txt >"$TMP_ROOT/context-source-fault-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-ordinary-native; }
+    [ "$(git -C "$REPO" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed source-fault-ordinary-restored
+  else checkout_context_failed source-fault-ordinary-admission; fi
+  fault_hash="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  codex_hash="$(git -C "$REPO" hash-object CODEX.md)"
+  source_ref="$(git -C "$REPO" rev-parse refs/heads/hooks/validate-bash.sh)"
+  git -C "$REPO" update-ref -d refs/heads/hooks/validate-bash.sh
+  command='git checkout hooks/validate-bash.sh file.txt'
+  assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker source-lookup-protected-target || checkout_context_failed source-fault-leading-protected-admission
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$fault_hash" ] || checkout_context_failed source-fault-leading-protected-preserved
+  printf '\n# native leading protected dirty\n' >>"$native_source/hooks/validate-bash.sh"
+  printf 'native leading ordinary dirty\n' >"$native_source/file.txt"
+  native_status=0
+  (cd -- "$native_source"; /bin/bash -c "$command") >"$TMP_ROOT/context-leading-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-leading-native; }
+  [ "$(git -C "$native_source" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed source-fault-leading-native-protected-restored
+  [ "$(git -C "$native_source" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed source-fault-leading-native-ordinary-restored
+  [ "$(git -C "$native_source" write-tree)" = "$index_tree" ] || checkout_context_failed source-fault-leading-native-index
+  [ "$(git -C "$native_source" rev-parse HEAD)" = "$head" ] || checkout_context_failed source-fault-leading-native-head
+  command='git checkout CODEX.md file.txt'
+  printf 'source-fault first ordinary dirty\n' >"$REPO/CODEX.md"
+  printf 'source-fault second ordinary dirty\n' >"$REPO/file.txt"
+  assert_allowed "$command" worker || checkout_context_failed source-fault-leading-ordinary-admission
+  native_status=0
+  (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-leading-ordinary-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-leading-ordinary-native; }
+  [ "$(git -C "$REPO" hash-object CODEX.md)" = "$codex_hash" ] || checkout_context_failed source-fault-leading-first-restored
+  [ "$(git -C "$REPO" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed source-fault-leading-second-restored
+  command="git checkout HEAD ':(exclude)file.txt'"
+  assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker source-lookup-protected-target || checkout_context_failed source-fault-exclusion-protected-admission
+  printf '\n# native source exclusion dirty\n' >>"$native_source/hooks/validate-bash.sh"
+  native_status=0
+  (cd -- "$native_source"; /bin/bash -c "$command") >"$TMP_ROOT/context-source-exclusion-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-exclusion-native; }
+  [ "$(git -C "$native_source" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed source-fault-exclusion-protected-restored
+  command="git checkout HEAD CODEX.md ':(exclude)hooks'"
+  printf 'source-fault exclusion ordinary dirty\n' >"$REPO/CODEX.md"
+  assert_allowed "$command" worker || checkout_context_failed source-fault-exclusion-ordinary-admission
+  native_status=0
+  (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-source-exclusion-ordinary-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-exclusion-ordinary-native; }
+  [ "$(git -C "$REPO" hash-object CODEX.md)" = "$codex_hash" ] || checkout_context_failed source-fault-exclusion-ordinary-restored
+  printf '%s\n' hooks/validate-bash.sh >"$TMP_ROOT/context-source-fault.paths"
+  command="git checkout HEAD --pathspec-from-file=$TMP_ROOT/context-source-fault.paths"
+  assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker source-lookup-protected-target || checkout_context_failed source-fault-file-protected-admission
+  printf '\n# native source-file protected dirty\n' >>"$native_source/hooks/validate-bash.sh"
+  native_status=0
+  (cd -- "$native_source"; /bin/bash -c "$command") >"$TMP_ROOT/context-source-fault-file-protected-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-file-protected-native; }
+  [ "$(git -C "$native_source" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed source-fault-file-protected-restored
+  printf '%s\n' file.txt >"$TMP_ROOT/context-source-fault.paths"
+  printf 'source-fault file ordinary dirty\n' >"$REPO/file.txt"
+  assert_allowed "$command" worker || checkout_context_failed source-fault-file-ordinary-admission
+  native_status=0
+  (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-source-fault-file-native.log" 2>&1 || { native_status=$?; checkout_context_failed source-fault-file-ordinary-native; }
+  [ "$(git -C "$REPO" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed source-fault-file-ordinary-restored
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$fault_hash" ] || checkout_context_failed source-fault-final-protected
+  [ "$(git -C "$REPO" write-tree)" = "$index_tree" ] || checkout_context_failed source-fault-final-index
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ] || checkout_context_failed source-fault-final-head
+  [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$branch" ] || checkout_context_failed source-fault-final-branch
+  git -C "$REPO" update-ref refs/heads/hooks/validate-bash.sh "$source_ref"
+  [ "$(git -C "$REPO" rev-parse refs/heads/hooks/validate-bash.sh)" = "$source_ref" ] || checkout_context_failed source-fault-restored-ref
+  cp -- "$TMP_ROOT/context-hook-before-fault" "$RUNTIME_ROOT/hooks/validate-bash.sh"
+  # Operand-free patch checkout selects the changed index/worktree domain,
+  # rather than an empty set or every clean tracked protected file.
+  printf '\n# context patch dirty\n' >>"$REPO/hooks/validate-bash.sh"
+  patch_hash="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  for command in 'git checkout --patch' 'git checkout --patch --' 'git checkout --patch HEAD --' "git checkout --patch $head --" "git checkout --patch 'HEAD^{tree}' --"; do
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker || checkout_context_failed protected-patch-admission
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$patch_hash" ] || checkout_context_failed protected-patch-preserved
+    printf '\n# native protected patch dirty\n' >>"$native_source/hooks/validate-bash.sh"
+    native_status=0
+    # Explicit sources also ask to apply to the worktree when the clean index
+    # cannot accept the reversed dirty-worktree hunk.
+    printf 'y\ny\n' | (cd -- "$native_source"; /bin/bash -c "$command") >"$TMP_ROOT/context-protected-patch-native.log" 2>&1 || { native_status=$?; checkout_context_failed protected-patch-native; }
+    [ "$(git -C "$native_source" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed protected-patch-native-restored
+  done
+  git -C "$REPO" restore --worktree -- hooks/validate-bash.sh
+  for command in 'git checkout --patch' 'git checkout --patch HEAD --' "git checkout --patch $head --" "git checkout --patch 'HEAD^{tree}' --"; do
+    printf 'ordinary patch dirty\n' >"$REPO/file.txt"
+    if assert_allowed "$command" worker; then
+      native_status=0
+      printf 'y\ny\n' | (cd -- "$REPO"; /bin/bash -c "$command") >"$TMP_ROOT/context-patch-native.log" 2>&1 || { native_status=$?; checkout_context_failed ordinary-patch-native; }
+      [ "$(git -C "$REPO" hash-object file.txt)" = "$ordinary_hash" ] || checkout_context_failed ordinary-patch-native-restored
+    else checkout_context_failed ordinary-patch-admission; fi
+  done
+  git -C "$REPO" restore --worktree -- file.txt
+  [ "$(git -C "$REPO" write-tree)" = "$index_tree" ] || checkout_context_failed final-index
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ] || checkout_context_failed final-head
+  [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$branch" ] || checkout_context_failed final-branch
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_hash" ] || checkout_context_failed final-protected
+  checkout_context_mode_membership_pair || checkout_context_failed ancestor-membership-worktree-group
+  checkout_context_prefix_pair || checkout_context_failed retained-prefix-group
+  [ "$failures" -eq 0 ] || return 1
+  printf '%s\n' 'checkout invocation/source context: PASS'
+}
+
 run_effect_aware_git_target() {
   local command failures=0 before_head before_branch protected_base protected_changed
   # Protection binds to the configured runtime, so make that complete copied
@@ -1768,6 +2089,14 @@ run_effect_aware_git_target() {
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
   assert_denied_code 'git restore -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || return 1
+  if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-context-prefix ]; then
+    checkout_context_prefix_pair
+    return $?
+  fi
+  if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-context-validity ]; then
+    run_checkout_context_validity_target
+    return $?
+  fi
   if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-branch-source-validity ]; then
     checkout_branch_path_pair
     return $?
@@ -1786,6 +2115,7 @@ run_effect_aware_git_target() {
   fi
   run_checkout_native_selection_target || failures=1
   run_checkout_option_validity_target || failures=1
+  run_checkout_context_validity_target || failures=1
 
   # A verified checkout tree source is not an explicit destination and must
   # not prevent loading file-selected destinations. Protected forms are
@@ -2186,7 +2516,7 @@ run_effect_aware_git_target() {
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
   full) ;;
-  effect-aware-git|checkout-option-validity|checkout-branch-source-validity|checkout-completed-selection|checkout-native-selection)
+  effect-aware-git|checkout-option-validity|checkout-branch-source-validity|checkout-completed-selection|checkout-native-selection|checkout-context-validity|checkout-context-prefix)
     run_effect_aware_git_target
     if [ "${NORMAL_GIT_ADMISSION_TARGET}" = checkout-branch-source-validity ]; then
       printf '%s\n' 'normal Git admission explicit branch source target: PASS'

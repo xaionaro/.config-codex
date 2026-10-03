@@ -7087,6 +7087,74 @@ class SharedCheckoutOptionState(NamedTuple):
     positioned_operands: tuple[tuple[int, str], ...]
     overlay_mode: int
     source_lookup_unknown: bool
+    patch_mode: bool = False
+    source: "CheckoutSource | None" = None
+    stage_mode: int = 0
+
+
+class CheckoutInvocation(NamedTuple):
+    cwd: str
+    options: tuple[str, ...] | None
+    environment: dict[str, str] | None
+    git_dir: str | None = None
+    worktree: str | None = None
+    prefix: str | None = None
+
+
+def checkout_invocation(base: str, options: tuple[str, ...] | None,
+                        environment: dict[str, str] | None) -> CheckoutInvocation:
+    context = CheckoutInvocation(base, options, environment, None, None, None)
+    if not base or options is None or environment is None:
+        return context
+    values = []
+    for query in ("--absolute-git-dir", "--show-toplevel", "--show-prefix"):
+        try:
+            result = subprocess.run(["/usr/bin/git", *options, "rev-parse", query],
+                                    cwd=base, env=environment, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, timeout=1, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return context
+        if result.returncode:
+            return context
+        values.append(os.fsdecode(result.stdout.removesuffix(b"\n")))
+    values[:2] = [os.path.realpath(value) for value in values[:2]]
+    return context._replace(git_dir=values[0], worktree=values[1], prefix=values[2])
+
+
+class CheckoutSource(NamedTuple):
+    status: str
+    spelling: str | None
+    oid: str | None
+    head_role: bool
+
+
+def checkout_source(value: str | None, context: CheckoutInvocation,
+                    object_type: str = "tree") -> CheckoutSource:
+    if value is None:
+        return CheckoutSource("index", None, None, False)
+    spelling = value
+    value = "@{-1}" if value == "-" else value
+    if not value or value.startswith("-"):
+        return CheckoutSource("invalid", spelling, None, spelling == "HEAD")
+    if context.options is None or context.environment is None or not context.cwd:
+        return CheckoutSource("unresolved", spelling, None, spelling == "HEAD")
+    arguments = ["rev-parse", "--verify", "--quiet", value + "^{" + object_type + "}"]
+    if "..." in value:
+        sides = value.split("...")
+        if len(sides) != 2:
+            return CheckoutSource("invalid", spelling, None, False)
+        arguments = ["merge-base", "--all", "--", sides[0] or "HEAD", sides[1] or "HEAD"]
+    try:
+        result = subprocess.run(["/usr/bin/git", *context.options, *arguments],
+                                cwd=context.cwd, env=context.environment,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=1, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return CheckoutSource("unresolved", spelling, None, spelling == "HEAD")
+    names = result.stdout.splitlines()
+    if result.returncode or len(names) != 1:
+        return CheckoutSource("invalid", spelling, None, spelling == "HEAD")
+    return CheckoutSource("complete", spelling, os.fsdecode(names[0]), spelling == "HEAD")
 
 
 def checkout_revision(
@@ -7096,22 +7164,13 @@ def checkout_revision(
     git_options: tuple[str, ...] | None = (),
     environment: dict[str, str] | None = None,
 ) -> bool | None:
-    if value == "-":
-        value = "@{-1}"
-    if not value or value.startswith("-") or not base or not os.path.isabs(base):
+    if not base or not os.path.isabs(base):
         return False
-    if git_options is None:
-        return None
-    try:
-        result = subprocess.run(
-            ["/usr/bin/git", "-C", base, *git_options,
-             "rev-parse", "--verify", "--quiet", value + "^{" + object_type + "}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=1, env=environment,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.returncode == 0
+    context = CheckoutInvocation(base, git_options,
+                                 dict(os.environ) if environment is None else environment,
+                                 None, None, None)
+    source = checkout_source(value, context, object_type)
+    return None if source.status == "unresolved" else source.status == "complete"
 
 
 def checkout_context_value(value: str) -> int | None:
@@ -7156,6 +7215,7 @@ def checkout_option_state(
     ambiguous_source = False
     guess_state = None
     source_lookup_unknown = False
+    source = None
     if normalized is None:
         return SharedCheckoutOptionState("unknown", None, False, False, False, None,
                                          False, False, False, None, None, None, (), False, None, "", (), -1, False)
@@ -7181,6 +7241,9 @@ def checkout_option_state(
             pathspec_filename, tuple(positioned_operands),
             0 if patch_mode and overlay_mode == -1 else overlay_mode,
             source_lookup_unknown,
+            patch_mode,
+            source,
+            stage,
         )
 
     def invalid() -> SharedCheckoutOptionState:
@@ -7380,7 +7443,9 @@ def checkout_option_state(
     if patch_mode and (pathspec_file_option or force or effective_merge or overlay_mode == 1):
         return invalid()
     if source_value is not None:
-        source_is_tree = checkout_revision(source_value, base, "tree", git_options, environment)
+        source = checkout_source(source_value, CheckoutInvocation(
+            base or "", git_options, dict(os.environ) if environment is None else environment))
+        source_is_tree = None if source.status == "unresolved" else source.status == "complete"
         source_is_commit = checkout_revision(source_value, base, "commit", git_options, environment)
         if source_is_tree is None or source_is_commit is None:
             source_lookup_unknown = True
@@ -7402,15 +7467,43 @@ def checkout_option_state(
     return result("supported")
 
 
+class CompletedCheckout(NamedTuple):
+    invocation: CheckoutInvocation
+    options: SharedCheckoutOptionState
+    source: CheckoutSource
+
+
+def completed_checkout(arguments: list[str], unknown: frozenset[int],
+                       variable_cardinality: frozenset[int],
+                       context: CheckoutInvocation) -> CompletedCheckout:
+    if context.git_dir is None and context.options is not None and context.environment is not None:
+        context = checkout_invocation(context.cwd, context.options, context.environment)
+    options = checkout_option_state(arguments, unknown, context.cwd,
+                                    variable_cardinality, context.options,
+                                    context.environment)
+    source = options.source or CheckoutSource("index", None, None, False)
+    if source.status == "invalid" and options.separator_index is None:
+        # A known non-revision leading operand remains an index path,
+        # including Git's literal '-' fallback without previous history.
+        source = source._replace(status="index", oid=None, head_role=False)
+    return CompletedCheckout(context, options, source)
+
+
 def git_checkout_effect(
     arguments: list[str],
     unknown: frozenset[int] = frozenset(),
     variable_cardinality: frozenset[int] = frozenset(),
     base: str | None = None,
     git_options: tuple[str, ...] | None = (),
+    environment: dict[str, str] | None = None,
+    completed: CompletedCheckout | None = None,
 ) -> str:
     """Separate scoped path checkout from branch, HEAD, and ref transitions."""
-    options = checkout_option_state(arguments, unknown, base, variable_cardinality, git_options)
+    if completed is None:
+        context = checkout_invocation(base or "", git_options,
+                                      dict(os.environ) if environment is None else environment)
+        completed = completed_checkout(arguments, unknown, variable_cardinality, context)
+    options = completed.options
     if options.source_lookup_unknown:
         return "repository-unresolved"
     if options.validity != "supported" or options.invalid_path_mode or options.ambiguous_source:
@@ -7418,6 +7511,8 @@ def git_checkout_effect(
     if options.detach_state is True or options.orphan_mode or options.branch_mode:
         return "repository"
     if options.pathspec_file_option or options.destination_operands:
+        return "prep"
+    if options.patch_mode:
         return "prep"
     operands = [options.source_value] if options.source_value is not None else []
     if not operands:
@@ -7444,7 +7539,7 @@ def git_checkout_effect(
             configured_guess = subprocess.run(
                 ["/usr/bin/git", "-C", base, *git_options, "config", "--bool", "--get", "checkout.guess"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, check=False, timeout=1,
+                text=True, check=False, timeout=1, env=environment,
             )
             if configured_guess.returncode not in {0, 1}:
                 return "repository-unresolved"
@@ -7459,7 +7554,7 @@ def git_checkout_effect(
         fetch_mappings = subprocess.run(
             [*git_prefix, "config", "--get-regexp", r"^remote\..*\.fetch$"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, check=False, timeout=1,
+            text=True, check=False, timeout=1, env=environment,
         )
         if fetch_mappings.returncode not in {0, 1}:
             return "repository-unresolved"
@@ -7516,7 +7611,7 @@ def git_checkout_effect(
             remote_ref = subprocess.run(
                 [*git_prefix, "rev-parse", "--verify", "--quiet", destination + "^{commit}"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                check=False, timeout=1,
+                check=False, timeout=1, env=environment,
             )
             if remote_ref.returncode == 0:
                 matches.add(remote)
@@ -7524,7 +7619,7 @@ def git_checkout_effect(
             preferred = subprocess.run(
                 [*git_prefix, "config", "--get", "checkout.defaultRemote"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, check=False, timeout=1,
+                text=True, check=False, timeout=1, env=environment,
             )
             if preferred.returncode != 0 or preferred.stdout.strip() not in matches:
                 return "repository-unresolved"
@@ -11390,7 +11485,8 @@ git_mutation_specs() {
   # ordinary repository work into a denial.
   local command_text="${1:-$command}" timeout_replays="${PLAN_TIMEOUT_REPLAYS:-[]}"
   local worker_mode="${hook_is_subagent:-false}"
-  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" <<'PY'
+  local checkout_identity="${2:-false}"
+  python3 - "$command_text" "${cwd:-$PWD}" "$timeout_replays" "$worker_mode" "$(planner_shell_analysis_for "$command_text")" "$(git_effect_python)" "$checkout_identity" <<'PY'
 import json
 import os
 import re
@@ -11401,6 +11497,7 @@ exec(compile(sys.argv[6], "git-effect-library", "exec"))
 
 command, cwd = sys.argv[1:3]
 worker_mode = len(sys.argv) > 4 and sys.argv[4] == "true"
+checkout_identity = sys.argv[7] == "true"
 cwd = cwd or os.getcwd()
 try:
     timeout_replays = json.loads(sys.argv[3])
@@ -11621,7 +11718,7 @@ def segment_spec(
         return None
 
     index = 0
-    environment = {}
+    environment = dict(os.environ)
     # Shell control words, labels, assignments, and redirections are
     # structural context.  They do not change the concrete Git child that
     # follows them, so skip them before resolving that child.
@@ -11907,37 +12004,42 @@ def segment_spec(
                 git_dir = None if index + 1 in unknown else tokens[index + 1]
             else:
                 work_tree = None if index + 1 in unknown else tokens[index + 1]
+            git_options.extend((token, tokens[index + 1]))
             index += 2
             continue
         if token.startswith("--git-dir="):
             git_dir = None if index in unknown else token.split("=", 1)[1]
+            git_options.append(token)
             index += 1
             continue
         if token.startswith("--work-tree="):
             work_tree = None if index in unknown else token.split("=", 1)[1]
+            git_options.append(token)
             index += 1
             continue
         if token in value_options:
             if index + 1 >= len(tokens):
                 return None
-            if token == "-c":
+            if token in {"-c", "--config-env", "--attr-source"}:
                 if index + 1 in unknown:
                     git_options_known = False
                 else:
                     git_options.extend((token, tokens[index + 1]))
-            elif token == "--config-env":
-                git_options_known = False
             index += 2
             continue
         if token.startswith(("--attr-source=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
-            if token.startswith("--config-env="):
-                git_options_known = False
+            if token.startswith(("--config-env=", "--attr-source=")):
+                if index in unknown:
+                    git_options_known = False
+                else:
+                    git_options.append(token)
             index += 1
             continue
         if token == "--":
             index += 1
             break
         if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-pager"}:
+            git_options.append(token)
             index += 1
             continue
         if token.startswith("-"):
@@ -11946,6 +12048,7 @@ def segment_spec(
 
     if index >= len(tokens) or index in unknown:
         return None
+    invocation_cwd = repo_dir
     resolved_git_dir = resolve(git_dir, repo_dir) if git_dir else git_dir
     resolved_work_tree = resolve(work_tree, repo_dir) if work_tree else work_tree
     if resolved_work_tree is None or resolved_git_dir is None:
@@ -11984,10 +12087,14 @@ def segment_spec(
     if verb == "update-index":
         return "index-unsupported", repo_dir
     if verb == "checkout":
+        context = checkout_invocation(invocation_cwd or "", tuple(git_options) if git_options_known else None,
+                                      dict(environment) if all(value is not None for value in environment.values()) else None)
+        checkout_unknown = frozenset(value - index - 1 for value in unknown if value > index)
+        checkout_variable = frozenset(value - index - 1 for value in variable_cardinality if value > index)
+        completed = completed_checkout(tokens[index + 1:], checkout_unknown, checkout_variable, context)
         return git_checkout_effect(tokens[index + 1:],
-            frozenset(value - index - 1 for value in unknown if value > index),
-            frozenset(value - index - 1 for value in variable_cardinality if value > index),
-            repo_dir, tuple(git_options) if git_options_known else None), repo_dir
+            checkout_unknown, checkout_variable, context.cwd, context.options, context.environment,
+            completed=completed), context.worktree or repo_dir, context
     if verb == "commit":
         effect = commit_effect(tokens[index + 1:], frozenset(
             value - index - 1 for value in unknown if value > index), frozenset(
@@ -12025,6 +12132,18 @@ def segment_spec(
     return None
 
 
+def emit_spec(spec):
+    print(spec[0])
+    if checkout_identity and len(spec) == 3:
+        context = spec[2]
+        # Only resolved identity crosses this shell transport. Environment
+        # and configuration values stay inside the typed Python context.
+        print("checkout-context:" + json.dumps({"cwd": context.cwd,
+              "worktree": context.worktree, "git_dir": context.git_dir}, separators=(",", ":")))
+    else:
+        print(spec[1] if spec[1] and os.path.isabs(spec[1]) else "<unresolved>")
+
+
 analysis = json.loads(sys.argv[5])
 if analysis is not None:
     for record in analysis["commands"]:
@@ -12044,10 +12163,7 @@ if analysis is not None:
                                 frozenset(record.get("may_multiply_arguments") or []),
                                 cardinality_unknown)
             if spec:
-                print(spec[0])
-                # Transport uncertainty explicitly; never resolve this
-                # marker as a filesystem path in the shell consumer.
-                print(spec[1] if spec[1] and os.path.isabs(spec[1]) else "<unresolved>")
+                emit_spec(spec)
 else:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -12066,8 +12182,7 @@ else:
     for segment_index, segment in enumerate(segments, 1):
         spec = segment_spec(segment, segment_index)
         if spec:
-            print(spec[0])
-            print(spec[1] if spec[1] and os.path.isabs(spec[1]) else "<unresolved>")
+            emit_spec(spec)
 PY
 }
 
@@ -12845,10 +12960,7 @@ def unwrap(
     return CheckoutWrapperContext(index, base, environment,
                                   context_known and bool(base and os.path.isabs(base)))
 
-class CheckoutGitContext(NamedTuple):
-    cwd: str
-    options: tuple[str, ...] | None
-    environment: dict[str, str] | None
+CheckoutGitContext = CheckoutInvocation
 
 
 class ProtectedGitCommand(NamedTuple):
@@ -12945,7 +13057,7 @@ def git_command(
     def unavailable_context() -> ProtectedGitCommand | None:
         if segment[index] != "checkout":
             return None
-        return parsed(CheckoutGitContext(base or "", None, None), base or target_repo)
+        return parsed(checkout_invocation(base or "", None, None), base or target_repo)
 
     if work_tree is None or git_dir is None:
         return unavailable_context()
@@ -12964,16 +13076,17 @@ def git_command(
             repository_base = os.path.dirname(repository_base)
     if not repository_base or not os.path.isabs(repository_base):
         return unavailable_context()
-    current = os.path.realpath(repository_base)
-    while current != target_repo:
-        parent = os.path.dirname(current)
-        if parent == current or os.path.lexists(os.path.join(current, ".git")):
-            return None
-        current = parent
-    return parsed(
-        CheckoutGitContext(invocation_cwd, tuple(git_options) if context_known else None,
-                           dict(environment) if context_known else None), base,
-    )
+    context = checkout_invocation(invocation_cwd,
+                                  tuple(git_options) if context_known else None,
+                                  dict(environment) if context_known else None)
+    if segment[index] != "checkout":
+        current = os.path.realpath(repository_base)
+        while current != target_repo:
+            parent = os.path.dirname(current)
+            if parent == current or os.path.lexists(os.path.join(current, ".git")):
+                return None
+            current = parent
+    return parsed(context, base)
 
 def rm_detail(
     args: list[str],
@@ -13237,27 +13350,107 @@ def checkout_native_names(arguments: list[str], context: CheckoutGitContext) -> 
     return CheckoutSelection("complete", names)
 
 
-def checkout_selected_paths(paths: list[str], options: SharedCheckoutOptionState,
-                            context: CheckoutGitContext) -> CheckoutSelection:
+def checkout_literal_context(context: CheckoutGitContext) -> CheckoutGitContext:
+    flags = {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs"}
+    if context.options is None or context.environment is None:
+        return context
+    environment = dict(context.environment)
+    for name in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+        environment.pop(name, None)
+    return context._replace(options=tuple(value for value in context.options if value not in flags) +
+                            ("--literal-pathspecs",), environment=environment)
+
+
+def checkout_source_entries(names: frozenset[str], source: CheckoutSource,
+                            context: CheckoutGitContext) -> tuple[CheckoutSelection, dict[str, str]]:
+    modes = {}
+    literal = checkout_literal_context(context)
+    # Canonical matcher results are literal repository-relative names. Query
+    # only these entries, retaining modes without walking unrelated trees.
+    ordered = sorted(names)
+    for offset in range(0, len(ordered), 64):
+        batch = ordered[offset:offset + 64]
+        records = checkout_native_names(["ls-tree", "--full-tree", "-z", source.oid, "--", *batch], literal)
+        if records.status != "complete":
+            return records, {}
+        for record in records.paths:
+            header, separator, selected_name = record.partition("\t")
+            if not separator or selected_name not in batch:
+                return CheckoutSelection("unresolved", frozenset(), "source-entry-context"), {}
+            mode = header.split(" ", 1)[0]
+            if mode not in {"100644", "100755", "120000", "160000", "040000"}:
+                return CheckoutSelection("unresolved", frozenset(), "source-entry-mode"), {}
+            modes[selected_name] = mode
+    return CheckoutSelection("complete", frozenset(modes)), modes
+
+
+def checkout_index_modes(selected: CheckoutSelection, completed: CompletedCheckout) -> tuple[CheckoutSelection, dict[str, str]]:
+    if selected.status != "complete":
+        return selected, {}
+    literal = checkout_literal_context(completed.invocation)
+    if literal.options is not None:
+        literal = literal._replace(options=literal.options[:-1])
+    modes = {}
+    ordered = sorted(selected.paths)
+    for offset in range(0, len(ordered), 64):
+        batch = ordered[offset:offset + 64]
+        records = checkout_native_names(["ls-files", "--cached", "--stage", "--full-name", "-z", "--",
+                                         *(":(top,literal)" + name for name in batch)], literal)
+        if records.status != "complete":
+            return records, {}
+        for record in records.paths:
+            header, separator, name = record.partition("\t")
+            fields = header.split(" ")
+            if not separator or name not in batch or len(fields) != 3:
+                return CheckoutSelection("unresolved", frozenset(), "index-entry-context"), {}
+            if fields[2] == str(completed.options.stage_mode):
+                modes[name] = fields[0]
+    return selected, modes
+
+
+def checkout_selected_paths(paths: list[str], completed: CompletedCheckout) -> tuple[CheckoutSelection, dict[str, str]]:
+    options, context, source = completed.options, completed.invocation, completed.source
     arguments = ["ls-files", "--cached", "--full-name", "-z"]
-    if options.source_is_tree is not True:
-        return checkout_native_names([*arguments, "--", *paths], context)
-    source = "@{-1}" if options.source_value == "-" else options.source_value
+    if options.source_lookup_unknown:
+        # Source uncertainty does not erase known destination selection.
+        # Include untracked live entries: a source may overwrite a protected
+        # path that is absent from the current index. Keep the source status
+        # unresolved and report it if a live protected target is selected.
+        return checkout_native_names(["ls-files", "--cached", "--others", "--full-name", "-z", "--", *paths], context), {}
+    if options.patch_mode:
+        if source.status == "index":
+            query = ["diff-files", "--ignore-submodules=dirty", "--name-only", "-z", "--", *paths]
+        else:
+            if source.status != "complete":
+                return CheckoutSelection("unresolved", frozenset(), "source-lookup"), {}
+            query = ["diff-index", *([] if source.head_role else ["-R"]),
+                     "--ignore-submodules=dirty", "--name-only", "-z", source.oid, "--", *paths]
+        selected = checkout_native_names(query, context)
+        if selected.status != "complete":
+            return selected, {}
+        if source.status == "index":
+            return checkout_index_modes(selected, completed)
+        membership, modes = checkout_source_entries(selected.paths, source, context)
+        return (selected if membership.status == "complete" else membership), modes
+    if source.status == "index":
+        return checkout_index_modes(checkout_native_names([*arguments, "--", *paths], context), completed)
+    if source.status != "complete":
+        return CheckoutSelection("unresolved", frozenset(), "source-lookup"), {}
     # ls-tree cannot parse every checkout magic. ls-files adds missing tree
     # entries for native expansion; intersection removes index-only matches.
-    selected = checkout_native_names([*arguments, "--with-tree=" + source, "--", *paths], context)
+    selected = checkout_native_names([*arguments, "--with-tree=" + source.oid, "--", *paths], context)
     if selected.status != "complete":
-        return selected
-    inventory = checkout_native_names(["ls-tree", "-r", "--name-only", "--full-tree", "-z", source], context)
-    if inventory.status != "complete":
-        return inventory
-    names = selected.paths & inventory.paths
+        return selected, {}
+    membership, modes = checkout_source_entries(selected.paths, source, context)
+    if membership.status != "complete":
+        return membership, {}
+    names = membership.paths
     if options.overlay_mode == 0:
         current = checkout_native_names([*arguments, "--", *paths], context)
         if current.status != "complete":
-            return current
+            return current, {}
         names |= current.paths
-    return CheckoutSelection("complete", names)
+    return CheckoutSelection("complete", names), modes
 
 
 def checkout_detail(
@@ -13267,13 +13460,12 @@ def checkout_detail(
     variable_cardinality: frozenset[int] = frozenset(),
     context: CheckoutGitContext | None = None,
 ) -> str | None:
-    context = context or CheckoutGitContext(base, (), dict(os.environ))
+    context = context or checkout_invocation(base, (), dict(os.environ))
     if context.options is None or context.environment is None:
         return checkout_unresolved("invocation-context")
-    options = checkout_option_state(args, unknown, context.cwd, variable_cardinality,
-                                    context.options, context.environment)
-    if options.source_lookup_unknown:
-        return checkout_unresolved("source-lookup")
+    completed = completed_checkout(args, unknown, variable_cardinality, context)
+    context = completed.invocation
+    options = completed.options
     if options.pathspec_file_option and options.pathspec_filename is None:
         return checkout_unresolved("pathspec-file")
     # With `--`, every following token is a worktree pathspec. Without it,
@@ -13282,7 +13474,7 @@ def checkout_detail(
     # Positive detach options select a revision; they cannot introduce a
     # worktree pathspec.  Restrict this exemption to an effective positive
     # option before `--`; a later --no-detach or an option value cancels it.
-    if (options.validity != "supported" or options.invalid_path_mode or
+    if ((options.validity != "supported" and not options.source_lookup_unknown) or options.invalid_path_mode or
             options.ambiguous_source or options.detach_state is True):
         return None
     if options.branch_mode or options.orphan_mode:
@@ -13290,31 +13482,59 @@ def checkout_detail(
     # Only completed operands participate: option-consumed values never
     # become destinations or separators during protected-path selection.
     if options.separator_index is not None:
-        if options.source_value is not None and options.source_is_tree is not True:
+        if options.source_value is not None and options.source_is_tree is not True and not options.source_lookup_unknown:
             return None
         paths = [value for position, value in options.positioned_operands
                  if position > options.separator_index]
+        path_sets = [paths]
     else:
         paths = [value for _, value in options.positioned_operands]
         if options.source_is_tree is True:
             paths = paths[1:]  # Remove the eligible leading source exactly once.
+        path_sets = [paths]
+        if options.source_lookup_unknown and options.source_is_tree is not True and paths:
+            # Git may consume a leading source or retain a failed lookup as a
+            # path. Keep both complete sets: merging them changes exclusions.
+            path_sets.append(paths[1:])
     if options.pathspec_file_option:
-        if paths:
+        if not any(not paths for paths in path_sets):
             return None  # Git rejects simultaneous file and explicit paths.
         paths = git_pathspec_entries(options.pathspec_filename, context.cwd, options.pathspec_file_nul)
         if paths is None:
             return checkout_unresolved("pathspec-file")
-    if not paths:
+        path_sets = [paths]
+    names = set()
+    modes = {}
+    complete = False
+    for paths in path_sets:
+        if not paths and not options.patch_mode:
+            continue
+        selected, selected_modes = checkout_selected_paths(paths, completed)
+        if selected.status == "unresolved":
+            return checkout_unresolved(selected.reason)
+        if selected.status == "invalid":
+            continue
+        complete = True
+        names.update(selected.paths)
+        modes.update(selected_modes)
+        if len(names) > CHECKOUT_MATCH_NAMES:
+            return checkout_unresolved("role-name-limit")
+        if sum(len(os.fsencode(name)) + 1 for name in names) > CHECKOUT_MATCH_BYTES:
+            return checkout_unresolved("role-output-limit")
+    if not complete:
         return None
-    selected = checkout_selected_paths(paths, options, context)
-    if selected.status == "unresolved":
-        return checkout_unresolved(selected.reason)
-    if selected.status == "invalid":
-        return None
-    for name in sorted(selected.paths):
-        candidate = os.path.join(target_repo, name)
-        detail = protected_path_detail(candidate, "checkout", False)
+    for name in sorted(names):
+        if modes.get(name) == "160000":
+            continue  # Ordinary checkout leaves an existing gitlink directory intact.
+        if context.worktree is None:
+            return checkout_unresolved("worktree-context")
+        candidate = os.path.join(context.worktree, name)
+        recursive = modes.get(name) in {"100644", "100755", "120000"} and os.path.isdir(candidate) and not os.path.islink(candidate)
+        detail = protected_path_detail(candidate, "checkout", recursive)
         if detail:
+            if options.source_lookup_unknown:
+                return (f"operation=checkout effect=overwrite-unresolved target={candidate} "
+                        "kind=unresolved-checkout-selection reason=source-lookup-protected-target")
             return detail
     return None
 
@@ -13435,8 +13655,26 @@ PY
 
 enforce_git_mutation_gate() {
   local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_token
+  local checkout_context
 
-  if ! specs_text="$(git_mutation_specs)"; then
+  # Resolve concrete checkout targets before effect labels can take an
+  # inspection/preparation shortcut. The matcher preserves native-invalid,
+  # ordinary, and incomplete selections instead of denying unknown syntax.
+  protected_target_detail="$(git_protected_worktree_target_detail "$command" "${CODEX_CONFIGURED_HOME:-${CODEX_HOME:-$cwd}}" "$cwd" 2>/dev/null || true)"
+  if [ -n "$protected_target_detail" ]; then
+    protected_target_token="${protected_target_detail#operation=}"
+    protected_target_token="${protected_target_token%% *}"
+    if [ "${hook_is_subagent:-false}" = true ]; then
+      deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+        "ECI worker Git preparation requires protected-target resolution: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target" \
+        "the responsible Producer edits tracked hook source in place and stages exact owned paths or agreed hunks with git add; unstage with git restore --staged -- <paths>; the Supervisor owns installer, hook mode, and lifecycle controls"
+    else
+      deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
+        "ECI Supervisor Git worktree mutation requires protected-target resolution: ${protected_target_detail}; predicate=coordinator-protected-target" \
+        "assign the tracked source change to its responsible Producer for an in-place edit and scoped git add; use the Supervisor's canonical installer, hook mode, or lifecycle route for those controls"
+    fi
+  fi
+  if ! specs_text="$(git_mutation_specs "$command" true)"; then
     return 0
   fi
   if [ -n "$specs_text" ]; then
@@ -13471,6 +13709,11 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
+    checkout_context=""
+    if [[ "$repo_dir" = checkout-context:* ]]; then
+      checkout_context="${repo_dir#checkout-context:}"
+      repo_dir="$(jq -r '.cwd // "<unresolved>"' <<<"$checkout_context")"
+    fi
     case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
@@ -13538,13 +13781,18 @@ enforce_git_mutation_gate() {
     # Concrete repository boundaries still apply to retained Git commands.
     # Remaining target uncertainty cannot become an invented repository path.
     [ "$repo_dir" != '<unresolved>' ] || continue
-    repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$checkout_context" ]; then
+      repo_root="$(jq -r '.worktree // ""' <<<"$checkout_context")"
+      git_dir_raw="$(jq -r '.git_dir // ""' <<<"$checkout_context")"
+    else
+      repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+      git_dir_raw="$(codex_git_safe -C "$repo_dir" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    fi
     repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
     # A non-repository or otherwise unresolved Git target is Git's normal
     # runtime error, not proof of an accidental cross-scope mutation. Keep it
     # advisory; only a target that resolves to a different repository stops.
     [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || continue
-    git_dir_raw="$(codex_git_safe -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null || true)"
     git_dir="$(realpath -m -- "$git_dir_raw" 2>/dev/null || true)"
     [ -n "$git_dir" ] && [ -d "$git_dir" ] || continue
     if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] &&
