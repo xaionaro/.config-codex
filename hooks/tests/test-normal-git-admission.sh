@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SOURCE_ROOT="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-normal-git-admission.XXXXXX")"
 TMP_ROOT="$(realpath -e -- "$TMP_ROOT")"
 trap 'chmod -R u+w -- "$TMP_ROOT"; rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
+trap 'printf "fixture failed: target=%s line=%s\n" "${NORMAL_GIT_ADMISSION_TARGET:-full}" "$LINENO" >&2' ERR
 
 # Exercise a complete private runtime, removing only a leading bypass after
 # the shebang, blank lines, and comments. Never change the live runtime.
@@ -1834,6 +1835,9 @@ checkout_context_mode_membership_pair() {
   mkdir -p -- "$redirect"
   mv -- "$REPO/.git" "$redirect/.git"
   git -C "$redirect" config core.worktree "$REPO"
+  cp -- "$PROOF_ROOT/$SESSION/eci_active" "$TMP_ROOT/context-marker-before-redirect"
+  awk -v cwd="$redirect" '/^cwd:/ { print "cwd: " cwd; next } { print }' \
+    "$TMP_ROOT/context-marker-before-redirect" >"$PROOF_ROOT/$SESSION/eci_active"
   printf '\n# redirected dirty\n' >>"$REPO/hooks/validate-bash.sh"
   assert_denied_code 'git checkout HEAD -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker '' configured absent "$redirect" || failures=1
   git -C "$redirect" checkout HEAD -- hooks/validate-bash.sh >"$TMP_ROOT/context-redirect-protected.log" 2>&1 || failures=1
@@ -1848,6 +1852,7 @@ checkout_context_mode_membership_pair() {
   [ "$(git -C "$redirect" symbolic-ref HEAD)" = "$branch" ] || failures=1
   git -C "$redirect" config --unset core.worktree
   mv -- "$redirect/.git" "$REPO/.git"
+  cp -- "$TMP_ROOT/context-marker-before-redirect" "$PROOF_ROOT/$SESSION/eci_active"
   [ "$failures" -eq 0 ] || return 1
   printf '%s\n' 'checkout ancestor/membership/persisted worktree: PASS'
 }
@@ -2062,6 +2067,336 @@ run_checkout_context_validity_target() {
   printf '%s\n' 'checkout invocation/source context: PASS'
 }
 
+# Current worker contract: every CLI command passes the registered launcher,
+# then the compiled CLI performs the actual operation. Legacy pathspec/checkout
+# grammar lives in explicitly selected historical native differential targets.
+typed_run() {
+  local command status=0
+  printf -v command '%q ' "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" "$@"
+  assert_allowed "$command" worker
+  HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+    "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" "$@" >"$TMP_ROOT/typed-operation.log" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then cat "$TMP_ROOT/typed-operation.log" >&2; return "$status"; fi
+  printf 'typed operation executed: %s\n' "$*"
+}
+
+typed_reject() {
+  local command before_index before_head before_branch status=0
+  before_index="$(sha256sum "$REPO/.git/index")"
+  before_head="$(git -C "$REPO" rev-parse HEAD)"
+  before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  printf -v command '%q ' "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" "$@"
+  assert_allowed "$command" worker
+  HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+    "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" "$@" >"$TMP_ROOT/typed-rejection.log" 2>&1 || status=$?
+  [ "$status" -ne 0 ] && [ -s "$TMP_ROOT/typed-rejection.log" ] || {
+    printf 'expected CLI rejection: %s\n' "$command" >&2; return 1;
+  }
+  [ "$(sha256sum "$REPO/.git/index")" = "$before_index" ]
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ]
+  [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ]
+  printf 'typed rejected with state preserved: %s\n' "$*"
+}
+
+typed_invariants() {
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$matrix_head" ]
+  [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$matrix_branch" ]
+  [ "$(git -C "$REPO" show :unrelated.txt)" = 'unrelated staged' ]
+  [ "$(cat "$REPO/unrelated.txt")" = 'unrelated worktree' ]
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$matrix_protected" ]
+}
+
+run_worker_git_helper_effect() {
+  local output index_hash head worktree_hash helper_output="$TMP_ROOT/git-helper-effect.out"
+  assert_allowed 'git diff --ext-diff --textconv -- file.txt' worker
+  printf '#!/usr/bin/env bash\nprintf helper-effect > %q\n' "$helper_output" >"$TMP_ROOT/git-external-helper"
+  chmod 755 "$TMP_ROOT/git-external-helper"
+  git -C "$REPO" config diff.external "$TMP_ROOT/git-external-helper"
+  assert_denied_code 'git diff -- file.txt' ECI_GIT_EXECUTION_CONTEXT_DENIED worker
+  assert_allowed 'git diff --no-ext-diff --no-textconv -- file.txt' worker
+  assert_allowed 'git diff --name-only -- file.txt' worker
+  git -C "$REPO" diff --name-only -- file.txt >"$TMP_ROOT/git-name-only-native.log"
+  [ ! -e "$helper_output" ]
+  index_hash="$(sha256sum "$REPO/.git/index")"
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  worktree_hash="$(git -C "$REPO" hash-object file.txt)"
+  output="$(run_hook 'git diff --ext-diff -- file.txt' worker)"
+  cp -- "$output" "$TMP_ROOT/helper-decision.json"
+  output="$TMP_ROOT/helper-decision.json"
+  printf '%s\n' 'registered helper-effect command: git diff --ext-diff -- file.txt'
+  if [ -s "$output" ]; then cat "$output"; else printf '%s\n' 'registered helper-effect decision: ALLOW (empty output)'; fi
+  git -C "$REPO" diff --ext-diff -- file.txt >"$TMP_ROOT/git-helper-native.log" 2>&1
+  [ "$(cat "$helper_output")" = helper-effect ]
+  [ "$(sha256sum "$REPO/.git/index")" = "$index_hash" ]
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ]
+  [ "$(git -C "$REPO" hash-object file.txt)" = "$worktree_hash" ]
+  printf 'actual native helper effect: output=%s content=helper-effect index/HEAD/worktree preserved\n' "$helper_output"
+  git -C "$REPO" config --unset diff.external
+  printf 'file.txt diff=fixture\n' >"$REPO/.gitattributes"
+  git -C "$REPO" config diff.fixture.textconv "$TMP_ROOT/git-external-helper"
+  assert_denied_code 'git diff -- file.txt' ECI_GIT_EXECUTION_CONTEXT_DENIED worker
+  assert_allowed 'git diff --no-ext-diff --no-textconv -- file.txt' worker
+  assert_allowed 'git show HEAD:file.txt' worker
+  assert_allowed 'git log --no-textconv -p -1 -- file.txt' worker
+  rm -- "$helper_output"
+  git -C "$REPO" show HEAD:file.txt >"$TMP_ROOT/git-blob-native.log"
+  git -C "$REPO" log --no-textconv -p -1 -- file.txt >"$TMP_ROOT/git-log-native.log"
+  [ ! -e "$helper_output" ]
+  git -C "$REPO" diff -- file.txt >"$TMP_ROOT/git-textconv-native.log" 2>&1
+  [ "$(cat "$helper_output")" = helper-effect ]
+  [ "$(sha256sum "$REPO/.git/index")" = "$index_hash" ]
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ]
+  [ "$(git -C "$REPO" hash-object file.txt)" = "$worktree_hash" ]
+  git -C "$REPO" config --unset diff.fixture.textconv
+  rm -- "$REPO/.gitattributes"
+  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null || {
+    printf '%s\n' 'configured helper output effect escaped registered worker denial' >&2; return 1;
+  }
+  printf '%s\n' 'worker Git configured helper-effect denial: PASS'
+}
+
+run_worker_git_cli_edges() {
+  local saved_repo head hook_hash mode tree_oid status object blob
+  saved_repo="$REPO"
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  hook_hash="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  # Native skip-worktree state does not expand literal selection or waive
+  # live-target protection. Content staging remains native index behavior.
+  git -C "$REPO" update-index --skip-worktree file.txt
+  # Git itself excludes skip-worktree entries from this fixed restore form;
+  # native-invalid selection remains an ordinary CLI diagnostic, not a gate.
+  status=0
+  git -C "$REPO" restore --source=HEAD --worktree -- file.txt >"$TMP_ROOT/skip-native.log" 2>&1 || status=$?
+  [ "$status" -ne 0 ] && [ -s "$TMP_ROOT/skip-native.log" ]
+  typed_reject restore --source head --destination worktree -- file.txt
+  typed_reject restore --source head --destination worktree -- hooks/validate-bash.sh
+  git -C "$REPO" update-index --no-skip-worktree file.txt
+  # A source/index gitlink at the protected ancestor must never recursively
+  # rewrite live hooks. Both source/tree and index modes retain exact denial.
+  cp "$REPO/.git/index" "$TMP_ROOT/edge-index"
+  git -C "$REPO" rm -q --cached -- hooks/validate-bash.sh
+  blob="$(printf 'ancestor replacement\n' | git -C "$REPO" hash-object -w --stdin)"
+  for mode in 100644 120000 160000; do
+    object="$blob"; [ "$mode" != 160000 ] || object="$head"
+    git -C "$REPO" update-index --add --cacheinfo "$mode,$object,hooks"
+    tree_oid="$(git -C "$REPO" write-tree)"
+    typed_reject restore --source index --destination worktree -- hooks
+    typed_reject restore --source "$tree_oid" --destination both -- hooks
+    git -C "$REPO" update-index --force-remove hooks
+  done
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$hook_hash" ]
+  cp "$TMP_ROOT/edge-index" "$REPO/.git/index"
+  # A leaf symlink is a literal entry: restoring/removing it changes the link,
+  # and preserves its protected referent. Ancestor aliases were denied above.
+  ln -s hooks/validate-bash.sh "$REPO/ordinary-link"
+  typed_run stage-content -- ordinary-link
+  [ "$(git -C "$REPO" ls-files --stage -- ordinary-link | cut -d' ' -f1)" = 120000 ]
+  rm "$REPO/ordinary-link"
+  typed_run restore --source index --destination worktree -- ordinary-link
+  [ "$(readlink "$REPO/ordinary-link")" = hooks/validate-bash.sh ]
+  typed_run remove --destination both -- ordinary-link
+  [ ! -L "$REPO/ordinary-link" ]
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$hook_hash" ]
+  # Unborn unstage removes only selected prepared content, retaining the
+  # other prepared blob and every live file, without inventing a HEAD.
+  REPO="$TMP_ROOT/typed-unborn"
+  mkdir -p "$REPO"; git -C "$REPO" init -q
+  printf '%s\n' 'scope: typed unborn matrix' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  printf 'unborn selected\n' >"$REPO/selected"
+  printf 'unborn retained\n' >"$REPO/retained"
+  typed_run stage-content -- selected retained
+  typed_run unstage -- selected
+  if git -C "$REPO" cat-file -e :selected 2>/dev/null; then return 1; fi
+  [ "$(git -C "$REPO" show :retained)" = 'unborn retained' ]
+  [ "$(cat "$REPO/selected")" = 'unborn selected' ]
+  if git -C "$REPO" rev-parse --verify HEAD >/dev/null 2>&1; then return 1; fi
+  REPO="$saved_repo"
+  printf '%s\n' 'scope: typed matrix' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ]
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$hook_hash" ]
+  printf '%s\n' 'worker Git mode/unborn registered edges: PASS'
+}
+
+run_worker_git_cli_matrix() {
+  local matrix_head matrix_branch matrix_protected source_oid path destination source hook_hash redirect original_repo native_status command i
+  # Establish ordinary and unrelated staged/worktree states once; each bounded
+  # operation preserves HEAD, branch, live hook and unrelated content.
+  git -C "$REPO" restore --worktree -- file.txt
+  for path in unrelated.txt removed.txt move.txt ':(glob)*' '*.txt' 'HOOKS' 'space name' '-n'; do
+    printf 'ordinary base\n' >"$REPO/$path"
+    git -C "$REPO" --literal-pathspecs add -- "$path"
+  done
+  git -C "$REPO" commit -qm 'matrix baseline'
+  matrix_head="$(git -C "$REPO" rev-parse HEAD)"
+  matrix_branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  matrix_protected="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  source_oid="$(git -C "$REPO" rev-parse HEAD^{tree})"
+  printf 'unrelated staged\n' >"$REPO/unrelated.txt"
+  git -C "$REPO" add -- unrelated.txt
+  printf 'unrelated worktree\n' >"$REPO/unrelated.txt"
+  printf 'content staged\n' >"$REPO/file.txt"
+  typed_run stage-content -- file.txt
+  [ "$(git -C "$REPO" show :file.txt)" = 'content staged' ]; typed_invariants
+  typed_run unstage -- file.txt
+  [ "$(git -C "$REPO" show :file.txt)" = base ]
+  [ "$(cat "$REPO/file.txt")" = 'content staged' ]; typed_invariants
+  # Literal selectors select only the named entry, including case and dash.
+  for path in ':(glob)*' '*.txt' 'HOOKS' 'space name' '-n'; do
+    printf 'literal changed\n' >"$REPO/$path"
+    typed_run stage-content -- "$path"
+    [ "$(git -C "$REPO" show ":$path")" = 'literal changed' ]
+    typed_run restore --source head --destination both -- "$path"
+    [ "$(cat "$REPO/$path")" = 'ordinary base' ]; typed_invariants
+  done
+  # Fixed source/destination matrix: index reads only restore the worktree.
+  for source in head "$source_oid"; do
+    for destination in worktree index both; do
+      printf 'destination dirty\n' >"$REPO/file.txt"
+      typed_run stage-content -- file.txt
+      typed_run restore --source "$source" --destination "$destination" -- file.txt
+      if [ "$destination" != index ]; then [ "$(cat "$REPO/file.txt")" = base ]; fi
+      if [ "$destination" != worktree ]; then [ "$(git -C "$REPO" show :file.txt)" = base ]; fi
+      typed_invariants
+    done
+  done
+  printf 'index source\n' >"$REPO/file.txt"; typed_run stage-content -- file.txt
+  printf 'worktree source\n' >"$REPO/file.txt"
+  typed_run restore --source index --destination worktree -- file.txt
+  [ "$(cat "$REPO/file.txt")" = 'index source' ]; typed_invariants
+  typed_run restore --source head --destination both -- file.txt
+  # A protected file supports content/index operations; worktree effects deny.
+  printf '\n# protected dirty\n' >>"$REPO/hooks/validate-bash.sh"
+  matrix_protected="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+  typed_run stage-content -- hooks/validate-bash.sh
+  [ "$(git -C "$REPO" rev-parse :hooks/validate-bash.sh)" = "$matrix_protected" ]; typed_invariants
+  typed_run unstage -- hooks/validate-bash.sh
+  typed_run restore --source head --destination index -- hooks/validate-bash.sh
+  typed_run remove --destination index -- hooks/validate-bash.sh
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$matrix_protected" ]
+  typed_run restore --source head --destination index -- hooks/validate-bash.sh
+  for source in head index "$source_oid"; do
+    typed_reject restore --source "$source" --destination worktree -- hooks/validate-bash.sh
+    typed_invariants
+  done
+  typed_reject restore --source head --destination both -- hooks/validate-bash.sh
+  typed_reject remove --destination worktree -- hooks
+  typed_reject remove --destination both -- hooks/validate-bash.sh
+  typed_reject move -- hooks/validate-bash.sh moved-hook
+  typed_reject move -- file.txt hooks/validate-bash.sh
+  typed_invariants
+  # Protection is based on physical ancestors and provider paths, not a name.
+  ln -s hooks "$REPO/hook-alias"
+  typed_reject restore --source head --destination worktree -- hook-alias/validate-bash.sh
+  ln -s "$FOREIGN_REPO" "$REPO/outside-alias"
+  typed_reject stage-content -- outside-alias/file.txt
+  typed_reject stage-content -- .git/index
+  typed_reject stage-content -- ../file.txt
+  typed_reject stage-content -- /etc/hosts
+  typed_reject stage-content -- hooks
+  typed_reject restore --source index --destination both -- file.txt
+  typed_reject restore --source missing-ref --destination worktree -- file.txt
+  typed_reject restore --source 0000000000000000000000000000000000000000 --destination both -- file.txt
+  typed_reject restore --source head --destination worktree -- absent.txt
+  typed_reject stage-content -- absent.txt
+  typed_reject stage-removals -- file.txt
+  typed_reject move -- file.txt move.txt
+  typed_reject commit --amend
+  typed_reject commit --message invalid -- file.txt
+  typed_invariants
+  # Content staging never sweeps deletions; removal staging requires absence.
+  rm -- "$REPO/removed.txt"
+  typed_run stage-content -- file.txt
+  git -C "$REPO" cat-file -e :removed.txt
+  typed_run stage-removals -- removed.txt
+  if git -C "$REPO" cat-file -e :removed.txt 2>/dev/null; then return 1; fi
+  typed_run restore --source head --destination both -- removed.txt; typed_invariants
+  for destination in index worktree both; do
+    typed_run remove --destination "$destination" -- removed.txt
+    if [ "$destination" != index ]; then [ ! -e "$REPO/removed.txt" ]; else [ -f "$REPO/removed.txt" ]; fi
+    if [ "$destination" != worktree ]; then
+      if git -C "$REPO" cat-file -e :removed.txt 2>/dev/null; then return 1; fi
+    else git -C "$REPO" cat-file -e :removed.txt; fi
+    typed_run restore --source head --destination both -- removed.txt; typed_invariants
+  done
+  typed_run move -- move.txt moved.txt
+  [ ! -e "$REPO/move.txt" ] && [ -f "$REPO/moved.txt" ]
+  [ "$(git -C "$REPO" show :moved.txt)" = 'ordinary base' ]; typed_invariants
+  typed_run move -- moved.txt move.txt; typed_invariants
+  # Native patch selection proves complete changed-name validation and keeps
+  # worktree content untouched, including unlisted second-file rejection.
+  typed_run restore --source head --destination both -- file.txt
+  printf 'hunk changed\n' >"$REPO/file.txt"
+  git -C "$REPO" diff -- file.txt >"$TMP_ROOT/one.patch"
+  printf 'second patch\n' >"$REPO/removed.txt"
+  git -C "$REPO" diff -- file.txt removed.txt >"$TMP_ROOT/two.patch"
+  typed_reject stage-hunks --patch-file "$TMP_ROOT/two.patch" -- file.txt
+  typed_run stage-hunks --patch-file "$TMP_ROOT/one.patch" -- file.txt
+  [ "$(git -C "$REPO" show :file.txt)" = 'hunk changed' ]
+  [ "$(cat "$REPO/file.txt")" = 'hunk changed' ]; typed_invariants
+  typed_run restore --source head --destination both -- file.txt removed.txt
+  # A large tracked inventory does not broaden a narrow literal selection.
+  for ((i=0; i<1200; i++)); do printf 'inventory\n' >"$REPO/inventory-$i"; done
+  git -C "$REPO" add -- 'inventory-*'
+  printf 'large ordinary\n' >"$REPO/file.txt"
+  typed_run stage-content -- file.txt
+  [ "$(git -C "$REPO" show :file.txt)" = 'large ordinary' ]; typed_invariants
+  typed_run restore --source head --destination both -- file.txt
+  git -C "$REPO" reset -q HEAD -- 'inventory-*'
+  # The marker must match the physical callback CWD. An inactive control
+  # separately proves that it makes no active ECI admission claim.
+  assert_allowed 'git add -- file.txt' worker configured absent "$FOREIGN_REPO"
+  original_repo="$REPO"; redirect="$TMP_ROOT/typed-redirect"
+  mkdir -p "$redirect"
+  cp "$REPO/file.txt" "$redirect/file.txt"
+  mkdir -p "$redirect/hooks"; cp "$REPO/hooks/validate-bash.sh" "$redirect/hooks/validate-bash.sh"
+  git -C "$REPO" config core.worktree "$redirect"
+  REPO="$(realpath -e "$redirect")"
+  printf '%s\n' 'scope: typed redirected worktree' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  # --repo continues to designate the existing Git directory owner, whose
+  # persisted worktree resolves to the physical callback's directory.
+  printf -v command '%q ' "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$original_repo" restore --source head --destination worktree -- file.txt
+  assert_allowed "$command" worker
+  HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$original_repo" restore --source head --destination worktree -- file.txt
+  [ "$(cat "$REPO/file.txt")" = base ]
+  git --git-dir="$original_repo/.git" config --unset core.worktree
+  REPO="$original_repo"
+  printf '%s\n' 'scope: typed matrix' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  typed_invariants
+  # Native-invalid behavior is independent native component evidence; it is
+  # never reinterpreted as permission for worker native mutations.
+  hook_hash="$(sha256sum "$REPO/.git/index")"
+  native_status=0
+  git -C "$REPO" checkout --definitely-invalid -- file.txt >"$TMP_ROOT/native-invalid.log" 2>&1 || native_status=$?
+  [ "$native_status" -ne 0 ] && [ -s "$TMP_ROOT/native-invalid.log" ]
+  [ "$(sha256sum "$REPO/.git/index")" = "$hook_hash" ]; typed_invariants
+  printf 'helper dirty\n' >"$REPO/file.txt"
+  run_worker_git_helper_effect
+  typed_run restore --source head --destination both -- file.txt
+  for command in 'git status --short' 'git diff -- file.txt' 'git log --oneline -1' 'git show HEAD:file.txt'; do assert_allowed "$command" worker; done
+  assert_denied_code "git diff --output=$TMP_ROOT/inspection.out" ECI_GIT_OUTPUT_WRITE_DENIED worker
+  assert_denied_code "git -C $FOREIGN_REPO status --short" ECI_GIT_CROSS_SCOPE_DENIED worker
+  assert_allowed 'git add -- file.txt' coordinator
+  assert_denied_code 'git add .' ECI_BROAD_DESTRUCTIVE_DENIED coordinator
+  assert_denied_code 'git reset --hard' ECI_BROAD_DESTRUCTIVE_DENIED coordinator
+  for command in 'git rebase topic' 'git merge topic' 'git branch --delete topic' 'git checkout -- file.txt' 'git restore -- file.txt' 'git rm -- file.txt' 'git mv file.txt next.txt' 'git diff && env git add -- file.txt'; do
+    assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker
+  done
+  # Prepared-index commit intentionally includes the unrelated prepared blob;
+  # it preserves the unrelated live worktree and has no implicit -a behavior.
+  printf 'prepared commit\n' >"$REPO/file.txt"; typed_run stage-content -- file.txt
+  printf 'unstaged commit\n' >"$REPO/file.txt"
+  typed_run commit --message 'typed prepared checkpoint'
+  [ "$(git -C "$REPO" show HEAD:file.txt)" = 'prepared commit' ]
+  [ "$(cat "$REPO/file.txt")" = 'unstaged commit' ]
+  [ "$(git -C "$REPO" show HEAD:unrelated.txt)" = 'unrelated staged' ]
+  [ "$(cat "$REPO/unrelated.txt")" = 'unrelated worktree' ]
+  [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$matrix_branch" ]
+  [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$matrix_protected" ]
+  git -C "$REPO" diff --cached --quiet
+  run_worker_git_cli_edges
+  printf '%s\n' 'worker Git typed-operation registered matrix: PASS'
+}
+
 run_effect_aware_git_target() {
   local command failures=0 before_head before_branch protected_base protected_changed
   # Protection binds to the configured runtime, so make that complete copied
@@ -2088,6 +2423,58 @@ run_effect_aware_git_target() {
   git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
+  if [[ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-slice || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-matrix || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = full ]]; then
+    (
+      cd -- "$SOURCE_ROOT/hooks/lib/eci-worker-git-go"
+      env GOWORK=off CGO_ENABLED=0 /usr/lib/go-1.24/bin/go build -mod=readonly -trimpath -buildvcs=false -o "$RUNTIME_ROOT/bin/eci-worker-git" .
+    )
+    assert_denied_code 'git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git || return 1
+    assert_allowed 'git diff -- file.txt' worker || return 1
+    assert_allowed 'git log --oneline -1' worker || return 1
+    assert_allowed 'git show HEAD:file.txt' worker || return 1
+    assert_denied_code 'git diff -- file.txt && git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git || return 1
+    assert_denied_code 'env git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git || return 1
+    mkdir -p -- "$TMP_ROOT/typed-fixture-init"
+    assert_allowed "git -C $TMP_ROOT/typed-fixture-init init -q" worker || return 1
+    git -C "$TMP_ROOT/typed-fixture-init" init -q
+    [ -d "$TMP_ROOT/typed-fixture-init/.git" ] || return 1
+    assert_denied_code "\"$RUNTIME_ROOT/bin/eci-worker-git\" --repo \"$FOREIGN_REPO\" stage-content -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker || return 1
+    command="\"$RUNTIME_ROOT/bin/eci-worker-git\" --repo \"$REPO\" stage-content -- file.txt"
+    assert_allowed "$command" worker || return 1
+    printf 'typed stage changed\n' >"$REPO/file.txt"
+    HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" stage-content -- file.txt
+    [ "$(git -C "$REPO" show :file.txt)" = 'typed stage changed' ] || return 1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || return 1
+    command="\"$RUNTIME_ROOT/bin/eci-worker-git\" --repo \"$REPO\" unstage -- file.txt"
+    assert_allowed "$command" worker || return 1
+    HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" unstage -- file.txt
+    [ "$(git -C "$REPO" show :file.txt)" = base ] || return 1
+    [ "$(cat "$REPO/file.txt")" = 'typed stage changed' ] || return 1
+    command="\"$RUNTIME_ROOT/bin/eci-worker-git\" --repo \"$REPO\" restore --source head --destination worktree -- hooks/validate-bash.sh"
+    assert_allowed "$command" worker || return 1
+    if HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" restore --source head --destination worktree -- hooks/validate-bash.sh \
+      >"$TMP_ROOT/typed-protected.log" 2>&1; then
+      printf '%s\n' 'typed CLI admitted protected restoration' >&2
+      return 1
+    fi
+    rg -q 'protected live target' "$TMP_ROOT/typed-protected.log" || return 1
+    [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_base" ] || return 1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || return 1
+    [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || return 1
+    git -C "$REPO" diff --cached --quiet || return 1
+    printf '%s\n' 'worker Git native referral/inspection slice: PASS'
+    if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect ]; then
+      run_worker_git_helper_effect
+    elif [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges ]; then
+      run_worker_git_cli_edges
+    elif [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" != worker-git-cli-slice ]; then
+      run_worker_git_cli_matrix
+    fi
+    return 0
+  fi
   assert_denied_code 'git restore -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || return 1
   if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-context-prefix ]; then
     checkout_context_prefix_pair
@@ -2515,8 +2902,26 @@ run_effect_aware_git_target() {
 }
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
-  full) ;;
-  effect-aware-git|checkout-option-validity|checkout-branch-source-validity|checkout-completed-selection|checkout-native-selection|checkout-context-validity|checkout-context-prefix)
+  full|worker-git-cli-matrix|worker-git-cli-edges|worker-git-helper-effect)
+    run_effect_aware_git_target
+    printf '%s\n' 'normal Git admission current worker contract: PASS'
+    exit 0
+    ;;
+  historical-native-full)
+    [ -n "${NORMAL_GIT_ADMISSION_HOOK_SOURCE:-}" ] || {
+      printf '%s\n' 'historical-native-full requires explicit NORMAL_GIT_ADMISSION_HOOK_SOURCE from the historical revision' >&2
+      exit 64
+    }
+    printf '%s\n' 'historical native differential evidence; not current worker admission policy'
+    ;;
+  effect-aware-git|checkout-option-validity|checkout-branch-source-validity|checkout-completed-selection|checkout-native-selection|checkout-context-validity|checkout-context-prefix|worker-git-cli-slice)
+    if [ "${NORMAL_GIT_ADMISSION_TARGET}" != worker-git-cli-slice ]; then
+      [ -n "${NORMAL_GIT_ADMISSION_HOOK_SOURCE:-}" ] || {
+        printf '%s\n' 'historical native component requires explicit NORMAL_GIT_ADMISSION_HOOK_SOURCE; current worker proof is full or worker-git-cli-matrix' >&2
+        exit 64
+      }
+      printf '%s\n' 'historical native differential component; not current worker admission policy'
+    fi
     run_effect_aware_git_target
     if [ "${NORMAL_GIT_ADMISSION_TARGET}" = checkout-branch-source-validity ]; then
       printf '%s\n' 'normal Git admission explicit branch source target: PASS'

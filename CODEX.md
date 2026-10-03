@@ -81,6 +81,7 @@ These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Dire
 
 ## Git
 
+- During active ECI, Workers use `"$HOME/.codex/bin/eci-worker-git" --repo <repository> <named operation>` for Git mutations. Paths are literal repository-relative names; source/destination modes are explicit. The hook refers detected native Worker mutations to this CLI. Direct Git inspection retains output/helper/foreign-repository effect checks; unknown operation identity and harmless parser uncertainty remain advisory. Exact owned disposable `git init` remains available for fixture setup. This narrow routing rule preserves Producer scope agreement, pending intent, fresh same-index lookup and complete staged-result inspection.
 - Never expose secrets or credentials in code, commits, logs, prompts, or final output.
 - The stop hook enforces commit hygiene. Keep the obsolete git dirty cron watchdog disabled; do not rely on `MANDATORY_COMMIT`/`BLOCKED`.
 - Before each commit, run available fitting static checks.

@@ -7,11 +7,11 @@
 eci_runtime_build_missing() (
   local root="$1" name module binary compiler lock_fd temporary=''
   shift
-  [ "$#" -gt 0 ] || set -- eci-command-gate-mode eci-command-plan eci-safe-import
+  [ "$#" -gt 0 ] || set -- eci-command-gate-mode eci-command-plan eci-safe-import eci-worker-git
   trap '[ -z "$temporary" ] || rm -rf -- "$temporary"' EXIT
   for name in "$@"; do
     case "$name" in
-      eci-command-gate-mode) binary="$root/bin/$name" ;;
+      eci-command-gate-mode|eci-worker-git) binary="$root/bin/$name" ;;
       eci-command-plan|eci-safe-import) binary="$root/hooks/lib/$name-go/$name" ;;
       *) printf 'ECI runtime build: unknown tool: %s\n' "$name" >&2; return 1 ;;
     esac
@@ -191,6 +191,7 @@ eci_runtime_sync_collect() {
     printf '%s\n' bin/eci-active-dispatch
     printf '%s\n' bin/eci-runtime-sync
     [ -f "$source_root/bin/eci-command-gate-mode" ] && printf '%s\n' bin/eci-command-gate-mode
+    [ -f "$source_root/bin/eci-worker-git" ] && printf '%s\n' bin/eci-worker-git
     # Planner builds stage short-lived Go files here; pruning this known tree
     # prevents an accidental sync race without excluding ordinary source.
     find "$source_root/hooks" \( -type d -name '.eci-command-plan.txn.*' -o -name '.eci-go-build.*' -o -name '.eci-go-build.lock' \) -prune -o -type f ! -path "$source_root/hooks/tests/*" ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '*.pyo' ! -name '.eci-command-plan.lock' ! -name '.eci-command-plan.publish.lock' -printf 'hooks/%P\n' 2>/dev/null

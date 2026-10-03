@@ -11706,6 +11706,61 @@ def commit_effect(
     return "commit"
 
 
+def inspection_has_configured_helper(
+    verb: str, arguments: list[str], context: CheckoutInvocation,
+) -> bool:
+    """Resolve configured helpers and path attributes without executing them."""
+    if context.options is None or context.environment is None or not context.cwd:
+        return False
+    option_arguments = arguments[:arguments.index("--")] if "--" in arguments else arguments
+    patch_requested = any(value in {"-p", "--patch", "-u"} for value in option_arguments)
+    blob_show = verb == "show" and any(":" in value and not value.startswith("-") for value in option_arguments)
+    modes = {"ext-diff": verb == "diff", "textconv": verb == "diff" or (verb == "show" and not blob_show) or (verb == "log" and patch_requested)}
+    for value in arguments:
+        if value == "--":
+            break
+        if value in {"--ext-diff", "--no-ext-diff"}:
+            modes["ext-diff"] = value == "--ext-diff"
+        if value in {"--textconv", "--no-textconv"}:
+            modes["textconv"] = value == "--textconv"
+    summary_only = any(value in {"--name-only", "--name-status", "--stat", "--numstat", "--raw"} for value in option_arguments)
+    if "--no-patch" in option_arguments or "-s" in option_arguments or (summary_only and not patch_requested):
+        return False
+    if not any(modes.values()):
+        return False
+    prefix = ["/usr/bin/git", *context.options]
+    try:
+        configured = subprocess.run(prefix + ["config", "--null", "--get-regexp",
+            r"^diff\.(external|.*\.(command|textconv))$"], cwd=context.cwd,
+            env=context.environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=1, check=False)
+        settings = {}
+        for record in configured.stdout.split(b"\0"):
+            key, separator, value = record.partition(b"\n")
+            if separator:
+                settings[os.fsdecode(key)] = os.fsdecode(value)
+        if modes["ext-diff"] and (context.environment.get("GIT_EXTERNAL_DIFF") or settings.get("diff.external")):
+            return True
+        if not settings:
+            return False
+        paths = arguments[arguments.index("--") + 1:] if "--" in arguments else []
+        names = subprocess.run(prefix + ["ls-files", "-z", "--", *paths],
+            cwd=context.cwd, env=context.environment, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=1, check=False)
+        attributes = subprocess.run(prefix + ["check-attr", "-z", "--stdin", "diff"],
+            input=names.stdout, cwd=context.cwd, env=context.environment,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    records = attributes.stdout.split(b"\0")
+    for offset in range(0, len(records) - 2, 3):
+        driver = os.fsdecode(records[offset + 2])
+        if ((modes["ext-diff"] and settings.get("diff." + driver + ".command")) or
+                (modes["textconv"] and settings.get("diff." + driver + ".textconv"))):
+            return True
+    return False
+
+
 def segment_spec(
     tokens: list[str],
     segment_index: int,
@@ -11973,6 +12028,15 @@ def segment_spec(
                     return nested_spec
             return None
         return None
+    if index < len(tokens) and index not in unknown and os.path.basename(tokens[index]) == "eci-worker-git":
+        if (len(tokens) <= index + 3 or tokens[index + 1] != "--repo" or
+                index + 2 in unknown or index + 3 in unknown):
+            return None
+        if tokens[index + 3] not in {"stage-content", "stage-removals", "stage-hunks", "unstage", "restore", "remove", "move", "commit"}:
+            return None
+        target = resolve(tokens[index + 2], repo_dir)
+        context = checkout_invocation(target or "", (), dict(environment))
+        return "worker-cli", context.worktree or target, context
     if index >= len(tokens) or index in unknown or os.path.basename(tokens[index]) != "git":
         return None
     index += 1
@@ -12121,6 +12185,11 @@ def segment_spec(
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
+        if verb in {"diff", "log", "show", "grep"}:
+            context = checkout_invocation(repo_dir or "", tuple(git_options) if git_options_known else None,
+                dict(environment) if all(value is not None for value in environment.values()) else None)
+            if not any(offset > index for offset in unknown) and inspection_has_configured_helper(verb, tokens[index + 1:], context):
+                return "inspection-helper", repo_dir
         if any(value in {"-o", "--output"} or value.startswith("--output=")
                for value in tokens[index + 1:]):
             return "output", repo_dir
@@ -13657,6 +13726,36 @@ enforce_git_mutation_gate() {
   local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_token
   local checkout_context
 
+  # The typed worker CLI owns mutations; keep concrete native inspection
+  # effects on their existing output/helper/repository checks.
+  if [ "${hook_is_subagent:-false}" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+    specs_text="$(git_mutation_specs "$command" true)" || specs_text=''
+    if [ -n "$specs_text" ]; then
+      mapfile -t specs <<<"$specs_text"
+      if [ $(( ${#specs[@]} % 2 )) -eq 0 ]; then
+        for ((index = 0; index < ${#specs[@]}; index += 2)); do
+          operation="${specs[index]}"
+          repo_dir="${specs[index + 1]}"
+          case "$operation" in
+            inspection-helper)
+              validate_active_marker_binding
+              deny_eci "ECI_GIT_EXECUTION_CONTEXT_DENIED" "git-execution-context" \
+                "Git inspection enables a configured external diff/textconv helper; predicate=git-inspection-helper target=$repo_dir" \
+                "inspect with --no-ext-diff --no-textconv to keep Git output on stdout without external helpers; run an intended helper effect through its explicit task-owned command"
+              ;;
+            prep|reset|reset-index|reset-working-tree|whole-worktree-staging|index-unsupported|commit|commit-all|commit-stage|commit-amend|worktree|repository|apply)
+              validate_active_marker_binding
+              deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+                "worker native Git mutation uses the typed CLI: effect=$operation target=$repo_dir; predicate=worker-git-cli" \
+                "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; keep Producer scope agreement and fresh same-index lookup before staging, inspect the complete staged result, then commit the prepared index; history/ref operations remain unsupported"
+              ;;
+          esac
+        done
+      fi
+    fi
+    specs=()
+  fi
+
   # Resolve concrete checkout targets before effect labels can take an
   # inspection/preparation shortcut. The matcher preserves native-invalid,
   # ordinary, and incomplete selections instead of denying unknown syntax.
@@ -13714,9 +13813,14 @@ enforce_git_mutation_gate() {
       checkout_context="${repo_dir#checkout-context:}"
       repo_dir="$(jq -r '.cwd // "<unresolved>"' <<<"$checkout_context")"
     fi
-    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output) ;; *) continue ;; esac
+    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output|worker-cli) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
+    fi
+    if [ "$operation" = worker-cli ] && [ "${hook_is_subagent:-false}" != true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
+      deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
+        "typed worker Git operation belongs to its responsible Producer: target=$repo_dir" \
+        "assign the exact scoped operation to its Producer; the Supervisor verifies the checked immutable checkpoint"
     fi
     # Known operation boundaries do not depend on a repository path being
     # known. The transport marker below is never a filesystem target.

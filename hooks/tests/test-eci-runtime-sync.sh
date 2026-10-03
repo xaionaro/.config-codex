@@ -9,7 +9,7 @@ case "$TMP_BASE" in
   /) printf 'runtime-sync test: unusable temporary root: %s\n' "$TMP_BASE" >&2; exit 1 ;;
 esac
 TEST_ROOT="$(mktemp -d "$TMP_BASE/eci-runtime-sync-test.XXXXXX")"
-trap 'rm -rf -- "$TEST_ROOT"' EXIT HUP INT TERM
+trap 'chmod -R u+w -- "$TEST_ROOT"; rm -rf -- "$TEST_ROOT"' EXIT HUP INT TERM
 
 make_provider_tree() {
   local root="$1"
@@ -273,7 +273,7 @@ safe_import_dir='hooks/lib/eci-safe-import-go'
 mkdir -p -- "$planner_root/tmp" "$planner_codex/bin" "$planner_codex/$planner_dir" "$planner_kimi/$planner_dir" \
   "$planner_codex/$safe_import_dir" "$planner_kimi/$safe_import_dir"
 cp -- "$ROOT/bin/eci-runtime-sync" "$planner_codex/bin/eci-runtime-sync"
-for planner_source in go.mod classifier.go main.go; do
+for planner_source in go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go; do
   cp -- "$ROOT/$planner_dir/$planner_source" "$planner_codex/$planner_dir/$planner_source"
 done
 # The Kimi tree carries only the peer-published safe-importer binary; its Go
@@ -360,6 +360,13 @@ planner_toolexec="$planner_ambient_root/toolexec"
 planner_overlay="$planner_ambient_root/overlay.json"
 planner_overlay_main="$planner_ambient_root/overlay-main.go"
 mkdir -p -- "$planner_ambient_bin" "$planner_ambient_root/cache" "$planner_ambient_root/modcache"
+# The offline ambient-settings probe needs the module's declared dependencies
+# before disabling its proxy; build flags still cannot select another source.
+(
+  cd -- "$ROOT/$planner_dir"
+  GOENV=off GOFLAGS= GOWORK=off GOMODCACHE="$planner_ambient_root/modcache" \
+    /usr/lib/go-1.24/bin/go mod download
+)
 printf '%s\n' 'package main' 'func main() {}' >"$planner_overlay_main"
 printf '{"Replace":{"%s":"%s"}}\n' \
   "$planner_codex/$planner_dir/main.go" "$planner_overlay_main" >"$planner_overlay"
