@@ -7085,6 +7085,8 @@ class SharedCheckoutOptionState(NamedTuple):
     guess_state: bool | None
     pathspec_filename: str | None
     positioned_operands: tuple[tuple[int, str], ...]
+    overlay_mode: int
+    source_lookup_unknown: bool
 
 
 def checkout_revision(
@@ -7092,6 +7094,7 @@ def checkout_revision(
     base: str | None,
     object_type: str = "tree",
     git_options: tuple[str, ...] | None = (),
+    environment: dict[str, str] | None = None,
 ) -> bool | None:
     if value == "-":
         value = "@{-1}"
@@ -7104,7 +7107,7 @@ def checkout_revision(
             ["/usr/bin/git", "-C", base, *git_options,
              "rev-parse", "--verify", "--quiet", value + "^{" + object_type + "}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False, timeout=1,
+            check=False, timeout=1, env=environment,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -7135,6 +7138,7 @@ def checkout_option_state(
     base: str | None,
     variable_cardinality: frozenset[int] = frozenset(),
     git_options: tuple[str, ...] | None = (),
+    environment: dict[str, str] | None = None,
 ) -> SharedCheckoutOptionState:
     """Resolve validity, final modes, source, and destination roles once."""
     normalized = git_checkout_arguments(args, "checkout", unknown, variable_cardinality)
@@ -7151,9 +7155,10 @@ def checkout_option_state(
     positioned_operands = []
     ambiguous_source = False
     guess_state = None
+    source_lookup_unknown = False
     if normalized is None:
         return SharedCheckoutOptionState("unknown", None, False, False, False, None,
-                                         False, False, False, None, None, None, (), False, None, "", ())
+                                         False, False, False, None, None, None, (), False, None, "", (), -1, False)
 
     stage = 0
     force = False
@@ -7174,6 +7179,8 @@ def checkout_option_state(
             invalid_path_mode, source_value, source_is_tree, source_is_commit,
             tuple(destinations), ambiguous_source, guess_state,
             pathspec_filename, tuple(positioned_operands),
+            0 if patch_mode and overlay_mode == -1 else overlay_mode,
+            source_lookup_unknown,
         )
 
     def invalid() -> SharedCheckoutOptionState:
@@ -7373,9 +7380,10 @@ def checkout_option_state(
     if patch_mode and (pathspec_file_option or force or effective_merge or overlay_mode == 1):
         return invalid()
     if source_value is not None:
-        source_is_tree = checkout_revision(source_value, base, "tree", git_options)
-        source_is_commit = checkout_revision(source_value, base, "commit", git_options)
+        source_is_tree = checkout_revision(source_value, base, "tree", git_options, environment)
+        source_is_commit = checkout_revision(source_value, base, "commit", git_options, environment)
         if source_is_tree is None or source_is_commit is None:
+            source_lookup_unknown = True
             return result("unknown")
         branch_startpoint = (branch_mode or orphan_mode) and source_is_commit
     has_path_destinations = bool(destinations or pathspec_file_option)
@@ -7403,6 +7411,8 @@ def git_checkout_effect(
 ) -> str:
     """Separate scoped path checkout from branch, HEAD, and ref transitions."""
     options = checkout_option_state(arguments, unknown, base, variable_cardinality, git_options)
+    if options.source_lookup_unknown:
+        return "repository-unresolved"
     if options.validity != "supported" or options.invalid_path_mode or options.ambiguous_source:
         return "inspection"
     if options.detach_state is True or options.orphan_mode or options.branch_mode:
@@ -7413,7 +7423,9 @@ def git_checkout_effect(
     if not operands:
         return "inspection"
     if operands == ["-"]:
-        return "repository"
+        if options.source_is_commit is True:
+            return "repository"
+        return "prep" if options.source_is_commit is False else "repository-unresolved"
     explicit_reference = options.separator_index is not None
     guess = options.guess_state
     if options.source_is_commit is True:
@@ -11873,7 +11885,7 @@ def segment_spec(
     git_options = []
     git_options_known = True
     value_options = {
-        "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix",
+        "-c", "--config-env", "--attr-source", "--exec-path", "--namespace", "--super-prefix",
         "--source", "--pathspec-from-file",
     }
     while index < len(tokens):
@@ -11917,7 +11929,7 @@ def segment_spec(
                 git_options_known = False
             index += 2
             continue
-        if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
+        if token.startswith(("--attr-source=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
             if token.startswith("--config-env="):
                 git_options_known = False
             index += 1
@@ -11925,7 +11937,7 @@ def segment_spec(
         if token == "--":
             index += 1
             break
-        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-pager"}:
             index += 1
             continue
         if token.startswith("-"):
@@ -12293,7 +12305,7 @@ def git_record_command(
     index += 1
     git_dir = environment.get("GIT_DIR", "")
     work_tree = environment.get("GIT_WORK_TREE", "")
-    value_options = {"-C", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--git-dir", "--work-tree"}
+    value_options = {"-C", "-c", "--config-env", "--attr-source", "--exec-path", "--namespace", "--super-prefix", "--git-dir", "--work-tree"}
     while index < len(segment):
         token = segment[index]
         if token == "-C":
@@ -12315,7 +12327,7 @@ def git_record_command(
                 work_tree = None if index + 1 in unknown else segment[index + 1]
             index += 2
             continue
-        if token.startswith(("--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--git-dir=", "--work-tree=")):
+        if token.startswith(("--attr-source=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--git-dir=", "--work-tree=")):
             if token.startswith("--git-dir="):
                 git_dir = None if index in unknown else token.split("=", 1)[1]
             elif token.startswith("--work-tree="):
@@ -12325,7 +12337,7 @@ def git_record_command(
         if token == "--":
             index += 1
             break
-        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-pager"}:
             index += 1
             continue
         if token.startswith("-"):
@@ -12692,14 +12704,24 @@ def consume_env(
         break
     return index, base, environment
 
+class CheckoutWrapperContext(NamedTuple):
+    index: int
+    base: str | None
+    environment: dict[str, str | None]
+    known: bool
+
+
 def unwrap(
     segment: list[str],
     initial_base: str | None = None,
     unknown: frozenset[int] = frozenset(),
-) -> tuple[int, str, dict[str, str | None]] | None:
+    initial_environment: dict[str, str | None] | None = None,
+    initial_context_known: bool = True,
+) -> CheckoutWrapperContext | None:
     index = 0
     base = command_cwd if initial_base is None else initial_base
-    environment = {}
+    environment = dict(os.environ if initial_environment is None else initial_environment)
+    context_known = initial_context_known
 
     while index < len(segment):
         while index < len(segment) and ASSIGNMENT.fullmatch(segment[index]):
@@ -12753,6 +12775,9 @@ def unwrap(
                 return None
             index += 1
             continue
+        if name in {"sudo", "doas", "systemd-run"}:
+            # These wrappers may replace credentials, environment, or namespaces.
+            context_known = False
         if name in {"chronic", "nice", "time", "prlimit", "systemd-run"}:
             index += 1
             value_options = {
@@ -12817,27 +12842,47 @@ def unwrap(
                     index += 1
             continue
         break
-    return index, base, environment
+    return CheckoutWrapperContext(index, base, environment,
+                                  context_known and bool(base and os.path.isabs(base)))
+
+class CheckoutGitContext(NamedTuple):
+    cwd: str
+    options: tuple[str, ...] | None
+    environment: dict[str, str] | None
+
+
+class ProtectedGitCommand(NamedTuple):
+    verb: str
+    arguments: list[str]
+    base: str
+    unknown: frozenset[int]
+    variable_cardinality: frozenset[int]
+    context: CheckoutGitContext
+
 
 def git_command(
     segment: list[str],
     initial_base: str | None = None,
     unknown: frozenset[int] = frozenset(),
     variable_cardinality: frozenset[int] = frozenset(),
-) -> tuple[str, list[str], str, frozenset[int], frozenset[int]] | None:
+    initial_environment: dict[str, str | None] | None = None,
+    initial_context_known: bool = True,
+) -> ProtectedGitCommand | None:
     original_length = len(segment)
     segment, unknown = strip_structural_prefix(segment, unknown)
     removed = original_length - len(segment)
     if any(value < removed for value in variable_cardinality):
         return None
     variable_cardinality = frozenset(value - removed for value in variable_cardinality)
-    result = unwrap(segment, initial_base, unknown)
+    result = unwrap(segment, initial_base, unknown, initial_environment, initial_context_known)
     if result is None:
         return None
-    index, base, environment = result
+    index, base, environment, wrapper_known = result
     if index >= len(segment) or index in unknown or os.path.basename(segment[index]) != "git":
         return None
     index += 1
+    git_options = []
+    context_known = wrapper_known and all(value is not None for value in environment.values())
     work_tree = environment.get("GIT_WORK_TREE", "")
     git_dir = environment.get("GIT_DIR", "")
     while index < len(segment):
@@ -12852,16 +12897,22 @@ def git_command(
             base = lexical_resolve(None if index in unknown else value[2:], base)
             index += 1
             continue
-        if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--exec-path", "--namespace", "--super-prefix", "--source", "--pathspec-from-file"}:
+        if value in {"--git-dir", "--work-tree", "-c", "--config-env", "--attr-source", "--exec-path", "--namespace", "--super-prefix", "--source", "--pathspec-from-file"}:
             if index + 1 >= len(segment):
                 return None
+            if index in unknown or index + 1 in unknown:
+                context_known = False
+            git_options.extend((value, segment[index + 1]))
             if value == "--git-dir":
                 git_dir = None if index + 1 in unknown else segment[index + 1]
             elif value == "--work-tree":
                 work_tree = None if index + 1 in unknown else segment[index + 1]
             index += 2
             continue
-        if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
+        if value.startswith(("--git-dir=", "--work-tree=", "--config-env=", "--attr-source=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
+            git_options.append(value)
+            if index in unknown:
+                context_known = False
             if value.startswith("--git-dir="):
                 git_dir = None if index in unknown else value.split("=", 1)[1]
             elif value.startswith("--work-tree="):
@@ -12871,19 +12922,38 @@ def git_command(
         if value == "--":
             index += 1
             break
-        if value in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--no-pager"}:
+        if value in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-pager"}:
+            git_options.append(value)
             index += 1
             continue
         if value.startswith("-"):
+            context_known = False
             index += 1
             continue
         break
-    if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality) or work_tree is None or git_dir is None:
+    if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality):
         return None
+
+    def parsed(context: CheckoutGitContext, result_base: str) -> ProtectedGitCommand:
+        return ProtectedGitCommand(
+            segment[index], segment[index + 1:], result_base,
+            frozenset(value - index - 1 for value in unknown if value > index),
+            frozenset(value - index - 1 for value in variable_cardinality if value > index),
+            context,
+        )
+
+    def unavailable_context() -> ProtectedGitCommand | None:
+        if segment[index] != "checkout":
+            return None
+        return parsed(CheckoutGitContext(base or "", None, None), base or target_repo)
+
+    if work_tree is None or git_dir is None:
+        return unavailable_context()
     resolved_git_dir = lexical_resolve(git_dir, base) if git_dir else ""
     resolved_work_tree = lexical_resolve(work_tree, base) if work_tree else ""
     if (git_dir and not resolved_git_dir) or (work_tree and not resolved_work_tree):
-        return None
+        return unavailable_context()
+    invocation_cwd = base
     repository_base = base
     if work_tree:
         base = resolved_work_tree
@@ -12893,19 +12963,16 @@ def git_command(
         if repository_base and os.path.basename(repository_base) == ".git":
             repository_base = os.path.dirname(repository_base)
     if not repository_base or not os.path.isabs(repository_base):
-        return None
+        return unavailable_context()
     current = os.path.realpath(repository_base)
     while current != target_repo:
         parent = os.path.dirname(current)
         if parent == current or os.path.lexists(os.path.join(current, ".git")):
             return None
         current = parent
-    return (
-        segment[index],
-        segment[index + 1:],
-        base,
-        frozenset(value - index - 1 for value in unknown if value > index),
-        frozenset(value - index - 1 for value in variable_cardinality if value > index),
+    return parsed(
+        CheckoutGitContext(invocation_cwd, tuple(git_options) if context_known else None,
+                           dict(environment) if context_known else None), base,
     )
 
 def rm_detail(
@@ -13088,13 +13155,127 @@ def restore_detail(
                 return detail
     return None
 
+class CheckoutSelection(NamedTuple):
+    status: str
+    paths: frozenset[str]
+    reason: str = ""
+
+
+CHECKOUT_MATCH_TIMEOUT = 1.0
+CHECKOUT_MATCH_BYTES = 1048576
+CHECKOUT_MATCH_NAMES = 16384
+
+
+def checkout_unresolved(reason: str) -> str:
+    return (f"operation=checkout effect=overwrite-unresolved target={target_repo} "
+            f"kind=unresolved-checkout-selection reason={reason}")
+
+
+def checkout_native_names(arguments: list[str], context: CheckoutGitContext) -> CheckoutSelection:
+    """Bound both streams and distinguish unavailable evaluation from empty success."""
+    import selectors
+    import time
+
+    if context.options is None or context.environment is None or not context.cwd:
+        return CheckoutSelection("unresolved", frozenset(), "invocation-context")
+    output, errors = bytearray(), bytearray()
+    try:
+        with subprocess.Popen(
+            ["/usr/bin/git", *context.options, *arguments], cwd=context.cwd,
+            env=context.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as process:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ, output)
+                    selector.register(process.stderr, selectors.EVENT_READ, errors)
+                    deadline = time.monotonic() + CHECKOUT_MATCH_TIMEOUT
+                    reason = ""
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            reason = "matcher-timeout"
+                            break
+                        for key, _ in selector.select(remaining):
+                            chunk = os.read(key.fileobj.fileno(), 65536)
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                continue
+                            key.data.extend(chunk)
+                            if len(output) + len(errors) > CHECKOUT_MATCH_BYTES or output.count(0) > CHECKOUT_MATCH_NAMES:
+                                reason = "matcher-output-cap"
+                                break
+                        if reason:
+                            break
+                    if reason:
+                        process.kill()
+                        process.wait()
+                        return CheckoutSelection("unresolved", frozenset(), reason)
+                    try:
+                        code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                        return CheckoutSelection("unresolved", frozenset(), "matcher-timeout")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+    except (OSError, subprocess.SubprocessError):
+        return CheckoutSelection("unresolved", frozenset(), "matcher-unavailable")
+    if code:
+        diagnostic = os.fsdecode(bytes(errors))
+        # These native pathspec parser errors also reject checkout. Other Git
+        # failures (including source access) do not prove native invalidity.
+        if "Invalid pathspec magic" in diagnostic or "'literal' and 'glob' are incompatible" in diagnostic:
+            return CheckoutSelection("invalid", frozenset(), "native-pathspec-invalid")
+        return CheckoutSelection("unresolved", frozenset(), "matcher-failed")
+    if output and not output.endswith(b"\0"):
+        return CheckoutSelection("unresolved", frozenset(), "matcher-incomplete")
+    names = frozenset(os.fsdecode(bytes(value)) for value in output.split(b"\0") if value)
+    if any(os.path.isabs(value) or ".." in value.split("/") for value in names):
+        return CheckoutSelection("unresolved", frozenset(), "matcher-path-context")
+    return CheckoutSelection("complete", names)
+
+
+def checkout_selected_paths(paths: list[str], options: SharedCheckoutOptionState,
+                            context: CheckoutGitContext) -> CheckoutSelection:
+    arguments = ["ls-files", "--cached", "--full-name", "-z"]
+    if options.source_is_tree is not True:
+        return checkout_native_names([*arguments, "--", *paths], context)
+    source = "@{-1}" if options.source_value == "-" else options.source_value
+    # ls-tree cannot parse every checkout magic. ls-files adds missing tree
+    # entries for native expansion; intersection removes index-only matches.
+    selected = checkout_native_names([*arguments, "--with-tree=" + source, "--", *paths], context)
+    if selected.status != "complete":
+        return selected
+    inventory = checkout_native_names(["ls-tree", "-r", "--name-only", "--full-tree", "-z", source], context)
+    if inventory.status != "complete":
+        return inventory
+    names = selected.paths & inventory.paths
+    if options.overlay_mode == 0:
+        current = checkout_native_names([*arguments, "--", *paths], context)
+        if current.status != "complete":
+            return current
+        names |= current.paths
+    return CheckoutSelection("complete", names)
+
+
 def checkout_detail(
     args: list[str],
     base: str,
     unknown: frozenset[int],
     variable_cardinality: frozenset[int] = frozenset(),
+    context: CheckoutGitContext | None = None,
 ) -> str | None:
-    options = checkout_option_state(args, unknown, base, variable_cardinality)
+    context = context or CheckoutGitContext(base, (), dict(os.environ))
+    if context.options is None or context.environment is None:
+        return checkout_unresolved("invocation-context")
+    options = checkout_option_state(args, unknown, context.cwd, variable_cardinality,
+                                    context.options, context.environment)
+    if options.source_lookup_unknown:
+        return checkout_unresolved("source-lookup")
+    if options.pathspec_file_option and options.pathspec_filename is None:
+        return checkout_unresolved("pathspec-file")
     # With `--`, every following token is a worktree pathspec. Without it,
     # only the first operand can be a tree source; later operands are paths
     # even when their names also resolve as revisions.
@@ -13120,17 +13301,21 @@ def checkout_detail(
     if options.pathspec_file_option:
         if paths:
             return None  # Git rejects simultaneous file and explicit paths.
-        paths = git_pathspec_entries(options.pathspec_filename, base, options.pathspec_file_nul)
+        paths = git_pathspec_entries(options.pathspec_filename, context.cwd, options.pathspec_file_nul)
+        if paths is None:
+            return checkout_unresolved("pathspec-file")
     if not paths:
         return None
-    for value in paths:
-        candidates, _ = pathspec_candidates(value, base)
-        for candidate in candidates:
-            if not inside(target_repo, candidate):
-                continue
-            detail = protected_path_detail(candidate, "checkout", True)
-            if detail:
-                return detail
+    selected = checkout_selected_paths(paths, options, context)
+    if selected.status == "unresolved":
+        return checkout_unresolved(selected.reason)
+    if selected.status == "invalid":
+        return None
+    for name in sorted(selected.paths):
+        candidate = os.path.join(target_repo, name)
+        detail = protected_path_detail(candidate, "checkout", False)
+        if detail:
+            return detail
     return None
 
 def shell_child_segments(
@@ -13138,17 +13323,19 @@ def shell_child_segments(
     initial_base: str | None = None,
     unknown: frozenset[int] = frozenset(),
     variable_cardinality: frozenset[int] = frozenset(),
-) -> tuple[list[list[str]], str] | list[list[str]] | None:
+    initial_environment: dict[str, str | None] | None = None,
+    initial_context_known: bool = True,
+) -> tuple[list[list[str]], str, dict[str, str | None], bool] | list[list[str]] | None:
     original_length = len(segment)
     segment, unknown = strip_structural_prefix(segment, unknown)
     removed = original_length - len(segment)
     if any(value < removed for value in variable_cardinality):
         return None
     variable_cardinality = frozenset(value - removed for value in variable_cardinality)
-    result = unwrap(segment, initial_base, unknown)
+    result = unwrap(segment, initial_base, unknown, initial_environment, initial_context_known)
     if result is None:
         return None
-    index, base, _ = result
+    index, base, environment, context_known = result
     if index >= len(segment) or index in unknown or os.path.basename(segment[index]) not in {"bash", "sh", "dash", "zsh"}:
         return None
     shell_args = segment[index + 1:]
@@ -13178,7 +13365,7 @@ def shell_child_segments(
         # The nested callback uses the same canonical worktree identity. A
         # shell payload with a variable/opaque command simply has no visible
         # concrete child and remains transparent.
-        return nested_segments, base
+        return nested_segments, base, environment, context_known
     return []
 
 def inspect_segment(
@@ -13187,21 +13374,23 @@ def inspect_segment(
     base_override: str | None = None,
     unknown: frozenset[int] = frozenset(),
     variable_cardinality: frozenset[int] = frozenset(),
+    initial_environment: dict[str, str | None] | None = None,
+    initial_context_known: bool = True,
 ) -> str | None:
     if depth > 4:
         return None
-    nested = shell_child_segments(segment, base_override, unknown, variable_cardinality)
+    nested = shell_child_segments(segment, base_override, unknown, variable_cardinality, initial_environment, initial_context_known)
     if nested is not None:
-        nested_segments, nested_base = nested if nested else ([], base_override or command_cwd)
+        nested_segments, nested_base, nested_environment, nested_known = nested if nested else ([], base_override or command_cwd, initial_environment, initial_context_known)
         for nested_segment in nested_segments:
-            detail = inspect_segment(nested_segment, depth + 1, nested_base)
+            detail = inspect_segment(nested_segment, depth + 1, nested_base, initial_environment=nested_environment, initial_context_known=nested_known)
             if detail:
                 return detail
         return None
-    parsed = git_command(segment, base_override, unknown, variable_cardinality)
+    parsed = git_command(segment, base_override, unknown, variable_cardinality, initial_environment, initial_context_known)
     if parsed is None:
         return None
-    verb, args, base, argument_unknown, argument_variable_cardinality = parsed
+    verb, args, base, argument_unknown, argument_variable_cardinality, context = parsed
     if verb == "rm":
         return rm_detail(args, base, argument_unknown)
     if verb == "mv":
@@ -13209,7 +13398,7 @@ def inspect_segment(
     if verb == "restore":
         return restore_detail(args, base, argument_unknown)
     if verb == "checkout":
-        return checkout_detail(args, base, argument_unknown, argument_variable_cardinality)
+        return checkout_detail(args, base, argument_unknown, argument_variable_cardinality, context)
     return None
 
 if analysis is not None:
@@ -13266,11 +13455,11 @@ enforce_git_mutation_gate() {
         protected_target_token="${protected_target_detail#operation=}"
         protected_target_token="${protected_target_token%% *}"
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
+          "ECI worker Git preparation requires protected-target resolution: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
           "for the reported remove, relocate, or overwrite effect, the responsible Producer edits the tracked hook source in place and stages exact owned paths or agreed hunks with supported git add; unstage with git restore --staged -- <paths>; the Supervisor owns canonical installer, hook mode, and lifecycle controls; do not retry the same destructive Git operation under another role"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
+          "ECI Supervisor Git worktree mutation requires protected-target resolution: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
           "for the reported remove, relocate, or overwrite effect, assign the tracked source change to its responsible Producer for an in-place edit and scoped git add; use the Supervisor's canonical installer, hook mode, or lifecycle route only for those controls; do not reroute the same destructive Git operation"
       fi
     fi
@@ -13383,11 +13572,11 @@ enforce_git_mutation_gate() {
         protected_target_token="${protected_target_detail#operation=}"
         protected_target_token="${protected_target_token%% *}"
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker Git preparation targets a protected live hook: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
+          "ECI worker Git preparation requires protected-target resolution: ${protected_target_detail}; token=${protected_target_token}; predicate=worker-git-ownership; subpredicate=worker-protected-target; reason=active ECI control and provider-hook operations route through the Supervisor while ordinary implementation remains assigned to Producers" \
           "for the reported remove, relocate, or overwrite effect, the responsible Producer edits the tracked hook source in place and stages exact owned paths or agreed hunks with supported git add; unstage with git restore --staged -- <paths>; the Supervisor owns canonical installer, hook mode, and lifecycle controls; do not retry the same destructive Git operation under another role"
       else
         deny_eci "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED" "edit-routing" \
-          "ECI Supervisor Git worktree mutation targets a protected live hook: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
+          "ECI Supervisor Git worktree mutation requires protected-target resolution: ${protected_target_detail}; predicate=coordinator-protected-target; reason=tracked active-hook source edits are Producer-owned; protected provider/control operations use the Supervisor route" \
           "for the reported remove, relocate, or overwrite effect, assign the tracked source change to its responsible Producer for an in-place edit and scoped git add; use the Supervisor's canonical installer, hook mode, or lifecycle route only for those controls; do not reroute the same destructive Git operation"
       fi
     fi
