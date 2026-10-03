@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // TestStageRemovalsRequiresExactTrackedEntries rejects recursive directory selection.
 //
 // Example: naming a removed directory cannot stage both descendant removals.
-func TestStageRemovalsRequiresExactTrackedEntries(t *testing.T) {
+func TestStageRemovalsRequiresExactTrackedEntries(
+	t *testing.T,
+) {
 	root := fixtureRepository(t)
 	if err := os.Mkdir(filepath.Join(root, "removed-dir"), 0755); err != nil {
 		t.Fatal(err)
@@ -41,7 +45,9 @@ func TestStageRemovalsRequiresExactTrackedEntries(t *testing.T) {
 // TestFixedMutationOperationsPreserveUnselectedState exercises every remaining named effect.
 //
 // Example: index-only removal cannot delete the corresponding live file.
-func TestFixedMutationOperationsPreserveUnselectedState(t *testing.T) {
+func TestFixedMutationOperationsPreserveUnselectedState(
+	t *testing.T,
+) {
 	for _, kind := range []string{"stage-removals", "restore-index", "restore-worktree", "restore-both", "remove-index", "remove-worktree", "remove-both", "move", "commit"} {
 		t.Run(kind, func(t *testing.T) {
 			root := fixtureRepository(t)
@@ -120,7 +126,9 @@ func TestFixedMutationOperationsPreserveUnselectedState(t *testing.T) {
 // TestStageHunksChecksEntireFrozenPatch preserves unnamed staged entries and worktree content.
 //
 // Example: a patch that includes an unlisted file is rejected before index mutation.
-func TestStageHunksChecksEntireFrozenPatch(t *testing.T) {
+func TestStageHunksChecksEntireFrozenPatch(
+	t *testing.T,
+) {
 	root := fixtureRepository(t)
 	patch := filepath.Join(t.TempDir(), "selected.patch")
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("changed\n"), 0644); err != nil {
@@ -155,7 +163,9 @@ func TestStageHunksChecksEntireFrozenPatch(t *testing.T) {
 // TestStageHunksRejectsUnlistedRenameSource includes both endpoints in patch ownership.
 //
 // Example: naming only the destination cannot authorize removal of the old index entry.
-func TestStageHunksRejectsUnlistedRenameSource(t *testing.T) {
+func TestStageHunksRejectsUnlistedRenameSource(
+	t *testing.T,
+) {
 	root := fixtureRepository(t)
 	fixtureGit(t, root, "mv", "--", "file.txt", "renamed.txt")
 	diff := fixtureGit(t, root, "diff", "--cached", "--find-renames", "HEAD") + "\n"
@@ -170,5 +180,327 @@ func TestStageHunksRejectsUnlistedRenameSource(t *testing.T) {
 	}
 	if fixtureGit(t, root, "write-tree") != index {
 		t.Fatal("rejected rename patch changed index")
+	}
+}
+
+// TestExactLeavesRejectDirectoriesBeforeAnyWrite checks every operand before mutation.
+//
+// Example: an invalid second operand preserves the first selected file.
+func TestExactLeavesRejectDirectoriesBeforeAnyWrite(
+	t *testing.T,
+) {
+	for _, args := range [][]string{
+		{"remove", "--destination", "worktree", "--", "file.txt", "dir"},
+		{"remove", "--destination", "index", "--", "dir"},
+		{"restore", "--source", "head", "--destination", "index", "--", "dir"},
+		{"unstage", "--", "dir"},
+		{"move", "--", "dir", "moved"},
+	} {
+		// Each subtest exercises an independent native operation.
+		t.Run(args[0]+args[1], func(t *testing.T) {
+			root := fixtureRepository(t)
+			if err := os.Mkdir(filepath.Join(root, "dir"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "dir/a"), []byte("child\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			fixtureGit(t, root, "add", "--", "dir/a")
+			fixtureGit(t, root, "commit", "-qm", "directory fixture")
+			before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+			if err := executeFixtureOperation(t, root, args...); err == nil {
+				t.Fatal("directory selection admitted")
+			}
+			if after := fixtureGit(t, root, "ls-files", "--stage", "-z"); after != before {
+				t.Fatal("index changed")
+			}
+			if content, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(content) != "base\n" {
+				t.Fatal("earlier operand changed")
+			}
+			if content, err := os.ReadFile(filepath.Join(root, "dir/a")); err != nil || string(content) != "child\n" {
+				t.Fatal("unnamed descendant changed")
+			}
+		})
+	}
+}
+
+// TestLiveHookReferentAndLinkedPointerProtection protects both hook identities and administration.
+//
+// Example: the live symlink's referent cannot be removed through its ordinary source name.
+func TestLiveHookReferentAndLinkedPointerProtection(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	if err := os.Remove(filepath.Join(root, "hooks/validate-bash.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../file.txt", filepath.Join(root, "hooks/validate-bash.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, root, "remove", "--destination", "worktree", "--", "file.txt"); err == nil {
+		t.Fatal("live referent removal admitted")
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(content) != "base\n" {
+		t.Fatal("referent changed")
+	}
+	linked := filepath.Join(t.TempDir(), "linked")
+	fixtureGit(t, root, "worktree", "add", "-q", "-b", "linked", linked)
+	pointer, err := os.ReadFile(filepath.Join(linked, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, linked, "remove", "--destination", "worktree", "--", ".git"); err == nil {
+		t.Fatal("linked pointer removal admitted")
+	}
+	if after, err := os.ReadFile(filepath.Join(linked, ".git")); err != nil || string(after) != string(pointer) {
+		t.Fatal("pointer changed")
+	}
+}
+
+// TestGitlinkWorktreeEffectsAreRejected preserves submodule metadata.
+//
+// Example: native mv of a gitlink is rejected even when its working directory is absent.
+func TestGitlinkWorktreeEffectsAreRejected(
+	t *testing.T,
+) {
+	for _, args := range [][]string{{"remove", "--destination", "both", "--", "sub"}, {"move", "--", "sub", "destination"}, {"restore", "--source", "head", "--destination", "worktree", "--", "sub"}} {
+		// Each fixture starts with the same exact gitlink record.
+		t.Run(args[0], func(t *testing.T) {
+			root := fixtureRepository(t)
+			oid := fixtureGit(t, root, "rev-parse", "HEAD")
+			fixtureGit(t, root, "update-index", "--add", "--cacheinfo", "160000,"+oid+",sub")
+			fixtureGit(t, root, "commit", "-qm", "gitlink")
+			before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+			if err := executeFixtureOperation(t, root, args...); err == nil {
+				t.Fatal("worktree gitlink admitted")
+			}
+			if fixtureGit(t, root, "ls-files", "--stage", "-z") != before {
+				t.Fatal("gitlink index changed")
+			}
+		})
+	}
+}
+
+// TestHunkPreviewPreservesUnrelatedConflictStages supports patches beside unmerged entries.
+//
+// Example: selected regular content can be staged without resolving an unrelated conflict.
+func TestHunkPreviewPreservesUnrelatedConflictStages(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	oid := fixtureGit(t, root, "rev-parse", ":unrelated.txt")
+	fixtureGit(t, root, "update-index", "--force-remove", "--", "unrelated.txt")
+	repository, err := ResolveRepository(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := repository.Command(context.Background(), "update-index", "--index-info")
+	command.Stdin = strings.NewReader("100644 " + oid + " 1\tunrelated.txt\n100644 " + oid + " 2\tunrelated.txt\n100644 " + oid + " 3\tunrelated.txt\n")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("conflict fixture: %v %s", err, output)
+	}
+	before := fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "unrelated.txt")
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	patch := filepath.Join(t.TempDir(), "patch")
+	if err := os.WriteFile(patch, []byte(fixtureGit(t, root, "diff", "--", "file.txt")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, root, "stage-hunks", "--patch-file", patch, "--", "file.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if fixtureGit(t, root, "show", ":file.txt") != "changed" {
+		t.Fatal("selected content missing")
+	}
+	if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "unrelated.txt") != before {
+		t.Fatal("unrelated stages changed")
+	}
+}
+
+// TestAllOperandsRejectMissingLeafBeforeRemoval prevents partial manual operations.
+//
+// Example: an absent second leaf cannot allow deletion of the first leaf.
+func TestAllOperandsRejectMissingLeafBeforeRemoval(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	if err := executeFixtureOperation(t, root, "remove", "--destination", "worktree", "--", "file.txt", "missing.txt"); err == nil {
+		t.Fatal("missing operand admitted")
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(content) != "base\n" {
+		t.Fatal("first leaf removed before validation")
+	}
+}
+
+// TestOrdinarySymlinkRemovalPreservesProtectedReferent keeps lexical leaf semantics.
+//
+// Example: deleting a disposable alias to a live hook leaves the live hook intact.
+func TestOrdinarySymlinkRemovalPreservesProtectedReferent(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	if err := os.Symlink("hooks/validate-bash.sh", filepath.Join(root, "ordinary-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, root, "remove", "--destination", "worktree", "--", "ordinary-link"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "ordinary-link")); !os.IsNotExist(err) {
+		t.Fatal("lexical symlink retained")
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "hooks/validate-bash.sh")); err != nil || string(content) != "base\n" {
+		t.Fatal("referent changed")
+	}
+}
+
+// TestSourceOnlyDirectorySelectionIsRejected checks the source and index union.
+//
+// Example: a removed index directory cannot hide descendant selection from HEAD.
+func TestSourceOnlyDirectorySelectionIsRejected(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir/a"), []byte("child\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fixtureGit(t, root, "add", "--", "dir/a")
+	fixtureGit(t, root, "commit", "-qm", "source directory")
+	fixtureGit(t, root, "rm", "-r", "--", "dir")
+	before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+	if err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "both", "--", "dir"); err == nil {
+		t.Fatal("source-only directory admitted")
+	}
+	if fixtureGit(t, root, "ls-files", "--stage", "-z") != before {
+		t.Fatal("source-only rejection changed index")
+	}
+	if _, err := os.Lstat(filepath.Join(root, "dir")); !os.IsNotExist(err) {
+		t.Fatal("unnamed descendants restored")
+	}
+}
+
+// TestStageContentRejectsDirectoryToFileSweep checks existing index descendants.
+//
+// Example: replacing a tracked directory with a file cannot stage unnamed removals.
+func TestStageContentRejectsDirectoryToFileSweep(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir/a"), []byte("child\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fixtureGit(t, root, "add", "--", "dir/a")
+	before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+	if err := os.RemoveAll(filepath.Join(root, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir"), []byte("replacement\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, root, "stage-content", "--", "dir"); err == nil {
+		t.Fatal("unnamed descendant sweep admitted")
+	}
+	if fixtureGit(t, root, "ls-files", "--stage", "-z") != before {
+		t.Fatal("descendant index records changed")
+	}
+}
+
+// TestIndexOnlyGitlinkRemovalPreservesWorktreeMetadata proves the bounded gitlink domain.
+//
+// Example: an absent submodule's cached removal changes only its exact index entry.
+func TestIndexOnlyGitlinkRemovalPreservesWorktreeMetadata(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	oid := fixtureGit(t, root, "rev-parse", "HEAD")
+	fixtureGit(t, root, "update-index", "--add", "--cacheinfo", "160000,"+oid+",sub")
+	if err := os.WriteFile(filepath.Join(root, ".gitmodules"), []byte("metadata\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	before := fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "file.txt", "unrelated.txt")
+	head := fixtureGit(t, root, "rev-parse", "HEAD")
+	if err := executeFixtureOperation(t, root, "remove", "--destination", "index", "--", "sub"); err != nil {
+		t.Fatal(err)
+	}
+	if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "sub") != "" {
+		t.Fatal("gitlink retained")
+	}
+	if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "file.txt", "unrelated.txt") != before || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+		t.Fatal("unselected state changed")
+	}
+	if content, err := os.ReadFile(filepath.Join(root, ".gitmodules")); err != nil || string(content) != "metadata\n" {
+		t.Fatal("worktree metadata changed")
+	}
+}
+
+// TestLinkedWorktreePointerIsProtected preserves the administrative entry itself.
+//
+// Example: removing .git cannot disconnect a linked worktree from its Git directory.
+func TestLinkedWorktreePointerIsProtected(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	fixtureGit(t, root, "worktree", "add", "-q", "-b", "linked", linked)
+	pointer, err := os.ReadFile(filepath.Join(linked, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, linked, "remove", "--destination", "worktree", "--", ".git"); err == nil {
+		t.Fatal("linked pointer removal admitted")
+	}
+	if after, err := os.ReadFile(filepath.Join(linked, ".git")); err != nil || string(after) != string(pointer) {
+		t.Fatal("pointer changed")
+	}
+}
+
+// TestLiveHookEntryUnderAliasedParentIsProtected preserves the physical symlink entry.
+//
+// Example: an aliased hooks directory and a symlink hook require separate entry and referent identities.
+func TestLiveHookEntryUnderAliasedParentIsProtected(
+	t *testing.T,
+) {
+	root := fixtureRepository(t)
+	if err := os.Rename(filepath.Join(root, "hooks"), filepath.Join(root, "physical-hooks")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("physical-hooks", filepath.Join(root, "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(root, "physical-hooks/validate-bash.sh")
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../file.txt", hook); err != nil {
+		t.Fatal(err)
+	}
+	before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+	head := fixtureGit(t, root, "rev-parse", "HEAD")
+	if err := executeFixtureOperation(t, root, "remove", "--destination", "worktree", "--", "physical-hooks/validate-bash.sh"); err == nil {
+		t.Fatal("physical live hook entry removal admitted")
+	}
+	if target, err := os.Readlink(hook); err != nil || target != "../file.txt" {
+		t.Fatal("live hook entry changed")
+	}
+	if err := os.Symlink("file.txt", filepath.Join(root, "ordinary-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, root, "remove", "--destination", "worktree", "--", "ordinary-link"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "ordinary-link")); !os.IsNotExist(err) {
+		t.Fatal("ordinary symlink removal failed")
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(content) != "base\n" {
+		t.Fatal("hook referent changed")
+	}
+	if fixtureGit(t, root, "ls-files", "--stage", "-z") != before || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+		t.Fatal("index or HEAD changed")
 	}
 }

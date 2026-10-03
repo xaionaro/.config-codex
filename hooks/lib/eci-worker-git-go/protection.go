@@ -60,6 +60,13 @@ func liveProtectedPaths() []string {
 			candidate := filepath.Join(resolved, "hooks", name)
 			if _, err := os.Lstat(candidate); err == nil {
 				paths = append(paths, candidate)
+				// Resolve parent aliases while preserving the hook's own symlink entry.
+				if entry, err := resolvedParent(candidate); err == nil {
+					paths = append(paths, entry)
+				}
+				if referent, err := filepath.EvalSymlinks(candidate); err == nil {
+					paths = append(paths, referent)
+				}
 			}
 		}
 	}
@@ -89,7 +96,8 @@ func (r Repository) CheckPaths(
 		if !containsPath(r.Worktree, resolved) {
 			return fmt.Errorf("path leaves worktree through an ancestor alias: %q", name)
 		}
-		if containsPath(r.GitDir, resolved) || containsPath(resolved, r.GitDir) || resolved == r.Index {
+		pointer := filepath.Join(r.Worktree, ".git")
+		if containsPath(r.GitDir, resolved) || containsPath(resolved, r.GitDir) || resolved == r.Index || containsPath(pointer, resolved) || containsPath(resolved, pointer) {
 			return fmt.Errorf("operation targets Git control state: %q", name)
 		}
 		if !worktreeWrite {

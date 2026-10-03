@@ -14,10 +14,19 @@ examples below describe retained effect checks in other contexts; repository
 declarations do not lift the Worker CLI routing rule. Direct Worker inspection
 retains output, helper, and foreign-repository effect checks.
 
-Configured external diff/textconv execution uses `ECI_GIT_EXECUTION_CONTEXT_DENIED`.
-Inspect with `--no-ext-diff --no-textconv`, or run the intended helper through
-its explicit task-owned command. Helper flags without configured helpers remain
-ordinary inspection; unavailable configuration/attribute queries stay advisory.
+Supported native inspection that reaches a viable configured helper uses
+`ECI_GIT_EXECUTION_CONTEXT_DENIED`. The same-path observer contains writes and
+blocks helper creation; a kernel initial-exec certificate stops before helper
+instructions. Only the original first child supplies evidence. Clean comparisons,
+valid conversion caches, and helper-free inspection remain ordinary.
+
+Use the denial's command-specific raw hatch, or run the intended helper through
+its explicit task-owned command. Diff/log/show disable external diff and textconv;
+grep disables textconv only. Relevant fsmonitor uses a global disabling override.
+These overrides retain the observed working directory and selectors, and change
+converted output and pickaxe semantics. Missing helpers and unavailable evidence
+remain advisory. Unmodeled loader/trace/descriptor channels, daemon fsmonitor,
+unsupported input, layout or platform skip native inspection replay.
 
 | Gate family | Stops only this resolved effect | Legitimate path / escape hatch |
 | --- | --- | --- |
@@ -55,7 +64,7 @@ Prefix every operation with `"$HOME/.codex/bin/eci-worker-git" --repo <existing-
 | Operation | Fixed input and effect |
 | --- | --- |
 | `stage-content -- <files>` | Existing exact file/symlink names to index; no directory/deletion sweep. |
-| `stage-removals -- <paths>` | Named absent worktree entries staged as removals. |
+| `stage-removals -- <paths>` | Exact named absent tracked entries staged as removals. |
 | `stage-hunks --patch-file <file> -- <paths>` | Frozen patch applied only to index; complete native preview must select only named paths, including rename source/destination. |
 | `unstage -- <paths>` | HEAD to named index entries; proven unborn branch removes only named cached entries. |
 | `restore --source index\|head\|<full-object-id> --destination worktree\|index\|both -- <paths>` | Explicit source/destination; index source permits worktree only. Submodule worktree recursion is disabled. |
@@ -64,3 +73,9 @@ Prefix every operation with `"$HOME/.codex/bin/eci-worker-git" --repo <existing-
 | `commit --message <text>` | Prepared index only; no path selection, automatic staging or history rewrite. Project validation hooks remain active. |
 
 A typed request does not authorize semantic ownership of already staged content. Producers inspect the complete staged diff/tree and make their own checked append-only handoff commit after fresh same-index coordination. The Supervisor verifies that immutable range. Unsupported native selection modes require an exact supported operation or a separately assigned bounded operational route; no arbitrary-Git wrapper is provided.
+
+Every path is an exact file or symlink leaf; directory and sparse-directory
+selection is unsupported. Worktree-affecting gitlinks are rejected because
+native operations can alter unnamed administrative metadata. Live hook entries,
+their referents, and the worktree `.git` pointer retain protection. Hunk preview
+compares complete native index stage records and preserves unrelated conflicts.

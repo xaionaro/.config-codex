@@ -41,6 +41,12 @@ PLANNER_DIR="$RUNTIME_ROOT/hooks/lib/eci-command-plan-go"
   /usr/lib/go-1.24/bin/go build -trimpath -buildvcs=false -o eci-command-plan .
 )
 chmod 755 -- "$PLANNER_DIR/eci-command-plan"
+if [ -f "$SOURCE_ROOT/hooks/lib/eci-git-inspection-go/go.mod" ]; then
+  (
+    cd -- "$SOURCE_ROOT/hooks/lib/eci-git-inspection-go"
+    env GOWORK=off CGO_ENABLED=0 /usr/lib/go-1.24/bin/go build -mod=readonly -trimpath -buildvcs=false -o "$RUNTIME_ROOT/bin/eci-git-inspection" .
+  )
+fi
 planner_go_mod_sha="$(sha256sum -- "$PLANNER_DIR/go.mod" | awk '{print $1}')"
 planner_main_sha="$(sha256sum -- "$PLANNER_DIR/main.go" | awk '{print $1}')"
 planner_classifier_sha="$(sha256sum -- "$PLANNER_DIR/classifier.go" | awk '{print $1}')"
@@ -2108,6 +2114,10 @@ typed_invariants() {
 
 run_worker_git_helper_effect() {
   local output index_hash head worktree_hash helper_output="$TMP_ROOT/git-helper-effect.out"
+  local helper_decision_path="$TMP_ROOT/helper-decision.json"
+  local CODEX_TMPDIR="$TMP_ROOT/helper-scratch"
+  mkdir -p -- "$CODEX_TMPDIR"
+  export CODEX_TMPDIR
   assert_allowed 'git diff --ext-diff --textconv -- file.txt' worker
   printf '#!/usr/bin/env bash\nprintf helper-effect > %q\n' "$helper_output" >"$TMP_ROOT/git-external-helper"
   chmod 755 "$TMP_ROOT/git-external-helper"
@@ -2121,8 +2131,8 @@ run_worker_git_helper_effect() {
   head="$(git -C "$REPO" rev-parse HEAD)"
   worktree_hash="$(git -C "$REPO" hash-object file.txt)"
   output="$(run_hook 'git diff --ext-diff -- file.txt' worker)"
-  cp -- "$output" "$TMP_ROOT/helper-decision.json"
-  output="$TMP_ROOT/helper-decision.json"
+  cp -- "$output" "$helper_decision_path"
+  output="$helper_decision_path"
   printf '%s\n' 'registered helper-effect command: git diff --ext-diff -- file.txt'
   if [ -s "$output" ]; then cat "$output"; else printf '%s\n' 'registered helper-effect decision: ALLOW (empty output)'; fi
   git -C "$REPO" diff --ext-diff -- file.txt >"$TMP_ROOT/git-helper-native.log" 2>&1
@@ -2149,10 +2159,228 @@ run_worker_git_helper_effect() {
   [ "$(git -C "$REPO" hash-object file.txt)" = "$worktree_hash" ]
   git -C "$REPO" config --unset diff.fixture.textconv
   rm -- "$REPO/.gitattributes"
-  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null || {
+  jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$helper_decision_path" >/dev/null || {
     printf '%s\n' 'configured helper output effect escaped registered worker denial' >&2; return 1;
   }
   printf '%s\n' 'worker Git configured helper-effect denial: PASS'
+}
+
+run_worker_git_inspection_matrix() {
+  local command marker="$TMP_ROOT/inspection-helper.marker" helper="$TMP_ROOT/inspection-helper" failures=0
+  local index_before head_before worktree_before native_status guard observer_marker="$TMP_ROOT/observer-entry.marker"
+  # Keep observer scratch beside the repository, outside its same-path overlay.
+  local CODEX_TMPDIR="$TMP_ROOT/inspection-scratch"
+  mkdir -p -- "$CODEX_TMPDIR"
+  export CODEX_TMPDIR
+  printf '#!/usr/bin/env bash\nprintf callback >> %q\ncat -- "$1"\n' "$marker" >"$helper"
+  chmod 755 "$helper"
+  printf 'file.txt diff=observed\n' >"$REPO/.gitattributes"
+  git -C "$REPO" config diff.observed.textconv "$helper"
+  git -C "$REPO" restore --worktree -- file.txt
+  for command in 'git diff -- file.txt' 'git diff --cached -- file.txt' 'git diff --check -- file.txt' 'git log --oneline -1' 'git show HEAD:file.txt'; do
+    assert_allowed "$command" worker || failures=1
+  done
+  printf 'changed converted input\n' >"$REPO/file.txt"
+  index_before="$(sha256sum "$REPO/.git/index")"
+  head_before="$(git -C "$REPO" rev-parse HEAD)"
+  worktree_before="$(git -C "$REPO" hash-object file.txt)"
+  for command in 'git diff -Sabsent --name-only -- file.txt' 'git diff --quiet -- file.txt' 'git log -U3 -1 -- file.txt' 'git log --patch-with-stat -1 -- file.txt' 'git show --textconv HEAD:file.txt' 'git grep --textconv changed -- file.txt'; do
+    assert_denied_code "$command" ECI_GIT_EXECUTION_CONTEXT_DENIED worker || failures=1
+    [ ! -e "$marker" ] || failures=1
+    [ "$(sha256sum "$REPO/.git/index")" = "$index_before" ] || failures=1
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ] || failures=1
+    [ "$(git -C "$REPO" hash-object file.txt)" = "$worktree_before" ] || failures=1
+    # Run the identical native command only after preflight, proving its effect.
+    native_status=0
+    (cd -- "$REPO" && /bin/bash -c "$command") >"$TMP_ROOT/inspection-native.log" 2>&1 || native_status=$?
+    [ "$native_status" -le 1 ] && [ -s "$marker" ] || failures=1
+    rm -f -- "$marker"
+  done
+  for command in 'git diff --no-ext-diff --no-textconv -- file.txt' 'git grep --no-textconv changed -- file.txt'; do
+    assert_allowed "$command" worker || failures=1
+  done
+  mkdir -p -- "$REPO/subdir"
+  assert_denied_code 'git -C subdir diff -- ../file.txt' ECI_GIT_EXECUTION_CONTEXT_DENIED worker \
+    "raw inspection: git -C $REPO/subdir" || failures=1
+  assert_allowed 'git -C subdir diff --no-ext-diff --no-textconv -- ../file.txt' worker || failures=1
+  # A private wrapper records observer entry. Excluded loader/trace/FD cases
+  # must remain Advisory before even this infrastructure process is launched.
+  mv -- "$RUNTIME_ROOT/bin/eci-git-inspection" "$RUNTIME_ROOT/bin/eci-git-inspection.real"
+  printf '#!/bin/bash\nprintf observer >> %q\nexec %q\n' \
+    "$observer_marker" "$RUNTIME_ROOT/bin/eci-git-inspection.real" >"$RUNTIME_ROOT/bin/eci-git-inspection"
+  chmod 755 "$RUNTIME_ROOT/bin/eci-git-inspection"
+  assert_allowed "LD_DEBUG=libs LD_DEBUG_OUTPUT=$TMP_ROOT/inspection-loader git diff -- file.txt" worker || failures=1
+  if compgen -G "$TMP_ROOT/inspection-loader.*" >/dev/null; then
+    printf '%s\n' 'inspection eligibility diagnostics emitted original loader output' >&2
+    failures=1
+  fi
+  for guard in 'GLIBC_TUNABLES=glibc.malloc.trim_threshold=16384' 'LD_LIBRARY_PATH=/unmodeled' 'GCONV_PATH=/unmodeled' 'LOCPATH=/unmodeled' "MALLOC_TRACE=$TMP_ROOT/malloc-trace" "GIT_TRACE=$TMP_ROOT/original-trace"; do
+    assert_allowed "$guard git diff -- file.txt" worker || failures=1
+    [ ! -e "$observer_marker" ] && [ ! -e "$marker" ] || failures=1
+  done
+  [ ! -e "$TMP_ROOT/original-trace" ] || {
+    printf '%s\n' 'inspection eligibility diagnostics emitted original trace output' >&2
+    failures=1
+  }
+  assert_allowed 'git diff -- file.txt' worker configured absent "$REPO" '[]' false sentinel || failures=1
+  [ ! -e "$observer_marker" ] || failures=1
+  assert_denied_code 'GCONV_PATH= LOCPATH= MALLOC_TRACE= GLIBC_TUNABLES= LD_LIBRARY_PATH= GIT_TRACE=0 git diff -- file.txt' ECI_GIT_EXECUTION_CONTEXT_DENIED worker || failures=1
+  [ -s "$observer_marker" ] && [ ! -e "$marker" ] || failures=1
+  rm -- "$RUNTIME_ROOT/bin/eci-git-inspection" "$observer_marker"
+  mv -- "$RUNTIME_ROOT/bin/eci-git-inspection.real" "$RUNTIME_ROOT/bin/eci-git-inspection"
+  git -C "$REPO" config diff.observed.textconv "$TMP_ROOT/missing-helper"
+  assert_allowed 'git show --textconv HEAD:file.txt' worker || failures=1
+  assert_denied_code 'git restore --source=HEAD --worktree -- hooks/validate-bash.sh' \
+    ECI_COORDINATOR_EDIT_ROUTING_REQUIRED coordinator protected-target || failures=1
+  assert_denied_code 'git diff --output=inspection.out -- file.txt' ECI_GIT_OUTPUT_WRITE_DENIED worker || failures=1
+  assert_denied_code "git -C \"$FOREIGN_REPO\" diff -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker || failures=1
+  assert_denied_code 'git diff -- file.txt && git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
+  git -C "$REPO" config --unset diff.observed.textconv
+  rm -- "$REPO/.gitattributes"
+  rmdir -- "$REPO/subdir"
+  [ "$failures" -eq 0 ] || return 1
+  printf '%s\n' 'worker Git native inspection observer matrix: PASS'
+}
+
+
+run_worker_git_external_pairs() {
+  local marker="$TMP_ROOT/external-pair.marker" helper="$TMP_ROOT/external-helper"
+  local command index_before head_before worktree_before helper_command special_argument
+  local CODEX_TMPDIR="$TMP_ROOT/external-scratch"
+  mkdir -p -- "$CODEX_TMPDIR"
+  export CODEX_TMPDIR
+  printf '#!/usr/bin/env bash\nprintf "%%s:%%s\\n" "$GIT_DIFF_PATH_COUNTER" "$GIT_DIFF_PATH_TOTAL" >> %q\n' "$marker" >"$helper"
+  chmod 755 "$helper"
+  printf 'second base\n' >"$REPO/second.txt"
+  git -C "$REPO" add -- second.txt
+  git -C "$REPO" commit -qm 'external pair baseline'
+  printf 'second changed\n' >"$REPO/second.txt"
+  git -C "$REPO" config diff.external "$helper"
+  index_before="$(sha256sum "$REPO/.git/index")"
+  head_before="$(git -C "$REPO" rev-parse HEAD)"
+  worktree_before="$(git -C "$REPO" hash-object file.txt second.txt)"
+  for command in \
+    'git diff -- file.txt second.txt' \
+    'GIT_DIFF_PATH_COUNTER=1 GIT_DIFF_PATH_TOTAL=2 git diff -- file.txt second.txt' \
+    'GIT_DIFF_PATH_COUNTER=1 GIT_DIFF_PATH_TOTAL=old git diff -- file.txt second.txt' \
+    'GIT_DIFF_PATH_COUNTER=old GIT_DIFF_PATH_TOTAL=old git diff -- file.txt second.txt'; do
+    assert_denied_code "$command" ECI_GIT_EXECUTION_CONTEXT_DENIED worker
+    [ ! -e "$marker" ]
+    [ "$(sha256sum "$REPO/.git/index")" = "$index_before" ]
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ]
+    [ "$(git -C "$REPO" hash-object file.txt second.txt)" = "$worktree_before" ]
+    (cd -- "$REPO" && /bin/bash -c "$command") >"$TMP_ROOT/external-native.log" 2>&1
+    [ "$(cat "$marker")" = $'1:2\n2:2' ]
+    rm -- "$marker"
+  done
+  # Git quotes internal newline, apostrophe and exclamation bytes in a single
+  # complete Trace1 record. Numeric-looking argument text is not environment.
+  special_argument=$'apostrophe\047!\ntrace: run_command: GIT_DIFF_PATH_COUNTER=77 GIT_DIFF_PATH_TOTAL=77'
+  helper_command="$(python3 - "$helper" "$special_argument" <<'PYQUOTE'
+import shlex
+import sys
+print(shlex.join([sys.argv[1], 'GIT_DIFF_PATH_COUNTER=99', sys.argv[2]]))
+PYQUOTE
+)"
+  git -C "$REPO" config diff.external "$helper_command"
+  assert_denied_code 'git diff -- file.txt second.txt' ECI_GIT_EXECUTION_CONTEXT_DENIED worker
+  [ ! -e "$marker" ]
+  git -C "$REPO" diff -- file.txt second.txt >"$TMP_ROOT/external-quoted-native.log" 2>&1
+  [ "$(cat "$marker")" = $'1:2\n2:2' ]
+  rm -- "$marker"
+  assert_allowed 'git diff --no-ext-diff --no-textconv -- file.txt second.txt' worker
+  assert_allowed 'git diff --name-only -- file.txt second.txt' worker
+  assert_allowed 'git diff --check -- file.txt second.txt' worker
+  git -C "$REPO" diff --no-ext-diff --no-textconv -- file.txt second.txt >"$TMP_ROOT/external-raw-native.log"
+  git -C "$REPO" diff --name-only -- file.txt second.txt >"$TMP_ROOT/external-names-native.log"
+  [ ! -e "$marker" ]
+  git -C "$REPO" restore --worktree -- file.txt second.txt
+  assert_allowed 'git diff -- file.txt second.txt' worker
+  [ ! -e "$marker" ]
+  git -C "$REPO" config --unset diff.external
+  printf '%s\n' 'worker Git external diff registered native pairs: PASS'
+}
+
+run_worker_git_mutation_repairs() {
+  local saved_repo="$REPO" source_oid index_path pointer_before command status=0 conflict_oid
+  REPO="$TMP_ROOT/typed-repair-repo"
+  mkdir -p -- "$REPO/hooks" "$REPO/dir"
+  git -C "$REPO" init -q
+  git -C "$REPO" config user.email normal-git-test@example.invalid
+  git -C "$REPO" config user.name 'Normal Git Test'
+  printf 'base\n' >"$REPO/file.txt"
+  printf 'unrelated\n' >"$REPO/unrelated.txt"
+  printf 'child\n' >"$REPO/dir/child"
+  printf 'live hook\n' >"$REPO/hooks/validate-bash.sh"
+  git -C "$REPO" add -- file.txt unrelated.txt dir/child hooks/validate-bash.sh
+  git -C "$REPO" commit -qm 'repair baseline'
+  printf '%s\n' 'scope: typed repairs' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  source_oid="$(git -C "$REPO" rev-parse HEAD)"
+  typed_reject stage-content -- dir
+  typed_reject remove --destination worktree -- file.txt dir
+  typed_reject remove --destination index -- dir
+  typed_reject restore --source head --destination index -- dir
+  typed_reject unstage -- dir
+  typed_reject move -- dir moved
+  typed_reject remove --destination worktree -- file.txt missing
+  [ "$(cat "$REPO/file.txt")" = base ]
+  [ "$(cat "$REPO/dir/child")" = child ]
+  # An ordinary source path can be a configured live hook's resolved referent.
+  # Keep the registered Bash launcher intact while changing the private Edit hook.
+  mv -- "$RUNTIME_ROOT/hooks/validate-edit-write.sh" "$TMP_ROOT/saved-edit-hook"
+  ln -s "$REPO/file.txt" "$RUNTIME_ROOT/hooks/validate-edit-write.sh"
+  typed_reject remove --destination worktree -- file.txt
+  [ "$(cat "$REPO/file.txt")" = base ]
+  mv -- "$RUNTIME_ROOT/hooks" "$REPO/aliased-hooks"
+  ln -s "$REPO/aliased-hooks" "$RUNTIME_ROOT/hooks"
+  typed_reject remove --destination worktree -- aliased-hooks/validate-edit-write.sh
+  [ -L "$REPO/aliased-hooks/validate-edit-write.sh" ]
+  ln -s "$REPO/file.txt" "$REPO/aliased-hooks/ordinary-link"
+  typed_run remove --destination worktree -- aliased-hooks/ordinary-link
+  [ "$(cat "$REPO/file.txt")" = base ]
+  rm -- "$RUNTIME_ROOT/hooks"
+  mv -- "$REPO/aliased-hooks" "$RUNTIME_ROOT/hooks"
+  rm -- "$RUNTIME_ROOT/hooks/validate-edit-write.sh"
+  mv -- "$TMP_ROOT/saved-edit-hook" "$RUNTIME_ROOT/hooks/validate-edit-write.sh"
+  # Gitlinks may mutate .gitmodules or move implicit administrative state.
+  git -C "$REPO" update-index --add --cacheinfo "160000,$source_oid,sub"
+  git -C "$REPO" commit -qm 'gitlink fixture'
+  printf 'metadata sentinel\n' >"$REPO/.gitmodules"
+  typed_reject remove --destination both -- sub
+  typed_reject restore --source head --destination worktree -- sub
+  typed_reject move -- sub destination
+  [ "$(cat "$REPO/.gitmodules")" = 'metadata sentinel' ]
+  typed_run remove --destination index -- sub
+  [ "$(cat "$REPO/.gitmodules")" = 'metadata sentinel' ]
+  # A hunk can coexist with unrelated complete conflict stage records.
+  conflict_oid="$(git -C "$REPO" rev-parse :unrelated.txt)"
+  git -C "$REPO" update-index --force-remove unrelated.txt
+  printf '100644 %s 1\tunrelated.txt\n100644 %s 2\tunrelated.txt\n100644 %s 3\tunrelated.txt\n' "$conflict_oid" "$conflict_oid" "$conflict_oid" |
+    git -C "$REPO" update-index --index-info
+  git -C "$REPO" ls-files --stage -z -- unrelated.txt >"$TMP_ROOT/conflict-before"
+  printf 'selected hunk\n' >"$REPO/file.txt"
+  git -C "$REPO" diff -- file.txt >"$TMP_ROOT/repair.patch"
+  typed_run stage-hunks --patch-file "$TMP_ROOT/repair.patch" -- file.txt
+  [ "$(git -C "$REPO" show :file.txt)" = 'selected hunk' ]
+  git -C "$REPO" ls-files --stage -z -- unrelated.txt >"$TMP_ROOT/conflict-after"
+  cmp -- "$TMP_ROOT/conflict-before" "$TMP_ROOT/conflict-after"
+  # The linked worktree's pointer itself must remain a protected leaf.
+  git -C "$REPO" worktree add -q -b repair-linked "$TMP_ROOT/typed-linked"
+  REPO="$TMP_ROOT/typed-linked"
+  printf '%s\n' 'scope: linked pointer repair' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  pointer_before="$(cat "$REPO/.git")"
+  index_path="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index)"
+  cp -- "$index_path" "$TMP_ROOT/linked-index-before"
+  printf -v command '%q ' "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" remove --destination worktree -- .git
+  assert_allowed "$command" worker
+  status=0
+  HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+    "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" remove --destination worktree -- .git >"$TMP_ROOT/linked-pointer-rejection.log" 2>&1 || status=$?
+  [ "$status" -ne 0 ] && [ "$(cat "$REPO/.git")" = "$pointer_before" ]
+  cmp -- "$index_path" "$TMP_ROOT/linked-index-before"
+  REPO="$saved_repo"
+  printf '%s\n' 'scope: typed matrix' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
+  printf '%s\n' 'worker Git mutation repair registered pairs: PASS'
 }
 
 run_worker_git_cli_edges() {
@@ -2214,6 +2442,7 @@ run_worker_git_cli_edges() {
   printf '%s\n' 'scope: typed matrix' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
   [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ]
   [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$hook_hash" ]
+  run_worker_git_mutation_repairs
   printf '%s\n' 'worker Git mode/unborn registered edges: PASS'
 }
 
@@ -2423,7 +2652,7 @@ run_effect_aware_git_target() {
   git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
-  if [[ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-slice || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-matrix || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = full ]]; then
+  if [[ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-slice || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-matrix || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-inspection || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = full ]]; then
     (
       cd -- "$SOURCE_ROOT/hooks/lib/eci-worker-git-go"
       env GOWORK=off CGO_ENABLED=0 /usr/lib/go-1.24/bin/go build -mod=readonly -trimpath -buildvcs=false -o "$RUNTIME_ROOT/bin/eci-worker-git" .
@@ -2466,7 +2695,10 @@ run_effect_aware_git_target() {
     [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || return 1
     git -C "$REPO" diff --cached --quiet || return 1
     printf '%s\n' 'worker Git native referral/inspection slice: PASS'
-    if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect ]; then
+    if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-inspection ]; then
+      run_worker_git_inspection_matrix
+      run_worker_git_external_pairs
+    elif [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect ]; then
       run_worker_git_helper_effect
     elif [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges ]; then
       run_worker_git_cli_edges
@@ -2902,7 +3134,7 @@ run_effect_aware_git_target() {
 }
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
-  full|worker-git-cli-matrix|worker-git-cli-edges|worker-git-helper-effect)
+  full|worker-git-cli-matrix|worker-git-cli-edges|worker-git-helper-effect|worker-git-inspection)
     run_effect_aware_git_target
     printf '%s\n' 'normal Git admission current worker contract: PASS'
     exit 0

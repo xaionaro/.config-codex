@@ -57,6 +57,7 @@ __pycache__/
 *.py[cod]
 /bin/eci-command-gate-mode
 /bin/eci-worker-git
+/bin/eci-git-inspection
 eci-command-plan
 eci-safe-import
 /hooks/lib/eci-command-gate-mode-go/eci-command-gate-mode

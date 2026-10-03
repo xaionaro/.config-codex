@@ -11706,59 +11706,64 @@ def commit_effect(
     return "commit"
 
 
-def inspection_has_configured_helper(
-    verb: str, arguments: list[str], context: CheckoutInvocation,
-) -> bool:
-    """Resolve configured helpers and path attributes without executing them."""
-    if context.options is None or context.environment is None or not context.cwd:
-        return False
-    option_arguments = arguments[:arguments.index("--")] if "--" in arguments else arguments
-    patch_requested = any(value in {"-p", "--patch", "-u"} for value in option_arguments)
-    blob_show = verb == "show" and any(":" in value and not value.startswith("-") for value in option_arguments)
-    modes = {"ext-diff": verb == "diff", "textconv": verb == "diff" or (verb == "show" and not blob_show) or (verb == "log" and patch_requested)}
-    for value in arguments:
-        if value == "--":
-            break
-        if value in {"--ext-diff", "--no-ext-diff"}:
-            modes["ext-diff"] = value == "--ext-diff"
-        if value in {"--textconv", "--no-textconv"}:
-            modes["textconv"] = value == "--textconv"
-    summary_only = any(value in {"--name-only", "--name-status", "--stat", "--numstat", "--raw"} for value in option_arguments)
-    if "--no-patch" in option_arguments or "-s" in option_arguments or (summary_only and not patch_requested):
-        return False
-    if not any(modes.values()):
-        return False
-    prefix = ["/usr/bin/git", *context.options]
+def inspection_observation(
+    arguments: list[str], base: str, options: list[str], environment: dict[str, str],
+) -> dict[str, str | list[str]]:
+    """Obtain bounded native evidence; unsupported preparation remains advisory."""
+    from errno import EBADF
+
+    advisory = {"result": "Advisory"}
+    loader_controls = {"GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH", "MALLOC_TRACE"}
+    # JSON cannot preserve surrogateescaped native pathname/environment bytes.
     try:
-        configured = subprocess.run(prefix + ["config", "--null", "--get-regexp",
-            r"^diff\.(external|.*\.(command|textconv))$"], cwd=context.cwd,
-            env=context.environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=1, check=False)
-        settings = {}
-        for record in configured.stdout.split(b"\0"):
-            key, separator, value = record.partition(b"\n")
-            if separator:
-                settings[os.fsdecode(key)] = os.fsdecode(value)
-        if modes["ext-diff"] and (context.environment.get("GIT_EXTERNAL_DIFF") or settings.get("diff.external")):
-            return True
-        if not settings:
-            return False
-        paths = arguments[arguments.index("--") + 1:] if "--" in arguments else []
-        names = subprocess.run(prefix + ["ls-files", "-z", "--", *paths],
-            cwd=context.cwd, env=context.environment, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, timeout=1, check=False)
-        attributes = subprocess.run(prefix + ["check-attr", "-z", "--stdin", "diff"],
-            input=names.stdout, cwd=context.cwd, env=context.environment,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    records = attributes.stdout.split(b"\0")
-    for offset in range(0, len(records) - 2, 3):
-        driver = os.fsdecode(records[offset + 2])
-        if ((modes["ext-diff"] and settings.get("diff." + driver + ".command")) or
-                (modes["textconv"] and settings.get("diff." + driver + ".textconv"))):
-            return True
-    return False
+        for value in [base, *options, *arguments, *environment.keys(), *environment.values()]:
+            value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return advisory
+    # Eligibility precedes every subprocess, including observer diagnostics.
+    # Original loader/trace channels cannot affect the observer infrastructure.
+    if not base or any((value and (name.startswith("LD_") or name in loader_controls)) or
+                       (name.startswith("GIT_TRACE") and value not in {"", "0"})
+                       for name, value in environment.items()):
+        return advisory
+    try:
+        for name in os.listdir("/proc/self/fd"):
+            descriptor = int(name)
+            if descriptor > 2:
+                try:
+                    if os.get_inheritable(descriptor):
+                        return advisory
+                except OSError as error:
+                    # The directory scan itself can leave one already-closed FD.
+                    if error.errno != EBADF:
+                        return advisory
+    except OSError:
+        return advisory
+    configured_home = os.environ.get("CODEX_CONFIGURED_HOME")
+    if not configured_home:
+        return advisory
+    binary = os.path.join(configured_home, "bin", "eci-git-inspection")
+    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+        return advisory
+    infrastructure = {name: value for name, value in os.environ.items()
+                      if not name.startswith("LD_") and name not in loader_controls and not name.startswith("GIT_TRACE")}
+    try:
+        observed = subprocess.run([binary], input=json.dumps({"cwd": base,
+            "arguments": [*options, *arguments], "environment": environment}),
+            text=True, env=infrastructure, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=10, check=False)
+        result = json.loads(observed.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return advisory
+    if observed.returncode or not isinstance(result, dict) or result.get("result") not in {"Helper", "NoHelper", "Advisory"}:
+        return advisory
+    if result.get("result") == "Helper":
+        if (not all(isinstance(result.get(key), str) and result[key] for key in {"category", "target", "reason"}) or
+                not isinstance(result.get("hatch"), list) or not result["hatch"] or
+                not all(isinstance(value, str) for value in result["hatch"])):
+            return advisory
+        result["remediation"] = shlex.join(["git", "-C", base, *result["hatch"]])
+    return result
 
 
 def segment_spec(
@@ -12185,14 +12190,15 @@ def segment_spec(
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
-        if verb in {"diff", "log", "show", "grep"}:
-            context = checkout_invocation(repo_dir or "", tuple(git_options) if git_options_known else None,
-                dict(environment) if all(value is not None for value in environment.values()) else None)
-            if not any(offset > index for offset in unknown) and inspection_has_configured_helper(verb, tokens[index + 1:], context):
-                return "inspection-helper", repo_dir
         if any(value in {"-o", "--output"} or value.startswith("--output=")
                for value in tokens[index + 1:]):
             return "output", repo_dir
+        if (worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
+                not any(offset > index for offset in unknown) and all(value is not None for value in environment.values())):
+            result = inspection_observation(tokens[index:], repo_dir or "", git_options, environment)
+            if result.get("result") == "Helper":
+                result["repository"] = repo_dir or "<unresolved>"
+                return "inspection-helper", "inspection-helper:" + json.dumps(result, separators=(",", ":"))
         return "inspection", repo_dir
     # These operations are ordinary when they resolve inside the current
     # repository. They still expose a concrete foreign repository target.
@@ -12210,7 +12216,7 @@ def emit_spec(spec):
         print("checkout-context:" + json.dumps({"cwd": context.cwd,
               "worktree": context.worktree, "git_dir": context.git_dir}, separators=(",", ":")))
     else:
-        print(spec[1] if spec[1] and os.path.isabs(spec[1]) else "<unresolved>")
+        print(spec[1] if spec[1] and (os.path.isabs(spec[1]) or spec[1].startswith("inspection-helper:")) else "<unresolved>")
 
 
 analysis = json.loads(sys.argv[5])
@@ -13115,6 +13121,11 @@ def git_command(
     if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality):
         return None
 
+    # Only these verbs can produce a protected worktree target below. Avoid
+    # running original-context diagnostics for inspections discarded afterward.
+    if segment[index] not in {"rm", "mv", "restore", "checkout"}:
+        return None
+
     def parsed(context: CheckoutGitContext, result_base: str) -> ProtectedGitCommand:
         return ProtectedGitCommand(
             segment[index], segment[index + 1:], result_base,
@@ -13724,7 +13735,7 @@ PY
 
 enforce_git_mutation_gate() {
   local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_token
-  local checkout_context
+  local checkout_context inspection_helper_detail='' inspection_helper_target inspection_helper_hatch inspection_helper_reason
 
   # The typed worker CLI owns mutations; keep concrete native inspection
   # effects on their existing output/helper/repository checks.
@@ -13737,12 +13748,6 @@ enforce_git_mutation_gate() {
           operation="${specs[index]}"
           repo_dir="${specs[index + 1]}"
           case "$operation" in
-            inspection-helper)
-              validate_active_marker_binding
-              deny_eci "ECI_GIT_EXECUTION_CONTEXT_DENIED" "git-execution-context" \
-                "Git inspection enables a configured external diff/textconv helper; predicate=git-inspection-helper target=$repo_dir" \
-                "inspect with --no-ext-diff --no-textconv to keep Git output on stdout without external helpers; run an intended helper effect through its explicit task-owned command"
-              ;;
             prep|reset|reset-index|reset-working-tree|whole-worktree-staging|index-unsupported|commit|commit-all|commit-stage|commit-amend|worktree|repository|apply)
               validate_active_marker_binding
               deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
@@ -13813,7 +13818,12 @@ enforce_git_mutation_gate() {
       checkout_context="${repo_dir#checkout-context:}"
       repo_dir="$(jq -r '.cwd // "<unresolved>"' <<<"$checkout_context")"
     fi
-    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output|worker-cli) ;; *) continue ;; esac
+    if [ "$operation" = inspection-helper ]; then
+      inspection_helper_detail="${repo_dir#inspection-helper:}"
+      repo_dir="$(jq -r '.repository // "<unresolved>"' <<<"$inspection_helper_detail")"
+      operation=inspection
+    fi
+    case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output|worker-cli|inspection) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       validate_active_marker_binding
     fi
@@ -13933,6 +13943,14 @@ enforce_git_mutation_gate() {
       fi
     fi
   done
+  if [ "${hook_is_subagent:-false}" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ -n "$inspection_helper_detail" ]; then
+    inspection_helper_target="$(jq -r '.target' <<<"$inspection_helper_detail")"
+    inspection_helper_hatch="$(jq -r '.remediation' <<<"$inspection_helper_detail")"
+    inspection_helper_reason="$(jq -r '.reason' <<<"$inspection_helper_detail")"
+    deny_eci "ECI_GIT_EXECUTION_CONTEXT_DENIED" "git-execution-context" \
+      "Git inspection reaches a viable configured helper before original program execution; predicate=git-inspection-helper target=$inspection_helper_target; $inspection_helper_reason" \
+      "raw inspection: $inspection_helper_hatch; conversion is disabled, changing converted output and pickaxe semantics; run the intended helper through its explicit task-owned command"
+  fi
   # Normal commits, refs, remotes, pushes, and targeted repository actions
   # need no approval artifact, exact grammar, receipt, or command spelling
   # ceremony. Review remains ordinary workflow, not a PreToolUse prerequisite.

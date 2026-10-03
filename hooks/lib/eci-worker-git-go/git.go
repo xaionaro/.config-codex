@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Streams provides operation IO without storing process-global streams in repository state.
@@ -35,6 +36,9 @@ func ExecuteOperation(
 	worktreeWrite := operation.Kind == Move ||
 		((operation.Kind == Restore || operation.Kind == Remove) && operation.Destination != IndexDestination)
 	if err := repository.CheckPaths(operation.Paths, worktreeWrite); err != nil {
+		return err
+	}
+	if err := repository.CheckExactLeaves(ctx, operation, worktreeWrite); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(streams.Output, "eci-worker-git: worktree=%q gitdir=%q index=%q\n", repository.Worktree, repository.GitDir, repository.Index); err != nil {
@@ -78,8 +82,13 @@ func ExecuteOperation(
 		arguments = []string{"restore", "--source=HEAD", "--staged", "--"}
 	case StageRemovals:
 		for _, path := range operation.Paths {
-			if _, err := os.Lstat(filepath.Join(repository.Worktree, path)); !os.IsNotExist(err) {
+			_, err := os.Lstat(filepath.Join(repository.Worktree, path))
+			switch {
+			case err == nil:
 				return fmt.Errorf("stage-removals requires an absent worktree path: %q", path)
+			case errors.Is(err, os.ErrNotExist):
+			default:
+				return fmt.Errorf("inspect stage-removals path %q: %w", path, err)
 			}
 			selected, err := repository.Command(ctx, "ls-files", "-z", "--error-unmatch", "--", path).Output()
 			if err != nil {
@@ -115,20 +124,25 @@ func ExecuteOperation(
 	case Remove:
 		switch operation.Destination {
 		case IndexDestination:
-			arguments = []string{"rm", "--cached", "--force", "-r", "--"}
+			arguments = []string{"rm", "--cached", "--force", "--"}
 		case BothDestination:
-			arguments = []string{"rm", "--force", "-r", "--"}
+			arguments = []string{"rm", "--force", "--"}
 		case WorktreeDestination:
 			for _, path := range operation.Paths {
-				if err := os.RemoveAll(filepath.Join(repository.Worktree, path)); err != nil {
+				if err := os.Remove(filepath.Join(repository.Worktree, path)); err != nil {
 					return fmt.Errorf("remove worktree path %q: %w", path, err)
 				}
 			}
 			return nil
 		}
 	case Move:
-		if _, err := os.Lstat(filepath.Join(repository.Worktree, operation.Paths[1])); !os.IsNotExist(err) {
+		_, err := os.Lstat(filepath.Join(repository.Worktree, operation.Paths[1]))
+		switch {
+		case err == nil:
 			return fmt.Errorf("move requires an absent exact destination: %q", operation.Paths[1])
+		case errors.Is(err, os.ErrNotExist):
+		default:
+			return fmt.Errorf("inspect move destination %q: %w", operation.Paths[1], err)
 		}
 		arguments = []string{"mv", "--"}
 	case Commit:
@@ -154,7 +168,10 @@ func (r Repository) ApplySelectedPatch(
 	streams Streams,
 ) (_err error) {
 	info, err := os.Stat(operation.PatchFile)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return fmt.Errorf("inspect selected patch input %q: %w", operation.PatchFile, err)
+	}
+	if !info.Mode().IsRegular() {
 		return fmt.Errorf("patch input must be an existing regular file")
 	}
 	patch, err := os.ReadFile(operation.PatchFile)
@@ -172,18 +189,18 @@ func (r Repository) ApplySelectedPatch(
 	switch {
 	case err == nil:
 		if err := os.WriteFile(preview.Index, index, 0600); err != nil {
-			return err
+			return fmt.Errorf("copy patch preview index: %w", err)
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if err := preview.Command(ctx, "read-tree", "--empty").Run(); err != nil {
-			return err
+			return fmt.Errorf("initialize empty patch preview index: %w", err)
 		}
 	default:
 		return fmt.Errorf("read patch starting index: %w", err)
 	}
-	baseline, err := preview.Command(ctx, "write-tree").Output()
+	baseline, err := preview.StageRecords(ctx)
 	if err != nil {
-		return fmt.Errorf("read preview starting tree: %w", err)
+		return fmt.Errorf("read preview starting stage records: %w", err)
 	}
 	apply := preview.Command(ctx, "apply", "--cached", "-")
 	apply.Stdin = bytes.NewReader(patch)
@@ -191,8 +208,7 @@ func (r Repository) ApplySelectedPatch(
 	if err := apply.Run(); err != nil {
 		return fmt.Errorf("preview patch: %w", err)
 	}
-	query := preview.Command(ctx, "diff", "--cached", "--no-renames", "--name-only", "-z", string(bytes.TrimSuffix(baseline, []byte("\n"))), "--")
-	output, err := query.Output()
+	after, err := preview.StageRecords(ctx)
 	if err != nil {
 		return fmt.Errorf("read complete preview selection: %w", err)
 	}
@@ -200,14 +216,27 @@ func (r Repository) ApplySelectedPatch(
 	for _, name := range operation.Paths {
 		allowed[name] = true
 	}
-	records := bytes.Split(output, []byte{0})
-	if len(records) < 2 || len(records[len(records)-1]) != 0 {
-		return fmt.Errorf("patch has no complete changed target selection")
-	}
-	for _, name := range records[:len(records)-1] {
-		if !allowed[string(name)] {
+	changed := false
+	for name, records := range baseline {
+		if after[name] == records {
+			continue
+		}
+		changed = true
+		if !allowed[name] {
 			return fmt.Errorf("patch selects an unlisted target: %q", name)
 		}
+	}
+	for name, records := range after {
+		if baseline[name] == records {
+			continue
+		}
+		changed = true
+		if !allowed[name] {
+			return fmt.Errorf("patch selects an unlisted target: %q", name)
+		}
+	}
+	if !changed {
+		return fmt.Errorf("patch has no changed target selection")
 	}
 	for _, arguments := range [][]string{{"apply", "--cached", "--check", "-"}, {"apply", "--cached", "-"}} {
 		command := r.Command(ctx, arguments...)
@@ -215,6 +244,129 @@ func (r Repository) ApplySelectedPatch(
 		command.Stdout, command.Stderr = streams.Output, streams.Error
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("apply selected index patch: %w", err)
+		}
+	}
+	return nil
+}
+
+// StageRecords reads every native stage record without requiring a resolved tree.
+//
+// Example: an unrelated conflict retains its stage, mode and object identity.
+func (r Repository) StageRecords(ctx context.Context) (map[string]string, error) {
+	output, err := r.Command(ctx, "ls-files", "--stage", "--sparse", "-z").Output()
+	if err != nil {
+		return nil, fmt.Errorf("read complete index stage records: %w", err)
+	}
+	return parseStageRecords(output)
+}
+
+// parseStageRecords groups complete NUL records by their literal path.
+//
+// Example: three conflict stages remain distinct records under one path.
+func parseStageRecords(output []byte) (map[string]string, error) {
+	records := make(map[string]string)
+	if len(output) == 0 {
+		return records, nil
+	}
+	if output[len(output)-1] != 0 {
+		return nil, fmt.Errorf("incomplete native stage records")
+	}
+	for _, record := range bytes.Split(output[:len(output)-1], []byte{0}) {
+		metadata, path, ok := strings.Cut(string(record), "\t")
+		if !ok || len(strings.Fields(metadata)) != 3 || path == "" {
+			return nil, fmt.Errorf("invalid native stage record %q", record)
+		}
+		records[path] += string(record) + "\x00"
+	}
+	return records, nil
+}
+
+// CheckExactLeaves rejects native directory selections and implicit gitlink worktree effects.
+//
+// Example: a deleted directory is rejected from source entries even when absent on disk.
+func (r Repository) CheckExactLeaves(
+	ctx context.Context,
+	operation Operation,
+	worktreeWrite bool,
+) error {
+	if operation.Kind == Commit {
+		return nil
+	}
+	records, err := r.StageRecords(ctx)
+	if err != nil {
+		return err
+	}
+	source := ""
+	switch {
+	case operation.Kind == Unstage || (operation.Kind == Restore && operation.Source == HeadSource):
+		source = "HEAD"
+	case operation.Kind == Restore && operation.Source == TreeSource:
+		source = operation.TreeOID
+	}
+	if source != "" {
+		output, err := r.Command(ctx, "ls-tree", "-r", "-t", "-z", source).Output()
+		if err != nil {
+			// An unborn branch has no source tree; the operation's later branch proof handles it.
+			if operation.Kind != Unstage {
+				return fmt.Errorf("read exact source selection: %w", err)
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 128 {
+				return fmt.Errorf("read unstage source selection: %w", err)
+			}
+		} else {
+			for _, record := range bytes.Split(bytes.TrimSuffix(output, []byte{0}), []byte{0}) {
+				if len(record) == 0 {
+					continue
+				}
+				metadata, path, ok := strings.Cut(string(record), "\t")
+				fields := strings.Fields(metadata)
+				if !ok || len(fields) != 3 {
+					return fmt.Errorf("invalid source tree record %q", record)
+				}
+				records[path] += fields[0] + " " + fields[2] + " 0\t" + path + "\x00"
+			}
+		}
+	}
+	for _, name := range operation.Paths {
+		info, err := os.Lstat(filepath.Join(r.Worktree, name))
+		switch {
+		case err == nil:
+			if info.IsDir() {
+				return fmt.Errorf("operation requires an exact file or symlink leaf, not directory %q", name)
+			}
+			if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+				return fmt.Errorf("unsupported worktree leaf %q", name)
+			}
+		case errors.Is(err, os.ErrNotExist):
+			if (operation.Kind == Remove && operation.Destination == WorktreeDestination) || (operation.Kind == Move && name == operation.Paths[0]) {
+				return fmt.Errorf("operation requires existing worktree leaf %q: %w", name, err)
+			}
+		default:
+			return fmt.Errorf("inspect exact worktree leaf %q: %w", name, err)
+		}
+		for path, entries := range records {
+			if strings.HasPrefix(path, name+"/") {
+				return fmt.Errorf("operation selects unnamed descendant %q through %q", path, name)
+			}
+			if path != name {
+				continue
+			}
+			for _, record := range strings.Split(strings.TrimSuffix(entries, "\x00"), "\x00") {
+				mode, _, _ := strings.Cut(record, " ")
+				if mode == "040000" {
+					return fmt.Errorf("operation rejects directory or sparse-directory entry %q", name)
+				}
+				if worktreeWrite && mode == "160000" {
+					return fmt.Errorf("operation rejects implicit gitlink worktree metadata changes at %q", name)
+				}
+			}
+		}
+		requiresEntry := operation.Kind == Restore || operation.Kind == Unstage || operation.Kind == StageRemovals ||
+			(operation.Kind == Remove && operation.Destination != WorktreeDestination) ||
+			(operation.Kind == Move && name == operation.Paths[0])
+		if requiresEntry && records[name] == "" {
+			return fmt.Errorf("operation has no exact index or source entry %q", name)
 		}
 	}
 	return nil
