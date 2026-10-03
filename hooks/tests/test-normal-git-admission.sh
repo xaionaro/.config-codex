@@ -925,7 +925,7 @@ run_foreign_timeout_marker_target() {
 }
 
 checkout_invalid_mode_pair() {
-  local options="$1" input="${2:-file}" path command protected_before ordinary_before index_before raw_before index_path native_status row_preserved
+  local options="$1" input="${2:-file}" path command protected_before ordinary_before index_before raw_before index_path native_status row_preserved row_ok
   for path in hooks/validate-bash.sh CODEX.md; do
     printf '%s\n' "$path" >"$REPO/--"
     case "$input" in
@@ -939,12 +939,14 @@ checkout_invalid_mode_pair() {
     index_before="$(git -C "$REPO" ls-files --stage)"
     index_path="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index)"
     raw_before="$(sha256sum "$index_path")"
-    assert_allowed "$command" worker || failures=1
+    row_ok=1
+    assert_allowed "$command" worker || { failures=1; row_ok=0; }
     native_status=0
     (cd -- "$REPO"; bash -c "$command") >"$TMP_ROOT/mode-invalid.out" 2>&1 || native_status=$?
     if [ "$native_status" -eq 0 ]; then
       printf 'native-invalid checkout mode unexpectedly succeeded: %s\n' "$command" >&2
       failures=1
+      row_ok=0
     fi
     row_preserved=1
     [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || row_preserved=0
@@ -953,10 +955,10 @@ checkout_invalid_mode_pair() {
     [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || row_preserved=0
     [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || row_preserved=0
     [ "$(sha256sum "$index_path")" = "$raw_before" ] || row_preserved=0
-    if [ "$row_preserved" -eq 1 ]; then
+    if [ "$row_preserved" -eq 1 ] && [ "$row_ok" -eq 1 ]; then
       printf 'invalid-mode native_exit=%s destination=%s full-state-preserved options=%s\n' "$native_status" "$path" "$options"
     else
-      printf 'invalid-mode state preservation failed: %s\n' "$command" >&2
+      printf 'invalid-mode admission/native/state check failed: %s\n' "$command" >&2
       failures=1
     fi
   done
@@ -1148,14 +1150,14 @@ checkout_orphan_validity_pairs() {
   row_ok=1
   if assert_allowed "$command" worker; then
     (cd -- "$REPO"; bash -c "$command") || { failures=1; row_ok=0; }
-    [ "$(git -C "$REPO" rev-parse HEAD:CODEX.md)" = "$expected_ordinary" ] || { failures=1; row_ok=0; }
+    [ "$(git -C "$REPO" hash-object CODEX.md)" = "$expected_ordinary" ] || { failures=1; row_ok=0; }
     [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || { failures=1; row_ok=0; }
     if [ "$row_ok" -eq 1 ]; then printf 'cancelled-invalid-orphan restored ordinary path\n'; fi
   else failures=1; fi
 }
 
 checkout_branch_path_pair() {
-  local path command protected_before expected_ordinary row_ok index_before
+  local failures=0 path command protected_before expected_ordinary row_ok index_before
   for path in hooks/validate-bash.sh CODEX.md; do
     command="git checkout existing-other-branch -- $path"
     protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
@@ -1213,6 +1215,7 @@ checkout_branch_path_pair() {
     fi
     git -C "$REPO" restore --source=HEAD --worktree -- "$path"
   done
+  [ "$failures" -eq 0 ]
 }
 
 restore_explicit_worktree_pair() {
@@ -1272,8 +1275,70 @@ restore_explicit_worktree_pair() {
   git -C "$REPO" restore --source=HEAD --staged --worktree -- CODEX.md
 }
 
+run_checkout_completed_selection_target() {
+  local failures=0 options template path command row_ok protected_before index_before expected_ordinary
+  for options in \
+    '--patch -U-2' '--patch --unified=-2' '--patch --inter-hunk-context=-2' \
+    '--patch -U-1 -U-2' '--patch --inter-hunk-context=-1 --inter-hunk-context=-2' \
+    '--patch -U-2 --no-patch' '--patch -U08 -U1' \
+    '--patch --unified=2147483648 --unified=1' \
+    'HEAD CODEX.md' 'CODEX.md'; do
+    checkout_invalid_mode_pair "$options" explicit
+  done
+  for template in \
+    "git checkout --orphan topic --no-orphan --pathspec-from-file=$TMP_ROOT/completed.paths" \
+    "git checkout --orp topic --no-orphan --pathspec-fr=$TMP_ROOT/completed.paths" \
+    'git checkout --orp hooks/validate-bash.sh --no-orphan __PATH__' \
+    'git checkout --orp -- --no-orphan -- __PATH__' \
+    "git checkout --orp -- --no-orphan --pathspec-fr=$TMP_ROOT/completed.paths" \
+    "git checkout HEAD --pathspec-fr=$TMP_ROOT/completed.paths" \
+    "git checkout --pathspec-fr=$TMP_ROOT/completed.paths HEAD" \
+    "git checkout --pathspec-fr=$TMP_ROOT/completed.paths --pathspec-file-nul --no-pathspec-file-nul" \
+    "git checkout --pathspec-fr=$TMP_ROOT/completed.paths --pathspec-file-nul" \
+    "git checkout --pathspec-fr=$TMP_ROOT/completed.paths --pathspec-fr= -- __PATH__" \
+    "git checkout --pathspec-fr= --pathspec-fr=$TMP_ROOT/completed.paths" \
+    'git checkout --patch -U-2 -U1 -- __PATH__' \
+    'git checkout --unified=-2 --unified=-1 -- __PATH__' \
+    'git checkout --patch --inter-hunk-context=-2 --inter-hunk-context=1 -- __PATH__'; do
+    row_ok=1
+    protected_before="$(git -C "$REPO" hash-object hooks/validate-bash.sh)"
+    index_before="$(git -C "$REPO" ls-files --stage)"
+    expected_ordinary="$(git -C "$REPO" rev-parse HEAD:CODEX.md)"
+    for path in hooks/validate-bash.sh CODEX.md; do
+      case "$template" in
+        *--pathspec-file-nul) printf '%s\0' "$path" >"$TMP_ROOT/completed.paths" ;;
+        *) printf '%s\n' "$path" >"$TMP_ROOT/completed.paths" ;;
+      esac
+      command="${template//__PATH__/$path}"
+      if [ "$path" = hooks/validate-bash.sh ]; then
+        if [ "$template" = 'git checkout --orp hooks/validate-bash.sh --no-orphan __PATH__' ]; then
+          # This lone operand names the fixture's existing branch.
+          assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+            'operation=repository' || { failures=1; row_ok=0; }
+        else
+          assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker \
+            "effect=overwrite target=$REPO/hooks/validate-bash.sh" || { failures=1; row_ok=0; }
+        fi
+      else
+        printf 'ordinary changed\n' >"$REPO/CODEX.md"
+        if assert_allowed "$command" worker; then
+          (cd -- "$REPO"; printf 'y\n' | bash -c "$command") >"$TMP_ROOT/completed-checkout.out" 2>&1 || { failures=1; row_ok=0; }
+        else failures=1; row_ok=0; fi
+        [ "$(git -C "$REPO" hash-object CODEX.md)" = "$expected_ordinary" ] || { failures=1; row_ok=0; }
+      fi
+      [ "$(git -C "$REPO" hash-object hooks/validate-bash.sh)" = "$protected_before" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" ls-files --stage)" = "$index_before" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" rev-parse HEAD)" = "$before_head" ] || { failures=1; row_ok=0; }
+      [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || { failures=1; row_ok=0; }
+    done
+    if [ "$row_ok" -eq 1 ]; then printf 'completed-selection restored ordinary path and preserved other state: %s\n' "$template"; fi
+  done
+  [ "$failures" -eq 0 ]
+}
+
 run_checkout_option_validity_target() {
   local failures=0 options command path expected_ordinary protected_before index_before row_ok
+  run_checkout_completed_selection_target || failures=1
   git -C "$REPO" checkout -q existing-other-branch
   git -C "$REPO" checkout -q "${before_branch#refs/heads/}"
   assert_denied_code 'git checkout -' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || failures=1
@@ -1351,7 +1416,7 @@ run_checkout_option_validity_target() {
   checkout_unknown_syntax_pair
   checkout_ambiguous_source_pair
   checkout_orphan_validity_pairs
-  checkout_branch_path_pair
+  checkout_branch_path_pair || failures=1
   restore_no_staged_pair
   restore_explicit_worktree_pair
   # Option values and destinations after the actual separator stay data.
@@ -1436,6 +1501,10 @@ run_effect_aware_git_target() {
   assert_denied_code 'git restore -- hooks/validate-bash.sh' ECI_WORKER_GIT_OWNERSHIP_DENIED worker || return 1
   if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-branch-source-validity ]; then
     checkout_branch_path_pair
+    return $?
+  fi
+  if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-completed-selection ]; then
+    run_checkout_completed_selection_target
     return $?
   fi
   if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = checkout-option-validity ]; then
@@ -1843,7 +1912,7 @@ run_effect_aware_git_target() {
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
   full) ;;
-  effect-aware-git|checkout-option-validity|checkout-branch-source-validity)
+  effect-aware-git|checkout-option-validity|checkout-branch-source-validity|checkout-completed-selection)
     run_effect_aware_git_target
     if [ "${NORMAL_GIT_ADMISSION_TARGET}" = checkout-branch-source-validity ]; then
       printf '%s\n' 'normal Git admission explicit branch source target: PASS'

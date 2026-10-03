@@ -7083,6 +7083,8 @@ class SharedCheckoutOptionState(NamedTuple):
     destination_operands: tuple[str, ...]
     ambiguous_source: bool
     guess_state: bool | None
+    pathspec_filename: str | None
+    positioned_operands: tuple[tuple[int, str], ...]
 
 
 def checkout_revision(
@@ -7127,18 +7129,6 @@ def checkout_context_value(value: str) -> int | None:
     return number if -(1 << 31) <= number <= (1 << 31) - 1 else None
 
 
-def checkout_context_value_valid(value: str) -> bool:
-    return checkout_context_value(value) is not None
-
-
-def checkout_context_value_has_unpatched_effect(value: str) -> bool:
-    # Git's checkout path mode accepts -1 without --patch and can still
-    # restore a path. Other valid context values require --patch, while
-    # negative zero is invalid without it, so those commands remain
-    # transparent.
-    return checkout_context_value(value) == -1
-
-
 def checkout_option_state(
     args: list[str],
     unknown: frozenset[int],
@@ -7153,15 +7143,17 @@ def checkout_option_state(
     branch_startpoint = False
     separator_index = None
     pathspec_file_option = pathspec_file_nul = False
+    pathspec_filename = ""
     invalid_path_mode = False
     source_value = None
     source_is_tree = source_is_commit = None
     destinations = []
+    positioned_operands = []
     ambiguous_source = False
     guess_state = None
     if normalized is None:
         return SharedCheckoutOptionState("unknown", None, False, False, False, None,
-                                         False, False, False, None, None, None, (), False, None)
+                                         False, False, False, None, None, None, (), False, None, "", ())
 
     stage = 0
     force = False
@@ -7169,8 +7161,7 @@ def checkout_option_state(
     overlay_mode = -1
     conflict_style = False
     tracking_specified = reflog = patch_mode = False
-    unified_context_option = unified_context_unpatched_effect = False
-    inter_hunk_context_option = inter_hunk_context_unpatched_effect = False
+    unified_context = inter_hunk_context = -1
     orphan_name = None
     role_unknown = False
     after_separator = False
@@ -7182,6 +7173,7 @@ def checkout_option_state(
             separator_index, pathspec_file_option, pathspec_file_nul,
             invalid_path_mode, source_value, source_is_tree, source_is_commit,
             tuple(destinations), ambiguous_source, guess_state,
+            pathspec_filename, tuple(positioned_operands),
         )
 
     def invalid() -> SharedCheckoutOptionState:
@@ -7193,6 +7185,7 @@ def checkout_option_state(
         if after_separator:
             if offset not in unknown and offset not in variable_cardinality:
                 destinations.append(value)
+                positioned_operands.append((offset, value))
             else:
                 role_unknown = True
             index += 1
@@ -7208,6 +7201,7 @@ def checkout_option_state(
             continue
         if value == "--no-pathspec-from-file":
             pathspec_file_option = False
+            pathspec_filename = ""
             index += 1
             continue
         option, attached, argument = value.partition("=")
@@ -7215,13 +7209,16 @@ def checkout_option_state(
             pathspec_file_option = True
             if attached:
                 pathspec_file_option = argument != ""
+                pathspec_filename = argument
             if not attached:
                 if index + 1 >= len(normalized):
                     return invalid()
                 if index + 1 in unknown or index + 1 in variable_cardinality:
                     role_unknown = True
+                    pathspec_filename = None
                 else:
-                    pathspec_file_option = normalized[index + 1] != ""
+                    pathspec_filename = normalized[index + 1]
+                    pathspec_file_option = pathspec_filename != ""
                 index += 2
             else:
                 index += 1
@@ -7249,15 +7246,15 @@ def checkout_option_state(
                 if merge == 0:
                     merge = -1
             elif option == "--unified":
-                if not checkout_context_value_valid(context_value):
+                parsed_context = checkout_context_value(context_value)
+                if parsed_context is None:
                     return invalid()
-                unified_context_option = True
-                unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
+                unified_context = parsed_context
             else:
-                if not checkout_context_value_valid(context_value):
+                parsed_context = checkout_context_value(context_value)
+                if parsed_context is None:
                     return invalid()
-                inter_hunk_context_option = True
-                inter_hunk_context_unpatched_effect = checkout_context_value_has_unpatched_effect(context_value)
+                inter_hunk_context = parsed_context
             continue
         if value != "-" and value.startswith("-") and not value.startswith("--"):
             flags = value[1:]
@@ -7280,10 +7277,10 @@ def checkout_option_state(
                     if flag in {"b", "B"} and argument.startswith("-"):
                         return invalid()
                     if flag == "U":
-                        if not checkout_context_value_valid(argument):
+                        parsed_context = checkout_context_value(argument)
+                        if parsed_context is None:
                             return invalid()
-                        unified_context_option = True
-                        unified_context_unpatched_effect = checkout_context_value_has_unpatched_effect(argument)
+                        unified_context = parsed_context
                     break
                 if flag == "d":
                     detach_state = True
@@ -7336,6 +7333,7 @@ def checkout_option_state(
         elif value in {"--pathspec-file-nul", "--no-pathspec-file-nul"}:
             pathspec_file_nul = value == "--pathspec-file-nul"
         elif value == "-" or not value.startswith("-"):
+            positioned_operands.append((offset, value))
             if source_value is None:
                 source_value = value
             else:
@@ -7361,11 +7359,16 @@ def checkout_option_state(
         return invalid()
     if pathspec_file_nul and not pathspec_file_option:
         return invalid()
-    if not patch_mode:
-        if unified_context_option and not unified_context_unpatched_effect:
-            return invalid()
-        if inter_hunk_context_option and not inter_hunk_context_unpatched_effect:
-            return invalid()
+    # Git checks final context values after parsing, so later assignments
+    # can replace a syntactically valid negative value before this check.
+    if unified_context < -1 or inter_hunk_context < -1:
+        return invalid()
+    if not patch_mode and (unified_context != -1 or inter_hunk_context != -1):
+        return invalid()
+    if separator_index is not None and sum(
+        position < separator_index for position, _ in positioned_operands
+    ) > 1:
+        return invalid()
     effective_merge = merge == 1 or (merge == -1 and conflict_style)
     if patch_mode and (pathspec_file_option or force or effective_merge or overlay_mode == 1):
         return invalid()
@@ -13101,27 +13104,26 @@ def checkout_detail(
     if (options.validity != "supported" or options.invalid_path_mode or
             options.ambiguous_source or options.detach_state is True):
         return None
-    explicit_paths = options.separator_index is not None
     if options.branch_mode or options.orphan_mode:
         return None
-    # Git rejects a pathspec-file option combined with explicit pathspecs;
-    # leave that ordinary invalid command transparent even when the file
-    # itself names a protected path.
-    if options.pathspec_file_option and explicit_paths and args[options.separator_index + 1:]:
+    # Only completed operands participate: option-consumed values never
+    # become destinations or separators during protected-path selection.
+    if options.separator_index is not None:
+        if options.source_value is not None and options.source_is_tree is not True:
+            return None
+        paths = [value for position, value in options.positioned_operands
+                 if position > options.separator_index]
+    else:
+        paths = [value for _, value in options.positioned_operands]
+        if options.source_is_tree is True:
+            paths = paths[1:]  # Remove the eligible leading source exactly once.
+    if options.pathspec_file_option:
+        if paths:
+            return None  # Git rejects simultaneous file and explicit paths.
+        paths = git_pathspec_entries(options.pathspec_filename, base, options.pathspec_file_nul)
+    if not paths:
         return None
-    # Scan the complete option region so a pathspec file placed before the
-    # actual separator cannot be discarded.  `options.separator_index` comes from
-    # the option-state parser, so a `--` consumed as an option value is not
-    # mistaken for the pathspec separator.
-    paths = collect_pathspecs(
-        args, base, unknown, "checkout", options.source_is_tree is True,
-    )
-    if not paths or options.invalid_path_mode:
-        return None
-    for position, value in enumerate(paths):
-        if (position == 0 and not explicit_paths and not options.pathspec_file_option and
-                options.source_is_tree is True and value == options.source_value):
-            continue
+    for value in paths:
         candidates, _ = pathspec_candidates(value, base)
         for candidate in candidates:
             if not inside(target_repo, candidate):
