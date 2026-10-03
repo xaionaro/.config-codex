@@ -19,7 +19,11 @@ if [ -n "${NORMAL_GIT_ADMISSION_HOOK_SOURCE:-}" ]; then
 fi
 cp -- "$SOURCE_ROOT/hooks.json" "$RUNTIME_ROOT/hooks.json"
 mkdir -p -- "$RUNTIME_ROOT/bin"
-cp -a -- "$SOURCE_ROOT/bin/eci-command-gate-mode" "$RUNTIME_ROOT/bin/"
+# Build the disposable runtime from its copied sources. Clean archives contain
+# neither ignored executables nor optional planner provenance.
+source "$RUNTIME_ROOT/hooks/lib/eci-runtime-sync.sh"
+PATH="/usr/lib/go-1.24/bin:$PATH" eci_runtime_build_missing "$RUNTIME_ROOT" \
+  eci-command-gate-mode eci-command-plan eci-safe-import eci-worker-git eci-git-inspection
 awk '
   BEGIN { prefix = 1 }
   prefix && /^exit 0$/ { prefix = 0; next }
@@ -52,6 +56,7 @@ planner_main_sha="$(sha256sum -- "$PLANNER_DIR/main.go" | awk '{print $1}')"
 planner_classifier_sha="$(sha256sum -- "$PLANNER_DIR/classifier.go" | awk '{print $1}')"
 planner_binary_sha="$(sha256sum -- "$PLANNER_DIR/eci-command-plan" | awk '{print $1}')"
 planner_binary_size="$(stat -Lc '%s' -- "$PLANNER_DIR/eci-command-plan")"
+[ -e "$PLANNER_DIR/.eci-command-plan.provenance" ] || : >"$PLANNER_DIR/.eci-command-plan.provenance"
 awk \
   -v go_mod="$planner_go_mod_sha" \
   -v main="$planner_main_sha" \
@@ -2165,6 +2170,141 @@ run_worker_git_helper_effect() {
   printf '%s\n' 'worker Git configured helper-effect denial: PASS'
 }
 
+run_worker_git_argument_roles() {
+  local command index_before head_before worktree_before
+  index_before="$(sha256sum "$REPO/.git/index")"
+  head_before="$(git -C "$REPO" rev-parse HEAD)"
+  worktree_before="$(git -C "$REPO" hash-object file.txt)"
+  for command in \
+    'git grep -o base -- file.txt' \
+    'git ls-files -o' \
+    'git diff -- --output=literal' \
+    'git diff -O --output=literal -- file.txt' \
+    'git diff -O--output=literal -- file.txt' \
+    'git diff --relative -- --output=literal' \
+    'git grep -e --output=literal -- file.txt' \
+    'git grep -e--output=literal -- file.txt' \
+    'git grep base -o -- file.txt' \
+    'git log --author --output=literal -1' \
+    'git log --author=--output=literal -1' \
+    'git diff --unknown-role --output=literal'; do
+    assert_allowed "$command" worker
+  done
+  for command in \
+    'git diff --output=roles.out -- file.txt' \
+    'git diff HEAD --output roles.out -- file.txt' \
+    'git log HEAD --output=roles.out -1' \
+    'git diff --relative HEAD --output=roles.out -- file.txt' \
+    'git show HEAD --output roles.out'; do
+    assert_denied_code "$command" ECI_GIT_OUTPUT_WRITE_DENIED worker
+  done
+  assert_denied_code "git -C '$FOREIGN_REPO' grep -o base -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED worker
+  assert_denied_code 'git diff --unknown-role --output=literal && git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker
+  [ ! -e "$REPO/roles.out" ]
+  git -C "$REPO" grep -o changed -- file.txt >"$TMP_ROOT/roles-native.stdout"
+  [ "$(cat "$TMP_ROOT/roles-native.stdout")" = 'file.txt:changed' ]
+  git -C "$REPO" ls-files -o >"$TMP_ROOT/roles-native-untracked.stdout"
+  git -C "$REPO" diff -- --output=literal >"$TMP_ROOT/roles-native-literal.stdout"
+  printf 'file.txt\n' >"$REPO/--output=literal"
+  git -C "$REPO" diff -O --output=literal -- file.txt >"$TMP_ROOT/roles-native-order.stdout"
+  rm -- "$REPO/--output=literal"
+  git -C "$REPO" diff HEAD --output=roles.out -- file.txt
+  [ -s "$REPO/roles.out" ]
+  rm -- "$REPO/roles.out"
+  git -C "$REPO" log HEAD --output=roles.out -1
+  [ -s "$REPO/roles.out" ]
+  rm -- "$REPO/roles.out"
+  [ "$(sha256sum "$REPO/.git/index")" = "$index_before" ]
+  [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ]
+  [ "$(git -C "$REPO" hash-object file.txt)" = "$worktree_before" ]
+  printf '%s\n' 'worker Git command argument roles: PASS'
+}
+
+run_worker_git_literal_helper_roles() {
+  local command marker="$TMP_ROOT/literal-role.marker" helper="$TMP_ROOT/literal-role-helper"
+  local index_before head_before worktree_before
+  local CODEX_TMPDIR="$TMP_ROOT/literal-role-scratch"
+  export CODEX_TMPDIR
+  mkdir -p -- "$CODEX_TMPDIR"
+  printf '%s\n' '--output=literal base' >"$REPO/--output=literal"
+  printf '%s\n' '--output=literal base' >"$REPO/-"
+  git -C "$REPO" --literal-pathspecs add -- --output=literal -
+  git -C "$REPO" -c user.name=--output=literal commit -qm 'literal role baseline'
+  printf '%s\n' '--output=literal changed' >"$REPO/--output=literal"
+  printf '%s\n' '--output=literal changed' >"$REPO/-"
+  printf '%s\n' '--output=literal diff=literalrole' '- diff=literalrole' >"$REPO/.gitattributes"
+  printf '#!/bin/sh\nprintf callback >> %q\ncase "$1" in /*) cat -- "$1";; *) cat -- "./$1";; esac\n' "$marker" >"$helper"
+  chmod 755 "$helper"
+  git -C "$REPO" config diff.literalrole.textconv "$helper"
+  index_before="$(sha256sum "$REPO/.git/index")"
+  head_before="$(git -C "$REPO" rev-parse HEAD)"
+  worktree_before="$(sha256sum "$REPO/--output=literal" "$REPO/-")"
+  for command in \
+    'git diff -- --output=literal' \
+    'git diff -- -' \
+    'git grep --textconv -e --output=literal -- --output=literal' \
+    'git grep --textconv changed -- -' \
+    'git log --author --output=literal -p -1 -- --output=literal'; do
+    assert_denied_code "$command" ECI_GIT_EXECUTION_CONTEXT_DENIED worker
+    [ ! -e "$marker" ]
+    [ "$(sha256sum "$REPO/.git/index")" = "$index_before" ]
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ]
+    [ "$(sha256sum "$REPO/--output=literal" "$REPO/-")" = "$worktree_before" ]
+    (cd -- "$REPO" && /bin/bash -c "$command") >"$TMP_ROOT/literal-role-native.log" 2>&1
+    [ -s "$marker" ]
+    rm -- "$marker"
+  done
+  assert_allowed 'git diff --no-textconv --no-ext-diff -- --output=literal' worker
+  assert_allowed 'git grep --no-textconv -e --output=literal -- --output=literal' worker
+  assert_allowed 'git diff --no-textconv --no-ext-diff -- -' worker
+  assert_allowed 'git grep --no-textconv changed -- -' worker
+  assert_denied_code 'git diff --output=roles.out -- --output=literal' ECI_GIT_OUTPUT_WRITE_DENIED worker
+  [ ! -e "$marker" ] && [ ! -e "$REPO/roles.out" ]
+  git -C "$REPO" config --unset diff.literalrole.textconv
+  rm -- "$REPO/.gitattributes"
+  git -C "$REPO" restore --worktree -- --output=literal -
+  printf '%s\n' 'worker Git literal and consumed-role native helper pairs: PASS'
+}
+
+run_worker_git_global_context() {
+  local command observer_marker="$TMP_ROOT/global-observer.marker" helper_marker="$TMP_ROOT/global-helper.marker"
+  local empty="$TMP_ROOT/empty-exec" populated="$TMP_ROOT/populated-exec" native_status
+  local CODEX_TMPDIR="$TMP_ROOT/global-scratch"
+  export CODEX_TMPDIR
+  mkdir -p -- "$empty" "$populated" "$CODEX_TMPDIR"
+  printf '#!/bin/sh\nprintf callback > %q\n' "$helper_marker" >"$populated/global-helper"
+  chmod 755 "$populated/global-helper"
+  git -C "$REPO" config diff.external git-sh-i18n--envsubst
+  mv -- "$RUNTIME_ROOT/bin/eci-git-inspection" "$RUNTIME_ROOT/bin/eci-git-inspection.real"
+  printf '#!/bin/bash\nprintf entered >> %q\nexec %q\n' "$observer_marker" "$RUNTIME_ROOT/bin/eci-git-inspection.real" >"$RUNTIME_ROOT/bin/eci-git-inspection"
+  chmod 755 "$RUNTIME_ROOT/bin/eci-git-inspection"
+  for command in \
+    "git --exec-path='$empty' diff -- file.txt" \
+    "git --exec-path='$populated' -c diff.external=global-helper diff -- file.txt" \
+    "git --exec-path='$empty' --exec-path='$populated' -c diff.external=global-helper diff -- file.txt" \
+    'git --exec-path=../empty-exec diff -- file.txt' \
+    'git --exec-path diff --output=roles.out' \
+    'git --exec-path add -- file.txt'; do
+    assert_allowed "$command" worker
+    [ ! -e "$observer_marker" ] && [ ! -e "$helper_marker" ]
+  done
+  native_status=0
+  git -C "$REPO" --exec-path="$empty" diff -- file.txt >"$TMP_ROOT/global-empty.log" 2>&1 || native_status=$?
+  [ "$native_status" -ne 0 ]
+  git -C "$REPO" --exec-path="$populated" -c diff.external=global-helper diff -- file.txt >"$TMP_ROOT/global-populated.log" 2>&1
+  [ -s "$helper_marker" ]
+  rm -- "$helper_marker"
+  git --exec-path >"$TMP_ROOT/global-query.log"
+  [ -s "$TMP_ROOT/global-query.log" ]
+  assert_denied_code "git --exec-path='$empty' diff --output=roles.out" ECI_GIT_OUTPUT_WRITE_DENIED worker
+  assert_denied_code "git --exec-path='$empty' diff && git add -- file.txt" ECI_WORKER_GIT_OWNERSHIP_DENIED worker
+  assert_denied_code "git -C '$FOREIGN_REPO' --exec-path='$empty' diff" ECI_GIT_CROSS_SCOPE_DENIED worker
+  rm -- "$RUNTIME_ROOT/bin/eci-git-inspection"
+  mv -- "$RUNTIME_ROOT/bin/eci-git-inspection.real" "$RUNTIME_ROOT/bin/eci-git-inspection"
+  git -C "$REPO" config --unset diff.external
+  printf '%s\n' 'worker Git unsupported global context and terminal query: PASS'
+}
+
 run_worker_git_inspection_matrix() {
   local command marker="$TMP_ROOT/inspection-helper.marker" helper="$TMP_ROOT/inspection-helper" failures=0
   local index_before head_before worktree_before native_status guard observer_marker="$TMP_ROOT/observer-entry.marker"
@@ -2302,7 +2442,7 @@ PYQUOTE
 }
 
 run_worker_git_mutation_repairs() {
-  local saved_repo="$REPO" source_oid index_path pointer_before command status=0 conflict_oid
+  local saved_repo="$REPO" source_oid index_path pointer_before command status=0 conflict_oid kind directory_head
   REPO="$TMP_ROOT/typed-repair-repo"
   mkdir -p -- "$REPO/hooks" "$REPO/dir"
   git -C "$REPO" init -q
@@ -2310,9 +2450,10 @@ run_worker_git_mutation_repairs() {
   git -C "$REPO" config user.name 'Normal Git Test'
   printf 'base\n' >"$REPO/file.txt"
   printf 'unrelated\n' >"$REPO/unrelated.txt"
+  printf 'base\n' >"$REPO/index-only.txt"
   printf 'child\n' >"$REPO/dir/child"
   printf 'live hook\n' >"$REPO/hooks/validate-bash.sh"
-  git -C "$REPO" add -- file.txt unrelated.txt dir/child hooks/validate-bash.sh
+  git -C "$REPO" add -- file.txt unrelated.txt index-only.txt dir/child hooks/validate-bash.sh
   git -C "$REPO" commit -qm 'repair baseline'
   printf '%s\n' 'scope: typed repairs' "cwd: $REPO" "session_id: $SESSION" >"$PROOF_ROOT/$SESSION/eci_active"
   source_oid="$(git -C "$REPO" rev-parse HEAD)"
@@ -2352,6 +2493,42 @@ run_worker_git_mutation_repairs() {
   [ "$(cat "$REPO/.gitmodules")" = 'metadata sentinel' ]
   typed_run remove --destination index -- sub
   [ "$(cat "$REPO/.gitmodules")" = 'metadata sentinel' ]
+  directory_head="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" ls-files --stage -z -- file.txt unrelated.txt dir/child hooks/validate-bash.sh >"$TMP_ROOT/directory-unrelated-before"
+  for kind in restore unstage remove stage-hunks; do
+    printf 'changed\n' >"$REPO/index-only.txt"
+    git -C "$REPO" diff -- index-only.txt >"$TMP_ROOT/index-only.patch"
+    [ "$kind" = stage-hunks ] || git -C "$REPO" add -- index-only.txt
+    rm -- "$REPO/index-only.txt"
+    mkdir -- "$REPO/index-only.txt"
+    printf 'untouched\n' >"$REPO/index-only.txt/child"
+    case "$kind" in
+      restore) typed_run restore --source head --destination index -- index-only.txt ;;
+      unstage) typed_run unstage -- index-only.txt ;;
+      remove) typed_run remove --destination index -- index-only.txt ;;
+      stage-hunks) typed_run stage-hunks --patch-file "$TMP_ROOT/index-only.patch" -- index-only.txt ;;
+    esac
+    if [ "$kind" = remove ]; then
+      [ -z "$(git -C "$REPO" ls-files --stage -- index-only.txt)" ]
+    elif [ "$kind" = stage-hunks ]; then
+      [ "$(git -C "$REPO" show :index-only.txt)" = changed ]
+    else
+      [ "$(git -C "$REPO" show :index-only.txt)" = base ]
+    fi
+    [ "$(cat "$REPO/index-only.txt/child")" = untouched ]
+    typed_reject stage-content -- index-only.txt
+    typed_reject stage-removals -- index-only.txt
+    typed_reject restore --source head --destination worktree -- index-only.txt
+    typed_reject remove --destination worktree -- index-only.txt
+    [ "$(cat "$REPO/index-only.txt/child")" = untouched ]
+    git -C "$REPO" ls-files --stage -z -- file.txt unrelated.txt dir/child hooks/validate-bash.sh >"$TMP_ROOT/directory-unrelated-after"
+    cmp -- "$TMP_ROOT/directory-unrelated-before" "$TMP_ROOT/directory-unrelated-after"
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$directory_head" ]
+    rm -- "$REPO/index-only.txt/child"
+    rmdir -- "$REPO/index-only.txt"
+    git -C "$REPO" restore --source=HEAD --staged --worktree -- index-only.txt
+  done
+  printf '%s\n' 'worker Git untouched index-only directory registered pairs: PASS'
   # A hunk can coexist with unrelated complete conflict stage records.
   conflict_oid="$(git -C "$REPO" rev-parse :unrelated.txt)"
   git -C "$REPO" update-index --force-remove unrelated.txt
@@ -2652,7 +2829,7 @@ run_effect_aware_git_target() {
   git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   before_branch="$(git -C "$REPO" symbolic-ref HEAD)"
-  if [[ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-slice || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-matrix || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-inspection || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = full ]]; then
+  if [[ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-slice || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-matrix || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-helper-effect || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-inspection || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-argument-roles || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = full ]]; then
     (
       cd -- "$SOURCE_ROOT/hooks/lib/eci-worker-git-go"
       env GOWORK=off CGO_ENABLED=0 /usr/lib/go-1.24/bin/go build -mod=readonly -trimpath -buildvcs=false -o "$RUNTIME_ROOT/bin/eci-worker-git" .
@@ -2695,6 +2872,10 @@ run_effect_aware_git_target() {
     [ "$(git -C "$REPO" symbolic-ref HEAD)" = "$before_branch" ] || return 1
     git -C "$REPO" diff --cached --quiet || return 1
     printf '%s\n' 'worker Git native referral/inspection slice: PASS'
+    run_worker_git_argument_roles
+    run_worker_git_literal_helper_roles
+    run_worker_git_global_context
+    [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" != worker-git-argument-roles ] || return 0
     if [ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-inspection ]; then
       run_worker_git_inspection_matrix
       run_worker_git_external_pairs
@@ -3134,7 +3315,7 @@ run_effect_aware_git_target() {
 }
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
-  full|worker-git-cli-matrix|worker-git-cli-edges|worker-git-helper-effect|worker-git-inspection)
+  full|worker-git-cli-matrix|worker-git-cli-edges|worker-git-helper-effect|worker-git-inspection|worker-git-argument-roles)
     run_effect_aware_git_target
     printf '%s\n' 'normal Git admission current worker contract: PASS'
     exit 0

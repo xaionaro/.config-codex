@@ -75,7 +75,7 @@ func TestNativeCaptureCompleteness(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	_, events, _, err := s.run([]string{"diff"})
+	_, events, _, err := s.run([]string{"diff"}, replayOutput)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,5 +259,183 @@ func TestTransportEscapeBoundaries(t *testing.T) {
 	event := traceEvent{UseShell: true, Argv: []string{"/helper", "file"}}
 	if category, _ := classify(event, nil, map[string]string{"GIT_EXTERNAL_DIFF": "/helper"}); category != "external-diff" {
 		t.Fatalf("environment external attribution: %q", category)
+	}
+}
+
+// TestNativeInspectionArgumentRoles pairs native helper reachability with literal and consumed option-like text.
+//
+// Example: a tracked --output=literal leaf is inspected after the real delimiter.
+func TestNativeInspectionArgumentRoles(t *testing.T) {
+	for _, kind := range []string{"literal", "grep-pattern", "log-author"} {
+		// Native callbacks establish the original effect before isolated replay.
+		t.Run(kind, func(t *testing.T) {
+			in, helper, marker := fixture(t)
+			if err := os.WriteFile(helper, []byte("#!/bin/sh\necho reached >> '"+marker+"'\ncat -- \"$1\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "literal":
+				name := "--output=literal"
+				if err := os.WriteFile(filepath.Join(in.CWD, name), []byte("old\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(in.CWD, ".gitattributes"), []byte(name+" diff=sample\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				runFixture(t, in, "add", "--", name, ".gitattributes")
+				runFixture(t, in, "commit", "-qm", "literal baseline")
+				if err := os.WriteFile(filepath.Join(in.CWD, name), []byte("new\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				in.Arguments = []string{"diff", "--", name}
+			case "grep-pattern":
+				if err := os.WriteFile(filepath.Join(in.CWD, "file.txt"), []byte("--output=pattern\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				in.Arguments = []string{"grep", "--textconv", "-F", "-e", "--output=pattern", "--", "file.txt"}
+			case "log-author":
+				runFixture(t, in, "config", "user.name", "--output=Example")
+				runFixture(t, in, "add", "file.txt")
+				runFixture(t, in, "commit", "-qm", "author baseline")
+				in.Arguments = []string{"log", "HEAD", "-p", "-1", "--author", "--output=Example", "--", "file.txt"}
+			}
+			runFixture(t, in, in.Arguments...)
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatal("native callback absent", err)
+			}
+			if err := os.Remove(marker); err != nil {
+				t.Fatal(err)
+			}
+			if got := Inspect(in); got.Result != Helper {
+				t.Fatalf("native viable helper: %+v", got)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("observer callback effect: %v", err)
+			}
+		})
+	}
+}
+
+// TestInspectionRoleBoundaries keeps auxiliary options unsupported while admitting literal option values.
+//
+// Example: diff still recognizes an output option after a revision, but not after --.
+func TestInspectionRoleBoundaries(t *testing.T) {
+	for _, args := range [][]string{
+		{"diff", "HEAD", "--output=result"}, {"log", "HEAD", "--output", "result"}, {"show", "HEAD", "-Oorder"},
+		{"grep", "-nO/bin/cat", "pattern"}, {"grep", "-fpatterns"}, {"diff", "--unknown-arity", "--output=result"},
+		{"log", "--pretty", "--output=result"}, {"grep", "--regexp=pattern"}, {"grep", "-e"}, {"log", "--author"},
+		{"grep", "--threads"}, {"status", "--unknown"}, {"grep", "--", "/dev/fd/3"},
+	} {
+		if _, reason := admission(Invocation{CWD: "/", Arguments: args}); reason == "" {
+			t.Fatalf("admitted unresolved or auxiliary role %v", args)
+		}
+	}
+	for _, args := range [][]string{
+		{"diff", "--", "--output=literal", "-Oleaf"}, {"grep", "pattern", "-Oleaf"},
+		{"grep", "-ne--output=pattern", "--", "file"}, {"grep", "--textconv", "--threads", "4", "-e", "/dev/fd/3"},
+		{"log", "HEAD", "--author", "--output=author", "--format=%s"}, {"show", "--pretty", "HEAD"},
+		{"diff", "-S", "--output=pattern", "-U3"}, {"diff", "--inter-hunk-context", "3"}, {"status", "--porcelain=v1"},
+		{"grep", "--", "--output=literal"}, {"log", "--author=--output=author"},
+	} {
+		if _, reason := admission(Invocation{CWD: "/", Arguments: args}); reason != "" {
+			t.Fatalf("rejected literal value or leaf %v: %s", args, reason)
+		}
+	}
+}
+
+// TestNativeAuxiliaryRolesRemainAdvisory pairs native callback effects with early auxiliary refusal.
+//
+// Example: a valid orderfile changes native ordering but remains outside the replay domain.
+func TestNativeAuxiliaryRolesRemainAdvisory(t *testing.T) {
+	for _, kind := range []string{"orderfile", "output", "patternfile"} {
+		// Native callbacks establish that each excluded option has an actual effectful command.
+		t.Run(kind, func(t *testing.T) {
+			in, _, marker := fixture(t)
+			owned := filepath.Join(in.Environment["HOME"], "option-input")
+			switch kind {
+			case "orderfile":
+				if err := os.WriteFile(owned, []byte("file.txt\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				in.Arguments = []string{"diff", "HEAD", "-O", owned, "--", "file.txt"}
+			case "output":
+				in.Arguments = []string{"diff", "HEAD", "--output=" + owned, "--", "file.txt"}
+			case "patternfile":
+				if err := os.WriteFile(owned, []byte("new\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				in.Arguments = []string{"grep", "--textconv", "-f", owned, "--", "file.txt"}
+			}
+			runFixture(t, in, in.Arguments...)
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatal("native callback absent", err)
+			}
+			if err := os.Remove(marker); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "output" {
+				if err := os.Remove(owned); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := Inspect(in); got.Result != Advisory {
+				t.Fatalf("auxiliary context admitted: %+v", got)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("preflight callback effect: %v", err)
+			}
+			if kind == "output" {
+				if _, err := os.Stat(owned); !os.IsNotExist(err) {
+					t.Fatalf("preflight output effect: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestNativeDelimitedDashLeaf pairs a tracked dash filename with native helper and harmless raw inspection.
+//
+// Example: diff -- - selects a repository leaf rather than stream input.
+func TestNativeDelimitedDashLeaf(t *testing.T) {
+	in, helper, marker := fixture(t)
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\necho reached >> '"+marker+"'\nprintf 'converted new\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(in.CWD, "-"), []byte("old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(in.CWD, ".gitattributes"), []byte("- diff=sample\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runFixture(t, in, "add", "--", "-", ".gitattributes")
+	runFixture(t, in, "commit", "-qm", "dash baseline")
+	if err := os.WriteFile(filepath.Join(in.CWD, "-"), []byte("new\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"diff", "--", "-"}, {"grep", "--textconv", "new", "--", "-"}} {
+		in.Arguments = args
+		runFixture(t, in, args...)
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatal("native callback absent", err)
+		}
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		if got := Inspect(in); got.Result != Helper {
+			t.Fatalf("literal dash refused: %+v", got)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("observer callback effect: %v", err)
+		}
+	}
+	in.Arguments = []string{"diff", "--no-textconv", "--no-ext-diff", "--", "-"}
+	if got := Inspect(in); got.Result != NoHelper {
+		t.Fatalf("raw dash: %+v", got)
+	}
+	for _, args := range [][]string{{"diff", "-"}, {"grep", "new", "-"}, {"diff", "--", "/dev/fd/3"}, {"grep", "new", "--", "/proc/self/fd/3"}} {
+		in.Arguments = args
+		if got := Inspect(in); got.Result != Advisory {
+			t.Fatalf("stream context admitted: %+v", got)
+		}
 	}
 }

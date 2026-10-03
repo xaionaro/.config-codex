@@ -89,7 +89,7 @@ func Inspect(in Invocation) (observation Observation) {
 	}()
 	globals := append([]string{}, in.Arguments[:verb]...)
 	configArgs := append(append([]string{}, globals...), "config", "--null", "--list")
-	data, _, status, err := s.run(configArgs)
+	data, _, status, err := s.run(configArgs, metadataOutput)
 	if err != nil {
 		return advisory(err.Error())
 	}
@@ -111,7 +111,7 @@ func Inspect(in Invocation) (observation Observation) {
 			return advisory("unsupported repository/index/object configuration: " + key)
 		}
 	}
-	data, _, status, err = s.run([]string{"--version"})
+	data, _, status, err = s.run([]string{"--version"}, metadataOutput)
 	if err != nil {
 		return advisory(err.Error())
 	}
@@ -122,7 +122,7 @@ func Inspect(in Invocation) (observation Observation) {
 	if _, exists := config["core.fsmonitor"]; exists {
 		monitorArgs := append(append([]string{}, globals...), "config", "--type=bool", "--get", "core.fsmonitor")
 		var monitorEvents []traceEvent
-		data, monitorEvents, status, err = s.run(monitorArgs)
+		data, monitorEvents, status, err = s.run(monitorArgs, metadataOutput)
 		if err != nil {
 			return advisory(err.Error())
 		}
@@ -144,7 +144,7 @@ func Inspect(in Invocation) (observation Observation) {
 			return advisory("effective fsmonitor boolean/path preparation unresolved")
 		}
 	}
-	_, events, status, err := s.run(in.Arguments)
+	_, events, status, err := s.run(in.Arguments, replayOutput)
 	if err != nil {
 		return advisory(err.Error())
 	}

@@ -405,7 +405,7 @@ func TestNativePreparationEnvironment(t *testing.T) {
 			}
 		},
 	)
-	_, events, _, err := s.run(in.Arguments)
+	_, events, _, err := s.run(in.Arguments, replayOutput)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func TestRelativeHelperNativeCWDForAllVerbs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, events, _, err := s.run(in.Arguments)
+		_, events, _, err := s.run(in.Arguments, replayOutput)
 		if err != nil {
 			t.Fatal(err)
 		}

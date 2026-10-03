@@ -18,6 +18,10 @@ import (
 )
 
 const (
+	// outputCaptureByteLimit bounds complete metadata and diagnostic prefixes separately.
+	//
+	// Example: excess output is drained and invalidates the observation.
+	outputCaptureByteLimit = 1024 * 1024
 	// observationDeadline bounds opaque native processes without resuming blocked helpers.
 	//
 	// Example: a native input stall becomes Advisory after ten seconds.
@@ -31,6 +35,45 @@ const (
 	// Example: a malformed oversized event becomes Advisory.
 	traceEventByteLimit = 4 * 1024 * 1024
 )
+
+// outputPurpose selects the closed set of native stdout handling policies.
+//
+// Example: replayOutput sends inspection stdout directly to the private null device.
+type outputPurpose int
+
+const (
+	// metadataOutput retains bounded complete metadata for interpretation.
+	//
+	// Example: effective config must be captured completely before parsing.
+	metadataOutput outputPurpose = iota + 1
+	// replayOutput discards stdout while preserving native exit and trace evidence.
+	//
+	// Example: showing a large blob retains no stdout bytes.
+	replayOutput
+)
+
+// boundedOutput drains every write while retaining at most its limit.
+//
+// Example: overflow records rejected output without causing native EPIPE.
+type boundedOutput struct {
+	buffer   bytes.Buffer
+	limit    int
+	overflow bool
+}
+
+// Write consumes all bytes and records whether the complete payload exceeded the bound.
+//
+// Example: writing limit+1 bytes returns the original count and no pipe error.
+func (output *boundedOutput) Write(data []byte) (int, error) {
+	retained := len(data)
+	if remaining := output.limit - output.buffer.Len(); retained > remaining {
+		retained = remaining
+		output.overflow = true
+	}
+	// bytes.Buffer.Write always returns a nil error and consumes the supplied bytes.
+	_, _ = output.buffer.Write(data[:retained])
+	return len(data), nil
+}
 
 // traceEvent contains the Git 2.51 event fields needed for first-child evidence.
 //
@@ -112,13 +155,8 @@ func admission(in Invocation) (int, string) {
 			}
 		case "--no-pager", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs":
 		case "diff", "log", "show", "grep", "status":
-			for _, operand := range in.Arguments[i+1:] {
-				if operand == "--stdin" || operand == "--no-index" || operand == "--recurse-submodules" || strings.HasPrefix(operand, "--output") || strings.HasPrefix(operand, "--ext-diff=") || strings.HasPrefix(operand, "--open-files-in-pager") || strings.HasPrefix(operand, "-O") || strings.HasPrefix(operand, "-f") || strings.HasPrefix(operand, "--pathspec-from-file") || strings.HasPrefix(operand, "--filters") || strings.HasPrefix(operand, "--filter=") {
-					return 0, "unsupported input/output or auxiliary option: " + operand
-				}
-				if strings.Contains(operand, "/dev/fd/") || strings.Contains(operand, "/proc/self/fd/") || operand == "-" {
-					return 0, "unavailable stream input"
-				}
+			if reason := inspectionArgumentAdmission(arg, in.Arguments[i+1:]); reason != "" {
+				return 0, reason
 			}
 			return i, ""
 		default:
@@ -126,6 +164,128 @@ func admission(in Invocation) (int, string) {
 		}
 	}
 	return 0, "no positively identified inspection built-in"
+}
+
+// inspectionArgumentAdmission screens only native option positions and leaves consumed values literal.
+//
+// Example: log continues parsing after HEAD, while grep stops at its first pattern operand.
+func inspectionArgumentAdmission(
+	verb string,
+	args []string,
+) string {
+	options := true
+	delimited := false
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if !delimited && arg == "--" {
+			options = false
+			delimited = true
+			continue
+		}
+		if !options || !strings.HasPrefix(arg, "-") || arg == "-" {
+			if strings.Contains(arg, "/dev/fd/") || strings.Contains(arg, "/proc/self/fd/") || arg == "-" && !delimited {
+				return "unavailable stream input"
+			}
+			if verb == "grep" {
+				options = false
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, attached := strings.Cut(arg, "=")
+			if name == "--stdin" || name == "--no-index" || name == "--recurse-submodules" || name == "--output" || name == "--open-files-in-pager" || strings.HasPrefix(name, "--pathspec-from-file") || name == "--filters" || name == "--filter" || name == "--ext-diff" && attached {
+				return "unsupported input/output or auxiliary option: " + arg
+			}
+			value, known := inspectionLongOption(verb, name)
+			if !known {
+				return "unresolved native option role: " + arg
+			}
+			if value && !attached {
+				index++
+				if index == len(args) {
+					return "missing native option value: " + arg
+				}
+			}
+			continue
+		}
+		for offset := 1; offset < len(arg); offset++ {
+			letter := arg[offset]
+			if letter == 'O' || letter == 'f' {
+				return "unsupported input/output or auxiliary option: " + arg
+			}
+			values, flags, optional := "", "", ""
+			switch verb {
+			case "grep":
+				values, flags = "eABCm", "viwaIEGFPnhHlLzocpqWr()"
+			case "diff", "log", "show":
+				values, flags, optional = "SGIl", "psuWRawbrzD", "UCMB"
+				if verb != "diff" {
+					values += "n"
+				}
+			case "status":
+				flags, optional = "sbz", "u"
+			}
+			if letter >= '0' && letter <= '9' && verb != "status" {
+				continue
+			}
+			if strings.ContainsRune(values, rune(letter)) {
+				if offset+1 == len(arg) {
+					index++
+					if index == len(args) {
+						return "missing native option value: " + arg
+					}
+				}
+				break
+			}
+			if strings.ContainsRune(optional, rune(letter)) {
+				break
+			}
+			if !strings.ContainsRune(flags, rune(letter)) {
+				return "unresolved native option role: " + arg
+			}
+		}
+	}
+	return ""
+}
+
+// inspectionLongOption identifies selected source-defined option arity without interpreting values.
+//
+// Example: --author consumes one value only for revision-based log and show.
+func inspectionLongOption(
+	verb string,
+	name string,
+) (bool, bool) {
+	if verb == "grep" {
+		switch name {
+		case "--context", "--after-context", "--before-context", "--max-count", "--threads", "--max-depth":
+			return true, true
+		case "--textconv", "--no-textconv", "--cached", "--no-index", "--untracked", "--exclude-standard", "--no-exclude-standard", "--invert-match", "--ignore-case", "--word-regexp", "--text", "--recursive", "--extended-regexp", "--basic-regexp", "--fixed-strings", "--perl-regexp", "--line-number", "--column", "--full-name", "--files-with-matches", "--name-only", "--files-without-match", "--null", "--only-matching", "--count", "--color", "--no-color", "--break", "--heading", "--show-function", "--function-context", "--and", "--or", "--not", "--all-match", "--quiet":
+			return false, true
+		}
+		return false, false
+	}
+	if verb == "status" {
+		switch name {
+		case "--short", "--branch", "--porcelain", "--untracked-files", "--ignored", "--ignore-submodules", "--renames", "--no-renames", "--null", "--verbose", "--ahead-behind", "--no-ahead-behind":
+			return false, true
+		}
+		return false, false
+	}
+	if verb == "log" || verb == "show" {
+		switch name {
+		case "--author", "--committer", "--grep", "--grep-reflog", "--since", "--after", "--until", "--before", "--max-count", "--skip", "--date", "--encoding":
+			return true, true
+		case "--format", "--pretty", "--all", "--first-parent", "--reverse", "--topo-order", "--date-order", "--no-walk", "--oneline", "--decorate", "--no-decorate", "--abbrev-commit", "--no-abbrev-commit":
+			return false, true
+		}
+	}
+	switch name {
+	case "--inter-hunk-context", "--output-indicator-new", "--output-indicator-old", "--output-indicator-context", "--diff-filter", "--src-prefix", "--dst-prefix", "--line-prefix", "--word-diff-regex", "--ignore-matching-lines", "--anchored", "--rotate-to", "--skip-to", "--diff-algorithm":
+		return true, true
+	case "--textconv", "--no-textconv", "--ext-diff", "--no-ext-diff", "--cached", "--staged", "--quiet", "--exit-code", "--check", "--name-only", "--name-status", "--patch", "--no-patch", "--raw", "--patch-with-stat", "--patch-with-raw", "--stat", "--numstat", "--shortstat", "--summary", "--binary", "--full-index", "--color", "--no-color", "--word-diff", "--unified", "--find-renames", "--find-copies", "--no-renames", "--find-copies-harder", "--minimal", "--patience", "--histogram", "--ignore-all-space", "--ignore-space-change", "--ignore-space-at-eol", "--ignore-cr-at-eol", "--ignore-blank-lines", "--no-prefix", "--relative", "--submodule", "--ignore-submodules", "--abbrev", "--pickaxe-all", "--pickaxe-regex", "--ita-visible-in-index", "--ita-invisible-in-index":
+		return false, true
+	}
+	return false, false
 }
 
 // unmodeledLoaderKey identifies controls for unmodeled dynamic loading or libc trace/locale lookup.
@@ -274,8 +434,14 @@ func validateAdministration(source string) error {
 
 // run executes a Git subprocess behind the same-path write and process boundaries.
 //
-// Example: run(globals + config --list) reads includes without touching original state.
-func (s *sandbox) run(args []string) (output []byte, events []traceEvent, status int, runErr error) {
+// Example: run(configArgs, metadataOutput) reads includes without touching original state.
+func (s *sandbox) run(
+	args []string,
+	purpose outputPurpose,
+) (output []byte, events []traceEvent, status int, runErr error) {
+	if purpose != metadataOutput && purpose != replayOutput {
+		return nil, nil, 0, fmt.Errorf("unknown native output purpose")
+	}
 	filter, err := os.CreateTemp(s.dir, "filter-")
 	if err != nil {
 		return nil, nil, 0, err
@@ -327,8 +493,11 @@ func (s *sandbox) run(args []string) (output []byte, events []traceEvent, status
 	c.Dir = s.cwd
 	c.Env = observerEnvironment(s.env)
 	c.ExtraFiles = []*os.File{filter, trace, launch}
-	var stdout, stderr bytes.Buffer
-	c.Stdout = &stdout
+	stdout := boundedOutput{limit: outputCaptureByteLimit}
+	stderr := boundedOutput{limit: outputCaptureByteLimit}
+	if purpose == metadataOutput {
+		c.Stdout = &stdout
+	}
 	c.Stderr = &stderr
 	err = c.Run()
 	status = 0
@@ -341,6 +510,9 @@ func (s *sandbox) run(args []string) (output []byte, events []traceEvent, status
 	}
 	if ctx.Err() != nil {
 		return nil, nil, status, fmt.Errorf("observation deadline exceeded")
+	}
+	if stdout.overflow || stderr.overflow {
+		return nil, nil, status, fmt.Errorf("native metadata or diagnostic output exceeded supported size")
 	}
 	if _, err := launch.Seek(0, 0); err != nil {
 		return nil, nil, status, err
@@ -372,9 +544,9 @@ func (s *sandbox) run(args []string) (output []byte, events []traceEvent, status
 		return nil, nil, status, err
 	}
 	if len(events) == 0 {
-		return nil, nil, status, fmt.Errorf("sandbox or native Trace2 unavailable: %s", strings.TrimSpace(stderr.String()))
+		return nil, nil, status, fmt.Errorf("sandbox or native Trace2 unavailable: %s", strings.TrimSpace(stderr.buffer.String()))
 	}
-	return stdout.Bytes(), events, status, nil
+	return stdout.buffer.Bytes(), events, status, nil
 }
 
 // observerEnvironment isolates instrumentation while preserving original Git semantic inputs.
@@ -485,6 +657,7 @@ func capturedGitEnvironment(
 //
 // Example: conditional gitdir includes appear under their original effective keys.
 func readConfig(data []byte) (map[string]string, error) {
+	// TODO: Return config alone; this decoder has no error-producing branch.
 	config := map[string]string{}
 	for _, record := range bytes.Split(data, []byte{0}) {
 		if len(record) == 0 {

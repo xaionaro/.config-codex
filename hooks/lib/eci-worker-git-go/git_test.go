@@ -504,3 +504,121 @@ func TestLiveHookEntryUnderAliasedParentIsProtected(
 		t.Fatal("index or HEAD changed")
 	}
 }
+
+// TestIndexOnlyOperationsPreserveUntouchedDirectory ignores physical leaf shape when only the index changes.
+//
+// Example: restoring an exact index file leaves an unrelated directory at that worktree path intact.
+func TestIndexOnlyOperationsPreserveUntouchedDirectory(
+	t *testing.T,
+) {
+	for _, kind := range []string{"restore-index", "remove-index", "unstage", "stage-hunks"} {
+		// Each public operation starts with the same exact index leaf and unrelated physical directory.
+		t.Run(kind, func(t *testing.T) {
+			root := fixtureRepository(t)
+			if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("changed\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			patch := filepath.Join(t.TempDir(), "selected.patch")
+			if err := os.WriteFile(patch, []byte(fixtureGit(t, root, "diff", "--", "file.txt")+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if kind != "stage-hunks" {
+				fixtureGit(t, root, "add", "--", "file.txt")
+			}
+			if err := os.Remove(filepath.Join(root, "file.txt")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "file.txt"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			child := filepath.Join(root, "file.txt/untouched")
+			if err := os.WriteFile(child, []byte("unrelated child\n"), 0640); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "unrelated.txt"), []byte("unrelated staged\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			fixtureGit(t, root, "add", "--", "unrelated.txt")
+			unrelated := fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "unrelated.txt")
+			head := fixtureGit(t, root, "rev-parse", "HEAD")
+			args := []string{"unstage", "--", "file.txt"}
+			switch kind {
+			case "restore-index":
+				args = []string{"restore", "--source", "head", "--destination", "index", "--", "file.txt"}
+			case "remove-index":
+				args = []string{"remove", "--destination", "index", "--", "file.txt"}
+			case "stage-hunks":
+				args = []string{"stage-hunks", "--patch-file", patch, "--", "file.txt"}
+			}
+			if err := executeFixtureOperation(t, root, args...); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "remove-index":
+				if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "file.txt") != "" {
+					t.Fatal("selected entry retained")
+				}
+			case "stage-hunks":
+				if fixtureGit(t, root, "show", ":file.txt") != "changed" {
+					t.Fatal("selected patch missing")
+				}
+			default:
+				if fixtureGit(t, root, "show", ":file.txt") != "base" {
+					t.Fatal("selected entry not restored")
+				}
+			}
+			if content, err := os.ReadFile(child); err != nil || string(content) != "unrelated child\n" {
+				t.Fatal("directory child changed")
+			}
+			if info, err := os.Stat(child); err != nil || info.Mode().Perm() != 0640 {
+				t.Fatal("directory child mode changed")
+			}
+			if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "unrelated.txt") != unrelated || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+				t.Fatal("unrelated index or HEAD changed")
+			}
+		})
+	}
+}
+
+// TestWorktreeLeafOperationsStillRejectDirectory keeps physical restrictions on reads and writes.
+//
+// Example: stage-content cannot read a directory merely because the index has an exact file there.
+func TestWorktreeLeafOperationsStillRejectDirectory(
+	t *testing.T,
+) {
+	for _, args := range [][]string{
+		{"stage-content", "--", "file.txt"},
+		{"stage-removals", "--", "file.txt"},
+		{"restore", "--source", "head", "--destination", "worktree", "--", "file.txt"},
+		{"restore", "--source", "head", "--destination", "both", "--", "file.txt"},
+		{"remove", "--destination", "worktree", "--", "file.txt"},
+		{"remove", "--destination", "both", "--", "file.txt"},
+		{"move", "--", "file.txt", "moved.txt"},
+	} {
+		// Each operation must refuse the same physical directory before any mutation.
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := fixtureRepository(t)
+			if err := os.Remove(filepath.Join(root, "file.txt")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "file.txt"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			child := filepath.Join(root, "file.txt/untouched")
+			if err := os.WriteFile(child, []byte("unrelated child\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			index := fixtureGit(t, root, "ls-files", "--stage", "-z")
+			head := fixtureGit(t, root, "rev-parse", "HEAD")
+			if err := executeFixtureOperation(t, root, args...); err == nil {
+				t.Fatal("physical directory admitted")
+			}
+			if content, err := os.ReadFile(child); err != nil || string(content) != "unrelated child\n" {
+				t.Fatal("directory child changed")
+			}
+			if fixtureGit(t, root, "ls-files", "--stage", "-z") != index || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+				t.Fatal("index or HEAD changed")
+			}
+		})
+	}
+}

@@ -292,6 +292,10 @@ func (r Repository) CheckExactLeaves(
 	if operation.Kind == Commit {
 		return nil
 	}
+	usesWorktreeLeaf, err := operationUsesWorktreeLeaf(operation)
+	if err != nil {
+		return err
+	}
 	records, err := r.StageRecords(ctx)
 	if err != nil {
 		return err
@@ -329,21 +333,23 @@ func (r Repository) CheckExactLeaves(
 		}
 	}
 	for _, name := range operation.Paths {
-		info, err := os.Lstat(filepath.Join(r.Worktree, name))
-		switch {
-		case err == nil:
-			if info.IsDir() {
-				return fmt.Errorf("operation requires an exact file or symlink leaf, not directory %q", name)
+		if usesWorktreeLeaf {
+			info, err := os.Lstat(filepath.Join(r.Worktree, name))
+			switch {
+			case err == nil:
+				if info.IsDir() {
+					return fmt.Errorf("operation requires an exact file or symlink leaf, not directory %q", name)
+				}
+				if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+					return fmt.Errorf("unsupported worktree leaf %q", name)
+				}
+			case errors.Is(err, os.ErrNotExist):
+				if (operation.Kind == Remove && operation.Destination == WorktreeDestination) || (operation.Kind == Move && name == operation.Paths[0]) {
+					return fmt.Errorf("operation requires existing worktree leaf %q: %w", name, err)
+				}
+			default:
+				return fmt.Errorf("inspect exact worktree leaf %q: %w", name, err)
 			}
-			if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
-				return fmt.Errorf("unsupported worktree leaf %q", name)
-			}
-		case errors.Is(err, os.ErrNotExist):
-			if (operation.Kind == Remove && operation.Destination == WorktreeDestination) || (operation.Kind == Move && name == operation.Paths[0]) {
-				return fmt.Errorf("operation requires existing worktree leaf %q: %w", name, err)
-			}
-		default:
-			return fmt.Errorf("inspect exact worktree leaf %q: %w", name, err)
 		}
 		for path, entries := range records {
 			if strings.HasPrefix(path, name+"/") {
@@ -370,4 +376,27 @@ func (r Repository) CheckExactLeaves(
 		}
 	}
 	return nil
+}
+
+// operationUsesWorktreeLeaf identifies physical reads, probes and writes of selected leaves.
+//
+// Example: cached hunk application reads the patch and index while leaving a selected worktree directory untouched.
+func operationUsesWorktreeLeaf(operation Operation) (bool, error) {
+	switch operation.Kind {
+	case StageContent, StageRemovals, Move:
+		return true, nil
+	case Unstage, StageHunks, Commit:
+		return false, nil
+	case Restore, Remove:
+		switch operation.Destination {
+		case IndexDestination:
+			return false, nil
+		case WorktreeDestination, BothDestination:
+			return true, nil
+		default:
+			return false, fmt.Errorf("unsupported destination for physical leaf checks")
+		}
+	default:
+		return false, fmt.Errorf("unsupported operation for physical leaf checks")
+	}
 }

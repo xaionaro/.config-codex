@@ -11710,6 +11710,7 @@ def inspection_observation(
     arguments: list[str], base: str, options: list[str], environment: dict[str, str],
 ) -> dict[str, str | list[str]]:
     """Obtain bounded native evidence; unsupported preparation remains advisory."""
+    # TODO: Reuse first-pass evidence in the scope pass to avoid duplicate observation.
     from errno import EBADF
 
     advisory = {"result": "Advisory"}
@@ -11764,6 +11765,82 @@ def inspection_observation(
             return advisory
         result["remediation"] = shlex.join(["git", "-C", base, *result["hatch"]])
     return result
+
+
+def inspection_output_effect(verb: str, arguments: list[str]) -> bool | None:
+    """Resolve output roles; None leaves unfamiliar option grammar advisory."""
+    if verb == "grep":
+        values = {"-e", "--regexp", "-A", "-B", "-C", "--context", "--after-context",
+                  "--before-context", "--max-count", "-m", "--threads"}
+        flags = {"-o", "--only-matching", "--textconv", "--no-textconv", "--cached", "--no-index",
+                 "-n", "--line-number", "-i", "--ignore-case", "-v", "--invert-match", "-l", "-L",
+                 "--files-with-matches", "--files-without-match", "-q", "--quiet", "-c", "--count",
+                 "-w", "--word-regexp", "-F", "--fixed-strings", "-E", "--extended-regexp",
+                 "-G", "--basic-regexp", "-P", "--perl-regexp", "--and", "--or", "--not", "(", ")"}
+        index = 0
+        while index < len(arguments):
+            token = arguments[index]
+            if token == "--" or (not token.startswith("-") and token not in {"(", ")"}):
+                return False
+            if token in values:
+                if index + 1 >= len(arguments):
+                    return None
+                index += 2
+                continue
+            if (token in flags or any(token.startswith(option + "=") for option in values if option.startswith("--")) or
+                    any(token.startswith(option) and len(token) > len(option) for option in values if not option.startswith("--"))):
+                index += 1
+                continue
+            return None
+        return False
+    if verb not in {"diff", "log", "show"}:
+        # grep/ls-files -o select stdout content, never an output destination.
+        return False
+    values = {
+        "-O", "-S", "-G", "--find-object", "--diff-filter",
+        "--src-prefix", "--dst-prefix", "--line-prefix",
+    }
+    if verb in {"log", "show"}:
+        values |= {"--author", "--committer", "--grep", "--grep-reflog", "--since", "--until",
+                   "--after", "--before", "--max-count", "-n"}
+    flags = {
+        "--textconv", "--no-textconv", "--ext-diff", "--no-ext-diff", "--cached", "--staged",
+        "--quiet", "--exit-code", "--check", "--name-only", "--name-status", "--stat", "--numstat",
+        "--raw", "--patch", "--no-patch", "--patch-with-stat", "--patch-with-raw", "--oneline",
+        "--no-renames", "--full-index", "--binary", "--color", "--no-color", "--no-prefix",
+        "--ignore-space-change", "--ignore-all-space", "--ignore-space-at-eol", "--ignore-blank-lines",
+        "--reverse", "--all", "--first-parent", "--no-merges", "--merges", "--follow", "--decorate", "--relative",
+        "-p", "-u", "-s", "-w", "-b", "-z", "-R", "-a", "-r", "-m", "-c", "--cc",
+    }
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            return False
+        if token == "--output":
+            return True if index + 1 < len(arguments) else None
+        if token.startswith("--output="):
+            return True
+        if token in values:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(option + "=") for option in values if option.startswith("--")):
+            index += 1
+            continue
+        if any(token.startswith(option) and len(token) > len(option) for option in values if not option.startswith("--")):
+            index += 1
+            continue
+        if (token in flags or re.fullmatch(r"-[0-9]+|-[UCM][0-9]*", token) or
+                token.startswith(("--unified=", "--inter-hunk-context=", "--stat=", "--color=", "--pretty=", "--format=", "--decorate=", "--relative="))):
+            index += 1
+            continue
+        if token.startswith("-"):
+            return None
+        # Revision operands do not stop diff/revision option processing.
+        index += 1
+    return False
 
 
 def segment_spec(
@@ -12050,12 +12127,16 @@ def segment_spec(
     work_tree = environment.get("GIT_WORK_TREE", "")
     git_options = []
     git_options_known = True
+    inspection_globals_supported = True
     value_options = {
-        "-c", "--config-env", "--attr-source", "--exec-path", "--namespace", "--super-prefix",
+        "-c", "--config-env", "--attr-source", "--namespace", "--super-prefix",
         "--source", "--pathspec-from-file",
     }
     while index < len(tokens):
         token = tokens[index]
+        if token == "--exec-path":
+            # Native Git prints its exec path and exits; later argv is unused.
+            return None
         if token == "-C":
             if index + 1 >= len(tokens):
                 return None
@@ -12089,19 +12170,21 @@ def segment_spec(
         if token in value_options:
             if index + 1 >= len(tokens):
                 return None
-            if token in {"-c", "--config-env", "--attr-source"}:
-                if index + 1 in unknown:
-                    git_options_known = False
-                else:
-                    git_options.extend((token, tokens[index + 1]))
+            if index + 1 in unknown:
+                git_options_known = False
+            else:
+                git_options.extend((token, tokens[index + 1]))
+            if token not in {"-c", "--config-env", "--attr-source"}:
+                inspection_globals_supported = False
             index += 2
             continue
         if token.startswith(("--attr-source=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
-            if token.startswith(("--config-env=", "--attr-source=")):
-                if index in unknown:
-                    git_options_known = False
-                else:
-                    git_options.append(token)
+            if index in unknown:
+                git_options_known = False
+            else:
+                git_options.append(token)
+            if not token.startswith(("--config-env=", "--attr-source=")):
+                inspection_globals_supported = False
             index += 1
             continue
         if token == "--":
@@ -12190,10 +12273,10 @@ def segment_spec(
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
-        if any(value in {"-o", "--output"} or value.startswith("--output=")
-               for value in tokens[index + 1:]):
+        output_effect = inspection_output_effect(verb, tokens[index + 1:])
+        if output_effect is True:
             return "output", repo_dir
-        if (worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
+        if (output_effect is False and inspection_globals_supported and worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
                 not any(offset > index for offset in unknown) and all(value is not None for value in environment.values())):
             result = inspection_observation(tokens[index:], repo_dir or "", git_options, environment)
             if result.get("result") == "Helper":
