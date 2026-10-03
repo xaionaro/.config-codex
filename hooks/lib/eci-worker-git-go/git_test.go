@@ -622,3 +622,183 @@ func TestWorktreeLeafOperationsStillRejectDirectory(
 		})
 	}
 }
+
+// TestLogicalIndexOperationsPreserveAncestorAlias pairs native and typed exact index effects.
+//
+// Example: a staged restore of dir/file preserves an outside sentinel reached by dir's worktree symlink.
+func TestLogicalIndexOperationsPreserveAncestorAlias(
+	t *testing.T,
+) {
+	for _, kind := range []string{"restore-index", "remove-index", "unstage", "stage-hunks"} {
+		for _, runner := range []string{"native", "typed"} {
+			// Independent fixtures compare native Git with the public typed operation.
+			t.Run(kind+"/"+runner, func(t *testing.T) {
+				root := fixtureRepository(t)
+				if err := os.Mkdir(filepath.Join(root, "dir"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				selected := filepath.Join(root, "dir/file")
+				if err := os.WriteFile(selected, []byte("base\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				fixtureGit(t, root, "add", "--", "dir/file")
+				fixtureGit(t, root, "commit", "-qm", "selected leaf")
+				if err := os.WriteFile(selected, []byte("changed\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				patch := filepath.Join(t.TempDir(), "selected.patch")
+				if err := os.WriteFile(patch, []byte(fixtureGit(t, root, "diff", "--", "dir/file")+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if kind != "stage-hunks" {
+					fixtureGit(t, root, "add", "--", "dir/file")
+				}
+				oid := fixtureGit(t, root, "rev-parse", ":unrelated.txt")
+				fixtureGit(t, root, "update-index", "--force-remove", "--", "unrelated.txt")
+				repository, err := ResolveRepository(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				command := repository.Command(context.Background(), "update-index", "--index-info")
+				command.Stdin = strings.NewReader("100644 " + oid + " 1\tunrelated.txt\n100644 " + oid + " 2\tunrelated.txt\n100644 " + oid + " 3\tunrelated.txt\n")
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("conflict fixture: %v %s", err, output)
+				}
+				before := fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "unrelated.txt", "file.txt")
+				head := fixtureGit(t, root, "rev-parse", "HEAD")
+				outside := t.TempDir()
+				sentinel := filepath.Join(outside, "file")
+				if err := os.WriteFile(sentinel, []byte("outside sentinel\n"), 0640); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.RemoveAll(filepath.Join(root, "dir")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "dir")); err != nil {
+					t.Fatal(err)
+				}
+				typed := []string{"unstage", "--", "dir/file"}
+				native := []string{"restore", "--source=HEAD", "--staged", "--", "dir/file"}
+				switch kind {
+				case "restore-index":
+					typed = []string{"restore", "--source", "head", "--destination", "index", "--", "dir/file"}
+				case "remove-index":
+					typed = []string{"remove", "--destination", "index", "--", "dir/file"}
+					native = []string{"rm", "--cached", "--force", "--", "dir/file"}
+				case "stage-hunks":
+					typed = []string{"stage-hunks", "--patch-file", patch, "--", "dir/file"}
+					native = []string{"apply", "--cached", patch}
+				}
+				if runner == "native" {
+					fixtureGit(t, root, native...)
+				} else {
+					if err := executeFixtureOperation(t, root, typed...); err != nil {
+						t.Fatal(err)
+					}
+				}
+				switch kind {
+				case "remove-index":
+					if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "dir/file") != "" {
+						t.Fatal("selected index entry retained")
+					}
+				case "stage-hunks":
+					if fixtureGit(t, root, "show", ":dir/file") != "changed" {
+						t.Fatal("selected patch missing")
+					}
+				default:
+					if fixtureGit(t, root, "show", ":dir/file") != "base" {
+						t.Fatal("selected index entry not restored")
+					}
+				}
+				if fixtureGit(t, root, "ls-files", "--stage", "-z", "--", "unrelated.txt", "file.txt") != before || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+					t.Fatal("unrelated records or HEAD changed")
+				}
+				if content, err := os.ReadFile(sentinel); err != nil || string(content) != "outside sentinel\n" {
+					t.Fatal("outside sentinel changed")
+				}
+				if info, err := os.Stat(sentinel); err != nil || info.Mode().Perm() != 0640 {
+					t.Fatal("outside mode changed")
+				}
+				if target, err := os.Readlink(filepath.Join(root, "dir")); err != nil || target != outside {
+					t.Fatal("ancestor alias changed")
+				}
+				if names, err := os.ReadDir(outside); err != nil || len(names) != 1 || names[0].Name() != "file" {
+					t.Fatal("outside directory changed")
+				}
+			})
+		}
+	}
+}
+
+// TestPhysicalOperationsRejectAncestorAlias retains physical read and write boundaries.
+//
+// Example: staging aliased worktree content cannot read outside the selected repository.
+func TestPhysicalOperationsRejectAncestorAlias(
+	t *testing.T,
+) {
+	for _, args := range [][]string{{"stage-content", "--", "alias/file"}, {"stage-removals", "--", "alias/file"}, {"restore", "--source", "head", "--destination", "worktree", "--", "alias/file"}, {"remove", "--destination", "worktree", "--", "alias/file"}, {"move", "--", "file.txt", "alias/moved"}} {
+		// Each operation refuses a real outside alias before touching any selected state.
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := fixtureRepository(t)
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, "file"), []byte("outside\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "alias")); err != nil {
+				t.Fatal(err)
+			}
+			before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+			head := fixtureGit(t, root, "rev-parse", "HEAD")
+			if err := executeFixtureOperation(t, root, args...); err == nil {
+				t.Fatal("physical ancestor alias admitted")
+			}
+			if fixtureGit(t, root, "ls-files", "--stage", "-z") != before || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+				t.Fatal("index or HEAD changed")
+			}
+			if content, err := os.ReadFile(filepath.Join(outside, "file")); err != nil || string(content) != "outside\n" {
+				t.Fatal("outside state changed")
+			}
+			if _, err := os.Lstat(filepath.Join(outside, "moved")); !os.IsNotExist(err) {
+				t.Fatal("outside destination created")
+			}
+		})
+	}
+}
+
+// TestLogicalIndexOperationsRejectControlNames retains lexical administrative protection.
+//
+// Example: index-only operations cannot select the worktree's .git pointer or index pathname.
+func TestLogicalIndexOperationsRejectControlNames(
+	t *testing.T,
+) {
+	for _, kind := range []string{"restore-index", "remove-index", "unstage", "stage-hunks"} {
+		// Every logical-only peer retains its Git control check before native execution.
+		t.Run(kind, func(t *testing.T) {
+			root := fixtureRepository(t)
+			patch := filepath.Join(t.TempDir(), "patch")
+			if err := os.WriteFile(patch, []byte("unused"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			before := fixtureGit(t, root, "ls-files", "--stage", "-z")
+			head := fixtureGit(t, root, "rev-parse", "HEAD")
+			for _, name := range []string{".git", ".git/index"} {
+				args := []string{"unstage", "--", name}
+				switch kind {
+				case "restore-index":
+					args = []string{"restore", "--source", "head", "--destination", "index", "--", name}
+				case "remove-index":
+					args = []string{"remove", "--destination", "index", "--", name}
+				case "stage-hunks":
+					args = []string{"stage-hunks", "--patch-file", patch, "--", name}
+				}
+				err := executeFixtureOperation(t, root, args...)
+				if err == nil || !strings.Contains(err.Error(), "logical Git control state") {
+					t.Fatalf("logical control selection %q: %v", name, err)
+				}
+			}
+			if fixtureGit(t, root, "ls-files", "--stage", "-z") != before || fixtureGit(t, root, "rev-parse", "HEAD") != head {
+				t.Fatal("administrative rejection changed state")
+			}
+		})
+	}
+}

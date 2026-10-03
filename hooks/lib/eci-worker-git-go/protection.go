@@ -8,6 +8,26 @@ import (
 	"strings"
 )
 
+// PathAccess describes how an operation uses its selected worktree names.
+//
+// Example: cached hunks select logical index names while staging content reads physical leaves.
+type PathAccess int
+
+const (
+	// LogicalOnly selects index entries without reading selected worktree leaves.
+	//
+	// Example: unstaging a file preserves any worktree ancestor alias.
+	LogicalOnly PathAccess = iota
+	// PhysicalReadProbe reads content or probes absence under selected worktree names.
+	//
+	// Example: stage-content reads the selected file before updating the index.
+	PhysicalReadProbe
+	// PhysicalWrite changes selected worktree entries and protects live targets.
+	//
+	// Example: a move must protect both physical endpoints.
+	PhysicalWrite
+)
+
 // containsPath compares filesystem components rather than textual prefixes.
 //
 // Example: hooks-old does not contain hooks/validate-bash.sh.
@@ -84,11 +104,21 @@ func liveProtectedPaths() []string {
 // Example: index-only hook staging is allowed while worktree restoration is denied.
 func (r Repository) CheckPaths(
 	paths []string,
-	worktreeWrite bool,
+	access PathAccess,
 ) error {
 	protected := liveProtectedPaths()
 	for _, name := range paths {
 		candidate := filepath.Join(r.Worktree, name)
+		if !containsPath(r.Worktree, candidate) {
+			return fmt.Errorf("logical path leaves worktree: %q", name)
+		}
+		pointer := filepath.Join(r.Worktree, ".git")
+		if containsPath(r.GitDir, candidate) || containsPath(candidate, r.GitDir) || candidate == r.Index || containsPath(pointer, candidate) || containsPath(candidate, pointer) {
+			return fmt.Errorf("operation targets logical Git control state: %q", name)
+		}
+		if access == LogicalOnly {
+			continue
+		}
 		resolved, err := resolvedParent(candidate)
 		if err != nil {
 			return fmt.Errorf("resolve path %q: %w", name, err)
@@ -96,11 +126,10 @@ func (r Repository) CheckPaths(
 		if !containsPath(r.Worktree, resolved) {
 			return fmt.Errorf("path leaves worktree through an ancestor alias: %q", name)
 		}
-		pointer := filepath.Join(r.Worktree, ".git")
 		if containsPath(r.GitDir, resolved) || containsPath(resolved, r.GitDir) || resolved == r.Index || containsPath(pointer, resolved) || containsPath(resolved, pointer) {
 			return fmt.Errorf("operation targets Git control state: %q", name)
 		}
-		if !worktreeWrite {
+		if access != PhysicalWrite {
 			continue
 		}
 		for _, control := range protected {

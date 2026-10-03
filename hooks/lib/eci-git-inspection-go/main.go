@@ -47,6 +47,12 @@ func runCLI(
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return json.NewEncoder(output).Encode(advisory("expected exactly one invocation JSON"))
 	}
+	if in.Query == "argument-roles" {
+		return json.NewEncoder(output).Encode(AnalyzeArguments(in.Arguments))
+	}
+	if in.Query != "" {
+		return json.NewEncoder(output).Encode(advisory("unknown invocation query"))
+	}
 	return json.NewEncoder(output).Encode(Inspect(in))
 }
 

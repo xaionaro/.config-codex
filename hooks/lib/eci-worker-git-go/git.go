@@ -33,12 +33,14 @@ func ExecuteOperation(
 	if err != nil {
 		return err
 	}
-	worktreeWrite := operation.Kind == Move ||
-		((operation.Kind == Restore || operation.Kind == Remove) && operation.Destination != IndexDestination)
-	if err := repository.CheckPaths(operation.Paths, worktreeWrite); err != nil {
+	access, err := operationPathAccess(operation)
+	if err != nil {
 		return err
 	}
-	if err := repository.CheckExactLeaves(ctx, operation, worktreeWrite); err != nil {
+	if err := repository.CheckPaths(operation.Paths, access); err != nil {
+		return err
+	}
+	if err := repository.CheckExactLeaves(ctx, operation, access); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(streams.Output, "eci-worker-git: worktree=%q gitdir=%q index=%q\n", repository.Worktree, repository.GitDir, repository.Index); err != nil {
@@ -287,14 +289,10 @@ func parseStageRecords(output []byte) (map[string]string, error) {
 func (r Repository) CheckExactLeaves(
 	ctx context.Context,
 	operation Operation,
-	worktreeWrite bool,
+	access PathAccess,
 ) error {
 	if operation.Kind == Commit {
 		return nil
-	}
-	usesWorktreeLeaf, err := operationUsesWorktreeLeaf(operation)
-	if err != nil {
-		return err
 	}
 	records, err := r.StageRecords(ctx)
 	if err != nil {
@@ -333,7 +331,7 @@ func (r Repository) CheckExactLeaves(
 		}
 	}
 	for _, name := range operation.Paths {
-		if usesWorktreeLeaf {
+		if access != LogicalOnly {
 			info, err := os.Lstat(filepath.Join(r.Worktree, name))
 			switch {
 			case err == nil:
@@ -363,7 +361,7 @@ func (r Repository) CheckExactLeaves(
 				if mode == "040000" {
 					return fmt.Errorf("operation rejects directory or sparse-directory entry %q", name)
 				}
-				if worktreeWrite && mode == "160000" {
+				if access == PhysicalWrite && mode == "160000" {
 					return fmt.Errorf("operation rejects implicit gitlink worktree metadata changes at %q", name)
 				}
 			}
@@ -378,25 +376,27 @@ func (r Repository) CheckExactLeaves(
 	return nil
 }
 
-// operationUsesWorktreeLeaf identifies physical reads, probes and writes of selected leaves.
+// operationPathAccess classifies logical selection, physical reads/probes and physical writes once.
 //
 // Example: cached hunk application reads the patch and index while leaving a selected worktree directory untouched.
-func operationUsesWorktreeLeaf(operation Operation) (bool, error) {
+func operationPathAccess(operation Operation) (PathAccess, error) {
 	switch operation.Kind {
-	case StageContent, StageRemovals, Move:
-		return true, nil
+	case StageContent, StageRemovals:
+		return PhysicalReadProbe, nil
+	case Move:
+		return PhysicalWrite, nil
 	case Unstage, StageHunks, Commit:
-		return false, nil
+		return LogicalOnly, nil
 	case Restore, Remove:
 		switch operation.Destination {
 		case IndexDestination:
-			return false, nil
+			return LogicalOnly, nil
 		case WorktreeDestination, BothDestination:
-			return true, nil
+			return PhysicalWrite, nil
 		default:
-			return false, fmt.Errorf("unsupported destination for physical leaf checks")
+			return LogicalOnly, fmt.Errorf("unsupported destination for path access")
 		}
 	default:
-		return false, fmt.Errorf("unsupported operation for physical leaf checks")
+		return LogicalOnly, fmt.Errorf("unsupported operation for path access")
 	}
 }

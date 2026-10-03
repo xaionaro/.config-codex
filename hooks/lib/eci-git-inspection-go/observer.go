@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,151 +139,11 @@ func admission(in Invocation) (int, string) {
 	if !filepath.IsAbs(in.CWD) {
 		return 0, "cwd must be an absolute existing physical path"
 	}
-	for i := 0; i < len(in.Arguments); i++ {
-		arg := in.Arguments[i]
-		switch arg {
-		case "-c":
-			i++
-			if i == len(in.Arguments) || !strings.Contains(in.Arguments[i], "=") {
-				return 0, "unresolved global config override"
-			}
-			key := strings.ToLower(strings.SplitN(in.Arguments[i], "=", 2)[0])
-			if strings.HasPrefix(key, "trace") {
-				return 0, "unmodeled trace configuration"
-			}
-		case "--no-pager", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs":
-		case "diff", "log", "show", "grep", "status":
-			if reason := inspectionArgumentAdmission(arg, in.Arguments[i+1:]); reason != "" {
-				return 0, reason
-			}
-			return i, ""
-		default:
-			return 0, "unresolved built-in or global option: " + arg
-		}
+	roles := AnalyzeArguments(in.Arguments)
+	if !roles.Complete || !roles.Eligible {
+		return 0, roles.Reason
 	}
-	return 0, "no positively identified inspection built-in"
-}
-
-// inspectionArgumentAdmission screens only native option positions and leaves consumed values literal.
-//
-// Example: log continues parsing after HEAD, while grep stops at its first pattern operand.
-func inspectionArgumentAdmission(
-	verb string,
-	args []string,
-) string {
-	options := true
-	delimited := false
-	for index := 0; index < len(args); index++ {
-		arg := args[index]
-		if !delimited && arg == "--" {
-			options = false
-			delimited = true
-			continue
-		}
-		if !options || !strings.HasPrefix(arg, "-") || arg == "-" {
-			if strings.Contains(arg, "/dev/fd/") || strings.Contains(arg, "/proc/self/fd/") || arg == "-" && !delimited {
-				return "unavailable stream input"
-			}
-			if verb == "grep" {
-				options = false
-			}
-			continue
-		}
-		if strings.HasPrefix(arg, "--") {
-			name, _, attached := strings.Cut(arg, "=")
-			if name == "--stdin" || name == "--no-index" || name == "--recurse-submodules" || name == "--output" || name == "--open-files-in-pager" || strings.HasPrefix(name, "--pathspec-from-file") || name == "--filters" || name == "--filter" || name == "--ext-diff" && attached {
-				return "unsupported input/output or auxiliary option: " + arg
-			}
-			value, known := inspectionLongOption(verb, name)
-			if !known {
-				return "unresolved native option role: " + arg
-			}
-			if value && !attached {
-				index++
-				if index == len(args) {
-					return "missing native option value: " + arg
-				}
-			}
-			continue
-		}
-		for offset := 1; offset < len(arg); offset++ {
-			letter := arg[offset]
-			if letter == 'O' || letter == 'f' {
-				return "unsupported input/output or auxiliary option: " + arg
-			}
-			values, flags, optional := "", "", ""
-			switch verb {
-			case "grep":
-				values, flags = "eABCm", "viwaIEGFPnhHlLzocpqWr()"
-			case "diff", "log", "show":
-				values, flags, optional = "SGIl", "psuWRawbrzD", "UCMB"
-				if verb != "diff" {
-					values += "n"
-				}
-			case "status":
-				flags, optional = "sbz", "u"
-			}
-			if letter >= '0' && letter <= '9' && verb != "status" {
-				continue
-			}
-			if strings.ContainsRune(values, rune(letter)) {
-				if offset+1 == len(arg) {
-					index++
-					if index == len(args) {
-						return "missing native option value: " + arg
-					}
-				}
-				break
-			}
-			if strings.ContainsRune(optional, rune(letter)) {
-				break
-			}
-			if !strings.ContainsRune(flags, rune(letter)) {
-				return "unresolved native option role: " + arg
-			}
-		}
-	}
-	return ""
-}
-
-// inspectionLongOption identifies selected source-defined option arity without interpreting values.
-//
-// Example: --author consumes one value only for revision-based log and show.
-func inspectionLongOption(
-	verb string,
-	name string,
-) (bool, bool) {
-	if verb == "grep" {
-		switch name {
-		case "--context", "--after-context", "--before-context", "--max-count", "--threads", "--max-depth":
-			return true, true
-		case "--textconv", "--no-textconv", "--cached", "--no-index", "--untracked", "--exclude-standard", "--no-exclude-standard", "--invert-match", "--ignore-case", "--word-regexp", "--text", "--recursive", "--extended-regexp", "--basic-regexp", "--fixed-strings", "--perl-regexp", "--line-number", "--column", "--full-name", "--files-with-matches", "--name-only", "--files-without-match", "--null", "--only-matching", "--count", "--color", "--no-color", "--break", "--heading", "--show-function", "--function-context", "--and", "--or", "--not", "--all-match", "--quiet":
-			return false, true
-		}
-		return false, false
-	}
-	if verb == "status" {
-		switch name {
-		case "--short", "--branch", "--porcelain", "--untracked-files", "--ignored", "--ignore-submodules", "--renames", "--no-renames", "--null", "--verbose", "--ahead-behind", "--no-ahead-behind":
-			return false, true
-		}
-		return false, false
-	}
-	if verb == "log" || verb == "show" {
-		switch name {
-		case "--author", "--committer", "--grep", "--grep-reflog", "--since", "--after", "--until", "--before", "--max-count", "--skip", "--date", "--encoding":
-			return true, true
-		case "--format", "--pretty", "--all", "--first-parent", "--reverse", "--topo-order", "--date-order", "--no-walk", "--oneline", "--decorate", "--no-decorate", "--abbrev-commit", "--no-abbrev-commit":
-			return false, true
-		}
-	}
-	switch name {
-	case "--inter-hunk-context", "--output-indicator-new", "--output-indicator-old", "--output-indicator-context", "--diff-filter", "--src-prefix", "--dst-prefix", "--line-prefix", "--word-diff-regex", "--ignore-matching-lines", "--anchored", "--rotate-to", "--skip-to", "--diff-algorithm":
-		return true, true
-	case "--textconv", "--no-textconv", "--ext-diff", "--no-ext-diff", "--cached", "--staged", "--quiet", "--exit-code", "--check", "--name-only", "--name-status", "--patch", "--no-patch", "--raw", "--patch-with-stat", "--patch-with-raw", "--stat", "--numstat", "--shortstat", "--summary", "--binary", "--full-index", "--color", "--no-color", "--word-diff", "--unified", "--find-renames", "--find-copies", "--no-renames", "--find-copies-harder", "--minimal", "--patience", "--histogram", "--ignore-all-space", "--ignore-space-change", "--ignore-space-at-eol", "--ignore-cr-at-eol", "--ignore-blank-lines", "--no-prefix", "--relative", "--submodule", "--ignore-submodules", "--abbrev", "--pickaxe-all", "--pickaxe-regex", "--ita-visible-in-index", "--ita-invisible-in-index":
-		return false, true
-	}
-	return false, false
+	return roles.VerbIndex, ""
 }
 
 // unmodeledLoaderKey identifies controls for unmodeled dynamic loading or libc trace/locale lookup.
@@ -439,6 +297,21 @@ func (s *sandbox) run(
 	args []string,
 	purpose outputPurpose,
 ) (output []byte, events []traceEvent, status int, runErr error) {
+	ctx, cancel := context.WithTimeout(context.Background(), observationDeadline)
+	defer cancel()
+	return s.runContext(ctx, args, purpose)
+}
+
+// runContext keeps native execution, collection and decoding within one supplied deadline.
+//
+// Example: Inspect shares its observation budget across config, version and replay.
+func (s *sandbox) runContext(
+	ctx context.Context,
+	args []string,
+	purpose outputPurpose,
+) (output []byte, events []traceEvent, status int, runErr error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if purpose != metadataOutput && purpose != replayOutput {
 		return nil, nil, 0, fmt.Errorf("unknown native output purpose")
 	}
@@ -460,46 +333,48 @@ func (s *sandbox) run(
 	if _, err := filter.Seek(0, 0); err != nil {
 		return nil, nil, 0, err
 	}
-	trace, err := os.CreateTemp(s.dir, "trace-")
+	trace, err := newTraceCapture(ctx, traceCaptureByteLimit)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	// The trace descriptor is owned and must be closed on every return path.
-	//
-	// Example: trace descriptor cleanup failure returns an error.
-	defer func() {
-		if err := trace.Close(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("close observer trace: %w", err))
-		}
-	}()
-	launch, err := os.CreateTemp(s.dir, "launch-")
+	launch, err := newTraceCapture(ctx, launchCaptureByteLimit)
 	if err != nil {
-		return nil, nil, 0, err
+		cancel()
+		_, closeErr := trace.finish()
+		return nil, nil, 0, errors.Join(err, closeErr)
 	}
-	// Close the private launch capture and preserve errors.
-	//
-	// Example: failed trace cleanup cannot support a Helper result.
-	defer func() {
-		if err := launch.Close(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("close observer launch trace: %w", err))
-		}
-	}()
 	bargs := []string{"--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "--overlay-src", s.gitdir, "--tmp-overlay", s.gitdir, "--overlay-src", s.tmpdir, "--tmp-overlay", s.tmpdir, "--chdir", s.cwd, "--seccomp", "3"}
 	bargs = append(bargs, s.git)
 	bargs = append(bargs, args...)
-	ctx, cancel := context.WithTimeout(context.Background(), observationDeadline)
-	defer cancel()
 	c := exec.CommandContext(ctx, s.bwrap, bargs...)
+	if err := isolateObservationProcess(c); err != nil {
+		cancel()
+		_, traceErr := trace.finish()
+		_, launchErr := launch.finish()
+		return nil, nil, 0, errors.Join(err, traceErr, launchErr)
+	}
 	c.Dir = s.cwd
 	c.Env = observerEnvironment(s.env)
-	c.ExtraFiles = []*os.File{filter, trace, launch}
+	c.ExtraFiles = []*os.File{filter, trace.Writer, launch.Writer}
 	stdout := boundedOutput{limit: outputCaptureByteLimit}
 	stderr := boundedOutput{limit: outputCaptureByteLimit}
 	if purpose == metadataOutput {
 		c.Stdout = &stdout
 	}
 	c.Stderr = &stderr
-	err = c.Run()
+	err = c.Start()
+	if err != nil {
+		cancel()
+		_, traceErr := trace.finish()
+		_, launchErr := launch.finish()
+		return nil, nil, 0, errors.Join(fmt.Errorf("start sandbox: %w", err), traceErr, launchErr)
+	}
+	// Closing each parent's writer immediately permits collector EOF after native exit.
+	// finish joins while the native process still runs and both collectors drain concurrently.
+	traceData, traceErr := trace.finish()
+	s.launchTrace, err = launch.finish()
+	captureErr := errors.Join(traceErr, err)
+	err = c.Wait()
 	status = 0
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
@@ -514,33 +389,11 @@ func (s *sandbox) run(
 	if stdout.overflow || stderr.overflow {
 		return nil, nil, status, fmt.Errorf("native metadata or diagnostic output exceeded supported size")
 	}
-	if _, err := launch.Seek(0, 0); err != nil {
-		return nil, nil, status, err
+	if captureErr != nil {
+		return nil, nil, status, fmt.Errorf("collect native trace: %w", captureErr)
 	}
-	s.launchTrace, err = io.ReadAll(io.LimitReader(launch, launchCaptureByteLimit+1))
+	events, err = decodeTraceCapture(ctx, traceData)
 	if err != nil {
-		return nil, nil, status, fmt.Errorf("read native launch trace: %w", err)
-	}
-	if len(s.launchTrace) > launchCaptureByteLimit {
-		return nil, nil, status, fmt.Errorf("native launch capture exceeded supported size")
-	}
-	if _, err := trace.Seek(0, 0); err != nil {
-		return nil, nil, status, err
-	}
-	events = []traceEvent{}
-	scanner := bufio.NewScanner(trace)
-	scanner.Buffer(make([]byte, 4096), traceEventByteLimit)
-	for scanner.Scan() {
-		if !exactJSONUnicode(scanner.Bytes()) {
-			return nil, nil, status, fmt.Errorf("lossy native trace Unicode encoding")
-		}
-		var event traceEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, nil, status, fmt.Errorf("decode trace: %w", err)
-		}
-		events = append(events, event)
-	}
-	if err := scanner.Err(); err != nil {
 		return nil, nil, status, err
 	}
 	if len(events) == 0 {
@@ -704,14 +557,18 @@ func resolveProgram(
 	return "", fmt.Errorf("executable unavailable on original PATH: %s", name)
 }
 
-// rawHatch places command-specific conversion overrides after earlier toggles.
+// rawHatch reuses the analyzer boundary without altering original argument bytes.
 //
-// Example: grep receives --no-textconv without an unsupported --no-ext-diff.
+// Example: conversion overrides follow every parsed option and precede real operands.
 func rawHatch(
 	args []string,
 	verb int,
 	monitor bool,
 ) []string {
+	roles := AnalyzeArguments(args)
+	if !roles.Complete || !roles.Eligible || roles.VerbIndex != verb {
+		return nil
+	}
 	result := append([]string{}, args[:verb]...)
 	if monitor {
 		result = append(result, "-c", "core.fsmonitor=false")
@@ -719,35 +576,12 @@ func rawHatch(
 	if args[verb] == "status" {
 		return append(result, args[verb:]...)
 	}
-	end := len(args)
-	for i := verb + 1; i < len(args); i++ {
-		if args[i] == "--" {
-			end = i
-			break
-		}
-	}
-	if args[verb] == "grep" {
-		for i := verb + 1; i < end; i++ {
-			if args[i] == "-e" || args[i] == "--regexp" || args[i] == "-A" || args[i] == "-B" || args[i] == "-C" || args[i] == "--context" || args[i] == "--after-context" || args[i] == "--before-context" || args[i] == "--max-count" || args[i] == "-m" || args[i] == "--threads" {
-				i++
-				continue
-			}
-			if args[i] == "(" || args[i] == ")" {
-				continue
-			}
-			if !strings.HasPrefix(args[i], "-") {
-				end = i
-				break
-			}
-		}
-	}
-	result = append(result, args[verb:end]...)
+	result = append(result, args[verb:roles.Boundary]...)
 	if args[verb] != "grep" {
 		result = append(result, "--no-ext-diff")
 	}
 	result = append(result, "--no-textconv")
-	result = append(result, args[end:]...)
-	return result
+	return append(result, args[roles.Boundary:]...)
 }
 
 // classify attributes only source-matched first child preparations.

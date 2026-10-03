@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os/exec"
 )
 
 // inheritedDescriptorAdmission refuses unmodeled descriptor inheritance on unsupported platforms.
@@ -28,4 +29,11 @@ func certifyInitialExec(
 	env map[string]string,
 ) error {
 	return fmt.Errorf("unsupported initial-exec platform")
+}
+
+// isolateObservationProcess leaves unsupported platforms under their existing pre-execution admission boundary.
+//
+// Example: non-Linux sandbox creation fails before a native process can be started.
+func isolateObservationProcess(command *exec.Cmd) error {
+	return fmt.Errorf("unsupported observation process platform")
 }

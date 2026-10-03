@@ -220,3 +220,19 @@ func startInitialExec(
 	}
 	return c, nil
 }
+
+// isolateObservationProcess gives cancellation an owned sandbox process group.
+//
+// Example: a stalled native child cannot outlive the killed bubblewrap supervisor and retain capture pipes.
+func isolateObservationProcess(command *exec.Cmd) error {
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Cancel only the group whose identity was established by this command's Start.
+	command.Cancel = func() error {
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	return nil
+}

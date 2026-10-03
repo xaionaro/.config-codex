@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 //
 // Example: Invocation{CWD: "/repo", Arguments: []string{"diff"}} observes a diff.
 type Invocation struct {
+	Query       string            `json:"query,omitempty"`
 	CWD         string            `json:"cwd"`
 	Arguments   []string          `json:"arguments"`
 	Environment map[string]string `json:"environment"`
@@ -87,9 +89,11 @@ func Inspect(in Invocation) (observation Observation) {
 			observation = advisory("remove owned observer state: " + err.Error())
 		}
 	}()
+	ctx, cancel := context.WithTimeout(context.Background(), observationDeadline)
+	defer cancel()
 	globals := append([]string{}, in.Arguments[:verb]...)
 	configArgs := append(append([]string{}, globals...), "config", "--null", "--list")
-	data, _, status, err := s.run(configArgs, metadataOutput)
+	data, _, status, err := s.runContext(ctx, configArgs, metadataOutput)
 	if err != nil {
 		return advisory(err.Error())
 	}
@@ -111,7 +115,7 @@ func Inspect(in Invocation) (observation Observation) {
 			return advisory("unsupported repository/index/object configuration: " + key)
 		}
 	}
-	data, _, status, err = s.run([]string{"--version"}, metadataOutput)
+	data, _, status, err = s.runContext(ctx, []string{"--version"}, metadataOutput)
 	if err != nil {
 		return advisory(err.Error())
 	}
@@ -122,7 +126,7 @@ func Inspect(in Invocation) (observation Observation) {
 	if _, exists := config["core.fsmonitor"]; exists {
 		monitorArgs := append(append([]string{}, globals...), "config", "--type=bool", "--get", "core.fsmonitor")
 		var monitorEvents []traceEvent
-		data, monitorEvents, status, err = s.run(monitorArgs, metadataOutput)
+		data, monitorEvents, status, err = s.runContext(ctx, monitorArgs, metadataOutput)
 		if err != nil {
 			return advisory(err.Error())
 		}
@@ -144,7 +148,7 @@ func Inspect(in Invocation) (observation Observation) {
 			return advisory("effective fsmonitor boolean/path preparation unresolved")
 		}
 	}
-	_, events, status, err := s.run(in.Arguments, replayOutput)
+	_, events, status, err := s.runContext(ctx, in.Arguments, replayOutput)
 	if err != nil {
 		return advisory(err.Error())
 	}
@@ -188,8 +192,14 @@ func Inspect(in Invocation) (observation Observation) {
 		}
 	}
 	childCWD := filepath.Dir(s.gitdir)
+	if err := ctx.Err(); err != nil {
+		return advisory("observation deadline before helper certificate: " + err.Error())
+	}
 	if err := certifyInitialExec(*first, childCWD, childEnvironment); err != nil {
 		return advisory(err.Error())
+	}
+	if err := ctx.Err(); err != nil {
+		return advisory("observation deadline after helper certificate: " + err.Error())
 	}
 	if strings.ContainsAny(target, "|&;<>()$`\\\"' \t\n*?[#~=%") {
 		target = "/bin/sh"

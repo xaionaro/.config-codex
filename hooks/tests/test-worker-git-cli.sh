@@ -9,8 +9,10 @@ case "${1:-matrix}" in
   edges) export NORMAL_GIT_ADMISSION_TARGET=worker-git-cli-edges ;;
   inspection) export NORMAL_GIT_ADMISSION_TARGET=worker-git-inspection ;;
   helpers) export NORMAL_GIT_ADMISSION_TARGET=worker-git-helper-effect ;;
+  hatches) export NORMAL_GIT_ADMISSION_TARGET=worker-git-hatch-roles ;;
+  aliases) export NORMAL_GIT_ADMISSION_TARGET=worker-git-index-aliases ;;
   roles) export NORMAL_GIT_ADMISSION_TARGET=worker-git-argument-roles ;;
   matrix|full) export NORMAL_GIT_ADMISSION_TARGET=worker-git-cli-matrix ;;
-  *) printf 'usage: %s [slice|edges|inspection|helpers|roles|matrix|full]\n' "$0" >&2; exit 64 ;;
+  *) printf 'usage: %s [slice|edges|inspection|helpers|roles|hatches|aliases|matrix|full]\n' "$0" >&2; exit 64 ;;
 esac
 exec bash "$SOURCE_ROOT/hooks/tests/test-normal-git-admission.sh"

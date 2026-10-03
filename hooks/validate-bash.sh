@@ -11767,8 +11767,34 @@ def inspection_observation(
     return result
 
 
-def inspection_output_effect(verb: str, arguments: list[str]) -> bool | None:
-    """Resolve output roles; None leaves unfamiliar option grammar advisory."""
+def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | int] | None:
+    """Query pure argument facts under effect-free infrastructure context."""
+    configured_home = os.environ.get("CODEX_CONFIGURED_HOME")
+    if not configured_home:
+        return None
+    binary = os.path.join(configured_home, "bin", "eci-git-inspection")
+    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+        return None
+    loader_controls = {"GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH", "MALLOC_TRACE"}
+    infrastructure = {name: value for name, value in os.environ.items()
+                      if not name.startswith("LD_") and name not in loader_controls and not name.startswith("GIT_TRACE")}
+    try:
+        observed = subprocess.run([binary], input=json.dumps({"query": "argument-roles", "arguments": arguments}),
+            text=True, env=infrastructure, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            close_fds=True, timeout=10, check=False)
+        if observed.returncode or len(observed.stdout) > 8192:
+            return None
+        result = json.loads(observed.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if (not isinstance(result, dict) or result.get("query") != "argument-roles" or
+            not all(type(result.get(key)) is bool for key in {"output", "complete", "eligible"})):
+        return None
+    return result
+
+
+def inspection_output_fallback(verb: str, arguments: list[str]) -> bool | None:
+    """Preserve bounded existing concrete-output coverage when the query is unavailable."""
     if verb == "grep":
         values = {"-e", "--regexp", "-A", "-B", "-C", "--context", "--after-context",
                   "--before-context", "--max-count", "-m", "--threads"}
@@ -12273,10 +12299,11 @@ def segment_spec(
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
-        output_effect = inspection_output_effect(verb, tokens[index + 1:])
+        roles = inspection_argument_roles([*git_options, *tokens[index:]])
+        output_effect = roles["output"] if roles is not None else inspection_output_fallback(verb, tokens[index + 1:])
         if output_effect is True:
             return "output", repo_dir
-        if (output_effect is False and inspection_globals_supported and worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
+        if (roles is not None and roles["eligible"] and inspection_globals_supported and worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
                 not any(offset > index for offset in unknown) and all(value is not None for value in environment.values())):
             result = inspection_observation(tokens[index:], repo_dir or "", git_options, environment)
             if result.get("result") == "Helper":
