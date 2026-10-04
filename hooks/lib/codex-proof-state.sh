@@ -406,19 +406,19 @@ codex_eci_control_basename() {
 # Compare shared targets only with immediate controls in active sessions;
 # historical proof subtrees do not establish a live control target.
 codex_path_is_eci_control_alias() {
-  local path="${1:-}" root marker candidate links count=0
+  local path="${1:-}" root marker candidate session links
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
   links="$(stat -Lc '%h' -- "$path" 2>/dev/null || true)"
   [[ "$links" =~ ^[0-9]+$ ]] && [ "$links" -gt 1 ] || return 1
   root="$(codex_proof_root)"
   [ -d "$root" ] && [ ! -L "$root" ] || return 1
   for marker in "$root"/*/eci_active; do
-    codex_eci_marker_metadata_is_valid "$marker" || continue
+    session="${marker%/*}"
+    session="${session##*/}"
+    codex_eci_direct_marker_cwd "$marker" "$session" >/dev/null || continue
     for candidate in "${marker%/*}"/* "${marker%/*}"/.eci-*; do
       codex_eci_control_basename "${candidate##*/}" || continue
       [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
-      count=$((count + 1))
-      [ "$count" -le 2048 ] || return 1
       [ "$candidate" -ef "$path" ] && return 0
     done
   done
