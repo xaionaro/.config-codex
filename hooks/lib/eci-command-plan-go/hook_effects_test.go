@@ -93,6 +93,14 @@ func TestHookGitPreviewSemantics(t *testing.T) {
 	}{
 		{Command: "commit -n -m checkpoint", Mutation: true},
 		{Command: "commit --dry-run -m checkpoint", Mutation: false},
+		{Command: "commit -m --dry-run", Mutation: true},
+		{Command: "commit --message --dry-run", Mutation: true},
+		{Command: "commit -am --dry-run", Mutation: true},
+		{Command: "commit --message=--dry-run", Mutation: true},
+		{Command: "commit -F --dry-run", Mutation: true},
+		{Command: "commit -m --help", Mutation: true},
+		{Command: "commit -- --dry-run", Mutation: true},
+		{Command: "commit -m checkpoint --dry-run", Mutation: false},
 		{Command: "cherry-pick -n HEAD", Mutation: true},
 		{Command: "revert -n HEAD", Mutation: true},
 		{Command: "pull -n", Mutation: true},
@@ -115,10 +123,16 @@ func TestHookGitPreviewSemantics(t *testing.T) {
 		require.Equalf(t, current.Mutation, hookGitCoordinatorMutation(arguments, 1), "preview semantics: %s", current.Command)
 	}
 	root := t.TempDir()
-	request := Request{HookMode: true, Provider: ProviderCodex, Role: RoleCoordinator, Marker: MarkerActive, CWD: root, Command: "git commit -n -m checkpoint", CollectShellCommands: true}
-	diagnostic := inspectHookEffects(request, Classify(request))
-	require.NotNil(t, diagnostic)
-	require.Equal(t, hookCodeCommitProducerRequired, diagnostic.Code)
+	for _, command := range []string{"git commit -n -m checkpoint", "git commit -m --dry-run", "git commit -- --dry-run", "git commit -m --help"} {
+		request := Request{HookMode: true, Provider: ProviderCodex, Role: RoleCoordinator, Marker: MarkerActive, CWD: root, Command: command, CollectShellCommands: true}
+		diagnostic := inspectHookEffects(request, Classify(request))
+		require.NotNil(t, diagnostic, command)
+		require.Equal(t, hookCodeCommitProducerRequired, diagnostic.Code, command)
+	}
+	for _, command := range []string{"git commit --dry-run -m checkpoint", "git commit -m checkpoint --dry-run"} {
+		request := Request{HookMode: true, Provider: ProviderCodex, Role: RoleCoordinator, Marker: MarkerActive, CWD: root, Command: command, CollectShellCommands: true}
+		require.Nil(t, inspectHookEffects(request, Classify(request)), command)
+	}
 }
 
 // TestHookLifecycleAndScriptTargets verifies concrete execution ownership.

@@ -295,11 +295,6 @@ func inspectHookGit(
 		return diagnostic
 	}
 	if argv[verbIndex].value == "commit" {
-		for _, argument := range argv[verbIndex+1:] {
-			if argument.value == "--dry-run" || argument.value == "--help" || argument.value == "-h" {
-				return nil
-			}
-		}
 		diagnostic := diagnosticForToken(hookCodeCommitProducerRequired, "active coordinator selects a Producer-owned commit in "+directory,
 			record.Segment, argv[verbIndex].offset, argv[verbIndex], "hand the exact prepared-index checkpoint to its assigned Producer; inspect the complete staged result and preserve other contributions", "producer-checkpoint")
 		diagnostic.Path = directory
@@ -331,23 +326,47 @@ func inspectHookGit(
 // hookGitCoordinatorMutation recognizes concrete native coordinator effects.
 // Read-only native verbs retain their original options without a legacy denylist.
 // Preview flags are exempt only for verbs that define them as a dry run.
+// Commit message and other option operands are data; -- ends option parsing.
 //
 // Example: branch --list is inspection while branch feature changes a ref.
 func hookGitCoordinatorMutation(
 	argv []token,
 	verbIndex int,
 ) bool {
-	for _, argument := range argv[verbIndex+1:] {
-		if argument.value == "--help" || argument.value == "-h" {
+	for index := verbIndex + 1; index < len(argv); index++ {
+		value := argv[index].value
+		if value == "--" {
+			break
+		}
+		if argv[verbIndex].value == "commit" {
+			switch value {
+			case "--message", "--file", "--reuse-message", "--reedit-message", "--author", "--date", "--cleanup", "--template", "--trailer", "--pathspec-from-file", "--fixup", "--squash":
+				index++
+				continue
+			}
+			if strings.HasPrefix(value, "-") && !strings.HasPrefix(value, "--") {
+				for offset, option := range value[1:] {
+					// Commit's -m, -F, -c, -C and -t consume the rest of
+					// their short-option word or the following argument.
+					if strings.ContainsRune("mFcCt", option) {
+						if offset+2 == len(value) {
+							index++
+						}
+						break
+					}
+				}
+			}
+		}
+		if value == "--help" || value == "-h" {
 			return false
 		}
-		if argument.value == "-n" {
+		if value == "-n" {
 			switch argv[verbIndex].value {
 			case "add", "rm", "mv", "clean", "push":
 				return false
 			}
 		}
-		if argument.value == "--dry-run" {
+		if value == "--dry-run" {
 			switch argv[verbIndex].value {
 			case "add", "rm", "mv", "clean", "push", "fetch", "commit":
 				return false
