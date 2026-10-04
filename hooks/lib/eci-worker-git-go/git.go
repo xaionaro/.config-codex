@@ -37,7 +37,7 @@ func ExecuteOperation(
 	if err != nil {
 		return err
 	}
-	if err := repository.CheckPaths(operation.Paths, access); err != nil {
+	if err := repository.CheckPaths(operation, access); err != nil {
 		return err
 	}
 	if err := repository.CheckExactLeaves(ctx, operation, access); err != nil {
@@ -331,22 +331,6 @@ func (r Repository) CheckExactLeaves(
 		}
 	}
 	for _, name := range operation.Paths {
-		if operation.Kind == Restore && access == PhysicalWrite {
-			// Native restore can replace an unnamed ancestor symlink with a directory.
-			for ancestor := filepath.Dir(name); ancestor != "."; ancestor = filepath.Dir(ancestor) {
-				info, err := os.Lstat(filepath.Join(r.Worktree, ancestor))
-				switch {
-				case err == nil:
-					if info.Mode()&os.ModeSymlink != 0 {
-						return fmt.Errorf("restore leaf %q has existing ancestor symlink %q; move that exact owned ancestor entry to an unused owned name (mv -- <ancestor> <saved-alias>), then retry restore; index-only restore remains available", name, ancestor)
-					}
-				case errors.Is(err, os.ErrNotExist):
-					// Missing ordinary ancestors are created by the selected restoration.
-				default:
-					return fmt.Errorf("inspect restore ancestor %q for leaf %q: %w", ancestor, name, err)
-				}
-			}
-		}
 		if access != LogicalOnly {
 			info, err := os.Lstat(filepath.Join(r.Worktree, name))
 			switch {

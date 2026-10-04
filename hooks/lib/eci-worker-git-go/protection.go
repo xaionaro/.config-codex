@@ -79,7 +79,7 @@ func liveProtectedPaths() ([]string, error) {
 			"eci-review-gate.sh", "ate-orchestrator-gate.sh", "validate-edit-write.sh", "validate-apply-patch.sh"} {
 			candidate := filepath.Join(resolved, "hooks", name)
 			if _, err := os.Lstat(candidate); err == nil {
-				paths = append(paths, candidate)
+				paths = append(paths, filepath.Join(root, "hooks", name), candidate)
 				// Resolve parent aliases while preserving the hook's own symlink entry.
 				if entry, err := resolvedParent(candidate); err == nil {
 					paths = append(paths, entry)
@@ -117,7 +117,7 @@ func liveProtectedPaths() ([]string, error) {
 //
 // Example: index-only hook staging is allowed while worktree restoration is denied.
 func (r Repository) CheckPaths(
-	paths []string,
+	operation Operation,
 	access PathAccess,
 ) error {
 	var protected []string
@@ -128,7 +128,7 @@ func (r Repository) CheckPaths(
 			return err
 		}
 	}
-	for _, name := range paths {
+	for _, name := range operation.Paths {
 		candidate := filepath.Join(r.Worktree, name)
 		if !containsPath(r.Worktree, candidate) {
 			return fmt.Errorf("logical path leaves worktree: %q", name)
@@ -139,6 +139,11 @@ func (r Repository) CheckPaths(
 		}
 		if access == LogicalOnly {
 			continue
+		}
+		if operation.Kind == Restore && access == PhysicalWrite {
+			if err := r.checkRestoreAncestors(name, protected); err != nil {
+				return err
+			}
 		}
 		resolved, err := resolvedParent(candidate)
 		if err != nil {
@@ -158,6 +163,42 @@ func (r Repository) CheckPaths(
 				return fmt.Errorf("protected live target or ancestor: %q; edit source in place and stage exact content", name)
 			}
 		}
+	}
+	return nil
+}
+
+// checkRestoreAncestors diagnoses the first lexical alias before resolving deeper parents.
+//
+// Example: dir pointing to a regular file is named before inspecting dir/nested/file.
+func (r Repository) checkRestoreAncestors(
+	name string,
+	protected []string,
+) error {
+	ancestor := r.Worktree
+	components := strings.Split(name, string(filepath.Separator))
+	for _, component := range components[:len(components)-1] {
+		ancestor = filepath.Join(ancestor, component)
+		info, err := os.Lstat(ancestor)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return nil
+		case err != nil:
+			return fmt.Errorf("inspect restore ancestor %q for leaf %q: %w", ancestor, name, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		for _, control := range protected {
+			if containsPath(ancestor, control) || containsPath(control, ancestor) {
+				return fmt.Errorf("protected live target or ancestor %q for restore leaf %q; edit source in place and stage exact content; index-only restore remains available", ancestor, name)
+			}
+		}
+		// Native restore can replace this unnamed entry, so advise only its owned lexical move.
+		relative, err := filepath.Rel(r.Worktree, ancestor)
+		if err != nil {
+			return fmt.Errorf("name restore ancestor %q for leaf %q: %w", ancestor, name, err)
+		}
+		return fmt.Errorf("restore leaf %q has existing ancestor symlink %q; move that exact owned ancestor entry to an unused owned name (mv -- <ancestor> <saved-alias>), then retry restore; index-only restore remains available", name, relative)
 	}
 	return nil
 }
