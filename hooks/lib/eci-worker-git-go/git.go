@@ -37,8 +37,14 @@ func ExecuteOperation(
 	if err != nil {
 		return err
 	}
-	if err := repository.CheckPaths(operation, access); err != nil {
-		return err
+	diagnostics, denial := repository.CheckPaths(operation, access)
+	if diagnostics != nil {
+		if _, err := fmt.Fprintf(streams.Error, "eci-worker-git: live protection discovery diagnostics: %v\n", diagnostics); err != nil {
+			return fmt.Errorf("report live protection diagnostics before operation: %w", err)
+		}
+	}
+	if denial != nil {
+		return denial
 	}
 	if err := repository.CheckExactLeaves(ctx, operation, access); err != nil {
 		return err

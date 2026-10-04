@@ -66,40 +66,78 @@ func resolvedParent(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(path)), nil
 }
 
-// liveProtectedPaths enumerates the provider's live hooks and session-control roots.
+// LiveFrontier identifies an unresolved configured lookup that can hide another alias.
 //
-// Example: destructive hooks-directory operations include protected live descendants.
-func liveProtectedPaths() ([]string, error) {
+// Example: unreadable hooks can hide a target naming an otherwise independent worktree alias.
+type LiveFrontier struct {
+	Hook                 string
+	Path                 string
+	Directory            string
+	OwnedVisibility      bool
+	VisibilityDiagnostic error
+}
+
+// LiveProtection retains concrete identities, opaque lookup frontiers, and advisory diagnostics.
+//
+// Example: a malformed absent suffix remains advisory while an unreadable hook parent requires recheck.
+type LiveProtection struct {
+	Paths       []string
+	Frontiers   []LiveFrontier
+	Diagnostics error
+}
+
+// LiveHookTrace carries accessible lookup evidence without inventing a cleaned hook spelling.
+//
+// Example: raw portal/../runtime retains portal while an unreadable hook keeps its accessible prefixes.
+type LiveHookTrace struct {
+	Dependencies []string
+	Entry        string
+	Resolved     string
+	Absent       bool
+	Frontier     *LiveFrontier
+	Diagnostic   error
+}
+
+// liveProtectedPaths discovers named hooks before deciding whether their lookup is complete.
+//
+// Example: hooks -> dir/private retains dir even when the final hook entry cannot be inspected.
+func liveProtectedPaths() (LiveProtection, error) {
 	roots := []string{os.Getenv("CODEX_CONFIGURED_HOME"), os.Getenv("CODEX_HOME"), os.Getenv("KIMI_CODE_HOME"),
 		filepath.Join(os.Getenv("HOME"), ".codex"), filepath.Join(os.Getenv("HOME"), ".kimi-code")}
-	paths := []string{}
+	var paths []string
+	var frontiers []LiveFrontier
+	var diagnostics []error
 	for _, root := range roots {
 		if root == "" || !filepath.IsAbs(root) {
 			continue
 		}
-		resolved, err := filepath.EvalSymlinks(root)
-		if err != nil {
-			continue
-		}
 		for _, name := range []string{"validate-bash.sh", "pretooluse-edit-dispatch.sh", "stop-gate.sh", "eci-active-gate.sh",
 			"eci-review-gate.sh", "ate-orchestrator-gate.sh", "validate-edit-write.sh", "validate-apply-patch.sh"} {
-			candidate := filepath.Join(resolved, "hooks", name)
-			if _, err := os.Lstat(candidate); err == nil {
-				paths = append(paths, filepath.Join(root, "hooks", name), candidate)
-				for _, path := range []string{root, candidate} {
-					dependencies, err := livePathDependencies(path)
-					if err != nil {
-						return nil, fmt.Errorf("trace live hook %q through %q: %w", candidate, path, err)
-					}
-					paths = append(paths, dependencies...)
+			// Preserve raw root traversal; Join would invent a different configured hook when dotdot follows a link.
+			hook := root + string(filepath.Separator) + "hooks" + string(filepath.Separator) + name
+			trace := traceLiveHook(hook)
+			if trace.Absent && trace.Entry == "" {
+				if trace.Diagnostic != nil && !errors.Is(trace.Diagnostic, os.ErrNotExist) {
+					diagnostics = append(diagnostics, fmt.Errorf("trace absent configured hook %q: %w", hook, trace.Diagnostic))
 				}
-				// Resolve parent aliases while preserving the hook's own symlink entry.
-				if entry, err := resolvedParent(candidate); err == nil {
-					paths = append(paths, entry)
+				continue
+			}
+			paths = append(paths, trace.Dependencies...)
+			if trace.Entry != "" {
+				paths = append(paths, trace.Entry)
+			}
+			if trace.Resolved != "" {
+				paths = append(paths, trace.Resolved)
+			}
+			if trace.Frontier != nil {
+				trace.Frontier.Hook = hook
+				frontiers = append(frontiers, *trace.Frontier)
+				if trace.Frontier.VisibilityDiagnostic != nil {
+					diagnostics = append(diagnostics, trace.Frontier.VisibilityDiagnostic)
 				}
-				if referent, err := filepath.EvalSymlinks(candidate); err == nil {
-					paths = append(paths, referent)
-				}
+			}
+			if trace.Diagnostic != nil {
+				diagnostics = append(diagnostics, fmt.Errorf("trace configured hook %q: %w", hook, trace.Diagnostic))
 			}
 		}
 	}
@@ -109,7 +147,7 @@ func liveProtectedPaths() ([]string, error) {
 			paths = append(paths, filepath.Clean(root))
 			entry, err := resolvedParent(root)
 			if err != nil {
-				return nil, fmt.Errorf("resolve proof root parent %q: %w", root, err)
+				return LiveProtection{Paths: paths, Diagnostics: errors.Join(diagnostics...)}, fmt.Errorf("resolve proof root parent %q: %w", root, err)
 			}
 			paths = append(paths, entry)
 			referent, err := filepath.EvalSymlinks(root)
@@ -119,25 +157,35 @@ func liveProtectedPaths() ([]string, error) {
 			case errors.Is(err, os.ErrNotExist):
 				// A not-yet-created proof root still protects its lexical entry.
 			default:
-				return nil, fmt.Errorf("resolve proof root %q: %w", root, err)
+				return LiveProtection{Paths: paths, Diagnostics: errors.Join(diagnostics...)}, fmt.Errorf("resolve proof root %q: %w", root, err)
 			}
 		}
 	}
-	return paths, nil
+
+	return LiveProtection{Paths: paths, Frontiers: frontiers, Diagnostics: errors.Join(diagnostics...)}, nil
 }
 
-// livePathDependencies records symlink entries consumed while resolving an absolute native path.
+// livePathDependencies exposes the consumed entries and contextual trace error.
 //
-// Example: source/../hook retains source when source is an alias, even if hook ends elsewhere.
+// Example: an invalid suffix keeps an earlier consumed alias alongside its PathError.
 func livePathDependencies(path string) ([]string, error) {
+	trace := traceLiveHook(path)
+	return trace.Dependencies, trace.Diagnostic
+}
+
+// traceLiveHook retains dependencies until lookup completion or an observable frontier.
+//
+// Example: an absent overlong component is closed by a complete parent listing, without an errno allowlist.
+func traceLiveHook(path string) LiveHookTrace {
+	trace := LiveHookTrace{}
 	if !filepath.IsAbs(path) {
-		return nil, fmt.Errorf("live dependency path must be absolute: %q", path)
+		trace.Diagnostic = fmt.Errorf("live dependency path must be absolute: %q", path)
+		return trace
 	}
 	separator := string(filepath.Separator)
 	volume := filepath.VolumeName(path)
 	resolved := volume + separator
 	pending := strings.Split(path[len(volume):], separator)
-	var dependencies []string
 	expansions := 0
 	for len(pending) != 0 {
 		component := pending[0]
@@ -151,26 +199,49 @@ func livePathDependencies(path string) ([]string, error) {
 		}
 		entry := filepath.Join(resolved, component)
 		info, err := os.Lstat(entry)
-		switch {
-		case errors.Is(err, os.ErrNotExist), errors.Is(err, os.ErrPermission), errors.Is(err, syscall.ENOTDIR):
-			return dependencies, nil
-		case err != nil:
-			return nil, fmt.Errorf("inspect live dependency %q: %w", entry, err)
+		if err != nil {
+			trace.Diagnostic = fmt.Errorf("inspect live dependency %q: %w", entry, err)
+			entries, listingErr := os.ReadDir(resolved)
+			if listingErr == nil {
+				present := false
+				for _, listed := range entries {
+					if listed.Name() == component {
+						present = true
+					}
+				}
+				if !present {
+					trace.Absent = true
+					return trace
+				}
+			}
+			if listingErr != nil {
+				trace.Diagnostic = errors.Join(trace.Diagnostic, fmt.Errorf("inspect lookup frontier directory %q: %w", resolved, listingErr))
+			}
+			trace.Frontier = liveLookupFrontier(entry, resolved)
+			return trace
+		}
+		if trace.Entry == "" && len(pending) == 0 {
+			trace.Entry = entry
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
 			if !info.IsDir() && len(pending) != 0 {
-				return dependencies, nil
+				trace.Absent = true
+				return trace
 			}
 			resolved = entry
 			continue
 		}
-		dependencies = append(dependencies, entry)
+		trace.Dependencies = append(trace.Dependencies, entry)
 		if expansions == liveDependencySymlinkLimit {
-			return dependencies, nil
+			trace.Diagnostic = fmt.Errorf("live dependency expansion stopped at %q after %d links", entry, expansions)
+			trace.Frontier = liveLookupFrontier(entry, resolved)
+			return trace
 		}
 		target, err := os.Readlink(entry)
 		if err != nil {
-			return nil, fmt.Errorf("read live dependency %q: %w", entry, err)
+			trace.Diagnostic = fmt.Errorf("read live dependency %q: %w", entry, err)
+			trace.Frontier = liveLookupFrontier(entry, resolved)
+			return trace
 		}
 		expansions++
 		if filepath.IsAbs(target) {
@@ -178,27 +249,66 @@ func livePathDependencies(path string) ([]string, error) {
 			resolved = volume + separator
 			target = target[len(volume):]
 		}
-		// Expand the raw target before processing dotdot; cleaning it would erase dependencies.
 		pending = append(strings.Split(target, separator), pending...)
 	}
-	return dependencies, nil
+	trace.Resolved = resolved
+	return trace
 }
 
-// CheckPaths rejects index escape and destructive writes to live control paths.
+// liveLookupFrontier names the exact unresolved lookup and an owned visibility correction when proven.
+//
+// Example: a mode-000 directory owned by this actor supports chmod u+rx before rechecking.
+func liveLookupFrontier(
+	entry string,
+	parent string,
+) *LiveFrontier {
+	frontier := &LiveFrontier{Path: entry, Directory: parent}
+	info, err := os.Lstat(parent)
+	if err != nil {
+		frontier.VisibilityDiagnostic = fmt.Errorf("inspect owned visibility correction directory %q: %w", parent, err)
+		return frontier
+	}
+	if !info.IsDir() {
+		return frontier
+	}
+	status, ok := info.Sys().(*syscall.Stat_t)
+	frontier.OwnedVisibility = ok && status.Uid == uint32(os.Geteuid()) && info.Mode().Perm()&0500 != 0500
+	return frontier
+}
+
+// shellLiteral quotes a single exact native path for an executable Unix recovery command.
+//
+// Example: a path containing a quote remains one literal chmod operand.
+func shellLiteral(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
+}
+
+// CheckPaths returns advisory discovery diagnostics separately from a selected-target denial.
 //
 // Example: index-only hook staging is allowed while worktree restoration is denied.
 func (r Repository) CheckPaths(
 	operation Operation,
 	access PathAccess,
-) error {
-	var protected []string
+) (diagnostics error, denial error) {
+	var protection LiveProtection
 	if access == PhysicalWrite {
 		var err error
-		protected, err = liveProtectedPaths()
+		protection, err = liveProtectedPaths()
 		if err != nil {
-			return err
+			return protection.Diagnostics, err
 		}
 	}
+	return protection.Diagnostics, r.checkProtectedPaths(operation, access, protection)
+}
+
+// checkProtectedPaths rejects concrete logical and physical effects using discovered identities.
+//
+// Example: incomplete discovery elsewhere does not prevent restoration of an ordinary exact file.
+func (r Repository) checkProtectedPaths(
+	operation Operation,
+	access PathAccess,
+	protection LiveProtection,
+) error {
 	for _, name := range operation.Paths {
 		candidate := filepath.Join(r.Worktree, name)
 		if !containsPath(r.Worktree, candidate) {
@@ -212,7 +322,7 @@ func (r Repository) CheckPaths(
 			continue
 		}
 		if operation.Kind == Restore && access == PhysicalWrite {
-			if err := r.checkRestoreAncestors(name, protected); err != nil {
+			if err := r.checkRestoreAncestors(name, protection); err != nil {
 				return err
 			}
 		}
@@ -229,7 +339,7 @@ func (r Repository) CheckPaths(
 		if access != PhysicalWrite {
 			continue
 		}
-		for _, control := range protected {
+		for _, control := range protection.Paths {
 			if resolved == control || containsPath(resolved, control) || containsPath(control, resolved) {
 				return fmt.Errorf("protected live target or ancestor: %q; edit source in place and stage exact content", name)
 			}
@@ -243,7 +353,7 @@ func (r Repository) CheckPaths(
 // Example: dir pointing to a regular file is named before inspecting dir/nested/file.
 func (r Repository) checkRestoreAncestors(
 	name string,
-	protected []string,
+	protection LiveProtection,
 ) error {
 	ancestor := r.Worktree
 	components := strings.Split(name, string(filepath.Separator))
@@ -259,10 +369,17 @@ func (r Repository) checkRestoreAncestors(
 		if info.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
-		for _, control := range protected {
+		for _, control := range protection.Paths {
 			if containsPath(ancestor, control) || containsPath(control, ancestor) {
 				return fmt.Errorf("protected live target or ancestor %q for restore leaf %q; edit source in place and stage exact content; index-only restore remains available", ancestor, name)
 			}
+		}
+		if len(protection.Frontiers) != 0 {
+			frontier := protection.Frontiers[0]
+			if frontier.OwnedVisibility {
+				return fmt.Errorf("restore leaf %q has ancestor alias %q whose relation to configured hook %q remains unresolved at %q; restore exact owned lookup visibility (chmod u+rx -- %s), then rerun this exact restore; use an owned move route only if the fresh check offers it; index-only restore remains available", name, ancestor, frontier.Hook, frontier.Path, shellLiteral(frontier.Directory))
+			}
+			return fmt.Errorf("restore leaf %q has ancestor alias %q whose relation to configured hook %q remains unresolved at %q; resolve that exact lookup frontier in place, then rerun this exact restore before moving the alias; index-only restore remains available", name, ancestor, frontier.Hook, frontier.Path)
 		}
 		// Native restore can replace this unnamed entry, so advise only its owned lexical move.
 		relative, err := filepath.Rel(r.Worktree, ancestor)
