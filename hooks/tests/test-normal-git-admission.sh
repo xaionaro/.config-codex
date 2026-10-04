@@ -3188,7 +3188,7 @@ case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
       command="\"$RUNTIME_ROOT/bin/eci-worker-git\" --repo \"$REPO\" run-once --reason 'user approved fixture reset' --user-authorized -- reset --hard"
       assert_allowed "$command" "$role"
       assert_denied_code "$command; git -C $REPO reset --hard" "$denial" "$role"
-      assert_denied_code "$command; rm $FOREIGN_TIMEOUT_CONTROL_INNER/eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role"
+      assert_denied_code "$command; rm $FOREIGN_TIMEOUT_CONTROL_INNER/eci_active" ECI_PLAN_LIVE_CONTROL_DENIED "$role"
       printf 'modified\n' >"$REPO/file.txt"
       HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
         "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'user approved fixture reset' --user-authorized -- reset --hard
