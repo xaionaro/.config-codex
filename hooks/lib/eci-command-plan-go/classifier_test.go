@@ -13,6 +13,18 @@ import (
 	"testing"
 )
 
+// TestWorkerGitDefersBeforeEffects leaves active Worker native routing to the provider.
+//
+// Example: a native branch operation and a mutation preview share the provider route.
+func TestWorkerGitDefersBeforeEffects(t *testing.T) {
+	for _, command := range []string{"git branch feature", "git fsck --lost-found", "git add --dry-run file"} {
+		result := Classify(activeWorker(command))
+		if result.Decision != DecisionDefer || result.Diagnostic != nil {
+			t.Fatalf("%s: %+v, want provider defer", command, result)
+		}
+	}
+}
+
 func providerHome(provider Provider) string {
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -199,20 +211,14 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 			decision: DecisionAllow,
 		},
 		{
-			name:      "wrapped git mutation",
-			request:   activeWorker("timeout 5 git rebase topic"),
-			decision:  DecisionDeny,
-			code:      CodeWorkerGitOwnershipDenied,
-			segment:   1,
-			predicate: "worker-git-ownership",
+			name:     "wrapped git mutation",
+			request:  activeWorker("timeout 5 git rebase topic"),
+			decision: DecisionDefer,
 		},
 		{
-			name:      "transparent wrapped git mutations",
-			request:   activeWorker("nohup git rebase topic"),
-			decision:  DecisionDeny,
-			code:      CodeWorkerGitOwnershipDenied,
-			segment:   1,
-			predicate: "worker-git-ownership",
+			name:     "transparent wrapped git mutations",
+			request:  activeWorker("nohup git rebase topic"),
+			decision: DecisionDefer,
 		},
 		{
 			name:     "git archive inspection",
@@ -235,12 +241,9 @@ func TestClassifyFiniteCommandPlans(t *testing.T) {
 			decision: DecisionDefer,
 		},
 		{
-			name:      "git branch creation",
-			request:   activeWorker("git branch feature"),
-			decision:  DecisionDeny,
-			code:      CodeWorkerGitOwnershipDenied,
-			segment:   1,
-			predicate: "worker-git-ownership",
+			name:     "git branch creation",
+			request:  activeWorker("git branch feature"),
+			decision: DecisionDefer,
 		},
 		{
 			name:     "bounded unregistered environment name",
@@ -566,26 +569,22 @@ func TestGitBranchInspectionOptionGrammar(t *testing.T) {
 		{
 			name:     "abbrev option leaves branch operand visible",
 			command:  "git branch --abbrev feature",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "column option leaves branch operand visible",
 			command:  "git branch --column feature",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "color option leaves branch operand visible",
 			command:  "git branch --color feature",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "required option does not hide mutation option",
 			command:  "git branch --format --delete",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 	}
 	for _, testCase := range testCases {
@@ -614,7 +613,7 @@ func TestGitBranchInspectionOptionGrammar(t *testing.T) {
 // that timeout exposes a Git child only after its duration-bearing launch
 // grammar is concrete and valid.
 //
-// Example: timeout -p 5 git rebase reaches the worker Git diagnostic, while
+// Example: timeout -p 5 git rebase reaches the provider Git route, while
 // timeout not-a-duration git rebase remains an ordinary timeout failure.
 func TestTimeoutPrefixRequiresValidDurationsBeforeClassifyingGitChild(t *testing.T) {
 	t.Parallel()
@@ -628,38 +627,32 @@ func TestTimeoutPrefixRequiresValidDurationsBeforeClassifyingGitChild(t *testing
 		{
 			name:     "plain duration",
 			command:  "timeout 5 git rebase topic",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "positive signed duration",
 			command:  "timeout +5 git rebase topic",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "preserve status short",
 			command:  "timeout -p 5 git rebase topic",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "foreground short",
 			command:  "timeout -f 5 git rebase topic",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "preserve status long",
 			command:  "timeout --preserve-status 5 git rebase topic",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "foreground long",
 			command:  "timeout --foreground 5 git rebase topic",
-			decision: DecisionDeny,
-			code:     CodeWorkerGitOwnershipDenied,
+			decision: DecisionDefer,
 		},
 		{
 			name:     "kill after duration",
@@ -804,8 +797,8 @@ esac
 			name:        "launches replacement child",
 			command:     "timeout --signal TERM 5 git rebase topic",
 			commandPath: timeoutDirectory,
-			decision:    DecisionDeny,
-			code:        CodeWorkerGitOwnershipDenied,
+			decision:    DecisionDefer,
+
 			wantLaunches: []timeoutLaunchFact{{
 				Segment: 1,
 				Prefix:  []string{"timeout", "--signal", "TERM", "5"},
@@ -816,19 +809,19 @@ esac
 			command:     "./timeout --signal TERM 5 git rebase topic",
 			cwd:         timeoutDirectory,
 			commandPath: timeoutDirectory,
-			decision:    DecisionDeny,
-			code:        CodeWorkerGitOwnershipDenied,
+			decision:    DecisionDefer,
+
 			wantLaunches: []timeoutLaunchFact{{
 				Segment: 1,
 				Prefix:  []string{"./timeout", "--signal", "TERM", "5"},
 			}},
 		},
 		{
-			name:           "probe does not run original redirects",
-			command:        "timeout --signal TERM 5 git rebase topic > " + redirectOutput,
-			commandPath:    timeoutDirectory,
-			decision:       DecisionDeny,
-			code:           CodeWorkerGitOwnershipDenied,
+			name:        "probe does not run original redirects",
+			command:     "timeout --signal TERM 5 git rebase topic > " + redirectOutput,
+			commandPath: timeoutDirectory,
+			decision:    DecisionDefer,
+
 			redirectOutput: redirectOutput,
 			wantLaunches: []timeoutLaunchFact{{
 				Segment: 1,
@@ -1002,9 +995,8 @@ func TestTimeoutProbeUsesVerifiedCallbackContext(t *testing.T) {
 	if string(context) != wantContext {
 		t.Fatalf("probe context=%q, want %q", context, wantContext)
 	}
-	if result.Decision != DecisionDeny || result.Diagnostic == nil ||
-		result.Diagnostic.Code != CodeWorkerGitOwnershipDenied {
-		t.Fatalf("result=%#v, want observed worker Git denial", result)
+	if result.Decision != DecisionDefer || result.Diagnostic != nil {
+		t.Fatalf("result=%#v, want observed worker Git provider defer", result)
 	}
 	if len(result.TimeoutLaunches) != 1 {
 		t.Fatalf("timeout launches=%#v, want one observed launch", result.TimeoutLaunches)
@@ -1033,9 +1025,8 @@ exec "$@"
 
 	t.Setenv("PROBE_REQUIRED", "present")
 	result := classifyTimeoutJSONRequest(t, callbackCWD, timeoutDirectory, true, "timeout 5 git rebase topic")
-	if result.Decision != DecisionDeny || result.Diagnostic == nil ||
-		result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
-		t.Fatalf("present inherited variable result=%#v, want observed worker Git denial", result)
+	if result.Decision != DecisionDefer || result.Diagnostic != nil || len(result.TimeoutLaunches) != 1 {
+		t.Fatalf("present inherited variable result=%#v, want observed worker Git provider defer", result)
 	}
 
 	t.Setenv("PROBE_REQUIRED", "wrong")
@@ -1092,10 +1083,10 @@ exec "$@"
 		path     string
 		decision DecisionKind
 	}{
-		{name: "empty component resolves callback CWD", path: ":", decision: DecisionDeny},
-		{name: "dot component resolves callback CWD", path: ".", decision: DecisionDeny},
-		{name: "relative bin resolves callback CWD", path: "bin", decision: DecisionDeny},
-		{name: "missing absolute prefix skips to relative bin", path: "/missing:bin", decision: DecisionDeny},
+		{name: "empty component resolves callback CWD", path: ":", decision: DecisionDefer},
+		{name: "dot component resolves callback CWD", path: ".", decision: DecisionDefer},
+		{name: "relative bin resolves callback CWD", path: "bin", decision: DecisionDefer},
+		{name: "missing absolute prefix skips to relative bin", path: "/missing:bin", decision: DecisionDefer},
 		{name: "first executable remains first", path: "first:bin", decision: DecisionAllow},
 		{name: "unresolved absolute candidate stays opaque", path: "/missing", decision: DecisionAllow},
 	} {
@@ -1105,9 +1096,9 @@ exec "$@"
 			if result.Decision != testCase.decision {
 				t.Fatalf("PATH=%q decision=%q diagnostic=%#v, want %q", testCase.path, result.Decision, result.Diagnostic, testCase.decision)
 			}
-			if testCase.decision == DecisionDeny {
-				if result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
-					t.Fatalf("PATH=%q result=%#v, want observed worker Git denial", testCase.path, result)
+			if testCase.decision == DecisionDefer {
+				if result.Diagnostic != nil || len(result.TimeoutLaunches) != 1 {
+					t.Fatalf("PATH=%q result=%#v, want observed worker Git provider defer", testCase.path, result)
 				}
 				return
 			}
@@ -1145,10 +1136,10 @@ exec "$@"
 		commandPathSet bool
 		decision       DecisionKind
 	}{
-		{name: "absolute explicit empty PATH", command: timeoutPath + " 5 git rebase topic", commandPathSet: true, decision: DecisionDeny},
-		{name: "absolute unset PATH", command: timeoutPath + " 5 git rebase topic", decision: DecisionDeny},
-		{name: "slash explicit empty PATH", command: "./timeout 5 git rebase topic", commandPathSet: true, decision: DecisionDeny},
-		{name: "slash unset PATH", command: "./timeout 5 git rebase topic", decision: DecisionDeny},
+		{name: "absolute explicit empty PATH", command: timeoutPath + " 5 git rebase topic", commandPathSet: true, decision: DecisionDefer},
+		{name: "absolute unset PATH", command: timeoutPath + " 5 git rebase topic", decision: DecisionDefer},
+		{name: "slash explicit empty PATH", command: "./timeout 5 git rebase topic", commandPathSet: true, decision: DecisionDefer},
+		{name: "slash unset PATH", command: "./timeout 5 git rebase topic", decision: DecisionDefer},
 		{name: "bare explicit empty PATH", command: "timeout 5 git rebase topic", commandPathSet: true, decision: DecisionAllow},
 		{name: "bare unset PATH", command: "timeout 5 git rebase topic", decision: DecisionAllow},
 	} {
@@ -1158,9 +1149,9 @@ exec "$@"
 			if result.Decision != testCase.decision {
 				t.Fatalf("PATH set=%t value=%q decision=%q diagnostic=%#v, want %q", testCase.commandPathSet, testCase.commandPath, result.Decision, result.Diagnostic, testCase.decision)
 			}
-			if testCase.decision == DecisionDeny {
-				if result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied || len(result.TimeoutLaunches) != 1 {
-					t.Fatalf("PATH set=%t value=%q result=%#v, want observed worker Git denial", testCase.commandPathSet, testCase.commandPath, result)
+			if testCase.decision == DecisionDefer {
+				if result.Diagnostic != nil || len(result.TimeoutLaunches) != 1 {
+					t.Fatalf("PATH set=%t value=%q result=%#v, want observed worker Git provider defer", testCase.commandPathSet, testCase.commandPath, result)
 				}
 				return
 			}
@@ -1367,7 +1358,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			name:     "cd into child resolves dot timeout from child",
 			cwd:      downParent,
 			command:  "cd " + downChild + "; ./timeout 5 git rebase topic",
-			decision: DecisionDeny,
+			decision: DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"./timeout", "5"}, CWD: downChild,
 				Disposition: "observed",
@@ -1377,7 +1368,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			name:     "cd back to parent resolves dot timeout from parent",
 			cwd:      upChild,
 			command:  "cd " + upParent + "; ./timeout 5 git rebase topic",
-			decision: DecisionDeny,
+			decision: DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"./timeout", "5"}, CWD: upParent,
 				Disposition: "observed",
@@ -1390,7 +1381,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "PATH=" + launchDirectory + "; timeout 5 git rebase topic",
-			decision:            DecisionDeny,
+			decision:            DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
 				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
@@ -1416,7 +1407,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "PATH=" + launchDirectory + "\ntimeout 5 git rebase topic",
-			decision:            DecisionDeny,
+			decision:            DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
 				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
@@ -1426,7 +1417,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			name:     "export assignment creates exported PATH",
 			cwd:      downParent,
 			command:  "export PATH=" + launchDirectory + "; timeout 5 git rebase topic",
-			decision: DecisionDeny,
+			decision: DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
 				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
@@ -1439,7 +1430,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "PATH=" + unexportedDirectory + "; export -n PATH; timeout 5 git rebase topic",
-			decision:            DecisionDeny,
+			decision:            DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 3, ParentSegment: 3, Prefix: []string{"timeout", "5"}, CWD: downParent,
 				CommandPath: unexportedDirectory, CommandPathSet: true, CommandPathExported: false, Disposition: "observed",
@@ -1452,7 +1443,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "PATH=" + launchDirectory + "; export -n PATH; export PATH; timeout 5 git rebase topic",
-			decision:            DecisionDeny,
+			decision:            DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 4, ParentSegment: 4, Prefix: []string{"timeout", "5"}, CWD: downParent,
 				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
@@ -1509,7 +1500,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "cd child; timeout 5 git rebase topic",
-			decision:            DecisionDeny,
+			decision:            DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downChild,
 				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
@@ -1522,7 +1513,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			commandPathSet:      true,
 			commandPathExported: true,
 			command:             "printf harmless; timeout 5 git rebase topic",
-			decision:            DecisionDeny,
+			decision:            DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 2, ParentSegment: 2, Prefix: []string{"timeout", "5"}, CWD: downParent,
 				CommandPath: launchDirectory, CommandPathSet: true, CommandPathExported: true, Disposition: "observed",
@@ -1532,7 +1523,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			name:     "true conditional split body carries verified CWD",
 			cwd:      downParent,
 			command:  "if true; then; cd " + downChild + "; fi; ./timeout 5 git rebase topic",
-			decision: DecisionDeny,
+			decision: DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 5, ParentSegment: 5, Prefix: []string{"./timeout", "5"}, CWD: downChild,
 				Disposition: "observed",
@@ -1542,7 +1533,7 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			name:     "false conditional split body keeps outer CWD",
 			cwd:      downParent,
 			command:  "if false; then; cd " + downChild + "; fi; ./timeout 5 git rebase topic",
-			decision: DecisionDeny,
+			decision: DecisionDefer,
 			wantReplay: &timeoutReplayFact{
 				Segment: 5, ParentSegment: 5, Prefix: []string{"./timeout", "5"}, CWD: downParent,
 				Disposition: "observed",
@@ -1562,9 +1553,9 @@ func TestTimeoutCompoundReplayUsesLiteralShellState(t *testing.T) {
 			if result.Decision != testCase.decision {
 				t.Fatalf("decision=%q diagnostic=%#v, want %q", result.Decision, result.Diagnostic, testCase.decision)
 			}
-			if testCase.decision == DecisionDeny &&
-				(result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied) {
-				t.Fatalf("result=%#v, want observed worker Git denial", result)
+			if testCase.decision == DecisionDefer &&
+				result.Diagnostic != nil {
+				t.Fatalf("result=%#v, want observed worker Git provider defer", result)
 			}
 			if testCase.decision == DecisionAllow && result.Diagnostic != nil {
 				t.Fatalf("result=%#v, want ordinary opaque timeout", result)
@@ -1659,10 +1650,10 @@ func TestTimeoutReplayMissingOrMalformedDataStaysOrdinary(t *testing.T) {
 			wantRecords: 1,
 		},
 		{
-			name:        "observed replay reaches Git child",
-			replays:     []TimeoutReplay{observed},
-			decision:    DecisionDeny,
-			code:        CodeWorkerGitOwnershipDenied,
+			name:     "observed replay reaches Git child",
+			replays:  []TimeoutReplay{observed},
+			decision: DecisionDefer,
+
 			wantRecords: 1,
 		},
 	} {
@@ -2471,7 +2462,7 @@ func TestRawGitPlansHaveNoGenericCapability(t *testing.T) {
 				command string
 				code    DiagnosticCode
 			}{
-				{command: "git rebase topic", code: CodeWorkerGitOwnershipDenied},
+				{command: "git rebase topic"},
 				{command: "git checkout -- hooks/validate-bash.sh"},
 				{command: "git branch feature"},
 			} {
@@ -2652,20 +2643,8 @@ func TestGitFsckLostFoundDefersWithoutReadOnlyCapability(t *testing.T) {
 					result := Classify(request)
 					wantDecision := DecisionDefer
 					wantDiagnostic := false
-					if provider == ProviderCodex && role == RoleWorker &&
-						(command == "git fsck --lost-found" || command == "git --no-pager fsck --lost-found") {
-						wantDecision = DecisionDeny
-						wantDiagnostic = true
-					}
 					if result.Decision != wantDecision || (result.Diagnostic != nil) != wantDiagnostic {
 						t.Errorf("role=%q %q: decision=%q diagnostic=%#v, want %q diagnostic=%t", role, command, result.Decision, result.Diagnostic, wantDecision, wantDiagnostic)
-					}
-					if wantDiagnostic && (result.Diagnostic == nil || result.Diagnostic.Code != CodeWorkerGitOwnershipDenied) {
-						var code DiagnosticCode
-						if result.Diagnostic != nil {
-							code = result.Diagnostic.Code
-						}
-						t.Errorf("role=%q %q: diagnostic code=%q, want %q", role, command, code, CodeWorkerGitOwnershipDenied)
 					}
 					if len(result.Capabilities) != 0 {
 						t.Errorf("role=%q %q: capabilities=%v, want none", role, command, result.Capabilities)
@@ -2716,16 +2695,16 @@ func TestGitFsckLostFoundWorkerOwnershipGuard(t *testing.T) {
 		wantArgvIndex  int
 		wantRoute      DeferredRoute
 	}{
-		{name: "raw Git", command: "git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 2},
-		{name: "path-qualified Git", command: "env /usr/bin/git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 3},
-		{name: "wrapped Git", command: "env command git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 4},
-		{name: "quoted environment assignment", command: `env "FOO=bar" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantRoute: DeferredRouteWorkerEnvGitFsckLostFound},
-		{name: "quoted wrapped Git", command: `env "command" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 4},
-		{name: "Git global option", command: "env git --no-pager fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 4},
-		{name: "quoted Git global option", command: `env git "--no-pager" fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 4},
-		{name: "Git context option", command: "env git -C . fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 5},
-		{name: "operator plan", command: "env git fsck --lost-found && printf after", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDeny, wantDiagnostic: true, wantArgvIndex: 3},
-		{name: "quoted route", command: `env git fsck '--lost-found'`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantRoute: DeferredRouteWorkerEnvGitFsckLostFound},
+		{name: "raw Git", command: "git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 2},
+		{name: "path-qualified Git", command: "env /usr/bin/git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 3},
+		{name: "wrapped Git", command: "env command git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
+		{name: "quoted environment assignment", command: `env "FOO=bar" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "quoted wrapped Git", command: `env "command" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
+		{name: "Git global option", command: "env git --no-pager fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
+		{name: "quoted Git global option", command: `env git "--no-pager" fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
+		{name: "Git context option", command: "env git -C . fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 5},
+		{name: "operator plan", command: "env git fsck --lost-found && printf after", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 3},
+		{name: "quoted route", command: `env git fsck '--lost-found'`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "bare fsck", command: "git fsck", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "equals option", command: "git fsck --lost-found=ignored", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "quoted equals option", command: `git fsck '--lost-found=ignored'`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
@@ -2750,23 +2729,6 @@ func TestGitFsckLostFoundWorkerOwnershipGuard(t *testing.T) {
 			}
 			if (result.Diagnostic != nil) != testCase.wantDiagnostic {
 				t.Fatalf("diagnostic=%#v, want present=%t", result.Diagnostic, testCase.wantDiagnostic)
-			}
-			if testCase.wantDiagnostic {
-				if result.Diagnostic.Code != CodeWorkerGitOwnershipDenied {
-					t.Errorf("diagnostic code=%q, want %q", result.Diagnostic.Code, CodeWorkerGitOwnershipDenied)
-				}
-				if result.Diagnostic.Token != "--lost-found" {
-					t.Errorf("diagnostic token=%q, want --lost-found", result.Diagnostic.Token)
-				}
-				if result.Diagnostic.ArgvIndex != testCase.wantArgvIndex {
-					t.Errorf("diagnostic argv index=%d, want %d", result.Diagnostic.ArgvIndex, testCase.wantArgvIndex)
-				}
-				if result.Diagnostic.Predicate != "worker-git-ownership" {
-					t.Errorf("diagnostic predicate=%q, want worker-git-ownership", result.Diagnostic.Predicate)
-				}
-				if !strings.Contains(result.Diagnostic.Reason, "fsck") {
-					t.Errorf("diagnostic reason=%q does not mention fsck", result.Diagnostic.Reason)
-				}
 			}
 			if result.DeferredRoute != testCase.wantRoute {
 				t.Errorf("deferred route=%q, want %q", result.DeferredRoute, testCase.wantRoute)
@@ -2808,12 +2770,8 @@ func TestGitFsckLostFoundGitContextCannotHideWorkerWrite(t *testing.T) {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			result := Classify(activeWorker(testCase.command))
-			if result.Decision != DecisionDeny || result.Diagnostic == nil {
-				t.Fatalf("decision=%q diagnostic=%#v, want worker Git ownership denial", result.Decision, result.Diagnostic)
-			}
-			if result.Diagnostic.Code != CodeWorkerGitOwnershipDenied ||
-				result.Diagnostic.Token != "--lost-found" {
-				t.Fatalf("diagnostic=%#v, want worker Git ownership on --lost-found", result.Diagnostic)
+			if result.Decision != DecisionDefer || result.Diagnostic != nil {
+				t.Fatalf("decision=%q diagnostic=%#v, want native Git provider defer", result.Decision, result.Diagnostic)
 			}
 		})
 	}
@@ -2839,8 +2797,8 @@ func TestGitFsckLostFoundDeferredRoute(t *testing.T) {
 		if result.Decision != DecisionDefer || result.Diagnostic != nil {
 			t.Errorf("positive %q: decision=%q diagnostic=%#v, want defer without diagnostic", command, result.Decision, result.Diagnostic)
 		}
-		if result.DeferredRoute != DeferredRouteWorkerEnvGitFsckLostFound {
-			t.Errorf("positive %q: deferred route=%q, want %q", command, result.DeferredRoute, DeferredRouteWorkerEnvGitFsckLostFound)
+		if result.DeferredRoute != "" {
+			t.Errorf("positive %q: deferred route=%q, want %q", command, result.DeferredRoute, DeferredRoute(""))
 		}
 	}
 
@@ -2905,8 +2863,8 @@ func TestDeferredRouteJSONEncoding(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal positive result %q: %v", command, err)
 		}
-		if !containsBytes(encoded, []byte(`"deferred_route":"worker-env-git-fsck-lost-found"`)) {
-			t.Fatalf("positive result %q missing deferred route: %s", command, encoded)
+		if containsBytes(encoded, []byte(`"deferred_route"`)) || !containsBytes(encoded, []byte(`"decision":"defer"`)) {
+			t.Fatalf("positive result %q want provider defer without a special route: %s", command, encoded)
 		}
 	}
 
@@ -4454,10 +4412,9 @@ var directPathGitStatusCapabilityCases = []directPathGitStatusCapabilityCase{
 		wantDecision: DecisionDefer,
 	},
 	{
-		name:               "mutation",
-		command:            "/tmp/task/git rebase topic",
-		wantDecision:       DecisionDeny,
-		wantDiagnosticCode: CodeWorkerGitOwnershipDenied,
+		name:         "mutation",
+		command:      "/tmp/task/git rebase topic",
+		wantDecision: DecisionDefer,
 	},
 	{
 		name:         "direct notes mutation",
@@ -4672,12 +4629,8 @@ func TestTransparentWrappersPreserveChildClassification(t *testing.T) {
 				"chronic -- git rebase topic",
 			} {
 				result := Classify(Request{Provider: provider, Role: RoleWorker, CWD: "/tmp", Marker: MarkerActive, ActiveSession: "test", Command: command})
-				if result.Decision != DecisionDeny || result.Diagnostic == nil {
-					t.Errorf("%s: got decision=%q diagnostic=%#v, want denied Git ownership route", command, result.Decision, result.Diagnostic)
-					continue
-				}
-				if result.Diagnostic.Code != CodeWorkerGitOwnershipDenied {
-					t.Errorf("%s: code=%q, want %q", command, result.Diagnostic.Code, CodeWorkerGitOwnershipDenied)
+				if result.Decision != DecisionDefer || result.Diagnostic != nil {
+					t.Errorf("%s: decision=%q diagnostic=%#v, want native Git provider defer", command, result.Decision, result.Diagnostic)
 				}
 			}
 		})
@@ -5322,11 +5275,8 @@ func TestGitArchiveOutputsDeferToProvider(t *testing.T) {
 				Command:       "git rebase topic",
 				ActiveMarkers: []string{marker},
 			})
-			if mutation.Decision != DecisionDeny || mutation.Diagnostic == nil {
-				t.Fatalf("Git mutation: decision=%q diagnostic=%#v, want deny with diagnostic", mutation.Decision, mutation.Diagnostic)
-			}
-			if mutation.Diagnostic.Code != CodeWorkerGitOwnershipDenied {
-				t.Fatalf("Git mutation code=%q, want %q", mutation.Diagnostic.Code, CodeWorkerGitOwnershipDenied)
+			if mutation.Decision != DecisionDefer || mutation.Diagnostic != nil {
+				t.Fatalf("Git mutation: decision=%q diagnostic=%#v, want provider defer", mutation.Decision, mutation.Diagnostic)
 			}
 		})
 	}

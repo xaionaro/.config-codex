@@ -16,9 +16,8 @@ set -euo pipefail
 unset ECI_READ_ONLY_PIPELINE
 
 # Cross-repository Git checks remain enabled. The active session owner may
-# declare one additional repository for Git mutations. Worker inspection and
-# script routes still apply their worker-only boundary before using the same
-# session-bound repository record.
+# declare one additional repository for typed Git mutations and scripts.
+# Native Worker verbs outside the routed families keep their original context.
 ECI_CROSS_SCOPE_GATE_ENABLED=true
 
 # Determine the hook directory without a PATH lookup: callback PATH may be
@@ -2311,11 +2310,6 @@ direct_ledger_prefix_effect_check() {
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "broad-destructive" \
         "ECI ownership gate denied a broad destructive operation: ${prefix_detail}; reason=the resolved target is a filesystem, home, repository, provider, proof, or current working root" \
         "narrow the reported target to the exact task-owned file or subdirectory and retry as one finite literal argv"
-      ;;
-    class=worker-git\ *)
-      deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied a protected Git operation: ${prefix_detail}; predicate=worker-git-ownership; reason=protected Git operations route through the Supervisor while ECI is active; ordinary assigned Producer commits use the separate repository/effect checks" \
-        "route the reported protected Git operation request to the Supervisor; ordinary assigned Producer commits use the resolved repository/effect checks"
       ;;
   esac
 
@@ -4860,28 +4854,6 @@ if name == "find" and "-delete" in args:
 
 if effect_scope == "broad":
     raise SystemExit(1)
-
-if is_worker == "true" and name == "git":
-    index = 0
-    value_options = {"-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace"}
-    while index < len(args):
-        token = args[index]
-        if token in value_options:
-            index += 2
-            continue
-        if any(token.startswith(option + "=") for option in value_options if option.startswith("--")):
-            index += 1
-            continue
-        if token in {"--literal-pathspecs", "--no-optional-locks", "--no-pager"}:
-            index += 1
-            continue
-        if token.startswith("-"):
-            break
-        if token in {"config", "reset", "worktree"}:
-            print("class=worker-git executable=%s token=%s kind=acceptance-sensitive-git" %
-                  (argv[0], token))
-            raise SystemExit(0)
-        break
 
 if is_worker == "true":
     if name == "chmod":
@@ -7753,465 +7725,7 @@ def git_add_effect(
 PY
 }
 
-command_invokes_git_branch_remote_mutation() {
-  python3 - "$1" "$(planner_shell_analysis_for "$1")" "$(git_effect_python)" <<'PY'
-import json
-import os
-import hashlib
-import re
-import shlex
-import sys
-
-exec(compile(sys.argv[3], "git-effect-library", "exec"))
-
-text = sys.argv[1]
-separators = {";", "&", "&&", "|", "||", "(", ")"}
-remote_mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
-
-def tokenize(value):
-    try:
-        lexer = shlex.shlex(value, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        return list(lexer)
-    except ValueError:
-        return None
-
-def split(tokens):
-    result, current = [], []
-    for token in tokens + [";"]:
-        if token in separators:
-            if current:
-                result.append(current)
-            current = []
-        else:
-            current.append(token)
-    return result
-
-def inspect(
-    segment: list[str],
-    depth: int = 0,
-    unknown: frozenset[int] = frozenset(),
-    variable_cardinality: frozenset[int] = frozenset(),
-) -> bool:
-    if depth > 5:
-        return False
-    index = 0
-    while index < len(segment) and "=" in segment[index] and not segment[index].startswith("-"):
-        index += 1
-    if index >= len(segment):
-        return False
-    if index in unknown or any(value < index for value in variable_cardinality):
-        return False
-    name = os.path.basename(segment[index])
-    if name == "env":
-        index += 1
-        while index < len(segment):
-            token = segment[index]
-            if "=" in token and not token.startswith("-"):
-                index += 1
-                continue
-            if token in {"-i", "--ignore-environment"}:
-                index += 1
-                continue
-            if token in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0"} and index + 1 < len(segment):
-                index += 2
-                continue
-            if token.startswith("-"):
-                index += 1
-                continue
-            break
-        if any(value < index for value in variable_cardinality):
-            return False
-        return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index),
-                       frozenset(value - index for value in variable_cardinality if value >= index))
-    if name in {"bash", "sh", "dash", "zsh"}:
-        for option_index, option in enumerate(segment[index + 1:], index + 1):
-            if option == "-c" or (option.startswith("-") and "c" in option[1:]):
-                if option_index + 1 >= len(segment):
-                    return False
-                if option_index in unknown or option_index + 1 in unknown:
-                    return False
-                nested = tokenize(segment[option_index + 1])
-                return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
-        return False
-    if name in {"command", "builtin", "exec", "sudo", "doas", "nohup", "setsid"}:
-        index += 1
-        if any(value < index for value in variable_cardinality):
-            return False
-        return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index),
-                       frozenset(value - index for value in variable_cardinality if value >= index))
-    if name == "timeout":
-        return False
-    if name in {"systemd-run", "nice", "time", "prlimit", "chronic"}:
-        index += 1
-        value_options = {
-            "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment",
-            "-p", "--property", "--unit", "--setenv", "--working-directory",
-            "-C", "--chdir",
-        }
-        while index < len(segment) and segment[index].startswith("-"):
-            if segment[index] == "--":
-                index += 1
-                break
-            index += 2 if segment[index] in value_options else 1
-        if any(value < index for value in variable_cardinality):
-            return False
-        return inspect(segment[index:], depth + 1,
-                       frozenset(value - index for value in unknown if value >= index),
-                       frozenset(value - index for value in variable_cardinality if value >= index))
-    if name != "git":
-        return False
-    index += 1
-    while index < len(segment) and segment[index].startswith("-"):
-        index += 2 if segment[index] in {"-C", "-c", "--git-dir", "--work-tree", "--config-env", "--exec-path"} else 1
-    if index >= len(segment) or index in unknown or any(value <= index for value in variable_cardinality):
-        return False
-    subcommand, args = segment[index], segment[index + 1:]
-    if subcommand == "branch":
-        effect = git_branch_effect(args,
-            frozenset(value - index - 1 for value in unknown if value > index),
-            frozenset(value - index - 1 for value in variable_cardinality if value > index))
-        if effect == "repository":
-            print("executable=git subcommand=branch kind=branch-mutation")
-            return True
-        return False
-    if subcommand == "remote" and args and index + 1 not in unknown and args[0] in remote_mutators:
-        print("executable=git subcommand=remote token=%s argv_index=%d kind=remote-mutation" %
-              (args[0], index + 1))
-        return True
-    return False
-
-analysis = json.loads(sys.argv[2])
-if analysis is not None:
-    found = any(inspect(record["argv"], unknown=frozenset(record.get("unknown_arguments") or []),
-                        variable_cardinality=frozenset(record.get("may_disappear_arguments") or []) |
-                        frozenset(record.get("may_multiply_arguments") or []) |
-                        frozenset(record.get("unknown_cardinality_arguments") or []) |
-                        (frozenset(record.get("unknown_arguments") or [])
-                         if "may_disappear_arguments" not in record else frozenset())) for record in analysis["commands"]
-                if record["reachability"] != "unreachable")
-else:
-    parsed = tokenize(text)
-    found = parsed is not None and any(inspect(part) for part in split(parsed))
-sys.exit(0 if found else 1)
-PY
-}
-
-git_dynamic_execution_detail() {
-  python3 - "$1" <<'PY'
-import os
-import re
-import shlex
-import sys
-
-try:
-    tokens = shlex.split(sys.argv[1], posix=True)
-except ValueError:
-    raise SystemExit(1)
-
-hazardous_env = {
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_DIR",
-    "GIT_EXTERNAL_DIFF", "GIT_OBJECT_DIRECTORY", "GIT_PAGER",
-    "GIT_WORK_TREE",
-}
-for index, token in enumerate(tokens):
-    name = token.split("=", 1)[0] if "=" in token else ""
-    if name in hazardous_env:
-        print(f"token={name} argv_index={index}")
-        raise SystemExit(0)
-
-git_index = next(
-    (index for index, token in enumerate(tokens) if os.path.basename(token) == "git"),
-    None,
-)
-if git_index is None:
-    raise SystemExit(1)
-
-global_hazardous = {
-    "-c", "--config-env", "--exec-path", "--git-dir", "--work-tree",
-    "--namespace", "--super-prefix",
-}
-global_prefixes = tuple(option + "=" for option in global_hazardous if option.startswith("--"))
-bounded_read_only_subcommands = {
-    "branch", "describe", "diff", "grep", "log", "ls-files", "remote",
-    "rev-parse", "show", "status", "submodule",
-}
-git_c_options = []
-index = git_index + 1
-while index < len(tokens):
-    token = tokens[index]
-    if token in global_hazardous or token.startswith(global_prefixes):
-        print(f"token={token} argv_index={index}")
-        raise SystemExit(0)
-    if token == "-C":
-        if index + 1 >= len(tokens):
-            if git_index == 0 and tokens[git_index] == "git":
-                print(f"token=-C argv_index={index} reason=missing-canonical-repository-root")
-                raise SystemExit(0)
-            raise SystemExit(1)
-        git_c_options.append((index, tokens[index + 1]))
-        index += 2
-        continue
-    if token.startswith("-"):
-        index += 1
-        continue
-    break
-
-# `classify_eci_command` admits a direct Git inspection only after every
-# leading `-C` selects a canonical approved root. If that bounded parser
-# rejects a read-only-looking command, do not let the ordinary-command
-# fallback silently allow it. Repeated `-C` invocations receive the same
-# context validation for every Git subcommand; a single mutation remains on
-# its existing approval route.
-if (git_index == 0 and tokens[git_index] == "git" and git_c_options and
-        (len(git_c_options) > 1 or
-         (index < len(tokens) and tokens[index] in bounded_read_only_subcommands))):
-    approved_roots = {
-        os.environ.get("CODEX_APPROVED_REPO_ROOT_1", ""),
-        os.environ.get("CODEX_APPROVED_REPO_ROOT_2", ""),
-        os.environ.get("CODEX_APPROVED_REPO_ROOT_3", ""),
-    }
-    approved_roots.discard("")
-    for option_index, repo in git_c_options:
-        if (repo not in approved_roots or not os.path.isabs(repo) or
-                os.path.normpath(repo) != repo or not os.path.isdir(repo) or
-                os.path.islink(repo) or os.path.realpath(repo) != repo):
-            print(
-                "token=-C argv_index=%d repo=%s reason=unapproved-canonical-repository-root"
-                % (option_index, repo)
-            )
-            raise SystemExit(0)
-
-if index < len(tokens) and tokens[index] == "diff":
-    for option_index in range(index + 1, len(tokens)):
-        option = tokens[option_index]
-        if option in {"--textconv", "--ext-diff"}:
-            print(f"token={option} argv_index={option_index}")
-            raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
-
-# Git inspection is resolved from the concrete repository target below.  This
-# compatibility parser is retained only for older helper callers; it is not an
-# admission allowlist and the active worker route does not use its spelling.
-command_invokes_worker_git_read_only() {
-  python3 - "$1" <<'PY'
-import os
-import shlex
-import sys
-
-READ_ONLY = {"describe", "diff", "grep", "log", "ls-files", "rev-parse", "show", "status"}
-GLOBAL_VALUE = {"-C", "-c", "--config-env", "--exec-path", "--git-dir", "--namespace", "--super-prefix", "--work-tree"}
-OPERATORS = {";", "&", "&&", "|", "||", "(", ")"}
-
-def split(tokens):
-    result, current = [], []
-    for token in tokens + [";"]:
-        if token in OPERATORS:
-            if current:
-                result.append(current)
-            current = []
-        else:
-            current.append(token)
-    return result
-
-def tokenize(value):
-    try:
-        lexer = shlex.shlex(value, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        return list(lexer)
-    except ValueError:
-        return None
-
-def is_assignment(token):
-    name, sep, _ = token.partition("=")
-    return bool(sep) and bool(name) and name.replace("_", "A").isalnum() and not name[0].isdigit()
-
-def git_read_only(segment, index):
-    if index >= len(segment) or os.path.basename(segment[index]) != "git":
-        return False
-    index += 1
-    while index < len(segment):
-        token = segment[index]
-        if token in GLOBAL_VALUE:
-            index += 2
-            continue
-        if token.startswith(("--config-env=", "--exec-path=", "--git-dir=", "--namespace=", "--super-prefix=", "--work-tree=")):
-            index += 1
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        subcommand = token
-        args = segment[index + 1:]
-        if subcommand in READ_ONLY:
-            return True
-        if subcommand == "submodule" and args[:1] == ["status"]:
-            return True
-        if subcommand == "branch":
-            mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
-            return not any(value in mutators or not value.startswith("-") for value in args)
-        if subcommand == "remote":
-            mutators = {"add", "remove", "rename", "set-url", "set-head", "prune", "update"}
-            return not args or args[0] not in mutators
-        return False
-    return False
-
-def inspect(segment, depth=0):
-    if depth > 5 or not segment:
-        return False
-    index = 0
-    while index < len(segment) and is_assignment(segment[index]):
-        index += 1
-    if index >= len(segment):
-        return False
-    name = os.path.basename(segment[index])
-    if name == "env":
-        index += 1
-        while index < len(segment):
-            token = segment[index]
-            if is_assignment(token) or token.startswith("-"):
-                index += 2 if token in {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"} else 1
-                continue
-            break
-        return inspect(segment[index:], depth + 1)
-    if name in {"command", "builtin", "exec", "sudo", "doas", "nohup", "setsid", "timeout", "xargs"}:
-        return inspect(segment[index + 1:], depth + 1)
-    if name in {"bash", "sh", "dash", "zsh"}:
-        for option_index, option in enumerate(segment[index + 1:], index + 1):
-            if option == "-c" and option_index + 1 < len(segment):
-                nested = tokenize(segment[option_index + 1])
-                return nested is not None and any(inspect(part, depth + 1) for part in split(nested))
-        return False
-    return git_read_only(segment, index)
-
-tokens = tokenize(sys.argv[1])
-sys.exit(0 if tokens is not None and any(inspect(part) for part in split(tokens)) else 1)
-PY
-}
-
-WORKER_PROJECT_INSPECTION_ALLOWED=false
-WORKER_PROJECT_INSPECTION_DETAIL=""
-worker_project_inspection_route() {
-  worker_git_resolved_inspection_route "$1"
-  return $?
-
-  [ "$hook_is_subagent" = true ] || return 1
-  local detail
-  detail="$(python3 - "$1" "$cwd" <<'PY'
-import os
-import shlex
-import sys
-
-command, hook_cwd = sys.argv[1:]
-OPS = {";", "&", "|", "||", ">", ">>", ">|", ">&", "<", "<<", "<<<", "<&", "(", ")"}
-READ_ONLY = {
-    "branch", "describe", "diff", "grep", "log", "ls-files", "remote",
-    "rev-parse", "show", "status", "submodule",
-}
-CONTEXT_OPTIONS = {
-    "-c", "--config-env", "--exec-path", "--git-dir", "--namespace",
-    "--super-prefix", "--work-tree", "--textconv", "--ext-diff",
-}
-OUTPUT_OPTIONS = {"-o", "--output", "--output-directory"}
-PATH_MARKERS = ("$", "`", "\n", "\r", "*", "?", "[", "]", "(", ")")
-
-def reject(reason):
-    print("worker-project-inspection-route reason=" + reason)
-    raise SystemExit(1)
-
-try:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-except ValueError:
-    reject("shell quoting is unbalanced")
-if not tokens or any(token in OPS for token in tokens):
-    # && is handled below; every other shell operator is never a relay form.
-    if "&&" not in tokens or any(token in OPS - {"&&"} for token in tokens):
-        reject("only literal && inspection chaining is allowed")
-
-chunks, current = [], []
-for token in tokens + ["&&"]:
-    if token == "&&":
-        if not current:
-            reject("empty inspection segment")
-        chunks.append(current)
-        current = []
-    else:
-        current.append(token)
-if not 1 <= len(chunks) <= 3:
-    reject("inspection chain must contain one to three Git segments")
-
-def safe_value(value, allow_option=False):
-    return bool(value) and (allow_option or not value.startswith("-")) and not any(
-        marker in value for marker in PATH_MARKERS
-    )
-
-def safe_git_read_only(args):
-    args = list(args)
-    # `git -C <repo> status` only reads the selected repository. Its spelling,
-    # existence, or ownership metadata cannot make that inspection destructive;
-    # Git reports ordinary errors itself if the requested directory is invalid.
-    while args[:1] == ["-C"]:
-        if len(args) < 2:
-            return False
-        args = args[2:]
-    if not args or args[0] not in READ_ONLY:
-        return False
-    subcommand, values = args[0], args[1:]
-    if any(value in CONTEXT_OPTIONS or value.startswith(tuple(
-            option + "=" for option in CONTEXT_OPTIONS if option.startswith("--")
-    )) for value in values):
-        return False
-    if any(value in OUTPUT_OPTIONS or value.startswith(("--output=", "--output-directory="))
-           for value in values):
-        return False
-    if subcommand == "submodule":
-        return values == ["status"]
-    if subcommand == "status":
-        return all(value in {"--short", "--porcelain", "--branch"} for value in values)
-    if subcommand == "branch":
-        mutators = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move",
-                    "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
-        return all(value.startswith("-") and value not in mutators for value in values)
-    if subcommand == "remote":
-        return not values or values in (["-v"], ["--verbose"], ["show"], ["get-url"])
-    if subcommand == "diff":
-        delimiter = values.index("--") if "--" in values else len(values)
-        options, paths = values[:delimiter], values[delimiter + 1:]
-        allowed_options = {"--binary", "--cached", "--staged", "--check", "--stat",
-                           "--name-only", "--name-status", "--no-ext-diff", "--no-textconv"}
-        if any(option not in allowed_options for option in options):
-            return False
-        return all(safe_value(path) for path in paths)
-    if subcommand == "grep":
-        return bool(values) and all(safe_value(value, allow_option=True) for value in values)
-    if subcommand in {"log", "show", "ls-files", "describe", "rev-parse"}:
-        return all(safe_value(value, allow_option=True) for value in values)
-    return False
-
-for segment in chunks:
-    if segment[0] != "git" or any("/" in token for token in segment[:1]):
-        reject("segment must invoke the git command")
-    args = segment[1:]
-    if not safe_git_read_only(args):
-        reject("segment is outside the bounded read-only Git capability grammar")
-print("ok")
-PY
-  )" || true
-  if [[ "$detail" == ok ]]; then
-    WORKER_PROJECT_INSPECTION_ALLOWED=true
-    WORKER_PROJECT_INSPECTION_DETAIL=""
-    return 0
-  fi
-  WORKER_PROJECT_INSPECTION_DETAIL="${detail:-worker-project-inspection-route reason=command is outside the bounded Git relay grammar}"
-  return 1
-}
+WORKER_NATIVE_GIT_ALLOWED=false
 
 WORKER_CONTROL_DETAIL=""
 worker_control_path_detail() {
@@ -9086,6 +8600,8 @@ PY
 }
 
 command_invokes_eci_acceptance_mutation() {
+  # Active Worker Git families were routed before this legacy acceptance reader.
+  [ "${hook_is_subagent:-false}" != true ] || return 1
   python3 - "$1" "$(planner_shell_analysis_for "$1")" "$(git_effect_python)" <<'PY'
 import json
 import os
@@ -11706,256 +11222,6 @@ def commit_effect(
     return "commit"
 
 
-def inspection_observation(
-    arguments: list[str], base: str, options: list[str], environment: dict[str, str],
-) -> dict[str, str | list[str]]:
-    """Obtain bounded native evidence; unsupported preparation remains advisory."""
-    # TODO: Reuse first-pass evidence in the scope pass to avoid duplicate observation.
-    from errno import EBADF
-
-    advisory = {"result": "Advisory"}
-    loader_controls = {"GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH", "MALLOC_TRACE"}
-    # JSON cannot preserve surrogateescaped native pathname/environment bytes.
-    try:
-        for value in [base, *options, *arguments, *environment.keys(), *environment.values()]:
-            value.encode("utf-8", errors="strict")
-    except UnicodeEncodeError:
-        return advisory
-    # Eligibility precedes every subprocess, including observer diagnostics.
-    # Original loader/trace channels cannot affect the observer infrastructure.
-    if not base or any((value and (name.startswith("LD_") or name in loader_controls)) or
-                       (name.startswith("GIT_TRACE") and value not in {"", "0"})
-                       for name, value in environment.items()):
-        return advisory
-    try:
-        for name in os.listdir("/proc/self/fd"):
-            descriptor = int(name)
-            if descriptor > 2:
-                try:
-                    if os.get_inheritable(descriptor):
-                        return advisory
-                except OSError as error:
-                    # The directory scan itself can leave one already-closed FD.
-                    if error.errno != EBADF:
-                        return advisory
-    except OSError:
-        return advisory
-    result = inspection_query({"cwd": base, "arguments": [*options, *arguments],
-                               "environment": environment})
-    if result is None or result.get("result") not in {"Helper", "NoHelper", "Advisory"}:
-        return advisory
-    if result.get("result") == "Helper":
-        if (not all(isinstance(result.get(key), str) and result[key] for key in {"category", "target", "reason"}) or
-                not isinstance(result.get("hatch"), list) or not result["hatch"] or
-                not all(isinstance(value, str) for value in result["hatch"])):
-            return advisory
-        result["remediation"] = shlex.join(["git", "-C", base, *result["hatch"]])
-    return result
-
-
-def inspection_query(request_value: dict[str, object], response_limit: int = 4 * 1024 * 1024) -> dict[str, object] | None:
-    """Exchange bounded inspection data under effect-free infrastructure context."""
-    configured_home = os.environ.get("CODEX_CONFIGURED_HOME")
-    if not configured_home:
-        return None
-    binary = os.path.join(configured_home, "bin", "eci-git-inspection")
-    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
-        return None
-    loader_controls = {"GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH", "MALLOC_TRACE"}
-    infrastructure = {name: value for name, value in os.environ.items()
-                      if not name.startswith("LD_") and name not in loader_controls and not name.startswith("GIT_TRACE")}
-    import selectors
-    import time
-
-    request_limit = 4 * 1024 * 1024
-    request = bytearray()
-    for part in json.JSONEncoder().iterencode(request_value):
-        encoded = part.encode("utf-8")
-        if len(encoded) > request_limit - len(request):
-            return None
-        request.extend(encoded)
-    output = bytearray()
-    deadline = time.monotonic() + 10
-    try:
-        # Read the sentinel before decoding so external stdout cannot exceed the cap.
-        with subprocess.Popen(
-            [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, env=infrastructure, close_fds=True, bufsize=0,
-        ) as process:
-            try:
-                with selectors.DefaultSelector() as selector:
-                    os.set_blocking(process.stdin.fileno(), False)
-                    os.set_blocking(process.stdout.fileno(), False)
-                    selector.register(process.stdin, selectors.EVENT_WRITE)
-                    selector.register(process.stdout, selectors.EVENT_READ)
-                    offset = 0
-                    while selector.get_map():
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            return None
-                        for key, _ in selector.select(remaining):
-                            if key.fileobj is process.stdin:
-                                try:
-                                    offset += os.write(process.stdin.fileno(), request[offset:offset + 4096])
-                                except BlockingIOError:
-                                    continue
-                                if offset == len(request):
-                                    selector.unregister(process.stdin)
-                                    process.stdin.close()
-                                continue
-                            try:
-                                chunk = os.read(process.stdout.fileno(), response_limit + 1 - len(output))
-                            except BlockingIOError:
-                                continue
-                            if not chunk:
-                                selector.unregister(process.stdout)
-                                process.stdout.close()
-                                continue
-                            output.extend(chunk)
-                            if len(output) > response_limit:
-                                return None
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or process.wait(timeout=remaining):
-                        return None
-                result = json.loads(output.decode("utf-8"))
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                process.wait()
-    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
-        return None
-    if not isinstance(result, dict):
-        return None
-    pending = [result]
-    try:
-        while pending:
-            value = pending.pop()
-            if isinstance(value, str):
-                value.encode("utf-8", errors="strict")
-            elif isinstance(value, dict):
-                pending.extend(value.keys())
-                pending.extend(value.values())
-            elif isinstance(value, list):
-                pending.extend(value)
-    except UnicodeEncodeError:
-        return None
-    return result
-
-
-def inspection_argument_roles(arguments: list[str]) -> dict[str, object] | None:
-    """Obtain pure role facts without making output identity a denial."""
-    if sum(len(value) for value in arguments) > 4 * 1024 * 1024:
-        return None
-    result = inspection_query({"query": "argument-roles", "arguments": arguments}, 8192)
-    if (result is None or result.get("query") != "argument-roles" or
-            not all(type(result.get(key)) is bool for key in {"output", "complete", "eligible"})):
-        return None
-    return result
-
-
-_projection = {"__name__": "embedded_inspection_program"}
-exec(compile("# Generated from stagegen/main.go; DO NOT EDIT.\nimport json,re,sys\nPROGRAM=json.loads(\"{\\\"pipeline\\\":{\\\"diff\\\":[\\\"ordinary_diff_gate\\\",\\\"revision_raw_delimiter\\\",\\\"role_scan\\\"],\\\"log\\\":[\\\"log_front_scan\\\",\\\"revision_raw_delimiter\\\",\\\"role_scan\\\"],\\\"show\\\":[\\\"log_front_scan\\\",\\\"revision_raw_delimiter\\\",\\\"role_scan\\\"]},\\\"front\\\":{\\\"--clear-decorations\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--decorate\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decorations\\\",\\\"source\\\":\\\"log.c:161-178\\\"},\\\"--decorate-refs\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:289-292 OPT_STRING_LIST\\\"},\\\"--decorate-refs-exclude\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:289-292 OPT_STRING_LIST\\\"},\\\"--mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-decorate\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"parse-options callback/string-list unset\\\"},\\\"--no-decorate-refs\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"parse-options callback/string-list unset\\\"},\\\"--no-decorate-refs-exclude\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"parse-options callback/string-list unset\\\"},\\\"--no-mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-quiet\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-source\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-use-mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--quiet\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--source\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--use-mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"}},\\\"revision\\\":{\\\"--abbrev-commit\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--after\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--all\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--all-match\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--always\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--author\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--basic-regexp\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--before\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--committer\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--date\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"date\\\",\\\"source\\\":\\\"revision.c:2633\\\"},\\\"--date-order\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--encoding\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--extended-regexp\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--first-parent\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--fixed-strings\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--format\\\":{\\\"arity\\\":\\\"attached\\\",\\\"validator\\\":\\\"pretty\\\",\\\"source\\\":\\\"revision.c format equals\\\"},\\\"--full-diff\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--full-history\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--graph\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--grep\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--grep-reflog\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--invert-grep\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--max-count\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"revision.c:2332-2340\\\"},\\\"--merges\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-abbrev-commit\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-commit-id\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-graph\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-merges\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--oneline\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--perl-regexp\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--pretty\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"pretty\\\",\\\"source\\\":\\\"revision.c pretty bare/attached\\\"},\\\"--regexp-ignore-case\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--relative-date\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--reverse\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--root\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--show-pulls\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--since\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--skip\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"revision.c:2332-2340\\\"},\\\"--topo-order\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--until\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"}},\\\"diff\\\":{\\\"--binary\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--check\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--color\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"color\\\",\\\"source\\\":\\\"diff.c OPT__COLOR\\\"},\\\"--default-prefix\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--dst-prefix\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c string stores\\\"},\\\"--exit-code\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ext-diff\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--find-copies\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"},\\\"--find-renames\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"},\\\"--follow\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--full-index\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-all-space\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-blank-lines\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-space-at-eol\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-space-change\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--inter-hunk-context\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--line-prefix\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c string stores\\\"},\\\"--name-only\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--name-status\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-color\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-ext-diff\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-patch\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-prefix\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-renames\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-textconv\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--numstat\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--output\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"git v2.51.0 diff.c:5120-5134 xfopen during parse\\\"},\\\"--output-indicator-context\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"character\\\",\\\"source\\\":\\\"diff.c:5204 diff_opt_char\\\"},\\\"--output-indicator-new\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"character\\\",\\\"source\\\":\\\"diff.c:5204 diff_opt_char\\\"},\\\"--output-indicator-old\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"character\\\",\\\"source\\\":\\\"diff.c:5204 diff_opt_char\\\"},\\\"--patch\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--patch-with-raw\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--patch-with-stat\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--quiet\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--raw\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--shortstat\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--src-prefix\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c string stores\\\"},\\\"--stat\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"},\\\"--stat-count\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--stat-graph-width\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--stat-name-width\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--stat-width\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--summary\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--textconv\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--unified\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"}},\\\"short\\\":{\\\"C\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional attached short\\\"},\\\"G\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"nonempty\\\",\\\"source\\\":\\\"git v2.51.0 diff.c:5175-5197 pickaxe callback rejects empty\\\"},\\\"M\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional attached short\\\"},\\\"O\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c order filename\\\"},\\\"R\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"S\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"nonempty\\\",\\\"source\\\":\\\"git v2.51.0 diff.c:5175-5197 pickaxe callback rejects empty\\\"},\\\"U\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional attached short\\\"},\\\"a\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"b\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"n\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"revision.c -n\\\"},\\\"p\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"r\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"s\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"u\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"w\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"z\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"}},\\\"unsupported_front\\\":[\\\"--i-still-use-this\\\",\\\"--no-i-still-use-this\\\"]}\")\nstageDestinationLimit = 64\nstagePathLimit = 4096\n\ndef _cut(value, separator):\n    head, found, tail = value.partition(separator)\n    return head, tail, bool(found)\n\ndef _match(pattern, value):\n    try:\n        return re.search(pattern, value) is not None, None\n    except re.error as error:\n        return False, error\n\ndef offlineValid(value, validator):\n    if validator == \"any\":\n        return True\n    elif validator == \"nonempty\":\n        return (value != \"\")\n    elif validator == \"character\":\n        return (len(value.encode('utf-8')) == 1)\n    elif validator == \"decimal\":\n        if ((len(value) == 0) or (len(value) > 9)):\n            return False\n        for _, digit in enumerate(value):\n            if ((digit < \"0\") or (digit > \"9\")):\n                return False\n        return True\n    elif validator == \"decorations\":\n        for _, allowed in enumerate(\"short|full|auto|true|false|yes|no|on|off|0|1\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    elif validator == \"color\":\n        for _, allowed in enumerate(\"always|auto|never|true|false|0|1\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    elif validator == \"date\":\n        for _, allowed in enumerate(\"iso|iso-strict|rfc|short|raw|unix|default\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    elif validator == \"pretty\":\n        for _, allowed in enumerate(\"oneline|short|medium|full|fuller|raw|%s|%H|format:%s|tformat:%s\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    return False\n\ndef offlineStop(r, reason):\n    r[\"reason\"] = reason\n    return r\n\ndef analyzeStages(args, p):\n    r = {\"outputs\":[],\"output_spans\":[],\"complete\":False,\"reason\":\"\",\"boundary\":0,\"outputs\":[],\"output_spans\":[],\"boundary\":len(args)}\n    if ((len(args) == 0) or ((((args[0] != \"diff\") and (args[0] != \"log\")) and (args[0] != \"show\")))):\n        return offlineStop(r,\"outside built-in domain\")\n    verb = args[0]\n    for _, arg in enumerate(args):\n        if (\"\\x00\" in arg):\n            return offlineStop(r,\"unrepresentable native argument\")\n    original = args[1:]\n    residual = ([] + list(original))\n    positions = []\n    for i in range(len(original)):\n        positions = (positions + [(i + 1)])\n    for _, stage in enumerate(p[\"pipeline\"][verb]):\n        if stage == \"ordinary_diff_gate\":\n            for i, token in enumerate(original):\n                start = i\n                if (token == \"--no-index\"):\n                    return offlineStop(r,\"no-index requires native sensor\")\n                if (token == \"--\"):\n                    start += 1\n                else:\n                    if token.startswith(\"-\"):\n                        continue\n                if (len(original[start:]) == 2):\n                    for _, operand in enumerate(original[start:]):\n                        if (operand.startswith(\"/\") or (\"..\" in operand)):\n                            return offlineStop(r,\"implicit no-index requires native sensor\")\n                break\n        elif stage == \"log_front_scan\":\n            residual = []\n            positions = []\n            i = 0\n            while (i < len(original)):\n                token = original[i]\n                if ((token == \"--\") or (token == \"--end-of-options\")):\n                    r[\"boundary\"] = (i + 1)\n                    residual = (residual + list(original[i:]))\n                    j = i\n                    while (j < len(original)):\n                        positions = (positions + [(j + 1)])\n                        j += 1\n                    break\n                name, value, attached = _cut(token,\"=\")\n                for _, unsupported in enumerate(p[\"unsupported_front\"]):\n                    if (name == unsupported):\n                        return offlineStop(r,\"conditional front declaration\")\n                if (((token == \"--help\") or (token == \"--help-all\")) or (token == \"-h\")):\n                    r[\"complete\"] = True\n                    return r\n                rule, known = p[\"front\"].get(name), name in p[\"front\"]\n                if known:\n                    if ((rule[\"arity\"] == \"none\") and attached):\n                        return offlineStop(r,\"invalid front value\")\n                    if ((rule[\"arity\"] == \"required\") and (not attached)):\n                        i += 1\n                        if (i == len(original)):\n                            return offlineStop(r,\"missing front value\")\n                        value = original[i]\n                    if (((attached or (rule[\"arity\"] == \"required\"))) and (not offlineValid(value,rule[\"validator\"]))):\n                        return offlineStop(r,\"unproved front callback\")\n                    i += 1\n                    continue\n                if ((token.startswith(\"-\") and (not token.startswith(\"--\"))) and (token != \"-\")):\n                    suffix = token[1:]\n                    while (len(suffix) > 0):\n                        if suffix[0] == \"h\":\n                            r[\"complete\"] = True\n                            return r\n                        elif suffix[0] == \"q\":\n                            suffix = suffix[1:]\n                            continue\n                        elif suffix[0] == \"L\":\n                            if (len(suffix) == 1):\n                                i += 1\n                                if (i == len(original)):\n                                    return offlineStop(r,\"missing line range\")\n                            suffix = \"\"\n                        else:\n                            if ((suffix == \"-\") or (suffix == \"-end-of-options\")):\n                                return offlineStop(r,\"virtual delimiter requires native sensor\")\n                            residual = (residual + [(\"-\" + suffix)])\n                            positions = (positions + [(i + 1)])\n                            suffix = \"\"\n                    i += 1\n                    continue\n                residual = (residual + [token])\n                positions = (positions + [(i + 1)])\n                i += 1\n        elif stage == \"revision_raw_delimiter\":\n            for i, token in enumerate(residual):\n                if (token == \"--\"):\n                    if ((verb == \"diff\") and (len(residual[(i + 1):]) == 2)):\n                        for _, path in enumerate(residual[(i + 1):]):\n                            if (path.startswith(\"/\") or (\"..\" in path)):\n                                return offlineStop(r,\"implicit no-index requires native sensor\")\n                    if (verb == \"diff\"):\n                        r[\"boundary\"] = (i + 1)\n                    residual = residual[:i]\n                    positions = positions[:i]\n                    break\n        elif stage == \"role_scan\":\n            i = 0\n            while (i < len(residual)):\n                token = residual[i]\n                if (token == \"--end-of-options\"):\n                    if (verb == \"diff\"):\n                        r[\"boundary\"] = (i + 1)\n                    r[\"complete\"] = True\n                    return r\n                if ((not token.startswith(\"-\")) or (token == \"-\")):\n                    return offlineStop(r,\"unverified revision/path operand\")\n                if token.startswith(\"--\"):\n                    name, value, attached = _cut(token,\"=\")\n                    optionPosition = positions[i]\n                    valuePosition = 0\n                    rule, known = p[\"revision\"].get(name), name in p[\"revision\"]\n                    if (verb == \"diff\"):\n                        known = False\n                    if (not known):\n                        rule, known = p[\"diff\"].get(name), name in p[\"diff\"]\n                    if (not known):\n                        return offlineStop(r,\"unknown revision/diff role\")\n                    if ((rule[\"arity\"] == \"none\") and attached):\n                        return offlineStop(r,\"unexpected value\")\n                    if ((rule[\"arity\"] == \"attached\") and (not attached)):\n                        return offlineStop(r,\"missing attached value\")\n                    if ((rule[\"arity\"] == \"required\") and (not attached)):\n                        i += 1\n                        if (i == len(residual)):\n                            return offlineStop(r,\"missing required value\")\n                        value = residual[i]\n                        valuePosition = positions[i]\n                    if (((attached or (rule[\"arity\"] == \"required\"))) and (not offlineValid(value,rule[\"validator\"]))):\n                        return offlineStop(r,\"unproved callback\")\n                    if (name == \"--output\"):\n                        if (len(value.encode('utf-8')) > stagePathLimit):\n                            return offlineStop(r,\"output value beyond bounded domain\")\n                        if (len(r[\"outputs\"]) >= stageDestinationLimit):\n                            return offlineStop(r,\"output count beyond bounded domain\")\n                        r[\"outputs\"] = (r[\"outputs\"] + [value])\n                        r[\"output_spans\"] = (r[\"output_spans\"] + [[optionPosition,valuePosition]])\n                    i += 1\n                    continue\n                suffix = token[1:]\n                digits = offlineValid(suffix,\"decimal\")\n                if (digits and (verb != \"diff\")):\n                    if (not offlineValid(suffix,\"decimal\")):\n                        return offlineStop(r,\"unproved numeric count\")\n                    i += 1\n                    continue\n                while (len(suffix) > 0):\n                    letter = suffix[:1]\n                    suffix = suffix[1:]\n                    rule, known = p[\"short\"].get(letter), letter in p[\"short\"]\n                    if ((not known) or (((letter == \"n\") and (verb == \"diff\")))):\n                        return offlineStop(r,\"unknown short role\")\n                    if (rule[\"arity\"] == \"none\"):\n                        continue\n                    value = suffix\n                    if ((rule[\"arity\"] == \"required\") and (suffix == \"\")):\n                        i += 1\n                        if (i == len(residual)):\n                            return offlineStop(r,\"missing short value\")\n                        value = residual[i]\n                    if ((((value != \"\") or (rule[\"arity\"] == \"required\"))) and (not offlineValid(value,rule[\"validator\"]))):\n                        return offlineStop(r,\"unproved short callback\")\n                    suffix = \"\"\n                i += 1\n        else:\n            return offlineStop(r,\"unknown stage opcode\")\n    r[\"complete\"] = True\n    return r\n\n\ndef analyze(args):\n    if not isinstance(args, list) or not all(isinstance(value, str) for value in args):\n        return {\"outputs\": [], \"complete\": False, \"reason\": \"malformed argument types\", \"boundary\": 0}\n    return analyzeStages(args, PROGRAM)\n\nif __name__ == \"__main__\":\n    raw = sys.stdin.buffer.read(4 * 1024 * 1024 + 1)\n    result = {\"outputs\": [], \"complete\": False, \"reason\": \"malformed request\", \"boundary\": 0}\n    if len(raw) > 4 * 1024 * 1024:\n        result[\"reason\"] = \"input overflow\"\n    else:\n        try:\n            result = analyze(json.loads(raw)[\"arguments\"])\n        except (UnicodeError, ValueError, KeyError, TypeError):\n            pass\n    print(json.dumps(result, ensure_ascii=False))\n", "embedded-inspection-program", "exec"), _projection)
-
-from dataclasses import dataclass, asdict
-
-@dataclass(frozen=True)
-class Destination:
-    spelling: str
-    ordinal: int
-    option_index: int
-    value_index: int
-    target: str = ""
-    identity: str = "Advisory"
-    endpoint: str = "Unresolved"
-    decision: str = "Advisory"
-    device: int | None = None
-    inode: int | None = None
-    parent_device: int | None = None
-    parent_inode: int | None = None
-
-def inspection_output_record(
-    arguments: list[str],
-    base: str,
-    directories: list[str | None],
-    options: list[str],
-    environment: dict[str, str],
-    known: bool,
-    repository: str | None,
-) -> dict[str, object] | None:
-    """Compose output snapshots and independent helper evidence for fresh consumption."""
-    try:
-        local = _projection['analyze'](arguments)
-    except UnicodeEncodeError:
-        return None
-    if local['complete'] and not local['outputs']:
-        return None
-    spans = local['output_spans']
-    request = {'query': 'destinations', 'base': base, 'directories': directories, 'options': options, 'environment': environment, 'known': known, 'outputs': local['outputs'], 'spans': spans, 'arguments': arguments}
-    mapped = inspection_query(request)
-    context = {'cwd': '', 'worktree': '', 'git_dir': '', 'prefix': '', 'certainty': 'Advisory'}
-    destinations = [asdict(Destination(spelling=value, ordinal=n, option_index=spans[n][0], value_index=spans[n][1])) for n, value in enumerate(local['outputs'])]
-    if isinstance(mapped, dict) and mapped.get('query') == 'destinations' and isinstance(mapped.get('context'), dict) and isinstance(mapped.get('destinations'), list) and len(mapped['destinations']) == len(destinations):
-        expected = [(item['spelling'], item['ordinal'], item['option_index'], item['value_index']) for item in destinations]
-        actual = [(item.get('spelling'), item.get('ordinal'), item.get('option_index'), item.get('value_index')) for item in mapped['destinations'] if isinstance(item, dict)]
-        candidate_context = mapped['context']
-        context_keys = {'base', 'directories', 'directory_identities', 'cwd', 'worktree', 'git_dir', 'prefix', 'certainty'}
-        destination_keys = {'access', 'ordinal', 'option_index', 'value_index', 'reach', 'spelling', 'target', 'identity', 'endpoint', 'decision', 'device', 'inode', 'parent_device', 'parent_inode'}
-        closed_fields = set(candidate_context) <= context_keys and all(
-            isinstance(item, dict) and set(item) <= destination_keys for item in mapped['destinations'])
-        context_valid = closed_fields and all(isinstance(candidate_context.get(key), str) and len(candidate_context[key].encode('utf-8')) <= 4096 for key in ('cwd', 'worktree', 'git_dir', 'prefix', 'certainty')) and candidate_context['certainty'] in {'Snapshot', 'Advisory'}
-        if context_valid and candidate_context['certainty'] == 'Snapshot':
-            context_valid = all(os.path.isabs(candidate_context[key]) for key in ('cwd', 'worktree', 'git_dir'))
-        destinations_valid = all(
-            all(isinstance(item.get(key), str) and len(item[key].encode('utf-8')) <= 4096 for key in ('spelling', 'target', 'identity', 'endpoint', 'decision')) and
-            item['identity'] in {'Snapshot', 'Advisory'} and item['endpoint'] in {'Regular', 'AbsentLeaf', 'Null', 'Unresolved'} and item['decision'] in {'AccessCheckedOutputIntent', 'HarmlessEndpoint', 'Advisory'} and
-            all(item.get(key) is None or (type(item[key]) is int and 0 <= item[key] < 2**64) for key in ('device', 'inode', 'parent_device', 'parent_inode')) and
-            (item['identity'] != 'Snapshot' or os.path.isabs(item['target']))
-            for item in mapped['destinations'] if isinstance(item, dict))
-        if actual == expected and context_valid and destinations_valid:
-            context = mapped['context']
-            destinations = mapped['destinations']
-    reachable = True
-    for item in destinations:
-        item['reach'] = 'SourceModeled' if reachable else 'Advisory'
-        if item['decision'] == 'Advisory':
-            reachable = False
-    # Completeness and tail uncertainty are independent of prefix destination facts.
-    record = {"schema": "git-inspection-output-v1", "repository": context['worktree'] or repository or '<unresolved>', "context": context, "destinations": destinations, "complete": local['complete'], "tail_unknown": not local['complete'], "reason": local['reason'], "stdout_argv": [], "decision": "Advisory"}
-    # Helper facts are independent from optional destination metadata availability.
-    helper = inspection_query({**request, 'query': 'helper'})
-    if isinstance(helper, dict) and helper.get('query') == 'helper' and isinstance(helper.get('context'), dict) and isinstance(helper.get('observation'), dict):
-        observation = helper['observation']
-        if (observation.get('result') == 'Helper' and
-                isinstance(helper['context'].get('cwd'), str) and os.path.isabs(helper['context']['cwd']) and all(isinstance(observation.get(key), str) and observation[key] for key in ('target', 'category', 'reason')) and isinstance(observation.get('hatch'), list) and observation['hatch'] and all(isinstance(value, str) for value in observation['hatch'])):
-            helper['remediation'] = shlex.join(['git', '-C', helper['context']['cwd'], *observation['hatch']])
-        record['helper'] = helper
-    try:
-        total = sum(len(os.fsencode(arg)) for arg in arguments) + sum(len(os.fsencode(arg)) for arg in options)
-    except UnicodeEncodeError:
-        total = 65537
-    if local['complete'] and known and context['certainty'] == 'Snapshot' and total <= 65536:
-        remove = {index for span in spans for index in span if index > 0}
-        replacement = [arg for n, arg in enumerate(arguments) if n not in remove]
-        proof = _projection['analyze'](replacement)
-        if proof['complete'] and not proof['outputs']:
-            boundary = proof['boundary']
-            raw = [*replacement[:boundary], '--no-ext-diff', '--no-textconv', *replacement[boundary:]]
-            raw_proof = _projection['analyze'](raw)
-            if raw_proof['complete'] and not raw_proof['outputs']:
-                record['stdout_argv'] = ['git', '--no-pager', '-C', context['cwd'], *options, '-c', 'core.fsmonitor=false', *raw]
-    if any(item['decision'] == 'AccessCheckedOutputIntent' and item['reach'] == 'SourceModeled' for item in destinations) and record['stdout_argv']:
-        record['decision'] = 'DenyAccessCheckedOutputIntent'
-    elif record['complete'] and all(item['decision'] == 'HarmlessEndpoint' for item in destinations):
-        record['decision'] = 'HarmlessEndpoint' if destinations else 'NoOutput'
-    # Even an all-null retained prefix cannot establish no later output beyond the bound.
-    if len(json.dumps(record, separators=(',', ':')).encode('utf-8')) > 4*1024*1024:
-        record['stdout_argv'] = []
-        record['decision'] = 'Advisory'
-        record['reason'] = 'consumer record beyond bound; retained destination prefix remains advisory'
-    if not destinations and record['complete']:
-        return None
-    return record
-
 def segment_spec(
     tokens: list[str],
     segment_index: int,
@@ -12217,11 +11483,14 @@ def segment_spec(
                         nested_current = []
                 else:
                     nested_current.append(nested_value)
+            nested_specs = []
             for nested_segment in nested_segments:
                 nested_spec = segment_spec(nested_segment, segment_index)
-                if nested_spec:
+                if worker_mode:
+                    nested_specs.append(nested_spec or ("other", None))
+                elif nested_spec:
                     return nested_spec
-            return None
+            return nested_specs or None
         return None
     if index < len(tokens) and index not in unknown and os.path.basename(tokens[index]) == "eci-worker-git":
         if (len(tokens) <= index + 3 or tokens[index + 1] != "--repo" or
@@ -12236,14 +11505,10 @@ def segment_spec(
         return None
     index += 1
 
-    inspection_original_cwd = repo_dir
-    inspection_directories = []
-    inspection_directory_known = True
     git_dir = environment.get("GIT_DIR", "")
     work_tree = environment.get("GIT_WORK_TREE", "")
     git_options = []
     git_options_known = True
-    inspection_globals_supported = True
     value_options = {
         "-c", "--config-env", "--attr-source", "--namespace", "--super-prefix",
         "--source", "--pathspec-from-file",
@@ -12251,17 +11516,15 @@ def segment_spec(
     while index < len(tokens):
         token = tokens[index]
         if token == "--exec-path":
-            # Native Git prints its exec path and exits; later argv is unused.
-            return None
+            # Native Git owns this global exit form.
+            return ("native-git", None) if worker_mode else None
         if token == "-C":
             if index + 1 >= len(tokens):
                 return None
-            inspection_directories.append(None if index + 1 in unknown else tokens[index + 1])
             repo_dir = resolve(None if index + 1 in unknown else tokens[index + 1], repo_dir)
             index += 2
             continue
         if token.startswith("-C") and len(token) > 2:
-            inspection_directories.append(None if index in unknown else token[2:])
             repo_dir = resolve(None if index in unknown else token[2:], repo_dir)
             index += 1
             continue
@@ -12292,8 +11555,6 @@ def segment_spec(
                 git_options_known = False
             else:
                 git_options.extend((token, tokens[index + 1]))
-            if token not in {"-c", "--config-env", "--attr-source"}:
-                inspection_globals_supported = False
             index += 2
             continue
         if token.startswith(("--attr-source=", "--config-env=", "--exec-path=", "--namespace=", "--super-prefix=", "--source=", "--pathspec-from-file=")):
@@ -12301,14 +11562,14 @@ def segment_spec(
                 git_options_known = False
             else:
                 git_options.append(token)
-            if not token.startswith(("--config-env=", "--attr-source=")):
-                inspection_globals_supported = False
             index += 1
             continue
         if token == "--":
             index += 1
             break
-        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-pager"}:
+        if worker_mode and token in {"--help", "--version", "-h"}:
+            return "native-git", None
+        if token in {"--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-pager", "--paginate", "-p", "--no-optional-locks", "--bare", "--no-lazy-fetch", "--no-replace-objects"}:
             git_options.append(token)
             index += 1
             continue
@@ -12316,7 +11577,9 @@ def segment_spec(
             return None
         break
 
-    if index >= len(tokens) or index in unknown:
+    if index >= len(tokens):
+        return ("native-git", None) if worker_mode else None
+    if index in unknown:
         return None
     invocation_cwd = repo_dir
     resolved_git_dir = resolve(git_dir, repo_dir) if git_dir else git_dir
@@ -12336,6 +11599,15 @@ def segment_spec(
     if any(value < index for value in variable_cardinality):
         return None
     verb = tokens[index]
+    if worker_mode:
+        # One family policy owns native Worker routing before option effects.
+        if verb in {"add", "rm", "mv", "restore", "reset", "checkout", "switch", "commit",
+                    "update-index", "read-tree", "apply", "merge", "rebase", "cherry-pick", "revert", "am"}:
+            return "native-mutation", verb
+        if (verb == "worktree" and index + 1 < len(tokens) and index + 1 not in unknown and
+                tokens[index + 1] in MUTATING_WORKTREE):
+            return "native-mutation", verb
+        return "native-git", None
     if verb == "reset":
         effect, _ = git_reset_effect(tokens[index + 1:],
             frozenset(value - index - 1 for value in unknown if value > index),
@@ -12391,22 +11663,6 @@ def segment_spec(
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
-        if worker_mode and verb in {"diff", "log", "show"}:
-            output_record = inspection_output_record(
-                tokens[index:], inspection_original_cwd or "", inspection_directories,
-                git_options, environment,
-                inspection_directory_known and inspection_globals_supported and git_options_known and
-                not any(offset >= index for offset in unknown) and
-                all(value is not None for value in environment.values()), repo_dir)
-            if output_record is not None:
-                return "output", "inspection-output:" + json.dumps(output_record, separators=(",", ":"))
-        roles = inspection_argument_roles([*git_options, *tokens[index:]])
-        if (roles is not None and roles["eligible"] and inspection_globals_supported and worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
-                not any(offset > index for offset in unknown) and all(value is not None for value in environment.values())):
-            result = inspection_observation(tokens[index:], repo_dir or "", git_options, environment)
-            if result.get("result") == "Helper":
-                result["repository"] = repo_dir or "<unresolved>"
-                return "inspection-helper", "inspection-helper:" + json.dumps(result, separators=(",", ":"))
         return "inspection", repo_dir
     # These operations are ordinary when they resolve inside the current
     # repository. They still expose a concrete foreign repository target.
@@ -12416,7 +11672,14 @@ def segment_spec(
 
 
 def emit_spec(spec):
+    if isinstance(spec, list):
+        for child in spec:
+            emit_spec(child)
+        return
     print(spec[0])
+    if spec[0] == "native-mutation":
+        print(spec[1])
+        return
     if checkout_identity and len(spec) == 3:
         context = spec[2]
         # Only resolved identity crosses this shell transport. Environment
@@ -12424,7 +11687,7 @@ def emit_spec(spec):
         print("checkout-context:" + json.dumps({"cwd": context.cwd,
               "worktree": context.worktree, "git_dir": context.git_dir}, separators=(",", ":")))
     else:
-        print(spec[1] if spec[1] and (os.path.isabs(spec[1]) or spec[1].startswith(("inspection-helper:", "inspection-output:"))) else "<unresolved>")
+        print(spec[1] if spec[1] and (os.path.isabs(spec[1]) or spec[1].startswith("checkout-context:")) else "<unresolved>")
 
 
 analysis = json.loads(sys.argv[5])
@@ -12447,6 +11710,8 @@ if analysis is not None:
                                 cardinality_unknown)
             if spec:
                 emit_spec(spec)
+            elif worker_mode:
+                emit_spec(("other", None))
 else:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -12466,43 +11731,34 @@ else:
         spec = segment_spec(segment, segment_index)
         if spec:
             emit_spec(spec)
+        elif worker_mode:
+            emit_spec(("other", None))
 PY
 }
 
-worker_git_resolved_inspection_route() {
+worker_git_native_route() {
   [ "$hook_is_subagent" = true ] || return 1
-  local command_text="$1" specs_text operation repo_dir repo_root active_repo index
+  local specs_text index all_native=true
   local -a specs=()
-
-  specs_text="$(git_mutation_specs "$command_text" 2>/dev/null || true)"
+  WORKER_NATIVE_GIT_ALLOWED=false
+  specs_text="$(git_mutation_specs "$1" 2>/dev/null)" || return 1
   [ -n "$specs_text" ] || return 1
   mapfile -t specs <<<"$specs_text"
   [ $(( ${#specs[@]} % 2 )) -eq 0 ] || return 1
-  active_repo="$(codex_git_safe -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
-  active_repo="$(realpath -m -- "$active_repo" 2>/dev/null || true)"
-  [ -n "$active_repo" ] && [ -d "$active_repo" ] && [ ! -L "$active_repo" ] || return 1
-
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
-    operation="${specs[index]}"
-    repo_dir="${specs[index + 1]}"
-    # A harmless segment cannot short-circuit a second segment that mutates
-    # or otherwise writes. Let the normal mutation/control routes inspect the
-    # complete command whenever any resolved operation is not an inspection.
-    [ "$operation" = inspection ] || return 1
-    [ "$repo_dir" != '<unresolved>' ] || return 1
-    repo_root="$(codex_git_safe -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null || true)"
-    repo_root="$(realpath -m -- "$repo_root" 2>/dev/null || true)"
-    [ -n "$repo_root" ] && [ -d "$repo_root" ] && [ ! -L "$repo_root" ] || return 1
-    if [ "$ECI_CROSS_SCOPE_GATE_ENABLED" = true ] && [ "$repo_root" != "$active_repo" ] &&
-      ! worker_additional_repository_allowed "$repo_root"; then
-      deny_eci "ECI_GIT_CROSS_SCOPE_DENIED" "git-inspection" \
-        "ECI worker Git inspection targets a different undeclared repository: active_repo=$active_repo target_repo=$repo_root; operation=inspection" \
-        "declare this exact repository once for the owning worker with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git inspection from its owning worker repository"
-    fi
-    WORKER_PROJECT_INSPECTION_ALLOWED=true
-    WORKER_PROJECT_INSPECTION_DETAIL="resolved repository=$repo_root operation=inspection"
+    case "${specs[index]}" in
+      native-git) ;;
+      native-mutation)
+        validate_active_marker_binding
+        deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
+          "worker native Git mutation family uses the typed CLI: effect=${specs[index + 1]} target=$cwd; predicate=worker-git-cli" \
+          "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; preserve Producer scope agreement, fresh same-index lookup and complete staged-result review; unsupported native families require an assigned bounded route"
+        ;;
+      *) all_native=false ;;
+    esac
   done
-  [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
+  [ "$all_native" = true ] || return 1
+  WORKER_NATIVE_GIT_ALLOWED=true
 }
 
 active_session_additional_repository_allowed() {
@@ -13943,31 +13199,10 @@ PY
 
 enforce_git_mutation_gate() {
   local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_token
-  local inspection_output_detail='' output_decision inspection_output_target inspection_stdout_route
-  local checkout_context inspection_helper_detail='' inspection_helper_target inspection_helper_hatch inspection_helper_reason
+  local checkout_context
 
-  # The typed worker CLI owns mutations; keep concrete native inspection
-  # effects on their existing output/helper/repository checks.
   if [ "${hook_is_subagent:-false}" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
-    specs_text="$(git_mutation_specs "$command" true)" || specs_text=''
-    if [ -n "$specs_text" ]; then
-      mapfile -t specs <<<"$specs_text"
-      if [ $(( ${#specs[@]} % 2 )) -eq 0 ]; then
-        for ((index = 0; index < ${#specs[@]}; index += 2)); do
-          operation="${specs[index]}"
-          repo_dir="${specs[index + 1]}"
-          case "$operation" in
-            prep|reset|reset-index|reset-working-tree|whole-worktree-staging|index-unsupported|commit|commit-all|commit-stage|commit-amend|worktree|repository|apply)
-              validate_active_marker_binding
-              deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-                "worker native Git mutation uses the typed CLI: effect=$operation target=$repo_dir; predicate=worker-git-cli" \
-                "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; keep Producer scope agreement and fresh same-index lookup before staging, inspect the complete staged result, then commit the prepared index; history/ref operations remain unsupported"
-              ;;
-          esac
-        done
-      fi
-    fi
-    specs=()
+    worker_git_native_route "$command" && return 0
   fi
 
   # Resolve concrete checkout targets before effect labels can take an
@@ -14022,32 +13257,10 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
-    inspection_output_detail=""
-    output_decision=""
-    if [[ "$repo_dir" = inspection-output:* ]]; then
-      inspection_output_detail="${repo_dir#inspection-output:}"
-      repo_dir="$(jq -r '.repository // "<unresolved>"' <<<"$inspection_output_detail")"
-      # Decode both findings before repository uncertainty can skip this record.
-      output_decision="$(jq -c '. + {query:"consume-inspection"}' <<<"$inspection_output_detail" |
-        timeout -k 1 12 "$CODEX_CONFIGURED_HOME/bin/eci-git-inspection" 2>/dev/null |
-        head -c 4194305)" || output_decision=''
-      if [ "$(LC_ALL=C printf %s "$output_decision" | wc -c)" -gt 4194304 ]; then
-        output_decision=''
-      fi
-      if jq -e '.helper | type == "object"' <<<"$output_decision" >/dev/null 2>&1; then
-        inspection_helper_detail="$(jq -c '.helper' <<<"$output_decision")"
-      fi
-      operation=inspection
-    fi
     checkout_context=""
     if [[ "$repo_dir" = checkout-context:* ]]; then
       checkout_context="${repo_dir#checkout-context:}"
       repo_dir="$(jq -r '.cwd // "<unresolved>"' <<<"$checkout_context")"
-    fi
-    if [ "$operation" = inspection-helper ]; then
-      inspection_helper_detail="${repo_dir#inspection-helper:}"
-      repo_dir="$(jq -r '.repository // "<unresolved>"' <<<"$inspection_helper_detail")"
-      operation=inspection
     fi
     case "$operation" in reset|reset-index|reset-working-tree|reset-unresolved|reset-option-unresolved|index-unsupported|add-option-unresolved|add-target-unresolved|whole-worktree-staging|worktree|commit|commit-all|commit-stage|commit-amend|commit-unresolved|commit-option-unresolved|prep|repository|repository-unresolved|apply|output|worker-cli|inspection) ;; *) continue ;; esac
     if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
@@ -14142,14 +13355,6 @@ enforce_git_mutation_gate() {
         "ECI Git mutation targets a different repository without a valid declaration for this active session: ${cross_scope_detail}" \
         "from the active session, declare this exact canonical repository once with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git action from its owning session/repository"
     fi
-    if [ "${hook_is_subagent:-false}" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
-      jq -e '.effect == "explicit-access-checked-git-output-intent" and (.target | type == "string" and length > 0) and (.stdout_argv | type == "array" and length > 0)' <<<"$output_decision" >/dev/null 2>&1; then
-      inspection_output_target="$(jq -r '.target' <<<"$output_decision")"
-      inspection_stdout_route="$(jq -r '.stdout_argv | @sh' <<<"$output_decision")"
-      deny_eci "ECI_GIT_OUTPUT_WRITE_DENIED" "git-output" \
-        "explicit access-checked Git output request to named destination at fresh snapshot: target=$inspection_output_target repository=$repo_dir; predicate=git-output" \
-        "stdout inspection: $inspection_stdout_route; conversion is disabled, changing converted output and pickaxe semantics; or use a separate explicitly scoped file-writing command"
-    fi
     if { [ "$operation" = reset ] || [ "$operation" = prep ]; } &&
       broad_effect_detail="$(git_mutation_broad_effect_detail "$repo_root")"; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "git-mutation" \
@@ -14172,14 +13377,6 @@ enforce_git_mutation_gate() {
       fi
     fi
   done
-  if [ "${hook_is_subagent:-false}" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] && [ -n "$inspection_helper_detail" ]; then
-    inspection_helper_target="$(jq -r '.target' <<<"$inspection_helper_detail")"
-    inspection_helper_hatch="$(jq -r '.remediation' <<<"$inspection_helper_detail")"
-    inspection_helper_reason="$(jq -r '.reason' <<<"$inspection_helper_detail")"
-    deny_eci "ECI_GIT_EXECUTION_CONTEXT_DENIED" "git-execution-context" \
-      "Git inspection reaches a viable configured helper before original program execution; predicate=git-inspection-helper target=$inspection_helper_target; $inspection_helper_reason" \
-      "raw inspection: $inspection_helper_hatch; conversion is disabled, changing converted output and pickaxe semantics; run the intended helper through its explicit task-owned command"
-  fi
   # Normal commits, refs, remotes, pushes, and targeted repository actions
   # need no approval artifact, exact grammar, receipt, or command spelling
   # ceremony. Review remains ordinary workflow, not a PreToolUse prerequisite.
@@ -15258,18 +14455,7 @@ worker_read_only_pipeline_route() {
           "ECI worker pipeline denied broad destructive segment=$(eci_command_identity_subject "$segment"): ${detail}" \
           "narrow the reported target to the exact task-owned file or subdirectory, then retry the intended operation"
         ;;
-      class=worker-git\ *)
-        deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "ECI worker ownership gate denied protected Git segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership; ordinary assigned Producer commits use the separate repository/effect checks" \
-          "route the reported protected Git operation request to the Supervisor; ordinary assigned Producer commits use the resolved repository/effect checks"
-        ;;
     esac
-    detail="$(command_invokes_git_branch_remote_mutation "$segment" 2>/dev/null || true)"
-    if [ -n "$detail" ]; then
-      deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied branch/remote mutation in pipeline segment=$(eci_command_identity_subject "$segment"): ${detail}; predicate=worker-git-ownership" \
-        "send the reported Git ref or remote mutation request to the Supervisor"
-    fi
     if command_invokes_eci_binary "$segment"; then
       detail="$(rejected_command_detail "$segment" 2>/dev/null || printf 'segment=<unclassified>')"
       deny_eci "ECI_CONTROL_OWNER_REQUIRED" "eci-control" \
@@ -15852,7 +15038,7 @@ fi
 
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   [ "$worker_fast_path_candidate" != true ]; then
-  worker_project_inspection_route "$command" || true
+  worker_git_native_route "$command" || true
 fi
 
 coordinator_go_test_capture_route() {
@@ -15873,7 +15059,7 @@ fi
 
 if [ "$hook_is_subagent" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
   ! command_invokes_eci_binary "$command" &&
-  [ "$WORKER_PROJECT_INSPECTION_ALLOWED" != true ] &&
+  [ "$WORKER_NATIVE_GIT_ALLOWED" != true ] &&
   [ -z "$worker_protected_control_identity" ]; then
   enforce_foreign_active_marker_mutation_boundary
   direct_ledger_static_control_target_pass "$command" || true
@@ -18605,12 +17791,6 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
     coordinator_inspection_allowed=true
   elif [ "$(classify_eci_command "$command" 2>/dev/null || true)" = read-only ]; then
     read_only=true
-  elif [ "$hook_is_subagent" = true ] && [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]; then
-    # The worker Git route has already validated the current-repository
-    # read-only capability and ownership boundary.  Preserve that decision
-    # through the legacy adapter instead of reapplying its old command-name
-    # allowlist.
-    read_only=true
   fi
 elif command_is_read_only "$command"; then
   read_only=true
@@ -18698,15 +17878,13 @@ if [ "$hook_is_subagent" = true ] && command_invokes_eci_binary "$hook_original_
     "use only the exact owner-scoped repository-allow route for this active session; send other lifecycle/control requests to the Supervisor"
 fi
 
-# A typed, literal read-only command never mutates ECI or repository state.
-# Resolve the bounded marker set once so malformed/duplicate active markers
-# still fail closed, enforce the worker Git boundary, then return before Git
-# mutation parsing, activity bookkeeping, or other non-hot-path work. This
-# keeps every ordinary inspection callback local and sub-second by design.
+# Native Git admission preserves the original command and may have side effects.
+# The family router checked every reachable child; non-Git effects keep their
+# normal control routes before this complete-command admission.
 if [ "$coordinator_static_pipeline_candidate" != true ] &&
-  ! eci_cleanup_command_shape "$command" && [ "$read_only" = true ] && {
+  ! eci_cleanup_command_shape "$command" && { [ "$read_only" = true ] || [ "$WORKER_NATIVE_GIT_ALLOWED" = true ]; } && {
   if [ "$hook_is_subagent" = true ]; then
-    [ "$WORKER_PROJECT_INSPECTION_ALLOWED" = true ]
+    [ "$WORKER_NATIVE_GIT_ALLOWED" = true ]
   else
     [ "$coordinator_inspection_allowed" = true ] || read_only_fast_safe "$command"
   fi
@@ -18789,11 +17967,6 @@ if [ "${#syntax_eci_markers[@]}" -gt 0 ]; then
       deny_eci "ECI_BROAD_DESTRUCTIVE_DENIED" "broad-destructive" \
         "ECI ownership gate denied a broad destructive operation: ${protected_literal_detail}; reason=the resolved target is a filesystem, home, repository, provider, proof, or current working root" \
         "narrow the reported target to the exact task-owned file or subdirectory and retry as one finite literal argv"
-      ;;
-    class=worker-git\ *)
-      deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-        "ECI worker ownership gate denied a protected Git operation: ${protected_literal_detail}; predicate=worker-git-ownership; reason=protected Git operations route through the Supervisor while ECI is active; ordinary assigned Producer commits use the separate repository/effect checks" \
-        "route the reported protected Git operation request to the Supervisor; ordinary assigned Producer commits use the resolved repository/effect checks"
       ;;
     class=worker-hook-mode\ *)
       # The compiled planner normally reports this ownership-sensitive source
@@ -18898,33 +18071,6 @@ fi
 
 if [ "$hook_is_subagent" = true ] && command_invokes_eci_acceptance_mutation "$command"; then
   deny_eci "ECI_WORKER_ACCEPTANCE_DENIED" "worker-acceptance" "ECI worker boundary denied a Git history, explicit reference, or patch-application mutation. Assigned Producers may make ordinary scoped checkpoint commits through the resolved repository/effect checks; amendments, other history changes, explicit reference mutations, and git apply remain denied. Send protected acceptance/history/reference/patch requests to the Supervisor." "send this protected history, reference, or patch request to the Supervisor; the reported mutation remains denied"
-fi
-
-# A deferred, capability-free planner result for one direct env-prefixed Git
-# fsck writer needs the worker launcher diagnostic before generic wrapper
-# admission. The compiled planner owns the complete env/argv grammar and
-# publishes this route only after final classification.
-worker_env_git_fsck_lost_found_shape() {
-  [ "$hook_is_subagent" = true ] || return 1
-  [ "${#syntax_eci_markers[@]}" -gt 0 ] || return 1
-  [ "${plan_role:-coordinator}" = worker ] || return 1
-  [ "${plan_marker_state:-inactive}" = active ] || return 1
-  [ "${plan_status:-1}" -eq 3 ] || return 1
-  jq -e '
-    type == "object" and
-    .decision == "defer" and
-    .deferred_route == "worker-env-git-fsck-lost-found" and
-    (.diagnostic == null) and
-    ((.capabilities // []) | length == 0)
-  ' <<<"${plan_output:-}" >/dev/null 2>&1 || return 1
-}
-
-if worker_env_git_fsck_lost_found_shape; then
-  launcher_identity="$(eci_command_identity_subject "$command")"
-  launcher_detail="$(rejected_command_detail "$command" 2>/dev/null || printf 'segment=<unclassified>')"
-  deny_eci "ECI_WORKER_LAUNCHER_DENIED" "worker-launcher" \
-    "ECI worker boundary denied transparent env Git fsck writer: command=${launcher_identity}; detail=${launcher_detail}; predicate=worker-env-git-fsck-lost-found; reason=the exact --lost-found option writes dangling objects under the repository metadata" \
-    "remove --lost-found or route the repository-metadata write request to the Supervisor"
 fi
 
 worker_reviewed_script_admitted=false

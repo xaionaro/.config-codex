@@ -3736,6 +3736,10 @@ func inspectSegment(
 		unwrapped,
 		wholeSingleSegmentPlan,
 	)
+	if request.Marker == MarkerActive && request.Role == RoleWorker && name == "git" && !gitCloneLaunchVisible {
+		// The provider owns native Git family routing; keep clone acquisition separate.
+		return DecisionDefer, nil
+	}
 	if name == "git" {
 		if optionIndex, ok := gitFsckLostFoundOption(argv, gitSubcommandIndex(argv)); ok {
 			routeQualified := wholeSingleSegmentPlan && isWorkerEnvGitFsckLostFound(current.argv)
