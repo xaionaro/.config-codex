@@ -11778,13 +11778,66 @@ def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | in
     loader_controls = {"GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH", "MALLOC_TRACE"}
     infrastructure = {name: value for name, value in os.environ.items()
                       if not name.startswith("LD_") and name not in loader_controls and not name.startswith("GIT_TRACE")}
-    try:
-        observed = subprocess.run([binary], input=json.dumps({"query": "argument-roles", "arguments": arguments}),
-            text=True, env=infrastructure, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            close_fds=True, timeout=10, check=False)
-        if observed.returncode or len(observed.stdout) > 8192:
+    import selectors
+    import time
+
+    request_limit = 4 * 1024 * 1024
+    if sum(len(value) for value in arguments) > request_limit:
+        return None
+    request = bytearray()
+    for part in json.JSONEncoder().iterencode({"query": "argument-roles", "arguments": arguments}):
+        encoded = part.encode("utf-8")
+        if len(encoded) > request_limit - len(request):
             return None
-        result = json.loads(observed.stdout)
+        request.extend(encoded)
+    output = bytearray()
+    deadline = time.monotonic() + 10
+    try:
+        # Read the sentinel before decoding so external stdout cannot exceed the cap.
+        with subprocess.Popen(
+            [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=infrastructure, close_fds=True, bufsize=0,
+        ) as process:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    os.set_blocking(process.stdin.fileno(), False)
+                    os.set_blocking(process.stdout.fileno(), False)
+                    selector.register(process.stdin, selectors.EVENT_WRITE)
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    offset = 0
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return None
+                        for key, _ in selector.select(remaining):
+                            if key.fileobj is process.stdin:
+                                try:
+                                    offset += os.write(process.stdin.fileno(), request[offset:offset + 4096])
+                                except BlockingIOError:
+                                    continue
+                                if offset == len(request):
+                                    selector.unregister(process.stdin)
+                                    process.stdin.close()
+                                continue
+                            try:
+                                chunk = os.read(process.stdout.fileno(), 8193 - len(output))
+                            except BlockingIOError:
+                                continue
+                            if not chunk:
+                                selector.unregister(process.stdout)
+                                process.stdout.close()
+                                continue
+                            output.extend(chunk)
+                            if len(output) > 8192:
+                                return None
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or process.wait(timeout=remaining):
+                        return None
+                result = json.loads(output.decode("utf-8"))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
     if (not isinstance(result, dict) or result.get("query") != "argument-roles" or
@@ -11794,7 +11847,7 @@ def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | in
 
 
 def inspection_output_fallback(verb: str, arguments: list[str]) -> bool | None:
-    """Preserve bounded existing concrete-output coverage when the query is unavailable."""
+    """Preserve finite positive output facts when the query is unavailable or incomplete."""
     if verb == "grep":
         values = {"-e", "--regexp", "-A", "-B", "-C", "--context", "--after-context",
                   "--before-context", "--max-count", "-m", "--threads"}
@@ -12300,7 +12353,9 @@ def segment_spec(
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
         roles = inspection_argument_roles([*git_options, *tokens[index:]])
-        output_effect = roles["output"] if roles is not None else inspection_output_fallback(verb, tokens[index + 1:])
+        output_effect = roles["output"] if roles is not None else False
+        if roles is None or not roles["complete"]:
+            output_effect = output_effect or inspection_output_fallback(verb, tokens[index + 1:]) is True
         if output_effect is True:
             return "output", repo_dir
         if (roles is not None and roles["eligible"] and inspection_globals_supported and worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and

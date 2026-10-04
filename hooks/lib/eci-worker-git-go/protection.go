@@ -63,7 +63,7 @@ func resolvedParent(path string) (string, error) {
 // liveProtectedPaths enumerates the provider's live hooks and session-control roots.
 //
 // Example: destructive hooks-directory operations include protected live descendants.
-func liveProtectedPaths() []string {
+func liveProtectedPaths() ([]string, error) {
 	roots := []string{os.Getenv("CODEX_CONFIGURED_HOME"), os.Getenv("CODEX_HOME"), os.Getenv("KIMI_CODE_HOME"),
 		filepath.Join(os.Getenv("HOME"), ".codex"), filepath.Join(os.Getenv("HOME"), ".kimi-code")}
 	paths := []string{}
@@ -94,9 +94,23 @@ func liveProtectedPaths() []string {
 		root := os.Getenv(name)
 		if filepath.IsAbs(root) {
 			paths = append(paths, filepath.Clean(root))
+			entry, err := resolvedParent(root)
+			if err != nil {
+				return nil, fmt.Errorf("resolve proof root parent %q: %w", root, err)
+			}
+			paths = append(paths, entry)
+			referent, err := filepath.EvalSymlinks(root)
+			switch {
+			case err == nil:
+				paths = append(paths, referent)
+			case errors.Is(err, os.ErrNotExist):
+				// A not-yet-created proof root still protects its lexical entry.
+			default:
+				return nil, fmt.Errorf("resolve proof root %q: %w", root, err)
+			}
 		}
 	}
-	return paths
+	return paths, nil
 }
 
 // CheckPaths rejects index escape and destructive writes to live control paths.
@@ -106,7 +120,14 @@ func (r Repository) CheckPaths(
 	paths []string,
 	access PathAccess,
 ) error {
-	protected := liveProtectedPaths()
+	var protected []string
+	if access == PhysicalWrite {
+		var err error
+		protected, err = liveProtectedPaths()
+		if err != nil {
+			return err
+		}
+	}
 	for _, name := range paths {
 		candidate := filepath.Join(r.Worktree, name)
 		if !containsPath(r.Worktree, candidate) {

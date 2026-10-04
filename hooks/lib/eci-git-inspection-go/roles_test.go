@@ -89,6 +89,9 @@ func TestArgumentRoleFacts(t *testing.T) {
 		output, complete, eligible bool
 		boundary                   int
 	}{
+		{[]string{"log", "--no-merges", "--output=x"}, true, true, false, 3},
+		{[]string{"log", "--merges", "--output=x"}, true, true, false, 3},
+		{[]string{"log", "--follow", "--output=x"}, true, true, false, 3},
 		{[]string{"diff", "--stat-width=80", "--output=x"}, true, true, false, 3},
 		{[]string{"diff", "--stat-width", "80", "--output=x", "--unknown"}, true, false, false, 5},
 		{[]string{"diff", "--unknown", "--output=x"}, false, false, false, 3},
@@ -133,16 +136,77 @@ func TestArgumentRoleFacts(t *testing.T) {
 	}
 }
 
+// TestSharedDiffRoles checks shared flags and required values without guessing unknown suffixes.
+//
+// Example: --find-object consumes an output-looking value while --cc leaves output visible.
+func TestSharedDiffRoles(t *testing.T) {
+	for _, option := range []string{"--no-merges", "--merges", "--follow"} {
+		for _, args := range [][]string{
+			{"log", option, "--", "--output=literal"},
+			{"log", option, "-S", "--output=consumed"},
+		} {
+			if result := AnalyzeArguments(args); result.Output || !result.Complete || !result.Eligible {
+				t.Fatalf("literal or consumed output argv=%v result=%+v", args, result)
+			}
+		}
+		if result := AnalyzeArguments([]string{"log", option, "--output=x", "--unknown"}); !result.Output || result.Complete || result.Eligible {
+			t.Fatalf("lost positive fact option=%s result=%+v", option, result)
+		}
+	}
+	for _, verb := range []string{"diff", "log", "show"} {
+		cases := []struct {
+			args             []string
+			output, complete bool
+		}{
+			{[]string{verb, "--cc", "--output=x"}, true, true},
+			{[]string{verb, "--cc", "--output=x", "--unknown"}, true, false},
+			{[]string{verb, "--cc", "--unknown", "--output=x"}, false, false},
+			{[]string{verb, "--cc", "--", "--output=literal"}, false, true},
+			{[]string{verb, "--find-object=object", "--output=x"}, true, true},
+			{[]string{verb, "--find-object", "object", "--output=x"}, true, true},
+			{[]string{verb, "--find-object", "--output=consumed"}, false, true},
+			{[]string{verb, "--find-object=--output=consumed"}, false, true},
+			{[]string{verb, "--find-object"}, false, false},
+			{[]string{verb, "--cc=value", "--output=x"}, false, false},
+		}
+		for _, test := range cases {
+			result := AnalyzeArguments(test.args)
+			if result.Output != test.output || result.Complete != test.complete || result.Eligible != (test.complete && !test.output) {
+				t.Fatalf("argv=%v result=%+v", test.args, result)
+			}
+		}
+	}
+	for _, verb := range []string{"diff", "show", "grep", "status"} {
+		for _, option := range []string{"--no-merges", "--merges", "--follow"} {
+			if result := AnalyzeArguments([]string{verb, option, "--output=x"}); result.Complete || result.Output {
+				t.Fatalf("unsupported applicability argv=%s %s result=%+v", verb, option, result)
+			}
+		}
+	}
+}
+
 // TestNativeOutputFacts pairs known roles with native file creation even before a later invalid option.
 //
 // Example: stat-width consumes its value and preserves a subsequent concrete output request.
 func TestNativeOutputFacts(t *testing.T) {
-	for _, prefix := range [][]string{{"diff", "--stat-width=80", "--no-textconv"}, {"diff", "--inter-hunk-context", "2"}, {"diff", "--diff-algorithm", "minimal"}, {"log", "--date", "iso"}, {"log", "--encoding", "UTF-8"}, {"diff"}} {
+	for _, prefix := range [][]string{
+		{"diff", "--stat-width=80", "--no-textconv"}, {"diff", "--inter-hunk-context", "2"}, {"diff", "--diff-algorithm", "minimal"}, {"log", "--date", "iso"}, {"log", "--encoding", "UTF-8"}, {"diff"},
+		{"log", "--no-merges"}, {"log", "--merges"}, {"log", "--follow", "--", "file.txt"},
+		{"diff", "--cc"}, {"log", "--cc"}, {"show", "--cc"},
+		{"diff", "--find-object=0000000000000000000000000000000000000000"}, {"diff", "--find-object", "0000000000000000000000000000000000000000"},
+		{"log", "--find-object=0000000000000000000000000000000000000000"}, {"log", "--find-object", "0000000000000000000000000000000000000000"},
+		{"show", "--find-object=0000000000000000000000000000000000000000"}, {"show", "--find-object", "0000000000000000000000000000000000000000"},
+	} {
 		// Every native output lives in the owned fixture and is removed by its fixture cleanup.
 		t.Run(strings.Join(prefix, " "), func(t *testing.T) {
 			in, _, _ := fixture(t)
 			destination := in.Environment["HOME"] + "/native-output"
-			args := append(append([]string{}, prefix...), "--output="+destination)
+			args := append([]string{}, prefix...)
+			if prefix[0] == "log" && prefix[1] == "--follow" {
+				args = []string{"log", "--follow", "--output=" + destination, "--", "file.txt"}
+			} else {
+				args = append(args, "--output="+destination)
+			}
 			invalid := len(prefix) == 1
 			if invalid {
 				args = append(args, "--unknown-role")

@@ -2171,7 +2171,7 @@ run_worker_git_helper_effect() {
 }
 
 run_worker_git_argument_roles() {
-  local command index_before head_before worktree_before
+  local command index_before head_before worktree_before object verb option
   index_before="$(sha256sum "$REPO/.git/index")"
   head_before="$(git -C "$REPO" rev-parse HEAD)"
   worktree_before="$(git -C "$REPO" hash-object file.txt)"
@@ -2187,8 +2187,29 @@ run_worker_git_argument_roles() {
     'git grep base -o -- file.txt' \
     'git log --author --output=literal -1' \
     'git log --author=--output=literal -1' \
+    'git diff -S --output=literal -- file.txt' \
+    'git diff --find-object --output=literal -- file.txt' \
     'git diff --unknown-role --output=literal'; do
     assert_allowed "$command" worker
+  done
+  object="$(git -C "$REPO" rev-parse HEAD:file.txt)"
+  for command in \
+    'git log --no-merges --output=roles.out -1' \
+    'git log --merges --output=roles.out -1' \
+    'git log --follow --output=roles.out -- file.txt'; do
+    assert_denied_code "$command" ECI_GIT_OUTPUT_WRITE_DENIED worker
+    (cd -- "$REPO" && /bin/bash -c "$command")
+    [ -e "$REPO/roles.out" ]
+    rm -- "$REPO/roles.out"
+  done
+  for verb in diff log show; do
+    for option in '--cc' "--find-object=$object" "--find-object $object"; do
+      command="git $verb $option --output=roles.out -- file.txt"
+      assert_denied_code "$command" ECI_GIT_OUTPUT_WRITE_DENIED worker
+      (cd -- "$REPO" && /bin/bash -c "$command")
+      [ -e "$REPO/roles.out" ]
+      rm -- "$REPO/roles.out"
+    done
   done
   for command in \
     'git diff --output=roles.out -- file.txt' \
@@ -2224,6 +2245,48 @@ run_worker_git_argument_roles() {
   [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ]
   [ "$(git -C "$REPO" hash-object file.txt)" = "$worktree_before" ]
   printf '%s\n' 'worker Git command argument roles: PASS'
+}
+
+run_worker_git_restore_proof_aliases() {
+  local alias="$REPO/restore-alias" target="$REPO/restore-referent" proof="$REPO/proof-referent"
+  local tree head command binary="$RUNTIME_ROOT/bin/eci-worker-git"
+  mkdir -p -- "$alias" "$target" "$proof"
+  printf 'base\n' >"$alias/file"
+  printf 'sentinel\n' >"$target/file"
+  printf 'live\n' >"$proof/eci_active"
+  git -C "$REPO" add -- restore-alias/file proof-referent/eci_active
+  git -C "$REPO" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'restore alias fixture'
+  rm -- "$alias/file"
+  rmdir -- "$alias"
+  ln -s restore-referent "$alias"
+  git -C "$REPO" restore --source=HEAD --worktree -- restore-alias/file
+  [ -d "$alias" ] && [ ! -L "$alias" ]
+  [ "$(cat "$target/file")" = sentinel ]
+  rm -- "$alias/file"
+  rmdir -- "$alias"
+  ln -s restore-referent "$alias"
+  tree="$(git -C "$REPO" write-tree)"
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  if "$binary" --repo "$REPO" restore --source head --destination worktree -- restore-alias/file >"$TMP_ROOT/alias-refusal.log" 2>&1; then
+    printf '%s\n' 'restore replaced unnamed alias' >&2
+    return 1
+  fi
+  rg -q 'restore-alias/file.*ancestor symlink.*restore-alias.*move' "$TMP_ROOT/alias-refusal.log"
+  [ -L "$alias" ]
+  "$binary" --repo "$REPO" restore --source head --destination index -- restore-alias/file
+  command="mv -- '$alias' '$alias.saved-alias'"
+  assert_allowed "$command" worker
+  mv -- "$alias" "$alias.saved-alias"
+  "$binary" --repo "$REPO" restore --source head --destination worktree -- restore-alias/file
+  [ -L "$alias.saved-alias" ] && [ "$(cat "$alias/file")" = base ] && [ "$(cat "$target/file")" = sentinel ]
+  ln -s proof-referent "$REPO/proof-alias"
+  if CODEX_PROOF_ROOT="$REPO/proof-alias" "$binary" --repo "$REPO" remove --destination worktree -- proof-referent/eci_active >"$TMP_ROOT/proof-refusal.log" 2>&1; then
+    printf '%s\n' 'physical proof root alias lost protection' >&2
+    return 1
+  fi
+  [ "$(cat "$proof/eci_active")" = live ]
+  [ "$(git -C "$REPO" write-tree)" = "$tree" ] && [ "$(git -C "$REPO" rev-parse HEAD)" = "$head" ]
+  printf '%s\n' 'worker Git native restore/proof aliases and registered owned hatch: PASS'
 }
 
 run_worker_git_literal_helper_roles() {
@@ -2282,15 +2345,19 @@ run_worker_git_output_transport() {
     [ ! -e "$REPO/roles.out" ] && [ ! -e "$REPO/loader.out" ] && [ ! -e "$REPO/trace.out" ]
   done
   mv -- "$binary" "$binary.saved"
-  for mode in missing malformed timeout; do
+  for mode in missing malformed overflow incomplete timeout; do
     case "$mode" in
       missing) ;;
       malformed) printf '#!/bin/sh\nprintf "not-json\\n"\n' >"$binary"; chmod 755 "$binary" ;;
+      overflow) printf '#!/bin/sh\nhead -c 67108864 /dev/zero\n' >"$binary"; chmod 755 "$binary" ;;
+      incomplete) printf '#!/bin/sh\nprintf '\''{"query":"argument-roles","output":false,"complete":false,"eligible":false,"verb":"diff","boundary":0}'\''\n' >"$binary"; chmod 755 "$binary" ;;
       timeout) printf '#!/bin/sh\nexec /bin/sleep 20\n' >"$binary"; chmod 755 "$binary" ;;
     esac
     assert_denied_code 'git diff --output=roles.out -- file.txt' ECI_GIT_OUTPUT_WRITE_DENIED worker
+    assert_denied_code 'git log --no-merges --output=roles.out -1' ECI_GIT_OUTPUT_WRITE_DENIED worker
     assert_allowed 'git diff -- --output=literal' worker
     assert_allowed 'git grep -e --output=literal -- file.txt' worker
+    assert_denied_code 'git diff --unknown-role && git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker
     [ ! -e "$REPO/roles.out" ]
     [ "$mode" = missing ] || rm -- "$binary"
   done
@@ -3028,6 +3095,7 @@ run_effect_aware_git_target() {
       return 0
     fi
     run_worker_git_argument_roles
+    run_worker_git_restore_proof_aliases
     run_worker_git_literal_helper_roles
     run_worker_git_hatch_roles
     run_worker_git_output_transport

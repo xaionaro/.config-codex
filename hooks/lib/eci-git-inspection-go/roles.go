@@ -259,11 +259,11 @@ func longArgumentOption(
 		switch name {
 		case "--output":
 			return argumentOption{arity: requiredValue, auxiliary: true, output: true}
-		case "--stat-width", "--stat-name-width", "--stat-graph-width", "--stat-count", "--ws-error-highlight":
+		case "--stat-width", "--stat-name-width", "--stat-graph-width", "--stat-count", "--ws-error-highlight", "--find-object":
 			return argumentOption{arity: requiredValue}
 		case "--break-rewrites", "--dirstat", "--dirstat-by-file", "--color-moved":
 			return argumentOption{arity: optionalValue}
-		case "--irreversible-delete", "--cumulative", "--text", "--default-prefix":
+		case "--irreversible-delete", "--cumulative", "--text", "--default-prefix", "--cc":
 			return argumentOption{arity: noValue}
 		case "--no-index":
 			return argumentOption{arity: noValue, auxiliary: true}
@@ -278,6 +278,12 @@ func longArgumentOption(
 			if name == "--format" {
 				return argumentOption{arity: attachedValue}
 			}
+		}
+	}
+	if verb == "log" {
+		switch name {
+		case "--no-merges", "--merges", "--follow":
+			return argumentOption{arity: noValue}
 		}
 	}
 	if verb == "grep" {
