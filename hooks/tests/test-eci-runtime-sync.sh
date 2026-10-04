@@ -273,7 +273,7 @@ safe_import_dir='hooks/lib/eci-safe-import-go'
 mkdir -p -- "$planner_root/tmp" "$planner_codex/bin" "$planner_codex/$planner_dir" "$planner_kimi/$planner_dir" \
   "$planner_codex/$safe_import_dir" "$planner_kimi/$safe_import_dir"
 cp -- "$ROOT/bin/eci-runtime-sync" "$planner_codex/bin/eci-runtime-sync"
-for planner_source in go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go; do
+for planner_source in go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go hook.go hook_context.go hook_effects.go; do
   cp -- "$ROOT/$planner_dir/$planner_source" "$planner_codex/$planner_dir/$planner_source"
 done
 # The Kimi tree carries only the peer-published safe-importer binary; its Go

@@ -20,6 +20,9 @@ const (
 	StatusInternal = 64
 )
 
+// main selects the callback envelope or the existing planner request protocol.
+//
+// Example: --hook consumes one PreToolUse callback; no arguments use the planner.
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--hook" {
 		os.Exit(RunHook(os.Stdin, os.Stdout))

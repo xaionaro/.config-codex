@@ -14,6 +14,25 @@ import (
 	"time"
 )
 
+const (
+	// maxHookRecordBytes bounds one marker or dependency allowance record.
+	//
+	// Example: records over 4 KiB are advisory metadata rather than authority.
+	maxHookRecordBytes = 4096
+	// maxHookObservedMarkers bounds advisory peer marker discovery.
+	//
+	// Example: the direct session is checked before observing up to 64 markers.
+	maxHookObservedMarkers = 64
+	// maxHookTranscriptPrefixBytes bounds transcript metadata prefix reading.
+	//
+	// Example: parent metadata before a large history tail fits within 64 KiB.
+	maxHookTranscriptPrefixBytes = 64 << 10
+	// maxHookMetadataDepth bounds nested transcript metadata traversal.
+	//
+	// Example: ordinary thread_spawn fields are shallower than 32 levels.
+	maxHookMetadataDepth = 32
+)
+
 // HookInput contains the callback fields needed to resolve command ownership.
 //
 // Example: Bash callbacks supply ToolInput.Command and the callback SessionID.
@@ -87,7 +106,7 @@ func hookRequest(input HookInput) (Request, error) {
 			continue
 		}
 		count++
-		if count > 64 {
+		if count > maxHookObservedMarkers {
 			break
 		}
 		lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
@@ -192,19 +211,19 @@ func hookSmallRecord(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > 4096 {
+	if !info.Mode().IsRegular() || info.Size() > maxHookRecordBytes {
 		return nil, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, 4097))
+	data, readErr := io.ReadAll(io.LimitReader(file, maxHookRecordBytes+1))
 	closeErr := file.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return nil, err
 	}
-	if len(data) > 4096 || len(data) == 0 || data[len(data)-1] != '\n' {
+	if len(data) > maxHookRecordBytes || len(data) == 0 || data[len(data)-1] != '\n' {
 		return nil, nil
 	}
 	for _, c := range data {
@@ -255,7 +274,7 @@ func hookTranscriptParent(path string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	decoder := json.NewDecoder(io.LimitReader(file, 64<<10))
+	decoder := json.NewDecoder(io.LimitReader(file, maxHookTranscriptPrefixBytes))
 	metadata := hookSpawnPrefix{}
 	readErr := metadata.read(decoder, "", 0)
 	closeErr := file.Close()
@@ -294,7 +313,7 @@ func (metadata *hookSpawnPrefix) read(
 	path string,
 	depth int,
 ) error {
-	if depth > 32 {
+	if depth > maxHookMetadataDepth {
 		return io.ErrUnexpectedEOF
 	}
 	token, err := decoder.Token()

@@ -7,8 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
+// contextFixture isolates proof storage and command working directories.
+//
+// Example: marker discovery reads a temporary proof root without real session state.
 func contextFixture(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -17,174 +22,151 @@ func contextFixture(t *testing.T) (string, string) {
 	t.Setenv("CODEX_HOOK_IS_SUBAGENT", "")
 	return root, cwd
 }
-func contextMarker(t *testing.T, root, sid, cwd string) {
+
+// contextMarker writes a valid session marker in isolated proof storage.
+//
+// Example: a parent marker binds its session identifier to the fixture directory.
+func contextMarker(
+	t *testing.T,
+	root string,
+	sid string,
+	cwd string,
+) {
 	t.Helper()
 	dir := filepath.Join(root, sid)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "eci_active"), []byte("scope: test\ncwd: "+cwd+"\nsession_id: "+sid+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "eci_active"), []byte("scope: test\ncwd: "+cwd+"\nsession_id: "+sid+"\n"), 0600))
 }
+
+// TestHookContextParentPrefix discovers parent metadata before a large history tail.
+//
+// Example: a spawned child inherits the parent session's active marker.
 func TestHookContextParentPrefix(t *testing.T) {
 	root, cwd := contextFixture(t)
 	contextMarker(t, root, "parent", cwd)
 	transcript := filepath.Join(t.TempDir(), "transcript.jsonl")
 	metadata := `{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}`
-	if err := os.WriteFile(transcript, []byte(metadata+"\n"+strings.Repeat("x", 2<<20)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(transcript, []byte(metadata+"\n"+strings.Repeat("x", 2<<20)), 0600))
 	got, err := hookRequest(HookInput{SessionID: "child", CWD: cwd, TranscriptPath: transcript})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Role != RoleWorker || got.ActiveSession != "parent" || got.Marker != MarkerActive || len(got.ActiveMarkers) != 1 {
-		t.Fatalf("context=%+v", got)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, got.Role != RoleWorker || got.ActiveSession != "parent" || got.Marker != MarkerActive || len(got.ActiveMarkers) != 1, "context=%+v", got)
 }
+
+// TestHookContextMarkerAliasAndInvalid checks supported aliases and invalid records.
+//
+// Example: owner resolves session_owner, while a broken marker grants no authority.
 func TestHookContextMarkerAliasAndInvalid(t *testing.T) {
 	root, cwd := contextFixture(t)
 	contextMarker(t, root, "session_owner", cwd)
 	got, err := hookRequest(HookInput{SessionID: "owner", CWD: cwd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ActiveSession != "session_owner" || got.Marker != MarkerActive {
-		t.Fatalf("context=%+v", got)
-	}
-	if err := os.WriteFile(filepath.Join(root, "session_owner", "eci_active"), []byte("broken\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, got.ActiveSession != "session_owner" || got.Marker != MarkerActive, "context=%+v", got)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "session_owner", "eci_active"), []byte("broken\n"), 0600))
 	got, err = hookRequest(HookInput{SessionID: "owner", CWD: cwd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Marker == MarkerActive || len(got.ActiveMarkers) != 0 {
-		t.Fatalf("invalid marker accepted: %+v", got)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, got.Marker == MarkerActive || len(got.ActiveMarkers) != 0, "invalid marker accepted: %+v", got)
 }
+
+// TestHookContextExplicitWorkerAndActivity verifies role and mutation bookkeeping.
+//
+// Example: ordinary reads create no activity, while coordinator writes record it.
 func TestHookContextExplicitWorkerAndActivity(t *testing.T) {
 	root, cwd := contextFixture(t)
 	t.Setenv("CODEX_HOOK_IS_SUBAGENT", "1")
 	input := HookInput{SessionID: "child", CWD: cwd}
 	input.ToolInput.Command = "cat ordinary"
 	request, err := hookRequest(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Role != RoleWorker || request.Command != "cat ordinary" {
-		t.Fatalf("request=%+v", request)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, request.Role != RoleWorker || request.Command != "cat ordinary", "request=%+v", request)
 	readonly := Result{ShellAnalysis: &ShellAnalysis{Commands: []ShellCommandRecord{{Argv: []string{"cat", "ordinary"}}}}}
-	if err := recordHookActivity(request, readonly); err != nil {
-		t.Fatal(err)
+	require.NoError(t, recordHookActivity(request, readonly))
+	{
+		_, err := os.Stat(filepath.Join(root, "activity"))
+		require.Falsef(t, !os.IsNotExist(err), "worker read created activity: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "activity")); !os.IsNotExist(err) {
-		t.Fatalf("worker read created activity: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "touched-repos")); !os.IsNotExist(err) {
-		t.Fatalf("read-only command touched repositories: %v", err)
+	{
+		_, err := os.Stat(filepath.Join(root, "touched-repos"))
+		require.Falsef(t, !os.IsNotExist(err), "read-only command touched repositories: %v", err)
 	}
 	request.Role = RoleCoordinator
-	if err := recordHookActivity(request, readonly); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "activity")); !os.IsNotExist(err) {
-		t.Fatalf("coordinator read created activity: %v", err)
+	require.NoError(t, recordHookActivity(request, readonly))
+	{
+		_, err := os.Stat(filepath.Join(root, "activity"))
+		require.Falsef(t, !os.IsNotExist(err), "coordinator read created activity: %v", err)
 	}
 	request.Command = "printf data > output"
-	if err := recordHookActivity(request, Result{ShellAnalysis: &ShellAnalysis{OutputWrites: true}}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, recordHookActivity(request, Result{ShellAnalysis: &ShellAnalysis{OutputWrites: true}}))
 	data, err := os.ReadFile(filepath.Join(root, "activity", "sessions", "child", "shell"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "kind: shell\n") {
-		t.Fatalf("activity=%q", data)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, !strings.Contains(string(data), "kind: shell\n"), "activity=%q", data)
 }
 
+// TestHookContextDependencyAndRootAlias resolves canonical owner and dependency roots.
+//
+// Example: a proof-root symlink preserves a declared dependency allowance.
 func TestHookContextDependencyAndRootAlias(t *testing.T) {
 	root, cwd := contextFixture(t)
 	contextMarker(t, root, "owner", cwd)
 	alias := filepath.Join(t.TempDir(), "proof")
-	if err := os.Symlink(root, alias); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(root, alias))
 	t.Setenv("CODEX_PROOF_ROOT", alias)
 	dependency := t.TempDir()
 	data := "schema: eci-additional-repository/v1\nsession_id: owner\ncwd: " + cwd + "\nrepository: " + dependency + "\nreason: fix dependency\nstate: active\n"
-	if err := os.WriteFile(filepath.Join(root, "owner", "eci-additional-repository"), []byte(data), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "owner", "eci-additional-repository"), []byte(data), 0600))
 	got, err := hookRequest(HookInput{SessionID: "owner", CWD: dependency})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	canonicalDependency, err := hookCanonicalPath(dependency)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	canonicalRoot, err := hookCanonicalPath(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.ApprovedRoots) != 2 || got.ApprovedRoots[1] != canonicalDependency || got.ActiveMarkers[0] != filepath.Join(canonicalRoot, "owner", "eci_active") {
-		t.Fatalf("context=%+v", got)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, len(got.ApprovedRoots) != 2 || got.ApprovedRoots[1] != canonicalDependency || got.ActiveMarkers[0] != filepath.Join(canonicalRoot, "owner", "eci_active"), "context=%+v", got)
 }
 
+// TestHookContextOversizedFirstRecordTail retains metadata before an oversized value.
+//
+// Example: thread_spawn parent metadata remains readable before a large tail string.
 func TestHookContextOversizedFirstRecordTail(t *testing.T) {
 	root, cwd := contextFixture(t)
 	contextMarker(t, root, "parent", cwd)
 	transcript := filepath.Join(t.TempDir(), "transcript.jsonl")
 	metadata := `{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}},"tail":"` + strings.Repeat("x", 2<<20) + `"}}`
-	if err := os.WriteFile(transcript, []byte(metadata), 0600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(transcript, []byte(metadata), 0600))
 	got, err := hookRequest(HookInput{SessionID: "child", CWD: cwd, TranscriptPath: transcript})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ActiveSession != "parent" || got.Role != RoleWorker {
-		t.Fatalf("context=%+v", got)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, got.ActiveSession != "parent" || got.Role != RoleWorker, "context=%+v", got)
 }
 
+// TestHookContextTouchedBaseline checks consumer-compatible child-session records.
+//
+// Example: worker writes record initial HEAD and status without coordinator activity.
 func TestHookContextTouchedBaseline(t *testing.T) {
 	root, cwd := contextFixture(t)
-	if output, err := exec.Command("git", "-C", cwd, "init").CombinedOutput(); err != nil {
-		t.Fatalf("fixture: %v: %s", err, output)
+	{
+		output, err := exec.Command("git", "-C", cwd, "init").CombinedOutput()
+		require.NoErrorf(t, err, "fixture: %v: %s", err, output)
 	}
 	request := Request{Role: RoleWorker, ActiveSession: "owner", HookSessionID: "child", CWD: cwd, Command: "printf data > output"}
 	result := Result{ShellAnalysis: &ShellAnalysis{OutputWrites: true}}
-	if err := recordHookActivity(request, result); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, recordHookActivity(request, result))
 	entries, err := os.ReadDir(filepath.Join(root, "touched-repos", "sessions", "child"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("records=%d", len(entries))
-	}
+	require.NoError(t, err)
+	require.Falsef(t, len(entries) != 1, "records=%d", len(entries))
 	data, err := os.ReadFile(filepath.Join(root, "touched-repos", "sessions", "child", entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.Falsef(t, !strings.Contains(string(data), "status_sha: ") || !strings.Contains(string(data), "head: \n") || !strings.Contains(string(data), "repo_wide: true\n"), "baseline=%q", data)
+	{
+		_, err := os.Stat(filepath.Join(root, "touched-repos", "sessions", "owner"))
+		require.Falsef(t, !os.IsNotExist(err), "parent state created: %v", err)
 	}
-	if !strings.Contains(string(data), "status_sha: ") || !strings.Contains(string(data), "head: \n") || !strings.Contains(string(data), "repo_wide: true\n") {
-		t.Fatalf("baseline=%q", data)
-	}
-	if _, err := os.Stat(filepath.Join(root, "touched-repos", "sessions", "owner")); !os.IsNotExist(err) {
-		t.Fatalf("parent state created: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "activity")); !os.IsNotExist(err) {
-		t.Fatalf("worker mutation created activity: %v", err)
+	{
+		_, err := os.Stat(filepath.Join(root, "activity"))
+		require.Falsef(t, !os.IsNotExist(err), "worker mutation created activity: %v", err)
 	}
 }
 
+// TestHookContextDirectOwnerBeyondPeerCap prioritizes direct authority over peers.
+//
+// Example: a sorted-late current marker stays active after more than 64 peers.
 func TestHookContextDirectOwnerBeyondPeerCap(t *testing.T) {
 	root, cwd := contextFixture(t)
 	for index := 0; index < 65; index++ {
@@ -192,60 +174,44 @@ func TestHookContextDirectOwnerBeyondPeerCap(t *testing.T) {
 	}
 	contextMarker(t, root, "zzz-owner", cwd)
 	request, err := hookRequest(HookInput{SessionID: "zzz-owner", CWD: cwd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.Marker != MarkerActive || request.ActiveSession != "zzz-owner" {
-		t.Fatalf("direct owner hidden: %+v", request)
-	}
-	if !hookReadonlyCommand(ShellCommandRecord{Argv: []string{"git", "-C", cwd, "diff"}}) || hookReadonlyCommand(ShellCommandRecord{Argv: []string{"git", "add", "diff"}}) {
-		t.Fatal("git arguments confused with command verb")
-	}
+	require.NoError(t, err)
+	require.Falsef(t, request.Marker != MarkerActive || request.ActiveSession != "zzz-owner", "direct owner hidden: %+v", request)
+	require.False(t, !hookReadonlyCommand(ShellCommandRecord{Argv: []string{"git", "-C", cwd, "diff"}}) || hookReadonlyCommand(ShellCommandRecord{Argv: []string{"git", "add", "diff"}}), "git arguments confused with command verb")
 }
 
+// TestHookContextTypedDependencyTouched records the typed command's selected repository.
+//
+// Example: a worker stage targets its dependency while inspect creates no baseline.
 func TestHookContextTypedDependencyTouched(t *testing.T) {
 	root, cwd := contextFixture(t)
 	dependency := t.TempDir()
-	if output, err := exec.Command("git", "-C", dependency, "init").CombinedOutput(); err != nil {
-		t.Fatalf("fixture: %v: %s", err, output)
+	{
+		output, err := exec.Command("git", "-C", dependency, "init").CombinedOutput()
+		require.NoErrorf(t, err, "fixture: %v: %s", err, output)
 	}
 	request := Request{Role: RoleWorker, ActiveSession: "parent", HookSessionID: "child", CWD: cwd}
 	analysis := &ShellAnalysis{Commands: []ShellCommandRecord{{Argv: []string{"eci-worker-git", "--repo", dependency, "inspect"}}}}
-	if err := recordHookActivity(request, Result{ShellAnalysis: analysis}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "touched-repos")); !os.IsNotExist(err) {
-		t.Fatalf("inspect touched dependency: %v", err)
+	require.NoError(t, recordHookActivity(request, Result{ShellAnalysis: analysis}))
+	{
+		_, err := os.Stat(filepath.Join(root, "touched-repos"))
+		require.Falsef(t, !os.IsNotExist(err), "inspect touched dependency: %v", err)
 	}
 	analysis.Commands[0].Argv[3] = "stage"
-	if err := recordHookActivity(request, Result{ShellAnalysis: analysis}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, recordHookActivity(request, Result{ShellAnalysis: analysis}))
 	entries, err := os.ReadDir(filepath.Join(root, "touched-repos", "sessions", "child"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("touched=%d", len(entries))
-	}
+	require.NoError(t, err)
+	require.Falsef(t, len(entries) != 1, "touched=%d", len(entries))
 	data, err := os.ReadFile(filepath.Join(root, "touched-repos", "sessions", "child", entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	canonical, err := hookCanonicalPath(dependency)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "repo: "+canonical+"\n") {
-		t.Fatalf("wrong repository: %q", data)
-	}
+	require.NoError(t, err)
+	require.Falsef(t, !strings.Contains(string(data), "repo: "+canonical+"\n"), "wrong repository: %q", data)
 }
 
+// TestHookContextAssignmentReadonly preserves child effects after environment assignments.
+//
+// Example: KEY=value cat stays readonly, while KEY=value git add stays mutable.
 func TestHookContextAssignmentReadonly(t *testing.T) {
-	if !hookReadonlyCommand(ShellCommandRecord{Argv: []string{"KEY=value", "cat", "ordinary"}}) {
-		t.Fatal("assignment-prefixed read marked mutable")
-	}
-	if hookReadonlyCommand(ShellCommandRecord{Argv: []string{"KEY=value", "git", "add", "ordinary"}}) {
-		t.Fatal("assignment-prefixed mutation marked readonly")
-	}
+	require.False(t, !hookReadonlyCommand(ShellCommandRecord{Argv: []string{"KEY=value", "cat", "ordinary"}}), "assignment-prefixed read marked mutable")
+	require.False(t, hookReadonlyCommand(ShellCommandRecord{Argv: []string{"KEY=value", "git", "add", "ordinary"}}), "assignment-prefixed mutation marked readonly")
 }

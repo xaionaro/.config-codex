@@ -71,7 +71,7 @@ PLANNER_RECEIPT_NAME='.eci-command-plan.provenance'
 PLANNER_LOCK_NAME='.eci-command-plan.publish.lock'
 PLANNER_KNOWN_STALE_ROOT='hooks'
 PLANNER_SNAPSHOT_ATTEMPTS=3
-PLANNER_SOURCE_FILES=(go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go)
+PLANNER_SOURCE_FILES=(go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go hook.go hook_context.go hook_effects.go)
 readonly -a PLANNER_SOURCE_FILES
 readonly PLANNER_GO PLANNER_GOROOT PLANNER_GO_TOOL_DIR PLANNER_TARGET PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME \
   PLANNER_KNOWN_STALE_ROOT PLANNER_SNAPSHOT_ATTEMPTS
