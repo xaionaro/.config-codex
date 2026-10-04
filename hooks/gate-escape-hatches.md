@@ -59,6 +59,13 @@ retry. `--repo` supplies the initial Git `-C`; native arguments and environment 
 select another repository. Shell sibling commands keep their ordinary gates.
 Routine Producer ownership and Git coordination still apply outside the exact exception.
 
+Every wrapper call, including rejected input, appends a JSONL inventory row to
+`$HOME/.cache/codex/eci-worker-git.jsonl`: UTC `timestamp`, `pid`, `argc`, and
+`route` (`run-once` or `typed-or-invalid`). Arguments, repository, reason and
+environment are omitted; rows cannot reconstruct commands. Native streams are
+preserved during normal logging. Unavailable storage adds a stderr warning and
+continues the original command, validation and exit behavior.
+
 Prefix every typed operation with `"$HOME/.codex/bin/eci-worker-git" --repo <existing-repository>`. Paths after `--` are literal names, including metacharacters/newlines; absolute paths, empty segments and `.`/`..` escapes are rejected. Typed operations accept no arbitrary native Git argv; the explicit user-authorized `run-once` exception above does.
 
 | Operation | Fixed input and effect |

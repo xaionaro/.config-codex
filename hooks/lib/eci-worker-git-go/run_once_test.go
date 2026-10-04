@@ -12,6 +12,7 @@ import (
 //
 // Example: a whitespace reason never executes the supplied Git alias.
 func TestRunOnceRequiresAuthorizationAndReason(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := fixtureRepository(t)
 	marker := filepath.Join(t.TempDir(), "runs")
 	t.Setenv("GIT_ONCE_MARKER", marker)
@@ -41,6 +42,7 @@ func TestRunOnceRequiresAuthorizationAndReason(t *testing.T) {
 //
 // Example: native -C selects another owned fixture while an alias reads inherited environment and stdin.
 func TestRunOncePreservesNativeContextAndStreams(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	initial := fixtureRepository(t)
 	selected := fixtureRepository(t)
 	t.Setenv("GIT_ONCE_VALUE", "inherited value")
@@ -61,6 +63,7 @@ func TestRunOncePreservesNativeContextAndStreams(t *testing.T) {
 //
 // Example: a Git alias exiting 37 makes the escape invocation exit 37.
 func TestRunOncePreservesNativeExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := fixtureRepository(t)
 	var output, diagnostic bytes.Buffer
 	if code := Run([]string{"--repo", root, "run-once", "--reason", "approved status check", "--user-authorized", "--", "-c", "alias.failure=!exit 37", "failure"}, Streams{Output: &output, Error: &diagnostic}); code != 37 {

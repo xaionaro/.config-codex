@@ -12,6 +12,7 @@ import (
 //
 // Example: a successful stage returns zero, while a malformed native-style request returns nonzero.
 func TestRunReportsFixedOperationAndValidationFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := fixtureRepository(t)
 	var output bytes.Buffer
 	var diagnostic bytes.Buffer
