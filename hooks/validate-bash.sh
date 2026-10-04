@@ -11788,7 +11788,7 @@ worker_script_target_additional_repository_allowed() {
   local detail="$1" resolved repository
 
   [ "${hook_is_subagent:-false}" = true ] || return 1
-  case "$detail" in
+      case "$detail" in
     *" resolved="*" reason="*) ;;
     *) return 1 ;;
   esac
