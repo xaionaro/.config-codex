@@ -7730,6 +7730,11 @@ WORKER_NATIVE_GIT_ALLOWED=false
 WORKER_CONTROL_DETAIL=""
 worker_control_path_detail() {
   [ "$hook_is_subagent" = true ] || return 1
+  # TODO: Restore worker control-path ownership inspection with the verified Go
+  # replacement. This Python checker is temporarily disabled because its CPU
+  # cost stalls ordinary worker commands; the remaining policy gates stay active.
+  return 1
+
   local history_pathspec_exception="${1:-false}" detail worker_control_cwd="$cwd" worker_control_cwds='[]' worker_control_cwd_physical="" worker_control_cwd_physicals='[]'
   case "$history_pathspec_exception" in
     true|false) ;;
