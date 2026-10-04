@@ -3190,17 +3190,22 @@ case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
       assert_denied_code "$command; git -C $REPO reset --hard" "$denial" "$role"
       assert_denied_code "$command; rm $FOREIGN_TIMEOUT_CONTROL_INNER/eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role"
       printf 'modified\n' >"$REPO/file.txt"
-      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'user approved fixture reset' --user-authorized -- reset --hard
+      HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+        "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'user approved fixture reset' --user-authorized -- reset --hard
       [ "$(cat -- "$REPO/file.txt")" = base ]
       assert_denied_code "git -C $REPO reset --hard" "$denial" "$role"
     done
     printf 'unchanged\n' >"$REPO/file.txt"
-    if "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason '' --user-authorized -- reset --hard; then exit 1; fi
-    if "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'fixture' -- reset --hard; then exit 1; fi
+    if HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason '' --user-authorized -- reset --hard; then exit 1; fi
+    if HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'fixture' -- reset --hard; then exit 1; fi
     [ "$(cat -- "$REPO/file.txt")" = unchanged ]
     status=0
-    "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'approved fixture exit check' --user-authorized -- -c 'alias.failure=!exit 37' failure || status=$?
+    HOME="$HOME_ROOT" CODEX_HOME="$RUNTIME_ROOT" CODEX_PROOF_ROOT="$PROOF_ROOT" \
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'approved fixture exit check' --user-authorized -- -c 'alias.failure=!exit 37' failure || status=$?
     [ "$status" -eq 37 ]
+    jq -se 'length == 5 and all(.[]; .route == "run-once")' "$HOME_ROOT/.cache/codex/eci-worker-git.jsonl" >/dev/null
     printf '%s\n' 'normal Git admission run-once target: PASS'
     exit 0
     ;;
