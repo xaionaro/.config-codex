@@ -11751,8 +11751,8 @@ worker_git_native_route() {
       native-mutation)
         validate_active_marker_binding
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
-          "worker native Git mutation family uses the typed CLI: effect=${specs[index + 1]} target=$cwd; predicate=worker-git-cli" \
-          "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; preserve Producer scope agreement, fresh same-index lookup and complete staged-result review; unsupported native families require an assigned bounded route"
+          "worker native Git mutation family uses the typed CLI: effect=${specs[index + 1]} invocation-cwd=$cwd; predicate=worker-git-cli" \
+          "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; wrapper --repo must preserve the original Git repository context; preserve Producer scope agreement, fresh same-index lookup and complete staged-result review; unsupported native families require an assigned bounded route"
         ;;
       *) all_native=false ;;
     esac

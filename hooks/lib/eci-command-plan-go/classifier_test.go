@@ -2190,6 +2190,8 @@ func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 //
 // Example: env -- /usr/bin/git clone source destination records both literal
 // executable tokens so the provider can bind their actual identities.
+// TODO: Revisit inherited env/clone Allow expectations when final ShellAnalysis
+// defer policy changes; it currently produces Defer instead.
 func TestActiveBareGitCloneSourceAcquisitionCapability(t *testing.T) {
 	t.Parallel()
 
@@ -2681,7 +2683,7 @@ func TestGitFsckLostFoundDefersWithoutReadOnlyCapability(t *testing.T) {
 	}
 }
 
-func TestGitFsckLostFoundWorkerOwnershipGuard(t *testing.T) {
+func TestGitFsckLostFoundNativeProviderDefer(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
@@ -2692,18 +2694,17 @@ func TestGitFsckLostFoundWorkerOwnershipGuard(t *testing.T) {
 		marker         Marker
 		wantDecision   DecisionKind
 		wantDiagnostic bool
-		wantArgvIndex  int
 		wantRoute      DeferredRoute
 	}{
-		{name: "raw Git", command: "git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 2},
-		{name: "path-qualified Git", command: "env /usr/bin/git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 3},
-		{name: "wrapped Git", command: "env command git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
+		{name: "raw Git", command: "git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "path-qualified Git", command: "env /usr/bin/git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "wrapped Git", command: "env command git fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "quoted environment assignment", command: `env "FOO=bar" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
-		{name: "quoted wrapped Git", command: `env "command" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
-		{name: "Git global option", command: "env git --no-pager fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
-		{name: "quoted Git global option", command: `env git "--no-pager" fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 4},
-		{name: "Git context option", command: "env git -C . fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 5},
-		{name: "operator plan", command: "env git fsck --lost-found && printf after", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer, wantArgvIndex: 3},
+		{name: "quoted wrapped Git", command: `env "command" git fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "Git global option", command: "env git --no-pager fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "quoted Git global option", command: `env git "--no-pager" fsck --lost-found`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "Git context option", command: "env git -C . fsck --lost-found", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
+		{name: "operator plan", command: "env git fsck --lost-found && printf after", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "quoted route", command: `env git fsck '--lost-found'`, provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "bare fsck", command: "git fsck", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
 		{name: "equals option", command: "git fsck --lost-found=ignored", provider: ProviderCodex, role: RoleWorker, marker: MarkerActive, wantDecision: DecisionDefer},
@@ -2737,7 +2738,7 @@ func TestGitFsckLostFoundWorkerOwnershipGuard(t *testing.T) {
 	}
 }
 
-func TestGitFsckLostFoundGitContextCannotHideWorkerWrite(t *testing.T) {
+func TestGitFsckLostFoundGitContextDefersToNativeProvider(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
