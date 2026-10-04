@@ -401,29 +401,27 @@ codex_eci_control_basename() {
   esac
 }
 
-# A worker may name a hardlink alias outside the proof root.  Compare the
-# alias inode against canonical coordinator records before allowing any edit;
-# the regular path/name checks above cannot see this attack.  This helper is
-# only used on edit/control paths (not the Stop hot path) and is bounded to
-# the proof tree plus a finite candidate count.
-# This resolves one concrete accidental-target confusion: a worker can name an
-# alias of a coordinator record without realizing it.  It is not a malicious-
-# actor/evasion control and does not make ordinary aliases suspicious; callers
-# act only when the resolved edit target is an actual control record.
+# A shared edit target can alias a live coordinator control. Single-link
+# files cannot, so ordinary edits do not discover or read proof records.
+# Compare shared targets only with immediate controls in active sessions;
+# historical proof subtrees do not establish a live control target.
 codex_path_is_eci_control_alias() {
-  local path="${1:-}" root candidate target_stat candidate_stat count=0
+  local path="${1:-}" root marker candidate links count=0
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
-  target_stat="$(stat -Lc '%d:%i' -- "$path" 2>/dev/null || true)"
-  [ -n "$target_stat" ] || return 1
+  links="$(stat -Lc '%h' -- "$path" 2>/dev/null || true)"
+  [[ "$links" =~ ^[0-9]+$ ]] && [ "$links" -gt 1 ] || return 1
   root="$(codex_proof_root)"
   [ -d "$root" ] && [ ! -L "$root" ] || return 1
-  while IFS= read -r -d '' candidate; do
-    count=$((count + 1))
-    [ "$count" -le 2048 ] || return 1
-    codex_eci_control_basename "${candidate##*/}" || continue
-    candidate_stat="$(stat -Lc '%d:%i' -- "$candidate" 2>/dev/null || true)"
-    [ "$candidate_stat" = "$target_stat" ] && return 0
-  done < <(find -P "$root" -type f -links +1 -print0 2>/dev/null || true)
+  for marker in "$root"/*/eci_active; do
+    codex_eci_marker_metadata_is_valid "$marker" || continue
+    for candidate in "${marker%/*}"/* "${marker%/*}"/.eci-*; do
+      codex_eci_control_basename "${candidate##*/}" || continue
+      [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
+      count=$((count + 1))
+      [ "$count" -le 2048 ] || return 1
+      [ "$candidate" -ef "$path" ] && return 0
+    done
+  done
   return 1
 }
 
