@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -334,5 +336,276 @@ func TestRestoreDisposableAliasesRetainOwnedRecovery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRestoreProtectsConsumedHookAliases distinguishes traversed entries from shared referents.
+//
+// Example: a hook using dir/.. consumes dir even when its final referent is outside dir.
+func TestRestoreProtectsConsumedHookAliases(t *testing.T) {
+	for _, shape := range []string{"relative", "absolute", "chain", "nested", "dotdot", "root-dotdot", "dangling", "loop", "file", "sharing", "near-prefix", "no-hook"} {
+		// Each trace runs in an independent exact-leaf fixture.
+		t.Run(shape, func(t *testing.T) {
+			kind := "internal"
+			switch shape {
+			case "nested":
+				kind = "nested-alias"
+			case "dangling", "loop", "file":
+				kind = shape
+			}
+			root, target, sentinel := fixtureRestoreAlias(t, kind)
+			hook := filepath.Join(root, "hooks/validate-bash.sh")
+			if err := os.Remove(hook); err != nil {
+				t.Fatal(err)
+			}
+			link := "../dir/nested/file"
+			consumed := true
+			switch shape {
+			case "absolute":
+				link = root + "/dir/nested/file"
+			case "chain":
+				if err := os.Symlink("dir/nested/file", filepath.Join(root, "chain")); err != nil {
+					t.Fatal(err)
+				}
+				link = "../chain"
+			case "dotdot":
+				if err := os.WriteFile(filepath.Join(root, "hook-source"), []byte("live\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				link = "../dir/../hook-source"
+			case "root-dotdot":
+				if err := os.MkdirAll(filepath.Join(root, "runtime/hooks"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				hook = root + "/dir/../runtime/hooks/validate-bash.sh"
+				if err := os.WriteFile(hook, []byte("live\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("CODEX_HOME", root+"/dir/../runtime")
+				t.Setenv("CODEX_CONFIGURED_HOME", root+"/dir/../runtime")
+			case "sharing":
+				link = "../ordinary/nested/file"
+				consumed = false
+			case "near-prefix":
+				if err := os.Symlink("ordinary", filepath.Join(root, "dir-longer")); err != nil {
+					t.Fatal(err)
+				}
+				link = "../dir-longer/nested/file"
+				consumed = false
+			case "no-hook":
+				t.Setenv("CODEX_HOME", filepath.Join(root, "dir"))
+				t.Setenv("CODEX_CONFIGURED_HOME", filepath.Join(root, "dir"))
+				consumed = false
+			}
+			if shape != "root-dotdot" && shape != "no-hook" {
+				if err := os.Symlink(link, hook); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var live []byte
+			if shape != "dangling" && shape != "loop" && shape != "file" && shape != "no-hook" {
+				var err error
+				live, err = os.ReadFile(hook)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			tree := fixtureGit(t, root, "write-tree")
+			head := fixtureGit(t, root, "rev-parse", "HEAD")
+			branch := fixtureGit(t, root, "symbolic-ref", "HEAD")
+			index, err := os.ReadFile(filepath.Join(root, ".git/index"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "both", "--", "dir/nested/file")
+			if err == nil {
+				t.Fatal("missing alias refusal")
+			}
+			if strings.Contains(err.Error(), "protected live") != consumed || strings.Contains(err.Error(), "mv --") == consumed {
+				t.Errorf("wrong dependency advice: %v", err)
+			}
+			if got, err := os.Readlink(filepath.Join(root, "dir")); err != nil || got != target {
+				t.Fatalf("alias changed: %q %v", got, err)
+			}
+			if got, err := os.ReadFile(filepath.Join(root, ".git/index")); err != nil || !bytes.Equal(got, index) {
+				t.Fatalf("raw index changed: %v", err)
+			}
+			if fixtureGit(t, root, "write-tree") != tree || fixtureGit(t, root, "rev-parse", "HEAD") != head || fixtureGit(t, root, "symbolic-ref", "HEAD") != branch {
+				t.Fatal("refusal changed repository state")
+			}
+			if err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "index", "--", "dir/nested/file"); err != nil {
+				t.Fatal(err)
+			}
+			if fixtureGit(t, root, "show", ":dir/nested/file") != "base" || fixtureGit(t, root, "show", ":unrelated.txt") != "staged" {
+				t.Fatal("wrong index-only selection")
+			}
+			if !consumed {
+				if err := os.Rename(filepath.Join(root, "dir"), filepath.Join(root, "saved-alias")); err != nil {
+					t.Fatal(err)
+				}
+				if err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "worktree", "--", "dir/nested/file"); err != nil {
+					t.Fatal(err)
+				}
+				if got, err := os.ReadFile(sentinel); err != nil || string(got) != "sentinel\n" {
+					t.Fatalf("referent changed: %q %v", got, err)
+				}
+			}
+			if live != nil {
+				if got, err := os.ReadFile(hook); err != nil || !bytes.Equal(got, live) {
+					t.Fatalf("hook disconnected or changed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestRestorePermissionLimitedHookTracePreservesKnownAliases retains a partial dependency prefix.
+//
+// Example: inaccessible content leaves an earlier hook alias protected without blocking file.txt.
+func TestRestorePermissionLimitedHookTracePreservesKnownAliases(t *testing.T) {
+	for _, visitedAlias := range []bool{false, true} {
+		// Permissions belong only to this disposable fixture and are restored for cleanup.
+		t.Run(strconv.FormatBool(visitedAlias), func(t *testing.T) {
+			root, _, _ := fixtureRestoreAlias(t, "internal")
+			blocked := filepath.Join(root, "ordinary/inaccessible")
+			if err := os.Mkdir(blocked, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(blocked, "source"), []byte("live\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			hook := filepath.Join(root, "hooks/validate-bash.sh")
+			if err := os.Remove(hook); err != nil {
+				t.Fatal(err)
+			}
+			target := "../ordinary/inaccessible/source"
+			if visitedAlias {
+				target = "../dir/inaccessible/source"
+			}
+			if err := os.Symlink(target, hook); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(blocked, 0000); err != nil {
+				t.Fatal(err)
+			}
+			// Restore owned permissions even if the assertions fail.
+			t.Cleanup(func() {
+				if err := os.Chmod(blocked, 0755); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := os.Lstat(filepath.Join(blocked, "source")); !errors.Is(err, os.ErrPermission) {
+				t.Skipf("permission boundary unavailable: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("changed\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "worktree", "--", "file.txt"); err != nil {
+				t.Fatalf("unrelated restore blocked: %v", err)
+			}
+			if got, err := os.ReadFile(filepath.Join(root, "file.txt")); err != nil || string(got) != "base\n" {
+				t.Fatalf("unrelated content incorrect: %q %v", got, err)
+			}
+			if visitedAlias {
+				err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "worktree", "--", "dir/nested/file")
+				if err == nil || !strings.Contains(err.Error(), "protected live") || strings.Contains(err.Error(), "mv --") {
+					t.Fatalf("known prefix lost protection: %v", err)
+				}
+				if err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "index", "--", "dir/nested/file"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestRestoreIgnoresCleanedHookDecoy follows raw configured roots through symlink-sensitive dotdot.
+//
+// Example: portal/../runtime names an external live runtime while its cleaned spelling has a decoy.
+func TestRestoreIgnoresCleanedHookDecoy(t *testing.T) {
+	root, _, sentinel := fixtureRestoreAlias(t, "internal")
+	external := t.TempDir()
+	for _, directory := range []string{filepath.Join(external, "sub"), filepath.Join(external, "runtime/hooks"), filepath.Join(root, "runtime/hooks")} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(external, "sub"), filepath.Join(root, "portal")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "runtime/hooks/validate-bash.sh"), []byte("actual hook\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../dir/nested/file", filepath.Join(root, "runtime/hooks/validate-bash.sh")); err != nil {
+		t.Fatal(err)
+	}
+	rawRoot := root + "/portal/../runtime"
+	t.Setenv("CODEX_HOME", rawRoot)
+	t.Setenv("CODEX_CONFIGURED_HOME", rawRoot)
+	hook := rawRoot + "/hooks/validate-bash.sh"
+	if got, err := os.ReadFile(hook); err != nil || string(got) != "actual hook\n" {
+		t.Fatalf("wrong actual hook: %q %v", got, err)
+	}
+	err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "worktree", "--", "dir/nested/file")
+	if err == nil || !strings.Contains(err.Error(), "mv --") || strings.Contains(err.Error(), "protected live") {
+		t.Fatalf("cleaned decoy protected disposable entry: %v", err)
+	}
+	if err := os.Rename(filepath.Join(root, "dir"), filepath.Join(root, "saved-alias")); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFixtureOperation(t, root, "restore", "--source", "head", "--destination", "worktree", "--", "dir/nested/file"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(hook); err != nil || string(got) != "actual hook\n" {
+		t.Fatalf("actual hook changed: %q %v", got, err)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "sentinel\n" {
+		t.Fatalf("referent changed: %q %v", got, err)
+	}
+}
+
+// TestRestoreNestedHookDependencyKeepsSharingAliasMovable protects a visited nested entry only.
+//
+// Example: ordinary/nested is consumed by a hook while ordinary/share names the same directory independently.
+func TestRestoreNestedHookDependencyKeepsSharingAliasMovable(t *testing.T) {
+	root, _, _ := fixtureRestoreAlias(t, "nested-alias")
+	hook := filepath.Join(root, "hooks/validate-bash.sh")
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../dir/nested/file", hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("actual", filepath.Join(root, "ordinary/share")); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := liveProtectedPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, probe := range []struct {
+		name     string
+		consumed bool
+	}{{"ordinary/nested/file", true}, {"ordinary/share/file", false}} {
+		err := (Repository{Worktree: root}).checkRestoreAncestors(probe.name, paths)
+		if err == nil || strings.Contains(err.Error(), "protected live") != probe.consumed || strings.Contains(err.Error(), "mv --") == probe.consumed {
+			t.Fatalf("nested identity classification %q: %v", probe.name, err)
+		}
+	}
+}
+
+// TestLiveDependenciesRetainUnexpectedErrorContext preserves unknown filesystem errors.
+//
+// Example: an invalid native component wraps its PathError rather than returning a successful partial trace.
+func TestLiveDependenciesRetainUnexpectedErrorContext(t *testing.T) {
+	root := t.TempDir()
+	path := root + "/\x00"
+	_, err := livePathDependencies(path)
+	var pathError *os.PathError
+	if err == nil || !strings.Contains(err.Error(), "inspect live dependency") || !errors.As(err, &pathError) {
+		t.Fatalf("unexpected inspection error lost context: %v", err)
+	}
+	if _, err := livePathDependencies("relative/path"); err == nil {
+		t.Fatal("relative path silently admitted")
 	}
 }

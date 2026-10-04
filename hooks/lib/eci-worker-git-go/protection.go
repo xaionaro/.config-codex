@@ -6,7 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
+
+// liveDependencySymlinkLimit bounds expansions consistently with filepath.EvalSymlinks.
+//
+// Example: a looping live-hook target retains known entries after 255 expansions.
+const liveDependencySymlinkLimit = 255
 
 // PathAccess describes how an operation uses its selected worktree names.
 //
@@ -80,6 +86,13 @@ func liveProtectedPaths() ([]string, error) {
 			candidate := filepath.Join(resolved, "hooks", name)
 			if _, err := os.Lstat(candidate); err == nil {
 				paths = append(paths, filepath.Join(root, "hooks", name), candidate)
+				for _, path := range []string{root, candidate} {
+					dependencies, err := livePathDependencies(path)
+					if err != nil {
+						return nil, fmt.Errorf("trace live hook %q through %q: %w", candidate, path, err)
+					}
+					paths = append(paths, dependencies...)
+				}
 				// Resolve parent aliases while preserving the hook's own symlink entry.
 				if entry, err := resolvedParent(candidate); err == nil {
 					paths = append(paths, entry)
@@ -111,6 +124,64 @@ func liveProtectedPaths() ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+// livePathDependencies records symlink entries consumed while resolving an absolute native path.
+//
+// Example: source/../hook retains source when source is an alias, even if hook ends elsewhere.
+func livePathDependencies(path string) ([]string, error) {
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("live dependency path must be absolute: %q", path)
+	}
+	separator := string(filepath.Separator)
+	volume := filepath.VolumeName(path)
+	resolved := volume + separator
+	pending := strings.Split(path[len(volume):], separator)
+	var dependencies []string
+	expansions := 0
+	for len(pending) != 0 {
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		entry := filepath.Join(resolved, component)
+		info, err := os.Lstat(entry)
+		switch {
+		case errors.Is(err, os.ErrNotExist), errors.Is(err, os.ErrPermission), errors.Is(err, syscall.ENOTDIR):
+			return dependencies, nil
+		case err != nil:
+			return nil, fmt.Errorf("inspect live dependency %q: %w", entry, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			if !info.IsDir() && len(pending) != 0 {
+				return dependencies, nil
+			}
+			resolved = entry
+			continue
+		}
+		dependencies = append(dependencies, entry)
+		if expansions == liveDependencySymlinkLimit {
+			return dependencies, nil
+		}
+		target, err := os.Readlink(entry)
+		if err != nil {
+			return nil, fmt.Errorf("read live dependency %q: %w", entry, err)
+		}
+		expansions++
+		if filepath.IsAbs(target) {
+			volume = filepath.VolumeName(target)
+			resolved = volume + separator
+			target = target[len(volume):]
+		}
+		// Expand the raw target before processing dotdot; cleaning it would erase dependencies.
+		pending = append(strings.Split(target, separator), pending...)
+	}
+	return dependencies, nil
 }
 
 // CheckPaths rejects index escape and destructive writes to live control paths.
