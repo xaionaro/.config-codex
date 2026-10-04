@@ -2154,6 +2154,15 @@ run_worker_git_native() {
     'git --help' \
     'git --version' \
     'git worktree list' \
+    'git worktree move --help' \
+    'git worktree remove --help' \
+    'git worktree prune --help' \
+    'git worktree repair --help' \
+    'git worktree lock --help' \
+    'git worktree unlock --help' \
+    'git restore --staged -- file.txt' \
+    'git restore --source HEAD --worktree -- file.txt' \
+    'git apply --index --cached missing.patch' \
     "git -C $FOREIGN_REPO diff --output=$TMP_ROOT/foreign-native-report" \
     "git -C $FOREIGN_REPO log --oneline -1" \
     "git -C $FOREIGN_REPO status --short" \
@@ -2161,16 +2170,16 @@ run_worker_git_native() {
     "git --git-dir=$FOREIGN_REPO/.git --work-tree=$FOREIGN_REPO show HEAD:file.txt"; do
     assert_allowed "$command" worker
   done
-  for family in add rm mv restore reset checkout switch commit update-index read-tree apply merge rebase cherry-pick revert am; do
+  for family in add rm mv reset checkout switch commit update-index read-tree merge rebase cherry-pick revert am stash pull; do
     assert_denied_code "git $family --help" ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git
   done
   assert_denied_code 'git worktree add --help' ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git
   for command in \
     'git log && git add -- file.txt' \
-    'git diff --output=report; git restore -- file.txt' \
+    'git diff --output=report; git reset -- file.txt' \
     'git show HEAD:file.txt && env git commit --help' \
     'if true; then git log; git add -- file.txt; fi' \
-    '(git diff; git restore -- file.txt)' \
+    '(git diff; git reset -- file.txt)' \
     'bash -c "git log; git add -- file.txt"'; do
     assert_denied_code "$command" ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git
   done

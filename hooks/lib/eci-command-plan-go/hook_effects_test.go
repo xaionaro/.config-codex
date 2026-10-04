@@ -15,7 +15,7 @@ import (
 // Example: git diff stays native while a later git add uses the typed CLI.
 func TestHookWorkerGitFamilies(t *testing.T) {
 	root := t.TempDir()
-	for _, command := range []string{"git diff --output=diff.txt", "git show --format=%H", "git log --all", "git bisect reset", "git branch feature", "git status", "git worktree list"} {
+	for _, command := range []string{"git diff --output=diff.txt", "git show --format=%H", "git log --all", "git bisect reset", "git branch feature", "git status", "git restore file", "git restore --staged file", "git restore --staged --worktree file", "git restore --worktree --staged file", "git apply patch", "git apply --index patch", "git apply --cached patch", "git worktree list", "git worktree move old new", "git worktree remove old", "git worktree lock old", "git worktree unlock old", "git worktree repair old", "git worktree prune"} {
 		t.Run(command,
 			// Verify each native verb keeps its original option semantics.
 			//
@@ -29,7 +29,7 @@ func TestHookWorkerGitFamilies(t *testing.T) {
 				}
 			})
 	}
-	for _, command := range []string{"git add --help", "git reset --dry-run", "git switch topic", "git update-index --refresh", "git worktree add next", "git diff; git add file", "bash -c 'git diff; git commit -m checkpoint'", "printf '%s' \"$(git rebase topic)\"", "timeout 5 git add file", "command git restore file", "env -C " + root + " git add file"} {
+	for _, command := range []string{"git add --help", "git rm --cached file", "git mv old new", "git reset --dry-run", "git checkout topic", "git switch topic", "git update-index --refresh", "git read-tree HEAD", "git merge topic", "git rebase topic", "git cherry-pick -n HEAD", "git revert -n HEAD", "git am patch", "git commit -n -m checkpoint", "git stash", "git pull", "git worktree add next", "git diff; git add file", "git restore --staged file; git stash", "git apply --index patch; git pull", "git worktree repair old; git add file", "bash -c 'git diff; git commit -m checkpoint'", "printf '%s' \"$(git rebase topic)\"", "timeout 5 git add file", "command git checkout file", "env -C " + root + " git add file"} {
 		t.Run(command,
 			// Verify each reachable selected mutation has the typed route.
 			//
@@ -81,6 +81,44 @@ func TestHookCoordinatorGitTargets(t *testing.T) {
 			require.Falsef(t, diagnostic == nil || diagnostic.Code != CodeBroadDestructiveDenied, "broad mutation %s allowed: %+v", command, diagnostic)
 		}
 	}
+}
+
+// TestHookGitPreviewSemantics binds preview interpretation to the selected verb.
+//
+// Example: commit -n bypasses hooks while add -n is a dry run.
+func TestHookGitPreviewSemantics(t *testing.T) {
+	for _, current := range []struct {
+		Command  string
+		Mutation bool
+	}{
+		{Command: "commit -n -m checkpoint", Mutation: true},
+		{Command: "commit --dry-run -m checkpoint", Mutation: false},
+		{Command: "cherry-pick -n HEAD", Mutation: true},
+		{Command: "revert -n HEAD", Mutation: true},
+		{Command: "pull -n", Mutation: true},
+		{Command: "fetch -n", Mutation: true},
+		{Command: "reset --dry-run", Mutation: true},
+		{Command: "cherry-pick --dry-run HEAD", Mutation: true},
+		{Command: "add -n file", Mutation: false},
+		{Command: "rm -n file", Mutation: false},
+		{Command: "mv -n old new", Mutation: false},
+		{Command: "clean -n", Mutation: false},
+		{Command: "push -n", Mutation: false},
+		{Command: "fetch --dry-run", Mutation: false},
+		{Command: "add --dry-run file", Mutation: false},
+		{Command: "commit --help", Mutation: false},
+	} {
+		arguments := []token{{value: "git"}}
+		for _, value := range strings.Fields(current.Command) {
+			arguments = append(arguments, token{value: value})
+		}
+		require.Equalf(t, current.Mutation, hookGitCoordinatorMutation(arguments, 1), "preview semantics: %s", current.Command)
+	}
+	root := t.TempDir()
+	request := Request{HookMode: true, Provider: ProviderCodex, Role: RoleCoordinator, Marker: MarkerActive, CWD: root, Command: "git commit -n -m checkpoint", CollectShellCommands: true}
+	diagnostic := inspectHookEffects(request, Classify(request))
+	require.NotNil(t, diagnostic)
+	require.Equal(t, hookCodeCommitProducerRequired, diagnostic.Code)
 }
 
 // TestHookLifecycleAndScriptTargets verifies concrete execution ownership.

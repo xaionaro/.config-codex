@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	// manySessionFixtureEntries exercises immediate directory observation past 128 entries.
+	//
+	// Example: this many controls plus one marker must retain all 129 inode facts.
+	manySessionFixtureEntries = 128
 )
 
 // TestRunHookEnvelope verifies silent allows and a valid callback denial envelope.
@@ -245,10 +253,13 @@ func TestHookOwnedLinkCleanup(t *testing.T) {
 	}{
 		{"rm '" + link + "'", false},
 		{"rm '" + hardlink + "'", false},
+		{"unlink '" + link + "'", false},
+		{"unlink '" + hardlink + "'", false},
 		{"mv '" + link + "' '" + filepath.Join(home, "moved-link") + "'", false},
 		{"tee '" + link + "'", true},
 		{"tee '" + hardlink + "'", true},
 		{"rm '" + marker + "'", true},
+		{"unlink '" + marker + "'", true},
 	} {
 		input := HookInput{SessionID: "cleanup", CWD: home, ToolName: "Bash"}
 		input.ToolInput.Command = test.command
@@ -260,5 +271,74 @@ func TestHookOwnedLinkCleanup(t *testing.T) {
 			got := output.Len() != 0
 			require.Falsef(t, got != test.denied, "command=%s denied=%v want=%v output=%s", test.command, got, test.denied, &output)
 		}
+	}
+}
+
+// TestRunHookLargeCallback preserves all effects in a complete valid callback.
+//
+// Example: a large inert string cannot hide a later concrete root removal.
+func TestRunHookLargeCallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_PROOF_ROOT", filepath.Join(home, "proof"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CODEX_HOOK_IS_SUBAGENT", "false")
+	contextMarker(t, filepath.Join(home, "proof"), "large", home)
+	command := "printf '%s' '" + strings.Repeat("x", maxRequestBytes+1) + "'"
+	for _, test := range []struct {
+		command  string
+		trailing string
+		denied   bool
+	}{
+		{command, "", false},
+		{command + "; rm -rf /", "", true},
+		{command + "; rm -rf /", "{}", false},
+		{command + "; rm -rf /", "{", false},
+	} {
+		input := HookInput{SessionID: "large", CWD: home, ToolName: "Bash"}
+		input.ToolInput.Command = test.command
+		callback, err := json.Marshal(input)
+		require.NoError(t, err)
+		var output bytes.Buffer
+		require.Zero(t, RunHook(strings.NewReader(string(callback)+test.trailing), &output))
+		require.Equal(t, test.denied, output.Len() != 0, "trailing=%q", test.trailing)
+	}
+	var plannerOutput bytes.Buffer
+	require.Equal(t, StatusInternal, Run(strings.NewReader(strings.Repeat(" ", maxRequestBytes+1)+"{}"), &plannerOutput))
+}
+
+// TestHookControlIndexKeepsAllObservedAliases retains immediate control inode facts.
+//
+// Example: 129 controls cannot erase a marker alias or a later control alias.
+func TestHookControlIndexKeepsAllObservedAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_PROOF_ROOT", filepath.Join(home, "proof"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CODEX_HOOK_IS_SUBAGENT", "true")
+	contextMarker(t, filepath.Join(home, "proof"), "controls", home)
+	marker := filepath.Join(home, "proof", "controls", "eci_active")
+	markerAlias := filepath.Join(home, "marker-alias")
+	require.NoError(t, os.Link(marker, markerAlias))
+	late := ""
+	for index := 0; index < manySessionFixtureEntries; index++ {
+		late = filepath.Join(filepath.Dir(marker), fmt.Sprintf("eci_wait.%03d", index))
+		require.NoError(t, os.WriteFile(late, []byte("control\n"), 0600))
+	}
+	lateAlias := filepath.Join(home, "late-alias")
+	require.NoError(t, os.Link(late, lateAlias))
+	ordinary := filepath.Join(home, "ordinary")
+	require.NoError(t, os.WriteFile(ordinary, []byte("ordinary\n"), 0600))
+	require.NoError(t, os.Link(ordinary, filepath.Join(home, "ordinary-alias")))
+	for _, target := range []string{markerAlias, lateAlias, marker, ordinary} {
+		input := HookInput{SessionID: "controls", CWD: home, ToolName: "Bash"}
+		input.ToolInput.Command = "tee '" + target + "'"
+		callback, err := json.Marshal(input)
+		require.NoError(t, err)
+		var output bytes.Buffer
+		require.Zero(t, RunHook(bytes.NewReader(callback), &output))
+		require.Equal(t, target != ordinary, output.Len() != 0, "target=%s", target)
 	}
 }

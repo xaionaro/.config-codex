@@ -9,13 +9,14 @@ metadata are advisory unless they resolve to one of those effects.
 Every enabled gate below has a bounded legitimate path. A path with no concrete
 effect is transparent and therefore is not a gate.
 
-Active ECI Workers use the typed CLI for these native Git families:
-`add`, `rm`, `mv`, `restore`, `reset`, `checkout`, `switch`, `commit`,
-`update-index`, `read-tree`, `apply`, `merge`, `rebase`, `cherry-pick`, `revert`,
-and `am`, plus mutating `worktree` subcommands. Help and preview forms use the
-same route. Native `show`, `diff`, `log`, and `bisect` are allowed with any
-options. Other concrete Git verbs are native by default; clone acquisition
-checks remain separate. Every reachable nested or compound mutation is routed.
+Active ECI Workers use the typed CLI for default index-updating verbs:
+`add`, `rm`, `mv`, `reset`, `checkout`, `switch`, `update-index`, `read-tree`,
+`merge`, `rebase`, `cherry-pick`, `revert`, `am`, `stash`, and `pull`, plus
+explicit `commit` and `worktree add`. Help and preview forms use the same route.
+Native `show`, `diff`, `log`, `bisect`, and default non-index-updating verbs
+such as `restore` and `apply` allow every option, including optional index
+updates. Administrative worktree subcommands remain native. Clone acquisition
+checks remain separate. Every reachable nested or compound routed verb is checked.
 Native commands keep their original arguments, environment and repository context.
 The effect checks below remain applicable in other contexts.
 

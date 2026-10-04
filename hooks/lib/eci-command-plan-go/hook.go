@@ -19,11 +19,7 @@ func RunHook(
 	input io.Reader,
 	output io.Writer,
 ) int {
-	callback, err := io.ReadAll(io.LimitReader(input, maxRequestBytes+1))
-	if err != nil || len(callback) > maxRequestBytes {
-		return hookAdvisory("read callback", err)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(callback))
+	decoder := json.NewDecoder(input)
 	var envelope HookInput
 	if err := decoder.Decode(&envelope); err != nil {
 		return hookAdvisory("decode callback", err)

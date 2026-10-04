@@ -24,7 +24,6 @@ const (
 	maxWrapperDepth             = 8
 	maxReachableStates          = 128
 	maxProofAnchors             = 128
-	maxActiveControlEntries     = 128
 	timeoutProbeTimeout         = 150 * time.Millisecond
 	timeoutProbeWaitDelay       = 25 * time.Millisecond
 	timeoutProbeChild           = "/usr/bin/printf"
@@ -961,9 +960,8 @@ func Classify(request Request) Result {
 	}
 	if err != nil {
 		if err.diagnostic.Code == CodePlanLimitDenied {
-			// Parser capacity is not a command boundary. An active callback
-			// defers to the existing target-aware fallback; an inactive callback
-			// remains transparent. Neither path exposes a split instruction.
+			// Parser capacity alone establishes no effect. Retain the planner's
+			// advisory result; Go callback checks use any established typed facts.
 			if request.Marker == MarkerActive {
 				return Result{Decision: DecisionDefer}
 			}
@@ -1987,14 +1985,15 @@ type compoundSegmentState struct {
 }
 
 // compoundReachableCWDState keeps the bounded set of shell states that may
-// reach the next compound segment. Unknown is separate from an empty set so a
-// known candidate can still be checked when another branch is unsupported.
+// reach the next compound segment. Unknown marks CWD uncertainty; untracked
+// branches retain possible execution when a branch could not be represented.
 //
 // Example: a redirected `cd /tmp` carries both the pre-redirect and
 // post-redirect directories as reachable candidates.
 type compoundReachableCWDState struct {
-	states  []timeoutReplayState
-	unknown bool
+	states            []timeoutReplayState
+	unknown           bool
+	untrackedBranches bool
 }
 
 // compoundSegmentStates derives bounded CWD and reachability facts for each
@@ -2047,13 +2046,16 @@ func compoundSegmentStates(
 // shell operator may have made every concrete state skip the next command.
 //
 // Example: `false && rm target` marks the rm segment unreachable without
-// turning an unknown status into a denial.
+// allowing CWD uncertainty to erase its literal branch cancellation.
 func compoundReachabilityOf(reachable compoundReachableCWDState) SegmentReachability {
-	if reachable.unknown || len(reachable.states) == 0 {
+	if reachable.untrackedBranches || len(reachable.states) == 0 {
 		return segmentReachabilityUnknown
 	}
 	for _, state := range reachable.states {
 		if !state.skipped {
+			if reachable.unknown {
+				return segmentReachabilityUnknown
+			}
 			return segmentReachable
 		}
 	}
@@ -2432,6 +2434,8 @@ func joinCompoundReachableCWDStates(
 	return compoundReachableCWDState{
 		states:  states,
 		unknown: left.unknown || right.unknown || overflow,
+		untrackedBranches: left.untrackedBranches || right.untrackedBranches || overflow ||
+			left.unknown && len(left.states) == 0 || right.unknown && len(right.states) == 0,
 	}
 }
 
@@ -2468,7 +2472,7 @@ func initialCompoundReachableCWDState(request Request) compoundReachableCWDState
 		state.cwdPhysical, _ = verifiedPhysicalCWD(candidate)
 		states = append(states, state)
 	}
-	return compoundReachableCWDState{states: states, unknown: overflow || request.CWDUnknown}
+	return compoundReachableCWDState{states: states, unknown: overflow || request.CWDUnknown, untrackedBranches: overflow}
 }
 
 // describeCompoundSegmentCWDState converts reachable shell states into the
@@ -2577,7 +2581,10 @@ func advanceCompoundReachableCWDState(
 	current segment,
 	operator string,
 ) compoundReachableCWDState {
-	result := compoundReachableCWDState{unknown: reachable.unknown}
+	result := compoundReachableCWDState{
+		unknown:           reachable.unknown,
+		untrackedBranches: reachable.untrackedBranches || reachable.unknown && len(reachable.states) == 0,
+	}
 	for _, state := range reachable.states {
 		if state.skipped {
 			state.skipped = false
@@ -2593,7 +2600,8 @@ func advanceCompoundReachableCWDState(
 		if !ok {
 			// An unresolved effect does not erase concrete pre-transition
 			// candidates. It only records that another branch/state may exist.
-			result.states = append(result.states, state)
+			// Directory uncertainty does not erase a literal exit status.
+			result.states = append(result.states, reachableOperatorExits(state, state, current, operator, false)...)
 			result.unknown = true
 			continue
 		}
@@ -2618,6 +2626,7 @@ func advanceCompoundReachableCWDState(
 	var overflow bool
 	result.states, overflow = boundedTimeoutReplayStates(result.states)
 	result.unknown = result.unknown || overflow
+	result.untrackedBranches = result.untrackedBranches || overflow
 	if len(result.states) == 0 && !result.unknown {
 		result.unknown = true
 	}
@@ -5212,7 +5221,7 @@ func hookUnlinksDirectoryEntry(argv []token) bool {
 		return false
 	}
 	switch filepath.Base(argv[0].value) {
-	case "rm", "mv", "rmdir":
+	case "rm", "mv", "rmdir", "unlink":
 		return true
 	default:
 		return false
@@ -6811,11 +6820,16 @@ type activeControlFile struct {
 	info os.FileInfo
 }
 
+// activeControlIndex retains concrete inode facts from immediate session controls.
+//
+// Example: an observed marker hardlink remains protected beside many controls.
 type activeControlIndex struct {
-	files    []activeControlFile
-	overflow bool
+	files []activeControlFile
 }
 
+// activeControlFileIndex observes immediate control files without discarding facts.
+//
+// Example: the 129th control leaves earlier marker and control aliases visible.
 func activeControlFileIndex(markers []string) activeControlIndex {
 	index := activeControlIndex{
 		files: make([]activeControlFile, 0, len(markers)*len(eciControlBasenames)),
@@ -6833,14 +6847,12 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 		}
 		entries, err := directory.ReadDir(-1)
 		closeErr := directory.Close()
-		if err != nil && !errors.Is(err, io.EOF) {
-			continue
+		if errors.Is(err, io.EOF) {
+			err = nil
 		}
-		if closeErr != nil {
-			continue
+		if observationErr := errors.Join(err, closeErr); observationErr != nil {
+			hookAdvisory("observe active controls", observationErr)
 		}
-		sessionControlCount := 0
-		sessionIndexStart := len(index.files)
 		for _, entry := range entries {
 			name := entry.Name()
 			if entry.Type()&os.ModeSymlink != 0 || !isECIControlBasename(name) {
@@ -6849,12 +6861,6 @@ func activeControlFileIndex(markers []string) activeControlIndex {
 			info, err := entry.Info()
 			if err != nil || !info.Mode().IsRegular() {
 				continue
-			}
-			sessionControlCount++
-			if sessionControlCount > maxActiveControlEntries {
-				index.files = index.files[:sessionIndexStart]
-				index.overflow = true
-				break
 			}
 			index.files = append(index.files, activeControlFile{
 				path: filepath.Join(sessionDir, entry.Name()),

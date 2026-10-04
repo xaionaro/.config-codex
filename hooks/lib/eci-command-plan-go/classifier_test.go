@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestWorkerGitDefersBeforeEffects leaves active Worker native routing to the provider.
@@ -3293,32 +3295,33 @@ func TestCoordinatorApprovedGitReadContextsDeferToProvider(t *testing.T) {
 	}
 }
 
+// TestActiveControlFileIndexIgnoresOrdinarySessionRecords excludes ordinary records.
+//
+// Example: many ordinary files leave only the active marker in the inode index.
 func TestActiveControlFileIndexIgnoresOrdinarySessionRecords(t *testing.T) {
 	t.Parallel()
 
 	temporaryRoot := t.TempDir()
 	sessionDir := filepath.Join(temporaryRoot, "proof", "session")
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		t.Fatalf("create session directory: %v", err)
+	{
+		err := os.MkdirAll(sessionDir, 0o700)
+		require.NoErrorf(t, err, "create session directory: %v", err)
 	}
 	marker := filepath.Join(sessionDir, "eci_active")
-	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
+	{
+		err := os.WriteFile(marker, []byte("active\n"), 0o600)
+		require.NoErrorf(t, err, "write marker: %v", err)
 	}
-	for entryIndex := 0; entryIndex <= maxActiveControlEntries; entryIndex++ {
+	for entryIndex := 0; entryIndex <= manySessionFixtureEntries; entryIndex++ {
 		path := filepath.Join(sessionDir, "ordinary-entry-"+strconv.Itoa(entryIndex))
-		if err := os.WriteFile(path, []byte("ordinary\n"), 0o600); err != nil {
-			t.Fatalf("write session entry %d: %v", entryIndex, err)
+		{
+			err := os.WriteFile(path, []byte("ordinary\n"), 0o600)
+			require.NoErrorf(t, err, "write session entry %d: %v", entryIndex, err)
 		}
 	}
 
 	index := activeControlFileIndex([]string{marker})
-	if index.overflow {
-		t.Fatal("ordinary session records overflowed the active control index")
-	}
-	if len(index.files) != 1 {
-		t.Fatalf("ordinary session records retained %d control entries; want marker only", len(index.files))
-	}
+	require.Falsef(t, len(index.files) != 1, "ordinary session records retained %d control entries; want marker only", len(index.files))
 
 	result := Classify(Request{
 		Provider:      ProviderCodex,
@@ -3329,9 +3332,7 @@ func TestActiveControlFileIndexIgnoresOrdinarySessionRecords(t *testing.T) {
 		Command:       "cat ordinary-entry-0",
 		ActiveMarkers: []string{marker},
 	})
-	if result.Decision != DecisionAllow || result.Diagnostic != nil {
-		t.Fatalf("ordinary classification: decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
-	}
+	require.Falsef(t, result.Decision != DecisionAllow || result.Diagnostic != nil, "ordinary classification: decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
 }
 
 // TestWorkerReadOnlyControlDiscoveryRemainsOrdinary verifies that workers can
@@ -3346,22 +3347,23 @@ func TestWorkerReadOnlyControlDiscoveryRemainsOrdinary(t *testing.T) {
 
 	temporaryRoot := t.TempDir()
 	sessionDir := filepath.Join(temporaryRoot, "proof", "session")
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		t.Fatalf("create session directory: %v", err)
+	{
+		err := os.MkdirAll(sessionDir, 0o700)
+		require.NoErrorf(t, err, "create session directory: %v", err)
 	}
 	marker := filepath.Join(sessionDir, "eci_active")
-	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
+	{
+		err := os.WriteFile(marker, []byte("active\n"), 0o600)
+		require.NoErrorf(t, err, "write marker: %v", err)
 	}
 
 	source := filepath.Join(providerHome(ProviderCodex), "bin", "eci-active")
 	contents, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatalf("read lifecycle source: %v", err)
-	}
+	require.NoErrorf(t, err, "read lifecycle source: %v", err)
 	copyPath := filepath.Join(temporaryRoot, "eci-active-copy")
-	if err := os.WriteFile(copyPath, contents, 0o755); err != nil {
-		t.Fatalf("write lifecycle copy: %v", err)
+	{
+		err := os.WriteFile(copyPath, contents, 0o755)
+		require.NoErrorf(t, err, "write lifecycle copy: %v", err)
 	}
 
 	for _, testCase := range []struct {
@@ -3377,39 +3379,45 @@ func TestWorkerReadOnlyControlDiscoveryRemainsOrdinary(t *testing.T) {
 		{name: "copied lifecycle help", command: copyPath + " --help", decision: DecisionAllow},
 	} {
 		testCase := testCase
-		t.Run(testCase.name, func(t *testing.T) {
-			request := Request{
-				Provider:      ProviderCodex,
-				Role:          RoleWorker,
-				CWD:           temporaryRoot,
-				Marker:        MarkerActive,
-				ActiveSession: "session",
-				Command:       testCase.command,
-				ActiveMarkers: []string{marker},
-			}
-			result := Classify(request)
-			if result.Decision != testCase.decision || result.Diagnostic != nil {
-				t.Fatalf("decision=%q diagnostic=%#v, want %q without diagnostic", result.Decision, result.Diagnostic, testCase.decision)
-			}
-		})
+		t.Run(testCase.name,
+			// Verify harmless control discovery retains its original route.
+			//
+			// Example: a copied lifecycle status command stays an ordinary read.
+			func(t *testing.T) {
+				request := Request{
+					Provider:      ProviderCodex,
+					Role:          RoleWorker,
+					CWD:           temporaryRoot,
+					Marker:        MarkerActive,
+					ActiveSession: "session",
+					Command:       testCase.command,
+					ActiveMarkers: []string{marker},
+				}
+				result := Classify(request)
+				require.Falsef(t, result.Decision != testCase.decision || result.Diagnostic != nil, "decision=%q diagnostic=%#v, want %q without diagnostic", result.Decision, result.Diagnostic, testCase.decision)
+			})
 	}
 
 	overflowSessionDir := filepath.Join(temporaryRoot, "proof", "overflow-session")
-	if err := os.MkdirAll(overflowSessionDir, 0o700); err != nil {
-		t.Fatalf("create overflow session directory: %v", err)
+	{
+		err := os.MkdirAll(overflowSessionDir, 0o700)
+		require.NoErrorf(t, err, "create overflow session directory: %v", err)
 	}
 	overflowMarker := filepath.Join(overflowSessionDir, "eci_active")
-	if err := os.WriteFile(overflowMarker, []byte("active\n"), 0o600); err != nil {
-		t.Fatalf("write overflow marker: %v", err)
+	{
+		err := os.WriteFile(overflowMarker, []byte("active\n"), 0o600)
+		require.NoErrorf(t, err, "write overflow marker: %v", err)
 	}
 	overflowReadPath := filepath.Join(overflowSessionDir, "ordinary-entry")
-	if err := os.WriteFile(overflowReadPath, []byte("ordinary\n"), 0o600); err != nil {
-		t.Fatalf("write overflow ordinary entry: %v", err)
+	{
+		err := os.WriteFile(overflowReadPath, []byte("ordinary\n"), 0o600)
+		require.NoErrorf(t, err, "write overflow ordinary entry: %v", err)
 	}
-	for controlIndex := 0; controlIndex < maxActiveControlEntries; controlIndex++ {
+	for controlIndex := 0; controlIndex < manySessionFixtureEntries; controlIndex++ {
 		path := filepath.Join(overflowSessionDir, "eci-required-critics.json.control-"+strconv.Itoa(controlIndex))
-		if err := os.WriteFile(path, []byte("control\n"), 0o600); err != nil {
-			t.Fatalf("write overflow control entry %d: %v", controlIndex, err)
+		{
+			err := os.WriteFile(path, []byte("control\n"), 0o600)
+			require.NoErrorf(t, err, "write overflow control entry %d: %v", controlIndex, err)
 		}
 	}
 
@@ -3422,41 +3430,41 @@ func TestWorkerReadOnlyControlDiscoveryRemainsOrdinary(t *testing.T) {
 		Command:       "cat " + overflowReadPath,
 		ActiveMarkers: []string{overflowMarker},
 	})
-	if overflowResult.Decision != DecisionAllow || overflowResult.Diagnostic != nil {
-		t.Fatalf("overflow read: decision=%q diagnostic=%#v, want allow without diagnostic", overflowResult.Decision, overflowResult.Diagnostic)
-	}
+	require.Falsef(t, overflowResult.Decision != DecisionAllow || overflowResult.Diagnostic != nil, "overflow read: decision=%q diagnostic=%#v, want allow without diagnostic", overflowResult.Decision, overflowResult.Diagnostic)
 }
 
-func TestActiveControlFileIndexBoundsControlRecords(t *testing.T) {
+// TestActiveControlFileIndexRetainsObservedControlRecords retains every inode fact.
+//
+// Example: many controls preserve the marker while ordinary files remain excluded.
+func TestActiveControlFileIndexRetainsObservedControlRecords(t *testing.T) {
 	t.Parallel()
 
 	temporaryRoot := t.TempDir()
 	sessionDir := filepath.Join(temporaryRoot, "proof", "session")
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		t.Fatalf("create session directory: %v", err)
+	{
+		err := os.MkdirAll(sessionDir, 0o700)
+		require.NoErrorf(t, err, "create session directory: %v", err)
 	}
 	marker := filepath.Join(sessionDir, "eci_active")
-	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
+	{
+		err := os.WriteFile(marker, []byte("active\n"), 0o600)
+		require.NoErrorf(t, err, "write marker: %v", err)
 	}
 	ordinaryPath := filepath.Join(sessionDir, "ordinary-entry-0")
-	if err := os.WriteFile(ordinaryPath, []byte("ordinary\n"), 0o600); err != nil {
-		t.Fatalf("write ordinary session entry: %v", err)
+	{
+		err := os.WriteFile(ordinaryPath, []byte("ordinary\n"), 0o600)
+		require.NoErrorf(t, err, "write ordinary session entry: %v", err)
 	}
-	for controlIndex := 0; controlIndex < maxActiveControlEntries; controlIndex++ {
+	for controlIndex := 0; controlIndex < manySessionFixtureEntries; controlIndex++ {
 		path := filepath.Join(sessionDir, "eci-required-critics.json.control-"+strconv.Itoa(controlIndex))
-		if err := os.WriteFile(path, []byte("control\n"), 0o600); err != nil {
-			t.Fatalf("write control session entry %d: %v", controlIndex, err)
+		{
+			err := os.WriteFile(path, []byte("control\n"), 0o600)
+			require.NoErrorf(t, err, "write control session entry %d: %v", controlIndex, err)
 		}
 	}
 
 	index := activeControlFileIndex([]string{marker})
-	if !index.overflow {
-		t.Fatal("active control index did not report bounded control overflow")
-	}
-	if len(index.files) != 0 {
-		t.Fatalf("overflow index retained %d entries; want bounded empty index", len(index.files))
-	}
+	require.Falsef(t, len(index.files) != manySessionFixtureEntries+1, "index retained %d entries; want every immediate control", len(index.files))
 
 	result := Classify(Request{
 		Provider:      ProviderCodex,
@@ -3467,9 +3475,7 @@ func TestActiveControlFileIndexBoundsControlRecords(t *testing.T) {
 		Command:       "cat ordinary-entry-0",
 		ActiveMarkers: []string{marker},
 	})
-	if result.Decision != DecisionAllow || result.Diagnostic != nil {
-		t.Fatalf("overflow classification: decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
-	}
+	require.Falsef(t, result.Decision != DecisionAllow || result.Diagnostic != nil, "overflow classification: decision=%q diagnostic=%#v, want allow without diagnostic", result.Decision, result.Diagnostic)
 }
 
 // TestGateModeGetIsOrdinaryReadAcrossSpellings verifies that a visible get

@@ -20,7 +20,7 @@ const (
 	hookCodeGitCrossScopeDenied DiagnosticCode = "ECI_GIT_CROSS_SCOPE_DENIED"
 	// hookCodeCoordinatorEditRouting identifies a physical protected-hook mutation.
 	//
-	// Example: git restore --worktree of validate-bash.sh selects this gate.
+	// Example: git checkout -- hooks/validate-bash.sh selects this gate.
 	hookCodeCoordinatorEditRouting DiagnosticCode = "ECI_COORDINATOR_EDIT_ROUTING_REQUIRED"
 	// hookCodeWorkerHookInstallerDenied identifies provider installation ownership.
 	//
@@ -161,6 +161,7 @@ func hookArgumentKnown(
 }
 
 // hookGitFamily identifies the native Worker operations routed to the typed CLI.
+// Membership depends on the default verb family, never its selected options.
 //
 // Example: worktree list stays native while worktree add uses the typed route.
 func hookGitFamily(
@@ -168,14 +169,14 @@ func hookGitFamily(
 	verbIndex int,
 ) bool {
 	switch argv[verbIndex].value {
-	case "add", "rm", "mv", "restore", "reset", "checkout", "switch", "commit", "update-index", "read-tree", "apply", "merge", "rebase", "cherry-pick", "revert", "am":
+	case "add", "rm", "mv", "reset", "checkout", "switch", "commit", "update-index", "read-tree", "merge", "rebase", "cherry-pick", "revert", "am", "stash", "pull":
 		return true
 	case "worktree":
 		if verbIndex+1 >= len(argv) {
 			return false
 		}
 		switch argv[verbIndex+1].value {
-		case "add", "move", "remove", "prune", "repair", "lock", "unlock":
+		case "add":
 			return true
 		}
 	}
@@ -329,6 +330,7 @@ func inspectHookGit(
 
 // hookGitCoordinatorMutation recognizes concrete native coordinator effects.
 // Read-only native verbs retain their original options without a legacy denylist.
+// Preview flags are exempt only for verbs that define them as a dry run.
 //
 // Example: branch --list is inspection while branch feature changes a ref.
 func hookGitCoordinatorMutation(
@@ -336,8 +338,20 @@ func hookGitCoordinatorMutation(
 	verbIndex int,
 ) bool {
 	for _, argument := range argv[verbIndex+1:] {
-		if argument.value == "--help" || argument.value == "-h" || argument.value == "--dry-run" || argument.value == "-n" {
+		if argument.value == "--help" || argument.value == "-h" {
 			return false
+		}
+		if argument.value == "-n" {
+			switch argv[verbIndex].value {
+			case "add", "rm", "mv", "clean", "push":
+				return false
+			}
+		}
+		if argument.value == "--dry-run" {
+			switch argv[verbIndex].value {
+			case "add", "rm", "mv", "clean", "push", "fetch", "commit":
+				return false
+			}
 		}
 	}
 	if hookGitFamily(argv, verbIndex) {
@@ -537,9 +551,9 @@ func inspectHookGitBroad(
 }
 
 // inspectHookGitProtectedTarget checks explicit physical writes to live hooks.
-// Index-only staging/removal/restoration leaves the physical hook entry intact.
+// Index-only staging or removal leaves the physical hook entry intact.
 //
-// Example: git restore --worktree -- hooks/validate-bash.sh names a live hook.
+// Example: git checkout -- hooks/validate-bash.sh names a live hook.
 func inspectHookGitProtectedTarget(
 	record ShellCommandRecord,
 	argv []token,
@@ -547,7 +561,7 @@ func inspectHookGitProtectedTarget(
 	repository string,
 ) *Diagnostic {
 	verb := argv[verbIndex].value
-	if verb != "restore" && verb != "checkout" && verb != "rm" && verb != "mv" {
+	if verb != "checkout" && verb != "rm" && verb != "mv" {
 		return nil
 	}
 	physical := true
