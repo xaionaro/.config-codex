@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,26 @@ func TestRunOnceRequiresAuthorizationAndReason(t *testing.T) {
 	}
 	if content, err := os.ReadFile(marker); err != nil || string(content) != "x" {
 		t.Fatalf("expected exactly one invocation: %q: %v", content, err)
+	}
+}
+
+// TestRunOncePreservesNativeContextAndStreams checks native repository selection and process I/O.
+//
+// Example: native -C selects another owned fixture while an alias reads inherited environment and stdin.
+func TestRunOncePreservesNativeContextAndStreams(t *testing.T) {
+	initial := fixtureRepository(t)
+	selected := fixtureRepository(t)
+	t.Setenv("GIT_ONCE_VALUE", "inherited value")
+	var output, diagnostic bytes.Buffer
+	arguments := []string{"--repo", initial, "run-once", "--reason", "approved fixture context and streams", "--user-authorized", "--", "-C", selected, "-c", `alias.fidelity=!git rev-parse --show-toplevel && printf '%s\n' "$GIT_ONCE_VALUE" && cat && printf 'diagnostic\n' >&2`, "fidelity"}
+	if code := Run(arguments, Streams{Input: strings.NewReader("input value\n"), Output: &output, Error: &diagnostic}); code != 0 {
+		t.Fatalf("native context failed: %d: %s", code, diagnostic.String())
+	}
+	if got, want := output.String(), selected+"\ninherited value\ninput value\n"; got != want {
+		t.Fatalf("native context or stdout changed: got %q, want %q", got, want)
+	}
+	if got := diagnostic.String(); got != "diagnostic\n" {
+		t.Fatalf("stderr changed: %q", got)
 	}
 }
 

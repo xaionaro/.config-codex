@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-// Run parses one typed request and reports failures without native argument passthrough.
+// Run dispatches a typed operation or an explicitly acknowledged native Git exception.
 //
 // Example: a protected restore exits nonzero before worktree or index writes.
 func Run(
@@ -33,7 +33,7 @@ func Run(
 	return 0
 }
 
-// main binds process streams to the fixed command contract.
+// main binds process streams to the Git CLI.
 //
 // Example: the registered hook refers workers to this executable.
 func main() {
