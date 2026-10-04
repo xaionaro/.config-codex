@@ -2,11 +2,11 @@
 #model_provider = "ollama"
 #model_reasoning_effort = "xhigh"
 oss_provider = "ollama"
-model = "gpt-6-luna"
+model = "gpt-6.1-sol"
 review_model = "gpt-6-luna"
 #model = "gpt-reserve"
 #review_model = "gpt-6-astra"
-model_reasoning_effort = "max"
+model_reasoning_effort = "low"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 developer_instructions = """
@@ -22,7 +22,7 @@ multi_agent = true
 multi_agent_v2 = true
 
 [agents]
-max_concurrent_threads_per_session = 32
+max_concurrent_threads_per_session = 64
 
 [history]
 persistence = "none"
@@ -86,6 +86,7 @@ screen_reader_detection_done = true
 "gpt-5.5" = 4
 "gpt-5.6-sol" = 4
 gpt-6-astra = 4
+"gpt-6.1-sol" = 4
 
 [model_providers.openrouter]
 name = "OpenRouter"
@@ -326,6 +327,9 @@ trust_level = "trusted"
 [projects."/mnt/nvme0n1/home/pheona/go/src/github.com/AndroidGoLab/jni-proxy"]
 trust_level = "trusted"
 
+[projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/uefisettings"]
+trust_level = "trusted"
+
 [hooks.state]
 
 [hooks.state."/home/pheona/.codex/hooks.json:pre_tool_use:0:0"]
@@ -379,9 +383,6 @@ trusted_hash = "sha256:c6433d827f21e329f9da84e696791f95719af510090818f777ccd7070
 [marketplaces.openai-bundled]
 source_type = "local"
 source = "/home/pheona/.codex/.tmp/bundled-marketplaces/openai-bundled"
-
-[plugins."sites@openai-bundled"]
-enabled = true
 
 [plugins."visualize@openai-bundled"]
 enabled = true

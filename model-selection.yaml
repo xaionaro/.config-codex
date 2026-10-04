@@ -1,9 +1,9 @@
 default:
-  model: gpt-6-luna
-  reasoning_effort: max
+  model: gpt-6.1-sol
+  reasoning_effort: low
 higher:
-  model: gpt-6-sol
-  reasoning_effort: xhigh
+  model: gpt-6.1-sol
+  reasoning_effort: high
 max:
-  model: gpt-6-astra
+  model: gpt-6.1-sol
   reasoning_effort: xhigh
