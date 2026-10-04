@@ -16,6 +16,9 @@ import (
 type ShellAnalysis struct {
 	Commands   []ShellCommandRecord `json:"commands"`
 	Incomplete bool                 `json:"incomplete"`
+	// OutputWrites records a filesystem output effect for callback bookkeeping.
+	// Example: >> log is a write; 2>&1 only duplicates a descriptor.
+	OutputWrites bool `json:"-"`
 }
 
 // ShellCommandRecord binds arguments and per-word uncertainty to incoming
@@ -104,6 +107,9 @@ func inspectShellAnalysis(
 		state := states[index]
 		if state.reachability == segmentUnreachable {
 			continue
+		}
+		for _, redirect := range current.redirects {
+			analysis.OutputWrites = analysis.OutputWrites || !redirect.descriptorDuplication
 		}
 		childRequest := shellChildRequest(request, state)
 		childRequest.ShellExpansion = expansionFacts[index].state
@@ -323,6 +329,7 @@ func appendShellAnalysis(
 	}
 	analysis.Commands = append(analysis.Commands, child.Commands...)
 	analysis.Incomplete = analysis.Incomplete || child.Incomplete
+	analysis.OutputWrites = analysis.OutputWrites || child.OutputWrites
 }
 
 // literalShellPayload finds source-backed command text that a known wrapper

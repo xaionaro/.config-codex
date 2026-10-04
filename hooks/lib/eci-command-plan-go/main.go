@@ -21,6 +21,9 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--hook" {
+		os.Exit(RunHook(os.Stdin, os.Stdout))
+	}
 	os.Exit(Run(os.Stdin, os.Stdout))
 }
 

@@ -221,6 +221,10 @@ const (
 
 // Request is the bounded JSON request consumed by the compiled planner.
 type Request struct {
+	// HookMode selects callback-owned effect routing without changing the planner CLI.
+	HookMode bool `json:"-"`
+	// HookSessionID preserves the callback session independently of its parent owner.
+	HookSessionID       string          `json:"-"`
 	Provider            Provider        `json:"provider"`
 	Role                Role            `json:"role"`
 	CWD                 string          `json:"cwd"`
@@ -926,7 +930,7 @@ func Classify(request Request) Result {
 	} else if request.SegmentCWDKnown == nil {
 		request.CWDUnknown = true
 	}
-	if request.Provider == ProviderCodex {
+	if request.Provider == ProviderCodex && !request.HookMode {
 		if _, verb, candidate := classifyCodexLifecycleTargetCandidate(request.Command); candidate &&
 			(isLifecycleReadOnlyVerb(verb) || request.Marker == MarkerActive && request.Role == RoleCoordinator) {
 			return Result{Decision: DecisionDefer, DeferredRoute: DeferredRouteCodexLifecycle}
@@ -938,7 +942,7 @@ func Classify(request Request) Result {
 			}
 		}
 	}
-	if request.Provider == ProviderCodex && request.Marker == MarkerActive && request.Role == RoleCoordinator {
+	if !request.HookMode && request.Provider == ProviderCodex && request.Marker == MarkerActive && request.Role == RoleCoordinator {
 		if trace, ok := reviewedScriptTraceTopology(request.Command); ok {
 			return Result{
 				Decision:      DecisionDefer,
@@ -1012,7 +1016,7 @@ func Classify(request Request) Result {
 		segmentRequest.CWDUnknown = segmentCWD.unknown
 		segmentRequest.CWDCandidates = append([]string(nil), segmentCWD.candidates...)
 		segmentRequest.CWDPhysicalCandidates = append([]string(nil), segmentCWD.physicalCandidates...)
-		if request.Marker == MarkerActive && segmentState.reachability != segmentUnreachable &&
+		if !request.HookMode && request.Marker == MarkerActive && segmentState.reachability != segmentUnreachable &&
 			segmentCWD.known && !segmentCWD.unknown &&
 			len(segmentCWD.candidates) == 1 && segmentState.replayKnown {
 			// Observe this segment only after all earlier segments have had a
@@ -1429,7 +1433,7 @@ func parseShellPlan(
 			"invalid-utf8",
 		)
 	}
-	if len(command) > maxCommandBytes {
+	if !substitutions && len(command) > maxCommandBytes {
 		return plan{}, newPlanError(
 			CodePlanLimitDenied,
 			fmt.Sprintf("command is %d bytes; maximum is %d", len(command), maxCommandBytes),
@@ -3704,6 +3708,11 @@ func inspectSegment(
 					*ledgerRedirectAppend = true
 				}
 			}
+			if request.HookMode && !currentLedgerAppend {
+				if diagnostic := inspectHookControlWriter(request, redirectWriterArgv(redirect), segmentIndex); diagnostic != nil {
+					return DecisionDeny, diagnostic
+				}
+			}
 		}
 		decision, diagnostic := inspectProofPathOwnership(request, current.argv, segmentIndex, nil, nil, controlIndex)
 		if diagnostic != nil {
@@ -3731,6 +3740,16 @@ func inspectSegment(
 	}
 	argv := unwrapped.argv
 	name := filepath.Base(argv[0].value)
+	if request.HookMode && request.Marker == MarkerActive {
+		if diagnostic := inspectHookControlWriter(request, argv, segmentIndex); diagnostic != nil {
+			return DecisionDeny, diagnostic
+		}
+	}
+	if request.HookMode && name == "git" {
+		// Native Git owns its option grammar. The callback checks named mutation
+		// families after gathering every compound and nested command effect.
+		return DecisionAllow, nil
+	}
 	gitCloneLaunch, gitCloneLaunchVisible := gitCloneSourceAcquisitionLaunch(
 		current.argv,
 		unwrapped,
@@ -3789,7 +3808,7 @@ func inspectSegment(
 		if diagnostic := inspectActiveWorkerLifecycleIdentity(request, current.argv, argv, segmentIndex); diagnostic != nil {
 			return DecisionDeny, diagnostic
 		}
-		if argv[0].value == "eci-active" {
+		if !request.HookMode && argv[0].value == "eci-active" {
 			return DecisionDeny, diagnosticForToken(
 				CodeControlOwnerRequired,
 				"worker argv selects coordinator-owned bare lifecycle command: executable=eci-active invocation=unwrapped",
@@ -3891,7 +3910,7 @@ func inspectSegment(
 	if diagnostic := inspectBroadDestruction(argv, segmentIndex); diagnostic != nil {
 		return DecisionDeny, diagnostic
 	}
-	if request.Marker == MarkerActive && request.Role == RoleCoordinator && name == "find" {
+	if !request.HookMode && request.Marker == MarkerActive && request.Role == RoleCoordinator && name == "find" {
 		// Check each parsed segment before a compound plan can reach later
 		// commands; every find action launches an unbounded per-match operation.
 		if action, ok := findDynamicAction(argv); ok {
@@ -4111,6 +4130,9 @@ func inspectGateMode(
 	if !ok {
 		return nil
 	}
+	if request.HookMode {
+		return inspectHookGateModeTarget(request, argv, target, segmentIndex)
+	}
 	if !isDirectGateModeEnvelope(original, argv, wholeSingleSegmentPlan) {
 		return gateModeEnvelopeDiagnostic(
 			original,
@@ -4180,6 +4202,41 @@ func inspectGateMode(
 		"route the exact command-gate mode change through the coordinator",
 		"gate-mode-mutation",
 	)
+}
+
+// inspectHookGateModeTarget checks the resolved mode mutation and its owner.
+// Quoting, wrappers and unknown CLI arguments do not create a control effect.
+//
+// Example: a quoted canonical set invocation belongs to the coordinator.
+func inspectHookGateModeTarget(
+	request Request,
+	argv []token,
+	target token,
+	segmentIndex int,
+) *Diagnostic {
+	if len(argv) != 3 || argv[1].value != "set" || argv[2].value != "permissive" && argv[2].value != "enforcing" {
+		return nil
+	}
+	resolved := resolveExecutable(target.value, request.CWD)
+	actual, err := os.Stat(resolved)
+	if err != nil {
+		return nil
+	}
+	for _, root := range protectedHookModeRoots() {
+		canonical := filepath.Join(root, "bin", "eci-command-gate-mode")
+		expected, err := os.Stat(canonical)
+		if err != nil || !os.SameFile(actual, expected) {
+			continue
+		}
+		own := resolvePathIdentity(root) == resolvePathIdentity(filepath.Join(os.Getenv("HOME"), ".codex"))
+		if request.Role == RoleCoordinator && own {
+			return nil
+		}
+		diagnostic := diagnosticForToken(CodeControlOwnerRequired, "resolved command-gate mode mutation selects its coordinator-owned control target", segmentIndex, originalTokenIndex(argv, target), target, "route this exact mode change through the owning provider coordinator in the current session", "gate-mode-owner")
+		diagnostic.Path = canonical
+		return diagnostic
+	}
+	return nil
 }
 
 // isExactGateModeEnvelope reports whether parsed is the direct current-provider
@@ -4507,6 +4564,7 @@ func inspectProofPathOwnershipExact(
 	}
 	selectedProofSession := proofSessions[0]
 	deferToProvider := false
+	entryMutation := request.HookMode && hookUnlinksDirectoryEntry(argv)
 
 	for sourceIndex, argument := range argv {
 		pathArgument, argumentIndex, pathLike := outputDestinationOperand(argv, sourceIndex)
@@ -4540,6 +4598,9 @@ func inspectProofPathOwnershipExact(
 		lexical = filepath.Clean(lexical)
 
 		resolved, resolveErr := resolvePathWithMissingSuffix(lexical)
+		if entryMutation {
+			resolved, resolveErr = resolvePathEntryWithMissingSuffix(lexical)
+		}
 		containingSession := ""
 		contained := false
 		anchorSearchComplete := true
@@ -4587,7 +4648,14 @@ func inspectProofPathOwnershipExact(
 		canonicalHandoff := isCanonicalWorkerHandoffPath(lexical, request.ActiveMarkers) ||
 			(resolveErr == nil && isCanonicalWorkerHandoffPath(resolved, request.ActiveMarkers))
 		if writer {
-			if controlPath := activeControlResolvedPath(lexical, controlIndex.files); controlPath != "" {
+			controlPath := activeControlResolvedPath(lexical, controlIndex.files)
+			if entryMutation && controlPath != "" {
+				protectedEntry, err := resolvePathEntryWithMissingSuffix(controlPath)
+				if err != nil || resolveErr != nil || protectedEntry != resolved {
+					controlPath = ""
+				}
+			}
+			if controlPath != "" {
 				if isCanonicalWorkerHandoffPath(controlPath, request.ActiveMarkers) &&
 					filepath.Base(controlPath) != "high_level_log.md" {
 					deferToProvider = true
@@ -5134,6 +5202,32 @@ func isAppendOnlyLedgerPath(
 		}
 	}
 	return false
+}
+
+// hookUnlinksDirectoryEntry reports operations whose targets are directory entries.
+//
+// Example: rm of a symlink removes the link; tee writes through its referent.
+func hookUnlinksDirectoryEntry(argv []token) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	switch filepath.Base(argv[0].value) {
+	case "rm", "mv", "rmdir":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolvePathEntryWithMissingSuffix resolves parents while retaining the last entry.
+//
+// Example: removing /task/link resolves /task, leaving link as the unlink target.
+func resolvePathEntryWithMissingSuffix(path string) (string, error) {
+	parent, err := resolvePathWithMissingSuffix(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(path)), nil
 }
 
 func resolvePathWithMissingSuffix(path string) (string, error) {
@@ -6912,6 +7006,13 @@ func inspectLiveControlExact(
 			}
 		}
 		controlPath := activeControlResolvedPath(candidate, controlIndex.files)
+		if request.HookMode && hookUnlinksDirectoryEntry(argv) && controlPath != "" {
+			entry, entryErr := resolvePathEntryWithMissingSuffix(candidate)
+			protectedEntry, protectedErr := resolvePathEntryWithMissingSuffix(controlPath)
+			if entryErr != nil || protectedErr != nil || entry != protectedEntry {
+				controlPath = ""
+			}
+		}
 		if isCanonicalWorkerHandoffPath(candidate, request.ActiveMarkers) &&
 			(controlPath == "" || (isCanonicalWorkerHandoffPath(controlPath, request.ActiveMarkers) &&
 				filepath.Base(controlPath) == filepath.Base(candidate))) {
