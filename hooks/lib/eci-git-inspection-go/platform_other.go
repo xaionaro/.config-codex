@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"syscall"
 )
 
 // inheritedDescriptorAdmission refuses unmodeled descriptor inheritance on unsupported platforms.
@@ -36,4 +37,30 @@ func certifyInitialExec(
 // Example: non-Linux sandbox creation fails before a native process can be started.
 func isolateObservationProcess(command *exec.Cmd) error {
 	return fmt.Errorf("unsupported observation process platform")
+}
+
+// effectiveAccess refuses unsupported kernel access evidence.
+//
+// Example: an unsupported platform retains advisory intent.
+func effectiveAccess(
+	path string,
+	mode uintptr,
+) bool {
+	return false
+}
+
+// localIntentDomain refuses unsupported filesystem evidence.
+//
+// Example: an unsupported platform retains advisory intent.
+func localIntentDomain(path string) bool { return false }
+
+// regularIntentAccess refuses unsupported writable-handle evidence.
+//
+// Example: an unsupported platform retains advisory intent.
+func regularIntentAccess(
+	raw string,
+	target string,
+	expected *syscall.Stat_t,
+) bool {
+	return false
 }

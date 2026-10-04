@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused checks for the embedded inspection query transport and output merge."""
+"""Focused checks for the embedded inspection query transport."""
 
 import json
 import os
@@ -13,19 +13,10 @@ import time
 def load_functions() -> dict[str, object]:
     """Load the shipped query and output decision without executing the Bash hook."""
     source = Path(__file__).resolve().parents[1].joinpath("validate-bash.sh").read_text()
-    start = source.index("def inspection_argument_roles(")
-    end = source.index("\ndef segment_spec(", start)
+    start = source.index("def inspection_query(")
+    end = source.index("\nfrom dataclasses import", start)
     namespace = {"os": os, "json": json, "subprocess": subprocess, "re": re}
     exec(source[start:end], namespace)
-    start = source.index('        roles = inspection_argument_roles([*git_options, *tokens[index:]])')
-    end = source.index('        if (roles is not None and roles["eligible"]', start)
-    decision = source[start:end]
-    exec("def output_decision(roles, verb, arguments):\n" +
-         "    tokens, index, repo_dir = [verb, *arguments], 0, 'repo'\n" +
-         "    git_options = []\n" +
-         decision.replace('        ', '    ').replace(
-             '    roles = inspection_argument_roles([*git_options, *tokens[index:]])\n', '') +
-         "    return 'inspection', repo_dir\n", namespace)
     return namespace
 
 
@@ -43,7 +34,6 @@ def main() -> None:
     """Exercise transport failure boundaries and positive output fact merging."""
     namespace = load_functions()
     query = namespace["inspection_argument_roles"]
-    decision = namespace["output_decision"]
     valid = json.dumps(dict(query="argument-roles", output=False, complete=True, eligible=True)).encode()
     previous_home = os.environ.get("CODEX_CONFIGURED_HOME")
     try:
@@ -72,6 +62,7 @@ def main() -> None:
                 ("overflow", b"x" * 8193, False),
                 ("invalid encoding", b"\xff", False),
                 ("malformed JSON", b"{", False),
+                ("invalid Unicode scalar", valid[:-1] + b',"reason":"\\ud800"}', False),
             ):
                 install(f"sys.stdin.buffer.read()\nos.write(1,{payload!r})\n")
                 result = query(["diff"])
@@ -93,14 +84,6 @@ def main() -> None:
                 assert_reaped(pid_file)
                 print(name, "PASS")
 
-        for roles in (None, dict(output=False, complete=False, eligible=False)):
-            assert decision(roles, "log", ["--no-merges", "--output=out"])[0] == "output"
-            for arguments in (["--", "--output=literal"], ["-S", "--output=consumed"], ["--unknown", "--output=uncertain"]):
-                assert decision(roles, "diff", arguments)[0] == "inspection", arguments
-        assert decision(dict(output=True, complete=False, eligible=False), "diff", ["--unknown"])[0] == "output"
-        assert decision(dict(output=True, complete=True, eligible=False), "diff", ["--stat-width=80", "--output=out"])[0] == "output"
-        assert decision(dict(output=False, complete=True, eligible=False), "diff", ["--output=consumed"])[0] == "inspection"
-        print("positive fallback and query preservation PASS")
     finally:
         if previous_home is None:
             os.environ.pop("CODEX_CONFIGURED_HOME", None)

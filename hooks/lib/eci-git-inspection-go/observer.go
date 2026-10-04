@@ -140,8 +140,40 @@ func admission(in Invocation) (int, string) {
 		return 0, "cwd must be an absolute existing physical path"
 	}
 	roles := AnalyzeArguments(in.Arguments)
-	if !roles.Complete || !roles.Eligible {
+	if roles.VerbIndex < 0 {
 		return 0, roles.Reason
+	}
+	globals := append(append([]string{}, in.Arguments[:roles.VerbIndex]...), in.Arguments[roles.VerbIndex])
+	globalRoles := AnalyzeArguments(globals)
+	if !globalRoles.Complete || !globalRoles.Eligible {
+		return 0, globalRoles.Reason
+	}
+	if !roles.Complete || !roles.Eligible {
+		// Only the bounded generated program may extend the existing replay grammar.
+		bounded := OfflineAnalyze(in.Arguments[roles.VerbIndex:])
+		if !bounded.Complete || bounded.Boundary < 0 {
+			return 0, roles.Reason
+		}
+		removed := map[int]bool{}
+		c := InspectionContext{CWD: in.CWD, Certainty: SnapshotAvailabilitySnapshot}
+		for n, value := range bounded.Outputs {
+			if outputDestination(value, c).Decision != OutputIntentHarmlessEndpoint {
+				return 0, "output replay is not proved harmless"
+			}
+			for _, offset := range bounded.OutputSpans[n] {
+				if offset > 0 {
+					removed[roles.VerbIndex+offset] = true
+				}
+			}
+		}
+		for offset, arg := range in.Arguments[roles.VerbIndex+1:] {
+			if removed[roles.VerbIndex+1+offset] {
+				continue
+			}
+			if strings.Contains(arg, "/proc/") || strings.Contains(arg, "/dev/") || arg == "--stdin" || arg == "-" || strings.HasPrefix(arg, "-O") {
+				return 0, roles.Reason
+			}
+		}
 	}
 	return roles.VerbIndex, ""
 }
@@ -245,7 +277,7 @@ func newSandbox(in Invocation) (*sandbox, error) {
 	if info, err := os.Stat(bwrap); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("trusted bubblewrap unavailable")
 	}
-	dir, err := os.MkdirTemp("/var/tmp", "eci-git-inspection-")
+	dir, err := os.MkdirTemp(os.TempDir(), "eci-git-inspection-")
 	if err != nil {
 		return nil, fmt.Errorf("create owned overlay: %w", err)
 	}
@@ -565,9 +597,37 @@ func rawHatch(
 	verb int,
 	monitor bool,
 ) []string {
+	boundedOutput := OfflineAnalyze(args[verb:])
+	if boundedOutput.Complete && len(boundedOutput.Outputs) > 0 {
+		remove := map[int]bool{}
+		for _, span := range boundedOutput.OutputSpans {
+			for _, offset := range span {
+				if offset > 0 {
+					remove[verb+offset] = true
+				}
+			}
+		}
+		clean := []string{}
+		for n, arg := range args {
+			if !remove[n] {
+				clean = append(clean, arg)
+			}
+		}
+		return rawHatch(clean, verb, monitor)
+	}
 	roles := AnalyzeArguments(args)
 	if !roles.Complete || !roles.Eligible || roles.VerbIndex != verb {
-		return nil
+		bounded := OfflineAnalyze(args[verb:])
+		if !bounded.Complete || bounded.Boundary < 1 || len(bounded.Outputs) != 0 {
+			return nil
+		}
+		// The parser supplies a source-proved real boundary; disabling options are appended last.
+		result := append([]string{}, args[:verb]...)
+		result = append(result, "-c", "core.fsmonitor=false")
+		boundary := verb + bounded.Boundary
+		result = append(result, args[verb:boundary]...)
+		result = append(result, "--no-ext-diff", "--no-textconv")
+		return append(result, args[boundary:]...)
 	}
 	result := append([]string{}, args[:verb]...)
 	if monitor {

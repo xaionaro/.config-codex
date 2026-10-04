@@ -11740,23 +11740,9 @@ def inspection_observation(
                         return advisory
     except OSError:
         return advisory
-    configured_home = os.environ.get("CODEX_CONFIGURED_HOME")
-    if not configured_home:
-        return advisory
-    binary = os.path.join(configured_home, "bin", "eci-git-inspection")
-    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
-        return advisory
-    infrastructure = {name: value for name, value in os.environ.items()
-                      if not name.startswith("LD_") and name not in loader_controls and not name.startswith("GIT_TRACE")}
-    try:
-        observed = subprocess.run([binary], input=json.dumps({"cwd": base,
-            "arguments": [*options, *arguments], "environment": environment}),
-            text=True, env=infrastructure, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=10, check=False)
-        result = json.loads(observed.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return advisory
-    if observed.returncode or not isinstance(result, dict) or result.get("result") not in {"Helper", "NoHelper", "Advisory"}:
+    result = inspection_query({"cwd": base, "arguments": [*options, *arguments],
+                               "environment": environment})
+    if result is None or result.get("result") not in {"Helper", "NoHelper", "Advisory"}:
         return advisory
     if result.get("result") == "Helper":
         if (not all(isinstance(result.get(key), str) and result[key] for key in {"category", "target", "reason"}) or
@@ -11767,8 +11753,8 @@ def inspection_observation(
     return result
 
 
-def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | int] | None:
-    """Query pure argument facts under effect-free infrastructure context."""
+def inspection_query(request_value: dict[str, object], response_limit: int = 4 * 1024 * 1024) -> dict[str, object] | None:
+    """Exchange bounded inspection data under effect-free infrastructure context."""
     configured_home = os.environ.get("CODEX_CONFIGURED_HOME")
     if not configured_home:
         return None
@@ -11782,10 +11768,8 @@ def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | in
     import time
 
     request_limit = 4 * 1024 * 1024
-    if sum(len(value) for value in arguments) > request_limit:
-        return None
     request = bytearray()
-    for part in json.JSONEncoder().iterencode({"query": "argument-roles", "arguments": arguments}):
+    for part in json.JSONEncoder().iterencode(request_value):
         encoded = part.encode("utf-8")
         if len(encoded) > request_limit - len(request):
             return None
@@ -11820,7 +11804,7 @@ def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | in
                                     process.stdin.close()
                                 continue
                             try:
-                                chunk = os.read(process.stdout.fileno(), 8193 - len(output))
+                                chunk = os.read(process.stdout.fileno(), response_limit + 1 - len(output))
                             except BlockingIOError:
                                 continue
                             if not chunk:
@@ -11828,7 +11812,7 @@ def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | in
                                 process.stdout.close()
                                 continue
                             output.extend(chunk)
-                            if len(output) > 8192:
+                            if len(output) > response_limit:
                                 return None
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or process.wait(timeout=remaining):
@@ -11838,89 +11822,139 @@ def inspection_argument_roles(arguments: list[str]) -> dict[str, str | bool | in
                 if process.poll() is None:
                     process.kill()
                 process.wait()
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
         return None
-    if (not isinstance(result, dict) or result.get("query") != "argument-roles" or
+    if not isinstance(result, dict):
+        return None
+    pending = [result]
+    try:
+        while pending:
+            value = pending.pop()
+            if isinstance(value, str):
+                value.encode("utf-8", errors="strict")
+            elif isinstance(value, dict):
+                pending.extend(value.keys())
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+    except UnicodeEncodeError:
+        return None
+    return result
+
+
+def inspection_argument_roles(arguments: list[str]) -> dict[str, object] | None:
+    """Obtain pure role facts without making output identity a denial."""
+    if sum(len(value) for value in arguments) > 4 * 1024 * 1024:
+        return None
+    result = inspection_query({"query": "argument-roles", "arguments": arguments}, 8192)
+    if (result is None or result.get("query") != "argument-roles" or
             not all(type(result.get(key)) is bool for key in {"output", "complete", "eligible"})):
         return None
     return result
 
 
-def inspection_output_fallback(verb: str, arguments: list[str]) -> bool | None:
-    """Preserve finite positive output facts when the query is unavailable or incomplete."""
-    if verb == "grep":
-        values = {"-e", "--regexp", "-A", "-B", "-C", "--context", "--after-context",
-                  "--before-context", "--max-count", "-m", "--threads"}
-        flags = {"-o", "--only-matching", "--textconv", "--no-textconv", "--cached", "--no-index",
-                 "-n", "--line-number", "-i", "--ignore-case", "-v", "--invert-match", "-l", "-L",
-                 "--files-with-matches", "--files-without-match", "-q", "--quiet", "-c", "--count",
-                 "-w", "--word-regexp", "-F", "--fixed-strings", "-E", "--extended-regexp",
-                 "-G", "--basic-regexp", "-P", "--perl-regexp", "--and", "--or", "--not", "(", ")"}
-        index = 0
-        while index < len(arguments):
-            token = arguments[index]
-            if token == "--" or (not token.startswith("-") and token not in {"(", ")"}):
-                return False
-            if token in values:
-                if index + 1 >= len(arguments):
-                    return None
-                index += 2
-                continue
-            if (token in flags or any(token.startswith(option + "=") for option in values if option.startswith("--")) or
-                    any(token.startswith(option) and len(token) > len(option) for option in values if not option.startswith("--"))):
-                index += 1
-                continue
-            return None
-        return False
-    if verb not in {"diff", "log", "show"}:
-        # grep/ls-files -o select stdout content, never an output destination.
-        return False
-    values = {
-        "-O", "-S", "-G", "--find-object", "--diff-filter",
-        "--src-prefix", "--dst-prefix", "--line-prefix",
-    }
-    if verb in {"log", "show"}:
-        values |= {"--author", "--committer", "--grep", "--grep-reflog", "--since", "--until",
-                   "--after", "--before", "--max-count", "-n"}
-    flags = {
-        "--textconv", "--no-textconv", "--ext-diff", "--no-ext-diff", "--cached", "--staged",
-        "--quiet", "--exit-code", "--check", "--name-only", "--name-status", "--stat", "--numstat",
-        "--raw", "--patch", "--no-patch", "--patch-with-stat", "--patch-with-raw", "--oneline",
-        "--no-renames", "--full-index", "--binary", "--color", "--no-color", "--no-prefix",
-        "--ignore-space-change", "--ignore-all-space", "--ignore-space-at-eol", "--ignore-blank-lines",
-        "--reverse", "--all", "--first-parent", "--no-merges", "--merges", "--follow", "--decorate", "--relative",
-        "-p", "-u", "-s", "-w", "-b", "-z", "-R", "-a", "-r", "-m", "-c", "--cc",
-    }
-    index = 0
-    while index < len(arguments):
-        token = arguments[index]
-        if token == "--":
-            return False
-        if token == "--output":
-            return True if index + 1 < len(arguments) else None
-        if token.startswith("--output="):
-            return True
-        if token in values:
-            if index + 1 >= len(arguments):
-                return None
-            index += 2
-            continue
-        if any(token.startswith(option + "=") for option in values if option.startswith("--")):
-            index += 1
-            continue
-        if any(token.startswith(option) and len(token) > len(option) for option in values if not option.startswith("--")):
-            index += 1
-            continue
-        if (token in flags or re.fullmatch(r"-[0-9]+|-[UCM][0-9]*", token) or
-                token.startswith(("--unified=", "--inter-hunk-context=", "--stat=", "--color=", "--pretty=", "--format=", "--decorate=", "--relative="))):
-            index += 1
-            continue
-        if token.startswith("-"):
-            return None
-        # Revision operands do not stop diff/revision option processing.
-        index += 1
-    return False
+_projection = {"__name__": "embedded_inspection_program"}
+exec(compile("# Generated from stagegen/main.go; DO NOT EDIT.\nimport json,re,sys\nPROGRAM=json.loads(\"{\\\"pipeline\\\":{\\\"diff\\\":[\\\"ordinary_diff_gate\\\",\\\"revision_raw_delimiter\\\",\\\"role_scan\\\"],\\\"log\\\":[\\\"log_front_scan\\\",\\\"revision_raw_delimiter\\\",\\\"role_scan\\\"],\\\"show\\\":[\\\"log_front_scan\\\",\\\"revision_raw_delimiter\\\",\\\"role_scan\\\"]},\\\"front\\\":{\\\"--clear-decorations\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--decorate\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decorations\\\",\\\"source\\\":\\\"log.c:161-178\\\"},\\\"--decorate-refs\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:289-292 OPT_STRING_LIST\\\"},\\\"--decorate-refs-exclude\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:289-292 OPT_STRING_LIST\\\"},\\\"--mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-decorate\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"parse-options callback/string-list unset\\\"},\\\"--no-decorate-refs\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"parse-options callback/string-list unset\\\"},\\\"--no-decorate-refs-exclude\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"parse-options callback/string-list unset\\\"},\\\"--no-mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-quiet\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-source\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--no-use-mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--quiet\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--source\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"},\\\"--use-mailmap\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"log.c:275-298,parse-options exact KEEP_UNKNOWN\\\"}},\\\"revision\\\":{\\\"--abbrev-commit\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--after\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--all\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--all-match\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--always\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--author\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--basic-regexp\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--before\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--committer\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--date\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"date\\\",\\\"source\\\":\\\"revision.c:2633\\\"},\\\"--date-order\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--encoding\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--extended-regexp\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--first-parent\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--fixed-strings\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--format\\\":{\\\"arity\\\":\\\"attached\\\",\\\"validator\\\":\\\"pretty\\\",\\\"source\\\":\\\"revision.c format equals\\\"},\\\"--full-diff\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--full-history\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--graph\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--grep\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--grep-reflog\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--invert-grep\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--max-count\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"revision.c:2332-2340\\\"},\\\"--merges\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-abbrev-commit\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-commit-id\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-graph\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--no-merges\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--oneline\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--perl-regexp\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--pretty\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"pretty\\\",\\\"source\\\":\\\"revision.c pretty bare/attached\\\"},\\\"--regexp-ignore-case\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--relative-date\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--reverse\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--root\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--show-pulls\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--since\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"},\\\"--skip\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"revision.c:2332-2340\\\"},\\\"--topo-order\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c explicit strcmp and pseudo handlers\\\"},\\\"--until\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"revision.c:2355-2371,2643-2675\\\"}},\\\"diff\\\":{\\\"--binary\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--check\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--color\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"color\\\",\\\"source\\\":\\\"diff.c OPT__COLOR\\\"},\\\"--default-prefix\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--dst-prefix\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c string stores\\\"},\\\"--exit-code\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ext-diff\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--find-copies\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"},\\\"--find-renames\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"},\\\"--follow\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--full-index\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-all-space\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-blank-lines\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-space-at-eol\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--ignore-space-change\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--inter-hunk-context\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--line-prefix\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c string stores\\\"},\\\"--name-only\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--name-status\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-color\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-ext-diff\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-patch\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-prefix\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-renames\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--no-textconv\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--numstat\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--output\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"git v2.51.0 diff.c:5120-5134 xfopen during parse\\\"},\\\"--output-indicator-context\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"character\\\",\\\"source\\\":\\\"diff.c:5204 diff_opt_char\\\"},\\\"--output-indicator-new\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"character\\\",\\\"source\\\":\\\"diff.c:5204 diff_opt_char\\\"},\\\"--output-indicator-old\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"character\\\",\\\"source\\\":\\\"diff.c:5204 diff_opt_char\\\"},\\\"--patch\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--patch-with-raw\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--patch-with-stat\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--quiet\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--raw\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--shortstat\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--src-prefix\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c string stores\\\"},\\\"--stat\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"},\\\"--stat-count\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--stat-graph-width\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--stat-name-width\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--stat-width\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c stat/inter-hunk callbacks\\\"},\\\"--summary\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--textconv\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c no-argument declaration/callbacks\\\"},\\\"--unified\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional callbacks restricted decimal subset\\\"}},\\\"short\\\":{\\\"C\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional attached short\\\"},\\\"G\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"nonempty\\\",\\\"source\\\":\\\"git v2.51.0 diff.c:5175-5197 pickaxe callback rejects empty\\\"},\\\"M\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional attached short\\\"},\\\"O\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c order filename\\\"},\\\"R\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"S\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"nonempty\\\",\\\"source\\\":\\\"git v2.51.0 diff.c:5175-5197 pickaxe callback rejects empty\\\"},\\\"U\\\":{\\\"arity\\\":\\\"optional\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"diff.c optional attached short\\\"},\\\"a\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"b\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"n\\\":{\\\"arity\\\":\\\"required\\\",\\\"validator\\\":\\\"decimal\\\",\\\"source\\\":\\\"revision.c -n\\\"},\\\"p\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"r\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"s\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"u\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"w\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"},\\\"z\\\":{\\\"arity\\\":\\\"none\\\",\\\"validator\\\":\\\"any\\\",\\\"source\\\":\\\"diff.c short flags\\\"}},\\\"unsupported_front\\\":[\\\"--i-still-use-this\\\",\\\"--no-i-still-use-this\\\"]}\")\nstageDestinationLimit = 64\nstagePathLimit = 4096\n\ndef _cut(value, separator):\n    head, found, tail = value.partition(separator)\n    return head, tail, bool(found)\n\ndef _match(pattern, value):\n    try:\n        return re.search(pattern, value) is not None, None\n    except re.error as error:\n        return False, error\n\ndef offlineValid(value, validator):\n    if validator == \"any\":\n        return True\n    elif validator == \"nonempty\":\n        return (value != \"\")\n    elif validator == \"character\":\n        return (len(value.encode('utf-8')) == 1)\n    elif validator == \"decimal\":\n        if ((len(value) == 0) or (len(value) > 9)):\n            return False\n        for _, digit in enumerate(value):\n            if ((digit < \"0\") or (digit > \"9\")):\n                return False\n        return True\n    elif validator == \"decorations\":\n        for _, allowed in enumerate(\"short|full|auto|true|false|yes|no|on|off|0|1\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    elif validator == \"color\":\n        for _, allowed in enumerate(\"always|auto|never|true|false|0|1\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    elif validator == \"date\":\n        for _, allowed in enumerate(\"iso|iso-strict|rfc|short|raw|unix|default\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    elif validator == \"pretty\":\n        for _, allowed in enumerate(\"oneline|short|medium|full|fuller|raw|%s|%H|format:%s|tformat:%s\".split(\"|\")):\n            if (value == allowed):\n                return True\n        return False\n    return False\n\ndef offlineStop(r, reason):\n    r[\"reason\"] = reason\n    return r\n\ndef analyzeStages(args, p):\n    r = {\"outputs\":[],\"output_spans\":[],\"complete\":False,\"reason\":\"\",\"boundary\":0,\"outputs\":[],\"output_spans\":[],\"boundary\":len(args)}\n    if ((len(args) == 0) or ((((args[0] != \"diff\") and (args[0] != \"log\")) and (args[0] != \"show\")))):\n        return offlineStop(r,\"outside built-in domain\")\n    verb = args[0]\n    for _, arg in enumerate(args):\n        if (\"\\x00\" in arg):\n            return offlineStop(r,\"unrepresentable native argument\")\n    original = args[1:]\n    residual = ([] + list(original))\n    positions = []\n    for i in range(len(original)):\n        positions = (positions + [(i + 1)])\n    for _, stage in enumerate(p[\"pipeline\"][verb]):\n        if stage == \"ordinary_diff_gate\":\n            for i, token in enumerate(original):\n                start = i\n                if (token == \"--no-index\"):\n                    return offlineStop(r,\"no-index requires native sensor\")\n                if (token == \"--\"):\n                    start += 1\n                else:\n                    if token.startswith(\"-\"):\n                        continue\n                if (len(original[start:]) == 2):\n                    for _, operand in enumerate(original[start:]):\n                        if (operand.startswith(\"/\") or (\"..\" in operand)):\n                            return offlineStop(r,\"implicit no-index requires native sensor\")\n                break\n        elif stage == \"log_front_scan\":\n            residual = []\n            positions = []\n            i = 0\n            while (i < len(original)):\n                token = original[i]\n                if ((token == \"--\") or (token == \"--end-of-options\")):\n                    r[\"boundary\"] = (i + 1)\n                    residual = (residual + list(original[i:]))\n                    j = i\n                    while (j < len(original)):\n                        positions = (positions + [(j + 1)])\n                        j += 1\n                    break\n                name, value, attached = _cut(token,\"=\")\n                for _, unsupported in enumerate(p[\"unsupported_front\"]):\n                    if (name == unsupported):\n                        return offlineStop(r,\"conditional front declaration\")\n                if (((token == \"--help\") or (token == \"--help-all\")) or (token == \"-h\")):\n                    r[\"complete\"] = True\n                    return r\n                rule, known = p[\"front\"].get(name), name in p[\"front\"]\n                if known:\n                    if ((rule[\"arity\"] == \"none\") and attached):\n                        return offlineStop(r,\"invalid front value\")\n                    if ((rule[\"arity\"] == \"required\") and (not attached)):\n                        i += 1\n                        if (i == len(original)):\n                            return offlineStop(r,\"missing front value\")\n                        value = original[i]\n                    if (((attached or (rule[\"arity\"] == \"required\"))) and (not offlineValid(value,rule[\"validator\"]))):\n                        return offlineStop(r,\"unproved front callback\")\n                    i += 1\n                    continue\n                if ((token.startswith(\"-\") and (not token.startswith(\"--\"))) and (token != \"-\")):\n                    suffix = token[1:]\n                    while (len(suffix) > 0):\n                        if suffix[0] == \"h\":\n                            r[\"complete\"] = True\n                            return r\n                        elif suffix[0] == \"q\":\n                            suffix = suffix[1:]\n                            continue\n                        elif suffix[0] == \"L\":\n                            if (len(suffix) == 1):\n                                i += 1\n                                if (i == len(original)):\n                                    return offlineStop(r,\"missing line range\")\n                            suffix = \"\"\n                        else:\n                            if ((suffix == \"-\") or (suffix == \"-end-of-options\")):\n                                return offlineStop(r,\"virtual delimiter requires native sensor\")\n                            residual = (residual + [(\"-\" + suffix)])\n                            positions = (positions + [(i + 1)])\n                            suffix = \"\"\n                    i += 1\n                    continue\n                residual = (residual + [token])\n                positions = (positions + [(i + 1)])\n                i += 1\n        elif stage == \"revision_raw_delimiter\":\n            for i, token in enumerate(residual):\n                if (token == \"--\"):\n                    if ((verb == \"diff\") and (len(residual[(i + 1):]) == 2)):\n                        for _, path in enumerate(residual[(i + 1):]):\n                            if (path.startswith(\"/\") or (\"..\" in path)):\n                                return offlineStop(r,\"implicit no-index requires native sensor\")\n                    if (verb == \"diff\"):\n                        r[\"boundary\"] = (i + 1)\n                    residual = residual[:i]\n                    positions = positions[:i]\n                    break\n        elif stage == \"role_scan\":\n            i = 0\n            while (i < len(residual)):\n                token = residual[i]\n                if (token == \"--end-of-options\"):\n                    if (verb == \"diff\"):\n                        r[\"boundary\"] = (i + 1)\n                    r[\"complete\"] = True\n                    return r\n                if ((not token.startswith(\"-\")) or (token == \"-\")):\n                    return offlineStop(r,\"unverified revision/path operand\")\n                if token.startswith(\"--\"):\n                    name, value, attached = _cut(token,\"=\")\n                    optionPosition = positions[i]\n                    valuePosition = 0\n                    rule, known = p[\"revision\"].get(name), name in p[\"revision\"]\n                    if (verb == \"diff\"):\n                        known = False\n                    if (not known):\n                        rule, known = p[\"diff\"].get(name), name in p[\"diff\"]\n                    if (not known):\n                        return offlineStop(r,\"unknown revision/diff role\")\n                    if ((rule[\"arity\"] == \"none\") and attached):\n                        return offlineStop(r,\"unexpected value\")\n                    if ((rule[\"arity\"] == \"attached\") and (not attached)):\n                        return offlineStop(r,\"missing attached value\")\n                    if ((rule[\"arity\"] == \"required\") and (not attached)):\n                        i += 1\n                        if (i == len(residual)):\n                            return offlineStop(r,\"missing required value\")\n                        value = residual[i]\n                        valuePosition = positions[i]\n                    if (((attached or (rule[\"arity\"] == \"required\"))) and (not offlineValid(value,rule[\"validator\"]))):\n                        return offlineStop(r,\"unproved callback\")\n                    if (name == \"--output\"):\n                        if (len(value.encode('utf-8')) > stagePathLimit):\n                            return offlineStop(r,\"output value beyond bounded domain\")\n                        if (len(r[\"outputs\"]) >= stageDestinationLimit):\n                            return offlineStop(r,\"output count beyond bounded domain\")\n                        r[\"outputs\"] = (r[\"outputs\"] + [value])\n                        r[\"output_spans\"] = (r[\"output_spans\"] + [[optionPosition,valuePosition]])\n                    i += 1\n                    continue\n                suffix = token[1:]\n                digits = offlineValid(suffix,\"decimal\")\n                if (digits and (verb != \"diff\")):\n                    if (not offlineValid(suffix,\"decimal\")):\n                        return offlineStop(r,\"unproved numeric count\")\n                    i += 1\n                    continue\n                while (len(suffix) > 0):\n                    letter = suffix[:1]\n                    suffix = suffix[1:]\n                    rule, known = p[\"short\"].get(letter), letter in p[\"short\"]\n                    if ((not known) or (((letter == \"n\") and (verb == \"diff\")))):\n                        return offlineStop(r,\"unknown short role\")\n                    if (rule[\"arity\"] == \"none\"):\n                        continue\n                    value = suffix\n                    if ((rule[\"arity\"] == \"required\") and (suffix == \"\")):\n                        i += 1\n                        if (i == len(residual)):\n                            return offlineStop(r,\"missing short value\")\n                        value = residual[i]\n                    if ((((value != \"\") or (rule[\"arity\"] == \"required\"))) and (not offlineValid(value,rule[\"validator\"]))):\n                        return offlineStop(r,\"unproved short callback\")\n                    suffix = \"\"\n                i += 1\n        else:\n            return offlineStop(r,\"unknown stage opcode\")\n    r[\"complete\"] = True\n    return r\n\n\ndef analyze(args):\n    if not isinstance(args, list) or not all(isinstance(value, str) for value in args):\n        return {\"outputs\": [], \"complete\": False, \"reason\": \"malformed argument types\", \"boundary\": 0}\n    return analyzeStages(args, PROGRAM)\n\nif __name__ == \"__main__\":\n    raw = sys.stdin.buffer.read(4 * 1024 * 1024 + 1)\n    result = {\"outputs\": [], \"complete\": False, \"reason\": \"malformed request\", \"boundary\": 0}\n    if len(raw) > 4 * 1024 * 1024:\n        result[\"reason\"] = \"input overflow\"\n    else:\n        try:\n            result = analyze(json.loads(raw)[\"arguments\"])\n        except (UnicodeError, ValueError, KeyError, TypeError):\n            pass\n    print(json.dumps(result, ensure_ascii=False))\n", "embedded-inspection-program", "exec"), _projection)
 
+from dataclasses import dataclass, asdict
+
+@dataclass(frozen=True)
+class Destination:
+    spelling: str
+    ordinal: int
+    option_index: int
+    value_index: int
+    target: str = ""
+    identity: str = "Advisory"
+    endpoint: str = "Unresolved"
+    decision: str = "Advisory"
+    device: int | None = None
+    inode: int | None = None
+    parent_device: int | None = None
+    parent_inode: int | None = None
+
+def inspection_output_record(
+    arguments: list[str],
+    base: str,
+    directories: list[str | None],
+    options: list[str],
+    environment: dict[str, str],
+    known: bool,
+    repository: str | None,
+) -> dict[str, object] | None:
+    """Compose output snapshots and independent helper evidence for fresh consumption."""
+    try:
+        local = _projection['analyze'](arguments)
+    except UnicodeEncodeError:
+        return None
+    if local['complete'] and not local['outputs']:
+        return None
+    spans = local['output_spans']
+    request = {'query': 'destinations', 'base': base, 'directories': directories, 'options': options, 'environment': environment, 'known': known, 'outputs': local['outputs'], 'spans': spans, 'arguments': arguments}
+    mapped = inspection_query(request)
+    context = {'cwd': '', 'worktree': '', 'git_dir': '', 'prefix': '', 'certainty': 'Advisory'}
+    destinations = [asdict(Destination(spelling=value, ordinal=n, option_index=spans[n][0], value_index=spans[n][1])) for n, value in enumerate(local['outputs'])]
+    if isinstance(mapped, dict) and mapped.get('query') == 'destinations' and isinstance(mapped.get('context'), dict) and isinstance(mapped.get('destinations'), list) and len(mapped['destinations']) == len(destinations):
+        expected = [(item['spelling'], item['ordinal'], item['option_index'], item['value_index']) for item in destinations]
+        actual = [(item.get('spelling'), item.get('ordinal'), item.get('option_index'), item.get('value_index')) for item in mapped['destinations'] if isinstance(item, dict)]
+        candidate_context = mapped['context']
+        context_keys = {'base', 'directories', 'directory_identities', 'cwd', 'worktree', 'git_dir', 'prefix', 'certainty'}
+        destination_keys = {'access', 'ordinal', 'option_index', 'value_index', 'reach', 'spelling', 'target', 'identity', 'endpoint', 'decision', 'device', 'inode', 'parent_device', 'parent_inode'}
+        closed_fields = set(candidate_context) <= context_keys and all(
+            isinstance(item, dict) and set(item) <= destination_keys for item in mapped['destinations'])
+        context_valid = closed_fields and all(isinstance(candidate_context.get(key), str) and len(candidate_context[key].encode('utf-8')) <= 4096 for key in ('cwd', 'worktree', 'git_dir', 'prefix', 'certainty')) and candidate_context['certainty'] in {'Snapshot', 'Advisory'}
+        if context_valid and candidate_context['certainty'] == 'Snapshot':
+            context_valid = all(os.path.isabs(candidate_context[key]) for key in ('cwd', 'worktree', 'git_dir'))
+        destinations_valid = all(
+            all(isinstance(item.get(key), str) and len(item[key].encode('utf-8')) <= 4096 for key in ('spelling', 'target', 'identity', 'endpoint', 'decision')) and
+            item['identity'] in {'Snapshot', 'Advisory'} and item['endpoint'] in {'Regular', 'AbsentLeaf', 'Null', 'Unresolved'} and item['decision'] in {'AccessCheckedOutputIntent', 'HarmlessEndpoint', 'Advisory'} and
+            all(item.get(key) is None or (type(item[key]) is int and 0 <= item[key] < 2**64) for key in ('device', 'inode', 'parent_device', 'parent_inode')) and
+            (item['identity'] != 'Snapshot' or os.path.isabs(item['target']))
+            for item in mapped['destinations'] if isinstance(item, dict))
+        if actual == expected and context_valid and destinations_valid:
+            context = mapped['context']
+            destinations = mapped['destinations']
+    reachable = True
+    for item in destinations:
+        item['reach'] = 'SourceModeled' if reachable else 'Advisory'
+        if item['decision'] == 'Advisory':
+            reachable = False
+    # Completeness and tail uncertainty are independent of prefix destination facts.
+    record = {"schema": "git-inspection-output-v1", "repository": context['worktree'] or repository or '<unresolved>', "context": context, "destinations": destinations, "complete": local['complete'], "tail_unknown": not local['complete'], "reason": local['reason'], "stdout_argv": [], "decision": "Advisory"}
+    # Helper facts are independent from optional destination metadata availability.
+    helper = inspection_query({**request, 'query': 'helper'})
+    if isinstance(helper, dict) and helper.get('query') == 'helper' and isinstance(helper.get('context'), dict) and isinstance(helper.get('observation'), dict):
+        observation = helper['observation']
+        if (observation.get('result') == 'Helper' and
+                isinstance(helper['context'].get('cwd'), str) and os.path.isabs(helper['context']['cwd']) and all(isinstance(observation.get(key), str) and observation[key] for key in ('target', 'category', 'reason')) and isinstance(observation.get('hatch'), list) and observation['hatch'] and all(isinstance(value, str) for value in observation['hatch'])):
+            helper['remediation'] = shlex.join(['git', '-C', helper['context']['cwd'], *observation['hatch']])
+        record['helper'] = helper
+    try:
+        total = sum(len(os.fsencode(arg)) for arg in arguments) + sum(len(os.fsencode(arg)) for arg in options)
+    except UnicodeEncodeError:
+        total = 65537
+    if local['complete'] and known and context['certainty'] == 'Snapshot' and total <= 65536:
+        remove = {index for span in spans for index in span if index > 0}
+        replacement = [arg for n, arg in enumerate(arguments) if n not in remove]
+        proof = _projection['analyze'](replacement)
+        if proof['complete'] and not proof['outputs']:
+            boundary = proof['boundary']
+            raw = [*replacement[:boundary], '--no-ext-diff', '--no-textconv', *replacement[boundary:]]
+            raw_proof = _projection['analyze'](raw)
+            if raw_proof['complete'] and not raw_proof['outputs']:
+                record['stdout_argv'] = ['git', '--no-pager', '-C', context['cwd'], *options, '-c', 'core.fsmonitor=false', *raw]
+    if any(item['decision'] == 'AccessCheckedOutputIntent' and item['reach'] == 'SourceModeled' for item in destinations) and record['stdout_argv']:
+        record['decision'] = 'DenyAccessCheckedOutputIntent'
+    elif record['complete'] and all(item['decision'] == 'HarmlessEndpoint' for item in destinations):
+        record['decision'] = 'HarmlessEndpoint' if destinations else 'NoOutput'
+    # Even an all-null retained prefix cannot establish no later output beyond the bound.
+    if len(json.dumps(record, separators=(',', ':')).encode('utf-8')) > 4*1024*1024:
+        record['stdout_argv'] = []
+        record['decision'] = 'Advisory'
+        record['reason'] = 'consumer record beyond bound; retained destination prefix remains advisory'
+    if not destinations and record['complete']:
+        return None
+    return record
 
 def segment_spec(
     tokens: list[str],
@@ -12202,6 +12236,9 @@ def segment_spec(
         return None
     index += 1
 
+    inspection_original_cwd = repo_dir
+    inspection_directories = []
+    inspection_directory_known = True
     git_dir = environment.get("GIT_DIR", "")
     work_tree = environment.get("GIT_WORK_TREE", "")
     git_options = []
@@ -12219,10 +12256,12 @@ def segment_spec(
         if token == "-C":
             if index + 1 >= len(tokens):
                 return None
+            inspection_directories.append(None if index + 1 in unknown else tokens[index + 1])
             repo_dir = resolve(None if index + 1 in unknown else tokens[index + 1], repo_dir)
             index += 2
             continue
         if token.startswith("-C") and len(token) > 2:
+            inspection_directories.append(None if index in unknown else token[2:])
             repo_dir = resolve(None if index in unknown else token[2:], repo_dir)
             index += 1
             continue
@@ -12352,12 +12391,16 @@ def segment_spec(
             return "repository", repo_dir
         return "inspection", repo_dir
     if verb in READ_ONLY_GIT - {"branch", "remote"}:
+        if worker_mode and verb in {"diff", "log", "show"}:
+            output_record = inspection_output_record(
+                tokens[index:], inspection_original_cwd or "", inspection_directories,
+                git_options, environment,
+                inspection_directory_known and inspection_globals_supported and git_options_known and
+                not any(offset >= index for offset in unknown) and
+                all(value is not None for value in environment.values()), repo_dir)
+            if output_record is not None:
+                return "output", "inspection-output:" + json.dumps(output_record, separators=(",", ":"))
         roles = inspection_argument_roles([*git_options, *tokens[index:]])
-        output_effect = roles["output"] if roles is not None else False
-        if roles is None or not roles["complete"]:
-            output_effect = output_effect or inspection_output_fallback(verb, tokens[index + 1:]) is True
-        if output_effect is True:
-            return "output", repo_dir
         if (roles is not None and roles["eligible"] and inspection_globals_supported and worker_mode and verb in {"diff", "log", "show", "grep", "status"} and segment_index == 1 and git_options_known and
                 not any(offset > index for offset in unknown) and all(value is not None for value in environment.values())):
             result = inspection_observation(tokens[index:], repo_dir or "", git_options, environment)
@@ -12381,7 +12424,7 @@ def emit_spec(spec):
         print("checkout-context:" + json.dumps({"cwd": context.cwd,
               "worktree": context.worktree, "git_dir": context.git_dir}, separators=(",", ":")))
     else:
-        print(spec[1] if spec[1] and (os.path.isabs(spec[1]) or spec[1].startswith("inspection-helper:")) else "<unresolved>")
+        print(spec[1] if spec[1] and (os.path.isabs(spec[1]) or spec[1].startswith(("inspection-helper:", "inspection-output:"))) else "<unresolved>")
 
 
 analysis = json.loads(sys.argv[5])
@@ -13900,6 +13943,7 @@ PY
 
 enforce_git_mutation_gate() {
   local specs=() operation repo_dir repo_root git_dir_raw git_dir marker specs_text index protected_target_detail protected_target_token
+  local inspection_output_detail='' output_decision inspection_output_target inspection_stdout_route
   local checkout_context inspection_helper_detail='' inspection_helper_target inspection_helper_hatch inspection_helper_reason
 
   # The typed worker CLI owns mutations; keep concrete native inspection
@@ -13978,6 +14022,23 @@ enforce_git_mutation_gate() {
   for ((index = 0; index < ${#specs[@]}; index += 2)); do
     operation="${specs[index]}"
     repo_dir="${specs[index + 1]}"
+    inspection_output_detail=""
+    output_decision=""
+    if [[ "$repo_dir" = inspection-output:* ]]; then
+      inspection_output_detail="${repo_dir#inspection-output:}"
+      repo_dir="$(jq -r '.repository // "<unresolved>"' <<<"$inspection_output_detail")"
+      # Decode both findings before repository uncertainty can skip this record.
+      output_decision="$(jq -c '. + {query:"consume-inspection"}' <<<"$inspection_output_detail" |
+        timeout -k 1 12 "$CODEX_CONFIGURED_HOME/bin/eci-git-inspection" 2>/dev/null |
+        head -c 4194305)" || output_decision=''
+      if [ "$(LC_ALL=C printf %s "$output_decision" | wc -c)" -gt 4194304 ]; then
+        output_decision=''
+      fi
+      if jq -e '.helper | type == "object"' <<<"$output_decision" >/dev/null 2>&1; then
+        inspection_helper_detail="$(jq -c '.helper' <<<"$output_decision")"
+      fi
+      operation=inspection
+    fi
     checkout_context=""
     if [[ "$repo_dir" = checkout-context:* ]]; then
       checkout_context="${repo_dir#checkout-context:}"
@@ -14081,10 +14142,13 @@ enforce_git_mutation_gate() {
         "ECI Git mutation targets a different repository without a valid declaration for this active session: ${cross_scope_detail}" \
         "from the active session, declare this exact canonical repository once with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", or run the Git action from its owning session/repository"
     fi
-    if [ "$operation" = output ]; then
+    if [ "${hook_is_subagent:-false}" = true ] && [ "${#syntax_eci_markers[@]}" -gt 0 ] &&
+      jq -e '.effect == "explicit-access-checked-git-output-intent" and (.target | type == "string" and length > 0) and (.stdout_argv | type == "array" and length > 0)' <<<"$output_decision" >/dev/null 2>&1; then
+      inspection_output_target="$(jq -r '.target' <<<"$output_decision")"
+      inspection_stdout_route="$(jq -r '.stdout_argv | @sh' <<<"$output_decision")"
       deny_eci "ECI_GIT_OUTPUT_WRITE_DENIED" "git-output" \
-        "ECI Git inspection writes command output to a file: repository=$repo_root; operation=output" \
-        "keep Git inspection output on stdout or use a separate, explicitly scoped file-writing command"
+        "explicit access-checked Git output request to named destination at fresh snapshot: target=$inspection_output_target repository=$repo_dir; predicate=git-output" \
+        "stdout inspection: $inspection_stdout_route; conversion is disabled, changing converted output and pickaxe semantics; or use a separate explicitly scoped file-writing command"
     fi
     if { [ "$operation" = reset ] || [ "$operation" = prep ]; } &&
       broad_effect_detail="$(git_mutation_broad_effect_detail "$repo_root")"; then

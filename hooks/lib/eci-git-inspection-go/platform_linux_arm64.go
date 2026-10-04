@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 const (
@@ -235,4 +236,64 @@ func isolateObservationProcess(command *exec.Cmd) error {
 		return err
 	}
 	return nil
+}
+
+// Kernel access constants describe the Linux arm64 effective-credential boundary.
+//
+// Example: kernelEffectiveAccess avoids real-credential permission estimates.
+const (
+	kernelAccessSyscall    = 439
+	kernelCurrentDirectory = ^uintptr(99)
+	kernelEffectiveAccess  = 0x200
+	localExtFilesystem     = 0xef53
+	localTmpFilesystem     = 0x1021994
+)
+
+// effectiveAccess uses the kernel API without a permission-bit fallback.
+//
+// Example: inaccessible files, ACL failures, immutable and read-only mounts stay advisory.
+func effectiveAccess(
+	path string,
+	mode uintptr,
+) bool {
+	value, err := syscall.BytePtrFromString(path)
+	if err != nil {
+		return false
+	}
+	// Kernel access is required; permission-bit emulation cannot certify this intent.
+	_, _, errno := syscall.Syscall6(kernelAccessSyscall, kernelCurrentDirectory, uintptr(unsafe.Pointer(value)), mode, kernelEffectiveAccess, 0, 0)
+	runtime.KeepAlive(value)
+	return errno == 0
+}
+
+// localIntentDomain excludes filesystems whose permission behavior is outside this proof.
+//
+// Example: network and userspace filesystems retain target identity but remain advisory.
+func localIntentDomain(path string) bool {
+	var state syscall.Statfs_t
+	if syscall.Statfs(path, &state) != nil {
+		return false
+	}
+	return state.Type == localExtFilesystem || state.Type == localTmpFilesystem
+}
+
+// regularIntentAccess checks an ordinary writable handle without changing file contents.
+//
+// Example: append-only, write-busy and other open failures stay advisory.
+func regularIntentAccess(
+	raw string,
+	target string,
+	expected *syscall.Stat_t,
+) bool {
+	if !localIntentDomain(target) || !effectiveAccess(raw, 2) {
+		return false
+	}
+	fd, err := syscall.Open(target, syscall.O_WRONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	var actual syscall.Stat_t
+	statErr := syscall.Fstat(fd, &actual)
+	closeErr := syscall.Close(fd)
+	return statErr == nil && closeErr == nil && actual.Mode&syscall.S_IFMT == syscall.S_IFREG && actual.Dev == expected.Dev && actual.Ino == expected.Ino
 }

@@ -37,6 +37,32 @@ func runCLI(
 	if !exactJSONUnicode(data) {
 		return json.NewEncoder(output).Encode(advisory("unsupported lossy JSON Unicode input"))
 	}
+	var query struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(data, &query); err != nil {
+		return json.NewEncoder(output).Encode(advisory("invalid invocation JSON"))
+	}
+	switch query.Query {
+	case "destinations":
+		response, err := queryDestinations(data)
+		if err != nil {
+			return err
+		}
+		return writeQueryResponse(output, response)
+	case "helper":
+		response, err := queryHelper(data)
+		if err != nil {
+			return err
+		}
+		return writeQueryResponse(output, response)
+	case "consume-inspection":
+		response, err := json.Marshal(consumeInspection(data))
+		if err != nil {
+			return err
+		}
+		return writeQueryResponse(output, response)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var in Invocation
@@ -46,6 +72,9 @@ func runCLI(
 	var extra json.RawMessage
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return json.NewEncoder(output).Encode(advisory("expected exactly one invocation JSON"))
+	}
+	if in.Query == "offline-program" {
+		return json.NewEncoder(output).Encode(OfflineAnalyze(in.Arguments))
 	}
 	if in.Query == "argument-roles" {
 		return json.NewEncoder(output).Encode(AnalyzeArguments(in.Arguments))
@@ -103,4 +132,18 @@ func exactJSONUnicode(data []byte) bool {
 		index += 6
 	}
 	return true
+}
+
+// writeQueryResponse writes a bounded structured response and propagates transport errors.
+//
+// Example: unavailable query evidence returns an empty advisory object.
+func writeQueryResponse(output io.Writer, data []byte) error {
+	if len(data) == 0 {
+		data = []byte("{}")
+	}
+	if len(data)+1 > invocationByteLimit {
+		return json.NewEncoder(output).Encode(advisory("query response exceeds bounded contract"))
+	}
+	_, err := output.Write(append(data, '\n'))
+	return err
 }

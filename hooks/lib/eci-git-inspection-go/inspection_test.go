@@ -15,7 +15,7 @@ import (
 // Example: fixture(t) supplies native and observed inspection inputs.
 func fixture(t *testing.T) (Invocation, string, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/var/tmp", "eci-inspection-test-")
+	dir, err := os.MkdirTemp(os.TempDir(), "eci-inspection-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +31,13 @@ func fixture(t *testing.T) (Invocation, string, string) {
 	)
 	repo := filepath.Join(dir, "repo")
 	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Native cwd observations use the physical fixture identity while cleanup owns the original path.
+	//
+	// Example: a mounted TMPDIR alias does not become an apparent foreign working directory.
+	repo, err = filepath.EvalSymlinks(repo)
+	if err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{"PATH": "/usr/bin:/bin", "HOME": dir, "TMPDIR": "/tmp", "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C"}
