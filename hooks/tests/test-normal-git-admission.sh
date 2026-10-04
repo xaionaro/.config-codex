@@ -3180,6 +3180,29 @@ run_effect_aware_git_target() {
 }
 
 case "${NORMAL_GIT_ADMISSION_TARGET:-full}" in
+  git-run-once)
+    for role in coordinator worker; do
+      denial=ECI_BROAD_DESTRUCTIVE_DENIED
+      [ "$role" != worker ] || denial=ECI_WORKER_GIT_OWNERSHIP_DENIED
+      assert_denied_code "git -C $REPO reset --hard" "$denial" "$role"
+      command="\"$RUNTIME_ROOT/bin/eci-worker-git\" --repo \"$REPO\" run-once --reason 'user approved fixture reset' --user-authorized -- reset --hard"
+      assert_allowed "$command" "$role"
+      assert_denied_code "$command; rm $FOREIGN_TIMEOUT_CONTROL_INNER/eci_active" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED "$role"
+      printf 'modified\n' >"$REPO/file.txt"
+      "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'user approved fixture reset' --user-authorized -- reset --hard
+      [ "$(cat -- "$REPO/file.txt")" = base ]
+      assert_denied_code "git -C $REPO reset --hard" "$denial" "$role"
+    done
+    printf 'unchanged\n' >"$REPO/file.txt"
+    if "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason '' --user-authorized -- reset --hard; then exit 1; fi
+    if "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'fixture' -- reset --hard; then exit 1; fi
+    [ "$(cat -- "$REPO/file.txt")" = unchanged ]
+    status=0
+    "$RUNTIME_ROOT/bin/eci-worker-git" --repo "$REPO" run-once --reason 'approved fixture exit check' --user-authorized -- -c 'alias.failure=!exit 37' failure || status=$?
+    [ "$status" -eq 37 ]
+    printf '%s\n' 'normal Git admission run-once target: PASS'
+    exit 0
+    ;;
   full|worker-git-cli-matrix|worker-git-cli-edges|worker-git-native|worker-git-index-aliases)
     run_effect_aware_git_target
     printf '%s\n' 'normal Git admission current worker contract: PASS'

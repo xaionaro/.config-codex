@@ -50,7 +50,16 @@ The effect checks below remain applicable in other contexts.
 
 ## Typed Worker Git operations
 
-Prefix every operation with `"$HOME/.codex/bin/eci-worker-git" --repo <existing-repository>`. Paths after `--` are literal names, including metacharacters/newlines; absolute paths, empty segments and `.`/`..` escapes are rejected. No arbitrary native Git argv is accepted.
+For an exact Git command explicitly authorized by the user, the one-use exception is
+`"$HOME/.codex/bin/eci-worker-git" --repo <repository> run-once --reason "<reason>" --user-authorized -- <native Git args>`.
+Provide a nonblank reason. Use this only after the user authorizes the entire native
+argument and environment context; `--user-authorized` acknowledges that authorization
+and does not establish it. The CLI runs Git once, without a stored grant or automatic
+retry. `--repo` supplies the initial Git `-C`; native arguments and environment may
+select another repository. Shell sibling commands keep their ordinary gates.
+Routine Producer ownership and Git coordination still apply outside the exact exception.
+
+Prefix every typed operation with `"$HOME/.codex/bin/eci-worker-git" --repo <existing-repository>`. Paths after `--` are literal names, including metacharacters/newlines; absolute paths, empty segments and `.`/`..` escapes are rejected. Typed operations accept no arbitrary native Git argv; the explicit user-authorized `run-once` exception above does.
 
 | Operation | Fixed input and effect |
 | --- | --- |
@@ -63,7 +72,7 @@ Prefix every operation with `"$HOME/.codex/bin/eci-worker-git" --repo <existing-
 | `move -- <source> <destination>` | Two checked endpoints; destination must be absent. |
 | `commit --message <text>` | Prepared index only; no path selection, automatic staging or history rewrite. Project validation hooks remain active. |
 
-A typed request does not authorize semantic ownership of already staged content. Producers inspect the complete staged diff/tree and make their own checked append-only handoff commit after fresh same-index coordination. The Supervisor verifies that immutable range. Unsupported native selection modes require an exact supported operation or a separately assigned bounded operational route; no arbitrary-Git wrapper is provided.
+A typed request does not authorize semantic ownership of already staged content. Producers inspect the complete staged diff/tree and make their own checked append-only handoff commit after fresh same-index coordination. The Supervisor verifies that immutable range. Unsupported native selection modes require an exact supported operation, a separately assigned bounded operational route, or the exact user-authorized `run-once` exception above.
 
 Every path is an exact file or symlink leaf; directory and sparse-directory
 selection is unsupported. Worktree-affecting gitlinks are rejected because

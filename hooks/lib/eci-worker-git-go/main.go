@@ -14,6 +14,9 @@ func Run(
 	arguments []string,
 	streams Streams,
 ) int {
+	if len(arguments) >= 3 && arguments[0] == "--repo" && arguments[2] == "run-once" {
+		return RunOnce(arguments, streams)
+	}
 	operation, err := ParseOperation(arguments)
 	if err == nil {
 		err = ExecuteOperation(context.Background(), operation, streams)

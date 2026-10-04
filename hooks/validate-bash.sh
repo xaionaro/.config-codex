@@ -11496,8 +11496,12 @@ def segment_spec(
         if (len(tokens) <= index + 3 or tokens[index + 1] != "--repo" or
                 index + 2 in unknown or index + 3 in unknown):
             return None
-        if tokens[index + 3] not in {"stage-content", "stage-removals", "stage-hunks", "unstage", "restore", "remove", "move", "commit"}:
+        if tokens[index + 3] not in {"stage-content", "stage-removals", "stage-hunks", "unstage", "restore", "remove", "move", "commit", "run-once"}:
             return None
+        if tokens[index + 3] == "run-once":
+            # The CLI requires a reason and explicit user-authorization acknowledgment,
+            # then executes one native Git invocation without a persistent grant.
+            return "git-run-once", repo_dir
         target = resolve(tokens[index + 2], repo_dir)
         context = checkout_invocation(target or "", (), dict(environment))
         return "worker-cli", context.worktree or target, context
@@ -11752,7 +11756,7 @@ worker_git_native_route() {
         validate_active_marker_binding
         deny_eci "ECI_WORKER_GIT_OWNERSHIP_DENIED" "worker-git-ownership" \
           "worker native Git mutation family uses the typed CLI: effect=${specs[index + 1]} invocation-cwd=$cwd; predicate=worker-git-cli" \
-          "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; wrapper --repo must preserve the original Git repository context; preserve Producer scope agreement, fresh same-index lookup and complete staged-result review; unsupported native families require an assigned bounded route"
+          "use \"\$HOME/.codex/bin/eci-worker-git\" --repo <repository> stage-content|stage-removals|stage-hunks|unstage|restore|remove|move|commit with exact literal paths and fixed source/destination modes; wrapper --repo must preserve the original Git repository context; preserve Producer scope agreement, fresh same-index lookup and complete staged-result review; only with explicit user authorization for the exact command/environment, use --repo <repository> run-once --reason <reason> --user-authorized -- <native Git args>"
         ;;
       *) all_native=false ;;
     esac
