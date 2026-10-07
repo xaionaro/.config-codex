@@ -144,6 +144,6 @@ Any Step 4 review that runs concurrently before this restart is intermediate onl
    - Aggregate all required critics and the final E2E pair when triggered, resolve remaining `now` findings, and verify coverage of the current state before completing the normal path or accepting the task.
    - Earlier reviews alone cannot satisfy this sequence.
 
-Reopened provisional Fast completion invalidates this sequence even without resumed writes. Resumed Fast writes also invalidate it. After renewed genuine Fast completion, repeat the sequence from fresh Step 1. Later main-path or interacting task edits refresh affected review and verification; material design findings return through Steps 1–2. Independent sibling tasks keep advancing.
+Reopened provisional Fast completion invalidates this sequence even without resumed writes. Resumed Fast writes invalidate this sequence; after Fast finishes again, repeat it. Restart from fresh Step 1 after renewed genuine Fast completion. Later main-path or interacting task edits refresh affected review and verification; material design findings return through Steps 1–2. Independent sibling tasks keep advancing.
 
 Cancellation uses user closure, never a clean pass or substitute Fast completion. Preserve changes and evidence, observe task-owned writers stopped, and keep uncancelled siblings active under the existing closure rules.
