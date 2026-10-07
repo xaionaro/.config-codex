@@ -16,6 +16,10 @@ Ported skills live in `$HOME/.codex/skills`; use matching skills for Go, Python,
 service_tier = "default"
 
 [features]
+api_key_model_discovery = true
+auth_elicitation = true
+code_mode_host = true
+mcp_oauth_refresh_coordination = false
 hooks = true
 image_generation = false
 multi_agent = true
@@ -35,6 +39,7 @@ enabled = false
 log_user_prompt = false
 
 [mcp_servers.context7]
+enabled = false
 command = "bash"
 args = ["-lc", "exec \"$HOME/.codex/bin/context7-mcp\""]
 
@@ -78,9 +83,10 @@ hide_rate_limit_model_nudge = true
 "hf.co/xaionaro/qwen38-fcf-gguf:Q4_K_M" = "gpt-6-sol"
 
 [tui]
-status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]
+status_line = ["model-with-reasoning", "git-branch", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit", "context-used", "context-window-size", "thread-credits", "estimated-thread-cost", "thread-id", "thread-name"]
 terminal_title = ["activity", "project-name", "task-progress"]
 screen_reader_detection_done = true
+status_line_use_colors = true
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
