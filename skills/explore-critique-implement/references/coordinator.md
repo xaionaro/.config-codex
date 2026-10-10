@@ -54,7 +54,7 @@ Wait for each gate's required reviews and focused proof, plus E2E evidence when 
 
 ## Blockers, bugs, and limits
 
-Concrete bug/failure/flake/performance/incorrect behavior enters delegated debugging-discipline roles: repro, RCA/regression, Step 2 critic, implementer, A/B/C, and E2E. Capture a regression report or current coordination note before or alongside RCA; require a falsifiable cause, regression status, previous/current evidence, and proof on the real failing path.
+Concrete bug/failure/flake/performance/incorrect behavior uses debugging-discipline's direct-fix or uncertain-case RCA path. A verified local defect with a clear cause and repair follows the ordinary Producer and required ECI review path; delegate repro/RCA/regression work when local behavior, cause, or repair is uncertain. Unknown relation to the original incident alone does not require RCA. Preserve required Steps 1–4, independent reviews, and the central E2E policy on either path.
 
 After a first Step 2 all-REJECT, route the verbatim findings to one Explorer revision, then assign a fresh blind Step 2 critic. A second all-REJECT enters the ordinary blocker route.
 
@@ -76,7 +76,7 @@ ECI uses only `spawn_agent`, `followup_task`, `send_message`, `wait_agent` (norm
 
 Before Step 1 of the first iteration run `eci-active on "<Job + scope>"`. While engaged, assign every new tracked repository contribution to a Producer for authoring, checks, and commit. The Supervisor may directly maintain session-local coordination records outside the tracked repository; the self-edit routing exception does not override Producer ownership or authorize staging, index mutation, or commit. An ATE `ate_active` marker alone is insufficient. Keep ECI active through blocker work, nested paths, review, and acceptance; user cancellation/withdraw/replacement/ATE switch is user closure only after completing the successor handoff or scope removal. A PostCompact signal requires the Supervisor to reread the full router and then its exact assigned modules before the next decision.
 
-Every Producer assignment says fresh-target treatment: Explorer rereads every referenced file; the Implementer Producer rereads every intended target. Every report/submission tags factual claims; E2E evidence identifies exact tool output/log/screenshot/state rather than bare “green.” Code/debug submissions include root-cause cause chain, evidence, regression status/explanation, and why the diff repairs the cause; unknown why is not submittable. The Supervisor independently verifies every committed range before routing it as evidence or starting dependent review/work.
+Every Producer assignment says fresh-target treatment: Explorer rereads every referenced file; the Implementer Producer rereads every intended target. Every report/submission tags factual claims; E2E evidence identifies exact tool output/log/screenshot/state rather than bare “green.” Code/debug submissions follow debugging-discipline's proportionate evidence and reporting requirements and explain why the diff repairs the established local defect; unknown repair rationale is not submittable. The Supervisor independently verifies every committed range before routing it as evidence or starting dependent review/work.
 
 ## Exact team separation
 
@@ -84,7 +84,7 @@ Use stable Explorer and implementer identities across iterations, plus the Fast 
 
 ## Bug and blocker packet rules
 
-For a concrete bug, capture its statement, repro, previous/current evidence, regression status, and missing evidence in a readable regression report or current coordination note before or alongside RCA. Use debugging-discipline; require a falsifiable cause and proof on the real failing path. Do not make a fixed file path, artifact, or report schema a prerequisite for investigation.
+For a concrete bug, capture its statement, repro, available evidence, and missing evidence in a readable current coordination note or report. Apply debugging-discipline's direct-fix or RCA proof and reporting requirements, including regression evidence when RCA is needed. Do not make a fixed file path, artifact, or report schema a prerequisite for investigation.
 
 An isolated disposable repro/PoC may run before style review. Normal issue handling precedes BRP. For a genuine stall, record the useful attempts and choose an Explorer, brainstormer, or feasibility validator as needed; do not make a fixed blocker artifact or role sequence a prerequisite for continued ordinary work.
 

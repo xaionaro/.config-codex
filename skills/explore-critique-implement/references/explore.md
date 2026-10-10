@@ -15,7 +15,7 @@ Return ranked options. Each states what changes, why, where, cost, tradeoffs, re
 
 For an unproven core mechanism, attach a minimal isolated PoC that exercises one real input and reports observable behavior. Strip production polish and do not reuse the PoC before final-scope admission. A known/codebase-shipped/documented mechanism may instead state its evidence.
 
-If a bug is assigned, load debugging-discipline, develop falsifiable repro/RCA evidence, identify `regression: yes|no|unknown`, and return facts/options rather than a production fix.
+If a bug is assigned, load debugging-discipline and apply its direct-fix or uncertain-case RCA path: establish incorrect local behavior and assess the repair rationale; develop falsifiable repro/RCA evidence and regression status when local behavior, cause, or repair is uncertain. Return facts/options rather than a production fix.
 
 ## Required assignment packet
 

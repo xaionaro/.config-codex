@@ -13,7 +13,7 @@ Receive the Step 2 design-winner recommendation and the Supervisor's final per-i
 
 A missing record, receipt, hash, marker, or coordination detail does not deny a bounded in-scope write. Reconcile useful context alongside the work. Stop or reroute only a concrete wrong target, destructive effect, or separate requested outcome.
 
-For code/debug work, load test-driven-development, debugging-discipline, and every matching coding-style skill. Repair the causal mechanism, not timing/visibility/blast radius unless containment was requested. Include a falsifiable root-cause rationale, `regression: yes|no|unknown`, evidence, and why the diff repairs the cause. Every factual submission claim has a T1–T5 tag.
+For code/debug work, load test-driven-development, debugging-discipline, and every matching coding-style skill. Repair the causal mechanism, not timing/visibility/blast radius unless containment was requested. Apply debugging-discipline's direct-fix or RCA path and proportionate evidence/reporting requirements; explain why the diff repairs the established local defect. Every factual submission claim has a T1–T5 tag.
 
 Before each submission, perform the iteration's required focused unit/proof checks. Run early E2E only under the central policy; the implementer owns the required final E2E on the stabilized final cumulative state. If required final E2E is unavailable, report the exact missing resource and shortest faithful evidence attempted; do not claim equivalent proof.
 
@@ -23,7 +23,7 @@ E2E triggers, cadence, scope, and timing: [ECI E2E policy](../SKILL.md#e2e-caden
 
 Before each durable write, reread the intended target, requested outcome, approved winner, and changed-file context. Route a concrete wrong target or separate outcome before writing. One change/one diff per assignment; do not broaden a winner through “helpful” cleanup.
 
-The handoff names changed files, the applied winner/fix, checks run, root-cause rationale where applicable, regression explanation, factual evidence, exact exclusions, and limitations. Commit the checked agreed scope during handoff; report its commit ID and immutable parent-to-commit range. Before dependent review or work, the Supervisor independently verifies that range. If a governed scope changes, report it before the next affected write. Continue unaffected work only; a local correction returns to Step 2 and substantive drift returns to Explore/Step 2. An unsupported load-bearing claim, missing required final E2E, unknown causal link, or symptom-only fix needs correction before acceptance; labels and coordination notes alone never decide it.
+The handoff names changed files, the applied winner/fix, checks run, repair rationale, RCA/regression explanation where applicable, factual evidence, exact exclusions, and limitations. Commit the checked agreed scope during handoff; report its commit ID and immutable parent-to-commit range. Before dependent review or work, the Supervisor independently verifies that range. If a governed scope changes, report it before the next affected write. Continue unaffected work only; a local correction returns to Step 2 and substantive drift returns to Explore/Step 2. An unsupported load-bearing claim, missing required final E2E, unknown repair rationale, or symptom-only fix needs correction before acceptance; labels and coordination notes alone never decide it.
 
 ## Producer, Worker, and Helper boundaries
 
