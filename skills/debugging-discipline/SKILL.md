@@ -5,7 +5,7 @@ description: Use when debugging and needing falsifiable hypotheses, alternative 
 
 # Debugging Discipline
 
-Supplements `systematic-debugging` with additional rigor.
+This skill supplements `systematic-debugging`; for established incorrect local behavior with a clear cause and repair, its direct-fix path takes precedence over that skill's full phased procedure, while uncertain cases retain the full procedure and the additional rigor here.
 
 Mitigation is not a fix: lowering failure probability is containment until the cause chain is repaired.
 For an uncertain cause, require explicit causality: trigger -> mechanism -> failure -> repaired link. Missing links require investigation; an obvious local defect with a clear cause and repair needs only proportionate rationale and validation.
