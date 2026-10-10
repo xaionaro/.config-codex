@@ -184,9 +184,8 @@ multiline_entry=$'first historical line\nsecond historical line'
 multiline_resume=$'resumed after a local change\nwith ordinary detail'
 printf '%s\n%s\n' 'arbitrary external wait report' 'with historical free-form notes' >"$wait_source"
 run_active "$text_sid" "$cwd" on "$long_scope"
-run_active "$text_sid" "$cwd" ledger-append "$multiline_entry"
-grep -Fq 'first historical line' "$text_dir/high_level_log.md"
-grep -Fq 'second historical line' "$text_dir/high_level_log.md"
+run_active "$text_sid" "$cwd" ledger-append --json "$(jq -cn --arg summary "$multiline_entry" '{event:"decision",summary:$summary}')"
+jq -e --arg summary "$multiline_entry" 'select(.summary == $summary)' "$text_dir/high_level_log.jsonl" >/dev/null
 run_active "$text_sid" "$cwd" wait "$wait_source"
 cmp -s -- "$wait_source" "$text_dir/eci_user_owned_wait.md"
 [ -f "$text_dir/eci_wait" ] && [ ! -L "$text_dir/eci_wait" ]

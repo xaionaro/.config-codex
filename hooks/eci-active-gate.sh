@@ -96,7 +96,7 @@ current_session_working_document() {
   local path="${1:-}" owner_session
 
   case "${path##*/}" in
-    project-understanding.md|latest-status-report.md|handoff.md|high_level_log.md|high_level_log.anchor) ;;
+    project-understanding.yaml|latest-status-report.md|handoff.md|high_level_log.jsonl|high_level_log.anchor) ;;
     *) return 1 ;;
   esac
   owner_session="$(codex_path_owner_session_id "$path" 2>/dev/null || true)"

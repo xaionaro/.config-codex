@@ -928,11 +928,11 @@ func TestInstalledBinaryDeniesActiveLedgerWritersForBothProviders(t *testing.T) 
 		t.Run(string(provider), func(t *testing.T) {
 			t.Parallel()
 
-			for _, name := range []string{"high_level_log.md", "high_level_log.anchor"} {
+			for _, name := range []string{"high_level_log.jsonl", "high_level_log.anchor"} {
 				name := name
 				t.Run(name, func(t *testing.T) {
 					path := filepath.Join(sessionDir, name)
-					if err := os.WriteFile(path, []byte("ledger\n"), 0o600); err != nil {
+					if err := os.WriteFile(path, []byte("{\"event\":\"decision\",\"summary\":\"entry\"}\n"), 0o600); err != nil {
 						t.Fatalf("write %s: %v", name, err)
 					}
 
@@ -974,9 +974,9 @@ func TestInstalledBinaryDeniesActiveLedgerWritersForBothProviders(t *testing.T) 
 					if diagnostic.Predicate != "append-only-ledger" {
 						t.Errorf("%s predicate: got %q, want append-only-ledger", name, diagnostic.Predicate)
 					}
-					wantRemediation := "use eci-active ledger-append"
+					wantRemediation := "use eci-active ledger-append --json"
 					if provider == ProviderCodex {
-						wantRemediation = `use "$HOME/.codex/bin/eci-active" ledger-append`
+						wantRemediation = `use "$HOME/.codex/bin/eci-active" ledger-append --json`
 					}
 					if diagnostic.Remediation != wantRemediation {
 						t.Errorf("%s remediation: got %q, want %q", name, diagnostic.Remediation, wantRemediation)
@@ -988,7 +988,7 @@ func TestInstalledBinaryDeniesActiveLedgerWritersForBothProviders(t *testing.T) 
 				name    string
 				command string
 			}{
-				{name: "ledger read", command: "sed -n '1p' " + filepath.Join(sessionDir, "high_level_log.md")},
+				{name: "ledger read", command: "sed -n '1p' " + filepath.Join(sessionDir, "high_level_log.jsonl")},
 				{name: "ordinary write", command: "touch " + ordinaryPath},
 			} {
 				testCase := testCase

@@ -34,7 +34,7 @@ printf '%s\n' \
   'session_id: t00-session' \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$session_dir/eci_active"
-printf '%s\n' '# protected Git target test' >"$session_dir/high_level_log.md"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$session_dir/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$session_dir/instructions.md"
 
 hooks_session='t01-hooks-session'
@@ -47,7 +47,7 @@ printf '%s\n' \
   "session_id: $hooks_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$hooks_session_dir/eci_active"
-printf '%s\n' '# protected Git target test' >"$hooks_session_dir/high_level_log.md"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$hooks_session_dir/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$hooks_session_dir/instructions.md"
 
 alias_session='t02-canonical-cwd-session'
@@ -61,7 +61,7 @@ printf '%s\n' \
   "session_id: $alias_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$alias_session_dir/eci_active"
-printf '%s\n' '# protected Git target test' >"$alias_session_dir/high_level_log.md"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$alias_session_dir/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$alias_session_dir/instructions.md"
 
 # `--pathspec-from-file` consumes the following `--detach` token as its
@@ -77,7 +77,7 @@ printf '%s\n' \
   "session_id: $pathspec_value_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$pathspec_value_session_dir/eci_active"
-printf '%s\n' '# protected Git target test' >"$pathspec_value_session_dir/high_level_log.md"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$pathspec_value_session_dir/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$pathspec_value_session_dir/instructions.md"
 
 literal_dash_session='t04-literal-dash-session'
@@ -94,7 +94,7 @@ printf '%s\n' \
   "session_id: $literal_dash_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$literal_dash_session_dir/eci_active"
-printf '%s\n' '# protected Git target test' >"$literal_dash_session_dir/high_level_log.md"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$literal_dash_session_dir/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$literal_dash_session_dir/instructions.md"
 
 literal_dash_missing_session='t05-literal-dash-missing-session'
@@ -108,7 +108,7 @@ printf '%s\n' \
   "session_id: $literal_dash_missing_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$literal_dash_missing_session_dir/eci_active"
-printf '%s\n' '# protected Git target test' >"$literal_dash_missing_session_dir/high_level_log.md"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$literal_dash_missing_session_dir/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$literal_dash_missing_session_dir/instructions.md"
 
 cleanup() {

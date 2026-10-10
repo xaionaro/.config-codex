@@ -20,6 +20,92 @@ const (
 	manySessionFixtureEntries = 128
 )
 
+// TestRunHookScratchScript verifies execution admission in an active Worker callback.
+//
+// Example: an unchanged HOME/tmp script is inspected without running its body.
+func TestRunHookScratchScript(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_PROOF_ROOT", filepath.Join(home, "proof"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CODEX_HOOK_IS_SUBAGENT", "true")
+	contextMarker(t, filepath.Join(home, "proof"), "scratch-owner", cwd)
+	script := filepath.Join(home, "tmp", "proof", "run.sh")
+	sentinel := filepath.Join(home, "script-executed")
+	requireHookDirectory(t, filepath.Dir(script))
+	requireHookFile(t, script, "#!/bin/sh\nprintf executed > '"+sentinel+"'\n")
+	input := HookInput{SessionID: "scratch-owner", CWD: cwd, ToolName: "Bash"}
+	input.ToolInput.Command = "bash '" + script + "'"
+	request, err := hookRequest(input)
+	require.NoError(t, err)
+	require.Equal(t, MarkerActive, request.Marker)
+	require.Equal(t, RoleWorker, request.Role)
+	require.Equal(t, []string{resolvePathIdentity(cwd)}, request.ApprovedRoots)
+	callback, err := json.Marshal(input)
+	require.NoError(t, err)
+	var output bytes.Buffer
+	require.Zero(t, RunHook(bytes.NewReader(callback), &output))
+	_, err = os.Stat(sentinel)
+	require.ErrorIs(t, err, os.ErrNotExist, "hook must never execute the inspected script")
+	require.Empty(t, output.String(), "active scratch script callback denied: %s", &output)
+}
+
+// TestRunHookScratchAliases binds resolved scratch admission to real callback roles.
+//
+// Example: a transcript child inherits its parent's marker without changing repository roots.
+func TestRunHookScratchAliases(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	volume := t.TempDir()
+	proof := filepath.Join(home, "proof")
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_PROOF_ROOT", proof)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	contextMarker(t, proof, "scratch-parent", cwd)
+	require.NoError(t, os.Symlink(volume, filepath.Join(home, "tmp")))
+	script := filepath.Join(volume, "run.sh")
+	sentinel := filepath.Join(volume, "executed")
+	requireHookFile(t, script, "#!/bin/sh\nprintf executed > '"+sentinel+"'\n")
+	alias := filepath.Join(home, "tmp", "alias.sh")
+	require.NoError(t, os.Symlink(script, alias))
+	transcript := filepath.Join(home, "child.jsonl")
+	require.NoError(t, os.WriteFile(transcript, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"scratch-parent"}}}}}`+"\n"), 0600))
+	for _, actor := range []string{"direct-worker", "parent-worker", "coordinator"} {
+		input := HookInput{SessionID: "scratch-parent", CWD: cwd, ToolName: "Bash"}
+		t.Setenv("CODEX_HOOK_IS_SUBAGENT", "false")
+		role := RoleCoordinator
+		switch actor {
+		case "direct-worker":
+			t.Setenv("CODEX_HOOK_IS_SUBAGENT", "true")
+			role = RoleWorker
+		case "parent-worker":
+			input.SessionID = "scratch-child"
+			input.TranscriptPath = transcript
+			role = RoleWorker
+		}
+		for _, command := range []string{"bash '" + script + "'", "bash '" + alias + "'", "'" + alias + "'"} {
+			input.ToolInput.Command = command
+			request, err := hookRequest(input)
+			require.NoError(t, err)
+			require.Equal(t, role, request.Role, actor)
+			require.Equal(t, MarkerActive, request.Marker, actor)
+			require.Equal(t, "scratch-parent", request.ActiveSession, actor)
+			require.Equal(t, input.SessionID, request.HookSessionID, actor)
+			require.Equal(t, []string{resolvePathIdentity(cwd)}, request.ApprovedRoots, actor)
+			callback, err := json.Marshal(input)
+			require.NoError(t, err)
+			var output bytes.Buffer
+			require.Zero(t, RunHook(bytes.NewReader(callback), &output))
+			require.Empty(t, output.String(), "%s: %s", actor, command)
+		}
+	}
+	_, err := os.Stat(sentinel)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 // TestRunHookEnvelope verifies silent allows and a valid callback denial envelope.
 //
 // Example: root removal emits one denial while an ordinary read emits nothing.

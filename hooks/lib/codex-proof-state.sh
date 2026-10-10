@@ -366,15 +366,15 @@ codex_path_is_under_proof_root() {
 
 codex_session_ledger_basenames() {
   printf '%s\n' \
-    "project-understanding.md" \
-    "high_level_log.md" \
+    "project-understanding.yaml" \
+    "high_level_log.jsonl" \
     "high_level_log.anchor" \
     "latest-status-report.md"
 }
 
 codex_session_ledger_basename() {
   case "${1:-}" in
-    project-understanding.md|high_level_log.md|high_level_log.anchor|latest-status-report.md)
+    project-understanding.yaml|high_level_log.jsonl|high_level_log.anchor|latest-status-report.md)
       return 0
       ;;
     *)
@@ -392,7 +392,7 @@ codex_eci_control_basename() {
     eci-wait-repair-authorize|eci-wait-repair-authorize.*)
       return 0
       ;;
-    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-additional-repository|eci-additional-repository.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.md|project-understanding.md.*|high_level_log.md|high_level_log.md.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.md.tmp.*)
+    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-additional-repository|eci-additional-repository.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.yaml|project-understanding.yaml.*|high_level_log.jsonl|high_level_log.jsonl.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.jsonl.tmp.*)
       return 0
       ;;
     *)
@@ -516,7 +516,7 @@ codex_path_is_session_ledger_file() {
 
 codex_path_is_high_level_log_file() {
   local path="${1:-}"
-  [ "${path##*/}" = "high_level_log.md" ] || return 1
+  [ "${path##*/}" = "high_level_log.jsonl" ] || return 1
   codex_path_is_session_ledger_file "$path"
 }
 

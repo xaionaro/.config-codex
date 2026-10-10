@@ -7,7 +7,7 @@ authorization artifacts.
 
 ## Record useful context
 
-Keep the current `project-understanding.md` ledger readable enough to answer:
+Keep the current `project-understanding.yaml` ledger readable enough to answer:
 
 | Record | Purpose |
 | --- | --- |
@@ -54,7 +54,7 @@ code change, review, deadline, forecast, or proof program.
   outcome or a material ambiguity that cannot be resolved from the current
   request and ledger. Do not ask merely because an identifier or record is
   absent.
-- Preserve historical decisions in `high_level_log.md` when they change the
+- Preserve historical decisions in `high_level_log.jsonl` when they change the
   current scope or rationale. The ledger remains the current snapshot.
 - Correct false current scope in the ledger and status report, and log the
   correction. Cancel or reassign only unrooted current work. Do not

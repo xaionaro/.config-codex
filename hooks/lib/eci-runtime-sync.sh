@@ -4,15 +4,53 @@
 # Build absent runtime tools from this provider's sources. Existing executables
 # remain untouched; explicit planner maintenance still owns source refreshes.
 # The shell bootstrap runs before any compiled helper is available.
+eci_runtime_artifact_path() {
+  local provider="$1" name="$2" output_root="${3:-$HOME/tmp/eci-runtime}"
+  case "$provider" in codex|kimi) ;; *) return 1 ;; esac
+  case "$name" in eci-command-plan|eci-safe-import) ;; *) return 1 ;; esac
+  printf '%s/%s/%s\n' "$output_root" "$provider" "$name"
+}
+
+# Source the original publisher only inside this owned child. The publisher
+# alone acquires its pair lock, and rechecks requested tools after waiting.
+eci_runtime_ensure_pair() (
+  local output_root="$1" provider="$2" source_root peer_root
+  shift 2
+  source_root="$(realpath -e -- "$HOME/.codex")" || return 1
+  peer_root="$(realpath -e -- "${KIMI_CODE_HOME:-$HOME/.kimi-code}" 2>/dev/null || true)"
+  source "$source_root/bin/eci-runtime-sync" || return 1
+  planner_sync ensure "$source_root" "$peer_root" "$(id -u)" "$output_root" "$provider" "$@"
+)
+
 eci_runtime_build_missing() (
-  local root="$1" name module binary compiler lock_fd temporary=''
+  local root="$1" name module binary compiler lock_fd temporary='' provider resolved_root
+  local -a pair_tools=()
   shift
   [ "$#" -gt 0 ] || set -- eci-command-gate-mode eci-command-plan eci-safe-import eci-worker-git
+  for name in "$@"; do
+    case "$name" in
+      eci-command-plan|eci-safe-import) pair_tools+=("$name") ;;
+      eci-command-gate-mode|eci-worker-git) ;;
+      *) printf 'ECI runtime build: unknown tool: %s\n' "$name" >&2; return 1 ;;
+    esac
+  done
+  if [ "${#pair_tools[@]}" -gt 0 ]; then
+    resolved_root="$(realpath -e -- "$root")" || return 1
+    if [ "$resolved_root" = "$(realpath -e -- "$HOME/.codex")" ]; then
+      provider=codex
+    elif [ "$resolved_root" = "$(realpath -e -- "${KIMI_CODE_HOME:-$HOME/.kimi-code}")" ]; then
+      provider=kimi
+    else
+      printf 'ECI runtime build: unknown provider: %s\n' "$root" >&2
+      return 1
+    fi
+    eci_runtime_ensure_pair "$HOME/tmp/eci-runtime" "$provider" "${pair_tools[@]}" || return 1
+  fi
   trap '[ -z "$temporary" ] || rm -rf -- "$temporary"' EXIT
   for name in "$@"; do
     case "$name" in
       eci-command-gate-mode|eci-worker-git) binary="$root/bin/$name" ;;
-      eci-command-plan|eci-safe-import) binary="$root/hooks/lib/$name-go/$name" ;;
+      eci-command-plan|eci-safe-import) continue ;;
       *) printf 'ECI runtime build: unknown tool: %s\n' "$name" >&2; return 1 ;;
     esac
     [ ! -x "$binary" ] || continue

@@ -75,8 +75,8 @@ printf '%s\n' \
   'session_id: t00-session' \
   'created_utc: 2026-08-14T00:00:00Z' \
   >"$proof_root/t00-session/eci_active"
-high_level_log="$proof_root/t00-session/high_level_log.md"
-printf '%s\n' '# baseline' >"$high_level_log"
+high_level_log="$proof_root/t00-session/high_level_log.jsonl"
+printf '%s\n' '{"event":"decision","summary":"baseline"}' >"$high_level_log"
 evidence_dir="$proof_root/t00-session/evidence"
 evidence_file="$evidence_dir/inspection.txt"
 instructions_file="$proof_root/t00-session/instructions.md"
@@ -101,7 +101,7 @@ ledger_append_from_marker_cwd() {
   (
     cd "$ROOT"
     CODEX_PROOF_ROOT="$ledger_root" CODEX_SESSION_ID="$ledger_session" CODEX_HOME="$ROOT" \
-      "$ROOT/bin/eci-active" ledger-append "$ledger_entry"
+      "$ROOT/bin/eci-active" ledger-append --json "$(jq -cn --arg summary "$ledger_entry" '{event:"decision",summary:$summary}')"
   )
 }
 
@@ -111,7 +111,7 @@ wrong_cwd_log_sha256="$(sha256sum -- "$high_level_log" | awk '{print $1}')"
 if (
   cd "$TMP_ROOT"
   CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session CODEX_HOME="$ROOT" \
-    "$ROOT/bin/eci-active" ledger-append 'wrong-cwd probe'
+    "$ROOT/bin/eci-active" ledger-append --json '{"event":"decision","summary":"wrong-cwd probe"}'
 ) >"$TMP_ROOT/wrong-cwd-ledger.out" 2>"$TMP_ROOT/wrong-cwd-ledger.err"; then
   printf '%s\n' 'ledger append unexpectedly accepted a marker from another cwd' >&2
   exit 1
@@ -123,12 +123,12 @@ grep -Fq 'ECI high-level log append rejected a marker bound to another session o
 # bounded prefix anchor under the mutation lock.
 ledger_append_from_marker_cwd "$proof_root" t00-session 'coordinator entry' >/dev/null
 first_timestamp_line="$(tail -n 1 -- "$high_level_log")"
-[[ "$first_timestamp_line" =~ ^##\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\ -\ coordinator\ entry$ ]]
+jq -e '.schema == "eci-high-level-log/v1" and .event == "decision" and .summary == "coordinator entry" and (.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' <<<"$first_timestamp_line" >/dev/null
 ledger_append_from_marker_cwd "$proof_root" t00-session 'second timestamp entry' >/dev/null
 second_timestamp_line="$(tail -n 1 -- "$high_level_log")"
-[[ "$second_timestamp_line" =~ ^##\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\ -\ second\ timestamp\ entry$ ]]
-first_timestamp="${first_timestamp_line#'## '}"; first_timestamp="${first_timestamp%% - *}"
-second_timestamp="${second_timestamp_line#'## '}"; second_timestamp="${second_timestamp%% - *}"
+jq -e '.schema == "eci-high-level-log/v1" and .event == "decision" and .summary == "second timestamp entry" and (.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' <<<"$second_timestamp_line" >/dev/null
+first_timestamp="$(jq -r '.timestamp' <<<"$first_timestamp_line")"
+second_timestamp="$(jq -r '.timestamp' <<<"$second_timestamp_line")"
 [[ "$first_timestamp" < "$second_timestamp" || "$first_timestamp" = "$second_timestamp" ]]
 
 subagent_home="$TMP_ROOT/subagent-home"
@@ -388,10 +388,10 @@ assert_copied_home_admitted \
   "$(copied_home_lifecycle_command KIMI_SESSION_ID=wrong-session 'sync-runtime extra')" \
   "$COPIED_SESSION" "$COPIED_ROOT"
 assert_copied_home_session_targeting_denied \
-  "$(copied_home_lifecycle_command CODEX_SESSION_ID=wrong-session 'ledger-append session-targeting-probe')" \
+  "$(copied_home_lifecycle_command CODEX_SESSION_ID=wrong-session 'ledger-append --json "{\"event\":\"decision\",\"summary\":\"session-targeting-probe\"}"')" \
   'active session identity mismatch'
 assert_copied_home_session_targeting_denied \
-  "$(copied_home_lifecycle_command KIMI_SESSION_ID=wrong-session 'ledger-append session-targeting-probe')" \
+  "$(copied_home_lifecycle_command KIMI_SESSION_ID=wrong-session 'ledger-append --json "{\"event\":\"decision\",\"summary\":\"session-targeting-probe\"}"')" \
   'provider session identity mismatch'
 mkdir -p -- "$COPIED_PROOF_ROOT/foreign-session"
 printf 'scope: foreign copied-home marker\ncwd: %s\nsession_id: foreign-session\n' \
@@ -1392,8 +1392,8 @@ assert_ledger_append_only_denied() {
     (.hookSpecificOutput.permissionDecisionReason | contains(("token=" + $path))) and
     (.hookSpecificOutput.permissionDecisionReason | contains(("path=" + $path))) and
     (.hookSpecificOutput.permissionDecisionReason | contains("predicate=append-only-ledger")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: use \"$HOME/.codex/bin/eci-active\" ledger-append")) and
-    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: use eci-active ledger-append") | not)
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: use \"$HOME/.codex/bin/eci-active\" ledger-append --json")) and
+    (.hookSpecificOutput.permissionDecisionReason | contains("remediation: use eci-active ledger-append --json") | not)
   ' "$output" >/dev/null || {
     printf 'assert_ledger_append_only_denied failed: command=%q path=%q output=%s\n' "$command" "$path" "$output" >&2
     [ ! -e "$output" ] || cat -- "$output" >&2
@@ -1581,7 +1581,7 @@ assert_allowed "CODEX_SESSION_ID=t00-session $codex_lifecycle status"
 run_hook_matrix_parallel allowed coordinator-lifecycle-env \
   "env CODEX_SESSION_ID=t00-session $codex_lifecycle status" \
   "env KIMI_SESSION_ID=t00-session $codex_lifecycle status" \
-  "env CODEX_SESSION_ID=t00-session $codex_lifecycle ledger-append 'bounded coordinator entry'"
+  "env CODEX_SESSION_ID=t00-session $codex_lifecycle ledger-append --json '{\"event\":\"decision\",\"summary\":\"bounded coordinator entry\"}'"
 system_tmp="$(printf '/%s' tmp)"
 system_tmp_lifecycle_output="$(run_hook "env TMPDIR=$system_tmp CODEX_SESSION_ID=t00-session $codex_lifecycle --help")"
 [ ! -s "$system_tmp_lifecycle_output" ] || {
@@ -1590,7 +1590,7 @@ system_tmp_lifecycle_output="$(run_hook "env TMPDIR=$system_tmp CODEX_SESSION_ID
   exit 1
 }
 run_matrix_parallel coordinator assert_codex_lifecycle_identity_case lifecycle-identity \
-  "env CODEX_SESSION_ID=wrong-session $codex_lifecycle ledger-append 'mismatch probe'"
+  "env CODEX_SESSION_ID=wrong-session $codex_lifecycle ledger-append --json '{\"event\":\"decision\",\"summary\":\"mismatch probe\"}'"
 
 # ECI ownership admission is ecosystem-neutral: after reserved ownership and
 # shell-indirection checks, finite direct argv vectors for ordinary build/test
@@ -1651,7 +1651,7 @@ if [[ "$kimi_root" = /* ]] && [ -d "$kimi_root" ] && [ ! -L "$kimi_root" ] &&
     "$kimi_root/bin/eci-active on 'peer coordinator scope'" \
     "$kimi_root/bin/eci-active off ${HOME:?}/tmp/eci-peer-disengage.md"
   run_matrix_parallel peer assert_lifecycle_target_denied kimi-peer-identity \
-    "env KIMI_SESSION_ID=wrong-session $kimi_root/bin/eci-active ledger-append 'mismatch probe'"
+    "env KIMI_SESSION_ID=wrong-session $kimi_root/bin/eci-active ledger-append --json '{\"event\":\"decision\",\"summary\":\"mismatch probe\"}'"
   run_matrix_parallel peer assert_lifecycle_target_denied kimi-peer-lifecycle \
     "$kimi_root/bin/eci-active on peer-scope extra"
   # Worker ownership checks apply to lifecycle mutations, not visibility-only
@@ -2349,7 +2349,7 @@ hook_eci="$codex_lifecycle"
 assert_allowed "$hook_eci on classifier-activation"
 assert_allowed "$hook_eci --help"
 assert_allowed "$hook_eci status"
-assert_allowed "$hook_eci ledger-append 'entry with \`literal\` and \$dollar'"
+assert_allowed "$hook_eci ledger-append --json '{\"event\":\"decision\",\"summary\":\"entry with \`literal\` and \$dollar\"}'"
 
 # Exercise the real wait/resume path as a parser regression.  In particular,
 # resume must clear the state without taking a syntax-error branch.
@@ -2376,7 +2376,7 @@ run_hook_matrix_parallel allowed coordinator-lifecycle-shapes \
   "$hook_eci wait $TMP_ROOT/eci_user_owned_wait.md" \
   "$hook_eci resume aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
   "$ROOT/hooks/eci-review-gate.sh commit t00-session" \
-  "$hook_eci ledger-append one-line-entry" \
+  "$hook_eci ledger-append --json '{\"event\":\"decision\",\"summary\":\"one-line-entry\"}'" \
   "$hook_eci nested-enter 1 2 t00-session" \
   "$hook_eci nested-accept" \
   "$hook_eci nested-exit" \
@@ -2916,7 +2916,7 @@ run_subagent_matrix_parallel allowed gitleaks-basic \
   "gitleaks detect -r"
 # Ordinary evidence outputs belong to the active worker's proof directory;
 # their output option is not itself a control-state mutation. Control-path
-# names (for example high_level_log.md/anchor or live markers) remain covered
+# names (for example high_level_log.jsonl/anchor or live markers) remain covered
 # by the target-aware ownership tests above and in the planner unit suite.
 run_subagent_matrix_parallel allowed worker-evidence-output \
   "gitleaks detect --report-path $proof_root/t00-session/report.json" \
@@ -2931,13 +2931,13 @@ renamed_eci="$subagent_codex_home/bin/eci-stage"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$renamed_eci"
 chmod +x "$renamed_eci"
 run_matrix_parallel worker assert_allowed renamed-lifecycle \
-  "eci-stage ledger-append one-line-entry" \
+  "eci-stage ledger-append --json '{\"event\":\"decision\",\"summary\":\"one-line-entry\"}'" \
   "eci-stage nested-enter 1 2 t00-session"
 
 # eval is inspected for concrete lifecycle/control or acceptance effects; an
 # ordinary literal payload is transparent.
 run_subagent_matrix_parallel denied worker-eval-indirection \
-  "eval '$subagent_codex_home/bin/eci-active ledger-append one-line-entry'" \
+  "eval '$subagent_codex_home/bin/eci-active ledger-append --json \"{\\\"event\\\":\\\"decision\\\",\\\"summary\\\":\\\"one-line-entry\\\"}\"'" \
   "eval '$subagent_codex_home/bin/eci-active nested-enter 1 2 t00-session'" \
   "eval 'git rebase topic'"
 run_subagent_matrix_parallel allowed worker-eval-transparent \
@@ -3016,7 +3016,7 @@ run_matrix_parallel worker assert_worker_dynamic_interpreter_or_git_denied worke
 run_matrix_parallel worker assert_subagent_lifecycle_denied worker-shell-lifecycle \
   "source $subagent_codex_home/bin/eci-active off $TMP_ROOT/disengage.md" \
   ". $subagent_codex_home/bin/eci-active wait $TMP_ROOT/eci_user_owned_wait.md" \
-  "$subagent_codex_home/bin/eci-active ledger-append one-line-entry" \
+  "$subagent_codex_home/bin/eci-active ledger-append --json '{\"event\":\"decision\",\"summary\":\"one-line-entry\"}'" \
   "source bin/eci-active wait $TMP_ROOT/eci_user_owned_wait.md" \
   "env -u CODEX_ROLE bash -c 'source bin/eci-active wait $TMP_ROOT/eci_user_owned_wait.md'" \
   "env -S '$subagent_codex_home/bin/eci-active resume aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" \
@@ -3654,7 +3654,7 @@ run_hook_matrix_parallel allowed coordinator-sed-shapes \
   "sed -n '1d' $high_level_log" \
   "sed -n '1p' $high_level_log $high_level_log" \
   "sed -n '1p' -" \
-  "sed -n '1p' $proof_root/t00-session/../t00-session/high_level_log.md"
+  "sed -n '1p' $proof_root/t00-session/../t00-session/high_level_log.jsonl"
 assert_allowed "awk '{print 1}' $ROOT/hooks/validate-bash.sh"
 parameter_output="$(run_hook 'printf "%s" "$UNTRUSTED_COMMAND"')"
 jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_PLAN_SYNTAX_DENIED]")) and (.hookSpecificOutput.permissionDecisionReason | contains("predicate=dynamic-expansion"))' "$parameter_output" >/dev/null
@@ -3704,8 +3704,8 @@ run_hook_matrix_parallel allowed coordinator-process-substitution \
 # The planner resolves the redirect target and effect. Current-session EOF
 # append is role-neutral ordinary work; current rewrites and anchors retain
 # their concrete ownership diagnostics without requiring lifecycle preflight.
-assert_allowed "printf '%s\\n' appended >> $high_level_log"
-assert_allowed "printf '%s\\n' appended 2>> $high_level_log" run_subagent_hook
+assert_allowed "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"appended\"}' >> $high_level_log"
+assert_allowed "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"appended\"}' 2>> $high_level_log" run_subagent_hook
 assert_ledger_redirect_denied \
   "printf '%s\\n' rewritten > $high_level_log" \
   ECI_LEDGER_REWRITE_DENIED effect=overwrite
@@ -3715,10 +3715,10 @@ assert_ledger_redirect_denied \
 assert_ledger_redirect_denied \
   "printf '%s\\n' anchor >> $proof_root/t00-session/high_level_log.anchor" \
   ECI_LEDGER_ANCHOR_WRITE_DENIED target=high_level_log.anchor
-assert_allowed "printf '%s\\n' ordinary >> ./high_level_log.md"
+assert_allowed "printf '%s\\n' ordinary >> ./high_level_log.jsonl"
 log_alias="$proof_root/t00-session/high-level-log-alias.md"
 ln -s "$high_level_log" "$log_alias"
-assert_allowed "printf '%s\\n' alias >> $log_alias"
+assert_allowed "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"alias\"}' >> $log_alias"
 # A symlink remains a bounded inspection target only when its resolved path
 # stays under an approved root.
 assert_allowed "sed -n '1p' $log_alias"
@@ -3733,7 +3733,7 @@ before_log="$(cat -- "$high_level_log")"
 # mutation lock; its output is intentionally not admitted as a raw redirect.
 ledger_append_from_marker_cwd "$proof_root" t00-session 'append-route' >/dev/null
 append_route_line="$(tail -n 1 -- "$high_level_log")"
-[[ "$append_route_line" =~ ^##\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\ -\ append-route$ ]]
+jq -e '.schema == "eci-high-level-log/v1" and .event == "decision" and .summary == "append-route" and (.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' <<<"$append_route_line" >/dev/null
 
 # The lifecycle route preflights the total byte budget before writing. A
 # nearly-full anchored log must remain byte-identical when the next entry
@@ -3748,9 +3748,8 @@ printf '%s\n' \
   "session_id: $cap_session" \
   'created_utc: 2026-08-15T00:00:00Z' \
   >"$cap_dir/eci_active"
-cap_log="$cap_dir/high_level_log.md"
-head -c 1048569 /dev/zero | tr '\0' x >"$cap_log"
-printf '\n' >>"$cap_log"
+cap_log="$cap_dir/high_level_log.jsonl"
+head -c 1048536 /dev/zero | tr '\0' x | jq -Rsc '{event:"decision",summary:.}' >"$cap_log"
 cap_bytes="$(wc -c <"$cap_log")"
 cap_hash="$(sha256sum -- "$cap_log" | awk '{print $1}')"
 printf '%s\n' \

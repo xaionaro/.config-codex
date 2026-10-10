@@ -721,7 +721,7 @@ func inspectHookLifecycle(
 	return nil
 }
 
-// inspectHookScript checks actual existing script targets against session roots.
+// inspectHookScript checks existing script targets against session and scratch roots.
 // Syntax checking and missing script operands have no execution effect. File
 // inspection is an external observation: failed stat/open/read/close observations
 // cannot establish a concrete execution target and therefore remain advisory.
@@ -786,8 +786,8 @@ func inspectHookScript(
 		return nil
 	}
 	if index == 0 {
-		// Direct binaries are ordinary executables; only script files have a
-		// repository execution ownership boundary.
+		// Direct binaries are ordinary executables; only script files have an
+		// execution ownership boundary.
 		file, openErr := os.Open(target)
 		if openErr != nil {
 			return nil
@@ -845,6 +845,9 @@ func inspectHookScript(
 			return nil
 		}
 	}
+	if hookScratchScriptAllowed(target, request.ApprovedRoots) {
+		return nil
+	}
 	code := hookCodeWorkerScriptTargetDenied
 	if request.Role == RoleCoordinator {
 		code = hookCodeCoordinatorScriptTargetDenied
@@ -853,6 +856,41 @@ func inspectHookScript(
 		record.Segment, argv[index].offset, argv[index], "the legitimate session owner declares the exact dependency repository from this session with \"$HOME/.codex/bin/eci-active\" repository-allow-on <canonical-repository> \"<reason>\", then executes the same script", "script-target")
 	diagnostic.Path = target
 	return diagnostic
+}
+
+// hookScratchScriptAllowed admits a resolved script below the canonical HOME/tmp directory.
+// Scratch must not contain HOME, shared temp roots or a current repository anchor.
+// Failed external observations establish no additional execution admission; the caller
+// retains its existing script-target and advisory behavior. This does not grant Git scope.
+//
+// Example: HOME/tmp may point to a dedicated volume descendant, but never its broad parent.
+func hookScratchScriptAllowed(
+	target string,
+	approvedRoots []string,
+) bool {
+	home := os.Getenv("HOME")
+	if !filepath.IsAbs(home) {
+		return false
+	}
+	scratch, err := filepath.EvalSymlinks(filepath.Join(home, "tmp"))
+	if err != nil || !filepath.IsAbs(scratch) {
+		return false
+	}
+	info, err := os.Stat(scratch)
+	if err != nil || !info.IsDir() || !pathWithin(target, scratch) {
+		return false
+	}
+	anchors := append([]string{home, "/tmp", "/var/tmp"}, approvedRoots...)
+	for _, anchor := range anchors {
+		canonical, err := filepath.EvalSymlinks(anchor)
+		if err != nil || !filepath.IsAbs(canonical) {
+			return false
+		}
+		if pathWithin(canonical, scratch) {
+			return false
+		}
+	}
+	return true
 }
 
 // inspectHookControlWriter protects validated live sessions and their namespaces.

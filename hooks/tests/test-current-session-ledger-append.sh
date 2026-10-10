@@ -161,8 +161,14 @@ assert_output_target_pairs() {
     assert_allowed "$session" "diff --to-file=$marker $ordinary" "$role"
     assert_allowed "$session" "diff --to-file $marker $ordinary" "$role"
     assert_allowed "$session" "cp $marker 0<$marker $ordinary" "$role"
-    assert_allowed "$session" "touch $dir/project-understanding.md" "$role"
-    assert_allowed "$session" "sort -o $dir/project-understanding.md < $ordinary" "$role"
+    assert_allowed "$session" "touch $dir/project-understanding.yaml" "$role"
+    assert_allowed "$session" "sort -o $dir/project-understanding.yaml < $ordinary" "$role"
+    # Former spellings are ordinary files, including in a sibling proof dir.
+    # They acquire control protections only by resolving to a protected inode.
+    for obsolete in project-understanding.md project-understanding.json project-understanding.yml; do
+      assert_allowed "$session" "printf ordinary > $dir/$obsolete" "$role"
+      assert_allowed "$session" "printf ordinary > ${foreign_marker%/*}/$obsolete" "$role"
+    done
     for target in "$marker" "$alias" "$hardlink" "$note_symlink" "$note_hardlink"; do
       expected_target="$marker"
       commands=("touch $target" "sort -o $target < $ordinary")
@@ -187,8 +193,8 @@ assert_output_target_pairs() {
     for target in "$foreign_marker" "$foreign_alias" "$foreign_hardlink"; do
       assert_denied "$session" "sort -o $target < $ordinary" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED 'foreign_session=' "$role"
     done
-    assert_denied "$session" "sort -o $dir/high_level_log.md < $ordinary" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
-    assert_denied "$session" "sort -o ${foreign_marker%/*}/high_level_log.md < $ordinary" ECI_LEDGER_FOREIGN_SESSION_DENIED 'target_session=' "$role"
+    assert_denied "$session" "sort -o $dir/high_level_log.jsonl < $ordinary" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
+    assert_denied "$session" "sort -o ${foreign_marker%/*}/high_level_log.jsonl < $ordinary" ECI_LEDGER_FOREIGN_SESSION_DENIED 'target_session=' "$role"
   done
 }
 
@@ -229,55 +235,55 @@ assert_prefix_disposition_preserved() {
 
 SESSION=current-ledger-session
 SESSION_DIR="$PROOF_ROOT/$SESSION"
-LOG="$SESSION_DIR/high_level_log.md"
+LOG="$SESSION_DIR/high_level_log.jsonl"
 ANCHOR="$SESSION_DIR/high_level_log.anchor"
 mkdir -p -- "$SESSION_DIR"
-printf '%s\n' 'initial ledger entry' >"$LOG"
+printf '%s\n' '{"event":"decision","summary":"initial ledger entry"}' >"$LOG"
 run_lifecycle "$SESSION" on 'direct ledger redirect fixture' >/dev/null
 
 # Current-session EOF appends are role-neutral, including normal FD append
 # spelling. They do not depend on a lifecycle invocation or anchor receipt.
-assert_allowed "$SESSION" "printf raw >> $LOG" coordinator
-assert_allowed "$SESSION" "printf raw >> $LOG" worker
-assert_allowed "$SESSION" "printf raw 2>> $LOG" coordinator
-assert_allowed "$SESSION" "printf raw 2>> $LOG" worker
-assert_allowed "$SESSION" "printf raw &>> $LOG" coordinator
-assert_allowed "$SESSION" "printf raw &>> $LOG" worker
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $LOG" coordinator
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $LOG" worker
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' 2>> $LOG" coordinator
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' 2>> $LOG" worker
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' &>> $LOG" coordinator
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' &>> $LOG" worker
 assert_allowed "$SESSION" 'printf raw 2>&1' coordinator
 assert_allowed "$SESSION" 'printf raw 2>&1' worker
 
 # Rewrites, anchors, sibling session records, and shared inodes keep
 # distinct concrete diagnostics. Hook admission never executes these commands.
-assert_denied "$SESSION" "printf raw > $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
-assert_denied "$SESSION" "printf raw >| $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=force-overwrite'
-assert_denied "$SESSION" "printf raw >& $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
-assert_denied "$SESSION" "printf raw &> $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
-assert_denied "$SESSION" "printf raw >> $ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor'
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' > $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >| $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=force-overwrite'
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >& $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' &> $LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite'
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor'
 
 FOREIGN_SESSION=foreign-ledger-session
 FOREIGN_DIR="$PROOF_ROOT/$FOREIGN_SESSION"
-FOREIGN_LOG="$FOREIGN_DIR/high_level_log.md"
+FOREIGN_LOG="$FOREIGN_DIR/high_level_log.jsonl"
 FOREIGN_ANCHOR="$FOREIGN_DIR/high_level_log.anchor"
 mkdir -p -- "$FOREIGN_DIR"
-printf '%s\n' foreign >"$FOREIGN_LOG"
+printf '%s\n' '{"event":"decision","summary":"foreign"}' >"$FOREIGN_LOG"
 printf '%s\n' foreign-anchor >"$FOREIGN_ANCHOR"
 printf '%s\n' 'scope: foreign output fixture' "cwd: $FOREIGN_REPOSITORY" \
   "session_id: $FOREIGN_SESSION" 'created_utc: 2026-09-06T00:00:00Z' >"$FOREIGN_DIR/eci_active"
 assert_output_target_pairs "$SESSION" "$FOREIGN_DIR/eci_active"
-assert_denied "$SESSION" "printf raw >> $FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION"
-assert_denied "$SESSION" "printf raw >> $FOREIGN_ANCHOR" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION"
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION"
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FOREIGN_ANCHOR" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION"
 
 ESCAPE_TARGET="$TMP_ROOT/outside-ledger.txt"
 ESCAPE_LINK="$SESSION_DIR/escaping-ledger-link"
 printf '%s\n' outside >"$ESCAPE_TARGET"
 ln -s -- "$ESCAPE_TARGET" "$ESCAPE_LINK"
-assert_allowed "$SESSION" "printf raw >> $ESCAPE_LINK" coordinator
-assert_allowed "$SESSION" "printf raw >> $ESCAPE_LINK" worker
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $ESCAPE_LINK" coordinator
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $ESCAPE_LINK" worker
 
 SHARED_PEER="$TMP_ROOT/shared-ledger-peer"
 ln -- "$LOG" "$SHARED_PEER"
 cp -- "$SHARED_PEER" "$TMP_ROOT/shared-ledger-peer.before"
-assert_denied "$SESSION" "printf raw >> $LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2'
+assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2'
 cmp -s -- "$TMP_ROOT/shared-ledger-peer.before" "$SHARED_PEER"
 rm -f -- "$SHARED_PEER"
 
@@ -293,22 +299,22 @@ ln -- "$ANCHOR" "$EXTERNAL_CURRENT_ANCHOR"
 ln -- "$FOREIGN_LOG" "$EXTERNAL_FOREIGN_LOG"
 ln -- "$FOREIGN_ANCHOR" "$EXTERNAL_FOREIGN_ANCHOR"
 for role in coordinator worker; do
-  assert_denied "$SESSION" "printf raw > $EXTERNAL_CURRENT_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
-  assert_denied "$SESSION" "printf raw >> $EXTERNAL_CURRENT_LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2' "$role"
-  assert_denied "$SESSION" "printf raw >> $EXTERNAL_CURRENT_ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
-  assert_denied "$SESSION" "printf raw >> $EXTERNAL_FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION" "$role"
-  assert_denied "$SESSION" "printf raw >> $EXTERNAL_FOREIGN_ANCHOR" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION" "$role"
+  assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' > $EXTERNAL_CURRENT_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
+  assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $EXTERNAL_CURRENT_LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2' "$role"
+  assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $EXTERNAL_CURRENT_ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
+  assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $EXTERNAL_FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION" "$role"
+  assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $EXTERNAL_FOREIGN_ANCHOR" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FOREIGN_SESSION" "$role"
 done
 
 ORDINARY_OUTPUT="$TMP_ROOT/ordinary-output.txt"
-assert_allowed "$SESSION" "printf raw > $ORDINARY_OUTPUT"
-assert_allowed "$SESSION" "printf raw >> $ORDINARY_OUTPUT"
-assert_allowed "$SESSION" "printf raw >| $ORDINARY_OUTPUT"
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' > $ORDINARY_OUTPUT"
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $ORDINARY_OUTPUT"
+assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >| $ORDINARY_OUTPUT"
 
 assert_reconciliation_preserves_raw_append() {
   local session="$1" seed="$2" log anchor snapshot prefix raw_bytes raw_hash anchor_bytes anchor_hash actual_bytes actual_hash
   local session_dir="$PROOF_ROOT/$session"
-  log="$session_dir/high_level_log.md"
+  log="$session_dir/high_level_log.jsonl"
   anchor="$session_dir/high_level_log.anchor"
   snapshot="$TMP_ROOT/$session.raw"
   prefix="$TMP_ROOT/$session.prefix"
@@ -316,14 +322,15 @@ assert_reconciliation_preserves_raw_append() {
   mkdir -p -- "$session_dir"
   printf '%s' "$seed" >"$log"
   run_lifecycle "$session" on 'raw append reconciliation fixture' >/dev/null
-  assert_allowed "$session" "printf raw >> $log" worker
-  printf '%s' raw-direct-entry >>"$log"
+  assert_allowed "$session" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $log" worker
+  [ ! -s "$log" ] || [ "$(tail -c 1 -- "$log" | od -An -tu1 | tr -d ' ')" = 10 ] || printf '\n' >>"$log"
+  printf '%s\n' '{"event":"decision","summary":"raw direct entry"}' >>"$log"
   cp -- "$log" "$snapshot"
   raw_bytes="$(wc -c <"$snapshot")"
   raw_hash="$(sha256sum -- "$snapshot" | awk '{print $1}')"
   cp -- "$anchor" "$TMP_ROOT/$session.anchor.before"
 
-  run_lifecycle "$session" ledger-append "lifecycle reconciliation $session" >/dev/null
+  run_lifecycle "$session" ledger-append --json "$(jq -cn --arg summary "lifecycle reconciliation $session" '{event:"decision",summary:$summary}')" >/dev/null
   head -c "$raw_bytes" -- "$log" >"$prefix"
   cmp -s -- "$snapshot" "$prefix"
   [ "$(sha256sum -- "$prefix" | awk '{print $1}')" = "$raw_hash" ]
@@ -339,19 +346,19 @@ assert_reconciliation_preserves_raw_append() {
 # A raw append need not have an anchor precondition. The lifecycle route later
 # retains the raw bytes and publishes a fresh full-file anchor both when the
 # prior log did and did not end in LF.
-assert_reconciliation_preserves_raw_append ledger-reconcile-with-lf $'seed with LF\n'
-assert_reconciliation_preserves_raw_append ledger-reconcile-without-lf 'seed without LF'
+assert_reconciliation_preserves_raw_append ledger-reconcile-with-lf $'{"event":"decision","summary":"seed with LF"}\n'
+assert_reconciliation_preserves_raw_append ledger-reconcile-without-lf '{"event":"decision","summary":"seed without LF"}'
 
 # Remove only the copied planner source after all normal-path checks above.
 # The final probe exercises the real copied hook when no planner binary or
 # source is available, without changing the live hooks.
 FALLBACK_SESSION=planner-unavailable-ledger-session
 FALLBACK_DIR="$PROOF_ROOT/$FALLBACK_SESSION"
-FALLBACK_LOG="$FALLBACK_DIR/high_level_log.md"
+FALLBACK_LOG="$FALLBACK_DIR/high_level_log.jsonl"
 FALLBACK_ANCHOR="$FALLBACK_DIR/high_level_log.anchor"
 FALLBACK_FOREIGN_SESSION=planner-unavailable-foreign-session
 FALLBACK_FOREIGN_DIR="$PROOF_ROOT/$FALLBACK_FOREIGN_SESSION"
-FALLBACK_FOREIGN_LOG="$FALLBACK_FOREIGN_DIR/high_level_log.md"
+FALLBACK_FOREIGN_LOG="$FALLBACK_FOREIGN_DIR/high_level_log.jsonl"
 FALLBACK_FOREIGN_ACTIVE="$FALLBACK_FOREIGN_DIR/eci_active"
 FALLBACK_ESCAPE_TARGET="$TMP_ROOT/planner-unavailable-outside-log"
 FALLBACK_ESCAPE_LINK="$FALLBACK_DIR/escaping-output"
@@ -361,8 +368,8 @@ FALLBACK_ORDINARY="$TMP_ROOT/planner-unavailable-ordinary-output"
 FALLBACK_ACTIVE_REAL="$(realpath -m -- "$FALLBACK_ACTIVE")"
 FALLBACK_GOAL_REAL="$(realpath -m -- "$FALLBACK_GOAL")"
 mkdir -p -- "$FALLBACK_DIR" "$FALLBACK_FOREIGN_DIR"
-printf '%s\n' current >"$FALLBACK_LOG"
-printf '%s\n' foreign >"$FALLBACK_FOREIGN_LOG"
+printf '%s\n' '{"event":"decision","summary":"current"}' >"$FALLBACK_LOG"
+printf '%s\n' '{"event":"decision","summary":"foreign"}' >"$FALLBACK_FOREIGN_LOG"
 run_lifecycle "$FALLBACK_SESSION" on 'planner-unavailable ledger fallback fixture' >/dev/null
 printf '%s\n' 'scope: foreign fallback output fixture' "cwd: $FOREIGN_REPOSITORY" \
   "session_id: $FALLBACK_FOREIGN_SESSION" 'created_utc: 2026-09-06T00:00:00Z' >"$FALLBACK_FOREIGN_ACTIVE"
@@ -372,13 +379,15 @@ rm -rf -- "$PLANNER_DIR"
 assert_output_target_pairs "$FALLBACK_SESSION" "$FALLBACK_FOREIGN_ACTIVE"
 
 for role in coordinator worker; do
-  assert_allowed "$FALLBACK_SESSION" "printf raw >> $FALLBACK_LOG" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf raw &>> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf 'quoted ledger entry' >> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf harmless; printf raw >> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "LEDGER_NOTE=ordinary printf raw >> \"$FALLBACK_LOG\"" "$role"
-  assert_denied "$FALLBACK_SESSION" "LEDGER_NOTE=ordinary printf raw >> \"$FALLBACK_ANCHOR\"" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
-  assert_allowed "$FALLBACK_SESSION" "LEDGER_NOTE=\"\$UNRESOLVED_LEDGER_NOTE\" printf raw >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FALLBACK_LOG" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' &>> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"quoted ledger entry\"}' >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf harmless; printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "LEDGER_NOTE=ordinary printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
+  assert_denied "$FALLBACK_SESSION" "LEDGER_NOTE=ordinary printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_ANCHOR\"" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
+  assert_allowed "$FALLBACK_SESSION" "LEDGER_NOTE=\"\$UNRESOLVED_LEDGER_NOTE\" printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
+  # Parser/effect-boundary probes deliberately use malformed/non-JSON payloads;
+  # they inspect commands without executing supported-history appends.
   assert_allowed "$FALLBACK_SESSION" "printf \"\$(printf harmless)\" >> \"$FALLBACK_LOG\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "printf \"\$(printf \"\$(printf harmless)\")\" >> \"$FALLBACK_LOG\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "printf \"\$(printf '\$')\" >> \"$FALLBACK_LOG\"" "$role"
@@ -387,10 +396,10 @@ for role in coordinator worker; do
   assert_allowed "$FALLBACK_SESSION" "\"\$UNRESOLVED_SHELL\" -c 'rm -rf /' >> \"$FALLBACK_LOG\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "bash -c \"\$UNRESOLVED_SHELL_PAYLOAD\" >> \"$FALLBACK_LOG\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "printf \"\$(printf malformed\" >> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf harmless && printf raw >> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf harmless || printf raw >> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf harmless | printf raw >> \"$FALLBACK_LOG\"" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf harmless & printf raw >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf harmless && printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf harmless || printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf harmless | printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf harmless & printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "touch \"$FALLBACK_ORDINARY\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "touch \"$FALLBACK_DIR/\$UNRESOLVED_LEDGER_TARGET\"" "$role"
   assert_denied "$FALLBACK_SESSION" "printf \"\$(rm -rf /)\" >> \"$FALLBACK_LOG\"" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
@@ -402,18 +411,18 @@ for role in coordinator worker; do
     assert_denied "$FALLBACK_SESSION" "$shell -c 'rm -rf /' >> \"$FALLBACK_LOG\"" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
   done
   assert_allowed "$FALLBACK_SESSION" "unrecognized-ledger-wrapper --ordinary-argument >> \"$FALLBACK_LOG\"" "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; rm -rf /" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; git -C $FOREIGN_REPOSITORY add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED 'active_repo=' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; git -C $REPOSITORY add ." ECI_BROAD_DESTRUCTIVE_DENIED 'effect=whole-worktree-staging' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; git -C $REPOSITORY reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED 'effect=reset-working-tree' "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; touch $FALLBACK_ESCAPE_LINK" "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & rm -rf /" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & git -C $FOREIGN_REPOSITORY add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED 'active_repo=' "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & touch $FALLBACK_ESCAPE_LINK" "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; rm -rf /" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; git -C $FOREIGN_REPOSITORY add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED 'active_repo=' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; git -C $REPOSITORY add ." ECI_BROAD_DESTRUCTIVE_DENIED 'effect=whole-worktree-staging' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; git -C $REPOSITORY reset --hard" ECI_BROAD_DESTRUCTIVE_DENIED 'effect=reset-working-tree' "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; touch $FALLBACK_ESCAPE_LINK" "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\" & rm -rf /" ECI_BROAD_DESTRUCTIVE_DENIED 'kind=recursive-root-delete' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\" & git -C $FOREIGN_REPOSITORY add -- file.txt" ECI_GIT_CROSS_SCOPE_DENIED 'active_repo=' "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\" & touch $FALLBACK_ESCAPE_LINK" "$role"
   assert_control_denied "$FALLBACK_SESSION" "touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "touch \"$FALLBACK_GOAL\"" "$FALLBACK_GOAL_REAL" "$role"
-  assert_control_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
-  assert_control_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
+  assert_control_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
+  assert_control_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\" & touch \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "printf \"\$(touch \"$FALLBACK_ACTIVE\")\" >> \"$FALLBACK_LOG\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "bash -c 'touch $FALLBACK_ACTIVE' >> \"$FALLBACK_LOG\"" "$FALLBACK_ACTIVE_REAL" "$role"
 
@@ -434,8 +443,8 @@ for role in coordinator worker; do
   assert_control_denied "$FALLBACK_SESSION" "printf \"\$(tee \"$FALLBACK_ACTIVE\")\" >> \"$FALLBACK_LOG\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "printf \"\`dd if=/dev/null of=\"$FALLBACK_ACTIVE\"\`\" >> \"$FALLBACK_LOG\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_control_denied "$FALLBACK_SESSION" "bash -c 'install /dev/null $FALLBACK_ACTIVE' >> \"$FALLBACK_LOG\"" "$FALLBACK_ACTIVE_REAL" "$role"
-  assert_control_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\"; tee \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
-  assert_control_denied "$FALLBACK_SESSION" "printf raw >> \"$FALLBACK_LOG\" & dd if=/dev/null of=\"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
+  assert_control_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\"; tee \"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
+  assert_control_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> \"$FALLBACK_LOG\" & dd if=/dev/null of=\"$FALLBACK_ACTIVE\"" "$FALLBACK_ACTIVE_REAL" "$role"
 
   assert_allowed "$FALLBACK_SESSION" "tee \"$FALLBACK_ORDINARY\"" "$role"
   assert_allowed "$FALLBACK_SESSION" "dd if=/dev/null of=\"$FALLBACK_ORDINARY\"" "$role"
@@ -466,16 +475,16 @@ for role in coordinator worker; do
   assert_control_denied "$FALLBACK_SESSION" "install /dev/null \"$FALLBACK_ACTIVE\" >> \"$FALLBACK_ESCAPE_LINK\"" "$FALLBACK_ACTIVE_REAL" "$role"
   assert_prefix_disposition_preserved "$FALLBACK_SESSION" "$RUNTIME_ROOT/bin/eci-active off $TMP_ROOT/fallback-disengage.md" "$FALLBACK_LOG" "$role"
   assert_denied "$FALLBACK_SESSION" "cat /dev/null > $FALLBACK_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw &> \"$FALLBACK_LOG\"" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw > $FALLBACK_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> $FALLBACK_ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
-  assert_denied "$FALLBACK_SESSION" "printf raw >> $FALLBACK_FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FALLBACK_FOREIGN_SESSION" "$role"
-  assert_allowed "$FALLBACK_SESSION" "printf raw >> $FALLBACK_ESCAPE_LINK" "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' &> \"$FALLBACK_LOG\"" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' > $FALLBACK_LOG" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FALLBACK_ANCHOR" ECI_LEDGER_ANCHOR_WRITE_DENIED 'target=high_level_log.anchor' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FALLBACK_FOREIGN_LOG" ECI_LEDGER_FOREIGN_SESSION_DENIED "target_session=$FALLBACK_FOREIGN_SESSION" "$role"
+  assert_allowed "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FALLBACK_ESCAPE_LINK" "$role"
 done
 FALLBACK_SHARED_PEER="$TMP_ROOT/planner-unavailable-shared-log"
 ln -- "$FALLBACK_LOG" "$FALLBACK_SHARED_PEER"
 for role in coordinator worker; do
-  assert_denied "$FALLBACK_SESSION" "printf raw >> $FALLBACK_LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2' "$role"
+  assert_denied "$FALLBACK_SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $FALLBACK_LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2' "$role"
   assert_denied "$FALLBACK_SESSION" "tee \"$FALLBACK_ACTIVE\" >> $FALLBACK_LOG" ECI_LEDGER_SHARED_INODE_DENIED 'nlink=2' "$role"
 done
 assert_allowed "$FALLBACK_SESSION" 'unrecognized-ledger-wrapper --ordinary-argument' worker

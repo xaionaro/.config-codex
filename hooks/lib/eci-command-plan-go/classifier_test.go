@@ -66,8 +66,8 @@ func TestClassifyLedgerAppendRemediationUsesCodexAuthority(t *testing.T) {
 	if err := os.WriteFile(marker, []byte("active\n"), 0o600); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
-	ledger := filepath.Join(sessionDir, "high_level_log.md")
-	if err := os.WriteFile(ledger, []byte("ledger\n"), 0o600); err != nil {
+	ledger := filepath.Join(sessionDir, "high_level_log.jsonl")
+	if err := os.WriteFile(ledger, []byte("{\"event\":\"decision\",\"summary\":\"entry\"}\n"), 0o600); err != nil {
 		t.Fatalf("write ledger: %v", err)
 	}
 
@@ -77,11 +77,11 @@ func TestClassifyLedgerAppendRemediationUsesCodexAuthority(t *testing.T) {
 	}{
 		{
 			provider:        ProviderCodex,
-			wantRemediation: `use "$HOME/.codex/bin/eci-active" ledger-append`,
+			wantRemediation: `use "$HOME/.codex/bin/eci-active" ledger-append --json`,
 		},
 		{
 			provider:        ProviderKimi,
-			wantRemediation: "use eci-active ledger-append",
+			wantRemediation: "use eci-active ledger-append --json",
 		},
 	} {
 		testCase := testCase
@@ -1986,7 +1986,7 @@ func TestLedgerHardlinkAliasesKeepConcreteDiagnostics(t *testing.T) {
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			t.Fatalf("create session directory %q: %v", sessionDir, err)
 		}
-		if err := os.WriteFile(filepath.Join(sessionDir, "high_level_log.md"), []byte("prior note\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(sessionDir, "high_level_log.jsonl"), []byte("{\"event\":\"decision\",\"summary\":\"prior entry\"}\n"), 0o600); err != nil {
 			t.Fatalf("write session log %q: %v", sessionDir, err)
 		}
 		if err := os.WriteFile(filepath.Join(sessionDir, "high_level_log.anchor"), []byte("anchor\n"), 0o600); err != nil {
@@ -1998,9 +1998,9 @@ func TestLedgerHardlinkAliasesKeepConcreteDiagnostics(t *testing.T) {
 		t.Fatalf("write current marker: %v", err)
 	}
 
-	currentLog := filepath.Join(currentSession, "high_level_log.md")
+	currentLog := filepath.Join(currentSession, "high_level_log.jsonl")
 	currentAnchor := filepath.Join(currentSession, "high_level_log.anchor")
-	foreignLog := filepath.Join(foreignSession, "high_level_log.md")
+	foreignLog := filepath.Join(foreignSession, "high_level_log.jsonl")
 	foreignAnchor := filepath.Join(foreignSession, "high_level_log.anchor")
 	aliasRoot := t.TempDir()
 	aliases := []struct {
@@ -2009,11 +2009,11 @@ func TestLedgerHardlinkAliasesKeepConcreteDiagnostics(t *testing.T) {
 		command string
 		code    DiagnosticCode
 	}{
-		{name: "selected log rewrite", target: currentLog, command: "printf note > ", code: CodeLedgerRewriteDenied},
-		{name: "selected log shared append", target: currentLog, command: "printf note >> ", code: CodeLedgerSharedInodeDenied},
-		{name: "selected anchor", target: currentAnchor, command: "printf note >> ", code: CodeLedgerAnchorWriteDenied},
-		{name: "foreign log", target: foreignLog, command: "printf note >> ", code: CodeLedgerForeignSessionDenied},
-		{name: "foreign anchor", target: foreignAnchor, command: "printf note >> ", code: CodeLedgerForeignSessionDenied},
+		{name: "selected log rewrite", target: currentLog, command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' > ", code: CodeLedgerRewriteDenied},
+		{name: "selected log shared append", target: currentLog, command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> ", code: CodeLedgerSharedInodeDenied},
+		{name: "selected anchor", target: currentAnchor, command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> ", code: CodeLedgerAnchorWriteDenied},
+		{name: "foreign log", target: foreignLog, command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> ", code: CodeLedgerForeignSessionDenied},
+		{name: "foreign anchor", target: foreignAnchor, command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> ", code: CodeLedgerForeignSessionDenied},
 	}
 
 	for index := range aliases {
@@ -2054,8 +2054,8 @@ func TestLedgerHardlinkAliasesKeepConcreteDiagnostics(t *testing.T) {
 // anchors, foreign session records, escaping links, and shared inodes retain
 // their concrete ownership diagnostics.
 //
-// Example: printf note >> current/high_level_log.md is allowed for either
-// active role, while printf note >| that same file is a rewrite denial.
+// Example: appending a JSON event to current/high_level_log.jsonl is allowed
+// for either active role, while >| to that same file is a rewrite denial.
 func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 	t.Parallel()
 
@@ -2071,7 +2071,7 @@ func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 				if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 					t.Fatalf("create session directory %q: %v", sessionDir, err)
 				}
-				if err := os.WriteFile(filepath.Join(sessionDir, "high_level_log.md"), []byte("prior note\n"), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(sessionDir, "high_level_log.jsonl"), []byte("{\"event\":\"decision\",\"summary\":\"prior entry\"}\n"), 0o600); err != nil {
 					t.Fatalf("write session log %q: %v", sessionDir, err)
 				}
 				if err := os.WriteFile(filepath.Join(sessionDir, "high_level_log.anchor"), []byte("anchor\n"), 0o600); err != nil {
@@ -2083,9 +2083,9 @@ func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 				t.Fatalf("write current marker: %v", err)
 			}
 
-			currentLog := filepath.Join(currentSession, "high_level_log.md")
+			currentLog := filepath.Join(currentSession, "high_level_log.jsonl")
 			currentAnchor := filepath.Join(currentSession, "high_level_log.anchor")
-			foreignLog := filepath.Join(foreignSession, "high_level_log.md")
+			foreignLog := filepath.Join(foreignSession, "high_level_log.jsonl")
 			foreignAnchor := filepath.Join(foreignSession, "high_level_log.anchor")
 			ordinaryOutput := filepath.Join(proofRoot, "ordinary-output.txt")
 			outside := filepath.Join(proofRoot, "outside-log.txt")
@@ -2100,7 +2100,7 @@ func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 			if err := os.Symlink(proofRoot, proofAlias); err != nil {
 				t.Fatalf("create proof root alias: %v", err)
 			}
-			aliasedCurrentLog := filepath.Join(proofAlias, "current-session", "high_level_log.md")
+			aliasedCurrentLog := filepath.Join(proofAlias, "current-session", "high_level_log.jsonl")
 
 			for _, role := range []Role{RoleCoordinator, RoleWorker} {
 				role := role
@@ -2123,20 +2123,20 @@ func TestCurrentSessionLedgerRedirectsResolveEffectAndOwnership(t *testing.T) {
 						code       DiagnosticCode
 						detailPart string
 					}{
-						{name: "current append", command: "printf note >> " + currentLog, decision: DecisionAllow},
-						{name: "quoted current append", command: "printf 'quoted note' >> \"" + currentLog + "\"", decision: DecisionAllow},
-						{name: "semicolon composed current append", command: "printf before; printf note >> " + currentLog, decision: DecisionAllow},
-						{name: "current append through proof alias", command: "printf note >> " + aliasedCurrentLog, decision: DecisionAllow},
-						{name: "current stderr append", command: "printf note 2>> " + currentLog, decision: DecisionAllow},
-						{name: "current rewrite", command: "printf note > " + currentLog, decision: DecisionDeny, code: "ECI_LEDGER_REWRITE_DENIED", detailPart: "effect=overwrite"},
-						{name: "current forced rewrite", command: "printf note >| " + currentLog, decision: DecisionDeny, code: "ECI_LEDGER_REWRITE_DENIED", detailPart: "effect=force-overwrite"},
-						{name: "current anchor", command: "printf note >> " + currentAnchor, decision: DecisionDeny, code: "ECI_LEDGER_ANCHOR_WRITE_DENIED", detailPart: "target=high_level_log.anchor"},
-						{name: "foreign log", command: "printf note >> " + foreignLog, decision: DecisionDeny, code: "ECI_LEDGER_FOREIGN_SESSION_DENIED", detailPart: "target_session=foreign-session"},
-						{name: "foreign anchor", command: "printf note >> " + foreignAnchor, decision: DecisionDeny, code: "ECI_LEDGER_FOREIGN_SESSION_DENIED", detailPart: "target_session=foreign-session"},
-						{name: "ordinary output through proof alias", command: "printf note >> " + escapingLink, decision: DecisionAllow},
-						{name: "ordinary overwrite", command: "printf note > " + ordinaryOutput, decision: DecisionAllow},
-						{name: "ordinary append", command: "printf note >> " + ordinaryOutput, decision: DecisionAllow},
-						{name: "ordinary forced overwrite", command: "printf note >| " + ordinaryOutput, decision: DecisionAllow},
+						{name: "current append", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + currentLog, decision: DecisionAllow},
+						{name: "quoted current append", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"quoted entry\"}' >> \"" + currentLog + "\"", decision: DecisionAllow},
+						{name: "semicolon composed current append", command: "printf before; printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + currentLog, decision: DecisionAllow},
+						{name: "current append through proof alias", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + aliasedCurrentLog, decision: DecisionAllow},
+						{name: "current stderr append", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' 2>> " + currentLog, decision: DecisionAllow},
+						{name: "current rewrite", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' > " + currentLog, decision: DecisionDeny, code: "ECI_LEDGER_REWRITE_DENIED", detailPart: "effect=overwrite"},
+						{name: "current forced rewrite", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >| " + currentLog, decision: DecisionDeny, code: "ECI_LEDGER_REWRITE_DENIED", detailPart: "effect=force-overwrite"},
+						{name: "current anchor", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + currentAnchor, decision: DecisionDeny, code: "ECI_LEDGER_ANCHOR_WRITE_DENIED", detailPart: "target=high_level_log.anchor"},
+						{name: "foreign log", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + foreignLog, decision: DecisionDeny, code: "ECI_LEDGER_FOREIGN_SESSION_DENIED", detailPart: "target_session=foreign-session"},
+						{name: "foreign anchor", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + foreignAnchor, decision: DecisionDeny, code: "ECI_LEDGER_FOREIGN_SESSION_DENIED", detailPart: "target_session=foreign-session"},
+						{name: "ordinary output through proof alias", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + escapingLink, decision: DecisionAllow},
+						{name: "ordinary overwrite", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' > " + ordinaryOutput, decision: DecisionAllow},
+						{name: "ordinary append", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >> " + ordinaryOutput, decision: DecisionAllow},
+						{name: "ordinary forced overwrite", command: "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"entry\"}' >| " + ordinaryOutput, decision: DecisionAllow},
 					} {
 						testCase := testCase
 						t.Run(testCase.name, func(t *testing.T) {
@@ -5362,7 +5362,7 @@ func TestGenericOutputWriterProofOwnership(t *testing.T) {
 // TestResolvedProofControlNames verifies that destination identity, not an
 // alias basename, selects reserved-control and ledger classification.
 //
-// Example: high_level_log.md resolving to an ordinary file is not a ledger.
+// Example: high_level_log.jsonl resolving to an ordinary file is not a ledger.
 func TestResolvedProofControlNames(t *testing.T) {
 	t.Parallel()
 	sessions := []proofSession{{lexical: "/proof/session", resolved: "/proof/session"}}
@@ -5373,11 +5373,14 @@ func TestResolvedProofControlNames(t *testing.T) {
 		{"control", isReservedProofControlPath},
 		{"ledger", isAppendOnlyLedgerPath},
 	} {
-		if classify.call("/proof/session/high_level_log.md", "/proof/session/ordinary", sessions) {
+		if classify.call("/proof/session/high_level_log.jsonl", "/proof/session/ordinary", sessions) {
 			t.Errorf("%s: an ordinary resolved file inherited its alias basename", classify.name)
 		}
-		if !classify.call("/ordinary/alias", "/proof/session/high_level_log.md", sessions) {
+		if !classify.call("/ordinary/alias", "/proof/session/high_level_log.jsonl", sessions) {
 			t.Errorf("%s: a resolved ledger lost its actual basename", classify.name)
+		}
+		if classify.call("/ordinary/alias", "/proof/session/high_level_log.md", sessions) {
+			t.Errorf("%s: the obsolete log basename remains a recognized alias", classify.name)
 		}
 	}
 }
@@ -5395,8 +5398,12 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{"eci_active", "high_level_log.md", "high_level_log.anchor"} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte("fixture\n"), 0o600); err != nil {
+		for _, name := range []string{"eci_active", "high_level_log.jsonl", "high_level_log.anchor"} {
+			contents := []byte("fixture\n")
+			if name == "high_level_log.jsonl" {
+				contents = []byte("{\"event\":\"decision\",\"summary\":\"entry\"}\n")
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), contents, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -5435,7 +5442,7 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 							Marker: MarkerActive, ActiveSession: "session", Command: command,
 							ActiveMarkers: []string{marker, filepath.Join(foreign, "eci_active")}})
 					}
-				for _, note := range []string{"instructions.md", "project-understanding.md", "latest-status-report.md"} {
+				for _, note := range []string{"instructions.md", "project-understanding.yaml", "latest-status-report.md"} {
 					result := classify("touch " + filepath.Join(session, note))
 					if result.Decision != DecisionDefer || result.Diagnostic != nil {
 						t.Errorf("coordination note %s: got %s %#v, want ordinary provider route", note, result.Decision, result.Diagnostic)
@@ -5528,8 +5535,8 @@ func TestResolvedOutputTargetEffects(t *testing.T) {
 					command string
 					code    DiagnosticCode
 				}{
-					{"sort -o " + filepath.Join(session, "high_level_log.md") + " < " + ordinary, CodeLedgerRewriteDenied},
-					{"sort -o " + filepath.Join(foreign, "high_level_log.md") + " < " + ordinary, CodeLedgerForeignSessionDenied},
+					{"sort -o " + filepath.Join(session, "high_level_log.jsonl") + " < " + ordinary, CodeLedgerRewriteDenied},
+					{"sort -o " + filepath.Join(foreign, "high_level_log.jsonl") + " < " + ordinary, CodeLedgerForeignSessionDenied},
 					{"diff --to-file=" + ordinary + " " + ordinary + " > " + marker, CodePlanLiveControlDenied},
 					{"grep -o " + ordinary + " " + ordinary + " > " + marker, CodePlanLiveControlDenied},
 					{"tool --output " + filepath.Join(session, "ordinary-output") + " > " + marker, CodePlanLiveControlDenied},
@@ -8301,4 +8308,92 @@ func containsBytes(haystack []byte, needle []byte) bool {
 		}
 	}
 	return false
+}
+
+// TestProtectedHookRootsFromExternalExecutable keeps temporary executables from protecting ordinary HOME task hooks.
+//
+// Example: a planner under HOME/tmp/task/codex still protects HOME/.codex, not HOME/hooks.
+func TestProtectedHookRootsFromExternalExecutable(t *testing.T) {
+	if os.Getenv("ECI_TEST_EXTERNAL_HOOK_ROOTS") == "1" {
+		home := os.Getenv("HOME")
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		artifactParent := filepath.Clean(filepath.Join(filepath.Dir(executable), "..", "..", ".."))
+		ordinary := filepath.Join(artifactParent, "hooks", "validate-bash.sh")
+		wantProtected := os.Getenv("ECI_TEST_SOURCE_HOOK_ROOTS") == "1"
+		if resolved, protected := protectedHookModeTargetPath(home, ordinary); protected != wantProtected {
+			t.Errorf("ordinary task hook %q unexpectedly protected as %q", ordinary, resolved)
+		}
+		for _, root := range []string{filepath.Join(home, ".codex"), providerHome(ProviderKimi)} {
+			hook := filepath.Join(root, "hooks", "validate-bash.sh")
+			if _, protected := protectedHookModeTargetPath(home, hook); !protected {
+				t.Errorf("provider hook %q lost protection", hook)
+			}
+		}
+		request := activeWorker("chmod 644 " + ordinary)
+		request.CWD = home
+		wantDecision := DecisionAllow
+		if wantProtected {
+			wantDecision = DecisionDeny
+		}
+		if result := Classify(request); result.Decision != wantDecision {
+			t.Errorf("ordinary hook chmod decision=%q diagnostic=%#v, want allow", result.Decision, result.Diagnostic)
+		}
+		return
+	}
+
+	root, err := os.MkdirTemp(filepath.Join(os.Getenv("HOME"), "tmp"), "hook-root-executable-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(root)) })
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	data, err := os.ReadFile(executable)
+	require.NoError(t, err)
+	dir := filepath.Join(root, "codex")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	child := filepath.Join(dir, "eci-command-plan")
+	require.NoError(t, os.WriteFile(child, data, 0o700))
+	command := exec.Command(child, "-test.run=^TestProtectedHookRootsFromExternalExecutable$", "-test.v")
+	command.Env = append(os.Environ(), "ECI_TEST_EXTERNAL_HOOK_ROOTS=1")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	t.Logf("external executable child: %s", output)
+}
+
+// TestProtectedHookRootsFromSourceExecutable retains the existing source-module provider fallback.
+//
+// Example: provider/hooks/lib/eci-command-plan-go/planner protects provider/hooks.
+func TestProtectedHookRootsFromSourceExecutable(t *testing.T) {
+	root, err := os.MkdirTemp(filepath.Join(os.Getenv("HOME"), "tmp"), "hook-root-source-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(root)) })
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	data, err := os.ReadFile(executable)
+	require.NoError(t, err)
+	dir := filepath.Join(root, "hooks", "lib", "eci-command-plan-go")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	child := filepath.Join(dir, "eci-command-plan")
+	require.NoError(t, os.WriteFile(child, data, 0o700))
+	command := exec.Command(child, "-test.run=^TestProtectedHookRootsFromExternalExecutable$", "-test.v")
+	command.Env = append(os.Environ(), "ECI_TEST_EXTERNAL_HOOK_ROOTS=1", "ECI_TEST_SOURCE_HOOK_ROOTS=1")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	t.Logf("source-layout executable child: %s", output)
+}
+
+// TestUnderstandingControlBasename recognizes only the canonical YAML snapshot.
+//
+// Example: an old Markdown snapshot name remains an ordinary file.
+func TestUnderstandingControlBasename(t *testing.T) {
+	for _, name := range []string{"project-understanding.yaml", "project-understanding.yaml.tmp"} {
+		if !isECIControlBasename(name) {
+			t.Errorf("canonical control %q was not recognized", name)
+		}
+	}
+	for _, name := range []string{"project-understanding.md", "project-understanding.json", "project-understanding.yml", ".understanding-snapshot.ABCDEF"} {
+		if isECIControlBasename(name) {
+			t.Errorf("ordinary file %q inherited control identity", name)
+		}
+	}
 }

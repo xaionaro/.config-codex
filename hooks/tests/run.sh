@@ -4353,13 +4353,13 @@ test_eci_gate_allows_current_session_high_level_log_and_anchor() {
   local proof_root input out log anchor
   proof_root="$(fresh_proof_root eci-anchor-edit)"
   mkdir -p "$proof_root/t00-session"
-  log="$proof_root/t00-session/high_level_log.md"
+  log="$proof_root/t00-session/high_level_log.jsonl"
   anchor="$proof_root/t00-session/high_level_log.anchor"
-  printf '%s\n' 'coordinator ledger update' >"$log"
+  printf '%s\n' '{"event":"decision","summary":"coordinator ledger update"}' >"$log"
   printf '%s\n' 'coordinator anchor update' >"$anchor"
   input="$TMP_ROOT/eci-anchor-edit.json"
   jq -n --arg cwd "$ROOT" --arg path "$log" \
-    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"coordinator ledger update"}}' >"$input"
+    '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"{\"event\":\"decision\",\"summary\":\"coordinator ledger update\"}\n"}}' >"$input"
   out="$TMP_ROOT/eci-anchor-edit.out"
 
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
@@ -4567,7 +4567,7 @@ test_validate_edit_write_allows_notebookedit_same_sid_proof() {
   proof_root="$(fresh_proof_root edit-write-notebook-same)"
   mkdir -p "$proof_root/t00-session"
   input="$TMP_ROOT/edit-write-notebook-same.json"
-  jq -n --arg fp "$proof_root/t00-session/project-understanding.md" \
+  jq -n --arg fp "$proof_root/t00-session/project-understanding.yaml" \
     '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"x"}}' >"$input"
   out="$TMP_ROOT/edit-write-notebook-same.out"
 
@@ -4582,8 +4582,8 @@ test_validate_edit_write_allows_aliased_proof_dir() {
   mkdir -p "$alias_dir"
   printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
   input="$TMP_ROOT/edit-write-alias.json"
-  jq -n --arg fp "$alias_dir/project-understanding.md" \
-    '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"x"}}' >"$input"
+  jq -n --arg fp "$alias_dir/project-understanding.yaml" \
+    '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"schema: project-understanding/v1\nsections:\n  context:\n    title: \"Context\"\nrecords: {}\n"}}' >"$input"
   out="$TMP_ROOT/edit-write-alias.out"
 
   run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
@@ -4598,7 +4598,7 @@ test_validate_edit_write_blocks_symlinked_alias_dir() {
   alias_dir="$proof_root/mission-alias"
   ln -s "$alias_target" "$alias_dir"
   input="$TMP_ROOT/edit-write-symlink-alias.json"
-  jq -n --arg fp "$alias_dir/project-understanding.md" \
+  jq -n --arg fp "$alias_dir/project-understanding.yaml" \
     '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"x"}}' >"$input"
   out="$TMP_ROOT/edit-write-symlink-alias.out"
 
@@ -4629,7 +4629,7 @@ test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
   proof_root="$(fresh_proof_root edit-write-notebook-other)"
   mkdir -p "$proof_root/other-session"
   input="$TMP_ROOT/edit-write-notebook-other.json"
-  jq -n --arg fp "$proof_root/other-session/project-understanding.md" \
+  jq -n --arg fp "$proof_root/other-session/project-understanding.yaml" \
     '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"x"}}' >"$input"
   out="$TMP_ROOT/edit-write-notebook-other.out"
 
@@ -4644,9 +4644,9 @@ test_validate_apply_patch_allows_aliased_proof_dir() {
   alias_dir="$proof_root/mission-alias"
   mkdir -p "$alias_dir"
   printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
-  patch_path="$alias_dir/project-understanding.md"
-  printf '%s\n' 'existing ledger' >"$patch_path"
-  patch_text="$(printf '*** Begin Patch\n*** Update File: %s\n@@\n-existing ledger\n+updated ledger\n*** End Patch\n' "$patch_path")"
+  patch_path="$alias_dir/project-understanding.yaml"
+  printf '%s\n' 'schema: project-understanding/v1' 'sections:' '  context:' '    title: "Context"' 'records: {}' >"$patch_path"
+  patch_text="$(printf '*** Begin Patch\n*** Update File: %s\n@@\n-    title: "Context"\n+    title: "Current context"\n*** End Patch\n' "$patch_path")"
   input="$TMP_ROOT/apply-patch-alias.json"
   jq -n --arg patch "$patch_text" \
     '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
@@ -4663,7 +4663,7 @@ test_validate_apply_patch_blocks_symlinked_alias_dir() {
   mkdir -p "$alias_target"
   alias_dir="$proof_root/mission-alias"
   ln -s "$alias_target" "$alias_dir"
-  patch_path="$alias_dir/project-understanding.md"
+  patch_path="$alias_dir/project-understanding.yaml"
   patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
   input="$TMP_ROOT/apply-patch-symlink-alias.json"
   jq -n --arg patch "$patch_text" \
@@ -4697,7 +4697,7 @@ test_validate_apply_patch_blocks_other_sid_proof() {
   local proof_root input out patch_path patch_text
   proof_root="$(fresh_proof_root apply-patch-other-session)"
   mkdir -p "$proof_root/other-session"
-  patch_path="$proof_root/other-session/project-understanding.md"
+  patch_path="$proof_root/other-session/project-understanding.yaml"
   patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
   input="$TMP_ROOT/apply-patch-other-session.json"
   jq -n --arg patch "$patch_text" \
@@ -4715,7 +4715,7 @@ test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker() {
   uuid_dir="$proof_root/019e55e6-6d85-7181-b197-43aa5708609b"
   mkdir -p "$uuid_dir"
   printf 'session_id: t00-session\n' >"$uuid_dir/.codex-proof-alias"
-  patch_path="$uuid_dir/project-understanding.md"
+  patch_path="$uuid_dir/project-understanding.yaml"
   patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
   input="$TMP_ROOT/apply-patch-uuid-alias.json"
   jq -n --arg patch "$patch_text" \
@@ -4729,8 +4729,8 @@ test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker() {
 
 ledger_basenames() {
   printf '%s\n' \
-    "project-understanding.md" \
-    "high_level_log.md" \
+    "project-understanding.yaml" \
+    "high_level_log.jsonl" \
     "high_level_log.anchor" \
     "latest-status-report.md" \
     "eci_active" \
@@ -4784,6 +4784,10 @@ write_direct_ledger_input() {
   local tool="$1"
   local path="$2"
   local output="$3"
+  local content="new"
+  if [ "${path##*/}" = project-understanding.yaml ]; then
+    content=$'schema: project-understanding/v1\nsections:\n  context:\n    title: "Context"\nrecords: {}\n'
+  fi
 
   case "$tool" in
     Edit)
@@ -4791,8 +4795,8 @@ write_direct_ledger_input() {
         '{session_id:"t00-session",tool_name:"Edit",tool_input:{file_path:$fp,old_string:"old",new_string:"new"}}' >"$output"
       ;;
     Write)
-      jq -n --arg fp "$path" \
-        '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"new"}}' >"$output"
+      jq -n --arg fp "$path" --arg content "$content" \
+        '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:$content}}' >"$output"
       ;;
     MultiEdit)
       jq -n --arg fp "$path" \

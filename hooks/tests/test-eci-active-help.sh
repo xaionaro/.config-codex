@@ -796,7 +796,7 @@ assert_stale_runtime_receipt_deadlock_policy() {
   assert_receipt_deadlock_escape_admitted stale-maintain-planner '"$HOME/.codex/bin/eci-active" maintain-planner'
   assert_stale_receipt_admits_ordinary_lifecycle stale-status '"$HOME/.codex/bin/eci-active" status'
   assert_stale_receipt_admits_ordinary_lifecycle stale-ledger-append \
-    '"$HOME/.codex/bin/eci-active" ledger-append receipt-deadlock-regression'
+    '"$HOME/.codex/bin/eci-active" ledger-append --json "{\"event\":\"decision\",\"summary\":\"receipt-deadlock-regression\"}"'
   assert_role_labeled_sync_runtime_is_not_role_denied
   assert_delegated_recovery_is_role_denied
 
@@ -935,12 +935,12 @@ run_fixture_ledger_append() {
     cd "$ROOT"
     HOME="$fixture_home" CODEX_HOME="$fixture_codex" CODEX_ROLE=coordinator \
       CODEX_SESSION_ID=t00-help CODEX_PROOF_ROOT="$proof_root" \
-      "$fixture_eci" ledger-append "$entry"
+      "$fixture_eci" ledger-append --json "$(jq -cn --arg summary "$entry" '{event:"decision",summary:$summary}')"
   ) >"$output" 2>"$stderr_output"
 }
 
 assert_ledger_append_bootstraps_empty_log_and_reconciles_regular_history() {
-  local log="$proof_root/t00-help/high_level_log.md"
+  local log="$proof_root/t00-help/high_level_log.jsonl"
   local anchor="$proof_root/t00-help/high_level_log.anchor"
   local foreign="$TMP_ROOT/ledger-foreign-log"
   local log_before="$TMP_ROOT/ledger-log.before"
@@ -966,7 +966,7 @@ assert_ledger_append_bootstraps_empty_log_and_reconciles_regular_history() {
     printf '%s\n' 'ledger bootstrap did not create regular log and anchor files' >&2
     exit 1
   }
-  grep -Eq '^## [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z - empty-log-bootstrap-regression$' "$log" || {
+  jq -e '.schema == "eci-high-level-log/v1" and .event == "decision" and .summary == "empty-log-bootstrap-regression" and (.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' "$log" >/dev/null || {
     printf '%s\n' 'ledger bootstrap did not append the bounded entry at EOF' >&2
     cat -- "$log" >&2
     exit 1
@@ -994,7 +994,7 @@ assert_ledger_append_bootstraps_empty_log_and_reconciles_regular_history() {
   }
 
   rm -f -- "$log"
-  printf '%s\n' existing >"$log"
+  printf '%s\n' '{"event":"decision","summary":"existing"}' >"$log"
   printf '%s\n' malformed-anchor >"$anchor"
   if ! run_fixture_ledger_append 'malformed-anchor-reconciles'; then
     printf '%s\n' 'ledger append did not reconcile a malformed regular anchor:' >&2

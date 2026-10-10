@@ -2652,9 +2652,9 @@ assert_forecast_target_history_ledger_contract() {
   require_forecast_target_history_text "$source" 'append-only rows' \
     'Append only: never edit, delete, reorder, or reuse a row.' "$input"
   require_forecast_target_history_text "$source" 'none-to-A transition' \
-    '| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row with reason. |' "$input"
+    '| none → A | Append a material `high_level_log.jsonl` entry naming A, why, and evidence. | Append A row with reason. |' "$input"
   require_forecast_target_history_text "$source" 'A-to-B transition' \
-    '| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row with reason. |' "$input"
+    '| A → B | Append a material `high_level_log.jsonl` entry naming prior A, new B, why, and evidence. | Append B row with reason. |' "$input"
   require_forecast_target_history_text "$source" 'A-to-A reaffirmation rule' \
     '| A → A | No high-level-log entry or history row for mere reaffirmation. | No row. |' "$input"
   require_forecast_target_history_text "$source" 'close row rule' \
@@ -2666,7 +2666,7 @@ assert_forecast_target_history_ledger_contract() {
   require_forecast_target_history_text "$source" 'not a required session record' \
     'It is not a required session record or work prerequisite.' "$input"
   forbid_forecast_target_history_text "$source" 'direct audit-artifact gate' \
-    'must verify `forecast-target-history.tsv`, `high_level_log.md`, hash, receipt, or artifact before ordinary work.' "$input"
+    'must verify `forecast-target-history.tsv`, `high_level_log.jsonl`, hash, receipt, or artifact before ordinary work.' "$input"
   forbid_forecast_target_history_text "$source" 'direct reason gate' \
     'must verify the audit `reason` before ordinary work.' "$input"
 }
@@ -2677,7 +2677,7 @@ assert_forecast_target_history_coordinator_contract() {
   require_forecast_target_history_text "$source" 'ledger audit-contract pointer' \
     'Use the [`forecast-target-history.tsv` audit contract](../../context-ledger/SKILL.md#forecast-target-history) for every root-target transition. It is audit-only and never a gate.' "$input"
   forbid_forecast_target_history_text "$source" 'direct audit-artifact gate' \
-    'must verify `forecast-target-history.tsv`, `high_level_log.md`, hash, receipt, or artifact before ordinary work.' "$input"
+    'must verify `forecast-target-history.tsv`, `high_level_log.jsonl`, hash, receipt, or artifact before ordinary work.' "$input"
   forbid_forecast_target_history_text "$source" 'direct reason gate' \
     'must verify the audit `reason` before ordinary work.' "$input"
 }
@@ -2703,18 +2703,18 @@ assert_forecast_target_history_contract_mutations() {
   ledger="$(<"$LEDGER")"
   coordinator="$(<"$COORDINATOR")"
   header=$'added_utc\troot_task_id\tnew_target_utc\treason'
-  audit_artifact_gate='must verify `forecast-target-history.tsv`, `high_level_log.md`, hash, receipt, or artifact before ordinary work.'
+  audit_artifact_gate='must verify `forecast-target-history.tsv`, `high_level_log.jsonl`, hash, receipt, or artifact before ordinary work.'
   reason_gate='must verify the audit `reason` before ordinary work.'
 
   mutation="${ledger/"$header"/$'added_utc\troot_task_id\tnew_target_utc'}"
   [ "$mutation" != "$ledger" ] || fail 'forecast target-history schema mutation did not alter its fixture'
   assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'schema' "$mutation"
 
-  mutation="${ledger/'| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row with reason. |'/'| none → A | Append a material `high_level_log.md` entry naming A, why, and evidence. | Append A row. |'}"
+  mutation="${ledger/'| none → A | Append a material `high_level_log.jsonl` entry naming A, why, and evidence. | Append A row with reason. |'/'| none → A | Append a material `high_level_log.jsonl` entry naming A, why, and evidence. | Append A row. |'}"
   [ "$mutation" != "$ledger" ] || fail 'forecast target-history none-to-A reason mutation did not alter its fixture'
   assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'none-to-A reason' "$mutation"
 
-  mutation="${ledger/'| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row with reason. |'/'| A → B | Append a material `high_level_log.md` entry naming prior A, new B, why, and evidence. | Append B row. |'}"
+  mutation="${ledger/'| A → B | Append a material `high_level_log.jsonl` entry naming prior A, new B, why, and evidence. | Append B row with reason. |'/'| A → B | Append a material `high_level_log.jsonl` entry naming prior A, new B, why, and evidence. | Append B row. |'}"
   [ "$mutation" != "$ledger" ] || fail 'forecast target-history A-to-B reason mutation did not alter its fixture'
   assert_forecast_target_history_mutation_is_rejected assert_forecast_target_history_ledger_contract "$LEDGER" 'A-to-B reason' "$mutation"
 
@@ -2808,7 +2808,11 @@ assert_lane_forecast_contract() {
     require_text "$file" "$completed"
     forbid_generic_forecast_recalibration_placeholder "$file" '<prior deadline>'
     forbid_generic_forecast_recalibration_placeholder "$file" '<current deadline>'
-    require_pattern "$file" 'closed lanes record completion' "$closed_lane_pattern"
+    if [ "$file" = "$LEDGER" ]; then
+      require_pattern "$file" 'closed forecasted work records actual completion' 'closed[[:space:]]+forecasted[[:space:]]+lane/root.*`completed_at`[[:space:]]+UTC.*inactive[[:space:]]+canonical[[:space:]]+forecast.*Completed: <UTC ISO8601>; no active forecast deadline'
+    else
+      require_pattern "$file" 'closed lanes record completion' "$closed_lane_pattern"
+    fi
     require_pattern "$file" 'closed lanes do not revive forecasts' "$closed_lane_no_forecast_pattern"
     forbid_legacy_duration_forecast_form "$file" 'Remaining forecast'
     forbid_legacy_duration_forecast_form "$file" 'remaining range'
@@ -2834,21 +2838,21 @@ assert_lane_forecast_contract() {
   require_pattern "$STATUS_REPORT" 'status checklist covers unrepresented active roots' 'Root[[:space:]]+coverage[[:space:]]*\|[[:space:]]+In[[:space:]]+a[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update,[[:space:]]+each[[:space:]]+unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
   require_text "$LEDGER" 'Create `forecasts.md` once when the first forecast applies, then update current records in place.'
   require_text "$LEDGER" 'Store every current lane/root forecast in `forecasts.md`: named forecast outcome and status, current target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its range and endpoint.'
-  require_text "$LEDGER" 'Keep current project/task facts in `project-understanding.md` and current forecast values in `forecasts.md`.'
+  require_text "$LEDGER" 'Keep current project/task facts in `project-understanding.yaml` and current forecast values in `forecasts.md`.'
   require_text "$LEDGER" 'The ledger may link to forecast records but never copy their targets, baselines, recalibrations, base-case/downside estimates, scenario ranges, forecast statuses, or endpoints.'
-  require_text "$LEDGER" 'A forecast-only update does not require rewriting `project-understanding.md`.'
-  require_text "$LEDGER" 'For every material forecast update, edit `forecasts.md` in place, append to `high_level_log.md`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.md`.'
+  require_text "$LEDGER" 'A forecast-only update does not require rewriting `project-understanding.yaml`.'
+  require_text "$LEDGER" 'For every material forecast update, edit `forecasts.md` in place, append to `high_level_log.jsonl`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.md`.'
   require_text "$LEDGER" '`latest-status-report.md` projects these values using `writing-status-reports`.'
   require_text "$LEDGER" '- The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.md` record.'
-  forbid_text "$LEDGER" 'Under `Progress`, store these fields in structured form in `project-understanding.md`.'
+  forbid_text "$LEDGER" 'Under `Progress`, store these fields in structured form in `project-understanding.yaml`.'
   forbid_flattened_pattern "$LEDGER" 'scenario endpoint/range stored in ledger' '(^|[-*][[:space:]]+|[[:space:]][-*][[:space:]]+|[.!?][[:space:]]+)Keep[[:space:]]+each[[:space:]]+scenario[[:punct:]]s[[:space:]]+endpoint/range[[:space:]]+in[[:space:]]+the[[:space:]]+ledger\.'
   require_text "$COORDINATOR" '`forecasts.md` owns current scenario selection and stored endpoints.'
   require_pattern "$LEDGER" 'invalid-ledger rule covers unrepresented active roots' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome[[:space:]]+omitted[[:space:]]+by[[:space:]]+lane[[:space:]]+reports'
   require_pattern "$STATUS_REPORT" 'status forecast checklist' 'Lane[[:space:]]+forecasts[[:space:]]*\|[[:space:]]+A[[:space:]]+material[[:space:]]+changed-state[[:space:]]+update[[:space:]]+names[[:space:]]+each[[:space:]]+active[[:space:]]+lane.?s[[:space:]]+milestone[[:space:]]+and[[:space:]]+one[[:space:]]+named-outcome[[:space:]]+forecast'
-  require_pattern "$LEDGER" 'invalid ledger detects missing active-lane forecast links' 'active[[:space:]]+lane.*lacks.*rendered[[:space:]]+link.*current[[:space:]]+forecast[[:space:]]+record[[:space:]]+in[[:space:]]+`forecasts\.md`'
+  require_pattern "$LEDGER" 'invalid ledger detects missing active-lane forecast locators' 'active[[:space:]]+lane.*lacks.*`forecast_ref`[[:space:]]+locator.*current[[:space:]]+forecast[[:space:]]+record[[:space:]]+in[[:space:]]+`forecasts\.md`'
   require_pattern "$LEDGER" 'invalid ledger detects missing active-root forecasts' 'unrepresented[[:space:]]+active[[:space:]]+root-task[[:space:]]+outcome.*lacks.*full[[:space:]]+outcome[[:space:]]+and[[:space:]]+target[[:space:]]+record[[:space:]]+in[[:space:]]+`forecasts\.md`'
-  require_pattern "$LEDGER" 'invalid ledger detects stale changed forecasts' 'changed[[:space:]]+lane/root.*current[[:space:]]+canonical[[:space:]]+line.*recalibration'
-  require_pattern "$LEDGER" 'invalid ledger detects active closed-lane forecasts' '`CLOSED`[[:space:]]+lane.*forecast[[:space:]]+remains[[:space:]]+active'
+  require_pattern "$LEDGER" 'invalid ledger detects stale changed forecasts' 'changed[[:space:]]+lane/root.*restated[[:space:]]+canonical[[:space:]]+line.*recalibration'
+  require_pattern "$LEDGER" 'invalid ledger detects active completed-work forecasts' 'Completed[[:space:]]+forecasted[[:space:]]+lane/root[[:space:]]+work.*`completed_at`[[:space:]]+UTC.*forecast[[:space:]]+remains[[:space:]]+active'
 }
 
 assert_lineage_context_contract() {
@@ -2865,6 +2869,43 @@ assert_lineage_context_contract() {
   forbid_text "$LINEAGE" 'any missing/stale pair/hash fails closed.'
   forbid_pattern "$LINEAGE" 'lineage.*(must|shall|needs? to).*(resolve|validate|admit).*(work|status|report|assignment)'
   forbid_pattern "$LINEAGE" '(hash|receipt|registry).*(must|shall|needs? to).*(work|status|report|assignment)'
+}
+
+assert_yaml_understanding_contract() {
+  require_text "$LEDGER" 'project-understanding.yaml'
+  require_text "$LEDGER" 'project-understanding/v1'
+  for field in sections records section type data evidence links forecast_ref completed_at; do
+    require_text "$LEDGER" "$field"
+  done
+  for record_type in requirement outcome scope work unknown decision guard verification; do
+    require_text "$LEDGER" "| $record_type |"
+  done
+  require_text "$LEDGER" '| context, constraint |'
+  require_text "$LEDGER" '.understanding-snapshot.XXXXXX'
+  require_text "$LEDGER" 'stringKeys:true'
+  require_text "$LEDGER" 'Review the whole snapshot; affected records bound the native patch'
+  require_pattern "$LEDGER" 'native edits preserve the whole document' 'never[[:space:]]+serialize[[:space:]]+the[[:space:]]+whole[[:space:]]+document[[:space:]]+merely'
+  require_pattern "$LEDGER" 'publication copies latest state' 'copy[[:space:]]+the[[:space:]]+latest[[:space:]]+snapshot[[:space:]]+to[[:space:]]+an[[:space:]]+owned'
+  require_text "$LEDGER" 'set -o pipefail'
+  forbid_text "$LEDGER" 'project-understanding.md'
+  forbid_text "$LEDGER" 'Put every fact under a heading whose subject covers it.'
+  forbid_text "$LEDGER" 'Include a rendered, unfenced Markdown example'
+}
+
+assert_yaml_understanding_contract_mutation() {
+  local source mutation output
+  source="$(<"$LEDGER")"
+  mutation="${source//project-understanding\/v1/obsolete-schema}"
+  [ "$mutation" != "$source" ] || fail 'YAML schema mutation did not alter its fixture'
+  if output="$( (
+    exec 9< <(printf '%s\n' "$mutation")
+    LEDGER=/dev/fd/9
+    assert_yaml_understanding_contract
+  ) 2>&1)"; then
+    fail 'YAML canonical schema omission was admitted'
+  fi
+  [[ "$output" == *'missing: project-understanding/v1'* ]] ||
+    fail "unexpected YAML schema mutation failure: $output"
 }
 
 require_primary_scope_fidelity_text() {
@@ -3427,6 +3468,14 @@ assert_scope_fidelity_pressure_mutations_are_rejected
 assert_lane_forecast_contract
 assert_source_forecast_mutations_are_rejected
 assert_lineage_context_contract
+assert_yaml_understanding_contract
+assert_yaml_understanding_contract_mutation
+require_text "$LEDGER" 'All new canonical entries are one compact JSON object per line'
+require_text "$LEDGER" 'Use exactly `ledger-append --json'
+require_text "$LEDGER" 'Extract one worker'
+forbid_text "$LEDGER" 'high_level_log.md'
+forbid_text "$LEDGER" 'fromjson?'
+forbid_text "$LEDGER" 'ledger-append [--json]'
 assert_pause_resume_closure_contract
 assert_least_restriction_contract
 assert_eci_ordinary_role_split

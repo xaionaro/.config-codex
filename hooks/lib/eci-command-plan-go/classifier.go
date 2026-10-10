@@ -581,8 +581,8 @@ var eciControlBasenames = [...]string{
 	"eci-commit-admitted", "eci-user-closed.ledger", "proof.md",
 	"eci-aggregate", "eci-aggregate-plan.json", "eci-aggregate-teardown-complete",
 	"instructions.md", "stop_timestamps", "stop_loop_state",
-	"disengage.md", "user-closed.md", "project-understanding.md",
-	"high_level_log.md", "latest-status-report.md", "high_level_log.anchor",
+	"disengage.md", "user-closed.md", "project-understanding.yaml",
+	"high_level_log.jsonl", "latest-status-report.md", "high_level_log.anchor",
 }
 
 type planError struct {
@@ -829,10 +829,10 @@ func codexLifecycleDispatcherDiagnostic(command string, word lifecycleLexicalWor
 // Example: a Codex denial names the literal current-home lifecycle executable.
 func ledgerAppendRemediation(provider Provider) string {
 	if provider == ProviderCodex {
-		return `use "$HOME/.codex/bin/eci-active" ledger-append`
+		return `use "$HOME/.codex/bin/eci-active" ledger-append --json`
 	}
 	// Kimi does not share Codex's literal current-home lifecycle grammar.
-	return "use eci-active ledger-append"
+	return "use eci-active ledger-append --json"
 }
 
 // reviewedScriptTraceTopology recognizes exactly the coordinator diagnostic
@@ -4666,7 +4666,9 @@ func inspectProofPathOwnershipExact(
 			}
 			if controlPath != "" {
 				if isCanonicalWorkerHandoffPath(controlPath, request.ActiveMarkers) &&
-					filepath.Base(controlPath) != "high_level_log.md" {
+					filepath.Base(controlPath) != "high_level_log.jsonl" {
+					// TODO: preserve foreign handoff inode ownership when provider
+					// callbacks inspect an ordinary hardlink's pathname only.
 					deferToProvider = true
 					continue
 				}
@@ -4774,8 +4776,8 @@ func inspectProofPathOwnershipExact(
 // inspectCurrentLedgerRedirect classifies one resolved output redirect against
 // the selected proof session's ledger artifacts and their concrete inode.
 //
-// Example: an EOF append to current/high_level_log.md is handled and allowed,
-// while a sibling session's high_level_log.md receives a foreign-session denial.
+// Example: an EOF append to current/high_level_log.jsonl is handled and allowed,
+// while a sibling session's high_level_log.jsonl receives a foreign-session denial.
 func inspectCurrentLedgerRedirect(
 	redirect outputRedirect,
 	selectedSession proofSession,
@@ -4807,7 +4809,7 @@ func inspectCurrentLedgerRedirect(
 				segmentIndex,
 				argumentIndex,
 				redirect.target,
-				"write only the selected session's high_level_log.md",
+				"write only the selected session's high_level_log.jsonl",
 				"foreign-ledger-session",
 			)
 			diagnostic.Path = lexical
@@ -4840,7 +4842,7 @@ func inspectCurrentLedgerRedirect(
 				segmentIndex,
 				argumentIndex,
 				redirect.target,
-				"write only the selected session's high_level_log.md",
+				"write only the selected session's high_level_log.jsonl",
 				"foreign-ledger-session",
 			)
 			diagnostic.Path = lexical
@@ -4848,7 +4850,7 @@ func inspectCurrentLedgerRedirect(
 		}
 	}
 
-	selectedLog, err := resolvePathWithMissingSuffix(filepath.Join(selectedSession.lexical, "high_level_log.md"))
+	selectedLog, err := resolvePathWithMissingSuffix(filepath.Join(selectedSession.lexical, "high_level_log.jsonl"))
 	if err != nil {
 		return false, nil
 	}
@@ -4858,7 +4860,7 @@ func inspectCurrentLedgerRedirect(
 			return false, nil
 		}
 		artifactSession = selectedLexicalName
-		artifact = "high_level_log.md"
+		artifact = "high_level_log.jsonl"
 	}
 	if artifactSession != selectedLexicalName {
 		diagnostic := diagnosticForToken(
@@ -4867,7 +4869,7 @@ func inspectCurrentLedgerRedirect(
 			segmentIndex,
 			argumentIndex,
 			redirect.target,
-			"write only the selected session's high_level_log.md",
+			"write only the selected session's high_level_log.jsonl",
 			"foreign-ledger-session",
 		)
 		diagnostic.Path = lexical
@@ -4886,7 +4888,7 @@ func inspectCurrentLedgerRedirect(
 		diagnostic.Path = lexical
 		return true, diagnostic
 	}
-	if artifact != "high_level_log.md" {
+	if artifact != "high_level_log.jsonl" {
 		return false, nil
 	}
 	if redirect.effect != outputRedirectAppend {
@@ -4896,7 +4898,7 @@ func inspectCurrentLedgerRedirect(
 			segmentIndex,
 			argumentIndex,
 			redirect.target,
-			"append at EOF to the selected session's high_level_log.md",
+			"append at EOF to the selected session's high_level_log.jsonl",
 			"current-ledger-rewrite",
 		)
 		diagnostic.Path = lexical
@@ -4913,7 +4915,7 @@ func inspectCurrentLedgerRedirect(
 			segmentIndex,
 			argumentIndex,
 			redirect.target,
-			"append only to the existing regular selected-session high_level_log.md",
+			"append only to the existing regular selected-session high_level_log.jsonl",
 			"current-ledger-target",
 		)
 		diagnostic.Path = lexical
@@ -4931,7 +4933,7 @@ func inspectCurrentLedgerRedirect(
 			segmentIndex,
 			argumentIndex,
 			redirect.target,
-			"restore a uniquely linked selected-session high_level_log.md before appending",
+			"restore a uniquely linked selected-session high_level_log.jsonl before appending",
 			"ledger-shared-inode",
 		)
 		diagnostic.Path = lexical
@@ -4943,15 +4945,15 @@ func inspectCurrentLedgerRedirect(
 // ledgerArtifactByInode identifies a selected or sibling ledger artifact by
 // concrete filesystem identity rather than by its caller-provided pathname.
 //
-// Example: an external hardlink to current/high_level_log.md returns the
-// selected session and high_level_log.md artifact.
+// Example: an external hardlink to current/high_level_log.jsonl returns the
+// selected session and high_level_log.jsonl artifact.
 func ledgerArtifactByInode(selectedSession proofSession, target string) (string, string, fs.FileInfo, bool) {
 	targetInfo, err := os.Stat(target)
 	if err != nil {
 		return "", "", nil, false
 	}
 	selectedName := filepath.Base(selectedSession.lexical)
-	for _, artifact := range []string{"high_level_log.md", "high_level_log.anchor"} {
+	for _, artifact := range []string{"high_level_log.jsonl", "high_level_log.anchor"} {
 		candidateInfo, candidateErr := os.Stat(filepath.Join(selectedSession.lexical, artifact))
 		if candidateErr == nil && os.SameFile(targetInfo, candidateInfo) {
 			return selectedName, artifact, targetInfo, true
@@ -4967,7 +4969,7 @@ func ledgerArtifactByInode(selectedSession proofSession, target string) (string,
 		if entry.Name() == selectedName || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
-		for _, artifact := range []string{"high_level_log.md", "high_level_log.anchor"} {
+		for _, artifact := range []string{"high_level_log.jsonl", "high_level_log.anchor"} {
 			candidateInfo, candidateErr := os.Stat(filepath.Join(proofRoot, entry.Name(), artifact))
 			if candidateErr == nil && os.SameFile(targetInfo, candidateInfo) {
 				return entry.Name(), artifact, targetInfo, true
@@ -4980,7 +4982,7 @@ func ledgerArtifactByInode(selectedSession proofSession, target string) (string,
 // ledgerSessionArtifact identifies a direct session ledger artifact under one
 // proof root without treating nested or similarly named paths as ledger state.
 //
-// Example: proof/session/high_level_log.md returns session and high_level_log.md.
+// Example: proof/session/high_level_log.jsonl returns session and high_level_log.jsonl.
 func ledgerSessionArtifact(path string, proofRoot string) (string, string, bool) {
 	relative, err := filepath.Rel(proofRoot, path)
 	if err != nil || relative == "." || relative == ".." ||
@@ -4992,7 +4994,7 @@ func ledgerSessionArtifact(path string, proofRoot string) (string, string, bool)
 		return "", "", false
 	}
 	switch parts[1] {
-	case "high_level_log.md", "high_level_log.anchor":
+	case "high_level_log.jsonl", "high_level_log.anchor":
 		return parts[0], parts[1], true
 	default:
 		return "", "", false
@@ -5202,7 +5204,7 @@ func isAppendOnlyLedgerPath(
 		path = lexical
 	}
 	base := filepath.Base(path)
-	if base != "high_level_log.md" && base != "high_level_log.anchor" {
+	if base != "high_level_log.jsonl" && base != "high_level_log.anchor" {
 		return false
 	}
 	for _, session := range sessions {
@@ -6896,7 +6898,7 @@ func activeControlHardlinkPath(path string, index []activeControlFile) string {
 func isCanonicalWorkerHandoffPath(path string, markers []string) bool {
 	base := filepath.Base(path)
 	switch base {
-	case "instructions.md", "project-understanding.md", "high_level_log.md", "latest-status-report.md":
+	case "instructions.md", "project-understanding.yaml", "high_level_log.jsonl", "latest-status-report.md":
 		for _, marker := range markers {
 			if path == filepath.Join(filepath.Dir(marker), base) {
 				return true
@@ -6925,7 +6927,7 @@ func activeControlResolvedPath(
 			// A note-named hardlink cannot hide another control record sharing
 			// its inode. Prefer the concrete control over the ordinary note.
 			switch filepath.Base(control.path) {
-			case "instructions.md", "project-understanding.md", "latest-status-report.md":
+			case "instructions.md", "project-understanding.yaml", "latest-status-report.md":
 				handoffPath = control.path
 				continue
 			}
@@ -7660,7 +7662,13 @@ func protectedHookModeRoots() []string {
 		filepath.Join(home, ".kimi-code"),
 	}
 	if executable, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "..", "..", ".."))
+		// Only the source-module layout identifies a provider root; managed artifacts do not.
+		dir := filepath.Dir(executable)
+		if filepath.Base(dir) == "eci-command-plan-go" &&
+			filepath.Base(filepath.Dir(dir)) == "lib" &&
+			filepath.Base(filepath.Dir(filepath.Dir(dir))) == "hooks" {
+			candidates = append(candidates, filepath.Join(dir, "..", "..", ".."))
+		}
 	}
 	roots := make([]string, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))

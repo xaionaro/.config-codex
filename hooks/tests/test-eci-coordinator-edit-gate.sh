@@ -289,7 +289,7 @@ jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$cross_sessi
 cross_session_output="$(run_dispatch cross-session "$cross_session_input")"
 assert_cross_session_deny cross-session "$cross_session_output" "$other_session"
 
-cross_session_document="$proof_root/$other_session/project-understanding.md"
+cross_session_document="$proof_root/$other_session/project-understanding.yaml"
 cross_session_document_input="$TMP_ROOT/cross-session-document.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$cross_session_document" \
   '{tool_name:"Write",session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"wrong session document"}}' \
@@ -299,8 +299,8 @@ assert_control_deny cross-session-document "$cross_session_document_output"
 cross_session_document_dispatch_output="$(run_dispatch cross-session-document-dispatch "$cross_session_document_input")"
 assert_cross_session_deny cross-session-document-dispatch "$cross_session_document_dispatch_output" "$other_session"
 
-ledger="$proof_root/$session_id/high_level_log.md"
-printf '%s\n' '# immutable history' >"$ledger"
+ledger="$proof_root/$session_id/high_level_log.jsonl"
+printf '%s\n' '{"event":"decision","summary":"immutable history"}' >"$ledger"
 ledger_input="$TMP_ROOT/ledger.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$ledger" \
   '{tool_name:"Write",session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"forged"}}' \
@@ -401,14 +401,14 @@ assert_empty_output advisory-normal-dispatch "$advisory_normal_dispatch_output"
 
 for advisory_path in \
   "$repo/docs/status.md" \
-  "$proof_root/$session_id/project-understanding.md" \
+  "$proof_root/$session_id/project-understanding.yaml" \
   "$proof_root/$session_id/latest-status-report.md" \
   "$proof_root/$session_id/handoff.md"; do
   advisory_tool=Write
   [ "$advisory_path" = "$repo/docs/status.md" ] && advisory_tool=Edit
   advisory_input="$TMP_ROOT/advisory-$(basename -- "$advisory_path").json"
   jq -cn --arg tool "$advisory_tool" --arg session_id "$session_id" --arg cwd "$repo" --arg path "$advisory_path" \
-    '{tool_name:$tool,session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"ordinary update"}}' \
+    '{tool_name:$tool,session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:(if $path | endswith("/project-understanding.yaml") then "schema: project-understanding/v1\nsections:\n  context:\n    title: \"Context\"\nrecords: {}\n" else "ordinary update" end)}}' \
     >"$advisory_input"
   advisory_output="$(run_active_gate_as_coordinator "advisory-$(basename -- "$advisory_path")" "$advisory_input")"
   assert_empty_output "advisory-$(basename -- "$advisory_path")" "$advisory_output"
