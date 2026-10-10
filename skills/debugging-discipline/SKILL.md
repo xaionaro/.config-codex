@@ -8,11 +8,11 @@ description: Use when debugging and needing falsifiable hypotheses, alternative 
 Supplements `systematic-debugging` with additional rigor.
 
 Mitigation is not a fix: lowering failure probability is containment until the cause chain is repaired.
-Require explicit causality: trigger -> mechanism -> failure -> repaired link. Any missing link means keep investigating.
+For an uncertain cause, require explicit causality: trigger -> mechanism -> failure -> repaired link. Missing links require investigation; an obvious local defect with a clear cause and repair needs only proportionate rationale and validation.
 
 ## Required Procedure
 
-Debugging pipeline:
+Choose the path from evidence. If incorrect local behavior is established and its cause and repair are clear, fix it directly with before/after verification and checks proportionate to regression risk. A real defect encountered during isolation may be fixed even when its relation to the original incident is unproven or it may mask that incident. This does not authorize an unrelated bug hunt. Do not invent alternative causes, falsification exercises, or a bisect solely to justify that obvious repair. If behavior, cause, or repair is uncertain, use the RCA pipeline:
 
 ```text
 loop(loop(RCA, critic), repro), loop(fix, review)
@@ -25,21 +25,20 @@ Core rule: keep the whole edit-to-result loop fast; use the shortest repro that 
 - **Iteration latency:** Revisit opportunities to shorten the whole loop as work proceeds. When delays limit iteration, time build, setup/deploy, repro, and evidence collection; investigate the dominant cost. A minutes-long build warrants inspecting timing/logs and build configuration for avoidable work, such as unnecessary clean/full rebuilds, dependency invalidation, cache misses, or resource contention. Try the smallest evidence-backed improvement within the debugging task. Bound the effort by expected savings over the remaining iterations; return to diagnosis when further tuning will not repay that effort. Compare equivalent before/after runs. Verify the faster path incorporates current edits and preserves assertions and required final user-path proof. When changing the repro, establish the isolated defect on a failing revision before using it to evaluate its fix; original-incident equivalence is not a pre-fix gate. Record the measured reason for unavoidable delay.
 - **Regression check:** Every RCA classifies `regression: yes/no/unknown`. Check prior known-good behavior from commits, releases, configs, dependency/data states, previous test/run artifacts, CI history, user reports, and recent changes. If unknown after feasible checks, record why and what evidence is missing.
 - **Live/prod proof gate:** Before waiting on live/prod, record {question, cheapest faithful environment, rejected cheaper-environment reasons, active owner}. Run the proof now; if out-of-role, route it to an active owner. Live/prod is allowed only for prod-only env/config/network proof, final confirmation after cheaper proof, or capture of a currently observable prod-only failure.
-- **RCA/critic loop:** Gather evidence first: inspect the failing path, relevant code, logs, tests, recent changes, and adjacent systems. State an informed RCA hypothesis from that evidence, not a guess. The critic must identify alternative explanations, missing evidence, and predictions that could falsify the hypothesis. Repeat until the critic has no unresolved objections.
+- **RCA/critic loop, when needed:** Apply to uncertainty about the local behavior, cause, or repair, not merely an unknown relation to the original incident. Gather evidence first: inspect the failing path, relevant code, logs, tests, recent changes, and adjacent systems. State an informed RCA hypothesis from that evidence, not a guess. The critic must identify alternative explanations, missing evidence, and predictions that could falsify the hypothesis. Repeat until the critic has no unresolved objections.
 - **RCA instrumentation:** RCA may add any scoped diagnostic code needed to gather strong evidence for or against a root-cause hypothesis: logs, traces, counters, assertions, probes, tests, scripts, data captures, or temporary instrumentation. Keep probes targeted and reversible; final review decides what to keep, remove, or convert into regression coverage.
 - **Bisect during RCA:** If the required behavior worked at a known commit, release, config, dependency version, or data state, bisect from known-good to current-bad before broad speculation. Run the fast repro at every step. If only a rough timeframe exists, first establish known-good and known-bad anchors.
-- **Fix/review loop:** Implement one root-cause fix with rationale: cause chain, evidence, and why the diff repairs the mechanism. Review the rationale against the repro, RCA evidence, tests, and regression risk. Unknown "why" or symptom-only change = failed review unless containment was explicitly requested. Repeat until review finds no blocking issue.
+- **Fix/review loop:** Explain the established local defect and why the diff repairs it; review before/after evidence and regression risk. For uncertain cases, include the critic-approved cause chain and RCA evidence. Unknown "why" or symptom-only change requires investigation unless containment was explicitly requested. Repeat until required review finds no blocking issue.
 
-When ECI or ATE owns the debugging work, use that protocol's debugging-role mapping. Outside ECI/ATE, when subagents are explicitly authorized, use one persistent `repro/RCA/fix` subagent for all three phases so reproduction and RCA context carry into the fix. Use separate subagents for `critic` and `review`. Prefer fresh `critic` and `review` subagents each iteration; close or replace them after each pass so prior conclusions do not anchor the next critique. Pass only a compact evidence packet: problem statement, repro steps, relevant logs, current RCA or diff, constraints, and open questions.
+When ECI or ATE owns the debugging work, preserve that protocol's required roles and reviews; the direct-fix path does not waive them. Outside ECI/ATE, when subagents are explicitly authorized and RCA is needed, use one persistent `repro/RCA/fix` subagent for all three phases so reproduction and RCA context carry into the fix. Use separate subagents for `critic` and `review`. Prefer fresh `critic` and `review` subagents each iteration; close or replace them after each pass so prior conclusions do not anchor the next critique. Pass only a compact evidence packet: problem statement, repro steps, relevant logs, current RCA or diff, constraints, and open questions.
 
-Root-cause reporting to the coordinator is mandatory at each transition: suggested RCA, critic-approved RCA, fix proposal, and confirmed fix.
+Report fix proposal and confirmation to the coordinator; when RCA is needed, also report suggested and critic-approved RCA. Direct fixes need no invented RCA milestones.
 
 - Label state as `hypothesis`, `accepted-for-fix`, `fix-submitted`, or `confirmed-fixed`.
 - Only `confirmed-fixed` may say RCA/fix is closed for its named defect. It requires domain-required acceptance proof on that defect's failing path; original-incident closure requires its original/user-path proof.
 - Source/unit proof alone is source readiness when required E2E/integration proof for the claimed scope remains open.
 - Name the evidence scope: an isolated defect may be fixed while the original incident remains unconfirmed. Preserve its causal proof and report the original-path retry separately; do not close the original incident solely from the isolated result.
-- Include cause chain, evidence, falsifying prediction tested or still needed, repaired link, and unresolved alternatives.
-- Include regression status. If `regression: yes`, report the regression explanation alongside the RCA: prior working evidence, introducing change/state, why existing tests/runs/guards did not catch it earlier, and the mechanism that changed old-good into current-bad.
+- Include the local defect, repair rationale, and validation evidence. For RCA, include cause chain, falsifying prediction tested or still needed, repaired link, unresolved alternatives, and regression status. If `regression: yes`, report the regression explanation alongside the RCA: prior working evidence, introducing change/state, why existing tests/runs/guards did not catch it earlier, and the mechanism that changed old-good into current-bad.
 - Coordinator owns current root-cause state and passes it into the next critic/review packet.
 
 ## Reproduce first
@@ -47,6 +46,8 @@ Root-cause reporting to the coordinator is mandatory at each transition: suggest
 Establish the defect under the repro's stated conditions before causal investigation and repair. A reduced repro need not match production ordering or inputs before its own defect can be fixed. Slow repros block learning; shrink or automate them before expanding scope, then retry the original path after the isolated fix.
 
 ## Hypothesis Discipline
+
+Apply these rules when the cause is uncertain; clear local defects use the direct-fix path above.
 
 - Label every potential cause as HYPOTHESIS until falsified — saying "root cause identified" prematurely leads to wasted effort on wrong fixes.
 - An RCA hypothesis without cited evidence and explored code/log/test context is a guess. Gather more evidence before testing fixes.
