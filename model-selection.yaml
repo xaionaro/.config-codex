@@ -3,7 +3,7 @@ default:
   reasoning_effort: low
 higher:
   model: gpt-6.1-sol
-  reasoning_effort: high
+  reasoning_effort: medium
 max:
   model: gpt-6.1-sol
-  reasoning_effort: xhigh
+  reasoning_effort: high

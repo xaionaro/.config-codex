@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# TODO: Remove teardown's ECI marker dependency when this hook is migrated;
+# native goals own continuation and the Supervisor owns ECI lifecycle.
 # Acceptance boundary for the required-critic ledger.
 #
 # This script is intentionally absent from Stop's active-marker fast path.  It

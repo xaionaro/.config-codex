@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Reconcile the ECI control-gate dispatch after its marker-dependent hooks are migrated.
 
 set -euo pipefail
 

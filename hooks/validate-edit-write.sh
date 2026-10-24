@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Replace the retired ECI marker activity check with ordinary callback bookkeeping.
 # PreToolUse hook: validate direct file edits made through Edit, Write, MultiEdit, and NotebookEdit.
 
 set -euo pipefail

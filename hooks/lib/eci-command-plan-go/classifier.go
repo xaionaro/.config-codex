@@ -1,5 +1,7 @@
 package main
 
+// TODO: Retire ECI marker-dependent classification while preserving concrete target checks.
+
 import (
 	"context"
 	"crypto/sha256"

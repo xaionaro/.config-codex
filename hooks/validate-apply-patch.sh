@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Replace the retired ECI marker activity check with ordinary callback bookkeeping.
 # PreToolUse hook: validate file edits made through apply_patch.
 
 set -euo pipefail

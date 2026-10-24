@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Remove ECI marker-based VCS context suppression; native goals own lifecycle.
 # Stop reviewer: fail-open external compliance check for main Codex sessions.
 
 set -uo pipefail

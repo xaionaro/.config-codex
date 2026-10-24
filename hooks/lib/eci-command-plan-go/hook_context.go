@@ -1,5 +1,7 @@
 package main
 
+// TODO: Derive callback scope and parent ownership without reading the retired ECI marker.
+
 import (
 	"crypto/sha256"
 	"encoding/hex"

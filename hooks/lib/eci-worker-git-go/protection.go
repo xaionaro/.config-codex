@@ -1,5 +1,7 @@
 package main
 
+// TODO: Remove retired Stop/ECI marker control entries after hook ownership rules are migrated.
+
 import (
 	"errors"
 	"fmt"

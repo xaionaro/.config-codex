@@ -29,10 +29,12 @@ For ECI, record stage `normal` as a context fact. Track main and fast progress u
 
 For material ECI work, keep `exact user source → faithful requested outcome →
 bounded scope` as readable context. A repair stays in its lane when it is
-necessary to meet or prove that outcome. A separate-outcome concern is only a
+necessary to meet or prove that outcome. An unadmitted separate-outcome concern is only a
 post-ECI observation or follow-up, never current lane, assignment, code change,
 review, deadline, forecast, or proof program. Reconcile missing or stale
 lineage alongside known work; do not block it.
+
+Record authorized child Jobs with stable parent edges, their own outcomes and full ECI evidence, and upward owner routes under the [recursive Job contract](../explore-critique-implement/references/task-orchestrator.md#recursive-child-admission-and-closure). A parent's finished home outcomes do not close unfinished descendants. Admission within inherited authorization does not invent a user requirement.
 
 Ground each progress item in `high_level_log.jsonl` and `latest-status-report.md` in a
 named or linked user-stated requirement. Explain how the change advances or
@@ -55,7 +57,7 @@ For ECI/ATE, these records live at:
 ~/.cache/codex-proof/$SESSION_ID/forecast-target-history.tsv # target history
 ```
 
-Do not store any of these files in the project/repo. The Codex stop hook only deletes named scratch files (`proof.md`, `instructions.md`, `baseline_head`); session-snapshot pruning ignores directories younger than 30 days. The ledger, report, forecasts, and target history survive across stops by construction; do not place them under any other name.
+Do not store any of these files in the project/repo. Keep the canonical filenames above; session-snapshot pruning ignores directories younger than 30 days.
 
 Create `project-understanding.yaml`, `high_level_log.jsonl`, and `latest-status-report.md` once. Create `forecasts.md` once when the first forecast applies, then update current records in place. Create `forecast-target-history.tsv` with its header at the first `none → A` transition. Follow each file's edit mode above; never delete or recreate these records.
 
@@ -79,8 +81,8 @@ Append-only history. Every material change to the ledger or `forecasts.md` gets 
 Treat bytes already present in `high_level_log.jsonl` as immutable; permit only
 an EOF append to that same canonical file. Never follow a symlink alias.
 
-Use the command below from the bound CWD with an active direct marker bound to
-the selected session. A missing canonical JSONL starts empty through normal
+Use the command below with explicit `CODEX_SESSION_ID` (or `CODEX_THREAD_ID`
+when unset), from the intended CWD. A missing canonical JSONL starts empty through normal
 bootstrap; append current events without importing or converting other files.
 Existing JSONL remains append-only. The CLI preserves concrete target safety,
 detaches shared log inodes, and refreshes `high_level_log.anchor` advisory metadata.
@@ -142,7 +144,7 @@ jq -r 'select(.schema == "eci-high-level-log/v1" and .event == "worker_progress"
 |------|--------|
 | Same skill, same format | Content follows `writing-status-reports`: state, progress, decisions, blockers/risks, verification, next focus; multi-lane table when applicable. |
 | Lead with UTC timestamp | First line: `# Status - <UTC ISO8601>`. Stale reports without a timestamp are rejected. |
-| Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status. |
+| Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status; apply [Update Points](#update-points) timing. |
 | Forecast projection | Derive current forecast lines and scenario summaries from `forecasts.md`; do not treat the report as a second source of truth. |
 | No copying the ledger | Report changed state plus next focus; do not duplicate ledger structure. Cross-reference instead. |
 
@@ -186,7 +188,7 @@ A lane is an independently advancing workstream, not an ECI step. Serial impleme
 
 Record lane/root state and next action in `work` records, including owner and outcome links. Preserve dependencies, binding user deadlines and useful milestones as typed current records. Store each relevant forecast locator in `forecast_ref`; do not copy forecast values into the ledger or require rendered Markdown links inside YAML.
 
-Store every current lane/root forecast in `forecasts.md`: named forecast outcome and status, current target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its range and endpoint. Keep current records there in place. `latest-status-report.md` projects these values using `writing-status-reports`.
+Store every current lane/root forecast in `forecasts.md`: named outcome, active/inactive status, assessment, target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its evidence, range, and endpoint. Keep current records there in place. `latest-status-report.md` projects these values using `writing-status-reports`.
 
 #### Forecast outcome wording
 
@@ -198,12 +200,16 @@ Example: `Outcome: Import validation that identifies unpriced records and explai
 
 - Lane forecast:
   - Outcome: `<named lane/task outcome>`
-  - Status: `active` or `inactive`
+  - Status: `active` or `inactive` (whether this forecast still applies)
+  - Assessment: `complete` or `provisional` (whether every material risk has supported timing)
   - Target: `<UTC ISO8601>` when active
 - Root completion forecast, when an active root outcome is not represented by lane reports:
   - Outcome: `<full named active root-task outcome>`
-  - Status: `active` or `inactive`
+  - Status: `active` or `inactive` (whether this forecast still applies)
+  - Assessment: `complete` or `provisional` (whether every material risk has supported timing)
   - Target: `<UTC ISO8601>` when active
+- Set assessment to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. While any material risk lacks a defensible finite duration or endpoint, set it to `provisional`; record the exact evidence gap and next fact-finding action on that scenario. Keep `Status` independent of `Assessment`.
+- For a provisional forecast, record `Target basis: conditional — <unpriced material risk(s)>`. Any finite target, base case, or displayed spread is conditional while those risks remain open.
 - Recalibration, when a forecast changes:
   - Prior: `<UTC ISO8601>`
   - Current: `<UTC ISO8601>`
@@ -212,33 +218,54 @@ Example: `Outcome: Import validation that identifies unpriced records and explai
 - Initial forecast:
   - Status: `unchanged`
   - Original baseline: `<UTC ISO8601>`
+  - Assessment: `complete` or `provisional`, from the fact-based review of every material risk; an unresolved material evidence gap makes the assessment provisional and any finite target conditional
   - Evidence: `<evidence>`
 
 Every non-`CLOSED` lane has a current forecast record with its named outcome and target. For each unrepresented active root-task outcome omitted by lane reports, keep one root completion forecast with the full root outcome and target. Root completion is not a child sum or stage. Keep task dependencies and critical-path facts in the ledger; use them to calculate the forecast without copying forecast values back into the ledger.
 
-When a lane or root forecast changes, update its current record in `forecasts.md` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, and evidence. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
+When a lane or root forecast changes, update its current record in `forecasts.md` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, evidence, and `Assessment: complete` or `provisional` from the fact-based risk review. If provisional, retain each exact evidence gap and next action and label any finite target conditional. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
 
 #### ECI scenario forecasts
 
-For ECI forecasts, including nested ECI, store a base case and each material
-evidence-supported downside scenario alongside the canonical target:
+For ECI forecasts, including nested ECI, store a base case and every material
+downside scenario alongside the canonical target, including risks whose timing
+is not yet supported:
 
 - Base case: completion UTC for the remaining authorized in-scope work on the
   current critical path, assuming no listed downside scenario. Add no generic
   buffer.
-- Scenario: include only material, evidence-supported downside scenarios that
-  affect or delay completion of the requested ECI outcome. For each, record the
-  name; trigger/evidence; affected work or dependency; added duration or
-  supported range and its basis; resulting endpoint or endpoint range.
-- Record supported co-occurring delays as combinations only when they can occur
-  sequentially on the same path. List mutually exclusive scenarios separately;
-  count overlapping delay once. For root forecasts, use the latest required
+- Scenario: include every material downside risk that could affect completion
+  of the requested ECI outcome. Record its name, trigger/evidence, affected work
+  or dependency, evidence assessed, assumptions and limits, supported added
+  duration/range and endpoint/range, or the exact evidence gap and next
+  fact-finding action. Assess all relevant current facts, applicable written
+  commitments or service-level terms only when they cover this failure and
+  measure its resolution, comparable history, current progress or throughput,
+  documented lead times, direct timing evidence, and dependency/overlap
+  evidence. Distinguish commitments from observed durations; do not present a
+  commitment as a guaranteed resolution, hard cap, or worst case. Cite or
+  summarize what was assessed; update as evidence changes. Derive a UTC
+  endpoint only from a known event/base time and supported duration. If no
+  defensible finite duration or endpoint is supported, retain the risk and set
+  the forecast assessment to `provisional`. An unpriced material risk is not a
+  completed assessment and cannot coexist with a `complete` forecast. Keep any finite
+  target, base case, or spread conditional while it remains open; continue safe
+  work while gathering evidence.
+- Record co-occurring delays as combinations only when evidence supports that
+  they can occur sequentially on the same path. Keep events with unresolved
+  dependency or overlap separate and request evidence from their owners; do not
+  invent their sequence, overlap, or combined duration. When two material
+  events' relation is unresolved, keep the forecast assessment provisional
+  until evidence supports the endpoint. List mutually exclusive scenarios
+  separately and count overlapping delay once. For root forecasts, use the latest required
   parallel lane/dependency endpoint, not a sum of parallel work.
 - The single UTC target is the latest endpoint among the base case and bounded,
   evidence-supported scenarios. Keep each scenario's endpoint/range in the
-  `forecasts.md` record. A material risk without a finite duration basis is `unknown/unbounded`:
-  give it no fabricated endpoint, and do not call the target an absolute worst
-  case.
+  `forecasts.md` record. If a material risk lacks supported timing, keep it in
+  the record with its gap and next action, set `Assessment: provisional`, and
+  label the finite target/base case/spread conditional. A finite target is the
+  latest supported endpoint, not an absolute worst case. Never invent
+  probabilities.
 - `Initial forecast.Original baseline` remains the original forecast target; it is not
   the scenario base-case endpoint.
 
@@ -406,20 +433,22 @@ permission ceremonies. History/status/forecasts retain their separate contracts.
 
 ## Update Points
 
-Update before work starts, after material state changes, after material findings/decisions/agreements, after milestones, after material user input that changes current understanding, binding requirements, risks, decisions, or useful recurrence guards, before QA/verdicts, before user-waiting stops, and before shutdown.
+Update at work start, material state changes, findings/decisions/agreements, milestones, material user input, and existing QA/verdict, handoff, user-waiting stop, and shutdown checkpoints. Apply the dependency order below; these update points do not delay ready independent work.
 
 Every material forecast change updates its current `forecasts.md` record in place and applies the same-update recalibration rule to that forecast.
 
 Answer the user before ledger maintenance or coordination when a response is due.
-After a material event, update the affected current-state record: `project-understanding.yaml` for project/task facts or `forecasts.md` for forecast changes. Append the change to `high_level_log.jsonl` and refresh `latest-status-report.md` before dispatching work, sending coordination messages, or taking the next project action. A forecast-only change does not require rewriting the ledger. Already-running independent jobs continue; launch ready work after recording the event. This orders coordinator work without adding permission gates, receipts, or per-command checks.
+Advance ready independent work without waiting for ledger, log, forecast, or report maintenance. Before a dependent action, correct the affected current-state records and communicate the material changed facts that action needs, including changed requirements, scope, ownership, controls, evidence, and verification results. Stop or redirect only work invalidated by that correction.
+
+Reconcile the remaining records, append material changes to `high_level_log.jsonl`, and refresh `latest-status-report.md` in the same turn, before QA/verdicts, handoff, user-waiting stops, or shutdown. A status must reflect current facts; answering a due user response still comes first. A forecast-only change updates `forecasts.md` without rewriting the ledger. Keep this maintenance bounded to changed facts and their affected links; it never grants permission or creates a dispatch gate.
 
 For a project/task fact change, use this three-pass ledger edit:
 
-1. Stale pass. Review the whole snapshot against current instructions, sources and reports. Replace/delete obsolete subject records and contradictory copied state.
-2. Omission pass. Add what is missing, checking authoritative sources, user instructions, current diffs/state, and this turn's agent reports.
-3. Fit pass. Rename, split, merge, add or drop sections so titles/memberships fit current knowledge. Repair incoming references when deleting or moving records.
+1. Stale pass. Check the affected subjects and linked records against current instructions, sources and reports. Replace/delete obsolete records and contradictory copied state.
+2. Omission pass. Add missing facts for those subjects from authoritative sources, user instructions, current diffs/state, and this turn's agent reports.
+3. Fit pass. Adjust their sections and memberships to fit current knowledge. Repair incoming references when deleting or moving records.
 
-Review the whole snapshot; affected records bound the native patch, not the stale/omission/fit review. Shared record contracts stay predictable while domain payloads and sections evolve. A purely additive update retaining stale state is a log-into-ledger defect: replace/delete in place.
+Review the whole snapshot at existing QA/verdict, handoff, and shutdown checkpoints. Between checkpoints, review affected subjects and linked contradictions rather than rescanning unrelated state for every event. Shared record contracts stay predictable while domain payloads and sections evolve. A purely additive update retaining stale state is a log-into-ledger defect: replace/delete in place.
 
 Then append to `high_level_log.jsonl` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry. For a forecast-only change, update its `forecasts.md` record and log it without rewriting the ledger.
 

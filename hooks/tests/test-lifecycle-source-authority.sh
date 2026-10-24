@@ -21,8 +21,6 @@ foreign_root="$TMP_ROOT/foreign"
 poisoned_codex="$TMP_ROOT/poisoned-codex"
 proof_root="$TMP_ROOT/proof"
 cwd="$TMP_ROOT/cwd"
-stop_input="$TMP_ROOT/stop-input.json"
-stop_output="$TMP_ROOT/stop-output.json"
 ledger_input="$TMP_ROOT/ledger-input.json"
 
 mkdir -p -- "$fixture_home" "$fixture_codex" "$fixture_kimi_home" "$fixture_kimi" "$foreign_root/hooks/lib" \
@@ -31,38 +29,6 @@ proof_root="$(realpath -e -- "$proof_root")"
 cp -a -- "$ROOT/hooks" "$fixture_codex/hooks"
 cp -a -- "$ROOT/hooks" "$fixture_kimi/hooks"
 cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$foreign_root/hooks/lib/codex-proof-state.sh"
-
-printf '%s\n' \
-  '{"session_id":"source-authority-stop","cwd":"'"$cwd"'","transcript_path":"","stop_hook_active":false}' \
-  >"$stop_input"
-
-run_stop() {
-  local selected_home="$1" output="$2"
-
-  env -u CODEX_STOP_GATE_ROOT \
-    HOME="$selected_home" CODEX_HOME="$poisoned_codex" CODEX_PROOF_ROOT="$proof_root" \
-    bash "$fixture_codex/hooks/stop-gate.sh" <"$stop_input" >"$output"
-}
-
-# A symlinked HOME parent is an identity alias, not a replacement of the
-# selected final authority component. It must continue to work.
-parent_alias="$TMP_ROOT/home-parent-alias"
-ln -s -- "$fixture_home" "$parent_alias"
-run_stop "$parent_alias" "$stop_output"
-if ! jq -e '. == {"continue":true}' "$stop_output" >/dev/null; then
-  fail "Stop hook rejected a parent HOME alias: $(cat -- "$stop_output")"
-fi
-
-# A final `$HOME/.codex` symlink that resolves to the already loaded hook
-# directory is an identity alias. It must keep the normal continuation path.
-final_symlink_home="$TMP_ROOT/final-symlink-home"
-final_symlink_output="$TMP_ROOT/final-symlink-output.json"
-mkdir -p -- "$final_symlink_home"
-ln -s -- "$fixture_codex" "$final_symlink_home/.codex"
-run_stop "$final_symlink_home" "$final_symlink_output"
-if ! jq -e '. == {"continue":true}' "$final_symlink_output" >/dev/null; then
-  fail "Stop hook rejected a final HOME/.codex identity alias: $(cat -- "$final_symlink_output")"
-fi
 
 make_claim() {
   local session_id="$1" claim

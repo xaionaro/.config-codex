@@ -18,7 +18,7 @@ Start only on explicit invocation. Invocation requests the repairs, observabilit
 
 ## One ECI root task per unresolved issue
 
-Create each unresolved issue as its own ECI root task, identified by its issue URL/ID, with scope, owner, dependencies, evidence, and current-iteration acceptance criteria. Here "root task" means an independently owned issue outcome under the **one active ECI/ATE lifecycle**, not a separate top-level lifecycle for each issue; preserve normal bounded ECI markers under active ATE. Do not reduce issue tasks to list items inside one aggregate implementation task. Reuse an existing task for that issue. Preserve active ATE and route bounded issue work through normal ECI; otherwise use ECI. Do not infer ATE from queue size.
+Create each unresolved issue as its own ECI root task, identified by its issue URL/ID, with scope, owner, dependencies, evidence, and current-iteration acceptance criteria. Here "root task" means an independently owned issue outcome under the **one active ECI/ATE lifecycle**, not a separate top-level lifecycle for each issue; preserve normal bounded ECI lifecycle under active ATE. Do not reduce issue tasks to list items inside one aggregate implementation task. Reuse an existing task for that issue. Preserve active ATE and route bounded issue work through normal ECI; otherwise use ECI. Do not infer ATE from queue size.
 
 Check prior observability and new-build evidence before scheduling solving work. A verified waiting issue keeps its independent task record with a checked skip disposition for this iteration; do not launch another repair/instrumentation effort or a polling lifecycle for it.
 

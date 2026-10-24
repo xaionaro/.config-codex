@@ -8,12 +8,12 @@ Use this module as the ECI Supervisor or the owning outer-workflow Coordinator/L
 - Apply [concurrent task scheduling](../../../CODEX.md#concurrent-tasks) to ECI tasks within the active lifecycle. Stage, checkpoint, and review waits follow the affected task's dependencies; root teardown covers all owned tasks.
 - Before a durable spawn, followup, lane-changing message, or write, identify task, scope, owner, and enough target detail to avoid an accidental cross-scope change. For material ECI work, carry `exact user source → faithful requested outcome → bounded scope`. Missing lineage or a stale label calls for a concise clarification or reassignment; it does not block harmless work.
 - Keep a repair in its current lane when the record shows it is necessary to meet or prove the requested outcome. Do not relabel that repair as a substitute user requirement.
-- Record a discovered concern whose remedy serves a separate outcome as an observation or follow-up suggestion after current ECI. It does not create current lane, assignment, code change, review, deadline, forecast, or proof work.
+- Record a discovered concern whose remedy serves an unadmitted separate outcome as an observation or follow-up suggestion after current ECI. It does not create current lane, assignment, code change, review, deadline, forecast, or proof work.
 - Keep prompts and handoffs as readable coordination records. They may support review, but no proof-directory artifact, hash, receipt, ledger prefix, or serialized field list is a prerequisite for normal spawn, followup, exploration, implementation, or verification.
 - `spawn_agent` creates a role; `followup_task` starts a new turn when a reusable role is idle and delivers at a message boundary when it is running; `send_message` supplies bounded information to a running turn; `interrupt_agent` cancels exact active work only. Never shell-launch agents or close terminal agents.
 - Name reusable ordinary producers by stable semantic role. Every blind critic and every special role uses a fresh `spawn_agent({fork_turns:"none"})` with a unique transport name. A `followup_task` never upgrades an ordinary role to special.
 - Keep at most one outstanding `wait_agent({timeout_ms:3600000})` per undelivered expected completion. A timeout is non-terminal: do not poll, retry, or infer a crash. Use `list_agents` only for roster maintenance or documented crash recovery.
-- Include this exact Stop-hook rule in every subagent prompt: “Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when resolution needs out-of-scope changes, unrelated user work, credentials, or approval.”
+- Include scoped verification and recovery duties in every subagent prompt.
 
 ## Role and model admission
 
@@ -46,7 +46,7 @@ If work needs a different role, reassign it clearly and use a fresh reviewer whe
 
 ## Required-critic runtime
 
-The ECI Supervisor keeps global ECI review state visible while the direct marker is active. A manifest is a useful summary, not a publication or command-admission monopoly; Workers may provide ordinary reports and the current Job owner reconciles outcome-local evidence.
+The ECI Supervisor keeps global ECI review state visible while ECI is active. A manifest is a useful summary, not a publication or command-admission monopoly; Workers may provide ordinary reports and the current Job owner reconciles outcome-local evidence.
 
 For each target, record its path or scope, current diff/revision when useful, assigned reviewers, required verification, and current verdict. Keep enough context to notice that the target changed; do not require a prescribed header, hashes, or artifact paths before work can proceed.
 
@@ -64,7 +64,7 @@ Only governed target paths need assigned review; leave unrelated changes out. Wi
 
 Before a destructive Git action, resolve the repository and concrete paths. Stop only a broad, unresolved, or unrelated destructive action and offer the narrow safe route.
 
-Within ECI, Producers own and author new tracked repository contributions, check their complete scope, and make their own commits. This includes documentation, configuration, analysis, and administrative output; a Producer integrates delegated Helper work. Preserve any pre-existing authorized Supervisor-authored repository change with its original author, exact scope, and provenance, then explicitly hand it to a Producer for integration, checking, and its own checkpoint. The Supervisor self-edit hatch changes routing only; it grants no authority to author a new tracked contribution or stage, mutate the index, or commit it.
+Within ECI, Producers own and author new tracked repository contributions, check their complete scope, and make their own commits. This includes documentation, configuration, analysis, and administrative output; a Producer integrates delegated Helper work. Preserve any pre-existing authorized Supervisor-authored repository change with its original author, exact scope, and provenance, then explicitly hand it to a Producer for integration, checking, and its own checkpoint. Session coordination grants no Supervisor authority to author a new tracked contribution or stage, mutate the index, or commit it.
 
 Within ECI, an explicitly authorized Helper may perform bounded staging or index operations only after its own exact runtime identity and write scope have a live pending intent and a fresh same-index lookup. Its responsible Producer routes that intent and lookup, then agrees order directly with matching Producers; the Helper follows that order and never commits. Supervisors and Orchestrators retain live-control, coordination, and verification duties but do not author new tracked contributions or stage, mutate the index for, or commit repository contributions. They relay matching identity, scope, and index facts; they do not assign contested content or Git turns. Follow the [active-writer, shared-index, staged-result, and joint-checkpoint rules](../../explore-critique-implement/references/task-orchestrator.md) for shared-index order. Preserve other authors’ staged and unstaged content. The ECI Supervisor independently verifies each Producer’s exact immutable parent-to-commit range before dependent review or work. Reviewers receive that range and explicit exclusions; exclude later ambient changes. This is review scope, not admission proof.
 
@@ -76,7 +76,7 @@ After ECI `off`, record a concise teardown summary and the actual current reposi
 ## Shared records
 
 Use readable current-state records for current requested work. A concern whose
-remedy serves a separate outcome is only a post-ECI observation or follow-up
+remedy serves an unadmitted separate outcome is only a post-ECI observation or follow-up
 suggestion, never a current queue or replay record. It never waives an original
 criterion.
 
@@ -84,7 +84,7 @@ criterion.
 
 Before every spawn, followup, lane-changing `send_message`, or durable execution, carry enough context to identify the task, scope, owner, target/change/verification when implementation is involved, and reason for any reroute. Use stable IDs and lineage where helpful. Missing metadata routes a concise clarification or queue; it does not block harmless work or create an admission failure state.
 
-Every prompt states semantic role, exact scope/files/ownership, expected output, fresh-assignment reread rule, matching skills, concurrent-edit warning, relevant verification, and the Stop-hook rule. Reviewer/verifier/QA packets also state objective/criteria and the current target/diff. Use concise readable context; no prompt artifact, hash, or ledger prefix gates dispatch.
+Every prompt states semantic role, exact scope/files/ownership, expected output, fresh-assignment reread rule, matching skills, concurrent-edit warning, relevant verification, and scoped verification and recovery duties. Reviewer/verifier/QA packets also state objective/criteria and the current target/diff. Use concise readable context; no prompt artifact, hash, or ledger prefix gates dispatch.
 
 Prompts and selector records aid review. They do not prove effective model behavior and do not gate ordinary work. Record a limitation when relevant, then continue with the available provider.
 

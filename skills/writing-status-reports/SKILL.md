@@ -42,7 +42,7 @@ Progress reports changed state and completed outcomes, not files read, commands 
 - Preserve parent/child work: use a tree, or include `Task ID` and `Parent ID` columns; do not flatten children into peer lanes.
 - If task IDs exist, make them hierarchical, e.g. `1`, `1.3`, `1.3.2`, and sort children under their parent.
 - In material ECI status, show `exact user source → faithful requested outcome → bounded scope` in readable form. Do not broaden the outcome through a generic paraphrase or relabel a reason, discovery, or inferred safeguard as a user requirement.
-- Keep a repair in its lane when it is needed to meet or prove that outcome. Put a discovered concern serving a separate outcome under Risks as an observation or follow-up suggestion, not as a lane, assignment, code change, review, deadline, forecast, or proof program.
+- Keep a repair in its lane when it is needed to meet or prove that outcome. Put a discovered concern serving an unadmitted separate outcome under Risks as an observation or follow-up suggestion, not as a lane, assignment, code change, review, deadline, forecast, or proof program. Report admitted child Jobs with their stable parent chain, current owners, and distinct outcome evidence under the [recursive Job contract](../explore-critique-implement/references/task-orchestrator.md#recursive-child-admission-and-closure).
 - When requirement context is missing or stale, write `lineage unavailable—reconcile` beside the lane and continue the status report and safe bounded work. Do not invent a registry or turn missing context into a blocker.
 - Known in-scope work remains in scope while lineage is reconciled; do not infer a new outcome from a missing record.
 - Workflow activity is overhead, not progress.
@@ -61,6 +61,7 @@ Use these labels when a material changed-state report includes the corresponding
 | Next milestone | `Next milestone: <named outcome>` |
 | Forecast deadline | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.` |
 | Root completion forecast | `Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.` |
+| Forecast assessment | `Forecast assessment: complete` or `Forecast assessment: provisional — <material risk/evidence gap>; target conditional.` |
 | Forecast recalibration | `Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` |
 | Initial forecast evidence | `Forecast recalibration: unchanged — baseline <UTC ISO8601>; supporting evidence: <evidence>.` |
 | Dependencies / critical path | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` |
@@ -77,6 +78,9 @@ lane/root canonical forecast once. For
 a changed lane or root forecast, restate its current canonical line, then state
 Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved:
 <why>; supporting evidence: <evidence>.
+Beside each lane/root canonical forecast line, state `Forecast assessment:
+complete` or `Forecast assessment: provisional — <material risk/evidence gap>;
+target conditional.` Keep the canonical line exact.
 A `CLOSED` lane records `Completed: <UTC ISO8601>; no active forecast deadline.`
 A `CLOSED` lane records completion; do not invent or revive a forecast deadline
 or recalibration. For an initial forecast, write `Forecast recalibration:
@@ -90,19 +94,32 @@ parallel child deadlines into a parent, root, or mission deadline.
 
 For each material ECI forecast update, including nested ECI, add a separate
 report-only block beside the canonical forecast line. Keep the forecast line
-exact. Show the base case and each named evidence-supported downside scenario
-or supported combination; identify the lane or root in each row:
+exact and put its assessment beside it using the labels above. Show the base
+case and every named material downside scenario, including any whose timing is
+not supported; identify the lane or root in each row:
 
-| Lane/root and case | Trigger/evidence | Affected work/dependency | Added duration/range and basis | Endpoint/range |
-| --- | --- | --- | --- | --- |
-| `<lane/root> — base case` | No listed downside scenario | Remaining authorized in-scope critical-path work | No generic buffer | `<UTC>` |
-| `<lane/root> — <scenario or supported combination>` | `<trigger/evidence>` | `<work/dependency>` | `<duration/range; basis>` | `<UTC endpoint/range>` |
+| Lane/root and case | Trigger/evidence | Affected work/dependency | Added duration/range and basis | Evidence assessed; assumptions/limits | Endpoint/range | Evidence gap / next fact-finding action |
+| --- | --- | --- | --- | --- | --- | --- |
+| `<lane/root> — base case` | No listed downside scenario | Remaining authorized in-scope critical-path work | No generic buffer | `<current work facts and progress used; assumptions/limits>` | `<UTC>` | — |
+| `<lane/root> — <scenario or supported combination>` | `<trigger/evidence>` | `<work/dependency>` | `<supported duration/range and basis, or not supportable yet>` | `<relevant facts reviewed and assumptions/limits>` | `<supported UTC endpoint/range, or not supportable yet>` | `<specific evidence gap and next fact-finding action; — when resolved>` |
 
-For each lane/root, state the finite displayed spread from the base-case
-endpoint through the latest bounded scenario endpoint. Name material
-unknown/unbounded risks without fabricating a duration or endpoint; do not
-describe the finite spread as an absolute worst case. Do not invent
-probabilities. Follow the canonical
+Assess each scenario using all relevant current facts, applicable written
+commitments or service-level terms only when they cover the failure and measure
+its resolution, comparable history, current progress or throughput, documented
+lead times, direct timing evidence, and dependency/overlap evidence. Summarize
+or cite what was assessed; distinguish commitments from observed durations,
+state assumptions and limits, then update as evidence changes. Do not present a
+service commitment as a guaranteed resolution or hard cap. Report a UTC
+endpoint only when its event/base time and supported duration justify it.
+If no defensible finite duration or endpoint is supported, keep the risk
+visible, name its exact evidence gap and next fact-finding action, and set the
+forecast assessment to provisional. The open risk is not a
+completed assessment and cannot coexist with `Forecast assessment: complete`.
+Continue safe work while gathering evidence. Any finite target, base case, or
+displayed spread is conditional while a material risk remains unpriced. Show a
+finite spread through the latest bounded scenario only as a conditional range;
+never imply it covers an unpriced risk or is an absolute worst case. Never omit
+a material scenario or invent a duration, endpoint, or probability. Follow the canonical
 [ledger scenario rule](../context-ledger/SKILL.md#eci-scenario-forecasts)
 for duration combinations, mutually exclusive scenarios, overlap, and root
 critical-path endpoints.
@@ -116,6 +133,7 @@ them alongside safe work without delaying the update.
 | --- | --- |
 | Material changed-state report omits a milestone or forecast | The report is corrected alongside safe work. |
 | Forecast lacks current evidence | A changed lane/root forecast without its restated current canonical line, prior/current UTCs, why moved, and supporting evidence is stale. |
+| Material risk has no supported duration or endpoint | Keep its scenario visible with the exact evidence gap and next fact-finding action; render the forecast as provisional and any finite target/spread as conditional. |
 | Parallel children | For parallel children, report the single critical-path deadline; child deadlines remain parallel; never add or sum parallel child deadlines into a parent, root, or mission deadline. |
 | Dependency is paused | A paused dependency names its owner and resume condition; it is not a user blocker. |
 
@@ -140,13 +158,13 @@ without pausing harmless work. Stage records never authorize work or change
 the implementation/test/production status meanings below.
 
 After coordinator-confirmed Fast completion, report one `Root-task status` per
-root task, on a separate line outside the lane-readiness table. Use
+assigned outcome, including child-Job outcomes, on a separate line outside the lane-readiness table. The legacy field name does not imply root-only ownership. Use
 `Root-task status: FOLLOWUP` or `Root-task status: FOLLOWUP_PAUSED`. Omit this
 field before genuine Fast completion and after coordinator acceptance or
 explicit user closure. Keep these root-task statuses separate from the existing
 Implementation, Test, and Prod status columns and their vocabulary.
-For reports covering multiple root tasks, put each status on its own line and
-identify it by task ID or human-readable outcome, e.g.
+For reports covering multiple outcomes, put each status on its own line and
+identify it by Job/parent chain and outcome, e.g.
 `Root-task status [1.2 / checkout flow]: FOLLOWUP_PAUSED`.
 
 | `Root-task status` | Use |

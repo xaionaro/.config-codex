@@ -617,16 +617,6 @@ test_append_only_rejects_same_phase_manifest_rewrite() {
   grep -Eq 'changed manifest|reused|unbound or silent critic adjudication' "$TMP_ROOT/append-candidate.err"
 }
 
-test_active_stop_does_not_run_manifest_gate() {
-  local proof_root="$TMP_ROOT/stop-fast" sid=stop-fast out
-  mkdir -p "$proof_root/$sid"
-  printf 'scope: active stop\n' >"$proof_root/$sid/eci_active"
-  out="$TMP_ROOT/stop-fast.out"
-  jq -cn --arg cwd "$ROOT" --arg sid "$sid" '{session_id:$sid,cwd:$cwd,hook_event_name:"Stop",stop_hook_active:false}' |
-    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$out"
-  jq -e '.decision == "block" and (.reason | contains("ECI"))' "$out" >/dev/null
-}
-
 test_main_commit_boundary_requires_manifest() {
   local proof_root="$TMP_ROOT/commit-gate" sid=commit-session out
   mkdir -p "$proof_root/$sid" "$TMP_ROOT/home"
@@ -646,7 +636,7 @@ test_main_commit_boundary_requires_manifest() {
 }
 
 test_reviewed_dirty_commit_and_off_review_are_nonblocking() {
-  local repo proof_root sid session_dir stop_output
+  local repo proof_root sid session_dir
   repo="$TMP_ROOT/reviewed-commit-repo"
   proof_root="$TMP_ROOT/reviewed-commit-proof"
   mkdir -p "$repo"
@@ -681,86 +671,6 @@ test_reviewed_dirty_commit_and_off_review_are_nonblocking() {
   [ -f "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ] || return 1
   git -C "$repo" commit -qm reviewed
 
-  stop_output="$TMP_ROOT/reviewed-commit-stop-active.out"
-  jq -cn --arg sid "$sid" --arg cwd "$repo" \
-    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_output"
-  jq -e '.decision == "block" and (.reason | contains("ECI"))' "$stop_output" >/dev/null
-}
-
-test_user_closed_teardown_is_single_terminal_route() {
-  local proof_root="$TMP_ROOT/user-closed-proof" sid=session-user-closed session_dir report out err
-  mkdir -p "$proof_root/$sid"
-  {
-    printf 'scope: explicit user closure\n'
-    printf 'cwd: %s\n' "$ROOT"
-    printf 'session_id: %s\n' "$sid"
-    printf 'created_utc: 2026-01-01T00:00:00Z\n'
-  } >"$proof_root/$sid/eci_active"
-  session_dir="$proof_root/$sid"
-  report="$session_dir/user-closed.md"
-
-  for stop_attempt in 1 2 3; do
-    out="$TMP_ROOT/user-closed-stop-$RANDOM.out"
-    jq -cn --arg cwd "$ROOT" --arg sid "$sid" \
-      '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-      CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$out"
-    if [ "$stop_attempt" -eq 1 ]; then
-      jq -e '.decision == "block" and (.reason | contains("ECI"))' "$out" >/dev/null
-    else
-      jq -e '.continue == true and (has("decision") | not)' "$out" >/dev/null
-    fi
-  done
-
-  {
-    printf 'schema: eci-user-closed/v1\n'
-    printf 'owner: coordinator\n'
-    printf 'session_id: %s\n' "$sid"
-    printf 'cwd: %s\n' "$ROOT"
-    printf 'report_path: %s\n' "$report"
-    printf 'reason: explicit user request to stop looping; incomplete teardown is recorded\n'
-    printf 'state: incomplete\n'
-    printf 'user-closed: true\n'
-  } >"$report"
-  out="$TMP_ROOT/user-closed-off.out"
-  (cd "$ROOT" && CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$report" >"$out")
-  [ ! -e "$session_dir/eci_active" ] || return 1
-  [ -f "$session_dir/eci-user-closed.ledger" ] || return 1
-  grep -Fqx 'user-closed: true' "$session_dir/eci-user-closed.ledger"
-
-  err="$TMP_ROOT/user-closed-replay.err"
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/user-closed-replay.out" 2>"$err"; then
-    return 1
-  fi
-  [ ! -e "$session_dir/eci_active" ] || return 1
-  [ "$(grep -Fc 'user-closed: true' "$session_dir/eci-user-closed.ledger")" -eq 1 ]
-
-  out="$TMP_ROOT/user-closed-stop-after.out"
-  jq -cn --arg cwd "$ROOT" --arg sid "$sid" \
-    '{session_id:$sid,cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-    CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$out"
-  jq -e '.continue == true' "$out" >/dev/null
-
-  # A report for an older session is an identity claim, never a hint to select
-  # the newest active marker.
-  stale_sid=session-stale-user-closed
-  mkdir -p "$proof_root/$stale_sid"
-  {
-    printf 'scope: stale report owner\n'
-    printf 'cwd: %s\n' "$ROOT"
-    printf 'session_id: %s\n' "$stale_sid"
-    printf 'created_utc: 2026-01-01T00:00:00Z\n'
-  } >"$proof_root/$stale_sid/eci_active"
-  stale_report="$proof_root/$stale_sid/user-closed.md"
-  sed "s/session_id: $sid/session_id: $stale_sid/; s#report_path: $report#report_path: $stale_report#" "$report" >"$stale_report"
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$sid" \
-    "$ROOT/bin/eci-active" off "$stale_report" >"$TMP_ROOT/user-closed-stale.out" 2>"$TMP_ROOT/user-closed-stale.err"; then
-    return 1
-  fi
-  grep -Fq 'ECI off session identity mismatch' "$TMP_ROOT/user-closed-stale.err"
-  [ -f "$proof_root/$stale_sid/eci_active" ]
 }
 
 test_manifest_write_is_role_neutral_and_target_safe() {
@@ -1719,7 +1629,6 @@ if [ "${ECI_EMIT_CURRENT_MANIFEST:-0}" = 1 ]; then
 fi
 
 test_reviewed_dirty_commit_and_off_review_are_nonblocking
-test_user_closed_teardown_is_single_terminal_route
 test_manifest_write_is_role_neutral_and_target_safe
 test_malformed_commit_identity_does_not_skip_active_gate
 test_commit_parser_wrappers_and_unknown_fail_closed

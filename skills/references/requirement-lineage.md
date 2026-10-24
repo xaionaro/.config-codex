@@ -31,9 +31,11 @@ requirement.
 
 A repair is current-lane work when the record shows it is necessary to meet or
 prove that outcome. A discovered concern whose remedy
-serves a separate outcome is an observation or follow-up suggestion, not a user
+serves an unadmitted separate outcome is an observation or follow-up suggestion, not a user
 requirement, current lane, assignment, code change, review, forecast, deadline,
 or proof program.
+
+Authorized decomposition or related work may receive a child Job under the [recursive Job contract](../explore-critique-implement/references/task-orchestrator.md#recursive-child-admission-and-closure). Preserve its authorization source, stable parent chain, distinct outcome, and upward reporting route; no renewed user request is needed within that mandate. A discovery alone never supplies authorization.
 
 Pressure check: a user requests useful diagnostics; investigation reveals an
 unrelated potential secret/log concern. Preserve the diagnostics work and record the concern as a post-ECI
@@ -50,7 +52,7 @@ code change, review, deadline, forecast, or proof program.
 - Reconcile missing context in parallel with safe work. For example, assign an
   explorer to recover the connection between an existing user requirement and
   a current implementation lane.
-- Ask the user only when the proposed work introduces a genuinely new material
+- Ask the user only when the proposed work introduces a genuinely unauthorized new material
   outcome or a material ambiguity that cannot be resolved from the current
   request and ledger. Do not ask merely because an identifier or record is
   absent.

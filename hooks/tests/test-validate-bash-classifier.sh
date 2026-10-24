@@ -2431,7 +2431,7 @@ assert_worker_review_gate_denied() {
 assert_worker_control_script_denied() {
   local launcher="$1" runner="${2:-run_subagent_hook}" output
   output="$("$runner" "$launcher")"
-  jq -e --arg canonical_target "$ROOT/hooks/stop-gate.sh" '
+  jq -e --arg canonical_target "$ROOT/hooks/eci-active-gate.sh" '
     .hookSpecificOutput.permissionDecision == "deny" and
     (.hookSpecificOutput.permissionDecisionReason | contains("[ECI_WORKER_CONTROL_SCRIPT_DENIED]")) and
     (.hookSpecificOutput.permissionDecisionReason | contains("operation=worker-control-script")) and
@@ -2453,8 +2453,8 @@ assert_worker_gate_case() {
   local command="$1" runner="${2:-run_subagent_hook}"
   case "$command" in
     *"eci-review-gate.sh"*) assert_worker_review_gate_denied "$command" "$runner" ;;
-    "bash -n hooks/stop-gate.sh"|"sh -n hooks/stop-gate.sh") assert_allowed "$command" "$runner" ;;
-    *"stop-gate.sh"*) assert_worker_control_script_denied "$command" "$runner" ;;
+    "bash -n hooks/eci-active-gate.sh"|"sh -n hooks/eci-active-gate.sh") assert_allowed "$command" "$runner" ;;
+    *"eci-active-gate.sh"*) assert_worker_control_script_denied "$command" "$runner" ;;
     *)
       printf 'unknown worker gate fixture: %q\n' "$command" >&2
       return 1
@@ -2472,11 +2472,11 @@ run_matrix_parallel worker assert_worker_gate_case worker-gate-entrypoints \
   "bash $ROOT/hooks/eci-review-gate.sh unknown t00-session" \
   "bash $ROOT/hooks/eci-review-gate.sh commit" \
   "bash $ROOT/hooks/eci-review-gate.sh commit t00-session extra" \
-  "bash -O extglob $ROOT/hooks/stop-gate.sh" \
-  "bash --noprofile $ROOT/hooks/stop-gate.sh" \
-  "bash -n hooks/stop-gate.sh" \
-  "sh -n hooks/stop-gate.sh" \
-  "sh -e $ROOT/hooks/stop-gate.sh"
+  "bash -O extglob $ROOT/hooks/eci-active-gate.sh" \
+  "bash --noprofile $ROOT/hooks/eci-active-gate.sh" \
+  "bash -n hooks/eci-active-gate.sh" \
+  "sh -n hooks/eci-active-gate.sh" \
+  "sh -e $ROOT/hooks/eci-active-gate.sh"
 output="$(run_subagent_hook "python3 -c 'open(\"$proof_root/t00-session/eci_wait\",\"w\").write(\"x\")'")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
@@ -2772,7 +2772,7 @@ for isolated_structural_command in \
   assert_isolated_coordinator_structural_allowed "$isolated_structural_command"
 done
 assert_isolated_coordinator_structural_allowed \
-  "bash $isolated_coordinator_script_relative && bash -n hooks/stop-gate.sh"
+  "bash $isolated_coordinator_script_relative && bash -n hooks/eci-active-gate.sh"
 
 isolated_coordinator_outside="$TMP_ROOT/isolated-coordinator-outside.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$isolated_coordinator_outside"
@@ -3510,8 +3510,8 @@ run_hook_matrix_parallel allowed coordinator-structural-diagnostics \
   "bash -x hooks/tests/test-eci-review-gate.sh" \
   "bash -x hooks/tests/test-eci-review-gate.sh 2>&1 | tail -n 200"
 run_hook_matrix_parallel allowed coordinator-read-only-syntax-compounds \
-  "bash hooks/tests/test-eci-fast-path.sh && bash -n hooks/stop-gate.sh" \
-  "bash hooks/tests/test-eci-command-plan.sh && bash -n hooks/stop-gate.sh"
+  "bash hooks/tests/test-eci-fast-path.sh && bash -n hooks/eci-active-gate.sh" \
+  "bash hooks/tests/test-eci-command-plan.sh && bash -n hooks/eci-active-gate.sh"
 run_hook_matrix_parallel unknown coordinator-rejected-batches \
   "bash hooks/tests/test-eci-fast-path.sh && bash -c 'true'" \
   "bash -x hooks/tests/test-eci-review-gate.sh 2>&1 | cat" \

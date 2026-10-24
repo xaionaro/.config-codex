@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# TODO: Retire legacy ECI marker-dependent command planning with the remaining hook migration.
 """Classify one finite literal shell command plan for the ECI Bash gate."""
 
 from __future__ import annotations

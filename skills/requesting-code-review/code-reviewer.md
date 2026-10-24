@@ -3,7 +3,7 @@
 You are reviewing code changes for production readiness.
 
 Follow any Stop-hook prompt in this session, including required proof/checklist files.
-Fix blockers within your assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
+Reviewers investigate and report; responsible writers repair under existing disposition authority. Escalate recovery needing out-of-scope changes, unrelated user work, credentials, or approval to the current owner.
 
 **Your task:**
 1. Review {WHAT_WAS_IMPLEMENTED}

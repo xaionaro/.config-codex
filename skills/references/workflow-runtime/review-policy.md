@@ -6,6 +6,8 @@ ECI-specific routing below governs ECI outcomes. For nested ECI, the owning oute
 
 ## Evidence and severity
 
+Apply [impact-first delivery](../../explore-critique-implement/references/fast-path.md#impact-first-provisional-delivery) and [security follow-ups](../../../CODEX.md#decisions) before severity, `now`, defer eligibility, or gate evaluation. Security follow-ups override the generic only-trivial defer rule below.
+
 Tag factual claims when precision matters and name their source/confidence. Verify load-bearing source-backed claims independently; no peer output is trusted by default. An omitted tag is a review gap to clarify, not a permission gate. A reviewer’s first response to another agent’s input identifies a concern, gap, or question.
 
 Evidence tests the result; a record, receipt, hash, or packet shape never permits or blocks ordinary work. Unsupported evidence can invalidate the conclusion that relies on it, not unrelated bounded work.
@@ -20,7 +22,7 @@ Review every applicable root-cause rationale and regression explanation. Unknown
 
 ## Impact-proportional routing
 
-Screen scope before severity. A remedy is `now` only when it is necessary to meet or prove the original user outcome; labels such as acceptance criteria, security, correctness, specification, contract/interface, persistence, concurrency, admission, TDD, proof, regression, verification, or required test do not independently make it current work. A repair with a clear link to meeting or proving that outcome is a current-lane repair, not a substitute requirement. Within ECI, maintain one TODO under [Main ECI quality responsibility](../../explore-critique-implement/references/fast-path.md#main-eci-quality-responsibility) for each already-discovered lower-priority code issue that remains unfixed: reuse a covering TODO, update it if stale or incomplete, and add one only if absent. It changes no scope, priority, or in-scope disposition, and never replaces a required in-scope repair. A separate-outcome issue remains post-ECI; its TODO is the only code change directed at it, with no separate issue-specific investigation, repair, lane, blocker, deadline, forecast, proof, or review. Keep the TODO in the bounded Producer assignment and full current-diff review, followed by the usual independent verification and checkpoint; if no assignment covers it, route a bounded TODO-only Producer assignment under the linked rule. Do not limit review to the TODO hunk. Split mixed remedies.
+Screen scope before severity. A remedy is `now` only when it is necessary to meet or prove the original user outcome; labels such as acceptance criteria, security, correctness, specification, contract/interface, persistence, concurrency, admission, TDD, proof, regression, verification, or required test do not independently make it current work. A repair with a clear link to meeting or proving that outcome is a current-lane repair, not a substitute requirement. Within ECI, maintain one TODO under [Main ECI quality responsibility](../../explore-critique-implement/references/fast-path.md#main-eci-quality-responsibility) for each already-discovered lower-priority code issue that remains unfixed: reuse a covering TODO, update it if stale or incomplete, and add one only if absent. It changes no scope, priority, or in-scope disposition, and never replaces a required in-scope repair. An unadmitted separate-outcome issue remains post-ECI; its TODO is the only code change directed at it, with no separate issue-specific investigation, repair, lane, blocker, deadline, forecast, proof, or review. Keep the TODO in the bounded Producer assignment and full current-diff review, followed by the usual independent verification and checkpoint; if no assignment covers it, route a bounded TODO-only Producer assignment under the linked rule. Do not limit review to the TODO hunk. Split mixed remedies.
 
 After scope-screening, for ECI work (including ECI nested in ATE), order in-scope findings and remedies by [Main ECI quality responsibility](../../explore-critique-implement/references/fast-path.md#main-eci-quality-responsibility). This changes work order only; it does not alter `now` or defer eligibility.
 
@@ -44,6 +46,8 @@ All report only. A/B/C independently classify findings and state impact. Critic 
 
 ## Review packet and finding contract
 
+Include the shared [review investigation responsibility](../review-investigation.md) in reviewer packets.
+
 Normal reviewer packets contain original user requirements, exact target/diff, objective/criteria, readable lineage context, available evidence, and scrutiny rules. For a checkpointed review, the packet names the checkpoint and states explicit exclusions. The checkpointed `current diff` is the named parent-to-checkpoint range. Respect explicit exclusions and exclude later ambient worktree changes. This is review scope, not admission proof. Every finding attaches to a specific option/target with severity, impact (`trivial` or `substantive`), one-line rationale, evidence location, and concrete fix direction. Missing presentation detail is repaired in the review report; it is not a work-admission test.
 
 ECI packets also cover retained fast changes through the [adoption boundary](../../explore-critique-implement/references/fast-path.md#adoption-review-and-closure); report missing cumulative coverage or stale final-state evidence.
@@ -54,7 +58,7 @@ Required E2E uses the shortest faithful real path that proves the original crite
 
 ## Gate evaluation
 
-After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean iteration gate has no remaining `now` issue and all required same-run focused proof; final acceptance also needs the final E2E pair when triggered. A post-ECI observation/follow-up for a separate outcome, valid defer, and ignored contradiction are not clean-pass defects.
+After all required reports, pre-route findings. At least one substantive `now` REJECT/CONDITIONAL, or design/API-uncertain E2E failure, becomes one design-revision issue batch for re-exploration/critique. A trivial `now` REJECT/CONDITIONAL or trivial E2E failure returns in one implementer repair batch. A clean iteration gate has no remaining `now` issue and all required same-run focused proof; final acceptance also needs the final E2E pair when triggered. A post-ECI observation/follow-up for an unadmitted separate outcome, valid defer, and ignored contradiction are not clean-pass defects. Admitted child outcomes retain independent acceptance under the Job contract.
 
 The design-revision batch groups all remaining issues by affected artifact/API/contract and includes source reviewer, severity, impact, evidence location, exact issue text, relevant debt/defer reference, and acceptance criteria. Never patch substantive gate issues one by one without the design loop. Review caps and loop-breaker/BRP escalation remain owned by the outer workflow.
 

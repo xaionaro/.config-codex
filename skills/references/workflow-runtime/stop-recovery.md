@@ -4,7 +4,7 @@ Treat Stop as post-response continuation, not output control. A Stop result cann
 
 ## Concrete Recovery Boundary
 
-A valid direct active marker for the callback’s session and canonical working directory gets one useful `decision: "block"` reminder to resume actual work or perform normal teardown. Identical unchanged callbacks return `{"continue":true}`. A malformed or scope-mismatched direct marker remains a concrete first-callback boundary.
+Stop does not deny completion based on ECI lifecycle state or ECI marker presence. Native goals provide continuation; the Supervisor owns ordinary teardown and goal synchronization.
 
 Only a resolved direct scope mistake, cross-session target, or destructive/broad target warrants recovery before ordinary work can proceed. State the exact target, repair it or choose the narrow safe route, then continue.
 

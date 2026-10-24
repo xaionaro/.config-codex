@@ -4,13 +4,6 @@ set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HOOK_DIR/lib/eci-diagnostic.sh"
 
-# The active-ECI Stop path must provide loop-convergent remediation in the
-# diagnostic's remediation field, not only in its human-readable reason.
-grep -Fq 'ECI_STOP_ACTIVE_ECI)' "$HOOK_DIR/stop-gate.sh"
-grep -Fq 'do not retry or poll Stop while the marker and normalized control state are unchanged' "$HOOK_DIR/stop-gate.sh"
-grep -Fq 'ECI_STOP_MARKER_UNSAFE)' "$HOOK_DIR/stop-gate.sh"
-grep -Fq 'repair the marker ownership and cwd/session binding at the reported path' "$HOOK_DIR/stop-gate.sh"
-
 assert_code() {
   local expected="$1" reason="$2" actual
   actual="$(eci_diagnostic_code_for_reason "$reason")"

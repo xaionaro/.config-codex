@@ -611,13 +611,4 @@ run_active aggregate-off "$report"
 [ ! -e "$proof_root/$session_id/eci-aggregate-teardown-complete" ] && \
   [ ! -L "$proof_root/$session_id/eci-aggregate-teardown-complete" ]
 
-# Stop uses the removed current marker as the lifecycle boundary. It must not
-# require a historic all-members receipt or a singleton manifest after the
-# aggregate parent has been closed.
-stop_output="$TMP_ROOT/aggregate-stop.json"
-jq -cn --arg session_id "$session_id" --arg cwd "$outer_cwd" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:""}' |
-  CODEX_HOME="$ROOT" CODEX_PROOF_ROOT="$proof_root" bash "$ROOT/hooks/stop-gate.sh" >"$stop_output"
-jq -e '.continue == true' "$stop_output" >/dev/null
-
 printf '%s\n' 'ECI aggregate recovery tests: PASS'

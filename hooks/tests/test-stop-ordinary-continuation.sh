@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-
-# Ordinary Stop callbacks use a private copied hook.  Workflow records and
-# callback metadata are advisory unless a valid direct marker names concrete
-# active work for this session.
-
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
@@ -13,25 +8,12 @@ TMP_ROOT="$(mktemp -d "$TMP_PARENT/stop-ordinary-continuation.XXXXXX")"
 FIXTURE_HOME="$TMP_ROOT/home"
 FIXTURE_CODEX="$FIXTURE_HOME/.codex"
 REPO="$TMP_ROOT/repo"
-
-cp -- "$ROOT/hooks/stop-gate.sh" "$TMP_ROOT/live-stop-gate.before"
-
-cleanup() {
-  local status=$?
-
-  if ! cmp -s "$TMP_ROOT/live-stop-gate.before" "$ROOT/hooks/stop-gate.sh"; then
-    printf '%s\n' 'the copied-hook test changed the live production Stop hook' >&2
-    status=1
-  fi
-  rm -rf -- "$TMP_ROOT"
-  exit "$status"
-}
-trap cleanup EXIT
-
+trap 'rm -rf -- "$TMP_ROOT"' EXIT
 # Smoke-test the copied PreToolUse hook bodies, removing a line-2 bypass if
 # present, with any callback state confined to the private fixture.
 mkdir -p -- "$FIXTURE_CODEX" "$FIXTURE_HOME/tmp" "$REPO"
 cp -a -- "$ROOT/hooks" "$FIXTURE_CODEX/hooks"
+cp -a -- "$ROOT/bin" "$FIXTURE_CODEX/bin"
 sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_CODEX/hooks/validate-bash.sh"
 sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_CODEX/hooks/pretooluse-edit-dispatch.sh"
 (
@@ -40,156 +22,4 @@ sed -i '2{/^exit 0$/d;}' -- "$FIXTURE_CODEX/hooks/pretooluse-edit-dispatch.sh"
   printf '%s\n' '{"tool_name":"Bash"}' | bash "$FIXTURE_CODEX/hooks/validate-bash.sh" >/dev/null
   printf '%s\n' '{"tool_name":"Edit"}' | bash "$FIXTURE_CODEX/hooks/pretooluse-edit-dispatch.sh" >/dev/null
 )
-
-git -C "$REPO" init -q
-git -C "$REPO" config user.email 'stop-ordinary@example.invalid'
-git -C "$REPO" config user.name 'Stop ordinary continuation test'
-printf 'base\n' >"$REPO/file.txt"
-git -C "$REPO" add file.txt
-git -C "$REPO" commit -qm 'initial fixture'
-
-run_stop() {
-  local input="$1" output="$2" proof_root="$3"
-
-  env -u CODEX_HOME -u CODEX_ROLE \
-    HOME="$FIXTURE_HOME" CODEX_PROOF_ROOT="$proof_root" \
-    bash "$FIXTURE_CODEX/hooks/stop-gate.sh" <"$input" >"$output"
-}
-
-assert_continue() {
-  local output="$1"
-
-  jq -e '.continue == true and (has("decision") | not)' "$output" >/dev/null || {
-    cat "$output" >&2
-    exit 1
-  }
-}
-
-write_activity_transcript() {
-  local transcript="$1"
-
-  mkdir -p -- "${transcript%/*}"
-  printf '%s\n' '{"type":"user","message":{"content":"inspect ordinary work"}}' >"$transcript"
-  printf '%s\n' '{"type":"response_item","payload":{"type":"function_call","name":"apply_patch","arguments":"{}"}}' >>"$transcript"
-}
-
-write_marker() {
-  local proof_root="$1" session="$2" marker_cwd="$3"
-  local marker="$proof_root/$session/eci_active"
-
-  mkdir -p -- "${marker%/*}"
-  printf 'scope: direct marker fixture\ncwd: %s\nsession_id: %s\ncreated_utc: 2026-08-28T00:00:00Z\n' \
-    "$marker_cwd" "$session" >"$marker"
-}
-
-# Clean post-user activity is ordinary work.  It must not be converted into a
-# manual-checklist Stop denial merely because no workflow marker was written.
-ordinary_proof="$TMP_ROOT/ordinary-proof"
-ordinary_session=ordinary-session
-ordinary_transcript="$FIXTURE_CODEX/sessions/$ordinary_session.jsonl"
-ordinary_input="$TMP_ROOT/ordinary-input.json"
-ordinary_output="$TMP_ROOT/ordinary-output.json"
-mkdir -p -- "$ordinary_proof"
-write_activity_transcript "$ordinary_transcript"
-jq -cn --arg session_id "$ordinary_session" --arg cwd "$REPO" --arg transcript "$ordinary_transcript" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' >"$ordinary_input"
-run_stop "$ordinary_input" "$ordinary_output" "$ordinary_proof"
-assert_continue "$ordinary_output"
-
-# An active ATE phase is workflow ceremony, not a concrete destructive or
-# cross-scope target.  It must be advisory and allow the callback to return.
-ate_proof="$TMP_ROOT/ate-proof"
-ate_session=ate-session
-ate_input="$TMP_ROOT/ate-input.json"
-ate_output="$TMP_ROOT/ate-output.json"
-ate_transcript="$FIXTURE_CODEX/sessions/$ate_session.jsonl"
-mkdir -p -- "$ate_proof/ate/sessions/$ate_session"
-printf '%s\n' 'phase: execution' >"$ate_proof/ate/sessions/$ate_session/ate_active"
-write_activity_transcript "$ate_transcript"
-jq -cn --arg session_id "$ate_session" --arg cwd "$REPO" --arg transcript "$ate_transcript" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' >"$ate_input"
-run_stop "$ate_input" "$ate_output" "$ate_proof"
-assert_continue "$ate_output"
-
-# A recursive callback with no direct marker continues even when a peer marker
-# exists.  Peer discovery and callback metadata cannot manufacture ownership.
-peer_proof="$TMP_ROOT/recursive-peer-proof"
-recursive_session=recursive-session
-peer_input="$TMP_ROOT/recursive-peer-input.json"
-peer_output="$TMP_ROOT/recursive-peer-output.json"
-mkdir -p -- "$peer_proof"
-write_marker "$peer_proof" peer-session "$REPO"
-jq -cn --arg session_id "$recursive_session" --arg cwd "$REPO" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:true}' >"$peer_input"
-run_stop "$peer_input" "$peer_output" "$peer_proof"
-assert_continue "$peer_output"
-
-# The same is true when the recursive callback has no marker records at all.
-empty_proof="$TMP_ROOT/recursive-empty-proof"
-empty_input="$TMP_ROOT/recursive-empty-input.json"
-empty_output="$TMP_ROOT/recursive-empty-output.json"
-mkdir -p -- "$empty_proof"
-jq -cn --arg session_id "$recursive_session" --arg cwd "$REPO" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:true}' >"$empty_input"
-run_stop "$empty_input" "$empty_output" "$empty_proof"
-assert_continue "$empty_output"
-
-# A valid direct marker retains its one useful reminder; this is the only
-# workflow record that can own the callback's active-work boundary.
-direct_proof="$TMP_ROOT/recursive-direct-proof"
-direct_session=direct-session
-direct_input="$TMP_ROOT/recursive-direct-input.json"
-direct_first="$TMP_ROOT/recursive-direct-first.json"
-direct_second="$TMP_ROOT/recursive-direct-second.json"
-mkdir -p -- "$direct_proof"
-write_marker "$direct_proof" "$direct_session" "$REPO"
-jq -cn --arg session_id "$direct_session" --arg cwd "$REPO" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:true}' >"$direct_input"
-run_stop "$direct_input" "$direct_first" "$direct_proof"
-jq -e '.decision == "block" and ((.reason // "") | contains("[ECI_STOP_ACTIVE_ECI]"))' \
-  "$direct_first" >/dev/null || {
-  cat "$direct_first" >&2
-  exit 1
-}
-run_stop "$direct_input" "$direct_second" "$direct_proof"
-assert_continue "$direct_second"
-
-# A hardlink changes neither the direct marker's owner nor its Stop reminder.
-shared_session=shared-marker-session
-shared_proof="$TMP_ROOT/shared-marker-proof"
-shared_input="$TMP_ROOT/shared-marker-input.json"
-shared_first="$TMP_ROOT/shared-marker-first.json"
-shared_second="$TMP_ROOT/shared-marker-second.json"
-write_marker "$shared_proof" "$shared_session" "$REPO"
-shared_marker="$shared_proof/$shared_session/eci_active"
-ln -- "$shared_marker" "$TMP_ROOT/ordinary-marker-hardlink"
-cp -- "$shared_marker" "$TMP_ROOT/shared-marker.before"
-jq -cn --arg session_id "$shared_session" --arg cwd "$REPO" \
-  '{session_id:$session_id,cwd:$cwd,transcript_path:"",stop_hook_active:false}' >"$shared_input"
-run_stop "$shared_input" "$shared_first" "$shared_proof"
-jq -e '.decision == "block" and ((.reason // "") | contains("[ECI_STOP_ACTIVE_ECI]"))' \
-  "$shared_first" >/dev/null || { cat "$shared_first" >&2; exit 1; }
-run_stop "$shared_input" "$shared_second" "$shared_proof"
-assert_continue "$shared_second"
-cmp -- "$TMP_ROOT/shared-marker.before" "$shared_marker"
-
-for transcript_kind in absent null empty string; do
-  optional_session="optional-$transcript_kind"
-  optional_proof="$TMP_ROOT/$optional_session-proof"
-  optional_input="$TMP_ROOT/$optional_session-input.json"
-  write_marker "$optional_proof" "$optional_session" "$REPO"
-  cp -- "$optional_proof/$optional_session/eci_active" "$TMP_ROOT/$optional_session.before"
-  jq -cn --arg session_id "$optional_session" --arg cwd "$REPO" --arg kind "$transcript_kind" \
-    --arg transcript "$ordinary_transcript" '
-    {session_id:$session_id,cwd:$cwd,stop_hook_active:false} +
-    (if $kind == "absent" then {} elif $kind == "null" then {transcript_path:null}
-     elif $kind == "empty" then {transcript_path:""} else {transcript_path:$transcript} end)' >"$optional_input"
-  run_stop "$optional_input" "$direct_first" "$optional_proof"
-  jq -e '.decision == "block" and ((.reason // "") | contains("[ECI_STOP_ACTIVE_ECI]"))' \
-    "$direct_first" >/dev/null || { cat "$direct_first" >&2; exit 1; }
-  run_stop "$optional_input" "$direct_second" "$optional_proof"
-  assert_continue "$direct_second"
-  cmp -- "$TMP_ROOT/$optional_session.before" "$optional_proof/$optional_session/eci_active"
-done
-
-printf '%s\n' 'ordinary Stop continuation assertions: PASS'
+printf 'PreToolUse copied-hook smoke: PASS\n'

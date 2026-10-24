@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Remove ECI marker discovery from this no-op callback; native goals own lifecycle.
 
 # PostCompact hook: validate the event without touching session state.
 # Codex 0.149 does not accept event-specific output fields for PostCompact, so

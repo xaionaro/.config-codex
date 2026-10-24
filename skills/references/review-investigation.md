@@ -1,0 +1,7 @@
+# Review investigation
+
+Actively investigate undesirable consequences of the code or design within the assigned review scope, including consequences of behavior working as intended. Brainstorm plausible hypotheses, investigate them against current sources and representative uses, and verify consequential claims with suitable checks. Use confirmed, refuted, and unresolved results to guide continued review. Pursue promising leads according to their plausible impact and uncertainty; passing tests or producing a hypothesis list does not discharge this responsibility. Support the verdict with decisive evidence and disclose material uncertainty. Report supported findings through the existing review contract; reviewers investigate and report, writers repair.
+
+## Adoption checks
+
+Examine the original directive, relevant contracts/consumers and actual proposed commitment or diff. Test consequential premises with a source-backed alternative or real input: could the action exclude authorized work or lose meaning while local checks pass? Report concrete findings with evidence and needed corrections, or no finding; do not redefine the whole problem. Preserve explicitly narrow or staged work and authorized semantic changes. The responsible writer resolves findings under existing disposition authority, applies the disposition and verifies the resulting artifact plus a representative consumer or action before dependent use. A review recommendation alone is not verified adoption or causal proof.

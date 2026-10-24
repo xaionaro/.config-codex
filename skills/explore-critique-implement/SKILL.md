@@ -11,13 +11,17 @@ Separate exploration, authoritative critique, implementation, and independent re
 
 Start only when CODEX selects ECI or active ATE explicitly routes bounded work through it. Loading this router alone does not start ECI. Use ECI for non-mechanical work with uncertainty, future behavior/routing/protocol risk, or two plausible approaches; classify by decision complexity and risk, not diff size. A one-line/local change is still non-trivial when it changes instructions, prompts, routing, protocols, public contracts, security, persistence, concurrency, architecture, or reviewer/agent behavior. Skip only a mechanical answer whose consequences are obvious, directly verifiable, and carry no future behavior or routing risk.
 
+On activation and closure, the Supervisor follows [native goal lifecycle](references/coordinator.md#native-goal-lifecycle).
+
 - Maintain requirement lineage and a project-understanding ledger. The active ECI/ATE lifecycle owns normal work; ATE may contain normal ECI. Keep forecast values in `forecasts.md`; project-understanding may link to it but must not duplicate them.
 - Apply [concurrent task scheduling](../../CODEX.md#concurrent-tasks) to new Jobs, independent progress, outcome-local gates, and root closure. Each outcome keeps its scope and Producer identities; ownership follows the [Job Orchestrator contract](references/task-orchestrator.md).
 - For material ECI work, keep `exact user source → faithful requested outcome →
   bounded scope`. A repair necessary to meet or prove that outcome stays current-lane work.
-  For each already-discovered lower-priority code issue that remains unfixed, add the TODO defined by [Main ECI quality responsibility](references/fast-path.md#main-eci-quality-responsibility). It does not change an in-scope disposition or replace its required repair; for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.
+  For each already-discovered lower-priority code issue that remains unfixed, add the TODO defined by [Main ECI quality responsibility](references/fast-path.md#main-eci-quality-responsibility). It does not change an in-scope disposition or replace its required repair; for an unadmitted separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.
   Missing or stale lineage never blocks known in-scope work.
 - Every admitted outcome starts main-path ECI and one [Fast Owner](references/fast-path.md) concurrently within its home Job. That module owns launch, lifetime, shared-tree priority, evidence feedback, adoption, and closure rules.
+- Apply [impact-first provisional delivery](references/fast-path.md#impact-first-provisional-delivery): deliver verified useful improvements over a broken baseline while the full quality and acceptance pipeline continues.
+- Jobs may recursively admit bounded authorized child packages under the [recursive Job contract](references/task-orchestrator.md#recursive-child-admission-and-closure). Each child owns the full pipeline and reports through its parent owner; unadmitted separate-outcome restrictions do not prohibit authorized child work.
 - Follow the normative [post-Fast completion sequence](references/fast-path.md#post-fast-completion).
 - Intermediate iteration progress remains concurrent.
 - Record `Stage: normal` for ECI; show main-path and Fast progress within each outcome, not as separate stages or automatic lanes.
@@ -63,6 +67,8 @@ Choose by assigned activity; mixed assignments use the highest applicable profil
 
 ## Module routing
 
+For bounded Linux host process families needing deadline/interruption cleanup or exact PID/birth cancellation, use [owned-command](../owned-command/SKILL.md); keep ordinary foreground inspection such as `rg --files` direct.
+
 Supervisor routes begin with [coordinator runtime](../references/workflow-runtime/coordinator-runtime.md). Use [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for governed writing/admission, [review policy](../references/workflow-runtime/review-policy.md) only for review/impact routing, [pause-all-work](../references/workflow-runtime/pause-all-work.md) only for its exact direct-user predicate, [stop recovery](../references/workflow-runtime/stop-recovery.md) only for recognized Stop diagnostics, and [policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md) only for workflow-policy changes.
 
 | Role | Required module | Conditional module/predicate |
@@ -71,7 +77,7 @@ Supervisor routes begin with [coordinator runtime](../references/workflow-runtim
 | `explorer` | [explore](references/explore.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned bug investigation; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for assigned governed source discovery |
 | `critic-step2` | [critique](references/critique.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for independent admission |
 | Producer (`implementer`) | [implement](references/implement.md) | [debugging-discipline](../debugging-discipline/SKILL.md) only for assigned code/debug work; [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for a governed scope |
-| Orchestrator | [task-orchestrator](references/task-orchestrator.md) | Candidate, handoff, or relay by bounded assignment; Job dispatch only after the Supervisor publishes ownership; shared [review policy](../references/workflow-runtime/review-policy.md) only for outcome-level review/evidence |
+| Orchestrator | [task-orchestrator](references/task-orchestrator.md) | Candidate, handoff, or relay by bounded assignment; Job dispatch only after its designated publisher publishes ownership under that contract; shared [review policy](../references/workflow-runtime/review-policy.md) only for outcome-level review/evidence |
 | `fast-owner` (Fast Owner Producer) | [ECI fast path](references/fast-path.md) | Early E2E only under [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing) |
 | Critic A/B/C, E2E | [review](references/review.md) | [coding-style admission](../references/workflow-runtime/coding-style-admission.md) only for reviewed governed scope; E2E follows [E2E cadence, scope, and timing](#e2e-cadence-scope-and-timing). |
 
@@ -99,4 +105,4 @@ Maintenance provenance: [coverage map](references/coverage-map.md).
 - A worker loads coordinator/blocker/pause/stop/teardown/review-runtime/pressure policy without explicit assignment.
 - A producer reviews itself, a blind critic reuses context, or review critics run sequentially.
 - A substantive gate finding is patched directly instead of returning through Explore/Critique.
-- A marker is removed to bypass routing or acceptance.
+- A lifecycle is closed to bypass routing or acceptance.

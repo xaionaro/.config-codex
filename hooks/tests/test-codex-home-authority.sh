@@ -8,8 +8,6 @@ trap 'rm -rf -- "$tmp"' EXIT
 
 home="$tmp/home"
 canonical_codex="$home/.codex"
-foreign_stop_root="$tmp/foreign-stop"
-foreign_stop_hook="$foreign_stop_root/hooks/stop-gate.sh"
 foreign_codex="$tmp/foreign-codex"
 proof_root="$tmp/proof"
 session_id=t00-copied-subagent
@@ -18,10 +16,9 @@ transcript="$canonical_codex/sessions/copied-subagent.jsonl"
 input="$tmp/input.json"
 output="$tmp/output.json"
 
-mkdir -p "$canonical_codex" "$foreign_stop_root/hooks" "$foreign_codex/sessions" \
+mkdir -p "$canonical_codex" "$foreign_codex/sessions" \
   "$proof_root/$session_id" "$cwd" "$canonical_codex/sessions"
 cp -a -- "$ROOT/hooks" "$canonical_codex/hooks"
-cp -- "$canonical_codex/hooks/stop-gate.sh" "$foreign_stop_hook"
 
 global_home="$tmp/global-home"
 global_codex="$global_home/.codex"
@@ -38,20 +35,6 @@ expected_global_paths="$expected_global_root"$'\n'"$expected_global_root/.eci-ac
   printf 'global authority paths followed poisoned CODEX_HOME: %s\n' "$global_paths" >&2
   exit 1
 }
-
-# A valid worker transcript must come from the HOME-rooted source.  The
-# incomplete proof makes a generic non-worker callback block, which keeps the
-# assertion sensitive to a poisoned CODEX_HOME redirect.
-printf '%s\n' '{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"t00-parent"}}}}}' \
-  >"$transcript"
-printf '%s\n' '# incomplete generic proof' >"$proof_root/$session_id/proof.md"
-jq -n --arg cwd "$cwd" --arg transcript "$transcript" --arg session_id "$session_id" \
-  '{session_id:$session_id,transcript_path:$transcript,stop_hook_active:false,cwd:$cwd}' \
-  >"$input"
-
-env -u CODEX_ROLE HOME="$home" CODEX_HOME="$foreign_codex" CODEX_PROOF_ROOT="$proof_root" \
-  bash "$foreign_stop_hook" <"$input" >"$output"
-jq -e '. == {"continue":true}' "$output" >/dev/null
 
 # Every active validate-bash route runs from this source.  CODEX_HOME may be
 # printed for diagnostics, but it must never be read as a path selector: a

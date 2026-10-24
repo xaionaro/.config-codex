@@ -66,18 +66,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc 'exec \"$HOME/.codex/hooks/stop-gate.sh\"'",
-            "timeout": 300,
-            "statusMessage": "Checking stop criteria"
-          }
-        ]
-      }
     ]
   }
 }

@@ -21,9 +21,17 @@ If a bug is assigned, load debugging-discipline and apply its direct-fix or unce
 
 The coordinator gives the exact change for this iteration in full context; active canonical requirement refs and alias map; register/state version; immutable lane and mutable assignment; complete path/edge evidence; derivation reason; admission binding; expanded requirement chain; existing related paths to reread; and all prior attempts, gate findings, changed files, and rejected reasons verbatim where applicable. Reject a proposed new material outcome that does not reach an active user requirement; reconcile missing lineage alongside known work.
 
-Trace each material option as `exact user source → faithful requested outcome → bounded scope`. A repair needed to meet or prove that outcome stays in the lane and is not a new direct requirement. Return a concern whose remedy serves a separate outcome only as a tagged observation or follow-up suggestion; do not turn it into an option or lane. Known in-scope work remains nonblocking while stale lineage is reconciled.
+Trace each material option as `exact user source → faithful requested outcome → bounded scope`. A repair needed to meet or prove that outcome stays in the lane and is not a new direct requirement. Return a concern whose remedy serves an unadmitted separate outcome only as a tagged observation or follow-up suggestion; do not turn it into an option or lane. Known in-scope work remains nonblocking while stale lineage is reconciled.
 
 For each option return `{what, why, where it applies, cost, tradeoffs}` and distinguish fact from inference with the required claim tag. State what is proven in the codebase/documented vendor behavior versus what requires a PoC. Do not treat an assumption, training recall, or an unverified URL as T1. Keep the bounded report focused on this iteration; do not smuggle unrelated future work into an option.
+
+## Ownership argument
+
+For a new capability/invariant or substantive responsibility change, include a concise source-backed ownership argument in each material option. Identify who owns its meaning, required information, enforcement, and lifecycle; these owners may differ. Trace relevant contracts and representative consumers. Compare extending an existing abstraction, changing the boundary, and an adapter where viable. Explain the chosen placement, what callers must know, and any duplicated policy. Give one concrete counterexample that would falsify the placement. Neither the deepest layer nor the existing abstraction is automatically correct; valid adapters and split ownership remain options.
+
+Apply [clean system and repair](../../../CODEX.md#clean-system-and-repair). For applicable resources, identify the maintained source and owner, effective configuration precedence, selected executable and installation owner, and service manager, instance, and data. Trace actual consumers. Compare reuse or repair against any proposed new authority; explain necessary copies and their lifecycle.
+
+Include owner changes needed to meet or prove the requested outcome within its bounded scope. Exclude unrelated cleanup.
 
 ## Style-source proposal
 

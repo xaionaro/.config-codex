@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Reconcile retired ECI lifecycle controls when the remaining marker-dependent hooks migrate.
 # Synchronize one provider's hook runtime through an explicit coordinator route.
 
 # Build absent runtime tools from this provider's sources. Existing executables

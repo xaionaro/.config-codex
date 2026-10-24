@@ -1382,11 +1382,11 @@ assert_post_fast_scope_and_disposition_contract() {
   recommendation_directive='The fresh Step 2 critic reviews every in-scope Fast finding and every in-scope Fast-originated changed hunk and recommends exactly one canonical disposition for each in-scope inventory item: retain, revise, replace, superseded, resolved-with-evidence, or policy-valid deferred-with-reason, under [main ECI quality responsibility](#main-eci-quality-responsibility).'
   final_evidence='The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
   final_now='The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
-  separate_outcome='Separate-outcome observations remain outside acceptance.'
+  separate_outcome='Unadmitted separate-outcome observations remain outside acceptance; admitted child outcomes retain their own acceptance evidence.'
   require_section_pattern "$text" 'scope-screen covers every Fast finding and hunk' \
     'Scope-screen every Fast finding and every Fast-originated changed hunk against `exact user source → faithful requested outcome → bounded scope`'
   require_section_pattern "$text" 'separate-outcome findings stay outside current work' \
-    'A separate-outcome finding stays a post-ECI observation/follow-up and creates no issue-specific repair, review, proof, or acceptance work'
+    'An unadmitted separate-outcome finding stays a post-ECI observation/follow-up and creates no issue-specific repair, review, proof, or acceptance work'
   require_section_pattern "$text" 'Fast-originated hunks stay review context' \
     'Keep every Fast-originated hunk in inventory/review context; do not expand authorization'
   require_active_literal_directive "$text" 'post-Fast scope-screen and source-outcome chain' "$scope_clause"
@@ -1429,7 +1429,7 @@ assert_post_fast_scope_and_disposition_contract() {
   require_section_pattern "$text" 'final coverage leaves no unresolved now finding' \
     'no unresolved in-scope `treatment: now` finding'
   require_section_pattern "$text" 'separate-outcome observations stay outside acceptance' \
-    'Separate-outcome observations remain outside acceptance'
+    'Unadmitted separate-outcome observations remain outside acceptance'
   require_active_literal_directive "$text" 'post-Fast Explorer restart and quality review' "$explorer_directive"
 }
 
@@ -1704,7 +1704,7 @@ assert_post_fast_completion() {
   contained_now='Send a `treatment: now` finding to the implementer once only if it is contained, in-scope, impact-trivial, and isolated.'
   final_evidence_line='   - The final cumulative Step 4 verifies every in-scope inventory item has exactly one disposition and final evidence.'
   final_now_line='   - The final cumulative Step 4 leaves no unresolved in-scope `treatment: now` finding or failed-eligibility `revise`/`replace` needing implementation.'
-  separate_outcome_line='   - Separate-outcome observations remain outside acceptance.'
+  separate_outcome_line='   - Unadmitted separate-outcome observations remain outside acceptance; admitted child outcomes retain their own acceptance evidence.'
   step2_directive="A fresh Step 2 critic independently assesses the current sources and Explorer's options."
   step2_line='3. '"$step2_directive"
   step4_tail='   - Earlier reviews alone cannot satisfy this sequence.'
@@ -1815,7 +1815,7 @@ $step2_line}"
     'supplies evidence for no-hunk resolutions and for non-retained, superseded, reverted, resolved, and deferred outcomes' \
     'verifies every in-scope inventory item has exactly one disposition and final evidence' \
     'no unresolved in-scope `treatment: now` finding' \
-    'Separate-outcome observations remain outside acceptance'; do
+    'Unadmitted separate-outcome observations remain outside acceptance'; do
     mutation="${text/"$clause"/REMOVED}"
     if output="$(assert_post_fast_completion_contract "$mutation" 2>&1)"; then
       fail "post-Fast mutation admitted missing requirement: $clause"
@@ -2883,7 +2883,8 @@ assert_yaml_understanding_contract() {
   require_text "$LEDGER" '| context, constraint |'
   require_text "$LEDGER" '.understanding-snapshot.XXXXXX'
   require_text "$LEDGER" 'stringKeys:true'
-  require_text "$LEDGER" 'Review the whole snapshot; affected records bound the native patch'
+  require_text "$LEDGER" 'Review the whole snapshot at existing QA/verdict, handoff, and shutdown checkpoints.'
+  require_text "$LEDGER" 'Between checkpoints, review affected subjects and linked contradictions rather than rescanning unrelated state for every event.'
   require_pattern "$LEDGER" 'native edits preserve the whole document' 'never[[:space:]]+serialize[[:space:]]+the[[:space:]]+whole[[:space:]]+document[[:space:]]+merely'
   require_pattern "$LEDGER" 'publication copies latest state' 'copy[[:space:]]+the[[:space:]]+latest[[:space:]]+snapshot[[:space:]]+to[[:space:]]+an[[:space:]]+owned'
   require_text "$LEDGER" 'set -o pipefail'
@@ -2928,7 +2929,7 @@ assert_primary_scope_fidelity_contract() {
   require_primary_scope_fidelity_text "$source" 'necessary repair remains current-lane work' \
     'A repair necessary to meet or prove that outcome stays current-lane work.' "$activation"
   require_primary_scope_fidelity_text "$source" 'separate outcome is only post-ECI follow-up' \
-    'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' "$activation"
+    'for an unadmitted separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' "$activation"
   if section_has_active_literal_directive "$activation" 'Treat a discovered concern serving a separate outcome as current-lane work.'; then
     fail "$source contradicts primary scope fidelity contract: separate outcome becomes current work"
   fi
@@ -2959,13 +2960,13 @@ assert_primary_scope_fidelity_contract_mutations() {
   [ "$mutation" != "$primary" ] || fail 'primary repair mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'necessary repair becomes a separate lane' "$mutation"
 
-  mutation="${primary/'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.'/'A concern serving a separate outcome is current work.'}"
+  mutation="${primary/'for an unadmitted separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.'/'A concern serving a separate outcome is current work.'}"
   [ "$mutation" != "$primary" ] || fail 'primary separate-outcome mutation did not alter its fixture'
   assert_primary_scope_fidelity_mutation_is_rejected "$ECI" 'separate outcome becomes current work' "$mutation"
 
   assert_active_literal_directive_fixtures \
     assert_primary_scope_fidelity_contract "$ECI" "$primary" \
-    'for a separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' \
+    'for an unadmitted separate-outcome issue, its TODO is the only code edit and the issue remains post-ECI.' \
     'Treat a discovered concern serving a separate outcome as current-lane work.' \
     'primary scope fidelity contract'
 
@@ -3044,7 +3045,7 @@ assert_scope_fidelity_coordinator_contract() {
   require_scope_fidelity_text "$source" 'necessary repair stays current lane' \
     'A repair needed to meet or prove that outcome stays in its current lane;' "$input"
   require_scope_fidelity_text "$source" 'separate outcome remains post-ECI' \
-    'separate-outcome concern is only a post-ECI observation or follow-up, never' "$input"
+    'unadmitted separate-outcome concern is only a post-ECI observation or follow-up, never' "$input"
   require_scope_fidelity_text "$source" 'separate outcome cannot create current work or forecasts' \
     'current work or a forecast.' "$input"
   require_scope_fidelity_text "$source" 'stale lineage remains nonblocking' \
@@ -3113,7 +3114,7 @@ assert_scope_fidelity_critique_contract() {
   local source="$1" input="$2"
 
   require_scope_fidelity_text "$source" 'Step 2 rejects separate outcome presented as current scope' \
-    'REJECT a discovered concern whose remedy serves a separate outcome when presented as current scope,' "$input"
+    'REJECT a discovered concern whose remedy serves an unadmitted separate outcome when presented as current scope,' "$input"
   require_scope_fidelity_text "$source" 'stale lineage is not a rejection gate' \
     'Stale lineage does not reject known in-scope work.' "$input"
 }
@@ -3425,6 +3426,167 @@ assert_ate_explicit_only() {
   done
 }
 
+assert_recursive_job_contract() {
+  local text="$1" clause
+  for clause in \
+    '**J** counts every unclosed Job once across the whole lifecycle' \
+    'A Job closes only when all home outcomes are accepted or cancellation-closed, all child Jobs are closed, all subtree Writers are observed stopped, and all produced reports are accounted for' \
+    'Pending transfers, report drains, and cancellation cleanup keep the Job counted' \
+    'Job B satisfies the closure predicate, leaving A1/A2; J returns to 1 while N = 2' \
+    'A → B → C; N = 0; C has pending Writer/report cleanup; J = 3' \
+    'A/B/C remain counted until the subtree satisfies closure; then J = 0' \
+    'Children may admit further children by the same rule' \
+    'Each child has its own requirements and full ECI pipeline' \
+    'The publisher is the root Supervisor for root Jobs and the current parent Job owner for child Jobs' \
+    'For initial publication, the publisher is the named interim owner; during transfer, the outgoing owner remains effective until publication' \
+    'rechecks J, Job membership, current ownership, and the current parent owner before publishing' \
+    'immediate child owners receive the new upward reporting route' \
+    'Transfer held reports through the publisher' \
+    'Former, withdrawn, and non-current owners relay reports through the current parent route' \
+    'Cancel a Job recursively through its descendants' \
+    'leave unrelated siblings running' \
+    'coordination handback never flattens the Job tree' \
+    'A child-local lookup never substitutes for the root-global fresh lookup'; do
+    [[ "$text" == *"$clause"* ]] || fail "recursive Job contract missing: $clause"
+  done
+  [[ "$text" != *'B1 closes, leaving A1/A2; J returns to 1'* ]] ||
+    fail 'recursive Job contract admits outcome-only premature J transition'
+  [[ "$text" != *'The Supervisor remains that Job’s explicit interim owner'* &&
+     "$text" != *'Transfer held reports through the Supervisor'* &&
+     "$text" != *'A non-current owner relays reports to the Supervisor'* ]] ||
+    fail 'recursive Job contract bypasses child publisher or parent report route'
+}
+
+assert_recursive_jobs() {
+  local text clause output mutation
+  text="$(<"$ROOT/skills/explore-critique-implement/references/task-orchestrator.md")"
+  assert_recursive_job_contract "$text"
+  require_text "$ECI" 'Job dispatch only after its designated publisher publishes ownership'
+  require_text "$FAST_PATH" 'including a child-Job outcome'
+  require_text "$FAST_PATH" 'Completion and post-Fast rules apply independently to every assigned outcome'
+  require_text "$STATUS_REPORT" 'serving an unadmitted separate outcome'
+  require_text "$STATUS_REPORT" 'assigned outcome, including child-Job outcomes'
+  require_text "$LINEAGE" 'genuinely unauthorized new material'
+  require_text "$REVIEW_POLICY" 'for an unadmitted separate outcome'
+  # Every condition prevents premature closure, flattened ownership, or local-only lookup.
+  for clause in \
+    'Job B satisfies the closure predicate' \
+    'C has pending Writer/report cleanup; J = 3' \
+    'all home outcomes are accepted or cancellation-closed' \
+    'all child Jobs are closed' \
+    'all subtree Writers are observed stopped' \
+    'all produced reports are accounted for' \
+    'Pending transfers, report drains, and cancellation cleanup keep the Job counted' \
+    'the current parent Job owner for child Jobs' \
+    'and the current parent owner before publishing' \
+    'immediate child owners receive the new upward reporting route' \
+    'through the current parent route' \
+    'leave unrelated siblings running' \
+    'A child-local lookup never substitutes for the root-global fresh lookup'; do
+    mutation="${text//"$clause"/}"
+    if output="$(assert_recursive_job_contract "$mutation" 2>&1)"; then
+      fail "recursive Job mutation admitted missing: $clause"
+    fi
+    [[ "$output" == *'recursive Job contract missing'* ]] || fail "unexpected mutation failure: $output"
+  done
+  if output="$(assert_recursive_job_contract "$text | B1 closes, leaving A1/A2; J returns to 1 |" 2>&1)"; then
+    fail 'recursive Job mutation admitted outcome-only premature J transition'
+  fi
+  [[ "$output" == *'outcome-only premature J transition'* ]] || fail "unexpected mutation failure: $output"
+  for clause in 'The Supervisor remains that Job’s explicit interim owner' \
+    'Transfer held reports through the Supervisor' 'A non-current owner relays reports to the Supervisor'; do
+    if output="$(assert_recursive_job_contract "$text $clause" 2>&1)"; then
+      fail "recursive Job mutation admitted parent-route bypass: $clause"
+    fi
+    [[ "$output" == *'bypasses child publisher'* ]] || fail "unexpected mutation failure: $output"
+  done
+}
+
+assert_delivery_contract() {
+  local codex="$1" fast="$2" policy="$3" goal previous='' clause
+  for goal in '1. It works.' '2. The design is correct.' '3. High code quality.' '4. Reliable.' \
+    '5. Observable.' '6. Scalable, when applicable.' '7. High performance.' '8. Secure'; do
+    [[ "$codex" == *"$goal"* ]] || fail "engineering goal missing: $goal"
+    [[ -z "$previous" ]] || require_order "$codex" "$previous" "$goal" || fail 'engineering goals reordered'
+    previous="$goal"
+  done
+  for clause in 'Achieve all applicable goals' 'An unfinished lower-priority improvement never blocks a higher-priority improvement' \
+    'Security findings are always follow-up work' \
+    'They never block provisional delivery or final functional acceptance' \
+    'Split mixed findings and judge actual requested functional behavior separately' \
+    'do not relabel a security concern as functional' \
+    'Existing instructions protecting credentials, secrets, user work, and authorized actions still govern execution'; do
+    [[ "$codex" == *"$clause"* ]] || fail "delivery contract missing: $clause"
+  done
+  for clause in 'When it provides a useful improvement, deliver it promptly even if it remains defective or incomplete' \
+    'Provisional delivery neither completes Fast nor accepts the outcome' \
+    'candidate whose defects eliminate its benefit does not establish an improvement' \
+    'External publishing or deployment still requires its existing authorization'; do
+    [[ "$fast" == *"$clause"* ]] || fail "delivery contract missing: $clause"
+  done
+  [[ "$policy" == *'before severity, `now`, defer eligibility, or gate evaluation'* ]] || fail 'security follow-up precedence missing'
+}
+
+assert_impact_delivery() {
+  local codex fast policy clause output mutation
+  codex="$(<"$CODEX")" fast="$(<"$FAST_PATH")" policy="$(<"$REVIEW_POLICY")"
+  assert_delivery_contract "$codex" "$fast" "$policy"
+  for clause in 'Achieve all applicable goals' 'An unfinished lower-priority improvement never blocks a higher-priority improvement' \
+    'Security findings are always follow-up work' \
+    'They never block provisional delivery or final functional acceptance' \
+    'Split mixed findings and judge actual requested functional behavior separately' \
+    'do not relabel a security concern as functional' \
+    'Existing instructions protecting credentials, secrets, user work, and authorized actions still govern execution' \
+    '4. Reliable' '8. Secure'; do
+    mutation="${codex//"$clause"/}"
+    if output="$(assert_delivery_contract "$mutation" "$fast" "$policy" 2>&1)"; then
+      fail "delivery mutation admitted missing: $clause"
+    fi
+  done
+  for clause in 'When it provides a useful improvement, deliver it promptly even if it remains defective or incomplete' \
+    'Provisional delivery neither completes Fast nor accepts the outcome' \
+    'candidate whose defects eliminate its benefit does not establish an improvement' \
+    'External publishing or deployment still requires its existing authorization'; do
+    mutation="${fast//"$clause"/}"
+    if output="$(assert_delivery_contract "$codex" "$mutation" "$policy" 2>&1)"; then
+      fail "delivery mutation admitted missing: $clause"
+    fi
+  done
+  mutation="${codex/'4. Reliable.'/'PRIORITY_PLACEHOLDER'}"
+  mutation="${mutation/'8. Secure'/'4. Reliable.'}"
+  mutation="${mutation/'PRIORITY_PLACEHOLDER'/'8. Secure'}"
+  if output="$(assert_delivery_contract "$mutation" "$fast" "$policy" 2>&1)"; then
+    fail 'delivery mutation admitted security before reliability'
+  fi
+  [[ "$output" == *'engineering goals reordered'* ]] || fail "unexpected priority mutation failure: $output"
+  mutation="${policy/'before severity, `now`, defer eligibility, or gate evaluation'/'after security blocker evaluation'}"
+  if output="$(assert_delivery_contract "$codex" "$fast" "$mutation" 2>&1)"; then
+    fail 'delivery mutation admitted security blockers before follow-up routing'
+  fi
+  [[ "$output" == *'security follow-up precedence missing'* ]] || fail "unexpected security mutation failure: $output"
+}
+
+# Focused policy checks avoid unrelated legacy failures without weakening the default suite.
+if [[ "${1:-}" == '--eci-hierarchy-contract' ]]; then
+  assert_recursive_jobs
+  assert_impact_delivery
+  assert_concurrent_tasks
+  assert_task_root_closure
+  assert_scope_fidelity_pressure_fixtures
+  assert_scope_fidelity_pressure_mutations_are_rejected
+  assert_primary_scope_fidelity_contract "$ECI" "$(<"$ECI")"
+  assert_primary_scope_fidelity_contract_mutations
+  assert_post_fast_completion
+  assert_fast_quality
+  assert_lineage_context_contract
+  assert_status_lane_stage_contract
+  assert_local_links_resolve
+  printf 'ECI hierarchy, delivery, and affected scope contracts passed\n'
+  exit 0
+fi
+
+assert_recursive_jobs
+assert_impact_delivery
 assert_local_links_resolve
 assert_ate_explicit_only
 assert_role_rows_are_local

@@ -88,6 +88,7 @@ status_line = ["model-with-reasoning", "git-branch", "total-input-tokens", "tota
 terminal_title = ["activity", "project-name", "task-progress"]
 screen_reader_detection_done = true
 status_line_use_colors = true
+pet = "disabled"
 
 [tui.model_availability_nux]
 "gpt-5.5" = 4
@@ -335,6 +336,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/mnt/nvme0n1/home/pheona/go/src/github.com/xaionaro-go/uefisettings"]
+trust_level = "trusted"
+
+[projects."/mnt/nvme0n1/home/pheona/src/php2shell"]
 trust_level = "trusted"
 
 [hooks.state]

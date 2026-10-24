@@ -1,5 +1,7 @@
 package main
 
+// TODO: Separate concrete target checks from the retired ECI marker activation state.
+
 import (
 	"fmt"
 	"os"

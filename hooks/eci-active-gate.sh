@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Retire ECI marker control-path handling while preserving concrete session ownership checks.
 # PreToolUse hook: protect active ECI control and ledger targets during edits.
 
 set -euo pipefail

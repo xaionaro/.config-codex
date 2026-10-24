@@ -234,24 +234,6 @@ assert_codex_help_examples_use_literal_home_path() {
   }
 }
 
-# Normal teardown must not send a coordinator into manifest/receipt recovery.
-# The current marker/CWD and supplied report are the lifecycle boundaries;
-# historical review metadata is reconciled without another command ceremony.
-assert_teardown_history_needs_no_lifecycle_recovery() {
-  local lifecycle_source="$ROOT/bin/eci-active"
-
-  grep -Fq 'reconcile_teardown_history' "$lifecycle_source" || {
-    printf '%s\n' 'normal teardown does not reconcile historical metadata:' >&2
-    exit 1
-  }
-  if grep -Fq 'provider-native critic/receipt evidence is missing or invalid' "$lifecycle_source" ||
-    grep -Fq 'manifest-write <TMPDIR>/eci-required-critics.json.source' "$lifecycle_source" ||
-    grep -Fq 'write_teardown_receipt' "$lifecycle_source"; then
-    printf '%s\n' 'normal teardown still requires historical artifact recovery:' >&2
-    exit 1
-  fi
-}
-
 # `$HOME/.codex` is the selected source authority even when HOME itself is a
 # stable filesystem alias.  The executable may discover its own directory
 # physically, but it must compare that physical identity to the resolved
@@ -304,40 +286,6 @@ assert_kimi_help_success() {
     cat -- "$output" >&2
     exit 1
   fi
-}
-
-assert_role_label_does_not_block_on_or_status() {
-  local role_proof_root="$TMP_ROOT/role-proof"
-  local role_marker="$role_proof_root/t00-role/eci_active"
-
-  mkdir -p -- "$role_proof_root"
-  if ! (
-    cd "$ROOT"
-    HOME="$fixture_home" CODEX_ROLE=worker CODEX_SESSION_ID=t00-role \
-      CODEX_PROOF_ROOT="$role_proof_root" "$fixture_eci" on 'role-labeled lifecycle fixture'
-  ) >"$output" 2>"$stderr_output"; then
-    printf '%s\n' 'role label blocked ordinary eci-active on:' >&2
-    cat -- "$stderr_output" >&2
-    exit 1
-  fi
-  [ -f "$role_marker" ] && [ ! -L "$role_marker" ] || {
-    printf '%s\n' 'role-labeled eci-active on did not create its direct session marker' >&2
-    exit 1
-  }
-  if ! (
-    cd "$ROOT"
-    HOME="$fixture_home" CODEX_ROLE=worker CODEX_SESSION_ID=t00-role \
-      CODEX_PROOF_ROOT="$role_proof_root" "$fixture_eci" status
-  ) >"$output" 2>"$stderr_output"; then
-    printf '%s\n' 'role label blocked ordinary eci-active status:' >&2
-    cat -- "$stderr_output" >&2
-    exit 1
-  fi
-  grep -Fqx 'session_id: t00-role' "$output" || {
-    printf '%s\n' 'role-labeled eci-active status did not report the direct active marker' >&2
-    cat -- "$output" >&2
-    exit 1
-  }
 }
 
 run_hook_with_path() {
@@ -1019,11 +967,9 @@ assert_ledger_append_bootstraps_empty_log_and_reconciles_regular_history() {
 assert_help_success --help
 assert_help_success -h
 assert_codex_help_examples_use_literal_home_path
-assert_teardown_history_needs_no_lifecycle_recovery
 assert_home_alias_help_success
 assert_home_alias_context7_success
 assert_kimi_help_success
-assert_role_label_does_not_block_on_or_status
 assert_runtime_sync_rejects_resolved_self_target
 assert_alternate_active_sync_refreshes_resolved_home_source
 write_current_planner_provenance

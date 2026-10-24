@@ -19,7 +19,6 @@ EXPECTED_HOOK_COMMANDS=(
   "bash \"\$HOME/.codex/hooks/validate-bash.sh\""
   "bash \"\$HOME/.codex/hooks/pretooluse-edit-dispatch.sh\""
   "bash \"\$HOME/.codex/hooks/pretooluse-edit-dispatch.sh\""
-  "bash -lc 'exec \"\$HOME/.codex/hooks/stop-gate.sh\"'"
 )
 failures=0
 
@@ -76,26 +75,6 @@ fi
 if grep -Fq 'CODEX_HOME' "$CONTEXT7_MCP"; then
   fail "context7 MCP must not select its source or cache through CODEX_HOME"
 fi
-
-# A stale/copied Stop hook must not recover its helpers from its own location.
-# It must re-exec the HOME-bound source before parsing state.  Deliberately
-# poison CODEX_HOME too: it is not a lifecycle-source selector.
-source_probe_root="$(mktemp -d "${CODEX_TMPDIR:-${TMPDIR:-${HOME:?}/tmp}}/codex-stop-source.XXXXXX")"
-source_probe_hook="$source_probe_root/hooks/stop-gate.sh"
-source_probe_proof="$source_probe_root/proof"
-source_probe_output="$source_probe_root/output.json"
-mkdir -p "$source_probe_root/hooks" "$source_probe_proof"
-cp -- "$CANONICAL_CODEX_HOME/hooks/stop-gate.sh" "$source_probe_hook"
-if ! jq -cn --arg cwd "$CANONICAL_CODEX_HOME" \
-  '{session_id:"source-root-probe",cwd:$cwd,transcript_path:"",stop_hook_active:false}' |
-  env -u CODEX_ROLE HOME="$HOME" CODEX_HOME="$source_probe_root" \
-    CODEX_SESSION_ID=source-root-probe CODEX_PROOF_ROOT="$source_probe_proof" \
-    "$source_probe_hook" >"$source_probe_output"; then
-  fail "copied Stop hook did not transfer to the HOME-bound source"
-elif ! jq -e '. == {"continue":true}' "$source_probe_output" >/dev/null; then
-  fail "copied Stop hook did not return the canonical source result"
-fi
-rm -rf -- "$source_probe_root"
 
 if ! jq -e '
   [.hooks | .. | objects | select(.type? == "command") | .command] |

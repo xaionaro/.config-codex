@@ -2,6 +2,8 @@
 
 Fresh special `ECI critic-step2` only. It is authoritative for choosing an explored design, never a producer or implementation role. Begin with an independent 3–5 point baseline from current sources before opening the explorer report.
 
+Apply the shared [review investigation responsibility](../../references/review-investigation.md) throughout this assignment.
+
 Apply [fast evidence routing](fast-path.md#evidence-can-reopen-design) when assessing discoveries and reopened options; preserve independent source checks and winner selection.
 
 Apply [main ECI quality responsibility](fast-path.md#main-eci-quality-responsibility): assess the Fast design as a candidate on its merits; implementation status and passing tests alone do not justify selecting it.
@@ -13,7 +15,7 @@ Read the target state, original requirements, available lineage context, candida
 
 Records, hashes, receipts, and packet shape are review context, not admission criteria. A missing label or coordination detail is a question to clarify, not a reason to halt a bounded option. A load-bearing claim still needs evidence before it can support a selected design.
 
-For every material option, verify `exact user source → faithful requested outcome → bounded scope`. Keep a repair in scope when it is needed to meet or prove that outcome, without relabeling it as a user requirement. REJECT a discovered concern whose remedy serves a separate outcome when presented as current scope, and report it only as an observation or follow-up suggestion. Stale lineage does not reject known in-scope work.
+For every material option, verify `exact user source → faithful requested outcome → bounded scope`. Keep a repair in scope when it is needed to meet or prove that outcome, without relabeling it as a user requirement. REJECT a discovered concern whose remedy serves an unadmitted separate outcome when presented as current scope, and report it only as an observation or follow-up suggestion. Stale lineage does not reject known in-scope work.
 
 Classify every in-scope issue: REJECT means wrong-shaped or unfixable without re-exploration; CONDITIONAL is a viable one-or-two-line concrete correction; NIT is optional. Do not rewrite options. Report scope impact, debt/defer candidates, and acceptance concerns to coordinator; the coordinator owns final disposition application/treatment.
 
@@ -24,6 +26,8 @@ If one option has zero remaining material REJECTs, select the highest-ranked sur
 Before reading explorer output, read the current target/code/prior art and write a 3–5 bullet independent baseline. Assume every suggestion is wrong until evidence supports it. Verify alleged duplication, current behavior, source citations, and style applicability from primary source/code. Fetch each load-bearing T1/T2 URL when available, quote the supporting passage, and mark unavailable material `unverified — could not fetch` with whether the dependent claim is load-bearing. Sample T3/T4 rather than blindly trusting it. A fabricated/misquoted URL or training recall dressed as T1 rejects the dependent option.
 
 For governance/prompt/hook/protocol/reviewer changes, audit mechanism/predicate, emitted/user-facing wording, strongest supported wording, and one boundary counterexample. Reject certainty, task classification, provenance, LLM authority, or causal claim beyond mechanism evidence. Silent state maintenance does not prove reminder emission or task complexity; an optional LLM auxiliary must not be described as a synchronous hook gate unless source proves it.
+
+Independently validate each applicable [ownership argument](explore.md#ownership-argument) against current sources, contracts, and representative consumers. REJECT misplaced or duplicated responsibilities with a concrete failing scenario; return missing load-bearing ownership evidence for correction. Judge adapters and split ownership on their evidence, without presuming the deepest layer or existing abstraction is right. Necessary owner changes remain within the requested outcome; unrelated cleanup does not.
 
 ## Admission and coordinator handoff
 

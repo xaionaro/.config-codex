@@ -7,19 +7,19 @@ description: Use when writing, reviewing, shortening, tightening, deduplicating,
 
 Every token costs context window in every session. Waste is cumulative.
 
-**Core rule:** Every word earns its place. Removing a word doesn't change behavior? Remove it.
+**Core rule:** Apply [meaning-preserving compression](../../CODEX.md#response). Remove a word only when supported meaning stays intact and locally recoverable.
 
 ## Principles
 
 | # | Rule | Example |
 |---|------|---------|
-| 1 | One idea per sentence | Split compounds. Cut conjunctions. |
+| 1 | One idea per sentence | Split compounds. Preserve necessary connections. |
 | 2 | Rule first, not reasoning | "Push only after approval" before risk explanation. |
 | 3 | Preserve intent, not wording | Rewrite the user's phrasing into a sharper explicit rule. |
 | 4 | Positive form | Lead with the action to take: "Use relative paths instead of absolute paths." |
 | 5 | Tables over prose | Rows scan; paragraphs don't. |
 | 6 | Lean wording | Cut: "It is important to", "Make sure to", "In order to" |
-| 7 | Define once, reference elsewhere | Rule in table AND prose AND red flags? Keep table. |
+| 7 | Define once; keep references resolvable where consumed | Rule in table AND prose AND red flags? Keep table. |
 | 8 | Imperatives | "Tag all claims" not "All teammates should tag their claims" |
 | 9 | Specific over abstract | "Reject bare `uint64`" not "Ensure strong typing" |
 | 10 | Examples compress | One precise example replaces a paragraph. |
@@ -59,7 +59,7 @@ Test: 20%+ word reduction with same rules = better version.
 ## Process
 
 1. Write content.
-2. Each sentence: "Does this change behavior?" No -> delete.
+2. Each sentence: "Does removing this preserve supported meaning and local recoverability?" Yes -> delete.
 3. Deduplicate. Keep most scannable version (table > list > prose).
 4. 3+ parallel items -> table.
 5. Repeat 2-4 until no further cut preserves all rules.

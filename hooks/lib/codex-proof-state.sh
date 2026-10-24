@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Shared state helpers for Codex proof-adjacent hooks.
+# TODO: Retire ECI marker readers and marker-dependent coordination validation;
+# native goals own continuation and the Supervisor owns ECI lifecycle.
 
 codex_configured_proof_root() {
   printf '%s\n' "${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"

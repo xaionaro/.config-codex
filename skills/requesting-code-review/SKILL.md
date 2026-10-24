@@ -6,7 +6,7 @@ description: Use when completing tasks, implementing major features, or before m
 # Requesting Code Review
 
 Launch a dedicated code-reviewer subagent with `spawn_agent`; include the filled `requesting-code-review/code-reviewer.md` prompt in the subagent prompt body. The reviewer gets precise context for evaluation, never your session history.
-Every reviewer prompt must include: Follow any Stop-hook prompt in that session, including required proof/checklist files. Fix blockers within assigned scope. Report to the orchestrator only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
+Every reviewer prompt must include: Follow any Stop-hook prompt in that session, including required proof/checklist files. Reviewers investigate and report; responsible writers repair under existing disposition authority. Escalate recovery needing out-of-scope changes, unrelated user work, credentials, or approval to the orchestrator.
 
 **Core principle:** Review early, review often.
 
@@ -16,6 +16,7 @@ Every reviewer prompt must include: Follow any Stop-hook prompt in that session,
 - After each task in subagent-driven development
 - After completing major feature
 - Before merge to main
+- When CODEX calls for an [adoption check](../references/review-investigation.md#adoption-checks), unless an applicable review already covers that commitment
 
 **Optional but valuable:**
 - When stuck (fresh perspective)
@@ -24,7 +25,11 @@ Every reviewer prompt must include: Follow any Stop-hook prompt in that session,
 
 ## How to Request
 
-**1. Get git SHAs:**
+**1. Identify the actual review target:**
+
+For an adoption check, supply the actual draft, noncode commitment or uncommitted diff instead of completed-implementation and Git-range fields in the template. Include the original directive and relevant contracts/consumers; follow the shared adoption-check operation. Do not invent SHAs or wait for a commit to review a draft.
+
+For committed code, get git SHAs:
 ```bash
 BASE_SHA=$(git rev-parse HEAD~1)  # or origin/main
 HEAD_SHA=$(git rev-parse HEAD)
@@ -36,7 +41,7 @@ Launch a dedicated code-reviewer subagent with `spawn_agent`; include the filled
 
 **Placeholders:**
 - `{WHAT_WAS_IMPLEMENTED}` - What you just built
-- `{PLAN_OR_REQUIREMENTS}` - What it should do
+- `{PLAN_OR_REQUIREMENTS}` - Original directive/contracts; distinguish any proposed plan from requirements
 - `{BASE_SHA}` - Starting commit
 - `{HEAD_SHA}` - Ending commit
 - `{DESCRIPTION}` - Brief summary

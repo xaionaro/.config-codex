@@ -131,7 +131,7 @@ for role in coordinator worker; do
     "dd if=/dev/zero of=$null_alias count=1" \
     "env -C $TMP_ROOT/narrow rm -rf ../repository" \
     "env --chdir=$TMP_ROOT/narrow rm -rf ../repository" \
-    'bash -n hooks/stop-gate.sh | true' 'bash --noexec hooks/stop-gate.sh | true'; do
+    'bash -n hooks/eci-active-gate.sh | true' 'bash --noexec hooks/eci-active-gate.sh | true'; do
     run_hook "$role" "$subagent" "$command"
     if [ -s "$output" ] || [ -s "$stderr_output" ]; then
       printf 'ordinary effect rejected: role=%s command=%q\n' "$role" "$command" >&2
@@ -142,8 +142,8 @@ for role in coordinator worker; do
   for command in \
     "sort -o $marker_alias < $ordinary" "sort -o $proof_root/foreign/eci_active < $ordinary" \
     "grep -o $marker_alias $ordinary > $marker_alias" "wipefs --help > $marker_alias" \
-    "bash -n hooks/stop-gate.sh > $marker_alias | true" \
-    'bash -n hooks/stop-gate.sh | rm -rf /' \
+    "bash -n hooks/eci-active-gate.sh > $marker_alias | true" \
+    'bash -n hooks/eci-active-gate.sh | rm -rf /' \
     "env -C .. rm -rf ${ROOT##*/}" "env -C.. rm -rf ${ROOT##*/}" \
     "env --chdir .. rm -rf ${ROOT##*/}" "env --chdir=.. rm -rf ${ROOT##*/}" \
     'wipefs --all /dev/example' 'wipefs --offset 0 /dev/example' \
@@ -156,10 +156,10 @@ for role in coordinator worker; do
     }
   done
   if [ "$role" = worker ]; then
-    run_hook "$role" "$subagent" 'bash hooks/stop-gate.sh'
+    run_hook "$role" "$subagent" 'bash hooks/eci-active-gate.sh'
     jq -e '.hookSpecificOutput.permissionDecision == "deny"' "$output" >/dev/null
   else
-    run_hook "$role" "$subagent" 'bash hooks/stop-gate.sh | true'
+    run_hook "$role" "$subagent" 'bash hooks/eci-active-gate.sh | true'
     [ ! -s "$output" ] || {
       printf 'coordinator own control execution rejected: %s\n' "$(<"$output")" >&2
       exit 1
