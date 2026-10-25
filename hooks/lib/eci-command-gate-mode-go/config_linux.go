@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	// atSymlinkNoFollow prevents fstatat from resolving a named symlink.
-	atSymlinkNoFollow = 0x100
+	// pathOpenFlag obtains metadata without opening the object for I/O (Linux O_PATH).
+	//
+	// Example: paired with O_NOFOLLOW, it opens a dangling symlink itself.
+	pathOpenFlag = 0x200000
 	// directoryOpenFlags open one directory component without following aliases.
 	directoryOpenFlags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC
 	// regularReadFlags open an existing configuration file without following aliases.
@@ -520,13 +522,16 @@ func statDescriptor(fd int) (fileIdentity, error) {
 
 // statNamed reads one directory entry without following a symlink.
 //
-// Example: fstatat protects config reads from a swapped named entry.
+// Example: a dangling symlink yields its own metadata rather than its target's.
 func statNamed(parentFD int, name string) (fileIdentity, error) {
-	var metadata syscall.Stat_t
-	if err := syscall.Fstatat(parentFD, name, &metadata, atSymlinkNoFollow); err != nil {
+	// O_PATH preserves entry metadata without requiring read access or activating
+	// special files; syscall.Fstatat is unavailable on some Linux architectures.
+	fd, err := syscall.Openat(parentFD, name, pathOpenFlag|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
 		return fileIdentity{}, err
 	}
-	return fileIdentityFromStat(metadata), nil
+	identity, statErr := statDescriptor(fd)
+	return identity, errors.Join(statErr, syscall.Close(fd))
 }
 
 // statPathNoFollow validates a root path whose parent descriptor is not retained.

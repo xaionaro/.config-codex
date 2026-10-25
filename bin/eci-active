@@ -475,10 +475,10 @@ safe_import_fixed_session_leaf() (
     *) return 1 ;;
   esac
   importer="$(eci_runtime_artifact_path "$provider" eci-safe-import)" || return 1
-  if [ ! -f "$importer" ] || [ -L "$importer" ] || [ ! -x "$importer" ]; then
+  if ! eci_runtime_binary_is_native "$importer"; then
     eci_runtime_build_missing "$base_dir" eci-safe-import || return 1
   fi
-  [ -f "$importer" ] && [ ! -L "$importer" ] && [ -x "$importer" ] || return 1
+  eci_runtime_binary_is_native "$importer" || return 1
   root="$(codex_proof_root)"
   arguments=(--proof-root "$root" --session-dir "$session_dir" --leaf "$leaf" --source "$source")
   [ -z "$repo_id" ] || arguments+=(--repo-id "$repo_id")

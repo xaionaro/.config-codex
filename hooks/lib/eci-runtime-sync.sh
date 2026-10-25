@@ -2,8 +2,10 @@
 # TODO: Reconcile retired ECI lifecycle controls when the remaining marker-dependent hooks migrate.
 # Synchronize one provider's hook runtime through an explicit coordinator route.
 
-# Build absent runtime tools from this provider's sources. Existing executables
-# remain untouched; explicit planner maintenance still owns source refreshes.
+source "${BASH_SOURCE[0]%/*}/eci-native-binary.sh"
+
+# Build absent or incompatible runtime tools from this provider's sources.
+# Compatible executables stay in place; explicit maintenance owns source refreshes.
 # The shell bootstrap runs before any compiled helper is available.
 eci_runtime_artifact_path() {
   local provider="$1" name="$2" output_root="${3:-$HOME/tmp/eci-runtime}"

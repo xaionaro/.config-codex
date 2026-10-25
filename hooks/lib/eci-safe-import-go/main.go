@@ -27,7 +27,10 @@ const (
 	waitReportName        = "eci_user_owned_wait.md"
 	singletonManifestName = "eci-required-critics.json"
 	temporaryLeafPrefix   = ".eci-safe-import."
-	atSymlinkNoFollow     = 0x100
+	// pathOpenFlag obtains entry metadata without opening it for I/O (Linux O_PATH).
+	//
+	// Example: O_NOFOLLOW permits inspecting a dangling symlink itself.
+	pathOpenFlag = 0x200000
 )
 
 // Request identifies a regular source and one fixed destination leaf below a
@@ -100,7 +103,7 @@ func importRequest(request Request, hooks importHooks) error {
 	}
 
 	var destinationStat syscall.Stat_t
-	err = syscall.Fstatat(sessionFD, destination, &destinationStat, atSymlinkNoFollow)
+	err = statNamed(sessionFD, destination, &destinationStat)
 	switch {
 	case err == nil:
 		return replaceExistingLeaf(sessionFD, destination, sourceFD, hooks)
@@ -392,7 +395,7 @@ func publishAbsentLeaf(sessionFD int, destination string, sourceFD int, hooks im
 	}
 	removeTemporary = false
 	var stat syscall.Stat_t
-	if err := syscall.Fstatat(sessionFD, destination, &stat, atSymlinkNoFollow); err != nil {
+	if err := statNamed(sessionFD, destination, &stat); err != nil {
 		return err
 	}
 	if !validDestinationStat(stat) {
@@ -473,10 +476,24 @@ func validDestinationStat(stat syscall.Stat_t) bool {
 // same validated inode after an existing-destination descriptor write.
 func destinationBindingMatches(sessionFD int, destination string, expected syscall.Stat_t) bool {
 	var current syscall.Stat_t
-	if err := syscall.Fstatat(sessionFD, destination, &current, atSymlinkNoFollow); err != nil {
+	if err := statNamed(sessionFD, destination, &current); err != nil {
 		return false
 	}
 	return current.Dev == expected.Dev && current.Ino == expected.Ino && validDestinationStat(current)
+}
+
+// statNamed reads descriptor-relative entry metadata without following its final symlink.
+//
+// Example: a destination symlink is inspected itself, including when its target is absent.
+func statNamed(parentFD int, name string, metadata *syscall.Stat_t) error {
+	// O_PATH avoids read permissions and special-file I/O while retaining the
+	// nofollow semantics of fstatat across Linux syscall package architectures.
+	fd, err := syscall.Openat(parentFD, name, pathOpenFlag|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	statErr := syscall.Fstat(fd, metadata)
+	return errors.Join(statErr, syscall.Close(fd))
 }
 
 // copyDescriptor copies all bytes from an already-validated source FD to an

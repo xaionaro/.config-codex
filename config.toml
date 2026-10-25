@@ -391,9 +391,5 @@ trusted_hash = "sha256:468974840464ddf975ed694dc144cbdeff9af559707e2eb59514ac288
 [hooks.state."/home/pheona/.codex/hooks.json:post_compact:0:0"]
 trusted_hash = "sha256:c6433d827f21e329f9da84e696791f95719af510090818f777ccd7070f6e8860"
 
-[marketplaces.openai-bundled]
-source_type = "local"
-source = "/home/pheona/.codex/.tmp/bundled-marketplaces/openai-bundled"
-
 [plugins."visualize@openai-bundled"]
 enabled = true

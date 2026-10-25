@@ -13,6 +13,8 @@ set -euo pipefail
 PATH='/usr/bin:/bin'
 export PATH
 
+source "${BASH_SOURCE[0]%/*}/../hooks/lib/eci-native-binary.sh"
+
 usage() {
   printf '%s\n' \
     'usage: eci-runtime-sync {check|apply} --target PROVIDER_HOME' \
@@ -65,13 +67,18 @@ safe_importer_binary_path() {
 
 PLANNER_GO='/usr/lib/go-1.24/bin/go'
 PLANNER_GOROOT='/usr/lib/go-1.24'
-PLANNER_GO_TOOL_DIR='/usr/lib/go-1.24/pkg/tool/linux_arm64'
-PLANNER_TARGET='linux/arm64'
 PLANNER_RECEIPT_NAME='.eci-command-plan.provenance'
 PLANNER_LOCK_NAME='.planner-importer.publish.lock'
 PLANNER_SOURCE_FILES=(go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go hook.go hook_context.go hook_effects.go response.go)
 readonly -a PLANNER_SOURCE_FILES
-readonly PLANNER_GO PLANNER_GOROOT PLANNER_GO_TOOL_DIR PLANNER_TARGET PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME
+readonly PLANNER_GO PLANNER_GOROOT PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME
+
+planner_configure_native_toolchain() {
+  local host_target
+  host_target="$(GOROOT="$PLANNER_GOROOT" "$PLANNER_GO" env GOHOSTOS GOHOSTARCH)" || return 1
+  PLANNER_TARGET="${host_target%$'\n'*}/${host_target##*$'\n'}"
+  PLANNER_GO_TOOL_DIR="$PLANNER_GOROOT/pkg/tool/${PLANNER_TARGET/\//_}"
+}
 
 # Private no-op rendezvous, overridden only in an owned proof child.
 if ! declare -F planner_publication_event >/dev/null; then
@@ -129,8 +136,8 @@ planner_build_original() {
   planner_publication_event "before-build:$name" "$module" || return 1
   (
     cd -- "$module" &&
-    env -u GOCACHEPROG -u GOARM -u GOAMD64 \
-      GOOS=linux GOARCH=arm64 CGO_ENABLED=0 GOFLAGS= GOWORK=off GOTOOLCHAIN=local \
+    env -u GOCACHEPROG -u GOARM -u GOARM64 -u GOAMD64 \
+      GOOS="${PLANNER_TARGET%/*}" GOARCH="${PLANNER_TARGET#*/}" CGO_ENABLED=0 GOFLAGS= GOWORK=off GOTOOLCHAIN=local \
       GOROOT="$PLANNER_GOROOT" GOPATH="$transaction/gopath" \
       GOCACHE="$transaction/gocache" GOMODCACHE="$transaction/gomodcache" \
       GOTMPDIR="$transaction/tmp" TMPDIR="$transaction/tmp" \
@@ -138,6 +145,10 @@ planner_build_original() {
         -ldflags=-buildid= -o "$transaction/built/$name" .
   ) || return 1
   chmod 755 -- "$transaction/built/$name" || return 1
+  eci_runtime_binary_is_native "$transaction/built/$name" || {
+    printf 'ECI runtime build: incompatible host executable: %s\n' "$name" >&2
+    return 1
+  }
   planner_publication_event "after-build:$name" "$module"
 }
 
@@ -308,6 +319,7 @@ planner_sync() (
   local name transaction='' lock_fd pair_in_progress='' receipt_in_progress=''
   local receipt_path='' receipt_old_state='' receipt_new_state=''
   local local_complete=false peer_complete=false requested_ok=true source_inputs_complete=true lock_type
+  local PLANNER_TARGET PLANNER_GO_TOOL_DIR
   local -A old_states=() new_states=()
   set -euo pipefail
   [ "$source_root" = "$(realpath -e -- "$HOME/.codex")" ] || return 1
@@ -332,9 +344,7 @@ planner_sync() (
   /usr/bin/flock "$lock_fd" || return 1
   planner_publication_event after-lock "$output_root/$PLANNER_LOCK_NAME" || return 1
   for name in "$@"; do
-    [ -f "$output_root/$requested_provider/$name" ] &&
-      [ ! -L "$output_root/$requested_provider/$name" ] &&
-      [ -x "$output_root/$requested_provider/$name" ] || requested_ok=false
+    eci_runtime_binary_is_native "$output_root/$requested_provider/$name" || requested_ok=false
   done
   case "$planner_mode" in
     ensure) [ "$requested_ok" != true ] || return 0 ;;
@@ -342,6 +352,7 @@ planner_sync() (
     planner-apply) ;;
     *) return 1 ;;
   esac
+  planner_configure_native_toolchain || return 1
   transaction="$(mktemp -d "$output_root/.planner-importer.txn.XXXXXX")" || return 1
   trap 'planner_finish "$?"' EXIT
   trap 'exit 129' HUP
@@ -373,9 +384,7 @@ planner_sync() (
   fi
   if [ "$planner_mode" = ensure ]; then
     for name in "$@"; do
-      [ -f "$output_root/$requested_provider/$name" ] &&
-        [ ! -L "$output_root/$requested_provider/$name" ] &&
-        [ -x "$output_root/$requested_provider/$name" ] || return 1
+      eci_runtime_binary_is_native "$output_root/$requested_provider/$name" || return 1
     done
   fi
   printf 'ECI pair complete: local=%s peer=%s requested=%s\n' "$local_complete" "$peer_complete" "$requested_provider" >&2
