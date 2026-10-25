@@ -67,3 +67,5 @@ eci-safe-import
 .eci-go-build.lock
 .eci-command-plan.provenance
 .eci-command-plan.txn.*/
+
+skills/.system
