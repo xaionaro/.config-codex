@@ -79,6 +79,16 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - Consolidate relevant duplicates touched by authorized work: reconcile required behavior, route consumers, verify results, then retire only authorized obsolete copies. Preserve unrelated user work. Report other duplicates as follow-ups.
 - Generated artifacts, backups, fixtures, replicas, distinct supported deployments or versions, and necessary isolation may coexist with a defined source, owner, purpose, and lifecycle. Temporary copies need a cleanup condition. Replacements need an activation and retirement plan.
 
+### Work estimates
+
+Before each bounded work package, state estimated elapsed duration, expected result, scope, and material uncertainty in the ordinary plan, assignment, or update. Apply this in every workflow to investigation, implementation, review, verification, delegation, and follow-up work. Group routine commands and record maintenance into packages; do not estimate every command.
+
+The executing owner tracks elapsed time and preserves the initial estimate across revisions. At the next safe interaction boundary after first observing an overrun, report elapsed time, the prior estimate, why it changed, and revised remaining effort or completion estimate with uncertainty. Decide whether the approach remains worthwhile by comparing expected future user benefit against remaining effort, delay, and other ready authorized work; sunk cost does not justify continuation. Explicitly choose to continue, narrow, switch, reorder, defer, or stop the affected approach. Continue unchanged only when current evidence justifies its remaining cost. Repeat on every revised-estimate overrun or material new evidence.
+
+Use a supported range when appropriate. When completion duration is unsupported, state the uncertainty and estimate a bounded evidence probe with its expected decision. Preserve the required outcome, necessary repairs, checks, acceptance, and unaffected ready progress when changing approach.
+
+These planning actions are required; lane/root forecasts remain advisory and follow their existing update rules when affected. Use ordinary coordination without approval, new artifacts, timer services, receipts, or per-command ceremony. Reconcile missing records alongside safe work.
+
 ### Engineering priorities
 
 Achieve all applicable goals; this order governs conflicts, scheduling, and incremental delivery. An unfinished lower-priority improvement never blocks a higher-priority improvement; track it and advance it independently or afterward. The order does not waive final goals, and security follow-ups cannot block reliability work.

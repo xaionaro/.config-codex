@@ -10,6 +10,14 @@ Pressure-test evidence is audit context, never an ordinary-work gate.
 | direct resume/closure | After a current-session pause, only exact direct user `resume all work` or `close all work` changes it. |
 | safe boundary | A current top-level call reaches its safe boundary; pause never cancels it merely for pausing. |
 | ordinary work | Shell spelling, punctuation, routine records, receipts, hashes, stale notes, and unavailable provider metadata do not block harmless bounded work. |
+| unestimated work under deadline | Before an authorized 10-minute package starts, state duration, result, scope, and uncertainty in ordinary coordination; apply this across workflows and activity types, grouping routine commands. |
+| sunk-cost overrun | At minute 12 of a 5-minute investigation, report elapsed/prior estimate, cause, revised remaining estimate and uncertainty at the next safe boundary. Decide whether future benefit warrants remaining effort and delay against other ready work; explicitly choose an approach, including stopping an optional rabbit hole. Sunk cost does not justify continuing unchanged. |
+| repeated overrun | If a revised 3-minute estimate reaches 5 minutes, repeat the update and reassessment; a prior revision does not excuse another overrun. Material new evidence also triggers reassessment. |
+| original estimate preserved | Preserve the initial 14:05 completion estimate when revising the current estimate to 14:20; do not erase the overrun baseline. |
+| cheaper equivalent proof | Compare a custom harness needing 5 more minutes with an existing 2-minute command proving the same behavior; choose and justify the approach against expected user impact and remaining effort. |
+| required proof overruns | Reestimate and reconsider the approach while preserving required outcome, repairs, assertions, checks, and acceptance; time pressure does not waive proof. |
+| estimate and independent progress | Reassess the affected approach while unaffected ready authorized work continues under its scheduling rules. |
+| uncertain estimate and missing records | State unsupported completion uncertainty and estimate a bounded evidence probe with its expected decision. Missing forecasts or estimate records are reconciled alongside safe work; no new artifact, approval, timer service, parser, or receipt is required. Required planning actions remain distinct from advisory lane/root forecasts. |
 | scope fidelity | A user-requested repair and proof stay current work; a separate discovered outcome stays a post-ECI suggestion. |
 | quality | Style, test, interface, ownership, and E2E findings remain hard only when they are needed to meet or prove the requested outcome. |
 | role routing | Use fresh independent critics where required; do not substitute a producer's own review. |
