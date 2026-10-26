@@ -10,10 +10,41 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// CaptureEventKind identifies only the event alternatives emitted by assignment preparation.
+//
+// Example: changed snapshot capture uses CaptureRequirementChange.
+type CaptureEventKind int
+
+const (
+	// CaptureDecision records preparation that reuses a faithful existing snapshot.
+	//
+	// Example: empty edits prepare a new assignment without changing requirements.
+	CaptureDecision CaptureEventKind = iota + 1
+	// CaptureRequirementChange records preparation that publishes changed requirement facts.
+	//
+	// Example: a compactness correction is captured before its assignment is emitted.
+	CaptureRequirementChange
+)
+
+// MarshalJSON preserves canonical wire names and rejects unsupported generated event kinds.
+//
+// Example: CaptureDecision serializes as the canonical JSON string "decision".
+func (kind CaptureEventKind) MarshalJSON() ([]byte, error) {
+	switch kind {
+	case CaptureDecision:
+		return json.Marshal("decision")
+	case CaptureRequirementChange:
+		return json.Marshal("requirement_change")
+	default:
+		return nil, fmt.Errorf("unknown capture event kind %d", kind)
+	}
+}
 
 // RecordID names a canonical semantic subject rather than an occurrence in a transcript.
 //
@@ -80,12 +111,12 @@ type CaptureDetails struct {
 //
 // Example: changed source capture is logged as requirement_change, without asserting delivery.
 type CaptureEvent struct {
-	Event        string         `json:"event"`
-	Actor        Identity       `json:"actor"`
-	Summary      string         `json:"summary"`
-	Reason       string         `json:"reason"`
-	Requirements []RecordID     `json:"requirements"`
-	Details      CaptureDetails `json:"details"`
+	Event        CaptureEventKind `json:"event"`
+	Actor        Identity         `json:"actor"`
+	Summary      string           `json:"summary"`
+	Reason       string           `json:"reason"`
+	Requirements []RecordID       `json:"requirements"`
+	Details      CaptureDetails   `json:"details"`
 }
 
 // readRequest rejects unknown input fields so callers cannot supply independent requirement prose.
@@ -205,14 +236,7 @@ func savedChain(
 		return "", fmt.Errorf("outcome scopes: %w", err)
 	}
 	for _, selected := range request.Requirements {
-		found := false
-		for _, linked := range requirements {
-			if string(selected) == linked {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(requirements, string(selected)) {
 			return "", fmt.Errorf("affected requirement %s is not linked to outcome %s", selected, request.Outcome)
 		}
 	}
@@ -412,14 +436,14 @@ func prepare(
 	}
 	message := fmt.Sprintf("Canonical assignment requirements from %s\nAssigned outcome: %s\nAll linked requirements, scopes and supporting records (saved values):\n\n```yaml\n%s```\n\nOperational instructions (separate from canonical requirements):\n%s", ledger, request.Outcome, chain, request.Instructions)
 	event := CaptureEvent{
-		Event: "decision", Actor: request.Actor,
+		Event: CaptureDecision, Actor: request.Actor,
 		Summary:      "Requirement capture and assignment preparation; native delivery remains pending.",
 		Reason:       request.Reason,
 		Requirements: request.Requirements,
 		Details:      CaptureDetails{Outcome: request.Outcome, Target: request.Target, SnapshotChanged: changed, Edits: request.Edits},
 	}
 	if changed {
-		event.Event = "requirement_change"
+		event.Event = CaptureRequirementChange
 	}
 	return Preparation{Payload: Payload{Target: request.Target, Message: message}, Event: event}, nil
 }

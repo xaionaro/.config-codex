@@ -323,3 +323,29 @@ func TestExactAttributedMultilineSources(t *testing.T) {
 	require.Contains(t, payload.Message, "Compact expanded content; collapse is additional")
 	require.Contains(t, payload.Message, "zero versus unavailable")
 }
+
+// TestUnknownCaptureEventKindIsRejected prevents a generated event from inventing a wire value.
+//
+// Example: unsupported event kinds fail serialization before log publication.
+func TestUnknownCaptureEventKindIsRejected(t *testing.T) {
+	for _, kind := range []CaptureEventKind{0, -1, 3} {
+		encoded, err := json.Marshal(CaptureEvent{Event: kind})
+		require.ErrorContains(t, err, "unknown capture event kind")
+		require.Empty(t, encoded)
+	}
+}
+
+// TestCaptureEventWireKinds preserves both canonical event alternatives after integer typing.
+//
+// Example: no-write preparation still logs decision rather than a numeric enum value.
+func TestCaptureEventWireKinds(t *testing.T) {
+	for kind, expected := range map[CaptureEventKind]string{CaptureDecision: "decision", CaptureRequirementChange: "requirement_change"} {
+		encoded, err := json.Marshal(CaptureEvent{Event: kind})
+		require.NoError(t, err)
+		var wire struct {
+			Event string `json:"event"`
+		}
+		require.NoError(t, json.Unmarshal(encoded, &wire))
+		require.Equal(t, expected, wire.Event)
+	}
+}
