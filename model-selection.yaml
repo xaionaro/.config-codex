@@ -1,6 +1,6 @@
 default:
-  model: gpt-6.1-sol
-  reasoning_effort: low
+  model: gpt-6.1-terra
+  reasoning_effort: high
 higher:
   model: gpt-6.1-sol
   reasoning_effort: medium

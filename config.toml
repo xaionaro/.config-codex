@@ -2,11 +2,11 @@
 #model_provider = "ollama"
 #model_reasoning_effort = "xhigh"
 oss_provider = "ollama"
-model = "gpt-6.1-sol"
+model = "gpt-6.1-terra"
 review_model = "gpt-6-luna"
 #model = "gpt-reserve"
 #review_model = "gpt-6-astra"
-model_reasoning_effort = "low"
+model_reasoning_effort = "high"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 developer_instructions = """
@@ -392,3 +392,7 @@ trusted_hash = "sha256:c6433d827f21e329f9da84e696791f95719af510090818f777ccd7070
 
 [plugins."visualize@openai-bundled"]
 enabled = true
+
+[marketplaces.openai-bundled]
+source_type = "local"
+source = "/home/pheona/.codex/.tmp/bundled-marketplaces/openai-bundled"

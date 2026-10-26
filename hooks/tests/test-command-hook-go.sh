@@ -39,7 +39,7 @@ printf '\377\377' | dd of="$binary" bs=1 seek=18 conv=notrunc status=none
 chmod 755 -- "$binary"
 cp -- "$binary" "${binary%/*}/eci-safe-import"
 source "$runtime/hooks/lib/eci-native-binary.sh"
-eci_runtime_binary_is_native /bin/true
+eci_runtime_binary_is_native "$(realpath -e -- /bin/true)"
 ! eci_runtime_binary_is_native "$binary"
 ln -s /bin/true "$fixture/native-link"
 ! eci_runtime_binary_is_native "$fixture/native-link"
