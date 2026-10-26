@@ -190,6 +190,7 @@ The Supervisor may edit session-local coordination records, ledgers, plans, stat
 | Trigger | Skill |
 |---|---|
 | Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` |
+| Writing / modifying / reviewing code in any language, including diffs and PRs | `common-coding-style` |
 | Go / Python code | `go-coding-style` / `python-coding-style` |
 | Tests / code implementation / logic-heavy implementation | `testing-discipline` / `test-driven-development` / `proof-driven-development` |
 | Android device work: `adb`, `fastboot`, flashing, kernel updates | `android-device` |
