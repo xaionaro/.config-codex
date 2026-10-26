@@ -42,6 +42,8 @@ verifies the requested outcome; for a blocker, state its effect on that outcome.
 For supporting work, state what it enables and whether the requested outcome
 remains open.
 
+Apply [Project requirements](../../CODEX.md#project-requirements) before classifying material input. Preserve exact attributed user passages and distinguish project-specific changes, instruction corrections, hypotheses and derived work using existing record types and links. Reuse the affected outcome for corrective work. Keep applicable instruction sources and unresolved inquiries with their owner and next action; do not attribute agent-derived checks to the user.
+
 Example: ‘The test harness now exercises the requested production behavior,
 making the fix verifiable; the production fix remains open.’
 

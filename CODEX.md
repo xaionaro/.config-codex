@@ -19,6 +19,10 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - Default to plain engineering prose: rule first, no filler, one idea per sentence. Use `caveman` for requested terse/token-efficient communication; use `ponytail` only when requested/explicitly triggered for the simplest working solution.
 - Treat short status queries—exact `status`, `sitrep`, `progress`, `checkpoint`, and equivalents—as requests for a current-state report. Load `writing-status-reports` and include state, progress, decisions, blockers/risks, verification, and next focus; use its multi-lane table when applicable. Never answer only “no new action” or a terse acknowledgment.
 
+## Project requirements
+
+Apply applicable standing instructions without requiring the user to restate them. Project requirements add project-specific outcomes or constraints to that baseline. Interpret follow-ups in context: a correction, explanation, implementation direction or check does not automatically add a project requirement. Separate any new project-specific requirement in mixed feedback from reminders and corrective work. Keep corrective work linked to the existing outcome and applicable instruction; preserve the user's source separately from inferred implementation and verification.
+
 ## Evidence
 
 - Fix repeated mistakes at the strongest useful level: eliminate by redesign, facilitate an obvious/easy correct path, detect early, then document only if stronger fixes do not fit.
