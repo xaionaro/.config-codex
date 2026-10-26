@@ -429,14 +429,16 @@ newline), `|` (one), `|+` (all trailing newlines), or quoted escapes. No
 directives, explicit/custom tags, anchors, aliases, merge keys or multiple
 documents. These are writing/quality rules, not runtime content permission gates.
 
-Prefer native selective YAML text edits, preserving unrelated comments, order,
-quoting and multiline text. Use `yq` for bounded manipulations when its installed
-implementation can make selective edits without whole-document serialization;
-verify that it preserves unrelated text. Otherwise use native text edits. One
-canonical session writer combines bounded worker
-proposals against the latest snapshot. Never serialize the whole document merely
-to change one value, redirect parser output onto its input, or publish a stale
-worker copy. For whole-snapshot publication, copy the latest snapshot to an owned
+Use `yq` when available to select records and compute bounded candidate additions,
+updates or deletions, emitting only the affected subtree. For updates and
+deletions, confirm the ID exists and its type matches; if it is missing, add an
+explicit complete record only when an addition is intended. Apply the change to the latest
+snapshot with a native selective YAML text edit, then inspect the diff to preserve
+unrelated comments, order, quoting and multiline text. One canonical session
+writer combines bounded worker proposals against the latest snapshot. Never
+serialize the whole document merely to change one value, redirect parser output
+onto its input, or publish a stale worker copy. For whole-snapshot publication,
+copy the latest snapshot to an owned
 same-directory temporary, edit that copy, then replace only the canonical regular
 file under existing ownership. Rename is publication, not concurrency control.
 
@@ -455,6 +457,15 @@ mv -- "$snapshot_tmp" "$session_dir/project-understanding.yaml"
 Example fixture: [project-understanding.yaml](examples/project-understanding.yaml).
 Its source/values are explicitly synthetic; adapt subjects and sections to the
 project instead of treating it as a fixed domain template.
+
+For example, jq-based `yq` can emit a candidate work record without editing the
+fixture; this fails if the ID is missing or has another type:
+
+```sh
+yq -e --arg id 'work:receiver:clock' \
+  'if (.records | has($id)) and .records[$id].type == "work" then .records[$id] | .data.owner = "worker-b" else error("missing or mistyped work record") end' \
+  skills/context-ledger/examples/project-understanding.yaml
+```
 
 ### Read-only queries
 
