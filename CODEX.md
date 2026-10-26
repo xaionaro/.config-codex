@@ -107,6 +107,8 @@ Achieve all applicable goals; this order governs conflicts, scheduling, and incr
 
 Before adding work to ECI scope because something appears broken or making that concern blocking, state a concrete practical use case tied to the requested outcome: user action or input, current failure, and expected result. Apply this wherever discovered, including main ECI and Fast. Without a case, keep the concern nonblocking and record only as a post-ECI follow-up. A case does not authorize a separate outcome. Admit authorized child packages under the [recursive Job contract](skills/explore-critique-implement/references/task-orchestrator.md#recursive-child-admission-and-closure); inherited authorization needs no renewed user request. Preserve explicit requirements and their acceptance criteria.
 
+Applicable coding-policy requirements govern the selected design and changed or retained contribution as part of that outcome. A source-backed violation there is a current failure; it needs no additional runtime defect to qualify for repair. Apply [coding-policy enforcement](skills/references/workflow-runtime/coding-style-admission.md). This does not authorize an unrelated baseline audit or cleanup.
+
 ### Concurrent tasks
 
 These scheduling rules apply to ECI tasks, including bounded ECI under ATE. Direct work and ATE outside ECI retain their existing lifecycle and wait rules.

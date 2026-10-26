@@ -1,17 +1,17 @@
-# Coding-style Guidance
+# Coding-policy Enforcement
 
 Load this for a governed write or its independent review. It improves the changed work; it never weakens non-style requirements or becomes permission ceremony.
 
 ## Rule
 
-Style is the baseline among otherwise correct choices. Behavior, names/interfaces, root-cause analysis, TDD/tests/proof, and approved architecture, ownership, purpose, or interface contracts remain hard when they serve the requested outcome.
+Enforce every applicable requirement from governing instructions, common and language-specific style skills, repository conventions, and formatter/linter configuration throughout design selection, implementation, review, and final acceptance. Distinguish requirements from discretionary preferences by their source wording, including stated conditions and defaults; a policy's placement in a style skill does not make it optional. Explicit source-defined exceptions and higher-priority instructions govern actual conflicts. A technical tradeoff alone cannot waive a requirement.
 
-Style sources guide the change; a brief or tool output is review context, not a write permit. Before writing, identify readily available repository conventions, formatter/linter settings, matching style skills, and relevant exclusions. Apply them where they fit. Missing, stale, or disputed style context prompts a concise clarification or review note; it does not pause a bounded in-scope change.
+Before selecting or writing governed work, resolve readily available applicable sources and relevant exclusions. Check their requirements against the actual design and contribution, including retained Fast work and relevant consumers. Missing, stale, or disputed context prompts source investigation or a concise review question; keep unaffected bounded work moving. A brief, skill invocation, review verdict, or tool output is context, never a write permit or proof of compliance.
 
-Use a concise note only when it helps explain a real deviation or an unresolved style conflict. State the source, choice, technical reason, and tradeoff. Do not inventory rules, create empty records, or require a note before work. Convenience, deadline, authority, fatigue, sunk cost, precedent, or completed work do not justify a material deviation.
+Explain a real exception or conflict only when useful: source, applicability, resolution, and evidence. Use ordinary design/review output; create no separate rule inventory, empty record, or approval step. Convenience, deadline, authority, fatigue, sunk cost, precedent, or completed work do not waive requirements.
 
-An independent reviewer checks the actual diff, applicable tools, and any meaningful deviation. Formatter/linter output covers only its mechanical domain. Cosmetic preference is NIT. A behavior, interface, test, ownership, architecture, or purpose failure is not downgraded to style.
+Independent review checks actual adherence, including requirements outside formatter/linter coverage. For a violation, identify the source requirement, concrete conflicting code or decision, and repair consequence. A missing runtime failure does not turn a violated requirement into a preference. Purely discretionary taste is NIT. Behavior, interfaces, tests, ownership, architecture, and purpose retain their own consequences.
 
 ## Consequence boundary
 
-Treat names, package purpose, and interfaces as quality contracts: fulfill what they promise and avoid smuggled effects. A bug fix repairs its causal mechanism, not merely timing, visibility, or blast radius unless containment was requested. Prefer consistent names, parallel structure, domain types, approved placement, and simple maintainable code among correct choices.
+An unresolved applicable requirement violation in the selected or changed contribution requires repair before final acceptance, even when tests and reviews pass. In ECI it is hard, current work: route substantive design repairs through Explore/Critique and contained implementation repairs through the Implementer; impact orders work and does not authorize deferral. Fast provisional delivery may precede that repair under its existing contract, with remaining violations disclosed. Preserve unrelated baseline work and source-defined exceptions.

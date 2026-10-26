@@ -18,7 +18,7 @@ The current Job owner—its Orchestrator when J > 1, or the Supervisor when J �
 
 ## Critic A — coding style
 
-Check applicable style skills, formatter/linter/config anchors, actual scope, admitted records, deviations, and post-write tool evidence. Report material style or quality findings; identify purely cosmetic preference as `NIT`.
+Check applicable style skills, formatter/linter/config anchors, actual scope, exceptions, and post-write tool evidence under [coding-policy enforcement](../../references/workflow-runtime/coding-style-admission.md). Report every source-backed applicable requirement violation; reserve `NIT` for discretionary preferences.
 
 ## Critic B — correctness and fidelity
 

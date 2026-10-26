@@ -33,7 +33,7 @@ Independently validate each applicable [ownership argument](explore.md#ownership
 
 ## Admission and coordinator handoff
 
-Independently re-resolve applicable style guidance before recommending Step 3. Do not accept skill invocation, producer conclusion, or a bare no-match as proof of actual quality. Hand useful guidance to implementation. A material unjustified deviation is REJECT; cosmetic style is NIT; hard non-style failures remain their own consequence.
+Independently re-resolve applicable style sources before recommending Step 3 and apply [coding-policy enforcement](../../references/workflow-runtime/coding-style-admission.md). Reject options that violate applicable requirements; reserve NIT for discretionary preferences. Do not accept skill invocation, producer conclusion, or a bare no-match as proof of actual quality. Hand the requirements and necessary corrections to implementation; hard non-style failures retain their own consequence.
 
 Report evidence-backed scope impact, debt/defer candidates, and conflicting remedies without assigning treatment, creating records, calculating impact, or applying acceptance gates. The coordinator decides scope disposition, debt/defer handling, impact accumulation, and gate application, then applies exactly one canonical disposition per in-scope inventory item.
 
