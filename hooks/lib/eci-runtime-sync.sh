@@ -87,7 +87,7 @@ eci_runtime_build_missing() (
       rmdir -- "$temporary" || return 1
       temporary=''
     fi
-    codex_file_lock_release_fd "$lock_fd"
+    codex_file_lock_release_fd "$lock_fd" || return $?
   done
 )
 

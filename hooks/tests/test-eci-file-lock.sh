@@ -7,8 +7,18 @@ TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-file-lock.XXXXXX")"
 children=()
 cleanup() {
   local child
-  for child in "${children[@]}"; do kill "$child" 2>/dev/null || true; done
+  # Unblock our known children cooperatively, then reap their callers. Killing
+  # only the caller shells can orphan a compiler waiting on the private FIFO.
+  if [ -n "${owner_fd:-}" ]; then
+    codex_file_lock_release_fd "$owner_fd" 2>/dev/null || true
+  fi
+  if [ -n "${build_release_fd:-}" ]; then
+    printf 'cancel\ncancel\n' >&"$build_release_fd" || true
+  fi
   for child in "${children[@]}"; do wait "$child" 2>/dev/null || true; done
+  if [ -n "${build_release_fd:-}" ]; then
+    exec {build_release_fd}>&-
+  fi
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -151,6 +161,7 @@ if [ "$NATIVE_PLATFORM" = Linux ]; then
   wait_for_linux_lock_waiter "$TMP_ROOT/blocking.lock" "$waiter"
   [ ! -e "$TMP_ROOT/waiter-acquired" ]
   codex_file_lock_release_fd "$owner_fd"
+  owner_fd=''
   wait "$waiter"
   children=()
   grep -qx acquired "$TMP_ROOT/waiter-acquired"
@@ -241,7 +252,7 @@ mkdir -p "$RUNTIME_ROOT/hooks/lib/eci-worker-git-go"
 printf '%s\n' 'module fixture.invalid/eci-worker-git' 'go 1.23' \
   >"$RUNTIME_ROOT/hooks/lib/eci-worker-git-go/go.mod"
 cat >"$BUILD_BIN/go" <<'SH'
-#!/bin/sh
+#!/usr/bin/env bash
 output=''
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -o ]; then
@@ -253,7 +264,7 @@ while [ "$#" -gt 0 ]; do
 done
 printf 'build\n' >>"$CODEX_FILE_LOCK_TEST_BUILD_LOG"
 printf 'ready\n' >"$CODEX_FILE_LOCK_TEST_BUILD_READY"
-read -r release <"$CODEX_FILE_LOCK_TEST_BUILD_RELEASE"
+read -r -t 5 release <"$CODEX_FILE_LOCK_TEST_BUILD_RELEASE" || exit 1
 [ "$release" = release ] || exit 1
 printf '#!/bin/sh\nexit 0\n' >"$output"
 SH
@@ -262,6 +273,7 @@ chmod +x "$BUILD_BIN/go"
 BUILD_READY="$TMP_ROOT/build-ready"
 BUILD_RELEASE="$TMP_ROOT/build-release"
 mkfifo "$BUILD_RELEASE"
+exec {build_release_fd}<>"$BUILD_RELEASE"
 export CODEX_FILE_LOCK_TEST_BUILD_LOG="$BUILD_LOG" \
   CODEX_FILE_LOCK_TEST_BUILD_READY="$BUILD_READY" \
   CODEX_FILE_LOCK_TEST_BUILD_RELEASE="$BUILD_RELEASE"
@@ -290,5 +302,31 @@ wait "$second_build"
 children=()
 [ "$(grep -c '^build$' "$BUILD_LOG")" -eq 1 ]
 [ -x "$RUNTIME_ROOT/bin/eci-worker-git" ]
+
+# A failed release on the first module must stop the whole request, even when
+# another module remains. Invoke in a conditional to expose masked statuses.
+mkdir -p "$RUNTIME_ROOT/hooks/lib/eci-command-gate-mode-go"
+cp "$RUNTIME_ROOT/hooks/lib/eci-worker-git-go/go.mod" \
+  "$RUNTIME_ROOT/hooks/lib/eci-command-gate-mode-go/go.mod"
+status=0
+(
+  source "$ROOT/hooks/lib/eci-runtime-sync.sh"
+  release_count=0
+  codex_file_lock_release_fd() {
+    release_count=$((release_count + 1))
+    eval "exec ${1}>&-"
+    [ "$release_count" -ne 1 ] || return 37
+  }
+  # Both private modules must need builds so each takes its own lock.
+  rm "$RUNTIME_ROOT/bin/eci-worker-git"
+  printf 'release\nrelease\n' >&"$build_release_fd"
+  PATH="$BUILD_BIN:$BASE_PATH" \
+    eci_runtime_build_missing "$RUNTIME_ROOT" eci-worker-git eci-command-gate-mode
+) || status=$?
+if [ "$status" -ne 37 ]; then
+  printf 'expected first module release status 37, got %s\n' "$status" >&2
+  exit 1
+fi
+[ ! -e "$RUNTIME_ROOT/bin/eci-command-gate-mode" ]
 
 printf '%s\n' 'portable file lock and proof-state tests: PASS'
