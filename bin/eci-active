@@ -24,6 +24,7 @@ usage() {
   cat >&2 <<EOF
 Usage:
   $lifecycle_usage_command ledger-append --json <event-object>
+  $lifecycle_usage_command requirement-assignment --request <JSON-file>
   $lifecycle_usage_command manifest-write \${TMPDIR:-\$HOME/tmp}/<...>/eci-required-critics.json.source
   $lifecycle_usage_command aggregate-review <prewrite|final> <repo-id>
   $lifecycle_usage_command coordinator-edit-status
@@ -1161,6 +1162,25 @@ permissive-off)
     rm -f -- "$permissive_record" || exit 1
   fi
   printf 'ECI permissive mode inactive: %s\n' "$permissive_record"
+  ;;
+requirement-assignment)
+  [ "$#" -eq 3 ] && [ "${2:-}" = --request ] || { usage; exit 2; }
+  request_path="$(realpath -e -- "$3")" || exit 1
+  session_dir="$(resolve_session_dir)" || exit 1
+  acquire_eci_mutation_lock || exit 1
+  preparation="$(cd "$base_dir/hooks/lib/eci-requirement-assignment-go" &&
+    go run -mod=readonly . --ledger "$session_dir/project-understanding.yaml" --request "$request_path")" || exit 1
+  # ledger-append takes the same lock. Release it before calling that owner;
+  # retain the prepared payload privately until its required append succeeds.
+  flock -u "$eci_lock_fd" || exit 1
+  eval "exec ${eci_lock_fd}>&-"
+  trap - EXIT
+  event="$(jq -ce '.event' <<<"$preparation")" || exit 1
+  if ! "$script_path" ledger-append --json "$event" >/dev/null; then
+    echo 'requirement-assignment: snapshot saved; no assignment emitted; inspect records and retry with empty edits for faithful reuse. Canonical log append failed.' >&2
+    exit 1
+  fi
+  jq -ce '.payload' <<<"$preparation"
   ;;
 ledger-append)
   if [ "${2:-}" = --json ]; then

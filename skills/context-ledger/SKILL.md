@@ -445,6 +445,8 @@ Every material forecast change updates its current `forecasts.md` record in plac
 Answer the user before ledger maintenance or coordination when a response is due.
 Advance ready independent work without waiting for ledger, log, forecast, or report maintenance. Before a dependent action, correct the affected current-state records and communicate the material changed facts that action needs, including changed requirements, scope, ownership, controls, evidence, and verification results. Stop or redirect only work invalidated by that correction.
 
+For assignments affected by material user input, use the [capture-and-prepare operation](requirement-assignment.md).
+
 Reconcile the remaining records, append material changes to `high_level_log.jsonl`, and refresh `latest-status-report.md` in the same turn, before QA/verdicts, handoff, user-waiting stops, or shutdown. A status must reflect current facts; answering a due user response still comes first. A forecast-only change updates `forecasts.md` without rewriting the ledger. Keep this maintenance bounded to changed facts and their affected links; it never grants permission or creates a dispatch gate.
 
 For a project/task fact change, use this three-pass ledger edit:
