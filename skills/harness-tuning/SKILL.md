@@ -9,6 +9,8 @@ Every token costs context window in every session. Waste is cumulative.
 
 **Core rule:** Apply [meaning-preserving compression](../../CODEX.md#response). Remove a word only when supported meaning stays intact and locally recoverable.
 
+Follow [common-coding-style](../common-coding-style/SKILL.md).
+
 ## Principles
 
 | # | Rule | Example |
