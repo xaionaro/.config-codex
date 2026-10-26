@@ -101,28 +101,17 @@ not supported; identify the lane or root in each row:
 | Lane/root and case | Trigger/evidence | Affected work/dependency | Added duration/range and basis | Evidence assessed; assumptions/limits | Endpoint/range | Evidence gap / next fact-finding action |
 | --- | --- | --- | --- | --- | --- | --- |
 | `<lane/root> — base case` | No listed downside scenario | Remaining authorized in-scope critical-path work | No generic buffer | `<current work facts and progress used; assumptions/limits>` | `<UTC>` | — |
-| `<lane/root> — <scenario or supported combination>` | `<trigger/evidence>` | `<work/dependency>` | `<supported duration/range and basis, or not supportable yet>` | `<relevant facts reviewed and assumptions/limits>` | `<supported UTC endpoint/range, or not supportable yet>` | `<specific evidence gap and next fact-finding action; — when resolved>` |
+| `<lane/root> — <scenario or conditional combination>` | `<trigger/evidence>` | `<work/dependency>` | `<estimated duration/range; evidence or labeled educated-guess basis>` | `<relevant facts reviewed and assumptions/limits>` | `<estimated UTC endpoint/range; label conditional guesses>` | `<specific evidence gap and next fact-finding action; — when resolved>` |
 
-Assess each scenario using all relevant current facts, applicable written
-commitments or service-level terms only when they cover the failure and measure
-its resolution, comparable history, current progress or throughput, documented
-lead times, direct timing evidence, and dependency/overlap evidence. Summarize
-or cite what was assessed; distinguish commitments from observed durations,
-state assumptions and limits, then update as evidence changes. Do not present a
-service commitment as a guaranteed resolution or hard cap. Report a UTC
-endpoint only when its event/base time and supported duration justify it.
-If no defensible finite duration or endpoint is supported, keep the risk
-visible, name its exact evidence gap and next fact-finding action, and set the
-forecast assessment to provisional. The open risk is not a
-completed assessment and cannot coexist with `Forecast assessment: complete`.
-Continue safe work while gathering evidence. Any finite target, base case, or
-displayed spread is conditional while a material risk remains unpriced. Show a
-finite spread through the latest bounded scenario only as a conditional range;
-never imply it covers an unpriced risk or is an absolute worst case. Never omit
-a material scenario or invent a duration, endpoint, or probability. Follow the canonical
-[ledger scenario rule](../context-ledger/SKILL.md#eci-scenario-forecasts)
-for duration combinations, mutually exclusive scenarios, overlap, and root
-critical-path endpoints.
+Apply the canonical [ledger scenario rule](../context-ledger/SKILL.md#eci-scenario-forecasts)
+for decomposition, educated guesses, external-wait assumptions, evidence gaps,
+duration combinations and critical-path endpoints. Always report an overall
+completion estimate; a bounded probe supplements it. Keep guessed timing
+provisional and conditional until evidence supports or resolves the risks.
+Summarize the basis, assumptions, limits and next fact-finding action; never
+present guesses as observations, guarantees, external commitments or hard caps.
+Include every material scenario and its conditional endpoint in the spread;
+the latest estimated endpoint is no absolute worst case. Never invent probabilities.
 
 Forecasts are advisory. They never gate work, grant or deny permissions, require
 artifacts or receipts, create blockers, require parsers, or require per-command
@@ -133,7 +122,7 @@ them alongside safe work without delaying the update.
 | --- | --- |
 | Material changed-state report omits a milestone or forecast | The report is corrected alongside safe work. |
 | Forecast lacks current evidence | A changed lane/root forecast without its restated current canonical line, prior/current UTCs, why moved, and supporting evidence is stale. |
-| Material risk has no supported duration or endpoint | Keep its scenario visible with the exact evidence gap and next fact-finding action; render the forecast as provisional and any finite target/spread as conditional. |
+| Material risk has no supported duration or endpoint | Decompose work and give labeled educated duration/endpoint guesses, including explicit external-wait assumptions; retain the evidence gap and next action, provisional assessment and conditional overall target/spread. |
 | Parallel children | For parallel children, report the single critical-path deadline; child deadlines remain parallel; never add or sum parallel child deadlines into a parent, root, or mission deadline. |
 | Dependency is paused | A paused dependency names its owner and resume condition; it is not a user blocker. |
 

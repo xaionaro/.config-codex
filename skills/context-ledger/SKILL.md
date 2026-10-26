@@ -208,8 +208,8 @@ Example: `Outcome: Import validation that identifies unpriced records and explai
   - Status: `active` or `inactive` (whether this forecast still applies)
   - Assessment: `complete` or `provisional` (whether every material risk has supported timing)
   - Target: `<UTC ISO8601>` when active
-- Set assessment to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. While any material risk lacks a defensible finite duration or endpoint, set it to `provisional`; record the exact evidence gap and next fact-finding action on that scenario. Keep `Status` independent of `Assessment`.
-- For a provisional forecast, record `Target basis: conditional — <unpriced material risk(s)>`. Any finite target, base case, or displayed spread is conditional while those risks remain open.
+- Set assessment to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. While any material risk's timing relies on educated guesses, set it to `provisional`; retain the guessed duration and endpoint, exact evidence gap and next fact-finding action on that scenario. Keep `Status` independent of `Assessment`.
+- For a provisional forecast, record `Target basis: conditional — <guessed material risk timing and assumptions>`. Any finite target, base case, or displayed spread is conditional while those evidence gaps remain open.
 - Recalibration, when a forecast changes:
   - Prior: `<UTC ISO8601>`
   - Current: `<UTC ISO8601>`
@@ -229,15 +229,19 @@ When a lane or root forecast changes, update its current record in `forecasts.md
 
 For ECI forecasts, including nested ECI, store a base case and every material
 downside scenario alongside the canonical target, including risks whose timing
-is not yet supported:
+is not yet supported. Apply [Work estimates](../../CODEX.md#work-estimates):
+decompose remaining work, use labeled educated guesses where evidence is
+incomplete, and always give an overall completion estimate. Keep evidence gaps
+visible; a probe supplements the estimate.
 
 - Base case: completion UTC for the remaining authorized in-scope work on the
-  current critical path, assuming no listed downside scenario. Add no generic
-  buffer.
+  current critical path, assuming no listed downside scenario. Estimate each
+  package using evidence or a labeled educated guess with reasoning; add serial
+  durations and use the latest required parallel endpoint. Add no generic buffer.
 - Scenario: include every material downside risk that could affect completion
   of the requested ECI outcome. Record its name, trigger/evidence, affected work
-  or dependency, evidence assessed, assumptions and limits, supported added
-  duration/range and endpoint/range, or the exact evidence gap and next
+  or dependency, evidence assessed, assumptions and limits, added
+  duration/range and endpoint/range with evidence or labeled educated-guess basis, and the exact evidence gap and next
   fact-finding action. Assess all relevant current facts, applicable written
   commitments or service-level terms only when they cover this failure and
   measure its resolution, comparable history, current progress or throughput,
@@ -245,26 +249,27 @@ is not yet supported:
   evidence. Distinguish commitments from observed durations; do not present a
   commitment as a guaranteed resolution, hard cap, or worst case. Cite or
   summarize what was assessed; update as evidence changes. Derive a UTC
-  endpoint only from a known event/base time and supported duration. If no
-  defensible finite duration or endpoint is supported, retain the risk and set
-  the forecast assessment to `provisional`. An unpriced material risk is not a
-  completed assessment and cannot coexist with a `complete` forecast. Keep any finite
+  endpoint from a stated event/base time and estimated duration. When timing
+  lacks evidence, use a labeled educated guess and set the forecast assessment
+  to `provisional`. For external waits, state assumed availability or wait duration,
+  owner and resume condition; the conditional estimate is no commitment or cap
+  on the external actor. Permanent access loss may prevent completion; state
+  that condition alongside an ETA conditional on access recovery. A guessed
+  material risk cannot coexist with a `complete` forecast. Keep any finite
   target, base case, or spread conditional while it remains open; continue safe
   work while gathering evidence.
-- Record co-occurring delays as combinations only when evidence supports that
-  they can occur sequentially on the same path. Keep events with unresolved
-  dependency or overlap separate and request evidence from their owners; do not
-  invent their sequence, overlap, or combined duration. When two material
-  events' relation is unresolved, keep the forecast assessment provisional
-  until evidence supports the endpoint. List mutually exclusive scenarios
+- Record co-occurring delays as combinations when evidence supports their
+  sequence, or label the assumed dependency/overlap used for a provisional
+  estimate and request evidence from their owners. Do not present assumed
+  relationships as facts. List mutually exclusive scenarios
   separately and count overlapping delay once. For root forecasts, use the latest required
   parallel lane/dependency endpoint, not a sum of parallel work.
-- The single UTC target is the latest endpoint among the base case and bounded,
-  evidence-supported scenarios. Keep each scenario's endpoint/range in the
+- The single UTC target is the latest endpoint among the base case and estimated
+  scenarios, including labeled educated guesses. Keep each scenario's endpoint/range in the
   `forecasts.md` record. If a material risk lacks supported timing, keep it in
   the record with its gap and next action, set `Assessment: provisional`, and
   label the finite target/base case/spread conditional. A finite target is the
-  latest supported endpoint, not an absolute worst case. Never invent
+  latest estimated endpoint, not an absolute worst case. Never invent
   probabilities.
 - `Initial forecast.Original baseline` remains the original forecast target; it is not
   the scenario base-case endpoint.
