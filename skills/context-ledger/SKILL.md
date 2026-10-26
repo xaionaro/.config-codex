@@ -208,7 +208,7 @@ Example: `Outcome: Import validation that identifies unpriced records and explai
   - Status: `active` or `inactive` (whether this forecast still applies)
   - Assessment: `complete` or `provisional` (whether every material risk has supported timing)
   - Target: `<UTC ISO8601>` when active
-- Set assessment to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. While any material risk's timing relies on educated guesses, set it to `provisional`; retain the guessed duration and endpoint, exact evidence gap and next fact-finding action on that scenario. Keep `Status` independent of `Assessment`.
+- Set assessment to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. A materially guessed base-case package duration also makes the forecast provisional. While any material risk's timing relies on educated guesses, set it to `provisional`; retain the guessed duration and endpoint, exact evidence gap and next fact-finding action on that scenario. Keep `Status` independent of `Assessment`.
 - For a provisional forecast, record `Target basis: conditional — <guessed material risk timing and assumptions>`. Any finite target, base case, or displayed spread is conditional while those evidence gaps remain open.
 - Recalibration, when a forecast changes:
   - Prior: `<UTC ISO8601>`
