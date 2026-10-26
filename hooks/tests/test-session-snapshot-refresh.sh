@@ -239,34 +239,31 @@ test_worker_cli_lifecycle_mutations_are_role_neutral() {
 }
 
 test_eci_active_mutations_fail_closed_when_lock_is_busy() {
-  local proof_root="$TMP_ROOT/mutation-lock-proof" session_dir report out lock_fd
+  local proof_root="$TMP_ROOT/mutation-lock-proof" session_dir log_path lock_fd entry
   session_dir="$proof_root/t00-session"
-  report="$session_dir/disengage.md"
   mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
   printf 'scope: lock test\n' >"$session_dir/eci_active"
-  printf '%s\n' '# lock test' >"$report"
+  log_path="$session_dir/high_level_log.jsonl"
+  entry='{"event":"checkpoint","summary":"append after lock release"}'
+  printf '%s\n' '{"event":"checkpoint","summary":"existing entry"}' >"$log_path"
+  cp "$log_path" "$TMP_ROOT/log-before-lock"
   exec {lock_fd}>>"$proof_root/.eci-active.lock"
   codex_file_lock_acquire_fd "$lock_fd" nonblocking
 
   if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
-      "$ROOT/bin/eci-active" on 'blocked on' >"$TMP_ROOT/on-lock.out" 2>"$TMP_ROOT/on-lock.err"; then
+      "$ROOT/bin/eci-active" ledger-append --json "$entry" >"$TMP_ROOT/append-lock.out" 2>"$TMP_ROOT/append-lock.err"; then
     return 1
   fi
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
-      "$ROOT/bin/eci-active" wait "$session_dir/eci_user_owned_wait.md" >"$TMP_ROOT/wait-lock.out" 2>"$TMP_ROOT/wait-lock.err"; then
-    return 1
-  fi
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
-      "$ROOT/bin/eci-active" resume "$(printf '%064d' 1)" >"$TMP_ROOT/resume-lock.out" 2>"$TMP_ROOT/resume-lock.err"; then
-    return 1
-  fi
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
-      "$ROOT/bin/eci-active" off "$report" >"$TMP_ROOT/off-lock.out" 2>"$TMP_ROOT/off-lock.err"; then
-    return 1
-  fi
-  [ -f "$session_dir/eci_active" ]
-  [ ! -e "$session_dir/eci_wait" ]
+  printf 'ECI mutation lock is busy; refusing state mutation: %s/.eci-active.lock\n' "$(cd "$proof_root" && pwd -P)" \
+    >"$TMP_ROOT/expected-lock.err"
+  cmp "$TMP_ROOT/expected-lock.err" "$TMP_ROOT/append-lock.err"
+  cmp "$TMP_ROOT/log-before-lock" "$log_path"
   codex_file_lock_release_fd "$lock_fd"
+  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+    "$ROOT/bin/eci-active" ledger-append --json "$entry" >"$TMP_ROOT/append-unlocked.out"
+  jq -se 'length == 2 and (.[1] | .schema == "eci-high-level-log/v1" and
+    .event == "checkpoint" and .summary == "append after lock release" and
+    .session_id == "t00-session")' "$log_path" >/dev/null
 }
 
 test_session_start_skips_pruning_when_mutation_lock_is_busy() {
@@ -281,7 +278,11 @@ test_session_start_skips_pruning_when_mutation_lock_is_busy() {
   out="$TMP_ROOT/lock.out"
   run_snapshot "$proof_root" resume "$out" t00-session
   [ -e "$old_dir/eci_active" ]
+  [ ! -e "$proof_root/t00-session" ]
   codex_file_lock_release_fd "$lock_fd"
+  run_snapshot "$proof_root" resume "$out" t00-session
+  [ -s "$proof_root/t00-session/baseline_head" ]
+  [ -e "$old_dir/eci_active" ]
 }
 
 test_old_uuid_session_with_active_eci_marker_survives_cleanup() {

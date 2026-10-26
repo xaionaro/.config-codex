@@ -4,7 +4,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-file-lock.XXXXXX")"
-trap 'rm -rf -- "$TMP_ROOT"' EXIT
+children=()
+cleanup() {
+  local child
+  for child in "${children[@]}"; do kill "$child" 2>/dev/null || true; done
+  for child in "${children[@]}"; do wait "$child" 2>/dev/null || true; done
+  rm -rf -- "$TMP_ROOT"
+}
+trap cleanup EXIT
 
 source "$ROOT/hooks/lib/codex-file-lock.sh"
 source "$ROOT/hooks/lib/codex-proof-state.sh"
@@ -108,6 +115,47 @@ assert_release_failure_closes_fd 37
 
 # The native platform path must hold the actual OS lock until release.
 NATIVE_PLATFORM="$(command uname -s)"
+# Poll observable kernel state with a deadline; time never establishes readiness.
+wait_for_linux_lock_waiter() {
+  local path="$1" child="$2" inode deadline=$((SECONDS + 5))
+  inode="$(stat -c %i "$path")"
+  while ! awk -v inode="$inode" '
+    $2 == "->" && $3 == "FLOCK" {
+      split($7, identity, ":")
+      if (identity[3] == inode) found=1
+    }
+    END { exit !found }
+  ' /proc/locks; do
+    if ! kill -0 "$child" 2>/dev/null || [ "$SECONDS" -ge "$deadline" ]; then
+      printf 'no blocked FLOCK waiter for %s before child exit/deadline\n' "$path" >&2
+      return 1
+    fi
+    sleep 0.01
+  done
+  kill -0 "$child"
+}
+
+if [ "$NATIVE_PLATFORM" = Linux ]; then
+  exec {owner_fd}>>"$TMP_ROOT/blocking.lock"
+  codex_file_lock_acquire_fd "$owner_fd" nonblocking
+  bash -c '
+    source "$1"
+    exec 8>>"$2"
+    codex_file_lock_acquire_fd 8 blocking || exit
+    printf "acquired\n" >"$3"
+    codex_file_lock_release_fd 8
+  ' bash "$ROOT/hooks/lib/codex-file-lock.sh" "$TMP_ROOT/blocking.lock" \
+    "$TMP_ROOT/waiter-acquired" &
+  waiter=$!
+  children+=("$waiter")
+  wait_for_linux_lock_waiter "$TMP_ROOT/blocking.lock" "$waiter"
+  [ ! -e "$TMP_ROOT/waiter-acquired" ]
+  codex_file_lock_release_fd "$owner_fd"
+  wait "$waiter"
+  children=()
+  grep -qx acquired "$TMP_ROOT/waiter-acquired"
+fi
+
 native_lock_available() {
   case "$NATIVE_PLATFORM" in
     Darwin) /usr/bin/lockf -k -s -t 0 "$1" /usr/bin/true ;;
@@ -204,21 +252,42 @@ while [ "$#" -gt 0 ]; do
   fi
 done
 printf 'build\n' >>"$CODEX_FILE_LOCK_TEST_BUILD_LOG"
-sleep 0.2
+printf 'ready\n' >"$CODEX_FILE_LOCK_TEST_BUILD_READY"
+read -r release <"$CODEX_FILE_LOCK_TEST_BUILD_RELEASE"
+[ "$release" = release ] || exit 1
 printf '#!/bin/sh\nexit 0\n' >"$output"
 SH
 chmod +x "$BUILD_BIN/go"
 : >"$BUILD_LOG"
-PATH="$BUILD_BIN:$BASE_PATH" CODEX_FILE_LOCK_TEST_BUILD_LOG="$BUILD_LOG" \
+BUILD_READY="$TMP_ROOT/build-ready"
+BUILD_RELEASE="$TMP_ROOT/build-release"
+mkfifo "$BUILD_RELEASE"
+export CODEX_FILE_LOCK_TEST_BUILD_LOG="$BUILD_LOG" \
+  CODEX_FILE_LOCK_TEST_BUILD_READY="$BUILD_READY" \
+  CODEX_FILE_LOCK_TEST_BUILD_RELEASE="$BUILD_RELEASE"
+PATH="$BUILD_BIN:$BASE_PATH" \
   bash -c 'source "$1"; eci_runtime_build_missing "$2" eci-worker-git' \
   bash "$RUNTIME_ROOT/hooks/lib/eci-runtime-sync.sh" "$RUNTIME_ROOT" &
 first_build=$!
-PATH="$BUILD_BIN:$BASE_PATH" CODEX_FILE_LOCK_TEST_BUILD_LOG="$BUILD_LOG" \
+children+=("$first_build")
+deadline=$((SECONDS + 5))
+while [ ! -s "$BUILD_READY" ]; do
+  kill -0 "$first_build"
+  [ "$SECONDS" -lt "$deadline" ]
+  sleep 0.01
+done
+PATH="$BUILD_BIN:$BASE_PATH" \
   bash -c 'source "$1"; eci_runtime_build_missing "$2" eci-worker-git' \
   bash "$RUNTIME_ROOT/hooks/lib/eci-runtime-sync.sh" "$RUNTIME_ROOT" &
 second_build=$!
+children+=("$second_build")
+if [ "$NATIVE_PLATFORM" = Linux ]; then
+  wait_for_linux_lock_waiter "$RUNTIME_ROOT/hooks/lib/eci-worker-git-go/.eci-go-build.lock" "$second_build"
+fi
+printf 'release\n' >"$BUILD_RELEASE"
 wait "$first_build"
 wait "$second_build"
+children=()
 [ "$(grep -c '^build$' "$BUILD_LOG")" -eq 1 ]
 [ -x "$RUNTIME_ROOT/bin/eci-worker-git" ]
 
