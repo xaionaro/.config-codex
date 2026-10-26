@@ -344,8 +344,11 @@ func prepare(
 		if err != nil {
 			return Preparation{}, err
 		}
-		// Remove only this operation's unpublished temporary file.
-		defer func() {
+		defer
+		// Remove only this operation's unpublished temporary file and retain cleanup errors.
+		//
+		// Example: failed publication leaves no owned staging file behind.
+		func() {
 			if err := os.Remove(temporary.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
 				_err = errors.Join(_err, err)
 			}
@@ -380,10 +383,13 @@ func prepare(
 			return Preparation{}, err
 		}
 	}
-	// Once saved, never imply that a subsequent failure rolled the snapshot back.
-	defer func() {
+	defer
+	// Report saved state and existing history recovery after a postpublication failure.
+	//
+	// Example: failed readback requires inspection and material-change log reconciliation before reuse.
+	func() {
 		if _err != nil {
-			_err = fmt.Errorf("snapshot saved; no assignment emitted; inspect current records and retry with reuse if faithful: %w", _err)
+			_err = fmt.Errorf("snapshot saved; no assignment emitted; inspect saved state and reconcile missing material-change history with ledger-append, then retry with empty edits for faithful reuse: %w", _err)
 		}
 	}()
 	if changed {

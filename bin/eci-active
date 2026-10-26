@@ -1177,7 +1177,7 @@ requirement-assignment)
   trap - EXIT
   event="$(jq -ce '.event' <<<"$preparation")" || exit 1
   if ! "$script_path" ledger-append --json "$event" >/dev/null; then
-    echo 'requirement-assignment: snapshot saved; no assignment emitted; inspect records and retry with empty edits for faithful reuse. Canonical log append failed.' >&2
+    echo 'requirement-assignment: snapshot saved; no assignment emitted; inspect saved state and reconcile missing material-change history with ledger-append, then retry with empty edits for faithful reuse. Canonical log append failed.' >&2
     exit 1
   fi
   jq -ce '.payload' <<<"$preparation"

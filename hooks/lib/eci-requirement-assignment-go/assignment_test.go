@@ -151,40 +151,43 @@ func (f cliFixture) rewriteRequest(t *testing.T, edits string) {
 func TestFailedPreparationEmitsNothing(t *testing.T) {
 	// Each case independently falsifies a prepublication boundary.
 	for _, name := range []string{"stale", "ambiguous", "missing-link", "selected-not-linked", "unknown-request"} {
-		// A fresh session prevents failed cases sharing mutations.
-		t.Run(name, func(t *testing.T) {
-			f := newCLIFixture(t)
-			original := snapshotFixture
-			expectedError := "native edit is stale"
-			switch name {
-			case "stale":
-				f.rewriteRequest(t, `[{"old":"not current","new":"new"}]`)
-			case "ambiguous":
-				f.rewriteRequest(t, `[{"old":"requirement","new":"new"}]`)
-			case "missing-link":
-				original = strings.Replace(original, `requirements: ["requirement:metrics", "requirement:preserved"]`, `requirements: ["requirement:metrics", "requirement:absent"]`, 1)
-				expectedError = "linked record requirement:absent"
-			case "selected-not-linked":
-				original = strings.Replace(original, `requirements: ["requirement:metrics", "requirement:preserved"]`, `requirements: ["requirement:preserved"]`, 1)
-				expectedError = "is not linked to outcome"
-			case "unknown-request":
-				expectedError = "unknown field"
-				contents, err := os.ReadFile(f.Request)
+		t.Run(name,
+			// Isolate each rejected preparation and verify its specific cause without snapshot mutation.
+			//
+			// Example: a missing linked requirement yields no assignment or ledger change.
+			func(t *testing.T) {
+				f := newCLIFixture(t)
+				original := snapshotFixture
+				expectedError := "native edit is stale"
+				switch name {
+				case "stale":
+					f.rewriteRequest(t, `[{"old":"not current","new":"new"}]`)
+				case "ambiguous":
+					f.rewriteRequest(t, `[{"old":"requirement","new":"new"}]`)
+				case "missing-link":
+					original = strings.Replace(original, `requirements: ["requirement:metrics", "requirement:preserved"]`, `requirements: ["requirement:metrics", "requirement:absent"]`, 1)
+					expectedError = "linked record requirement:absent"
+				case "selected-not-linked":
+					original = strings.Replace(original, `requirements: ["requirement:metrics", "requirement:preserved"]`, `requirements: ["requirement:preserved"]`, 1)
+					expectedError = "is not linked to outcome"
+				case "unknown-request":
+					expectedError = "unknown field"
+					contents, err := os.ReadFile(f.Request)
+					require.NoError(t, err)
+					require.NoError(t, os.WriteFile(f.Request, []byte(strings.Replace(string(contents), `"reason":`, `"requirements_message":"independent stale prose","reason":`, 1)), 0600))
+				}
+				require.NoError(t, os.WriteFile(f.Ledger, []byte(original), 0640))
+				output, stderr, err := f.invoke(t)
+				require.Error(t, err)
+				require.Empty(t, output)
+				require.NotEmpty(t, stderr)
+				require.Contains(t, stderr, expectedError)
+				saved, err := os.ReadFile(f.Ledger)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(f.Request, []byte(strings.Replace(string(contents), `"reason":`, `"requirements_message":"independent stale prose","reason":`, 1)), 0600))
-			}
-			require.NoError(t, os.WriteFile(f.Ledger, []byte(original), 0640))
-			output, stderr, err := f.invoke(t)
-			require.Error(t, err)
-			require.Empty(t, output)
-			require.NotEmpty(t, stderr)
-			require.Contains(t, stderr, expectedError)
-			saved, err := os.ReadFile(f.Ledger)
-			require.NoError(t, err)
-			require.Equal(t, original, string(saved))
-			_, err = os.Stat(filepath.Join(filepath.Dir(f.Ledger), "high_level_log.jsonl"))
-			require.True(t, os.IsNotExist(err))
-		})
+				require.Equal(t, original, string(saved))
+				_, err = os.Stat(filepath.Join(filepath.Dir(f.Ledger), "high_level_log.jsonl"))
+				require.True(t, os.IsNotExist(err))
+			})
 	}
 }
 
@@ -215,8 +218,11 @@ func TestPublicationFailureEmitsNothing(t *testing.T) {
 	f := newCLIFixture(t)
 	directory := filepath.Dir(f.Ledger)
 	require.NoError(t, os.Chmod(directory, 0500))
-	// Restore fixture permissions for automatic cleanup.
-	defer func() { require.NoError(t, os.Chmod(directory, 0700)) }()
+	defer
+	// Restore writable fixture permissions so test cleanup can remove the disposable session.
+	//
+	// Example: remove the failed-publication fixture after assertions finish.
+	func() { require.NoError(t, os.Chmod(directory, 0700)) }()
 	output, stderr, err := f.invoke(t)
 	require.Error(t, err, stderr)
 	require.Empty(t, output)
@@ -236,6 +242,7 @@ func TestLogFailureReportsSavedSnapshot(t *testing.T) {
 	require.Error(t, err)
 	require.Empty(t, output)
 	require.Contains(t, stderr, "snapshot saved")
+	require.Contains(t, stderr, "reconcile missing material-change history with ledger-append")
 	require.Contains(t, stderr, "reuse")
 	saved, err := os.ReadFile(f.Ledger)
 	require.NoError(t, err)
@@ -244,6 +251,15 @@ func TestLogFailureReportsSavedSnapshot(t *testing.T) {
 	before, err := os.Stat(f.Ledger)
 	require.NoError(t, err)
 	require.NoError(t, os.Remove(filepath.Join(filepath.Dir(f.Ledger), "high_level_log.jsonl")))
+	recoveryEvent := `{"event":"requirement_change","actor":{"id":"/root","role":"Supervisor"},"summary":"Recovered original material requirement capture before reuse","change":{"before":"User: old compactness","after":"User: 0.4A is more compact than 443 mA"},"reason":"Snapshot saved while log append failed","evidence":["Current snapshot and failed request exact native edits"]}`
+	recovery := exec.Command(f.CLI, "ledger-append", "--json", recoveryEvent)
+	recovery.Env = append(os.Environ(), "CODEX_PROOF_ROOT="+filepath.Join(f.Root, "proof"), "CODEX_SESSION_ID=test-capture")
+	recoveryOutput, err := recovery.CombinedOutput()
+	require.NoError(t, err, string(recoveryOutput))
+	history, err := os.ReadFile(filepath.Join(filepath.Dir(f.Ledger), "high_level_log.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(history), `"before":"User: old compactness"`)
+	require.Contains(t, string(history), `"after":"User: 0.4A is more compact than 443 mA"`)
 	f.rewriteRequest(t, `[]`)
 	output, stderr, err = f.invoke(t)
 	require.NoError(t, err, stderr)
@@ -252,6 +268,10 @@ func TestLogFailureReportsSavedSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, os.SameFile(before, after))
 	require.Equal(t, before.ModTime(), after.ModTime())
+	history, err = os.ReadFile(filepath.Join(filepath.Dir(f.Ledger), "high_level_log.jsonl"))
+	require.NoError(t, err)
+	require.Equal(t, 2, len(strings.Split(strings.TrimSpace(string(history)), "\n")))
+	require.Contains(t, string(history), `"before":"User: old compactness"`)
 }
 
 // TestDifferentRetentionCorrection replaces obsolete permission and preserves the full chain.
