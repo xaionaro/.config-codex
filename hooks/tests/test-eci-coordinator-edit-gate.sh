@@ -299,6 +299,24 @@ assert_control_deny cross-session-document "$cross_session_document_output"
 cross_session_document_dispatch_output="$(run_dispatch cross-session-document-dispatch "$cross_session_document_input")"
 assert_cross_session_deny cross-session-document-dispatch "$cross_session_document_dispatch_output" "$other_session"
 
+# Both report formats retain current-session editing and foreign-session ownership.
+for report in latest-status-report.md latest-status-report.yaml; do
+  for tool in Write Edit; do
+    for owner in "$session_id" "$other_session"; do
+      report_input="$TMP_ROOT/report-$report-$tool-$owner.json"
+      jq -cn --arg tool "$tool" --arg session_id "$session_id" --arg cwd "$repo" --arg path "$proof_root/$owner/$report" \
+        '{tool_name:$tool,session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"updated",old_string:"old",new_string:"updated"}}' \
+        >"$report_input"
+      report_output="$(run_dispatch "report-$report-$tool-$owner" "$report_input")"
+      if [ "$owner" = "$session_id" ]; then
+        assert_empty_output "report-$report-$tool-$owner" "$report_output"
+      else
+        assert_cross_session_deny "report-$report-$tool-$owner" "$report_output" "$other_session"
+      fi
+    done
+  done
+done
+
 ledger="$proof_root/$session_id/high_level_log.jsonl"
 printf '%s\n' '{"event":"decision","summary":"immutable history"}' >"$ledger"
 ledger_input="$TMP_ROOT/ledger.json"

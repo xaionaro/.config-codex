@@ -81,7 +81,16 @@ for command in \
 done
 run_bash_worker_write_denied "printf forged > $proof_root/$sid/eci_active" "$proof_root/$sid/eci_active"
 
-printf '%s\n' 'coordinator ledger' >"$proof_root/$sid/latest-status-report.md"
+for report in latest-status-report.md latest-status-report.yaml; do
+  printf '%s\n' 'coordinator report' >"$proof_root/$sid/$report"
+  run_bash_worker_allowed "cat $proof_root/$sid/$report"
+  run_bash_worker_allowed "printf updated > $proof_root/$sid/$report"
+done
+if [ "${STATUS_REPORT_ONLY:-0}" = 1 ]; then
+  printf '%s\n' 'status report Bash ownership assertions: PASS'
+  exit 0
+fi
+
 ln "$proof_root/$sid/latest-status-report.md" "$repo_hardlink_alias"
 for command in \
   "cat $repo_hardlink_alias" \

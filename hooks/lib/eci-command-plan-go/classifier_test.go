@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -8405,25 +8406,15 @@ func TestStatusReportControlIdentity(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "eci_active")
 	for _, name := range []string{"eci_active", "latest-status-report.md", "latest-status-report.yaml"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("fixture\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("fixture\n"), 0o600))
 	}
 	index := activeControlFileIndex([]string{marker})
 	for _, name := range []string{"latest-status-report.md", "latest-status-report.yaml"} {
 		path := filepath.Join(dir, name)
 		alias := filepath.Join(t.TempDir(), "alias")
-		if err := os.Link(path, alias); err != nil {
-			t.Fatal(err)
-		}
-		if got := activeControlResolvedPath(alias, index.files); got != path {
-			t.Errorf("%s hardlink resolved to %q, want %q", name, got, path)
-		}
-		if !isCanonicalWorkerHandoffPath(path, []string{marker}) {
-			t.Errorf("%s is not recognized as a coordination document", name)
-		}
+		require.NoError(t, os.Link(path, alias))
+		assert.Equal(t, path, activeControlResolvedPath(alias, index.files), name)
+		assert.True(t, isCanonicalWorkerHandoffPath(path, []string{marker}), name)
 	}
-	if isCanonicalWorkerHandoffPath(filepath.Join(dir, "ordinary.yaml"), []string{marker}) {
-		t.Error("ordinary YAML file classified as a coordination document")
-	}
+	assert.False(t, isCanonicalWorkerHandoffPath(filepath.Join(dir, "ordinary.yaml"), []string{marker}))
 }

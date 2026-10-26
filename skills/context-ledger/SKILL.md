@@ -146,39 +146,48 @@ jq -r 'select(.schema == "eci-high-level-log/v1" and .event == "worker_progress"
 |------|--------|
 | Coverage | Include UTC `timestamp`, `state`, `progress`, `decisions`, `blockers_risks`, `verification`, and `next_focus`; include hierarchical `lanes` and forecast projections when applicable. Use mappings and lists for structured detail; do not wrap the report in an opaque Markdown body. |
 | Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status; apply [Update Points](#update-points) timing. |
-| Forecast projection | Derive current forecast lines and scenario summaries from `forecasts.md`; do not treat the report as a second source of truth. |
+| Forecast projection | Derive equivalent native fields from `forecasts.md`, including outcome, target, assessment, baseline or recalibration and evidence, dependencies, and applicable scenarios and completion. Render exact lines and tables only in user-facing reports. The report is not a second source of truth. |
 | No copying the ledger | Report changed state plus next focus; do not duplicate ledger structure. Cross-reference instead. |
 
-Use this shape as a starting point; add fields as needed to retain the status skill's lane, dependency, root-task status, forecast and scenario detail. Each lane's `id` and `parent_id` preserve hierarchy; the three status values retain the skill's distinct readiness meanings. Forecasts remain projections of `forecasts.md`.
+Apply the scalar and selective-edit rules in [YAML authoring and native edits](#authoring-and-native-edits) to this report, without the ledger's envelope, record schema, or record-specific ID/type checks. Select changed fields against the latest report and preserve unrelated content. Use this shape as a starting point; add fields as needed to retain the status skill's lane, dependency, root-task status, forecast and scenario detail. Record changed forecast prior and current targets, reason and evidence; record initial baseline and evidence; record completed timestamps without an active deadline. Represent each applicable root-task status and every material scenario with its trigger, affected work, duration basis, evidence, assumptions, endpoint and next fact-finding action. Each lane's `id` and `parent_id` preserve hierarchy; the three status values retain the skill's distinct readiness meanings. Forecasts remain projections of `forecasts.md`.
 
 ```yaml
 timestamp: '2026-10-26T12:00:00Z'
-state: Validation remains open.
+state: 'Validation remains open.'
 progress:
-  - Source changes pass focused checks.
+  - 'Source changes pass focused checks.'
 decisions:
-  - Use the existing service contract.
+  - choice: 'Use the existing service contract.'
+    reason: 'It preserves compatibility with the test service.'
 blockers_risks: []
 verification:
-  - Focused checks passed.
-next_focus: Run the integration check.
+  - 'Focused checks passed.'
+next_focus: 'Run the integration check.'
 lanes:
   - id: '1.2'
     parent_id: '1'
-    outcome: Complete the service integration.
-    owner: integration owner
-    stage: normal
-    implementation_status: CLOSED
-    test_status: IN PROGRESS
-    prod_status: NEW
-    next_milestone: Integration check passes.
+    outcome: 'Complete the service integration.'
+    owner: 'integration owner'
+    stage: 'normal'
+    implementation_status: 'CLOSED'
+    test_status: 'IN PROGRESS'
+    prod_status: 'NEW'
+    next_milestone: 'Integration check passes.'
     forecast:
+      outcome: 'The service integration passes its required checks.'
       target: '2026-10-26T13:00:00Z'
-      assessment: provisional
-      dependencies: Test service availability.
+      assessment: 'provisional: test service availability is unverified; target conditional'
+      baseline: '2026-10-26T13:00:00Z'
+      evidence: 'Focused checks passed; integration check remains.'
+      dependencies: 'Test service availability; integration owner; resume when available.'
       scenarios:
-        - case: base
+        - case: 'base'
+          trigger: 'No listed downside scenario.'
+          affected_work: 'Remaining integration check.'
+          duration_basis: 'No generic buffer.'
+          evidence_assumptions: 'Focused checks passed; test service assumed available.'
           endpoint: '2026-10-26T13:00:00Z'
+          evidence_gap_next_action: 'Confirm test service availability.'
 ```
 
 If a session has only `latest-status-report.md`, create the YAML projection from current authoritative records at its next required refresh. Preserve the Markdown unchanged as a historical snapshot; only YAML is current thereafter. Do not bulk-convert other sessions or overwrite YAML from legacy Markdown.
@@ -314,9 +323,9 @@ scope, priority, blocker status, or forecast authority.
 
 For every material forecast update, edit `forecasts.md` in place, append to `high_level_log.jsonl`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.yaml`. A forecast-only update does not require rewriting `project-understanding.yaml`. Store forecast values only in `forecasts.md`, keeping locators in the ledger. On closure mark the canonical forecast inactive and retain history rows.
 
-**Status-report projection examples — not ledger storage**
+**Rendered status-report examples — not ledger storage**
 
-In a material changed-state report, emit each canonical forecast line once using `forecasts.md`. Keep these lines as report-only examples; do not copy them into `project-understanding.yaml`.
+In a material changed-state user-facing report, emit each canonical forecast line once using `forecasts.md`. The persisted YAML report carries equivalent fields as described in [Latest Status Report](#latest-status-report). Do not copy these values into `project-understanding.yaml`.
 
 - Next milestone: `Next milestone: <named outcome>`
 - Forecast deadline: `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
@@ -326,11 +335,11 @@ In a material changed-state report, emit each canonical forecast line once using
 - Dependencies / critical path: `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>`
 - `CLOSED` lane: `Completed: <UTC ISO8601>; no active forecast deadline.`
 
-Every non-`CLOSED` lane names its next milestone and canonical forecast line in the report. For each unrepresented active root-task outcome omitted by lane reports, include the standalone root completion line once. The forecast line itself names the finished outcome using the [forecast outcome wording](#forecast-outcome-wording); a separate `Lane` or `Next milestone` does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
+Every non-`CLOSED` lane names its next milestone and canonical forecast line in the rendered report. For each unrepresented active root-task outcome omitted by lane reports, include the standalone root completion line once. The forecast line itself names the finished outcome using the [forecast outcome wording](#forecast-outcome-wording); a separate `Lane` or `Next milestone` does not substitute, and it never names a critic, reviewer, actor, or stage. Root completion is full root completion, not a child sum or stage.
 
-For a changed lane or root forecast, restate its current canonical line in the same report, then record `Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.`
+For a changed lane or root forecast, restate its current canonical line in the same rendered report, then state `Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.`
 
-A closed forecasted lane/root requires actual quoted `completed_at` UTC in its work record and an inactive canonical forecast. Append material closure to the log and refresh the report with `Completed: <UTC ISO8601>; no active forecast deadline.` Small non-lane work timestamps are optional. Removing `forecast_ref` alone does not close a forecast. Do not invent or revive a forecast deadline or recalibration. For an initial forecast, write `Forecast recalibration: unchanged — baseline <UTC ISO8601>; supporting evidence: <evidence>.`
+A closed forecasted lane/root requires actual quoted `completed_at` UTC in its work record and an inactive canonical forecast. Append material closure to the log and refresh the report with the completion timestamp and absence of an active deadline. Render the completion and initial forecast evidence using the exact lines in `writing-status-reports`. Small non-lane work timestamps are optional. Removing `forecast_ref` alone does not close a forecast. Do not invent or revive a forecast deadline or recalibration.
 
 State dependencies and parallel work. For parallel children, report the single critical-path deadline; child deadlines remain parallel; never add or sum parallel child deadlines into a parent, root, or mission deadline.
 
@@ -533,10 +542,10 @@ Reject the ledger if any holds:
 - The latest update is purely additive while sections that should have changed were left untouched.
 - Facts are prose dumps instead of independently useful typed records under fitting sections.
 - Canonical schema/shared record shape is absent, semantic subjects are duplicated, or section/link targets are missing or mistyped.
-- An active lane lacks its next action or `forecast_ref` locator to its current forecast record in `forecasts.md`; the forecast lacks its named outcome, status, target, original baseline, or required recalibration; or a changed lane/root lacks its restated canonical line plus recalibration in the report projection.
+- An active lane lacks its next action or `forecast_ref` locator to its current forecast record in `forecasts.md`; the forecast lacks its named outcome, status, target, original baseline, or required recalibration; or a changed lane/root lacks equivalent outcome, target, assessment, and recalibration fields in the report projection.
 - An unrepresented active root-task outcome omitted by lane reports lacks a full outcome and target record in `forecasts.md`.
 - The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.md` record.
-- Completed forecasted lane/root work lacks actual `completed_at` UTC, its forecast remains active, or the report omits `Completed: <UTC ISO8601>; no active forecast deadline.`
+- Completed forecasted lane/root work lacks actual `completed_at` UTC, its forecast remains active, or the report omits the completion timestamp and absence of an active deadline.
 This is a planning-quality defect: reconcile it alongside safe work without delaying the update.
 - Section titles or memberships no longer fit the content.
 - The high-level log is missing, was edited or truncated in place, lacks entries for material ledger changes or material forecast-only updates made this session, or duplicates current-state synthesis.

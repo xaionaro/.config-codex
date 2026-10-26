@@ -34,6 +34,7 @@ Progress reports changed state and completed outcomes, not files read, commands 
 
 ## Format Rules
 
+- These formatting rules, including exact forecast lines and tables, apply to rendered user-facing reports. The persisted YAML projection carries equivalent structured fields as described in [Latest Status Report](../context-ledger/SKILL.md#latest-status-report).
 - Keep updates short: one tight paragraph or relevant coverage categories as bullets.
 - Lead with state, then include only categories that changed or matter now.
 - Name exact affected area, requirement, command, file, or decision when relevant.
