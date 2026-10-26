@@ -397,7 +397,10 @@ directives, explicit/custom tags, anchors, aliases, merge keys or multiple
 documents. These are writing/quality rules, not runtime content permission gates.
 
 Prefer native selective YAML text edits, preserving unrelated comments, order,
-quoting and multiline text. One canonical session writer combines bounded worker
+quoting and multiline text. Use `yq` for bounded manipulations when its installed
+implementation can make selective edits without whole-document serialization;
+verify that it preserves unrelated text. Otherwise use native text edits. One
+canonical session writer combines bounded worker
 proposals against the latest snapshot. Never serialize the whole document merely
 to change one value, redirect parser output onto its input, or publish a stale
 worker copy. For whole-snapshot publication, copy the latest snapshot to an owned
@@ -422,9 +425,17 @@ project instead of treating it as a fixed domain template.
 
 ### Read-only queries
 
-When available, Node's existing `yaml` package can parse for read-only queries;
-check `node -p 'require.resolve("yaml")'`. Do not assume Node, that package, or
-`yq` installed. Availability is not a work gate; native text edits remain usable.
+Use `yq` when available to select and inspect ledger records before a bounded
+edit. Check `yq --version` and its help: implementations have different syntax
+and preservation behavior. If `yq` is unavailable or unsuitable, use native
+text inspection and edits. For the jq-based `yq`, a read-only query is:
+
+```sh
+yq '.records | to_entries[] | select(.value.type == "requirement") | {id:.key,source:.value.data.source_text,acceptance:.value.data.acceptance}' project-understanding.yaml
+```
+
+Node's existing `yaml` package can also parse for read-only queries; check
+`node -p 'require.resolve("yaml")'`. Do not assume Node or the package is installed.
 The following Bash example rejects parse/key/alias failures but does not certify
 the full schema, allowed authoring subset, truth, freshness or completeness:
 
