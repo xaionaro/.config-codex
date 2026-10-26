@@ -5,7 +5,7 @@ description: Use when writing, modifying, or reviewing code in any language, inc
 
 # Common Coding Style
 
-Apply these requirements alongside the language-specific coding-style skill. Language-specific rules govern language syntax, APIs, and explicit policy differences.
+Apply these requirements alongside the language-specific coding-style skill. Language-specific rules govern language syntax, APIs, and explicit policy differences. Apply type-system requirements where the language supports them.
 
 ## Design and APIs
 
