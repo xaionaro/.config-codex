@@ -3,6 +3,7 @@
 # Synchronize one provider's hook runtime through an explicit coordinator route.
 
 source "${BASH_SOURCE[0]%/*}/eci-native-binary.sh"
+source "${BASH_SOURCE[0]%/*}/codex-file-lock.sh"
 
 # Build absent or incompatible runtime tools from this provider's sources.
 # Compatible executables stay in place; explicit maintenance owns source refreshes.
@@ -64,7 +65,7 @@ eci_runtime_build_missing() (
     fi
     # Concurrent session starts serialize per module and recheck after waiting.
     exec {lock_fd}>"$module/.eci-go-build.lock" || return 1
-    flock "$lock_fd" || return 1
+    codex_file_lock_acquire_fd "$lock_fd" blocking || return 1
     if [ ! -x "$binary" ]; then
       compiler="$(command -v go)" || {
         printf 'ECI runtime build: could not build %s: install Go and put go on PATH\n' "$name" >&2
@@ -86,7 +87,7 @@ eci_runtime_build_missing() (
       rmdir -- "$temporary" || return 1
       temporary=''
     fi
-    exec {lock_fd}>&-
+    codex_file_lock_release_fd "$lock_fd"
   done
 )
 

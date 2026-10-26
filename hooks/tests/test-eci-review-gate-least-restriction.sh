@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-eci-review-least-restriction.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
+source "$ROOT/hooks/lib/codex-file-lock.sh"
 
 cp -- "$ROOT/hooks/validate-bash.sh" "$TMP_ROOT/validate-bash.before"
 cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$TMP_ROOT/dispatcher.before"
@@ -28,6 +29,7 @@ setup_fixture() {
   mkdir -p "$fixture_root/hooks/lib" "$repo" "$proof_root/$session_id"
   cp -- "$ROOT/hooks/eci-review-gate.sh" "$fixture_root/hooks/eci-review-gate.sh"
   cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$fixture_root/hooks/lib/codex-proof-state.sh"
+  cp -- "$ROOT/hooks/lib/codex-file-lock.sh" "$fixture_root/hooks/lib/codex-file-lock.sh"
   cp -- "$ROOT/hooks/lib/eci-diagnostic.sh" "$fixture_root/hooks/lib/eci-diagnostic.sh"
   chmod +x "$fixture_root/hooks/eci-review-gate.sh"
 
@@ -93,6 +95,7 @@ setup_aggregate_fixture() {
   mkdir -p "$fixture_root/hooks/lib" "$aggregate_repo" "$proof_root/$session_id"
   cp -- "$ROOT/hooks/eci-review-gate.sh" "$fixture_root/hooks/eci-review-gate.sh"
   cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$fixture_root/hooks/lib/codex-proof-state.sh"
+  cp -- "$ROOT/hooks/lib/codex-file-lock.sh" "$fixture_root/hooks/lib/codex-file-lock.sh"
   cp -- "$ROOT/hooks/lib/eci-diagnostic.sh" "$fixture_root/hooks/lib/eci-diagnostic.sh"
   chmod +x "$fixture_root/hooks/eci-review-gate.sh"
 
@@ -154,7 +157,7 @@ test_stale_review_history_is_nonblocking() {
   setup_fixture
   (
     exec 9>>"$proof_root/.eci-active.lock"
-    flock -n 9
+    codex_file_lock_acquire_fd 9 nonblocking
     : >"$lock_ready"
     sleep 0.2
   ) &
@@ -298,7 +301,7 @@ test_singleton_commit_history_and_lock_are_nonblocking() {
   identity_before="$(sha256sum -- "$proof_root/$session_id/eci-critic-identities.ledger" | awk '{print $1}')"
   (
     exec 9>>"$proof_root/.eci-active.lock"
-    flock -n 9
+    codex_file_lock_acquire_fd 9 nonblocking
     : >"$lock_ready"
     sleep 0.2
   ) &
@@ -328,7 +331,7 @@ test_singleton_off_history_and_lock_are_nonblocking() {
   anchor_before="$(sha256sum -- "$proof_root/$session_id/eci-acceptance-anchor" | awk '{print $1}')"
   (
     exec 9>>"$proof_root/.eci-active.lock"
-    flock -n 9
+    codex_file_lock_acquire_fd 9 nonblocking
     : >"$lock_ready"
     sleep 0.2
   ) &
@@ -356,7 +359,7 @@ assert_aggregate_history_phase_is_nonblocking() {
   anchor_before="$(sha256sum -- "$proof_root/$session_id/eci-aggregate.repo-a.acceptance-anchor" | awk '{print $1}')"
   (
     exec 9>>"$proof_root/.eci-active.lock"
-    flock -n 9
+    codex_file_lock_acquire_fd 9 nonblocking
     : >"$lock_ready"
     sleep 0.2
   ) &

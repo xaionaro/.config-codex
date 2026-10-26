@@ -842,7 +842,8 @@ def discover_runtime_sources(code_root: Path) -> tuple[Path, ...]:
     discovered = {Path("hooks.json"), *CONFIGURED_HOOK_PATHS}
     pending = list(CONFIGURED_HOOK_PATHS)
     path_pattern = re.compile(
-        r"(?:\$HOOK_DIR/lib/|\$helper_dir/|\}\%/\*\}/)([A-Za-z0-9_.-]+)"
+        r"(?:\$HOOK_DIR/lib/|\$helper_dir/|\$\{BASH_SOURCE\[0\]%/\*\}/)"
+        r"([A-Za-z0-9_.-]+)"
     )
     while pending:
         relative = pending.pop()
@@ -1152,7 +1153,14 @@ def _verify_candidate_sources(candidate_root: Path, commit: str) -> None:
 
 def _runtime_manifest(root: Path) -> tuple[tuple[str, str], ...]:
     entries: list[tuple[str, str]] = []
-    for relative in (RUNTIME_MANIFEST_RELATIVE_PATH, *CANDIDATE_RUNTIME_SOURCE_PATHS):
+    if (root / RUNTIME_MANIFEST_RELATIVE_PATH).is_file():
+        definition = load_runtime_manifest(root)
+        runtime_sources = tuple(Path(value) for value in definition["product_sources"])
+    else:
+        # Preserved revisions predate the declared manifest; observe their own
+        # source closure rather than impose today's dependency list on them.
+        runtime_sources = discover_runtime_sources(root)
+    for relative in (RUNTIME_MANIFEST_RELATIVE_PATH, *runtime_sources):
         path = root / relative
         if not path.is_file():
             if relative in (

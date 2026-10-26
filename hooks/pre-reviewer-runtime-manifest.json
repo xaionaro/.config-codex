@@ -9,6 +9,8 @@
     "hooks/lib/edit-bash-pre-reviewer-worker.sh",
     "hooks/lib/bounded_hook_input.py",
     "hooks/lib/codex-proof-state.sh",
+    "hooks/lib/codex-file-lock.sh",
+    "hooks/lib/eci-diagnostic.sh",
     "hooks/lib/codex-tmp.sh",
     "hooks/lib/pre-reviewer-turn-state.sh",
     "hooks/lib/reviewer-backend.sh",
@@ -64,6 +66,7 @@
     "tail",
     "timeout",
     "tr",
+    "uname",
     "unshare",
     "xargs"
   ],
@@ -100,6 +103,7 @@
     "strace",
     "tar",
     "timeout",
+    "uname",
     "unshare"
   ],
   "optional_harness_tools": [

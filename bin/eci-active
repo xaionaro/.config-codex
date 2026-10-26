@@ -156,12 +156,12 @@ acquire_eci_mutation_lock() {
     echo "ECI mutation lock is unavailable: $lock_path" >&2
     return 1
   fi
-  if ! flock -n "$eci_lock_fd" 2>/dev/null; then
-    eval "exec ${eci_lock_fd}>&-" 2>/dev/null || true
+  if ! codex_file_lock_acquire_fd "$eci_lock_fd" nonblocking 2>/dev/null; then
+    codex_file_lock_release_fd "$eci_lock_fd" 2>/dev/null || true
     echo "ECI mutation lock is busy; refusing state mutation: $lock_path" >&2
     return 1
   fi
-  trap 'flock -u "$eci_lock_fd" 2>/dev/null || true; eval "exec ${eci_lock_fd}>&-"' EXIT
+  trap 'codex_file_lock_release_fd "$eci_lock_fd" 2>/dev/null || true' EXIT
 }
 
 run_eci_review_gate() {
@@ -1172,8 +1172,7 @@ requirement-assignment)
     go run -mod=readonly . --ledger "$session_dir/project-understanding.yaml" --request "$request_path")" || exit 1
   # ledger-append takes the same lock. Release it before calling that owner;
   # retain the prepared payload privately until its required append succeeds.
-  flock -u "$eci_lock_fd" || exit 1
-  eval "exec ${eci_lock_fd}>&-"
+  codex_file_lock_release_fd "$eci_lock_fd" || exit 1
   trap - EXIT
   event="$(jq -ce '.event' <<<"$preparation")" || exit 1
   if ! "$script_path" ledger-append --json "$event" >/dev/null; then

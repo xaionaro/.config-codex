@@ -2,6 +2,11 @@
 # Build the canonical host guard on demand; keep generated executables out of Git.
 set -euo pipefail
 
+wrapper_path=${BASH_SOURCE[0]}
+wrapper_dir=${wrapper_path%/*}
+[[ $wrapper_dir != "$wrapper_path" ]] || wrapper_dir=.
+wrapper_dir=$(cd -- "$wrapper_dir" && pwd -P)
+source "$wrapper_dir/../hooks/lib/codex-file-lock.sh"
 source_dir=${OWNED_COMMAND_SOURCE:-$HOME/.codex/tools/owned-command}
 cache_dir=${OWNED_COMMAND_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/codex/owned-command}
 resolve_executable=false
@@ -21,7 +26,8 @@ Usage: owned-command [guard flags] -- command args...
 Builds Codex tools/owned-command automatically and forwards arguments/status.
 OWNED_COMMAND_SOURCE: Go module directory override (default ~/.codex/tools/owned-command).
 OWNED_COMMAND_CACHE: generated executable cache (default ${XDG_CACHE_HOME:-$HOME/.cache}/codex/owned-command).
-Source changes rebuild before the next invocation. Requires Go, flock, sha256sum.
+Source changes rebuild before the next invocation. Requires Go, the native
+file-lock helper in ~/.codex/hooks/lib, and sha256sum.
 Cache versions belong to this wrapper; remove old versions only after their callers exit.
 --resolve-executable prepares without executing and prints one absolute cache path.
 Resolve before timed phases; execute that path directly with caller arguments/environment.
@@ -103,7 +109,7 @@ mkdir -p -- "$cache_dir"
 cache_dir=$(realpath -e -- "$cache_dir")
 # One builder per cache. Immutable filenames remain safe after unlocking and exec.
 exec 9>"$cache_dir/build.lock"
-flock 9
+codex_file_lock_acquire_fd 9 blocking
 fingerprint() (
   cd -- "$source_dir" || return
   printf '%s\n' 'owned-command cache format 2; native host/default ISA; GOFLAGS=space; GO_EXTLINK_ENABLED=0; -buildvcs=false'
@@ -141,8 +147,7 @@ if [[ ! -x $executable ]]; then
   rmdir -- "$build_dir"
   trap - EXIT
 fi
-flock -u 9
-exec 9>&-
+codex_file_lock_release_fd 9
 if "$resolve_executable"; then
   case $executable in
     *$'\r'*|*$'\n'*)

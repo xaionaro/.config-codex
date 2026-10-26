@@ -35,6 +35,31 @@ def git_output(*arguments: str) -> bytes:
 
 
 class ProfileIdentityTests(unittest.TestCase):
+    def test_runtime_sources_follow_bash_source_sibling(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="profile-source-closure-") as temporary:
+            root = Path(temporary)
+            for relative in MODULE.CONFIGURED_HOOK_PATHS:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+            (root / MODULE.CONFIGURED_HOOK_PATHS[0]).write_text(
+                'source "$HOOK_DIR/lib/codex-proof-state.sh"\n', encoding="utf-8"
+            )
+            library = root / "hooks/lib"
+            library.mkdir()
+            (library / "codex-proof-state.sh").write_text(
+                'source "${BASH_SOURCE[0]%/*}/codex-file-lock.sh"\n'
+                'source "${BASH_SOURCE[0]%/*}/other-library.sh"\n',
+                encoding="utf-8",
+            )
+            (library / "codex-file-lock.sh").write_text("", encoding="utf-8")
+            (library / "other-library.sh").write_text("", encoding="utf-8")
+            (library / "unreferenced.sh").write_text("", encoding="utf-8")
+            discovered = MODULE.discover_runtime_sources(root)
+            assert Path("hooks/lib/codex-file-lock.sh") in discovered
+            assert Path("hooks/lib/other-library.sh") in discovered
+            assert Path("hooks/lib/unreferenced.sh") not in discovered
+
     def test_runtime_manifest_covers_configuration_and_transitive_sources(self) -> None:
         definition = MODULE.load_runtime_manifest(ROOT)
         expected = {Path(value) for value in definition["product_sources"]}

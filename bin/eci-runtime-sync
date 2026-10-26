@@ -14,6 +14,7 @@ PATH='/usr/bin:/bin'
 export PATH
 
 source "${BASH_SOURCE[0]%/*}/../hooks/lib/eci-native-binary.sh"
+source "${BASH_SOURCE[0]%/*}/../hooks/lib/codex-file-lock.sh"
 
 usage() {
   printf '%s\n' \
@@ -341,7 +342,7 @@ planner_sync() (
   fi
   exec {lock_fd}<>"$output_root/$PLANNER_LOCK_NAME" || return 1
   planner_publication_event before-lock "$output_root/$PLANNER_LOCK_NAME" || return 1
-  /usr/bin/flock "$lock_fd" || return 1
+  codex_file_lock_acquire_fd "$lock_fd" blocking || return 1
   planner_publication_event after-lock "$output_root/$PLANNER_LOCK_NAME" || return 1
   for name in "$@"; do
     eci_runtime_binary_is_native "$output_root/$requested_provider/$name" || requested_ok=false

@@ -27,6 +27,7 @@ mkdir -p -- "$fixture_codex/bin" "$fixture_codex/hooks/lib" "$session_dir" \
   "$proof_root/$other_session" "$cwd" "$other_cwd"
 cp -- "$ROOT/bin/eci-active" "$fixture_eci"
 cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$fixture_codex/hooks/lib/codex-proof-state.sh"
+cp -- "$ROOT/hooks/lib/codex-file-lock.sh" "$fixture_codex/hooks/lib/codex-file-lock.sh"
 chmod 755 -- "$fixture_eci"
 
 # Preserve the live hooks regardless of whether a line-2 bypass is present.

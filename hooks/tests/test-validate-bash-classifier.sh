@@ -2508,6 +2508,7 @@ mkdir -p -- "$isolated_worker_root/bin" "$isolated_worker_root/hooks/lib" "$isol
 git -C "$isolated_worker_root" init --quiet
 cp -- "$ROOT/bin/eci-active" "$isolated_worker_root/bin/eci-active"
 cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$isolated_worker_root/hooks/lib/codex-proof-state.sh"
+cp -- "$ROOT/hooks/lib/codex-file-lock.sh" "$isolated_worker_root/hooks/lib/codex-file-lock.sh"
 chmod +x "$isolated_worker_root/bin/eci-active"
 printf '%s\n' '# isolated worker Codex instructions' >"$isolated_worker_root/CODEX.md"
 printf '%s\n' '# isolated worker agent instructions' >"$isolated_worker_root/AGENTS.md"

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$ROOT/hooks/lib/codex-file-lock.sh"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-session-refresh.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
 
@@ -245,7 +246,7 @@ test_eci_active_mutations_fail_closed_when_lock_is_busy() {
   printf 'scope: lock test\n' >"$session_dir/eci_active"
   printf '%s\n' '# lock test' >"$report"
   exec {lock_fd}>>"$proof_root/.eci-active.lock"
-  flock -n "$lock_fd"
+  codex_file_lock_acquire_fd "$lock_fd" nonblocking
 
   if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
       "$ROOT/bin/eci-active" on 'blocked on' >"$TMP_ROOT/on-lock.out" 2>"$TMP_ROOT/on-lock.err"; then
@@ -265,8 +266,7 @@ test_eci_active_mutations_fail_closed_when_lock_is_busy() {
   fi
   [ -f "$session_dir/eci_active" ]
   [ ! -e "$session_dir/eci_wait" ]
-  flock -u "$lock_fd"
-  eval "exec ${lock_fd}>&-"
+  codex_file_lock_release_fd "$lock_fd"
 }
 
 test_session_start_skips_pruning_when_mutation_lock_is_busy() {
@@ -277,12 +277,11 @@ test_session_start_skips_pruning_when_mutation_lock_is_busy() {
   touch -t 202001010000 "$old_dir" "$old_dir/eci_active"
   mkdir -p "$proof_root"
   exec {lock_fd}>>"$proof_root/.eci-active.lock"
-  flock -n "$lock_fd"
+  codex_file_lock_acquire_fd "$lock_fd" nonblocking
   out="$TMP_ROOT/lock.out"
   run_snapshot "$proof_root" resume "$out" t00-session
   [ -e "$old_dir/eci_active" ]
-  flock -u "$lock_fd"
-  eval "exec ${lock_fd}>&-"
+  codex_file_lock_release_fd "$lock_fd"
 }
 
 test_old_uuid_session_with_active_eci_marker_survives_cleanup() {
@@ -408,6 +407,13 @@ EOF
   cmp "$TMP_ROOT/import-report" "$TMP_ROOT/import-proof/import-on-demand/eci_user_owned_wait.md"
   [ -x "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import" ]
 }
+
+if [ "${1:-}" = --lock-paths-only ]; then
+  test_eci_active_mutations_fail_closed_when_lock_is_busy
+  test_session_start_skips_pruning_when_mutation_lock_is_busy
+  printf '%s\n' 'SessionStart and proof-state lock paths: PASS'
+  exit 0
+fi
 
 test_session_start_builds_missing_go_tools
 if [ "${1:-}" = --build-only ]; then

@@ -29,6 +29,7 @@ proof_root="$(realpath -e -- "$proof_root")"
 cp -a -- "$ROOT/hooks" "$fixture_codex/hooks"
 cp -a -- "$ROOT/hooks" "$fixture_kimi/hooks"
 cp -- "$ROOT/hooks/lib/codex-proof-state.sh" "$foreign_root/hooks/lib/codex-proof-state.sh"
+cp -- "$ROOT/hooks/lib/codex-file-lock.sh" "$foreign_root/hooks/lib/codex-file-lock.sh"
 
 make_claim() {
   local session_id="$1" claim

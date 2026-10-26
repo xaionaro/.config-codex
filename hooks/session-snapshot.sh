@@ -43,12 +43,13 @@ lock_held=false
 lock_path="$(codex_eci_lock_path 2>/dev/null || true)"
 if [ -n "$lock_path" ] &&
   { [ ! -e "$lock_path" ] || [ -f "$lock_path" ]; } && [ ! -L "$lock_path" ]; then
-  if exec {eci_lock_fd}>>"$lock_path" 2>/dev/null && flock -n "$eci_lock_fd" 2>/dev/null; then
+  if exec {eci_lock_fd}>>"$lock_path" 2>/dev/null &&
+    codex_file_lock_acquire_fd "$eci_lock_fd" nonblocking 2>/dev/null; then
     lock_held=true
-    trap 'flock -u "$eci_lock_fd" 2>/dev/null || true; eval "exec ${eci_lock_fd}>&-"' EXIT
+    trap 'codex_file_lock_release_fd "$eci_lock_fd" 2>/dev/null || true' EXIT
   else
     if [ -n "${eci_lock_fd:-}" ]; then
-      eval "exec ${eci_lock_fd}>&-" 2>/dev/null || true
+      codex_file_lock_release_fd "$eci_lock_fd" 2>/dev/null || true
     fi
   fi
 fi

@@ -5591,6 +5591,8 @@ run_case "session snapshot preserves fresh markers in old state dirs" \
   test_session_snapshot_preserves_fresh_markers_in_old_state_dirs
 run_case "session snapshot refresh and active-marker cleanup safety" \
   "$ROOT/hooks/tests/test-session-snapshot-refresh.sh"
+run_case "portable runtime file-lock selection and lifecycle" \
+  "$ROOT/hooks/tests/test-eci-file-lock.sh"
 run_case "Codex lifecycle source, receipt, and dispatcher authority" \
   bash "$ROOT/hooks/tests/test-eci-active-help.sh"
 run_case "direct permissive lifecycle recovery" \

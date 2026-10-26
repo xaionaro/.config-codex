@@ -3,6 +3,8 @@
 # TODO: Retire ECI marker readers and marker-dependent coordination validation;
 # native goals own continuation and the Supervisor owns ECI lifecycle.
 
+source "${BASH_SOURCE[0]%/*}/codex-file-lock.sh"
+
 codex_configured_proof_root() {
   printf '%s\n' "${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
 }
@@ -748,8 +750,8 @@ codex_eci_accidental_override_consume() {
   if ! exec {lock_fd}>>"$lock_path" 2>/dev/null; then
     return 1
   fi
-  if ! flock -n "$lock_fd" 2>/dev/null; then
-    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+  if ! codex_file_lock_acquire_fd "$lock_fd" nonblocking 2>/dev/null; then
+    codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
     return 1
   fi
 
@@ -764,35 +766,29 @@ codex_eci_accidental_override_consume() {
       else
         codex_eci_accidental_override_consume_reason="authorization state is already consumed or interrupted (state=$claim); publish a new explicitly authorized record and use the coordinator recovery route before retrying; do not restore the old record"
       fi
-      flock -u "$lock_fd" 2>/dev/null || true
-      eval "exec $lock_fd>&-" 2>/dev/null || true
+      codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
       return 1
     fi
   fi
   if [ -e "$claim" ] || [ -L "$claim" ] || ! mkdir -- "$claim" 2>/dev/null; then
-    flock -u "$lock_fd" 2>/dev/null || true
-    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
     return 1
   fi
   if ! codex_eci_accidental_override_record_is_valid "$scope" "$tool" "$session_id" "$cwd" "$payload"; then
     rmdir -- "$claim" 2>/dev/null || true
-    flock -u "$lock_fd" 2>/dev/null || true
-    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
     return 1
   fi
   if ! mv -- "$record" "$claim/record" 2>/dev/null; then
     rmdir -- "$claim" 2>/dev/null || true
-    flock -u "$lock_fd" 2>/dev/null || true
-    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
     return 1
   fi
   if ! rm -f -- "$claim/record" 2>/dev/null || ! rmdir -- "$claim" 2>/dev/null; then
-    flock -u "$lock_fd" 2>/dev/null || true
-    eval "exec ${lock_fd}>&-" 2>/dev/null || true
+    codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
     return 1
   fi
-  flock -u "$lock_fd" 2>/dev/null || true
-  eval "exec ${lock_fd}>&-" 2>/dev/null || true
+  codex_file_lock_release_fd "$lock_fd" 2>/dev/null || true
   return 0
 }
 
