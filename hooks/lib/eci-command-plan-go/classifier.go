@@ -575,6 +575,9 @@ type gateModeIdentity struct {
 	failure        string
 }
 
+// eciControlBasenames lists the session control filenames used for target discovery.
+//
+// Example: latest-status-report.yaml is indexed as a session control document.
 var eciControlBasenames = [...]string{
 	"eci_active", "goal_state", "eci_wait", "eci_user_owned_wait.md", "eci-additional-repository",
 	"eci-required-critics.json", "eci-critic-identities.ledger",
@@ -6897,7 +6900,13 @@ func activeControlHardlinkPath(path string, index []activeControlFile) string {
 	return ""
 }
 
-func isCanonicalWorkerHandoffPath(path string, markers []string) bool {
+// isCanonicalWorkerHandoffPath reports whether a path is a handoff document in an active session.
+//
+// Example: latest-status-report.yaml beside an active marker is a handoff document.
+func isCanonicalWorkerHandoffPath(
+	path string,
+	markers []string,
+) bool {
 	base := filepath.Base(path)
 	switch base {
 	case "instructions.md", "project-understanding.yaml", "high_level_log.jsonl", "latest-status-report.md", "latest-status-report.yaml":
