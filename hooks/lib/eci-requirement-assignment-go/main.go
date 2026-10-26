@@ -270,57 +270,15 @@ func savedChain(
 		if recordType == nil || (expectedTypes[id] != "" && recordType.Value != expectedTypes[id]) {
 			return "", fmt.Errorf("linked record %s has wrong type", id)
 		}
-		if _, err := textSequence(fields["evidence"]); err != nil {
-			return "", fmt.Errorf("record %s evidence: %w", id, err)
-		}
-		if fields["data"] == nil {
-			return "", fmt.Errorf("record %s has no data", id)
-		}
-		var data map[string]*yaml.Node
-		if recordType.Value == "requirement" || recordType.Value == "scope" || recordType.Value == "outcome" {
-			data, err = mapping(fields["data"])
-			if err != nil {
-				return "", fmt.Errorf("record %s data: %w", id, err)
-			}
-		}
-		switch recordType.Value {
-		case "requirement":
-			source := data["source_text"]
-			if source == nil || source.Kind != yaml.ScalarNode || source.Tag != "!!str" || strings.TrimSpace(source.Value) == "" {
-				return "", fmt.Errorf("requirement %s has no exact source text", id)
-			}
-			if _, err := stringList(data["acceptance"]); err != nil {
-				return "", fmt.Errorf("requirement %s acceptance: %w", id, err)
-			}
-		case "scope":
-			if _, err := textSequence(data["include"]); err != nil {
-				return "", fmt.Errorf("scope %s include: %w", id, err)
-			}
-			if _, err := textSequence(data["exclude"]); err != nil {
-				return "", fmt.Errorf("scope %s exclude: %w", id, err)
-			}
-		case "outcome":
-			if data["description"] == nil || data["description"].Kind != yaml.ScalarNode || data["description"].Tag != "!!str" || strings.TrimSpace(data["description"].Value) == "" {
-				return "", fmt.Errorf("outcome %s has no description", id)
-			}
+		if err := validateRecordData(RecordID(id), fields); err != nil {
+			return "", err
 		}
 		projected.Content = append(projected.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: id}, record)
-		if fields["links"] == nil {
-			continue
-		}
-		namedLinks, err := mapping(fields["links"])
+		targets, err := recordTargets(RecordID(id), fields["links"])
 		if err != nil {
-			return "", fmt.Errorf("record %s links: %w", id, err)
+			return "", err
 		}
-		// Traverse mapping order, not Go map iteration order.
-		for index := 0; index < len(fields["links"].Content); index += 2 {
-			name := fields["links"].Content[index].Value
-			targets, err := stringList(namedLinks[name])
-			if err != nil {
-				return "", fmt.Errorf("record %s link %s: %w", id, name, err)
-			}
-			queue = append(queue, targets...)
-		}
+		queue = append(queue, targets...)
 	}
 	encoded, err := yaml.Marshal(projected)
 	if err != nil {
@@ -332,6 +290,76 @@ func savedChain(
 		return "", fmt.Errorf("unsupported projection: %w", err)
 	}
 	return string(encoded), nil
+}
+
+// validateRecordData checks binding fields while preserving open supporting-record payloads.
+//
+// Example: requirements need exact source and acceptance, while context may retain scalar data.
+func validateRecordData(
+	id RecordID,
+	fields map[string]*yaml.Node,
+) error {
+	if _, err := textSequence(fields["evidence"]); err != nil {
+		return fmt.Errorf("record %s evidence: %w", id, err)
+	}
+	if fields["data"] == nil {
+		return fmt.Errorf("record %s has no data", id)
+	}
+	kind := fields["type"].Value
+	if kind != "requirement" && kind != "scope" && kind != "outcome" {
+		return nil
+	}
+	data, err := mapping(fields["data"])
+	if err != nil {
+		return fmt.Errorf("record %s data: %w", id, err)
+	}
+	switch kind {
+	case "requirement":
+		source := data["source_text"]
+		if source == nil || source.Kind != yaml.ScalarNode || source.Tag != "!!str" || strings.TrimSpace(source.Value) == "" {
+			return fmt.Errorf("requirement %s has no exact source text", id)
+		}
+		if _, err := stringList(data["acceptance"]); err != nil {
+			return fmt.Errorf("requirement %s acceptance: %w", id, err)
+		}
+	case "scope":
+		if _, err := textSequence(data["include"]); err != nil {
+			return fmt.Errorf("scope %s include: %w", id, err)
+		}
+		if _, err := textSequence(data["exclude"]); err != nil {
+			return fmt.Errorf("scope %s exclude: %w", id, err)
+		}
+	case "outcome":
+		if data["description"] == nil || data["description"].Kind != yaml.ScalarNode || data["description"].Tag != "!!str" || strings.TrimSpace(data["description"].Value) == "" {
+			return fmt.Errorf("outcome %s has no description", id)
+		}
+	}
+	return nil
+}
+
+// recordTargets extracts every named record link in native mapping order.
+//
+// Example: supporting links remain traversable without replacing the full projected node.
+func recordTargets(
+	id RecordID,
+	links *yaml.Node,
+) ([]string, error) {
+	if links == nil {
+		return nil, nil
+	}
+	if _, err := mapping(links); err != nil {
+		return nil, fmt.Errorf("record %s links: %w", id, err)
+	}
+	var result []string
+	for index := 0; index < len(links.Content); index += 2 {
+		name := links.Content[index].Value
+		targets, err := stringList(links.Content[index+1])
+		if err != nil {
+			return nil, fmt.Errorf("record %s link %s: %w", id, name, err)
+		}
+		result = append(result, targets...)
+	}
+	return result, nil
 }
 
 // prepare publishes selective bytes, then builds the authoritative assignment only from readback.
