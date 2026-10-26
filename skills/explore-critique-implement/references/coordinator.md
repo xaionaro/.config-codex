@@ -59,7 +59,7 @@ E2E triggers: [Configuration E2E contract](../SKILL.md#configuration-e2e-contrac
 
 Name at least one critic in every critic round to check least restriction: bots are non-malicious; controls catch concrete accidental mistakes without turning normal work into permission ceremony.
 
-Before dispatch, verify the assignment still names the right work, current requirements, named review range and exclusions, and supplied evidence. Missing or stale coordination evidence prompts refresh, reassignment, or an additional review; it does not stop ordinary exploration, implementation, or harmless verification.
+Before dispatch, compare the assignment with the affected canonical requirements, including material user corrections, named review range and exclusions, and supplied evidence. Apply the [ledger update priority](../../context-ledger/SKILL.md#update-points) before changed dependent work. Refresh only the affected facts; continue ready independent work. Missing packet detail, lineage metadata, hashes, receipts, or schema shape do not stop harmless work.
 
 Wait for each gate's required reviews and focused proof, plus E2E evidence when the central cadence calls for it. Final acceptance also requires the final E2E pair when a trigger applies. Pre-route every finding with the review policy. Send substantive `now` findings or design/API uncertainty back as one complete Steps 1–2 repair batch; send a trivial `now` finding once to the Implementer Producer. Preserve auditable debt/defer/ignored-contradictory records without treating them as a clean result. Use the shared Supervisor/runtime policy for repair cycles, clean-pass, and limits.
 
