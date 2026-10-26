@@ -51,7 +51,7 @@ Apply these requirements alongside the language-specific coding-style skill. Lan
 
 ## Complexity
 
-- When designing or modifying code, first establish the domain model, invariants, and responsibilities. Derive or validate a coherent design that solves the problem directly, then implement it and remove the logic it makes unnecessary. A better design may be more general or flexible.
+- When designing or modifying code, eliminate compensating complexity and patchwork by correcting the underlying design. First establish the domain model, invariants, and responsibilities from domain semantics and contracts, without assuming the existing structure is correct. Use that model to derive or validate a coherent design that solves the problem directly, then implement it and remove the code and mechanisms it makes unnecessary. A sounder design may be more general or flexible.
 - Justify every increase. A reusable, implementation-agnostic domain boundary is a concrete reason for an abstraction. Other increases need a concrete reason a simpler design cannot satisfy.
 - Decrease moving parts, state, and call depth when touching code.
 - Simplify through understanding while preserving behavior, contracts, and handled cases. Never amputate semantics to look simpler.
