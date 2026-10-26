@@ -51,6 +51,7 @@ Apply these requirements alongside the language-specific coding-style skill. Lan
 
 ## Complexity
 
+- When resolving issues, first try reducing complexity to a more elegant, generic solution. Generalize only across actual requirements.
 - Justify every increase. A reusable, implementation-agnostic domain boundary is a concrete reason for an abstraction. Other increases need a concrete reason a simpler design cannot satisfy.
 - Decrease moving parts, state, and call depth when touching code.
 - Simplify through understanding while preserving behavior, contracts, and handled cases. Never amputate semantics to look simpler.
