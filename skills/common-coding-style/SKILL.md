@@ -51,7 +51,7 @@ Apply these requirements alongside the language-specific coding-style skill. Lan
 
 ## Complexity
 
-- When designing or modifying code, reexamine the underlying design and prefer solutions that remove existing complexity and thereby solve the problem.
+- When designing or modifying code, seek a better underlying design that eliminates compensating patchwork and thereby solves the problem. Such a design may be more general or flexible.
 - Justify every increase. A reusable, implementation-agnostic domain boundary is a concrete reason for an abstraction. Other increases need a concrete reason a simpler design cannot satisfy.
 - Decrease moving parts, state, and call depth when touching code.
 - Simplify through understanding while preserving behavior, contracts, and handled cases. Never amputate semantics to look simpler.
