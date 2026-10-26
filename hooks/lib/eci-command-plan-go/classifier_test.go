@@ -8397,3 +8397,33 @@ func TestUnderstandingControlBasename(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusReportControlIdentity preserves both current and legacy report ownership.
+//
+// Example: a hardlink to either report resolves to its actual coordination file.
+func TestStatusReportControlIdentity(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "eci_active")
+	for _, name := range []string{"eci_active", "latest-status-report.md", "latest-status-report.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index := activeControlFileIndex([]string{marker})
+	for _, name := range []string{"latest-status-report.md", "latest-status-report.yaml"} {
+		path := filepath.Join(dir, name)
+		alias := filepath.Join(t.TempDir(), "alias")
+		if err := os.Link(path, alias); err != nil {
+			t.Fatal(err)
+		}
+		if got := activeControlResolvedPath(alias, index.files); got != path {
+			t.Errorf("%s hardlink resolved to %q, want %q", name, got, path)
+		}
+		if !isCanonicalWorkerHandoffPath(path, []string{marker}) {
+			t.Errorf("%s is not recognized as a coordination document", name)
+		}
+	}
+	if isCanonicalWorkerHandoffPath(filepath.Join(dir, "ordinary.yaml"), []string{marker}) {
+		t.Error("ordinary YAML file classified as a coordination document")
+	}
+}

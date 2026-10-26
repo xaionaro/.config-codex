@@ -403,6 +403,7 @@ for advisory_path in \
   "$repo/docs/status.md" \
   "$proof_root/$session_id/project-understanding.yaml" \
   "$proof_root/$session_id/latest-status-report.md" \
+  "$proof_root/$session_id/latest-status-report.yaml" \
   "$proof_root/$session_id/handoff.md"; do
   advisory_tool=Write
   [ "$advisory_path" = "$repo/docs/status.md" ] && advisory_tool=Edit

@@ -373,12 +373,13 @@ codex_session_ledger_basenames() {
     "project-understanding.yaml" \
     "high_level_log.jsonl" \
     "high_level_log.anchor" \
-    "latest-status-report.md"
+    "latest-status-report.md" \
+    "latest-status-report.yaml"
 }
 
 codex_session_ledger_basename() {
   case "${1:-}" in
-    project-understanding.yaml|high_level_log.jsonl|high_level_log.anchor|latest-status-report.md)
+    project-understanding.yaml|high_level_log.jsonl|high_level_log.anchor|latest-status-report.md|latest-status-report.yaml)
       return 0
       ;;
     *)

@@ -584,7 +584,7 @@ var eciControlBasenames = [...]string{
 	"eci-aggregate", "eci-aggregate-plan.json", "eci-aggregate-teardown-complete",
 	"instructions.md", "stop_timestamps", "stop_loop_state",
 	"disengage.md", "user-closed.md", "project-understanding.yaml",
-	"high_level_log.jsonl", "latest-status-report.md", "high_level_log.anchor",
+	"high_level_log.jsonl", "latest-status-report.md", "latest-status-report.yaml", "high_level_log.anchor",
 }
 
 type planError struct {
@@ -6900,7 +6900,7 @@ func activeControlHardlinkPath(path string, index []activeControlFile) string {
 func isCanonicalWorkerHandoffPath(path string, markers []string) bool {
 	base := filepath.Base(path)
 	switch base {
-	case "instructions.md", "project-understanding.yaml", "high_level_log.jsonl", "latest-status-report.md":
+	case "instructions.md", "project-understanding.yaml", "high_level_log.jsonl", "latest-status-report.md", "latest-status-report.yaml":
 		for _, marker := range markers {
 			if path == filepath.Join(filepath.Dir(marker), base) {
 				return true
@@ -6929,7 +6929,7 @@ func activeControlResolvedPath(
 			// A note-named hardlink cannot hide another control record sharing
 			// its inode. Prefer the concrete control over the ordinary note.
 			switch filepath.Base(control.path) {
-			case "instructions.md", "project-understanding.yaml", "latest-status-report.md":
+			case "instructions.md", "project-understanding.yaml", "latest-status-report.md", "latest-status-report.yaml":
 				handoffPath = control.path
 				continue
 			}
