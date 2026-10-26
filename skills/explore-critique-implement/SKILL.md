@@ -13,7 +13,7 @@ Start only when CODEX selects ECI or active ATE explicitly routes bounded work t
 
 On activation and closure, the Supervisor follows [native goal lifecycle](references/coordinator.md#native-goal-lifecycle).
 
-- Maintain requirement lineage and a project-understanding ledger. The active ECI/ATE lifecycle owns normal work; ATE may contain normal ECI. Keep forecast values in `forecasts.md`; project-understanding may link to it but must not duplicate them.
+- Maintain requirement lineage and a project-understanding ledger. The active ECI/ATE lifecycle owns normal work; ATE may contain normal ECI. Keep forecast values in `forecasts.yaml`; project-understanding may link to it but must not duplicate them.
 - Apply [concurrent task scheduling](../../CODEX.md#concurrent-tasks) to new Jobs, independent progress, outcome-local gates, and root closure. Each outcome keeps its scope and Producer identities; ownership follows the [Job Orchestrator contract](references/task-orchestrator.md).
 - For material ECI work, keep `exact user source → faithful requested outcome →
   bounded scope`. A repair necessary to meet or prove that outcome stays current-lane work.

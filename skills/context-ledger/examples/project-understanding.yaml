@@ -45,7 +45,7 @@ records:
       owner: "worker-a"
       state: "active"
       next_action: "Reconcile the setting evidence and submit the limited result"
-      forecast_ref: "forecasts.md#receiver-clock"
+      forecast_ref: "forecasts.yaml#/records/receiver-clock"
     links:
       outcomes: ["outcome:receiver:clock"]
     evidence: ["This example: synthetic work assignment"]

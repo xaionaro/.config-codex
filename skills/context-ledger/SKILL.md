@@ -11,17 +11,17 @@ Three required records, one conditional current forecast record, and one audit-o
 |------|------|-----------|
 | `project-understanding.yaml` (the ledger) | Current project/task records and forecast locators | Selective native YAML edits; stale records deleted |
 | `high_level_log.jsonl` (the log) | Append-only history of every material change | Append only; never edit, never delete past entries |
-| `forecasts.md` | Sole current source for lane/root forecast records; create when a forecast first applies | Update current records in place; never copy their values into the ledger |
+| `forecasts.yaml` | Sole current source for lane/root forecast records; create when a forecast first applies | Selective native YAML edits; never copy its values into the ledger |
 | `latest-status-report.yaml` (the report) | Latest structured status projection per `writing-status-reports` | Update stale or changed YAML fields; preserve unaffected content. Write the whole file only on first creation. |
 | `forecast-target-history.tsv` | Audit-only root-task forecast-target history | Append only; corrections add a new target row |
 
-The ledger answers what is true about the project and task now. `forecasts.md` answers what the current forecasts are. The log answers what changed, in order, and why. The report projects the latest state for the user; it is not another source of truth. The TSV audits root-target transitions and does not define current forecast state.
+The ledger answers what is true about the project and task now. `forecasts.yaml` answers what the current forecasts are. The log answers what changed, in order, and why. The report projects the latest state for the user; it is not another source of truth. The TSV audits root-target transitions and does not define current forecast state.
 
 ## Core Rule
 
-A fresh agent reading the ledger and its `forecasts.md` locators, without transcript or memory, must reach the same current understanding you have. Record every project/task fact that could affect planning, implementation, risk handling, assignment, command choice, verification, or the final answer.
+A fresh agent reading the ledger and its `forecasts.yaml` locators, without transcript or memory, must reach the same current understanding you have. Record every project/task fact that could affect planning, implementation, risk handling, assignment, command choice, verification, or the final answer.
 
-Keep current project/task facts in `project-understanding.yaml` and current forecast values in `forecasts.md`. The ledger may link to forecast records but never copy their targets, baselines, recalibrations, base-case/downside estimates, scenario ranges, forecast statuses, or endpoints. Binding user deadlines and actual completion timestamps are project facts and may remain in the ledger where useful; estimated completion dates belong only in `forecasts.md`.
+Keep current project/task facts in `project-understanding.yaml` and current forecast values in `forecasts.yaml`. The ledger may link to forecast records but never copy their targets, baselines, recalibrations, base-case/downside estimates, scenario ranges, forecast statuses, or endpoints. Binding user deadlines and actual completion timestamps are project facts and may remain in the ledger where useful; estimated completion dates belong only in `forecasts.yaml`.
 
 Err on exhaustive useful detail for current state. Do not omit a detail because it seems obvious from transcript, local state, prior agent memory, or project familiarity. Equally, do not retain a detail because it was true earlier. Exhaustive on current state; zero on superseded state.
 
@@ -54,14 +54,20 @@ For ECI/ATE, these records live at:
 ```text
 ~/.cache/codex-proof/$SESSION_ID/project-understanding.yaml   # the ledger
 ~/.cache/codex-proof/$SESSION_ID/high_level_log.jsonl          # the log
-~/.cache/codex-proof/$SESSION_ID/forecasts.md                # current forecasts, when applicable
+~/.cache/codex-proof/$SESSION_ID/forecasts.yaml                # current forecasts, when applicable
 ~/.cache/codex-proof/$SESSION_ID/latest-status-report.yaml    # the report
 ~/.cache/codex-proof/$SESSION_ID/forecast-target-history.tsv # target history
 ```
 
 Do not store any of these files in the project/repo. Keep the canonical filenames above; session-snapshot pruning ignores directories younger than 30 days.
 
-Create `project-understanding.yaml`, `high_level_log.jsonl`, and `latest-status-report.yaml` once. Create `forecasts.md` once when the first forecast applies, then update current records in place. Create `forecast-target-history.tsv` with its header at the first `none → A` transition. Follow each file's edit mode above; never delete or recreate these records.
+Create `project-understanding.yaml`, `high_level_log.jsonl`, and `latest-status-report.yaml` once. Create `forecasts.yaml` once when the first forecast applies, then update current records in place. Create `forecast-target-history.tsv` with its header at the first `none → A` transition. Follow each file's edit mode above; never delete or recreate these records.
+
+If an active session has only `forecasts.md`, create `forecasts.yaml` from its
+current records at the next forecast maintenance, preserving all forecast and
+scenario meaning, and update ledger locators to the new record IDs. Preserve
+`forecasts.md` unchanged as a historical snapshot; only YAML is current
+thereafter. Never overwrite existing YAML from Markdown or bulk-convert sessions.
 
 The only canonical understanding snapshot is `project-understanding.yaml`. Start
 fresh from current authoritative facts; do not import or convert other caches.
@@ -69,7 +75,7 @@ No alternate filename, compatibility alias, dual read/write, or migration.
 
 ## High-Level Log
 
-Append-only history. Every material change to the ledger or `forecasts.md` gets a corresponding entry appended to the log in the same turn.
+Append-only history. Every material change to the ledger or `forecasts.yaml` gets a corresponding entry appended to the log in the same turn.
 
 | Rule | Detail |
 |------|--------|
@@ -146,10 +152,10 @@ jq -r 'select(.schema == "eci-high-level-log/v1" and .event == "worker_progress"
 |------|--------|
 | Coverage | Include UTC `timestamp`, `state`, `progress`, `decisions`, `blockers_risks`, `verification`, and `next_focus`; include hierarchical `lanes` and forecast projections when applicable. Use mappings and lists for structured detail; do not wrap the report in an opaque Markdown body. |
 | Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, and whenever the user asks for status; apply [Update Points](#update-points) timing. |
-| Forecast projection | Derive equivalent native fields from `forecasts.md`, including outcome, target, assessment, baseline or recalibration and evidence, dependencies, and applicable scenarios and completion. Render exact lines and tables only in user-facing reports. The report is not a second source of truth. |
+| Forecast projection | Derive equivalent native fields from `forecasts.yaml`, including outcome, target, assessment, baseline or recalibration and evidence, dependencies, and applicable scenarios and completion. Render exact lines and tables only in user-facing reports. The report is not a second source of truth. |
 | No copying the ledger | Report changed state plus next focus; do not duplicate ledger structure. Cross-reference instead. |
 
-Apply the scalar and selective-edit rules in [YAML authoring and native edits](#authoring-and-native-edits) to this report, without the ledger's envelope, record schema, or record-specific ID/type checks. Select changed fields against the latest report and preserve unrelated content. Use this shape as a starting point; add fields as needed to retain the status skill's lane, dependency, root-task status, forecast and scenario detail. Record changed forecast prior and current targets, reason and evidence; record initial baseline and evidence; record completed timestamps without an active deadline. Represent each applicable root-task status and every material scenario with its trigger, affected work, duration basis, evidence, assumptions, endpoint and next fact-finding action. Each lane's `id` and `parent_id` preserve hierarchy; the three status values retain the skill's distinct readiness meanings. Forecasts remain projections of `forecasts.md`.
+Apply the scalar and selective-edit rules in [YAML authoring and native edits](#authoring-and-native-edits) to this report, without the ledger's envelope, record schema, or record-specific ID/type checks. Select changed fields against the latest report and preserve unrelated content. Use this shape as a starting point; add fields as needed to retain the status skill's lane, dependency, root-task status, forecast and scenario detail. Record changed forecast prior and current targets, reason and evidence; record initial baseline and evidence; record completed timestamps without an active deadline. Represent each applicable root-task status and every material scenario with its trigger, affected work, duration basis, evidence, assumptions, endpoint and next fact-finding action. Each lane's `id` and `parent_id` preserve hierarchy; the three status values retain the skill's distinct readiness meanings. Forecasts remain projections of `forecasts.yaml`.
 
 ```yaml
 timestamp: '2026-10-26T12:00:00Z'
@@ -232,7 +238,7 @@ A lane is an independently advancing workstream, not an ECI step. Serial impleme
 
 Record lane/root state and next action in `work` records, including owner and outcome links. Preserve dependencies, binding user deadlines and useful milestones as typed current records. Store each relevant forecast locator in `forecast_ref`; do not copy forecast values into the ledger or require rendered Markdown links inside YAML.
 
-Store every current lane/root forecast in `forecasts.md`: named outcome, active/inactive status, assessment, target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its evidence, range, and endpoint. Keep current records there in place. `latest-status-report.yaml` projects these values using `writing-status-reports`.
+Store every current lane/root forecast in `forecasts.yaml`: named outcome, active/inactive status, assessment, target, original baseline, recalibration reason/evidence, ECI base case, and each material downside scenario with its evidence, range, and endpoint. Keep current records there in place. `latest-status-report.yaml` projects these values using `writing-status-reports`.
 
 #### Forecast outcome wording
 
@@ -240,7 +246,33 @@ Write every lane and root forecast `Outcome` as a completed result in plain lang
 
 Example: `Outcome: Import validation that identifies unpriced records and explains how to correct them.`
 
-**Forecast record fields in `forecasts.md`**
+**Forecast record fields in `forecasts.yaml`**
+
+Use the scalar and selective-edit rules in [YAML authoring and native edits](#authoring-and-native-edits).
+The top-level mapping has `schema: "forecasts/v1"` and `records`, a mapping
+from stable IDs to forecast records. IDs use lowercase letters, digits, hyphens,
+underscores, or colons; retain them when a forecast changes. A work record's
+`forecast_ref` is `forecasts.yaml#/records/<id>` and identifies that exact key.
+Use distinct IDs for distinct lane/root forecasts. The synthetic
+[forecast example](examples/forecasts.yaml) shows the native shape.
+
+Each record has `kind` (`lane` or `root`), `outcome`, `status`, `assessment`,
+`target` while active, `original_baseline`, `baseline_evidence`, and `recalibration`. Recalibration
+has `status` (`unchanged` or `changed`) and `evidence`; when changed it also
+has `prior`, `current`, and `reason`. An initial forecast records its baseline
+and evidence with `unchanged`; preserve baseline evidence on later changes.
+A provisional record also has `target_basis`.
+For ECI, record `base_case` and `scenarios` as native mappings and lists: keep
+the package duration basis, endpoint, evidence, assumptions and evidence gaps
+needed by the scenario rules below. Store durations and ranges with units and
+UTC endpoints as quoted strings; retain full detail rather than collapsing
+scenario data into a rendered report. Omit an active target when inactive.
+`base_case` contains `endpoint` and a `packages` list; each package contains
+`work`, `duration`, and `basis`. Each scenario contains `name`, `trigger`,
+`affected_work`, `evidence`, `assumptions`, `added_duration`, `event_time`,
+`endpoint`, and `basis`; include `evidence_gap` and `next_action` when timing
+is unsupported. Add fields needed for combinations, external waits, or other
+material facts; these fields do not limit the scenario rules below.
 
 - Lane forecast:
   - Outcome: `<named lane/task outcome>`
@@ -267,7 +299,7 @@ Example: `Outcome: Import validation that identifies unpriced records and explai
 
 Every non-`CLOSED` lane has a current forecast record with its named outcome and target. For each unrepresented active root-task outcome omitted by lane reports, keep one root completion forecast with the full root outcome and target. Root completion is not a child sum or stage. Keep task dependencies and critical-path facts in the ledger; use them to calculate the forecast without copying forecast values back into the ledger.
 
-When a lane or root forecast changes, update its current record in `forecasts.md` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, evidence, and `Assessment: complete` or `provisional` from the fact-based risk review. If provisional, retain each exact evidence gap and next action and label any finite target conditional. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
+When a lane or root forecast changes, update its current record in `forecasts.yaml` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, evidence, and `Assessment: complete` or `provisional` from the fact-based risk review. If provisional, retain each exact evidence gap and next action and label any finite target conditional. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
 
 #### ECI scenario forecasts
 
@@ -310,7 +342,7 @@ visible; a probe supplements the estimate.
   parallel lane/dependency endpoint, not a sum of parallel work.
 - The single UTC target is the latest endpoint among the base case and estimated
   scenarios, including labeled educated guesses. Keep each scenario's endpoint/range in the
-  `forecasts.md` record. If a material risk lacks supported timing, keep it in
+  `forecasts.yaml` record. If a material risk lacks supported timing, keep it in
   the record with its gap and next action, set `Assessment: provisional`, and
   label the finite target/base case/spread conditional. A finite target is the
   latest estimated endpoint, not an absolute worst case. Never invent
@@ -321,11 +353,11 @@ visible; a probe supplements the estimate.
 Forecast scenarios describe planning uncertainty only. They do not change
 scope, priority, blocker status, or forecast authority.
 
-For every material forecast update, edit `forecasts.md` in place, append to `high_level_log.jsonl`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.yaml`. A forecast-only update does not require rewriting `project-understanding.yaml`. Store forecast values only in `forecasts.md`, keeping locators in the ledger. On closure mark the canonical forecast inactive and retain history rows.
+For every material forecast update, edit `forecasts.yaml` in place, append to `high_level_log.jsonl`, append a `forecast-target-history.tsv` row only when a root target changes, and refresh `latest-status-report.yaml`. A forecast-only update does not require rewriting `project-understanding.yaml`. Store forecast values only in `forecasts.yaml`, keeping locators in the ledger. On closure mark the canonical forecast inactive and retain history rows.
 
 **Rendered status-report examples — not ledger storage**
 
-In a material changed-state user-facing report, emit each canonical forecast line once using `forecasts.md`. The persisted YAML report carries equivalent fields as described in [Latest Status Report](#latest-status-report). Do not copy these values into `project-understanding.yaml`.
+In a material changed-state user-facing report, emit each canonical forecast line once using `forecasts.yaml`. The persisted YAML report carries equivalent fields as described in [Latest Status Report](#latest-status-report). Do not copy these values into `project-understanding.yaml`.
 
 - Next milestone: `Next milestone: <named outcome>`
 - Forecast deadline: `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`
@@ -506,14 +538,14 @@ permission ceremonies. History/status/forecasts retain their separate contracts.
 
 Update at work start, material state changes, findings/decisions/agreements, milestones, material user input, and existing QA/verdict, handoff, user-waiting stop, and shutdown checkpoints. Apply the dependency order below; these update points do not delay ready independent work.
 
-Every material forecast change updates its current `forecasts.md` record in place and applies the same-update recalibration rule to that forecast.
+Every material forecast change updates its current `forecasts.yaml` record in place and applies the same-update recalibration rule to that forecast.
 
 Answer the user before ledger maintenance or coordination when a response is due.
 Advance ready independent work without waiting for ledger, log, forecast, or report maintenance. Before a dependent action, correct the affected current-state records and communicate the material changed facts that action needs, including changed requirements, scope, ownership, controls, evidence, and verification results. Stop or redirect only work invalidated by that correction.
 
 For assignments affected by material user input, use the [capture-and-prepare operation](requirement-assignment.md).
 
-Reconcile the remaining records, append material changes to `high_level_log.jsonl`, and refresh `latest-status-report.yaml` in the same turn, before QA/verdicts, handoff, user-waiting stops, or shutdown. A status must reflect current facts; answering a due user response still comes first. A forecast-only change updates `forecasts.md` without rewriting the ledger. Keep this maintenance bounded to changed facts and their affected links; it never grants permission or creates a dispatch gate.
+Reconcile the remaining records, append material changes to `high_level_log.jsonl`, and refresh `latest-status-report.yaml` in the same turn, before QA/verdicts, handoff, user-waiting stops, or shutdown. A status must reflect current facts; answering a due user response still comes first. A forecast-only change updates `forecasts.yaml` without rewriting the ledger. Keep this maintenance bounded to changed facts and their affected links; it never grants permission or creates a dispatch gate.
 
 For a project/task fact change, use this three-pass ledger edit:
 
@@ -523,7 +555,7 @@ For a project/task fact change, use this three-pass ledger edit:
 
 Review the whole snapshot at existing QA/verdict, handoff, and shutdown checkpoints. Between checkpoints, review affected subjects and linked contradictions rather than rescanning unrelated state for every event. Shared record contracts stay predictable while domain payloads and sections evolve. A purely additive update retaining stale state is a log-into-ledger defect: replace/delete in place.
 
-Then append to `high_level_log.jsonl` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry. For a forecast-only change, update its `forecasts.md` record and log it without rewriting the ledger.
+Then append to `high_level_log.jsonl` one entry per material change made this turn. Every passed-around fact the stale pass deleted or rewrote becomes a log entry. For a forecast-only change, update its `forecasts.yaml` record and log it without rewriting the ledger.
 
 Finally refresh `latest-status-report.yaml` using the edit mode above and the coverage in `writing-status-reports`; reflect the updated ledger and/or forecasts. Skip only when this turn produced no current-state or log change.
 
@@ -532,7 +564,7 @@ Finally refresh `latest-status-report.yaml` using the edit mode above and the co
 Reject the ledger if any holds:
 
 - A fresh agent needs the transcript or unstated local memory to recover useful current project/task facts.
-- An authoritative project/task source is named without extracting its relevant current-state facts. Resolve forecast details through the linked `forecasts.md` record; never extract forecast values into `project-understanding.yaml`.
+- An authoritative project/task source is named without extracting its relevant current-state facts. Resolve forecast details through the linked `forecasts.yaml` record; never extract forecast values into `project-understanding.yaml`.
 - Binding requirements, acceptance criteria, material current-understanding corrections, useful recurrence guards, assumptions, risks, decisions, current state, or evidence are missing.
 - Claims cannot be traced to sources, reports, commands, logs, screenshots, or commits.
 - Obsolete states are retained as if current: stale plans, abandoned hypotheses, finished WIP, resolved blockers, superseded values.
@@ -542,9 +574,9 @@ Reject the ledger if any holds:
 - The latest update is purely additive while sections that should have changed were left untouched.
 - Facts are prose dumps instead of independently useful typed records under fitting sections.
 - Canonical schema/shared record shape is absent, semantic subjects are duplicated, or section/link targets are missing or mistyped.
-- An active lane lacks its next action or `forecast_ref` locator to its current forecast record in `forecasts.md`; the forecast lacks its named outcome, status, target, original baseline, or required recalibration; or a changed lane/root lacks equivalent outcome, target, assessment, and recalibration fields in the report projection.
-- An unrepresented active root-task outcome omitted by lane reports lacks a full outcome and target record in `forecasts.md`.
-- The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.md` record.
+- An active lane lacks its next action or `forecast_ref` locator to its current forecast record in `forecasts.yaml`; the forecast lacks its named outcome, status, target, original baseline, or required recalibration; or a changed lane/root lacks equivalent outcome, target, assessment, and recalibration fields in the report projection.
+- An unrepresented active root-task outcome omitted by lane reports lacks a full outcome and target record in `forecasts.yaml`.
+- The ledger copies a forecast target, baseline, recalibration, base-case/downside estimate, scenario range, endpoint, or forecast status instead of linking to its `forecasts.yaml` record.
 - Completed forecasted lane/root work lacks actual `completed_at` UTC, its forecast remains active, or the report omits the completion timestamp and absence of an active deadline.
 This is a planning-quality defect: reconcile it alongside safe work without delaying the update.
 - Section titles or memberships no longer fit the content.
