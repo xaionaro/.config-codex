@@ -256,7 +256,7 @@ underscores, or colons; retain them when a forecast changes. A work record's
 Use distinct IDs for distinct lane/root forecasts. The synthetic
 [forecast example](examples/forecasts.yaml) shows the native shape.
 
-Each record has `kind` (`lane` or `root`), `outcome`, `status`, `assessment`,
+Each record has `kind` (`lane` or `root`), `outcome`, `status` (`active` or `inactive`, whether the forecast still applies), `assessment` (`complete` or `provisional`, whether material timing is supported),
 `target` while active, `original_baseline`, `baseline_evidence`, and `recalibration`. Recalibration
 has `status` (`unchanged` or `changed`) and `evidence`; when changed it also
 has `prior`, `current`, and `reason`. An initial forecast records its baseline
@@ -274,32 +274,11 @@ scenario data into a rendered report. Omit an active target when inactive.
 is unsupported. Add fields needed for combinations, external waits, or other
 material facts; these fields do not limit the scenario rules below.
 
-- Lane forecast:
-  - Outcome: `<named lane/task outcome>`
-  - Status: `active` or `inactive` (whether this forecast still applies)
-  - Assessment: `complete` or `provisional` (whether every material risk has supported timing)
-  - Target: `<UTC ISO8601>` when active
-- Root completion forecast, when an active root outcome is not represented by lane reports:
-  - Outcome: `<full named active root-task outcome>`
-  - Status: `active` or `inactive` (whether this forecast still applies)
-  - Assessment: `complete` or `provisional` (whether every material risk has supported timing)
-  - Target: `<UTC ISO8601>` when active
-- Set assessment to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. A materially guessed base-case package duration also makes the forecast provisional. While any material risk's timing relies on educated guesses, set it to `provisional`; retain the guessed duration and endpoint, exact evidence gap and next fact-finding action on that scenario. Keep `Status` independent of `Assessment`.
-- For a provisional forecast, record `Target basis: conditional — <guessed material risk timing and assumptions>`. Any finite target, base case, or displayed spread is conditional while those evidence gaps remain open.
-- Recalibration, when a forecast changes:
-  - Prior: `<UTC ISO8601>`
-  - Current: `<UTC ISO8601>`
-  - Why moved: `<why>`
-  - Evidence: `<evidence>`
-- Initial forecast:
-  - Status: `unchanged`
-  - Original baseline: `<UTC ISO8601>`
-  - Assessment: `complete` or `provisional`, from the fact-based review of every material risk; an unresolved material evidence gap makes the assessment provisional and any finite target conditional
-  - Evidence: `<evidence>`
+Set `assessment` to `complete` only when every material risk has evidence-supported duration and endpoint ranges, or current evidence resolves the risk. A materially guessed base-case package duration makes it `provisional`; retain each guessed duration and endpoint, exact evidence gap and next fact-finding action. Keep `status` independent of `assessment`. For a provisional forecast, `target_basis` describes the conditional guessed timing and assumptions; any finite target, base case, or displayed spread remains conditional while evidence gaps are open.
 
 Every non-`CLOSED` lane has a current forecast record with its named outcome and target. For each unrepresented active root-task outcome omitted by lane reports, keep one root completion forecast with the full root outcome and target. Root completion is not a child sum or stage. Keep task dependencies and critical-path facts in the ledger; use them to calculate the forecast without copying forecast values back into the ledger.
 
-When a lane or root forecast changes, update its current record in `forecasts.yaml` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, evidence, and `Assessment: complete` or `provisional` from the fact-based risk review. If provisional, retain each exact evidence gap and next action and label any finite target conditional. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
+When a lane or root forecast changes, update its current record in `forecasts.yaml` with the outcome and target, then record the prior target, current target, reason, and evidence. Preserve the original baseline. For an initial forecast, record `unchanged`, its baseline, evidence, and `assessment: complete` or `provisional` from the fact-based risk review. If provisional, retain each exact evidence gap and next action and label any finite target conditional. When a lane closes, mark its forecast inactive; actual completion time remains a project fact in the ledger.
 
 #### ECI scenario forecasts
 
@@ -343,11 +322,11 @@ visible; a probe supplements the estimate.
 - The single UTC target is the latest endpoint among the base case and estimated
   scenarios, including labeled educated guesses. Keep each scenario's endpoint/range in the
   `forecasts.yaml` record. If a material risk lacks supported timing, keep it in
-  the record with its gap and next action, set `Assessment: provisional`, and
+  the record with its gap and next action, set `assessment: provisional`, and
   label the finite target/base case/spread conditional. A finite target is the
   latest estimated endpoint, not an absolute worst case. Never invent
   probabilities.
-- `Initial forecast.Original baseline` remains the original forecast target; it is not
+- `original_baseline` remains the original forecast target; it is not
   the scenario base-case endpoint.
 
 Forecast scenarios describe planning uncertainty only. They do not change
@@ -472,7 +451,7 @@ documents. These are writing/quality rules, not runtime content permission gates
 
 Use `yq` when available to select records and compute bounded candidate additions,
 updates or deletions, emitting only the affected subtree. For updates and
-deletions, confirm the ID exists and its type matches; if it is missing, add an
+deletions, confirm the ID exists and the ledger record’s `type` or forecast record’s `kind` matches the intended record; if it is missing, add an
 explicit complete record only when an addition is intended. Apply the change to the latest
 snapshot with a native selective YAML text edit, then inspect the diff to preserve
 unrelated comments, order, quoting and multiline text. One canonical session
