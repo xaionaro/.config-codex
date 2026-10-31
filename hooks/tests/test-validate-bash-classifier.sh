@@ -3350,7 +3350,7 @@ run_hook_matrix_parallel allowed coordinator-git-inspection \
   "git status --short --branch" \
   "git submodule status" \
   "git diff --stat" \
-  "git log --format=%H -- skills/go-coding-style/SKILL.md AGENTS.md" \
+  "git log --format=%H -- skills/coding-go/SKILL.md AGENTS.md" \
   "git status" \
   "git diff --check" \
   "git show" \
@@ -3366,7 +3366,7 @@ run_subagent_matrix_parallel allowed worker-git-inspection \
   "git status --short --branch" \
   "git submodule status" \
   "git diff --stat" \
-  "git log --format=%H -- skills/go-coding-style/SKILL.md AGENTS.md" \
+  "git log --format=%H -- skills/coding-go/SKILL.md AGENTS.md" \
   "git status" \
   "git diff --check" \
   "git show" \

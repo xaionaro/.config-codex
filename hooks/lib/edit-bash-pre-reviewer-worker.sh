@@ -139,8 +139,8 @@ Admission controller for a coding agent. The agent is about to invoke a tool on 
 
 Codex routing excerpt:
 - Debugging, failures, unexpected behavior: use debugging skills.
-- Go code: use go-coding-style.
-- Python code: use python-coding-style.
+- Go code: use coding-go.
+- Python code: use coding-python.
 - Tests: use testing-discipline.
 - Prompt, skill, or CODEX.md edits: use harness-tuning.
 - Medium uncertain coding task: use explore-critique-implement.

@@ -1,11 +1,11 @@
 ---
-name: python-coding-style
+name: coding-python
 description: Use when writing, reviewing, or modifying Python code (*.py, pyproject.toml, setup.cfg files) or reviewing diffs/PRs containing Python changes — ensures code quality and adherence to established Python conventions for naming, error handling, concurrency, typing, logging, and code organization
 ---
 
-# Python Coding Style
+# Coding: Python
 
-Read and apply [Common Coding Style](../common-coding-style/SKILL.md) alongside these Python-specific requirements. Preserve the Python policies below where they differ.
+Read and apply [Coding: Common](../coding-common/SKILL.md) alongside these Python-specific requirements. Preserve the Python policies below where they differ.
 
 ## Idiomatic Python
 
@@ -92,7 +92,7 @@ Read and apply [Common Coding Style](../common-coding-style/SKILL.md) alongside 
 ## General discipline
 
 - After every change, reduce code in related pieces while preserving readability and semantics.
-- **Comments explain how or what's next**: Only `how-it-works` explanations and TODOs. Apply Common Coding Style's authoring-process exclusions and external tracker rule.
+- **Comments explain how or what's next**: Only `how-it-works` explanations and TODOs. Apply Coding: Common's authoring-process exclusions and external tracker rule.
 
 ## Locality and lifetime
 

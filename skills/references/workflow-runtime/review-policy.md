@@ -56,7 +56,7 @@ Normal reviewer packets contain original user requirements, exact target/diff, o
 
 ECI packets also cover retained fast changes through the [adoption boundary](../../explore-critique-implement/references/fast-path.md#adoption-review-and-closure); report missing cumulative coverage or stale final-state evidence.
 
-Critic A loads each matching installed style skill and checks actual adherence under [coding-policy enforcement](coding-style-admission.md). Critic B independently verifies stated purpose and interface fulfillment before quality. Critic C judges final state, not change-history defense, and flags coupling, hidden dependencies, wrong layer, unclear names, duplication, missing/premature abstraction, or architectural mismatch supported by an applicable requirement or concrete harm. Discretionary taste is NIT; “would refactor someday” alone is not a finding.
+Critic A loads each matching installed coding skill and checks actual adherence under [coding-policy enforcement](coding-style-admission.md). Critic B independently verifies stated purpose and interface fulfillment before quality. Critic C judges final state, not change-history defense, and flags coupling, hidden dependencies, wrong layer, unclear names, duplication, missing/premature abstraction, or architectural mismatch supported by an applicable requirement or concrete harm. Discretionary taste is NIT; “would refactor someday” alone is not a finding.
 
 Required E2E uses the shortest faithful real path that proves the original criteria and checks relevant regressions; run the full suite only when it supplies required coverage. Cite command and output/state/screenshot. A missing required final E2E returns to the implementer before acceptance, not to a false approval.
 

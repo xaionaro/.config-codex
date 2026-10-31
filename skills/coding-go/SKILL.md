@@ -1,11 +1,11 @@
 ---
-name: go-coding-style
+name: coding-go
 description: Use when writing, reviewing, or modifying Go code (*.go, go.mod, go.sum files) or reviewing diffs/PRs containing Go changes — ensures code quality and adherence to the established Go conventions for naming, error handling, concurrency, types, logging, and code organization
 ---
 
-# Go Coding Style
+# Coding: Go
 
-Read and apply [Common Coding Style](../common-coding-style/SKILL.md) alongside these Go-specific requirements.
+Read and apply [Coding: Common](../coding-common/SKILL.md) alongside these Go-specific requirements.
 
 ## Idiomatic Go
 

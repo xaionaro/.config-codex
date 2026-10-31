@@ -222,7 +222,7 @@ Per-task prompt must include:
 - Dependencies on prior completed tasks and their outcomes.
 - "This is a porting task. Read the source implementation before exploring options."
 
-`explore-critique-implement` handles coding-style loading per its own prerequisites.
+`explore-critique-implement` handles coding skill loading per its own prerequisites.
 
 Task ordering from Phase 5 is mandatory — do not parallelize tasks with dependencies.
 

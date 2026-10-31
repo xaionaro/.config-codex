@@ -16,9 +16,9 @@ Tag every factual claim. An untagged claim or unpromoted T5 is not review eviden
 
 The current Job owner—its Orchestrator when J > 1, or the Supervisor when J ≤ 1—assigns required workflow reviews for each outcome. The Supervisor retains acceptance. A reviewer may use Helpers for bounded support, but personally establishes its independent baseline, verifies evidence, supplies its required verdict, and performs its assigned required E2E run. A Helper cannot replace any of those duties or carry conclusions into another independent review.
 
-## Critic A — coding style
+## Critic A — coding requirements
 
-Check applicable style skills, formatter/linter/config anchors, actual scope, exceptions, and post-write tool evidence under [coding-policy enforcement](../../references/workflow-runtime/coding-style-admission.md). Report every source-backed applicable requirement violation; reserve `NIT` for discretionary preferences.
+Check applicable coding skills, formatter/linter/config anchors, actual scope, exceptions, and post-write tool evidence under [coding-policy enforcement](../../references/workflow-runtime/coding-style-admission.md). Report every source-backed applicable requirement violation; reserve `NIT` for discretionary preferences.
 
 ## Critic B — correctness and fidelity
 

@@ -6,4 +6,4 @@ higher:
   reasoning_effort: medium
 max:
   model: gpt-6.1-sol
-  reasoning_effort: high
+  reasoning_effort: xhigh
