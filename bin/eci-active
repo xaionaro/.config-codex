@@ -29,6 +29,8 @@ Usage:
   $lifecycle_usage_command aggregate-review <prewrite|final> <repo-id>
   $lifecycle_usage_command coordinator-edit-status
   $lifecycle_usage_command repository-allow-status
+  $lifecycle_usage_command repository-allow-on <repository> <reason>
+  $lifecycle_usage_command repository-allow-off <repository>
   $lifecycle_usage_command permissive-on global <gate> <operation> <request> <ttl-seconds>
   $lifecycle_usage_command permissive-off <session|global> <gate> <operation> <request>
   $lifecycle_usage_command permissive-status <session|global> <gate> <operation> <request>
@@ -54,7 +56,7 @@ read_only_status() {
 # mutation paths below validate their real current-session targets instead.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 case "$cmd" in
-coordinator-edit-on|repository-allow-on|repository-allow-off|aggregate-migrate|aggregate-stage|aggregate-manifest-write|aggregate-commit)
+coordinator-edit-on|aggregate-migrate|aggregate-stage|aggregate-manifest-write|aggregate-commit)
   printf '%s\n' '[ECI_COORDINATION_DEFERRED] This mutator depends on legacy hook marker validation; no state was changed.' >&2
   exit 2
   ;;
@@ -1064,6 +1066,55 @@ repository_allow_record_path() {
   }
 }
 
+repository_allow_on() {
+  local repository reason active_repository tmp
+  [ "$#" -eq 3 ] || { usage; exit 2; }
+  reason="$3"
+  repository_allow_context || exit 1
+  repository="$(codex_eci_additional_repository_canonical_root "$2")" || {
+    echo "repository-allow requires an existing repository root: $2" >&2; exit 1;
+  }
+  codex_eci_additional_repository_reason_is_valid "$reason" || {
+    echo 'repository-allow requires a nonempty reason without control characters.' >&2; exit 1;
+  }
+  active_repository="$(codex_git_safe -C "$repository_allow_cwd" rev-parse --show-toplevel)" || exit 1
+  active_repository="$(realpath -e -- "$active_repository")" || exit 1
+  [ "$active_repository" != "$repository" ] || { echo 'Repository is already the active work repository.' >&2; exit 1; }
+  acquire_eci_mutation_lock || exit 1
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  [ ! -e "$repository_allow_record" ] && [ ! -L "$repository_allow_record" ] || {
+    echo 'An additional repository is already recorded; remove it first.' >&2; exit 1;
+  }
+  tmp="$repository_allow_record.tmp.$$"
+  [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || exit 1
+  if ! (umask 077; set -C; printf 'schema: %s\nsession_id: %s\ncwd: %s\nrepository: %s\nreason: %s\nstate: active\n' \
+    "$codex_eci_additional_repository_schema" "$repository_allow_session_id" "$repository_allow_cwd" "$repository" "$reason" > "$tmp"); then
+    rm -f -- "$tmp"; exit 1
+  fi
+  mv -T -- "$tmp" "$repository_allow_record" || { rm -f -- "$tmp"; exit 1; }
+  if ! codex_eci_additional_repository_record_is_valid "$repository_allow_session_id" "$repository_allow_cwd" "$repository"; then
+    rm -f -- "$repository_allow_record"
+    echo 'Repository allowance failed validation.' >&2; exit 1
+  fi
+  printf 'ECI additional repository active: %s\nreason: %s\n' "$repository" "$reason"
+}
+
+repository_allow_off() {
+  local repository
+  [ "$#" -eq 2 ] || { usage; exit 2; }
+  repository_allow_context || exit 1
+  repository="$(codex_eci_additional_repository_canonical_root "$2" 2>/dev/null || codex_eci_additional_repository_absent_target "$2")" || exit 1
+  acquire_eci_mutation_lock || exit 1
+  repository_allow_context || exit 1
+  repository_allow_record_path || exit 1
+  codex_eci_additional_repository_record_is_valid "$repository_allow_session_id" "$repository_allow_cwd" "$repository" true || {
+    echo 'No matching repository allowance.' >&2; exit 1;
+  }
+  rm -- "$repository_allow_record"
+  printf 'ECI additional repository inactive: %s\n' "$repository"
+}
+
 repository_allow_status() {
   local repository reason
 
@@ -1113,6 +1164,12 @@ coordinator-edit-status)
   ;;
 repository-allow-status)
   repository_allow_status "$@"
+  ;;
+repository-allow-on)
+  repository_allow_on "$@"
+  ;;
+repository-allow-off)
+  repository_allow_off "$@"
   ;;
 permissive-status)
   [ "$#" -eq 5 ] || { usage; exit 2; }

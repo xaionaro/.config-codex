@@ -20,15 +20,11 @@ fi
 [ ! -e "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID/ate_nested_eci_active" ]
 mkdir -p "$fixture/repository"
 git init -q "$fixture/repository"
-if "$base_dir/bin/eci-active" repository-allow-on "$fixture/repository" 'must not publish' >/dev/null 2>&1; then
-  echo 'marker-dependent repository command unexpectedly succeeded' >&2; exit 1
-fi
-[ ! -e "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID/eci-additional-repository" ] || {
-  echo 'rejected repository command published a record' >&2; exit 1;
-}
+"$base_dir/bin/eci-active" repository-allow-on "$fixture/repository" 'dependency repair' >/dev/null
+"$base_dir/bin/eci-active" repository-allow-off "$fixture/repository" >/dev/null
 printf 'existing record\n' > "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID/eci-additional-repository"
 if output="$("$base_dir/bin/eci-active" repository-allow-off "$fixture/repository" 2>&1)"; then exit 1; fi
-[[ "$output" == *ECI_COORDINATION_DEFERRED* ]]
+[[ "$output" == *'No matching repository allowance'* ]]
 [ "$(cat "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID/eci-additional-repository")" = 'existing record' ]
 for command in coordinator-edit-on aggregate-migrate aggregate-stage aggregate-manifest-write aggregate-commit; do
   if output="$("$base_dir/bin/eci-active" "$command" ignored 2>&1)"; then exit 1; fi
@@ -53,10 +49,10 @@ bash -c '
   source_path="$1"
   set -- on ignored
   . "$source_path"
-  for name in ledger_ensure_anchor safe_import_fixed_session_leaf aggregate_current_context repository_allow_status write_permissive_record cleanup_accidental_override_claim; do
+  for name in ledger_ensure_anchor safe_import_fixed_session_leaf aggregate_current_context repository_allow_status repository_allow_on repository_allow_off write_permissive_record cleanup_accidental_override_claim; do
     declare -F "$name" >/dev/null || { echo "live helper missing: $name" >&2; exit 1; }
   done
-  for name in clear_current_regular_eci_wait_state reconcile_local_activation_residue repository_allow_on repository_allow_off repository_allow_write_record write_coordinator_edit_record write_aggregate_plan aggregate_stage_path_is_selected aggregate_reconcile_commit_history write_user_closed_ledger; do
+  for name in clear_current_regular_eci_wait_state reconcile_local_activation_residue repository_allow_write_record write_coordinator_edit_record write_aggregate_plan aggregate_stage_path_is_selected aggregate_reconcile_commit_history write_user_closed_ledger; do
     if declare -F "$name" >/dev/null; then echo "retired helper remains: $name" >&2; exit 1; fi
   done
 ' _ "$base_dir/bin/eci-active"

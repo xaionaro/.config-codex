@@ -877,7 +877,7 @@ codex_eci_session_permissive_active() {
 # A repository allowance is a persistent, session-owned routing exception for
 # one additional Git repository.  It records the concrete owner, marker cwd,
 # canonical repository, and human reason; it is not a receipt, hash, or generic
-# command authorization.  The active marker remains required at use time.
+# command authorization. The record is bound to its session and working directory.
 codex_eci_additional_repository_record_name='eci-additional-repository'
 codex_eci_additional_repository_schema='eci-additional-repository/v1'
 codex_eci_additional_repository_max_reason_bytes=2048
@@ -966,8 +966,7 @@ codex_eci_additional_repository_record_is_valid() {
   [ "${lines[4]}" = "reason: $reason" ] || return 1
   codex_eci_additional_repository_reason_is_valid "$reason" || return 1
   [ "${lines[5]}" = 'state: active' ] || return 1
-  marker_cwd="$(codex_eci_direct_marker_cwd "$(codex_proof_root)/$session_id/eci_active" "$session_id" 2>/dev/null || true)"
-  [ "$marker_cwd" = "$expected_cwd" ] || return 1
+  return 0
 }
 
 codex_eci_additional_repository_is_allowed() {
