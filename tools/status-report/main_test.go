@@ -992,10 +992,10 @@ func TestTimelineWindowBoundaryAndEquivalentUTCOffsets(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestPriorityOrderKeepsUnrankedSlotsStable checks supplied priority ordering.
+// TestLegacyPriorityOrderCompatibility checks that legacy ordering remains accepted.
 //
-// Example: Ranked high and low tasks swap around an unknown task.
-func TestPriorityOrderKeepsUnrankedSlotsStable(t *testing.T) {
+// Example: A legacy high label does not supply missing score inputs.
+func TestLegacyPriorityOrderCompatibility(t *testing.T) {
 	r, err := parse([]byte(valid + "priority_order: [high]\n"))
 	require.NoError(t, err)
 	require.Contains(t, render(r), "unscored:")
@@ -1023,10 +1023,10 @@ func TestForecastBaselineTruth(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestPriorityOrderValidationAndStability checks arbitrary labels and absent ranks.
+// TestLegacyPriorityOrderValidation rejects invalid legacy ordering labels.
 //
-// Example: An unknown slot stays fixed while two ranked slots are reordered.
-func TestPriorityOrderValidationAndStability(t *testing.T) {
+// Example: Duplicate and unknown labels are rejected.
+func TestLegacyPriorityOrderValidation(t *testing.T) {
 	for _, order := range []string{"[high, high]", "[high, unknown]", "[high, '']", "[high, UNKNOWN]"} {
 		_, err := parse([]byte(valid + "priority_order: " + order + "\n"))
 		require.Error(t, err, order)
