@@ -50,3 +50,23 @@ if "$repo_root/bin/status-report" validate missing.yaml >/dev/null 2>&1; then
 	printf 'missing input unexpectedly succeeded\n' >&2
 	exit 1
 fi
+cat >project-understanding.yaml <<'YAML'
+schema: project-understanding/v1
+sections: {}
+records: {}
+YAML
+"$repo_root/bin/status-report" render --session-dir . 'report file.yaml' >relative-output.txt
+if grep -Eq 'session context unavailable|ledger unavailable' relative-output.txt; then
+	printf 'relative session directory was not resolved from the caller directory\n' >&2
+	exit 1
+fi
+grep -q 'Full task tree' relative-output.txt
+"$repo_root/bin/status-report" render --session-dir . - <'report file.yaml' >relative-stdin.txt
+"$repo_root/bin/status-report" render "$test_dir/report file.yaml" --session-dir . >relative-dir.txt
+for result in relative-stdin.txt relative-dir.txt; do
+	if grep -Eq 'session context unavailable|ledger unavailable' "$result"; then
+		printf 'relative session directory was not used with %s\n' "$result" >&2
+		exit 1
+	fi
+	grep -q 'Full task tree' "$result"
+done
