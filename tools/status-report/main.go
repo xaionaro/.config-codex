@@ -367,6 +367,9 @@ func run(
 	out io.Writer,
 	errOut io.Writer,
 ) int {
+	if len(args) > 0 && args[0] == "refresh" {
+		return runRefresh(args[1:], errOut)
+	}
 	if len(args) < 1 || (args[0] != "validate" && args[0] != "render") {
 		fmt.Fprintln(errOut, "usage: status-report validate|render [--session-dir DIR] [FILE]")
 		return 2

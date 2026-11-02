@@ -24,6 +24,7 @@ usage() {
   cat >&2 <<EOF
 Usage:
   $lifecycle_usage_command ledger-append --json <event-object>
+  $lifecycle_usage_command status-refresh --event <event-name>
   $lifecycle_usage_command requirement-assignment --request <JSON-file>
   $lifecycle_usage_command manifest-write \${TMPDIR:-\$HOME/tmp}/<...>/eci-required-critics.json.source
   $lifecycle_usage_command aggregate-review <prewrite|final> <repo-id>
@@ -1220,6 +1221,13 @@ permissive-off)
   fi
   printf 'ECI permissive mode inactive: %s\n' "$permissive_record"
   ;;
+status-refresh)
+  [ "$#" -eq 3 ] && [ "${2:-}" = --event ] || { usage; exit 2; }
+  case "$3" in worker_progress|assignment_change|review_result|decision|verification_result|requirement_change|forecast_change|blocker_change|checkpoint|lifecycle_change|correction) ;; *) usage; exit 2 ;; esac
+  session_dir="$(resolve_session_dir)" || exit 1
+  acquire_eci_mutation_lock || exit 1
+  (cd "$base_dir/tools/status-report" && go run -mod=readonly . refresh "$session_dir" "$3")
+  ;;
 requirement-assignment)
   [ "$#" -eq 3 ] && [ "${2:-}" = --request ] || { usage; exit 2; }
   request_path="$(realpath -e -- "$3")" || exit 1
@@ -1328,6 +1336,9 @@ ledger-append)
   }
   ledger_write_anchor "$session_dir" true ||
     printf 'ECI advisory: high-level ledger anchor could not be refreshed after append.\n' >&2
+  if ! (cd "$base_dir/tools/status-report" && go run -mod=readonly . refresh "$session_dir" "$(jq -r .event <<<"$entry")"); then
+    printf 'ECI advisory: log append succeeded; status refresh failed. Reconcile the report, then run eci-active status-refresh --event %s without appending the event again.\n' "$(jq -r .event <<<"$entry")" >&2
+  fi
   printf 'ECI high-level log appended at EOF: %s\n' "$log_path"
   ;;
 aggregate-review)
