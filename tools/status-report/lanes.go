@@ -6,18 +6,27 @@ import (
 )
 
 // renderLaneTable displays readiness and task context without combining statuses.
-func renderLaneTable(b *strings.Builder, lanes []map[string]any, tasks map[string]task) {
+//
+// Example: Show independent readiness columns for a lane.
+func renderLaneTable(
+	b *strings.Builder,
+	lanes []lane,
+	tasks map[string]task,
+) {
 	if len(lanes) == 0 {
 		return
 	}
 	fmt.Fprintln(b, "\n| Task ID | Parent ID | Lane | Lane requirement context | Priority | Impact | Effort | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |")
 	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, l := range lanes {
-		id, _ := l["task_id"].(string)
-		t := tasks[id]
-		f, _ := l["forecast"].(map[string]any)
+		t := tasks[l.TaskID]
+		target, dependencies := "", ""
+		if l.Forecast != nil {
+			target = l.Forecast.Target
+			dependencies = l.Forecast.Dependencies
+		}
 		effort := fmt.Sprintf("%g–%g minutes %s (%s)", *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis)
-		vals := []any{id, t.ParentID, l["outcome"], l["context"], t.Priority, t.Impact, effort, l["stage"], l["owner"], l["implementation_status"], l["test_status"], l["prod_status"], l["blocker"], l["next_milestone"], f["target"], f["dependencies"], l["next_action"]}
+		vals := []string{l.TaskID, t.ParentID, l.Outcome, l.Context, t.Priority, t.Impact, effort, l.Stage, l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
 		fmt.Fprint(b, "|")
 		for _, v := range vals {
 			fmt.Fprintf(b, " %s |", timelineCell(v))
@@ -25,43 +34,64 @@ func renderLaneTable(b *strings.Builder, lanes []map[string]any, tasks map[strin
 		fmt.Fprintln(b)
 	}
 	for _, l := range lanes {
-		if status, ok := l["root_task_status"].(string); ok && status != "" {
-			fmt.Fprintf(b, "\nRoot-task status [%s / %s]: %s\n", timelineCell(l["task_id"]), timelineCell(l["outcome"]), status)
+		if l.RootTaskStatus != rootTaskNone {
+			fmt.Fprintf(b, "\nRoot-task status [%s / %s]: %s\n", timelineCell(l.TaskID), timelineCell(l.Outcome), l.RootTaskStatus.String())
 		}
 	}
 }
 
 // renderScenarios displays supplied scenario facts in the required table.
-func renderScenarios(b *strings.Builder, name string, f map[string]any) {
-	rows, ok := f["scenarios"].([]any)
-	if !ok || len(rows) == 0 {
+//
+// Example: Display the base case and a downside case.
+func renderScenarios(
+	b *strings.Builder,
+	name string,
+	f forecast,
+) {
+	if len(f.Scenarios) == 0 {
 		return
 	}
 	fmt.Fprintln(b, "\n| Lane/root and case | Trigger/evidence | Affected work/dependency | Added duration/range and basis | Evidence assessed; assumptions/limits | Endpoint/range | Evidence gap / next fact-finding action |")
 	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- |")
-	for _, v := range rows {
-		row := v.(map[string]any)
-		fmt.Fprintf(b, "| %s — %s | %s | %s | %s | %s | %s | %s |\n", timelineCell(name), timelineCell(row["case"]), timelineCell(row["trigger"]), timelineCell(row["affected_work"]), timelineCell(row["duration_basis"]), timelineCell(row["evidence_assumptions"]), timelineCell(row["endpoint"]), timelineCell(row["evidence_gap_next_action"]))
+	for _, r := range f.Scenarios {
+		fmt.Fprintf(b, "| %s — %s | %s | %s | %s | %s | %s | %s |\n", timelineCell(name), timelineCell(r.Case), timelineCell(r.Trigger), timelineCell(r.AffectedWork), timelineCell(r.DurationBasis), timelineCell(r.EvidenceAssumptions), timelineCell(r.Endpoint), timelineCell(r.EvidenceGapNextAction))
 	}
 }
 
 // renderRootForecast prints the canonical root projection and scenarios.
-func renderRootForecast(b *strings.Builder, f map[string]any) {
-	outcome, _ := f["outcome"].(string)
-	target, _ := f["target"].(string)
-	if outcome != "" && target != "" {
-		fmt.Fprintf(b, "\nRoot completion forecast: %s will be finished by %s.\n", outcome, target)
+//
+// Example: Print the canonical root completion line.
+func renderRootForecast(
+	b *strings.Builder,
+	f forecast,
+) {
+	switch {
+	case f.Target == "unknown":
+		fmt.Fprintf(b, "\nRoot completion forecast: %s — unknown.\n", f.Outcome)
+	case f.Target != "":
+		fmt.Fprintf(b, "\nRoot completion forecast: %s will be finished by %s.\n", f.Outcome, f.Target)
 	}
-	if assessment, ok := f["assessment"].(string); ok && assessment != "" {
-		fmt.Fprintf(b, "Forecast assessment: %s\n", assessment)
+	renderForecastDetails(b, f)
+	renderScenarios(b, f.Outcome, f)
+}
+
+// renderForecastDetails prints the assessment and supplied recalibration.
+//
+// Example: Explain how an initial forecast was established.
+func renderForecastDetails(
+	b *strings.Builder,
+	f forecast,
+) {
+	if f.Assessment != "" {
+		fmt.Fprintf(b, "Forecast assessment: %s\n", f.Assessment)
 	}
-	if prior, ok := f["prior"].(string); ok && prior != "" {
-		fmt.Fprintf(b, "Forecast recalibration: %s → %s; why moved: %s; supporting evidence: %s.\n", prior, target, timelineCell(f["reason"]), timelineCell(f["evidence"]))
-	} else if baseline, ok := f["baseline"].(string); ok && baseline != "" {
-		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s; supporting evidence: %s.\n", baseline, timelineCell(f["evidence"]))
+	switch {
+	case f.Prior != "":
+		fmt.Fprintf(b, "Forecast recalibration: %s → %s; why moved: %s; supporting evidence: %s.\n", f.Prior, f.Target, timelineCell(f.Reason), timelineCell(f.Evidence))
+	case f.Baseline != "":
+		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s; supporting evidence: %s.\n", f.Baseline, timelineCell(f.Evidence))
 	}
-	if dependency, ok := f["dependencies"].(string); ok && dependency != "" {
-		fmt.Fprintf(b, "Dependencies / critical path: %s\n", dependency)
+	if f.Dependencies != "" {
+		fmt.Fprintf(b, "Dependencies / critical path: %s\n", f.Dependencies)
 	}
-	renderScenarios(b, outcome, f)
 }

@@ -1,96 +1,169 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+	"strings"
+	"time"
+)
 
-// validateFields enforces known scalar fields while allowing absent optional values.
-func validateFields(section string, fields map[string]any, allowed map[string]bool) error {
-	for key, value := range fields {
-		if !allowed[key] {
-			return fmt.Errorf("%s: unknown field %s", section, key)
-		}
-		if value == nil {
-			continue
-		}
-		if _, ok := value.(string); !ok {
-			return fmt.Errorf("%s: %s must be a string", section, key)
+// parseUTC parses RFC3339 timestamps and requires a zero UTC offset.
+//
+// Example: Accept Z or +00:00 and reject a nonzero offset.
+func parseUTC(value string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	_, offset := t.Zone()
+	if offset != 0 {
+		return time.Time{}, fmt.Errorf("timestamp must have zero UTC offset")
+	}
+	return t.UTC(), nil
+}
+
+// validateForecast checks an optional forecast without asserting its truth.
+//
+// Example: Reject an empty supplied root forecast.
+func validateForecast(f forecast) error {
+	if !validForecast(f) {
+		return fmt.Errorf("forecast requires outcome, target and assessment; use unknown when unsupported")
+	}
+	if f.Target != "unknown" {
+		if _, err := parseUTC(f.Target); err != nil {
+			return fmt.Errorf("invalid forecast target: %w", err)
 		}
 	}
 	return nil
 }
 
-// validateSections checks supported lane, forecast, scenario and timeline shapes.
+// validateSections checks typed lane, forecast and timeline relationships.
+//
+// Example: Reject a timeline interval outside the report window.
 func validateSections(r report) error {
-	laneFields := map[string]bool{}
-	for _, k := range []string{"id", "task_id", "parent_id", "outcome", "owner", "stage", "implementation_status", "test_status", "prod_status", "next_milestone", "completed_at", "blocker", "next_action", "context", "root_task_status"} {
-		laneFields[k] = true
+	priorities := map[string]bool{}
+	for _, e := range r.PriorityEstimates {
+		if strings.TrimSpace(e.Priority) == "" || priorities[e.Priority] {
+			return fmt.Errorf("priority estimates require unique priority")
+		}
+		priorities[e.Priority] = true
+		if err := validateCompletionEstimate(e); err != nil {
+			return err
+		}
 	}
-	forecastFields := map[string]bool{}
-	for _, k := range []string{"outcome", "target", "assessment", "baseline", "prior", "reason", "evidence", "dependencies"} {
-		forecastFields[k] = true
+	if r.CompletionEstimate != nil {
+		if err := validateCompletionEstimate(*r.CompletionEstimate); err != nil {
+			return err
+		}
 	}
-	scenarioFields := map[string]bool{}
-	for _, k := range []string{"case", "trigger", "affected_work", "duration_basis", "evidence_assumptions", "endpoint", "evidence_gap_next_action"} {
-		scenarioFields[k] = true
+	for priority := range priorities {
+		found := false
+		for _, t := range r.Tasks {
+			if t.Priority == priority {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("priority estimate %s has no matching task", priority)
+		}
 	}
-	timelineFields := map[string]bool{"job": true, "parent_chain": true, "interval": true, "fast": true, "normal": true, "evidence": true, "uncertainty": true}
+	if r.CompletionEstimate == nil {
+		return fmt.Errorf("completion_estimate is required")
+	}
+	for _, t := range r.Tasks {
+		if !priorities[t.Priority] {
+			return fmt.Errorf("missing completion estimate for priority %s", t.Priority)
+		}
+	}
+	byID := map[string]task{}
+	for _, t := range r.Tasks {
+		byID[t.ID] = t
+	}
+	for _, l := range r.Lanes {
+		t, ok := byID[l.TaskID]
+		if !ok || l.TaskID == "" {
+			return fmt.Errorf("lane references unknown task %s", l.TaskID)
+		}
+		if strings.TrimSpace(l.Outcome) == "" {
+			return fmt.Errorf("lane %s requires outcome", l.TaskID)
+		}
+		if l.ImplementationStatus == statusUnknown || l.TestStatus == statusUnknown || l.ProdStatus == statusUnknown {
+			return fmt.Errorf("lane %s requires three readiness statuses", l.TaskID)
+		}
+		if t.Status == statusClosed && l.Forecasted && l.CompletedAt == "" {
+			return fmt.Errorf("lane %s: completed forecasted task requires completed_at", l.TaskID)
+		}
+		if l.CompletedAt != "" {
+			if _, err := parseUTC(l.CompletedAt); err != nil {
+				return fmt.Errorf("lane %s: invalid completed_at", l.TaskID)
+			}
+			if t.Status != statusClosed {
+				return fmt.Errorf("lane %s: completed_at requires CLOSED task", l.TaskID)
+			}
+			if l.Forecast != nil {
+				return fmt.Errorf("lane %s: completion conflicts with active forecast", l.TaskID)
+			}
+		}
+		if l.Forecast != nil {
+			if t.Status == statusClosed {
+				return fmt.Errorf("lane %s: CLOSED task cannot retain active forecast", l.TaskID)
+			}
+			if err := validateForecast(*l.Forecast); err != nil {
+				return err
+			}
+		}
+	}
+	for _, f := range r.RootForecasts {
+		if err := validateForecast(f); err != nil {
+			return err
+		}
+	}
+	now, err := parseUTC(r.Timestamp)
+	if err != nil {
+		return err
+	}
 	chains := map[string]string{}
 	for _, row := range r.Timeline {
-		if err := validateFields("timeline", row, timelineFields); err != nil {
-			return err
+		if strings.TrimSpace(row.Job) == "" || strings.TrimSpace(row.ParentChain) == "" {
+			return fmt.Errorf("timeline requires job and parent_chain")
 		}
-		job, _ := row["job"].(string)
-		chain, _ := row["parent_chain"].(string)
-		if existing, ok := chains[job]; ok && existing != chain {
-			return fmt.Errorf("timeline job %s has inconsistent parent_chain", job)
+		if previous, ok := chains[row.Job]; ok && previous != row.ParentChain {
+			return fmt.Errorf("timeline job %s has inconsistent parent_chain", row.Job)
 		}
-		chains[job] = chain
+		chains[row.Job] = row.ParentChain
+		start, err := parseUTC(row.Start)
+		if err != nil {
+			return fmt.Errorf("timeline invalid start: %w", err)
+		}
+		end, err := parseUTC(row.End)
+		if err != nil {
+			return fmt.Errorf("timeline invalid end: %w", err)
+		}
+		if end.Sub(start) != 30*time.Minute || start.Before(now.Add(-4*time.Hour)) || end.After(now) {
+			return fmt.Errorf("timeline interval must be 30 minutes within the preceding four hours")
+		}
 	}
-	lanes := append([]map[string]any(nil), r.Lanes...)
-	for _, f := range r.RootForecasts {
-		lanes = append(lanes, map[string]any{"forecast": f})
+	return nil
+}
+
+// validateCompletionEstimate checks a supplied duration range and UTC endpoints.
+//
+// Example: Reject a reversed duration range.
+func validateCompletionEstimate(e completionEstimate) error {
+	if e.MinMinutes == nil || e.MaxMinutes == nil || math.IsNaN(*e.MinMinutes) || math.IsNaN(*e.MaxMinutes) || math.IsInf(*e.MinMinutes, 0) || math.IsInf(*e.MaxMinutes, 0) || *e.MinMinutes < 0 || *e.MaxMinutes < *e.MinMinutes {
+		return fmt.Errorf("completion estimate requires ordered finite minute range")
 	}
-	for _, lane := range lanes {
-		scalars := make(map[string]any, len(lane))
-		for k, v := range lane {
-			if k != "forecast" {
-				scalars[k] = v
-			}
-		}
-		if err := validateFields("lane", scalars, laneFields); err != nil {
-			return err
-		}
-		raw, exists := lane["forecast"]
-		if !exists || raw == nil {
-			continue
-		}
-		forecast, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("lane forecast must be a mapping")
-		}
-		scalars = make(map[string]any, len(forecast))
-		for k, v := range forecast {
-			if k != "scenarios" {
-				scalars[k] = v
-			}
-		}
-		if err := validateFields("forecast", scalars, forecastFields); err != nil {
-			return err
-		}
-		if raw, exists := forecast["scenarios"]; exists {
-			scenarios, ok := raw.([]any)
-			if !ok {
-				return fmt.Errorf("forecast scenarios must be a list")
-			}
-			for _, v := range scenarios {
-				row, ok := v.(map[string]any)
-				if !ok {
-					return fmt.Errorf("forecast scenario must be a mapping")
-				}
-				if err := validateFields("forecast scenario", row, scenarioFields); err != nil {
-					return err
-				}
-			}
-		}
+	early, err := parseUTC(e.Earliest)
+	if err != nil {
+		return fmt.Errorf("invalid earliest endpoint: %w", err)
+	}
+	late, err := parseUTC(e.Latest)
+	if err != nil || late.Before(early) {
+		return fmt.Errorf("invalid latest endpoint")
+	}
+	if strings.TrimSpace(e.Basis) == "" || strings.TrimSpace(e.Assumptions) == "" || strings.TrimSpace(e.Dependencies) == "" || strings.TrimSpace(e.CriticalPath) == "" {
+		return fmt.Errorf("completion estimate requires basis, assumptions, dependencies and critical_path")
 	}
 	return nil
 }

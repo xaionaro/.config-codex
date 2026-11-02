@@ -180,6 +180,9 @@ tasks:
     effort: {min_minutes: 20, max_minutes: 30, kind: elapsed, basis: educated guess}
     status: 'IN PROGRESS'
 top_priorities: ['1.2']
+priority_estimates:
+  - {priority: high, min_minutes: 20, max_minutes: 30, earliest: '2026-10-26T12:20:00Z', latest: '2026-10-26T12:30:00Z', basis: educated guess, assumptions: test service available, dependencies: test service, critical_path: integration check}
+completion_estimate: {min_minutes: 20, max_minutes: 30, earliest: '2026-10-26T12:20:00Z', latest: '2026-10-26T12:30:00Z', basis: educated guess, assumptions: test service available, dependencies: test service, critical_path: integration check}
 lanes:
   - id: '1.2'
     task_id: '1.2'

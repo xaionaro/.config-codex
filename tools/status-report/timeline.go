@@ -8,35 +8,39 @@ import (
 // writeTimeline renders each Job's supplied history in three columns.
 //
 // Example: A Job with Fast and normal events gets one table of its intervals.
-func writeTimeline(b *strings.Builder, entries []map[string]any) {
+func writeTimeline(
+	b *strings.Builder,
+	entries []timelineEntry,
+) {
 	if len(entries) == 0 {
 		fmt.Fprintln(b, "Timeline history unavailable or no evidenced progress; consult source evidence.")
 		return
 	}
-	groups := make(map[string][]map[string]any)
+	groups := make(map[string][]timelineEntry)
 	var jobs []string
 	for _, entry := range entries {
-		job := timelineCell(entry["job"])
-		if _, ok := groups[job]; !ok {
-			jobs = append(jobs, job)
+		if _, ok := groups[entry.Job]; !ok {
+			jobs = append(jobs, entry.Job)
 		}
-		groups[job] = append(groups[job], entry)
+		groups[entry.Job] = append(groups[entry.Job], entry)
 	}
 	for _, job := range jobs {
 		rows := groups[job]
-		chain := timelineCell(rows[0]["parent_chain"])
-		fmt.Fprintf(b, "Job %s (parent chain: %s)\n\n", job, chain)
+		fmt.Fprintf(b, "Job %s (parent chain: %s)\n\n", timelineCell(job), timelineCell(rows[0].ParentChain))
 		fmt.Fprintln(b, "| UTC interval | Fast | Normal |")
 		fmt.Fprintln(b, "| --- | --- | --- |")
 		for _, row := range rows {
-			fmt.Fprintf(b, "| %s | %s | %s |\n", timelineCell(row["interval"]), timelineCell(row["fast"]), timelineCell(row["normal"]))
+			interval := row.Start + " – " + row.End
+			fmt.Fprintf(b, "| %s | %s | %s |\n", timelineCell(interval), timelineCell(row.Fast), timelineCell(row.Normal))
 		}
 		fmt.Fprintln(b)
 		for _, row := range rows {
-			for _, field := range []string{"evidence", "uncertainty"} {
-				if row[field] != nil && strings.TrimSpace(fmt.Sprint(row[field])) != "" {
-					fmt.Fprintf(b, "- %s %s: %s\n", timelineCell(row["interval"]), field, timelineCell(row[field]))
-				}
+			interval := row.Start + " – " + row.End
+			if row.Evidence != "" {
+				fmt.Fprintf(b, "- %s evidence: %s\n", timelineCell(interval), timelineCell(row.Evidence))
+			}
+			if row.Uncertainty != "" {
+				fmt.Fprintf(b, "- %s uncertainty: %s\n", timelineCell(interval), timelineCell(row.Uncertainty))
 			}
 		}
 		fmt.Fprintln(b)
@@ -46,10 +50,10 @@ func writeTimeline(b *strings.Builder, entries []map[string]any) {
 // timelineCell renders a supplied value safely within a Markdown table cell.
 //
 // Example: A missing path history renders as unknown.
-func timelineCell(value any) string {
-	if value == nil || strings.TrimSpace(fmt.Sprint(value)) == "" {
+func timelineCell(value string) string {
+	if strings.TrimSpace(value) == "" {
 		return "unknown"
 	}
-	cell := strings.ReplaceAll(fmt.Sprint(value), "|", "\\|")
+	cell := strings.ReplaceAll(value, "|", "\\|")
 	return strings.ReplaceAll(cell, "\n", "<br>")
 }

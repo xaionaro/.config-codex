@@ -3,9 +3,13 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
-const valid = `timestamp: "2026-11-02T15:24:00Z"
+// validCore is a representative report before completion estimates.
+//
+// Example: Add estimates to exercise validation.
+const validCore = `timestamp: "2026-11-02T15:24:00Z"
 state: Working
 progress: [Implementation started]
 decisions: [Use YAML]
@@ -42,6 +46,23 @@ timeline: []
 reviews: []
 `
 
+// estimates supplies representative priority and overall ranges.
+//
+// Example: Combine it with validCore for a complete report.
+const estimates = `priority_estimates:
+  - {priority: high, min_minutes: 20, max_minutes: 40, earliest: "2026-11-02T15:44:00Z", latest: "2026-11-02T16:04:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
+  - {priority: unknown, min_minutes: 20, max_minutes: 40, earliest: "2026-11-02T15:44:00Z", latest: "2026-11-02T16:04:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
+completion_estimate: {min_minutes: 20, max_minutes: 40, earliest: "2026-11-02T15:44:00Z", latest: "2026-11-02T16:04:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
+`
+
+// valid combines the report and its estimates.
+//
+// Example: Parse it in behavior tests.
+const valid = validCore + estimates
+
+// TestRenderProgressAndSeparateLists checks the corresponding status report behavior.
+//
+// Example: Verify render progress and separate lists through the public behavior.
 func TestRenderProgressAndSeparateLists(t *testing.T) {
 	r, err := parse([]byte(valid))
 	if err != nil {
@@ -54,6 +75,10 @@ func TestRenderProgressAndSeparateLists(t *testing.T) {
 		}
 	}
 }
+
+// TestRejectInvalidStructures checks the corresponding status report behavior.
+//
+// Example: Verify reject invalid structures through the public behavior.
 func TestRejectInvalidStructures(t *testing.T) {
 	cases := []string{
 		strings.Replace(valid, `top_priorities: ["1.1"]`, `top_priorities: ["missing"]`, 1),
@@ -69,6 +94,10 @@ func TestRejectInvalidStructures(t *testing.T) {
 		}
 	}
 }
+
+// TestZeroKnownProgress checks the corresponding status report behavior.
+//
+// Example: Verify zero known progress through the public behavior.
 func TestZeroKnownProgress(t *testing.T) {
 	input := strings.Replace(valid, "status: CLOSED\n    evidence: accepted test", "status: unknown", 1)
 	r, err := parse([]byte(input))
@@ -81,6 +110,9 @@ func TestZeroKnownProgress(t *testing.T) {
 	}
 }
 
+// TestLaneAndUnknownCoverage checks the corresponding status report behavior.
+//
+// Example: Verify lane and unknown coverage through the public behavior.
 func TestLaneAndUnknownCoverage(t *testing.T) {
 	input := strings.Replace(valid, "lanes: []", "lanes:\n  - task_id: 'missing'\n    outcome: Test\n    implementation_status: NEW\n    test_status: NEW\n    prod_status: NEW", 1)
 	if _, err := parse([]byte(input)); err == nil {
@@ -97,6 +129,9 @@ func TestLaneAndUnknownCoverage(t *testing.T) {
 	}
 }
 
+// TestLaneForecastRendering checks the corresponding status report behavior.
+//
+// Example: Verify lane forecast rendering through the public behavior.
 func TestLaneForecastRendering(t *testing.T) {
 	input := strings.Replace(valid, "lanes: []", `lanes:
   - task_id: '1'
@@ -125,6 +160,9 @@ func TestLaneForecastRendering(t *testing.T) {
 	}
 }
 
+// TestPackageAndReviewValidation checks the corresponding status report behavior.
+//
+// Example: Verify package and review validation through the public behavior.
 func TestPackageAndReviewValidation(t *testing.T) {
 	for _, input := range []string{
 		strings.Replace(valid, "max_minutes: 30, kind: elapsed, basis: guess", "max_minutes: 60, kind: elapsed, basis: guess", 1),
@@ -146,6 +184,9 @@ func TestPackageAndReviewValidation(t *testing.T) {
 	}
 }
 
+// TestEmptyTimelineEvidence checks the corresponding status report behavior.
+//
+// Example: Verify empty timeline evidence through the public behavior.
 func TestEmptyTimelineEvidence(t *testing.T) {
 	r, err := parse([]byte(valid + "timeline_state: verified_empty\n"))
 	if err != nil {
@@ -159,11 +200,14 @@ func TestEmptyTimelineEvidence(t *testing.T) {
 	}
 }
 
+// TestNestedSchemaValidation checks the corresponding status report behavior.
+//
+// Example: Verify nested schema validation through the public behavior.
 func TestNestedSchemaValidation(t *testing.T) {
 	for _, replacement := range []string{
 		"lanes:\n  - {task_id: '1', outcome: X, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: 42}",
 		"lanes:\n  - {task_id: '1', outcome: X, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: {target: [bad]}}",
-		"timeline:\n  - {job: X, parent_chain: X, interval: X, fast: X, normal: X, lost_field: X}",
+		"timeline:\n  - {job: X, parent_chain: X, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: X, normal: X, lost_field: X}",
 	} {
 		source := "lanes: []"
 		if strings.HasPrefix(replacement, "timeline:") {
@@ -175,6 +219,9 @@ func TestNestedSchemaValidation(t *testing.T) {
 	}
 }
 
+// TestRejectNonFiniteEffort checks the corresponding status report behavior.
+//
+// Example: Verify reject non finite effort through the public behavior.
 func TestRejectNonFiniteEffort(t *testing.T) {
 	for _, value := range []string{".nan", ".inf", "-.inf"} {
 		input := strings.Replace(valid, "min_minutes: 30", "min_minutes: "+value, 1)
@@ -184,13 +231,19 @@ func TestRejectNonFiniteEffort(t *testing.T) {
 	}
 }
 
+// TestTimelineParentChainConsistency checks the corresponding status report behavior.
+//
+// Example: Verify timeline parent chain consistency through the public behavior.
 func TestTimelineParentChainConsistency(t *testing.T) {
-	input := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: X, parent_chain: A, interval: one, fast: unknown, normal: unknown}\n  - {job: X, parent_chain: B, interval: two, fast: unknown, normal: unknown}", 1)
+	input := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}\n  - {job: X, parent_chain: B, start: '2026-11-02T14:30:00Z', end: '2026-11-02T15:00:00Z', fast: unknown, normal: unknown}", 1)
 	if _, err := parse([]byte(input)); err == nil {
 		t.Fatal("accepted inconsistent chain")
 	}
 }
 
+// TestLaneScenarioAndRootForecastOutput checks the corresponding status report behavior.
+//
+// Example: Verify lane scenario and root forecast output through the public behavior.
 func TestLaneScenarioAndRootForecastOutput(t *testing.T) {
 	input := strings.Replace(valid, "lanes: []", `lanes:
   - task_id: '1'
@@ -220,13 +273,144 @@ root_forecasts:
 	}
 }
 
+// TestPartialTimelineDisclosure checks the corresponding status report behavior.
+//
+// Example: Verify partial timeline disclosure through the public behavior.
 func TestPartialTimelineDisclosure(t *testing.T) {
-	input := strings.Replace(valid, "timeline: []", "timeline_state: unavailable\ntimeline:\n  - {job: X, parent_chain: A, interval: one, fast: unknown, normal: unknown}", 1)
+	input := strings.Replace(valid, "timeline: []", "timeline_state: unavailable\ntimeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}", 1)
 	r, err := parse([]byte(input))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(render(r), "History is incomplete or unavailable") {
 		t.Fatal(render(r))
+	}
+}
+
+// TestRepairRegressionInputs checks the corresponding status report behavior.
+//
+// Example: Verify repair regression inputs through the public behavior.
+func TestRepairRegressionInputs(t *testing.T) {
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    implementation_status: IN PROGRESS
+    test_status: NEW
+    prod_status: NEW
+    completed_at: '2026-11-02T15:00:00Z'
+    forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
+`
+	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", lane, 1))); err == nil {
+		t.Error("accepted active task with completed_at and active forecast")
+	}
+	if _, err := parse([]byte(valid + "root_forecasts: [{}]\n")); err == nil {
+		t.Error("accepted empty root forecast")
+	}
+	bad := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-02T13:00:00Z', end: '2026-11-02T14:00:00Z', fast: unknown, normal: unknown}", 1)
+	if _, err := parse([]byte(bad)); err == nil {
+		t.Error("accepted one-hour interval")
+	}
+	utc := strings.Replace(valid, "2026-11-02T15:24:00Z", "2026-11-02T15:24:00+00:00", 1)
+	if _, err := parse([]byte(utc)); err != nil {
+		t.Errorf("rejected zero-offset UTC: %v", err)
+	}
+}
+
+// TestCompletionEstimates checks the corresponding status report behavior.
+//
+// Example: Verify completion estimates through the public behavior.
+func TestCompletionEstimates(t *testing.T) {
+	input := validCore + `priority_estimates:
+  - {priority: unknown, min_minutes: 10, max_minutes: 30, earliest: "2026-11-02T15:34:00Z", latest: "2026-11-02T15:54:00Z", basis: educated guess, assumptions: review available, dependencies: none, critical_path: unknown}
+  - priority: high
+    min_minutes: 20
+    max_minutes: 40
+    earliest: '2026-11-02T15:44:00Z'
+    latest: '2026-11-02T16:04:00Z'
+    basis: educated guess
+    assumptions: review available
+    dependencies: review
+    critical_path: parallel work, latest endpoint
+completion_estimate:
+  min_minutes: 20
+  max_minutes: 50
+  earliest: '2026-11-02T15:44:00Z'
+  latest: '2026-11-02T16:14:00Z'
+  basis: educated guess
+  assumptions: reviewers available
+  dependencies: review
+  critical_path: latest parallel endpoint
+`
+	r, err := parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := render(r)
+	for _, want := range []string{"Priority high completion estimate", "Priority unknown completion estimate", "Overall completion estimate", "latest parallel endpoint"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+// TestTimelineUTCAndLifecycle checks the corresponding status report behavior.
+//
+// Example: Verify timeline utcand lifecycle through the public behavior.
+func TestTimelineUTCAndLifecycle(t *testing.T) {
+	oldTZ := time.Local
+	time.Local = time.FixedZone("local", -5*3600)
+	base := strings.Replace(valid, "2026-11-02T15:24:00Z", "2026-11-02T00:15:00+00:00", 1)
+	row := "timeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-01T23:30:00Z', end: '2026-11-02T00:00:00+00:00', fast: unknown, normal: unknown}"
+	if _, err := parse([]byte(strings.Replace(base, "timeline: []", row, 1))); err != nil {
+		t.Errorf("valid midnight UTC: %v", err)
+	}
+	for _, replacement := range []string{"2026-11-02T00:01:00Z", "2026-11-01T19:00:00Z", "2026-11-02T00:00:00+01:00"} {
+		bad := strings.Replace(row, "2026-11-02T00:00:00+00:00", replacement, 1)
+		if _, err := parse([]byte(strings.Replace(base, "timeline: []", bad, 1))); err == nil {
+			t.Errorf("accepted invalid end %s", replacement)
+		}
+	}
+	closed := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: CLOSED\n    evidence: accepted\n  - id:", 1)
+	lane := "lanes:\n  - {task_id: '1', outcome: Work, implementation_status: CLOSED, test_status: IN PROGRESS, prod_status: NEW, forecasted: true}"
+	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err == nil {
+		t.Error("missing completed_at accepted")
+	}
+	lane = strings.Replace(lane, "forecasted: true}", "forecasted: true, completed_at: '2026-11-02T15:00:00+00:00'}", 1)
+	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err != nil {
+		t.Errorf("valid closed lane: %v", err)
+	}
+	time.Local = oldTZ
+}
+
+// TestEstimateCoverageRejectsMissing checks every priority and overall are estimated.
+//
+// Example: An unknown-priority task still needs a labeled educated estimate.
+func TestEstimateCoverageRejectsMissing(t *testing.T) {
+	if _, err := parse([]byte(validCore)); err == nil {
+		t.Error("accepted missing estimates")
+	}
+	input := strings.Replace(valid, "  - {priority: unknown, min_minutes: 20, max_minutes: 40, earliest: \"2026-11-02T15:44:00Z\", latest: \"2026-11-02T16:04:00Z\", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}\n", "", 1)
+	if _, err := parse([]byte(input)); err == nil {
+		t.Error("accepted missing unknown-priority estimate")
+	}
+}
+
+// TestClosedLifecycleRejectsContradictoryForecast verifies separate readiness and completion.
+//
+// Example: A closed forecasted task cannot retain an active target.
+func TestClosedLifecycleRejectsContradictoryForecast(t *testing.T) {
+	closed := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: CLOSED\n    evidence: accepted\n  - id:", 1)
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    implementation_status: CLOSED
+    test_status: IN PROGRESS
+    prod_status: NEW
+    forecasted: true
+    completed_at: '2026-11-02T15:00:00Z'
+    forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
+`
+	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err == nil {
+		t.Error("accepted closed task with active forecast")
 	}
 }

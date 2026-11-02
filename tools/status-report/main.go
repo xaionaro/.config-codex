@@ -8,20 +8,23 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // estimate describes the remaining work range and its basis.
+//
+// Example: Record a 20–30 minute elapsed package.
 type estimate struct {
-	MinMinutes *float64 `yaml:"min_minutes"`
-	MaxMinutes *float64 `yaml:"max_minutes"`
-	Kind       string   `yaml:"kind"`
-	Basis      string   `yaml:"basis"`
+	MinMinutes *float64   `yaml:"min_minutes"`
+	MaxMinutes *float64   `yaml:"max_minutes"`
+	Kind       effortKind `yaml:"kind"`
+	Basis      string     `yaml:"basis"`
 }
 
 // queueReview records the scoped review of one newly estimated queue item.
+//
+// Example: Record a critic check for a newly queued item.
 type queueReview struct {
 	TaskID     string `yaml:"task_id"`
 	Reporter   string `yaml:"reporter"`
@@ -34,42 +37,50 @@ type queueReview struct {
 }
 
 // task records one node of the package hierarchy.
+//
+// Example: Represent one leaf package or its parent.
 type task struct {
-	ID                string   `yaml:"id"`
-	ParentID          string   `yaml:"parent_id"`
-	Title             string   `yaml:"title"`
-	Owner             string   `yaml:"owner"`
-	Context           string   `yaml:"context"`
-	Priority          string   `yaml:"priority"`
-	Impact            string   `yaml:"impact"`
-	Effort            estimate `yaml:"effort"`
-	Status            string   `yaml:"status"`
-	Evidence          string   `yaml:"evidence"`
-	IndivisibleReason string   `yaml:"indivisible_reason"`
+	ID                string     `yaml:"id"`
+	ParentID          string     `yaml:"parent_id"`
+	Title             string     `yaml:"title"`
+	Owner             string     `yaml:"owner"`
+	Context           string     `yaml:"context"`
+	Priority          string     `yaml:"priority"`
+	Impact            string     `yaml:"impact"`
+	Effort            estimate   `yaml:"effort"`
+	Status            workStatus `yaml:"status"`
+	Evidence          string     `yaml:"evidence"`
+	IndivisibleReason string     `yaml:"indivisible_reason"`
 }
 
 // report holds one persisted status projection.
+//
+// Example: Load the current status projection from YAML.
 type report struct {
-	Timestamp     string           `yaml:"timestamp"`
-	State         string           `yaml:"state"`
-	Progress      []string         `yaml:"progress"`
-	Decisions     []any            `yaml:"decisions"`
-	Blockers      []string         `yaml:"blockers_risks"`
-	Verification  []string         `yaml:"verification"`
-	NextFocus     string           `yaml:"next_focus"`
-	ScopeComplete *bool            `yaml:"scope_complete"`
-	Tasks         []task           `yaml:"tasks"`
-	TopPriorities []string         `yaml:"top_priorities"`
-	Lanes         []map[string]any `yaml:"lanes"`
-	RootForecasts []map[string]any `yaml:"root_forecasts"`
-	Roster        map[string]any   `yaml:"roster"`
-	Timeline      []map[string]any `yaml:"timeline"`
-	TimelineState string           `yaml:"timeline_state"`
-	Reviews       []queueReview    `yaml:"reviews"`
-	Details       map[string]any   `yaml:"details"`
+	Timestamp          string               `yaml:"timestamp"`
+	State              string               `yaml:"state"`
+	Progress           []string             `yaml:"progress"`
+	Decisions          []any                `yaml:"decisions"`
+	Blockers           []string             `yaml:"blockers_risks"`
+	Verification       []string             `yaml:"verification"`
+	NextFocus          string               `yaml:"next_focus"`
+	ScopeComplete      *bool                `yaml:"scope_complete"`
+	Tasks              []task               `yaml:"tasks"`
+	TopPriorities      []string             `yaml:"top_priorities"`
+	Lanes              []lane               `yaml:"lanes"`
+	RootForecasts      []forecast           `yaml:"root_forecasts"`
+	Roster             map[string]any       `yaml:"roster"`
+	Timeline           []timelineEntry      `yaml:"timeline"`
+	TimelineState      timelineState        `yaml:"timeline_state"`
+	Reviews            []queueReview        `yaml:"reviews"`
+	Details            map[string]any       `yaml:"details"`
+	PriorityEstimates  []completionEstimate `yaml:"priority_estimates"`
+	CompletionEstimate *completionEstimate  `yaml:"completion_estimate"`
 }
 
 // parse decodes and validates one structured status projection.
+//
+// Example: Reject a report with a missing task reference.
 func parse(data []byte) (report, error) {
 	var r report
 	d := yaml.NewDecoder(bytes.NewReader(data))
@@ -81,7 +92,7 @@ func parse(data []byte) (report, error) {
 	if err := d.Decode(&extra); err != io.EOF {
 		return r, fmt.Errorf("expected one YAML document")
 	}
-	if t, err := time.Parse(time.RFC3339, r.Timestamp); err != nil || t.Location() != time.UTC {
+	if _, err := parseUTC(r.Timestamp); err != nil {
 		return r, fmt.Errorf("timestamp must be RFC3339 UTC")
 	}
 	if strings.TrimSpace(r.State) == "" || strings.TrimSpace(r.NextFocus) == "" || r.ScopeComplete == nil {
@@ -90,33 +101,24 @@ func parse(data []byte) (report, error) {
 	if r.Progress == nil || r.Decisions == nil || r.Blockers == nil || r.Verification == nil || r.Tasks == nil || r.TopPriorities == nil {
 		return r, fmt.Errorf("progress, decisions, blockers_risks, verification, tasks and top_priorities must be lists")
 	}
-	switch r.TimelineState {
-	case "", "unavailable", "verified_empty", "present":
-	default:
-		return r, fmt.Errorf("invalid timeline_state")
-	}
-	if r.TimelineState == "verified_empty" && len(r.Timeline) > 0 {
+	if r.TimelineState == timelineVerifiedEmpty && len(r.Timeline) > 0 {
 		return r, fmt.Errorf("verified_empty timeline cannot contain entries")
 	}
-	if r.TimelineState == "present" && len(r.Timeline) == 0 {
+	if r.TimelineState == timelinePresent && len(r.Timeline) == 0 {
 		return r, fmt.Errorf("present timeline requires entries")
 	}
 	byID := map[string]task{}
 	children := map[string]int{}
 	for _, t := range r.Tasks {
-		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(*t.Effort.MinMinutes) || math.IsNaN(*t.Effort.MaxMinutes) || math.IsInf(*t.Effort.MinMinutes, 0) || math.IsInf(*t.Effort.MaxMinutes, 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || (t.Effort.Kind != "elapsed" && t.Effort.Kind != "work") || strings.TrimSpace(t.Effort.Basis) == "" {
+		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(*t.Effort.MinMinutes) || math.IsNaN(*t.Effort.MaxMinutes) || math.IsInf(*t.Effort.MinMinutes, 0) || math.IsInf(*t.Effort.MaxMinutes, 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || t.Effort.Kind == effortUnknown || strings.TrimSpace(t.Effort.Basis) == "" {
 			return r, fmt.Errorf("task requires id, title, priority, impact and effort")
 		}
 		if _, exists := byID[t.ID]; exists {
 			return r, fmt.Errorf("duplicate task id %q", t.ID)
 		}
 		byID[t.ID] = t
-		switch t.Status {
-		case "", "unknown", "NEW", "IN PROGRESS", "PAUSED", "BLOCKED", "CLOSED":
-		default:
-			return r, fmt.Errorf("task %s: invalid status %q", t.ID, t.Status)
-		}
-		if t.Status == "CLOSED" && strings.TrimSpace(t.Evidence) == "" {
+
+		if t.Status == statusClosed && strings.TrimSpace(t.Evidence) == "" {
 			return r, fmt.Errorf("task %s: CLOSED requires acceptance evidence", t.ID)
 		}
 	}
@@ -164,54 +166,23 @@ func parse(data []byte) (report, error) {
 	if err := validateSections(r); err != nil {
 		return r, err
 	}
-	for _, lane := range r.Lanes {
-		id, ok := lane["task_id"].(string)
-		if !ok || id == "" {
-			return r, fmt.Errorf("lane requires string task_id")
-		}
-		if _, ok := byID[id]; !ok {
-			return r, fmt.Errorf("lane references unknown task %s", id)
-		}
-		if outcome, ok := lane["outcome"].(string); !ok || strings.TrimSpace(outcome) == "" {
-			return r, fmt.Errorf("lane %s requires outcome", id)
-		}
-		if value, ok := lane["root_task_status"].(string); ok && value != "" && value != "FOLLOWUP" && value != "FOLLOWUP_PAUSED" {
-			return r, fmt.Errorf("lane %s: invalid root_task_status", id)
-		}
-		for _, field := range []string{"implementation_status", "test_status", "prod_status"} {
-			value, ok := lane[field].(string)
-			if !ok {
-				return r, fmt.Errorf("lane %s requires %s", id, field)
-			}
-			switch value {
-			case "NEW", "IN PROGRESS", "PAUSED", "BLOCKED", "CLOSED":
-			default:
-				return r, fmt.Errorf("lane %s: invalid %s", id, field)
-			}
-		}
-	}
 	return r, nil
 }
 
 // render derives a readable status report from a validated projection.
+//
+// Example: Produce a human-readable report and derived progress bar.
 func render(r report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Status (%s)\n%s\n\n", r.Timestamp, r.State)
-	writeList := func(title string, values []string) {
-		fmt.Fprintf(&b, "%s:\n", title)
-		for _, v := range values {
-			fmt.Fprintf(&b, "- %s\n", v)
-		}
-		b.WriteString("\n")
-	}
-	writeList("Progress updates", r.Progress)
+	writeList(&b, "Progress updates", r.Progress)
 	fmt.Fprintln(&b, "Decisions:")
 	for _, v := range r.Decisions {
 		writeValue(&b, v, 1)
 	}
 	b.WriteString("\n")
-	writeList("Blockers / risks", r.Blockers)
-	writeList("Verification", r.Verification)
+	writeList(&b, "Blockers / risks", r.Blockers)
+	writeList(&b, "Verification", r.Verification)
 	fmt.Fprintf(&b, "Next focus: %s\n\n", r.NextFocus)
 	byID := map[string]task{}
 	children := map[string][]string{}
@@ -219,40 +190,15 @@ func render(r report) string {
 		byID[t.ID] = t
 		children[t.ParentID] = append(children[t.ParentID], t.ID)
 	}
-	taskLine := func(t task, indent string) {
-		fmt.Fprintf(&b, "%s- %s %s | priority: %s | impact: %s | effort: %s | status: %s", indent, t.ID, t.Title, t.Priority, t.Impact, fmt.Sprintf("%g–%g minutes %s (%s)", *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis), unknown(t.Status))
-		if t.Owner != "" {
-			fmt.Fprintf(&b, " | owner: %s", t.Owner)
-		} else {
-			fmt.Fprint(&b, " | owner: unowned")
-		}
-		if t.Context != "" {
-			fmt.Fprintf(&b, " | context: %s", t.Context)
-		}
-		if t.Evidence != "" {
-			fmt.Fprintf(&b, " | evidence: %s", t.Evidence)
-		}
-		if t.IndivisibleReason != "" {
-			fmt.Fprintf(&b, " | indivisible: %s", t.IndivisibleReason)
-		}
-		b.WriteByte('\n')
-	}
 	fmt.Fprintln(&b, "Top priorities:")
 	if len(r.TopPriorities) == 0 {
 		fmt.Fprintln(&b, "- unknown / none identified")
 	}
 	for _, id := range r.TopPriorities {
-		taskLine(byID[id], "")
+		writeTaskLine(&b, byID[id], "")
 	}
 	fmt.Fprintln(&b, "\nFull task tree:")
-	var tree func(string, int)
-	tree = func(parent string, depth int) {
-		for _, id := range children[parent] {
-			taskLine(byID[id], strings.Repeat("  ", depth))
-			tree(id, depth+1)
-		}
-	}
-	tree("", 0)
+	writeTaskTree(&b, byID, children, "", 0)
 	known, done, unknownCount := 0, 0, 0
 	var unscored, covered, oversized []string
 	for _, t := range r.Tasks {
@@ -262,14 +208,14 @@ func render(r report) string {
 		if *t.Effort.MaxMinutes > 30 {
 			oversized = append(oversized, t.ID+": "+t.IndivisibleReason)
 		}
-		if t.Status == "" || t.Status == "unknown" {
+		if t.Status == statusUnknown {
 			unknownCount++
 			unscored = append(unscored, t.ID)
 			continue
 		}
 		covered = append(covered, t.ID)
 		known++
-		if t.Status == "CLOSED" {
+		if t.Status == statusClosed {
 			done++
 		}
 	}
@@ -288,6 +234,7 @@ func render(r report) string {
 	if len(oversized) > 0 {
 		fmt.Fprintf(&b, "Larger indivisible packages: %s\n", strings.Join(oversized, "; "))
 	}
+	renderCompletionEstimates(&b, r)
 	renderLaneTable(&b, r.Lanes, byID)
 	for _, lane := range r.Lanes {
 		renderForecast(&b, lane)
@@ -298,15 +245,15 @@ func render(r report) string {
 	for _, section := range []struct {
 		name  string
 		value any
-	}{{"Lane details", r.Lanes}, {"Root forecast details", r.RootForecasts}, {"Roster", r.Roster}, {"Details", r.Details}} {
+	}{{"Roster", r.Roster}, {"Details", r.Details}} {
 		fmt.Fprintf(&b, "\n%s:\n", section.name)
 		writeValue(&b, section.value, 0)
 	}
-	if r.TimelineState == "verified_empty" {
+	if r.TimelineState == timelineVerifiedEmpty {
 		fmt.Fprintln(&b, "\nTimeline: verified no evidenced activity.")
 	} else {
 		fmt.Fprintln(&b, "\nTimeline:")
-		if r.TimelineState == "unavailable" {
+		if r.TimelineState == timelineUnavailable || (r.TimelineState == timelineUnknown && len(r.Timeline) > 0) {
 			fmt.Fprintln(&b, "History is incomplete or unavailable; displayed rows do not establish full coverage.")
 		}
 		writeTimeline(&b, r.Timeline)
@@ -319,6 +266,8 @@ func render(r report) string {
 }
 
 // unknown supplies a readable label for absent values.
+//
+// Example: Show unknown when a field is empty.
 func unknown(s string) string {
 	if s == "" {
 		return "unknown"
@@ -327,7 +276,13 @@ func unknown(s string) string {
 }
 
 // writeValue renders extensible nested report details.
-func writeValue(b *strings.Builder, v any, depth int) {
+//
+// Example: Show nested extension details without dropping fields.
+func writeValue(
+	b *strings.Builder,
+	v any,
+	depth int,
+) {
 	pad := strings.Repeat("  ", depth)
 	switch x := v.(type) {
 	case map[string]any:
@@ -366,6 +321,8 @@ func writeValue(b *strings.Builder, v any, depth int) {
 }
 
 // main routes validation and rendering from a file or stdin.
+//
+// Example: Run validate on a YAML file from the command line.
 func main() {
 	if len(os.Args) < 2 || len(os.Args) > 3 || (os.Args[1] != "validate" && os.Args[1] != "render") {
 		fmt.Fprintln(os.Stderr, "usage: status-report validate|render [FILE] (default: stdin)")
@@ -396,38 +353,86 @@ func main() {
 }
 
 // renderForecast projects the supplied forecast; it does not estimate deadlines.
-func renderForecast(b *strings.Builder, lane map[string]any) {
-	str := func(m map[string]any, key string) string {
-		if v, ok := m[key].(string); ok {
-			return v
-		}
-		return ""
+//
+// Example: Print the canonical lane deadline from its projection.
+func renderForecast(
+	b *strings.Builder,
+	l lane,
+) {
+	if l.NextMilestone != "" {
+		fmt.Fprintf(b, "\nNext milestone: %s\n", l.NextMilestone)
 	}
-	if milestone := str(lane, "next_milestone"); milestone != "" {
-		fmt.Fprintf(b, "\nNext milestone: %s\n", milestone)
-	}
-	if completed := str(lane, "completed_at"); completed != "" {
-		fmt.Fprintf(b, "Completed: %s; no active forecast deadline.\n", completed)
+	if l.CompletedAt != "" {
+		fmt.Fprintf(b, "Completed: %s; no active forecast deadline.\n", l.CompletedAt)
 		return
 	}
-	f, ok := lane["forecast"].(map[string]any)
-	if !ok {
+	if l.Forecast == nil {
 		return
 	}
-	outcome, target := str(f, "outcome"), str(f, "target")
-	if outcome != "" && target != "" {
-		fmt.Fprintf(b, "Forecast deadline: %s will be finished by %s.\n", outcome, target)
+	f := *l.Forecast
+	switch {
+	case f.Target == "unknown":
+		fmt.Fprintf(b, "Forecast deadline: %s — unknown.\n", f.Outcome)
+	case f.Target != "":
+		fmt.Fprintf(b, "Forecast deadline: %s will be finished by %s.\n", f.Outcome, f.Target)
 	}
-	if assessment := str(f, "assessment"); assessment != "" {
-		fmt.Fprintf(b, "Forecast assessment: %s\n", assessment)
+	renderForecastDetails(b, f)
+	renderScenarios(b, f.Outcome, f)
+}
+
+// writeList displays the supplied status items.
+//
+// Example: Print the report verification items.
+func writeList(
+	b *strings.Builder,
+	title string,
+	values []string,
+) {
+	fmt.Fprintf(b, "%s:\n", title)
+	for _, v := range values {
+		fmt.Fprintf(b, "- %s\n", v)
 	}
-	if prior := str(f, "prior"); prior != "" {
-		fmt.Fprintf(b, "Forecast recalibration: %s → %s; why moved: %s; supporting evidence: %s.\n", prior, target, str(f, "reason"), str(f, "evidence"))
-	} else if baseline := str(f, "baseline"); baseline != "" {
-		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s; supporting evidence: %s.\n", baseline, str(f, "evidence"))
+	b.WriteByte('\n')
+}
+
+// writeTaskLine displays a task once in a requested list.
+//
+// Example: Print one task in the priority list.
+func writeTaskLine(
+	b *strings.Builder,
+	t task,
+	indent string,
+) {
+	fmt.Fprintf(b, "%s- %s %s | priority: %s | impact: %s | effort: %g–%g minutes %s (%s) | status: %s", indent, t.ID, t.Title, t.Priority, t.Impact, *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis, t.Status.String())
+	if t.Owner != "" {
+		fmt.Fprintf(b, " | owner: %s", t.Owner)
+	} else {
+		fmt.Fprint(b, " | owner: unowned")
 	}
-	if dependency := str(f, "dependencies"); dependency != "" {
-		fmt.Fprintf(b, "Dependencies / critical path: %s\n", dependency)
+	if t.Context != "" {
+		fmt.Fprintf(b, " | context: %s", t.Context)
 	}
-	renderScenarios(b, outcome, f)
+	if t.Evidence != "" {
+		fmt.Fprintf(b, " | evidence: %s", t.Evidence)
+	}
+	if t.IndivisibleReason != "" {
+		fmt.Fprintf(b, " | indivisible: %s", t.IndivisibleReason)
+	}
+	b.WriteByte('\n')
+}
+
+// writeTaskTree renders parent and child tasks in input order.
+//
+// Example: Print child packages beneath their parent.
+func writeTaskTree(
+	b *strings.Builder,
+	byID map[string]task,
+	children map[string][]string,
+	parent string,
+	depth int,
+) {
+	for _, id := range children[parent] {
+		writeTaskLine(b, byID[id], strings.Repeat("  ", depth))
+		writeTaskTree(b, byID, children, id, depth+1)
+	}
 }

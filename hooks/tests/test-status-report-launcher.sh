@@ -23,10 +23,14 @@ tasks:
     status: CLOSED
     evidence: acceptance verified
 top_priorities: ['1']
+priority_estimates:
+  - {priority: high, min_minutes: 20, max_minutes: 30, earliest: '2026-11-02T15:44:00Z', latest: '2026-11-02T15:54:00Z', basis: educated guess, assumptions: review available, dependencies: none, critical_path: latest parallel endpoint}
+completion_estimate: {min_minutes: 20, max_minutes: 30, earliest: '2026-11-02T15:44:00Z', latest: '2026-11-02T15:54:00Z', basis: educated guess, assumptions: review available, dependencies: none, critical_path: latest parallel endpoint}
 timeline:
   - job: '1'
     parent_chain: '1'
-    interval: '15:00–15:30 UTC'
+    start: '2026-11-02T14:30:00Z'
+    end: '2026-11-02T15:00:00Z'
     fast: 'checkpoint'
     normal: 'unknown'
 YAML
@@ -36,7 +40,7 @@ cd "$test_dir"
 "$repo_root/bin/status-report" render <'report file.yaml' >output.txt
 grep -q 'Full task tree' output.txt
 grep -q '100%' output.txt
-grep -Fq '| 15:00–15:30 UTC | checkpoint | unknown |' output.txt
+grep -Fq '| 2026-11-02T14:30:00Z – 2026-11-02T15:00:00Z | checkpoint | unknown |' output.txt
 if "$repo_root/bin/status-report" validate missing.yaml >/dev/null 2>&1; then
 	printf 'missing input unexpectedly succeeded\n' >&2
 	exit 1
