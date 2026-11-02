@@ -146,6 +146,9 @@ func (s workStatus) String() string {
 //
 // Example: Decode a documented label and reject other values.
 func (s *workStatus) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
 	switch n.Value {
 	case "", "unknown", "null":
 		*s = statusUnknown
@@ -259,6 +262,9 @@ type timelineState int
 //
 // Example: Decode a documented label and reject other values.
 func (s *timelineState) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
 	switch n.Value {
 	case "", "unknown", "null":
 		*s = timelineUnknown
@@ -297,6 +303,9 @@ func (k effortKind) String() string {
 //
 // Example: Decode a documented label and reject other values.
 func (k *effortKind) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
 	switch n.Value {
 	case "elapsed":
 		*k = effortElapsed
@@ -331,6 +340,9 @@ func (s rootTaskStatus) String() string {
 //
 // Example: Decode a documented label and reject other values.
 func (s *rootTaskStatus) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
 	switch n.Value {
 	case "", "null":
 		*s = rootTaskNone
@@ -353,6 +365,9 @@ type requiredEnvironment int
 //
 // Example: The value test selects the test status column.
 func (e *requiredEnvironment) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
 	switch n.Value {
 	case "implementation":
 		*e = environmentImplementation
@@ -412,3 +427,13 @@ type priorityLabel string
 //
 // Example: One review uses one round.
 type reviewRounds int
+
+// checkEnumScalar rejects mappings, sequences, and non-string YAML tags.
+//
+// Example: A mapping cannot stand in for an unknown status.
+func checkEnumScalar(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return fmt.Errorf("enum requires a string scalar (kind %d, tag %q)", node.Kind, node.Tag)
+	}
+	return nil
+}

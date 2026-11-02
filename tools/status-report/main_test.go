@@ -542,7 +542,7 @@ func TestEnumNodeKinds(t *testing.T) {
 	cases := []struct{ old, new string }{
 		{"status: unknown", "status: {}"}, {"status: unknown", "status: []"}, {"status: unknown", "status: !custom unknown"},
 		{"kind: elapsed", "kind: {}"}, {"kind: elapsed", "kind: !custom elapsed"},
-		{"timeline: []", "timeline_state: []\ntimeline: []"}, {"timeline: []", "timeline_state: null\ntimeline: []"},
+		{"timeline: []", "timeline_state: []\ntimeline: []"},
 	}
 	for _, tc := range cases {
 		_, err := parse([]byte(strings.Replace(valid, tc.old, tc.new, 1)))
@@ -669,13 +669,11 @@ root_forecasts:
 	}
 }
 
-// TestAliasAndInvalidEnumsRejected prevents bypassing scalar validation.
+// TestInvalidEnumsRejected prevents bypassing scalar validation.
 //
-// Example: A merged status mapping cannot enter a task record.
-func TestAliasAndInvalidEnumsRejected(t *testing.T) {
-	input := strings.Replace(valid, "  - id: \"1\"", "  - <<: &base {status: NEW}\n    id: \"1\"", 1)
-	_, err := parse([]byte(input))
-	require.Error(t, err)
+// Example: A custom enum tag cannot enter a task record.
+func TestInvalidEnumsRejected(t *testing.T) {
+	var err error
 	for _, replacement := range []string{"kind: null", "kind: bogus", "status: !x CLOSED"} {
 		old := "kind: elapsed"
 		if strings.HasPrefix(replacement, "status") {
@@ -760,4 +758,116 @@ func TestInvalidCompletionRenderFailsClosed(t *testing.T) {
 	var out strings.Builder
 	writeCompletionEstimate(&out, "Overall", completionEstimate{})
 	require.Contains(t, out.String(), "unknown (invalid estimate:")
+}
+
+// TestResolvedEnumValuesTreatDirectAndMergedYAMLConsistently checks enum ownership.
+//
+// Example: A valid status inherited through a YAML merge behaves like a direct value.
+func TestResolvedEnumValuesTreatDirectAndMergedYAMLConsistently(t *testing.T) {
+	for _, value := range []string{"NEW", "null"} {
+		direct := strings.Replace(valid, "status: IN PROGRESS", "status: "+value, 1)
+		_, err := parse([]byte(direct))
+		require.NoError(t, err, value)
+		merged := strings.Replace(valid, "tasks:\n", "details: {defaults: &defaults {status: "+value+"}}\ntasks:\n", 1)
+		merged = strings.Replace(merged, "status: IN PROGRESS", "<<: *defaults", 1)
+		_, err = parse([]byte(merged))
+		require.NoError(t, err, value)
+	}
+	for _, value := range []string{"{}", "[]", "!bad NEW"} {
+		direct := strings.Replace(valid, "status: IN PROGRESS", "status: "+value, 1)
+		_, err := parse([]byte(direct))
+		require.Error(t, err, value)
+		merged := strings.Replace(valid, "tasks:\n", "details: {defaults: &defaults {status: "+value+"}}\ntasks:\n", 1)
+		merged = strings.Replace(merged, "status: IN PROGRESS", "<<: *defaults", 1)
+		_, err = parse([]byte(merged))
+		require.Error(t, err, value)
+	}
+	optional := valid + "timeline_state: null\n"
+	_, err := parse([]byte(optional))
+	require.NoError(t, err)
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    required_environment: test
+    implementation_status: NEW
+    test_status: IN PROGRESS
+    prod_status: NEW
+    root_task_status: null
+`
+	_, err = parse([]byte(strings.Replace(valid, "lanes: []", lane, 1)))
+	require.NoError(t, err)
+	_, err = parse([]byte(strings.Replace(strings.Replace(valid, "lanes: []", lane, 1), "test_status: IN PROGRESS", "test_status: null", 1)))
+	require.Error(t, err)
+}
+
+// TestMergedEnumFieldsKeepTheirSemantics checks merged lane and effort values.
+//
+// Example: Missing test readiness still fails when inherited as null.
+func TestMergedEnumFieldsKeepTheirSemantics(t *testing.T) {
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    required_environment: test
+    implementation_status: NEW
+    <<: *lane_defaults
+    prod_status: NEW
+`
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{{"IN PROGRESS", true}, {"null", false}, {"{}", false}, {"!custom NEW", false}} {
+		input := strings.Replace(valid, "tasks:\n", "details: {defaults: &lane_defaults {test_status: "+tc.value+"}}\ntasks:\n", 1)
+		input = strings.Replace(input, "lanes: []", lane, 1)
+		_, err := parse([]byte(input))
+		if tc.valid {
+			require.NoError(t, err, tc.value)
+		} else {
+			require.Error(t, err, tc.value)
+		}
+	}
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{{"elapsed", true}, {"null", false}, {"[]", false}, {"!custom elapsed", false}} {
+		input := strings.Replace(valid, "tasks:\n", "details: {defaults: &effort_defaults {kind: "+tc.value+"}}\ntasks:\n", 1)
+		input = strings.Replace(input, "kind: elapsed, basis:", "<<: *effort_defaults, basis:", 1)
+		_, err := parse([]byte(input))
+		if tc.valid {
+			require.NoError(t, err, tc.value)
+		} else {
+			require.Error(t, err, tc.value)
+		}
+	}
+}
+
+// TestOptionalMergedStatusesAndRequiredNull verifies nullable and required fields.
+//
+// Example: Null follow-up state is allowed, but null lane environment is not.
+func TestOptionalMergedStatusesAndRequiredNull(t *testing.T) {
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    implementation_status: NEW
+    test_status: IN PROGRESS
+    prod_status: NEW
+    <<: *defaults
+`
+	for _, tc := range []struct {
+		fields string
+		valid  bool
+	}{
+		{"required_environment: test, root_task_status: null", true},
+		{"required_environment: null, root_task_status: null", false},
+		{"required_environment: test, root_task_status: {}", false},
+		{"required_environment: test, root_task_status: !bad FOLLOWUP", false},
+	} {
+		input := strings.Replace(valid, "tasks:\n", "details: {defaults: &defaults {"+tc.fields+"}}\ntasks:\n", 1)
+		input = strings.Replace(input, "lanes: []", lane, 1)
+		_, err := parse([]byte(input))
+		if tc.valid {
+			require.NoError(t, err, tc.fields)
+		} else {
+			require.Error(t, err, tc.fields)
+		}
+	}
 }

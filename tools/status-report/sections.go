@@ -34,11 +34,9 @@ func validateForecast(f forecast) error {
 			return fmt.Errorf("invalid forecast target: %w", err)
 		}
 	}
-	for _, scenario := range f.Scenarios {
-		for _, value := range []string{scenario.Case, scenario.Trigger, scenario.AffectedWork, scenario.DurationBasis, scenario.EvidenceAssumptions, scenario.Endpoint, scenario.EvidenceGapNextAction} {
-			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("scenario requires all fields; use unknown where unsupported")
-			}
+	for _, item := range f.Scenarios {
+		if err := validateScenario(item); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -150,7 +148,7 @@ func validateSections(r report) error {
 		if err != nil {
 			return fmt.Errorf("timeline invalid end: %w", err)
 		}
-		if end.Sub(start) != 30*time.Minute || start.Before(now.Add(-4*time.Hour)) || end.After(now) {
+		if end.Sub(start) != timelineInterval || start.Before(now.Add(-timelineWindow)) || end.After(now) {
 			return fmt.Errorf("timeline interval must be 30 minutes within the preceding four hours")
 		}
 	}
@@ -194,4 +192,16 @@ func completionEndpoints(e completionEstimate) (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, fmt.Errorf("estimate endpoint outside RFC3339 range")
 	}
 	return earliest, latest, nil
+}
+
+// validateScenario requires explicit information in every scenario field.
+//
+// Example: Use unknown when a scenario endpoint is not yet supported.
+func validateScenario(item scenario) error {
+	for _, value := range []string{item.Case, item.Trigger, item.AffectedWork, item.DurationBasis, item.EvidenceAssumptions, item.Endpoint, item.EvidenceGapNextAction} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("scenario %q requires all fields; use unknown where unsupported", item.Case)
+		}
+	}
+	return nil
 }

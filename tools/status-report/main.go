@@ -8,8 +8,35 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
+)
+
+// Status report limits bound package, review, and timeline units.
+//
+// Example: An estimated leaf over thirty minutes needs an indivisibility reason.
+const (
+	// maxLeafMinutes is the target upper bound for estimated leaf packages.
+	//
+	// Example: An estimated 45-minute leaf requires a reason.
+	maxLeafMinutes = 30
+	// maxCriticRounds limits scoped review iterations.
+	//
+	// Example: A sixth round is rejected.
+	maxCriticRounds reviewRounds = 5
+	// progressBarWidth is the number of characters in the derived bar.
+	//
+	// Example: Half of twenty positions are filled for 50 percent.
+	progressBarWidth = 20
+	// timelineWindow is the preceding period covered by a timeline.
+	//
+	// Example: An event five hours old is outside the window.
+	timelineWindow = 4 * time.Hour
+	// timelineInterval is the duration of one timeline row.
+	//
+	// Example: A row spans thirty minutes.
+	timelineInterval = 30 * time.Minute
 )
 
 // estimate describes the remaining work range and its basis.
@@ -83,9 +110,6 @@ type report struct {
 // Example: Reject a report with a missing task reference.
 func parse(data []byte) (report, error) {
 	var r report
-	if err := validateEnumNodes(data); err != nil {
-		return r, fmt.Errorf("invalid YAML schema: %w", err)
-	}
 	d := yaml.NewDecoder(bytes.NewReader(data))
 	d.KnownFields(true)
 	if err := d.Decode(&r); err != nil {
@@ -155,7 +179,7 @@ func parse(data []byte) (report, error) {
 		}
 	}
 	for _, t := range r.Tasks {
-		if children[t.ID] == 0 && *t.Effort.MaxMinutes > 30 && strings.TrimSpace(t.IndivisibleReason) == "" {
+		if children[t.ID] == 0 && *t.Effort.MaxMinutes > maxLeafMinutes && strings.TrimSpace(t.IndivisibleReason) == "" {
 			return r, fmt.Errorf("task %s: leaf longer than 30 minutes needs indivisible_reason", t.ID)
 		}
 	}
@@ -173,7 +197,7 @@ func parse(data []byte) (report, error) {
 		if _, ok := byID[review.TaskID]; !ok {
 			return r, fmt.Errorf("review references unknown task %s", review.TaskID)
 		}
-		if review.Reporter == "" || review.Critic == "" || review.Rounds < 1 || review.Rounds > 5 || review.Estimate == "" || review.Impact == "" || review.Priority == "" || review.Unresolved == "" {
+		if review.Reporter == "" || review.Critic == "" || review.Rounds < 1 || review.Rounds > maxCriticRounds || review.Estimate == "" || review.Impact == "" || review.Priority == "" || review.Unresolved == "" {
 			return r, fmt.Errorf("review for %s requires reporter, critic, 1–5 rounds, estimate, impact, priority and unresolved", review.TaskID)
 		}
 	}
@@ -219,7 +243,7 @@ func render(r report) string {
 		if len(children[t.ID]) > 0 {
 			continue
 		}
-		if *t.Effort.MaxMinutes > 30 {
+		if *t.Effort.MaxMinutes > maxLeafMinutes {
 			oversized = append(oversized, string(t.ID)+": "+t.IndivisibleReason)
 		}
 		if t.Status == statusUnknown {
@@ -237,13 +261,13 @@ func render(r report) string {
 		fmt.Fprintf(&b, "\nProgress: unknown (no scored leaf packages; equal-package estimate from half-hour breakdown; partial coverage; unscored: %s; scope complete: %t)\n", strings.Join(unscored, ", "), *r.ScopeComplete)
 	} else {
 		pct := done * 100 / known
-		filled := done * 20 / known
+		filled := done * progressBarWidth / known
 		partial := unknownCount > 0 || !*r.ScopeComplete
 		qualifier := ""
 		if partial {
 			qualifier = "; partial coverage"
 		}
-		fmt.Fprintf(&b, "\nProgress: [%s%s] %d%% (%d/%d known leaf tasks; equal-package estimate from half-hour breakdown%s; covered: %s; unscored: %s; scope complete: %t)\n", strings.Repeat("#", filled), strings.Repeat("-", 20-filled), pct, done, known, qualifier, strings.Join(covered, ", "), strings.Join(unscored, ", "), *r.ScopeComplete)
+		fmt.Fprintf(&b, "\nProgress: [%s%s] %d%% (%d/%d known leaf tasks; equal-package estimate from half-hour breakdown%s; covered: %s; unscored: %s; scope complete: %t)\n", strings.Repeat("#", filled), strings.Repeat("-", progressBarWidth-filled), pct, done, known, qualifier, strings.Join(covered, ", "), strings.Join(unscored, ", "), *r.ScopeComplete)
 	}
 	if len(oversized) > 0 {
 		fmt.Fprintf(&b, "Larger indivisible packages: %s\n", strings.Join(oversized, "; "))
