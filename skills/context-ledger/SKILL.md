@@ -150,14 +150,14 @@ jq -r 'select(.schema == "eci-high-level-log/v1" and .event == "worker_progress"
 
 | Rule | Detail |
 |------|--------|
-| Coverage | Include UTC `timestamp`, `state`, `progress`, `decisions`, `blockers_risks`, `verification`, and `next_focus`; include hierarchical `lanes` and forecast projections when applicable. Use mappings and lists for structured detail; do not wrap the report in an opaque Markdown body. |
+| Coverage | Include UTC `timestamp`, `state`, `progress`, `decisions`, `blockers_risks`, `verification`, and `next_focus`; include hierarchical tasks, lanes, and forecast projections when applicable. Use mappings and lists for structured detail; do not wrap the report in an opaque Markdown body. |
 | Refresh triggers | After every ledger update, after every material change, before user-waiting stops, before shutdown, after each ECI compaction, and whenever the user asks for status; apply [Update Points](#update-points) timing. |
 | Forecast projection | Derive equivalent native fields from `forecasts.yaml`, including outcome, target, assessment, baseline or recalibration and evidence, dependencies, and applicable scenarios and completion. Render exact lines and tables only in user-facing reports. The report is not a second source of truth. |
 | No copying the ledger | Report changed state plus next focus; do not duplicate ledger structure. Cross-reference instead. |
 
 The executable contract and example live in [status-report README](../../tools/status-report/README.md). Use `status-report validate FILE` to check schema and references, then `status-report render FILE` to render solely from that YAML. Validation cannot establish factual truth or reviewer independence. Track task hierarchy and top-priority IDs; do not store a progress bar or percentage. Include queue review records when applicable. Forecast values remain projections from `forecasts.yaml`.
 
-Apply the scalar and selective-edit rules in [YAML authoring and native edits](#authoring-and-native-edits) to this report, without the ledger's envelope, record schema, or record-specific ID/type checks. Select changed fields against the latest report and preserve unrelated content. Use this shape as a starting point; add fields as needed to retain the status skill's lane, dependency, root-task status, forecast and scenario detail. Record changed forecast prior and current targets, reason and evidence; record initial baseline and evidence; record completed timestamps without an active deadline. Represent each applicable root-task status and every material scenario with its trigger, affected work, duration basis, evidence, assumptions, endpoint and next fact-finding action. Each lane's `id` and `parent_id` preserve hierarchy; the three status values retain the skill's distinct readiness meanings. Forecasts remain projections of `forecasts.yaml`.
+Apply the scalar and selective-edit rules in [YAML authoring and native edits](#authoring-and-native-edits) to this report, without the ledger's envelope, record schema, or record-specific ID/type checks. Select changed fields against the latest report and preserve unrelated content. Use the supported schema to retain the status skill's lane, dependency, root-task status, forecast and scenario detail. Record changed forecast prior and current targets, reason and evidence; record initial baseline and evidence; record actual completion timestamps for every lane whose required-environment status is closed, without an active deadline. Represent each applicable root-task status and every material scenario with its trigger, affected work, duration basis, evidence, assumptions, endpoint and next fact-finding action. Task `id` and `parent_id` preserve hierarchy: a dotted ID's parent is its exact prefix before the final dot, and a root has no parent. Lane `task_id` references that task. Task `owner` executes the task; lane `owner` coordinates the lane. The three lane status values retain distinct readiness meanings. Forecasts remain projections of `forecasts.yaml`.
 
 ```yaml
 timestamp: '2026-10-26T12:00:00Z'
@@ -173,23 +173,30 @@ verification:
 next_focus: 'Run the integration check.'
 scope_complete: false
 tasks:
+  - id: '1'
+    title: 'Deliver the service integration.'
+    priority: 'high'
+    impact: 'Service integration remains unverified.'
+    effort: {min_minutes: 20, max_minutes: 30, kind: elapsed, basis: educated guess}
+    status: 'IN PROGRESS'
+    owner: 'integration executor'
   - id: '1.2'
+    parent_id: '1'
     title: 'Complete the service integration.'
     priority: 'high'
     impact: 'Service integration remains unverified.'
     effort: {min_minutes: 20, max_minutes: 30, kind: elapsed, basis: educated guess}
     status: 'IN PROGRESS'
+    owner: 'integration executor'
 top_priorities: ['1.2']
 priority_estimates:
-  - {priority: high, min_minutes: 20, max_minutes: 30, earliest: '2026-10-26T12:20:00Z', latest: '2026-10-26T12:30:00Z', basis: educated guess, assumptions: test service available, dependencies: test service, critical_path: integration check}
-completion_estimate: {min_minutes: 20, max_minutes: 30, earliest: '2026-10-26T12:20:00Z', latest: '2026-10-26T12:30:00Z', basis: educated guess, assumptions: test service available, dependencies: test service, critical_path: integration check}
+  - {priority: high, as_of: '2026-10-26T12:00:00Z', min_minutes: 20, max_minutes: 30, basis: educated guess, assumptions: test service available, dependencies: test service, critical_path: integration check}
+completion_estimate: {as_of: '2026-10-26T12:00:00Z', min_minutes: 20, max_minutes: 30, basis: educated guess, assumptions: test service available, dependencies: test service, critical_path: integration check}
 lanes:
-  - id: '1.2'
-    task_id: '1.2'
+  - task_id: '1.2'
     required_environment: test
-    parent_id: '1'
     outcome: 'Complete the service integration.'
-    owner: 'integration owner'
+    owner: 'integration coordinator'
     stage: 'normal'
     implementation_status: 'CLOSED'
     test_status: 'IN PROGRESS'
