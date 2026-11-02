@@ -19,6 +19,12 @@ func validateCanonicalRecalibration(source map[string]any) []string {
 	if state == "changed" {
 		issues = append(issues, missingChangedHistory(recal)...)
 	}
+	if state == "unchanged" {
+		prior, current := textField(recal, "prior"), textField(recal, "current")
+		if prior != "" && current != "" && !sameValue(prior, current) {
+			issues = append(issues, "unchanged recalibration prior and current differ")
+		}
+	}
 	target := textField(source, "target")
 	if target == "" {
 		return issues

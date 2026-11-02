@@ -26,21 +26,22 @@ func TestReportEvaluationTime(t *testing.T) {
 		{at: "2026-11-02T15:50:00Z"},
 		{at: "2026-11-02T16:05:00Z", incomplete: true},
 	} {
-		// Check expiry at one fixed evaluation instant.
-		//
-		// Example: A future endpoint remains current.
-		t.Run(tc.at, func(t *testing.T) {
-			at, err := parseUTC(tc.at)
-			require.NoError(t, err)
-			var out, errOut bytes.Buffer
-			require.Equal(t, 0, runAt([]string{"render", path}, strings.NewReader(""), &out, &errOut, at), errOut.String())
-			if tc.incomplete {
-				require.Contains(t, out.String(), "INCOMPLETE")
-				require.Contains(t, out.String(), "elapsed")
-			} else {
-				require.NotContains(t, out.String(), "INCOMPLETE")
-			}
-		})
+		t.Run(tc.at,
+			// Check expiry at one fixed evaluation instant.
+			//
+			// Example: A future endpoint remains current.
+			func(t *testing.T) {
+				at, err := parseUTC(tc.at)
+				require.NoError(t, err)
+				var out, errOut bytes.Buffer
+				require.Equal(t, 0, runAt([]string{"render", path}, strings.NewReader(""), &out, &errOut, at), errOut.String())
+				if tc.incomplete {
+					require.Contains(t, out.String(), "INCOMPLETE")
+					require.Contains(t, out.String(), "elapsed")
+				} else {
+					require.NotContains(t, out.String(), "INCOMPLETE")
+				}
+			})
 	}
 }
 
