@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
 
@@ -53,7 +54,7 @@ func refreshForecastTargets(dir, path string, info os.FileInfo, original, candid
 		return err
 	}
 	root := doc.Content[0]
-	edits, err := collectForecastEdits(candidate, root, ledger, forecasts)
+	edits, err := collectForecastEdits(candidate, root, ledger, forecasts, &flowDocument{data: candidate})
 	if err != nil {
 		return err
 	}
@@ -79,6 +80,9 @@ func refreshForecastTargets(dir, path string, info os.FileInfo, original, candid
 	}
 	if bytes.Equal(updated, original) {
 		return nil
+	}
+	if err := verifyRefresh(original, updated, ledger, forecasts); err != nil {
+		return fmt.Errorf("unsafe refresh: %w", err)
 	}
 	inputs := map[string][]byte{ledgerPath: ledgerBytes}
 	if forecastBytes != nil {
@@ -174,15 +178,10 @@ func scalarReplacement(data []byte, n *yaml.Node, value string) (scalarEdit, err
 	if n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return scalarEdit{}, fmt.Errorf("multiline forecast scalar requires manual refresh")
 	}
-	lines := strings.Split(string(data), "\n")
-	if n.Line < 1 || n.Line > len(lines) {
-		return scalarEdit{}, fmt.Errorf("unsupported scalar location")
+	start, err := yamlByteOffset(data, n.Line, n.Column)
+	if err != nil {
+		return scalarEdit{}, err
 	}
-	start := 0
-	for _, line := range lines[:n.Line-1] {
-		start += len(line) + 1
-	}
-	start += n.Column - 1
 	if start < 0 || start >= len(data) {
 		return scalarEdit{}, fmt.Errorf("unsupported scalar location")
 	}
@@ -222,7 +221,7 @@ func quotedScalarEnd(data []byte, start int) (int, error) {
 	return 0, fmt.Errorf("unsupported quoted scalar")
 }
 
-func projectForecast(original []byte, node *yaml.Node, source map[string]any) ([]scalarEdit, error) {
+func projectForecast(original []byte, node *yaml.Node, source map[string]any, doc *flowDocument) ([]scalarEdit, error) {
 	fields := map[string]any{}
 	for dst, src := range map[string]string{"outcome": "outcome", "target": "target", "assessment": "assessment", "baseline": "original_baseline"} {
 		if value := textField(source, src); value != "" {
@@ -261,7 +260,7 @@ func projectForecast(original []byte, node *yaml.Node, source map[string]any) ([
 				return nil, err
 			}
 			if !projectionEqual(current, value) {
-				edit, err := projectionReplacement(original, existing, string(encoded))
+				edit, err := projectionReplacement(original, existing, string(encoded), doc)
 				if err != nil {
 					return nil, err
 				}
@@ -295,7 +294,7 @@ func projectForecast(original []byte, node *yaml.Node, source map[string]any) ([
 		edits = append(edits, scalarEdit{end, end, addition.String()})
 		return edits, nil
 	}
-	end, err := flowMappingEnd(original, node)
+	end, err := flowMappingEndCached(doc, node)
 	if err != nil {
 		return nil, err
 	}
@@ -318,17 +317,16 @@ func projectRecalibration(fields map[string]any, node *yaml.Node, recal map[stri
 	return nil
 }
 
-func projectionReplacement(data []byte, node *yaml.Node, value string) (scalarEdit, error) {
-	lines := strings.Split(string(data), "\n")
-	if node.Line < 1 || node.Line > len(lines) || node.Kind != yaml.MappingNode {
+func projectionReplacement(data []byte, node *yaml.Node, value string, doc *flowDocument) (scalarEdit, error) {
+	if node.Kind != yaml.MappingNode {
 		return scalarEdit{}, fmt.Errorf("unsupported source_projection layout")
 	}
-	start := node.Column - 1
-	for _, line := range lines[:node.Line-1] {
-		start += len(line) + 1
+	start, err := yamlByteOffset(data, node.Line, node.Column)
+	if err != nil {
+		return scalarEdit{}, err
 	}
 	if node.Style&yaml.FlowStyle != 0 {
-		end, err := flowMappingEnd(data, node)
+		end, err := flowMappingEndCached(doc, node)
 		if err != nil {
 			return scalarEdit{}, err
 		}
@@ -367,55 +365,25 @@ func blockMappingEnd(data []byte, node *yaml.Node) (int, int, error) {
 }
 
 func flowMappingEnd(data []byte, node *yaml.Node) (int, error) {
-	lines := strings.Split(string(data), "\n")
-	if node.Line < 1 || node.Line > len(lines) {
-		return 0, fmt.Errorf("invalid forecast location")
-	}
-	start := node.Column - 1
-	for _, line := range lines[:node.Line-1] {
-		start += len(line) + 1
-	}
-	if start < 0 || start >= len(data) || data[start] != '{' {
-		return 0, fmt.Errorf("unsupported forecast layout")
-	}
-	depth := 0
-	for i := start; i < len(data); i++ {
-		c := data[i]
-		if c == '#' && i > start && (data[i-1] == ' ' || data[i-1] == '\t' || data[i-1] == '\n') {
-			for i < len(data) && data[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		if c == '\'' || c == '"' {
-			end, err := quotedScalarEnd(data, i)
-			if err != nil {
-				return 0, err
-			}
-			i = end - 1
-			continue
-		}
-		switch c {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return i, nil
-			}
-		}
-	}
-	return 0, fmt.Errorf("unterminated forecast mapping")
+	return flowMappingEndCached(&flowDocument{data: data}, node)
 }
 
-func collectForecastEdits(candidate []byte, root *yaml.Node, ledger ledgerSource, forecasts forecastSource) ([]scalarEdit, error) {
+func flowMappingEndCached(doc *flowDocument, node *yaml.Node) (int, error) {
+	start, err := yamlByteOffset(doc.data, node.Line, node.Column)
+	if err != nil {
+		return 0, err
+	}
+	return doc.end(start, token.MappingStartType)
+}
+
+func collectForecastEdits(candidate []byte, root *yaml.Node, ledger ledgerSource, forecasts forecastSource, doc *flowDocument) ([]scalarEdit, error) {
 	var edits []scalarEdit
 	for _, kind := range []string{"lanes", "root_forecasts"} {
 		collection := mapValue(root, kind)
 		if collection == nil || collection.Kind != yaml.SequenceNode {
 			continue
 		}
-		next, err := collectForecastGroup(candidate, collection, kind, ledger, forecasts)
+		next, err := collectForecastGroup(candidate, collection, kind, ledger, forecasts, doc)
 		if err != nil {
 			return nil, err
 		}
@@ -424,10 +392,10 @@ func collectForecastEdits(candidate []byte, root *yaml.Node, ledger ledgerSource
 	return edits, nil
 }
 
-func collectForecastGroup(candidate []byte, collection *yaml.Node, kind string, ledger ledgerSource, forecasts forecastSource) ([]scalarEdit, error) {
+func collectForecastGroup(candidate []byte, collection *yaml.Node, kind string, ledger ledgerSource, forecasts forecastSource, doc *flowDocument) ([]scalarEdit, error) {
 	var edits []scalarEdit
 	for _, item := range collection.Content {
-		next, err := forecastItemEdits(candidate, item, kind, ledger, forecasts)
+		next, err := forecastItemEdits(candidate, item, kind, ledger, forecasts, doc)
 		if err != nil {
 			return nil, err
 		}
@@ -436,7 +404,7 @@ func collectForecastGroup(candidate []byte, collection *yaml.Node, kind string, 
 	return edits, nil
 }
 
-func forecastItemEdits(candidate []byte, item *yaml.Node, kind string, ledger ledgerSource, forecasts forecastSource) ([]scalarEdit, error) {
+func forecastItemEdits(candidate []byte, item *yaml.Node, kind string, ledger ledgerSource, forecasts forecastSource, doc *flowDocument) ([]scalarEdit, error) {
 	forecast := item
 	if kind == "lanes" {
 		forecast = mapValue(item, "forecast")
@@ -471,7 +439,7 @@ func forecastItemEdits(candidate []byte, item *yaml.Node, kind string, ledger le
 	if err := validateRefreshSource(source); err != nil {
 		return nil, fmt.Errorf("forecast %s: %w", ref.Value, err)
 	}
-	edits, err := projectForecast(candidate, forecast, source)
+	edits, err := projectForecast(candidate, forecast, source, doc)
 	if err != nil {
 		return nil, fmt.Errorf("forecast %s: %w", ref.Value, err)
 	}

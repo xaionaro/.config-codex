@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/goccy/go-yaml/token"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestRefreshRequirementChangePreservesReport(t *testing.T) {
@@ -495,4 +498,188 @@ func TestRefreshPreservesFlowCommentWithClosingBrace(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, parsed.Lanes[0].Forecast.SourceProjection)
 	require.Empty(t, reconcile(parsed, dir))
+}
+
+func TestLexerFlowBoundaryIgnoresCommentsAndUnicode(t *testing.T) {
+	for _, text := range []string{"label: {# comment }\n key: 'text }', nested: [one, {two: three}]}\n", "label: {\n # comment }\n key: 'text }', nested: [one, {two: three}]}\n", "label: {clé: '😀 }', nested: [one, {two: three}]}\n"} {
+		var doc yaml.Node
+		require.NoError(t, yaml.Unmarshal([]byte(text), &doc))
+		node := mapValue(doc.Content[0], "label")
+		end, err := flowMappingEnd([]byte(text), node)
+		require.NoError(t, err)
+		require.Equal(t, strings.LastIndex(text, "}"), end)
+	}
+	text := "{lead: 'λ', label: {key: '😀 }'}}\n"
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte(text), &doc))
+	end, err := flowMappingEnd([]byte(text), mapValue(doc.Content[0], "label"))
+	require.NoError(t, err)
+	require.Equal(t, strings.LastIndex(text, "}}"), end)
+}
+
+func TestVerifyRefreshRejectsUnrelatedChangesAndCommentLoss(t *testing.T) {
+	original := strings.Replace(linkedReport, "state: Working", "state: Working # preserve me", 1)
+	cases := []struct{ name, candidate, issue string }{
+		{"comment changed", strings.Replace(original, "# preserve me", "# damaged", 1), "comments"},
+		{"task changed", strings.Replace(original, "status: IN PROGRESS", "status: PAUSED", 1), "unprojected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, verifyRefresh([]byte(original), []byte(tc.candidate), ledgerSource{}, forecastSource{}), tc.issue)
+		})
+	}
+}
+
+func TestVerifyRefreshRejectsUnsupportedForecastChanges(t *testing.T) {
+	var ledger ledgerSource
+	var forecasts forecastSource
+	require.NoError(t, yaml.Unmarshal([]byte(linkedLedger), &ledger))
+	require.NoError(t, yaml.Unmarshal([]byte(linkedForecasts), &forecasts))
+	tests := []struct{ name, candidate, issue string }{
+		{"unbacked target", strings.Replace(linkedReport, "target: '2026-11-02T16:00:00Z'", "target: '2026-11-02T19:00:00Z'", 1), "unexpected projected target"},
+		{"readiness", strings.Replace(linkedReport, "test_status: NEW", "test_status: PAUSED", 1), "unprojected"},
+		{"unlinked reference", strings.Replace(linkedReport, "forecasts.yaml#/records/first", "forecasts.yaml#/records/other", 1), "unprojected"},
+		{"invented diagnostic", strings.Replace(linkedReport, "blockers_risks: []", "blockers_risks: [invented]", 1), "invalid refresh diagnostic"},
+		{"scope revival", strings.Replace(linkedReport, "scope_complete: true", "scope_complete: false", 1), "invalid scope change"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before, after := linkedReport, tc.candidate
+			if tc.name == "scope revival" {
+				before, after = after, before
+			}
+			require.ErrorContains(t, verifyRefresh([]byte(before), []byte(after), ledger, forecasts), tc.issue)
+		})
+	}
+}
+
+func TestVerifyRefreshPreservesBlockersAndLinkedFields(t *testing.T) {
+	var ledger ledgerSource
+	var forecasts forecastSource
+	require.NoError(t, yaml.Unmarshal([]byte(linkedLedger), &ledger))
+	require.NoError(t, yaml.Unmarshal([]byte(linkedForecasts), &forecasts))
+	original := strings.Replace(linkedReport, "blockers_risks: []", "blockers_risks: [existing]", 1)
+	candidates := []struct{ name, text, errorText string }{
+		{"remove blocker", strings.Replace(original, "blockers_risks: [existing]", "blockers_risks: []", 1), "invalid diagnostic change"},
+		{"replace blocker", strings.Replace(original, "blockers_risks: [existing]", "blockers_risks: [different]", 1), "existing blockers"},
+		{"forecast evidence", strings.Replace(original, "evidence: initial}", "evidence: fabricated}", 1), "unexpected projected evidence"},
+		{"unlinked task", strings.Replace(original, "work:first", "work:unknown", 1), "unprojected"},
+	}
+	for _, tc := range candidates {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, verifyRefresh([]byte(original), []byte(tc.text), ledger, forecasts), tc.errorText)
+		})
+	}
+}
+
+func TestFlowLexerRejectsUnprovableBoundaries(t *testing.T) {
+	_, err := flowEnd([]byte("label: {a: [one}\n"), 7, token.MappingStartType)
+	require.Error(t, err)
+	_, err = flowEnd([]byte("label: {a: one}\r\n"), 7, token.MappingStartType)
+	require.ErrorContains(t, err, "CRLF")
+	_, err = yamlByteOffset([]byte("label: x\n"), 1, 30)
+	require.ErrorContains(t, err, "exceeds")
+}
+
+func TestRequirementChangePreservesSingleLineReportWithUnicode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	var object any
+	require.NoError(t, yaml.Unmarshal([]byte(strings.Replace(linkedReport, "state: Working", "state: 'Working λ'", 1)), &object))
+	original, err := json.Marshal(object)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(original, '\n'), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
+	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	updated, err := os.ReadFile(path)
+	require.NoError(t, err)
+	parsed, err := parse(updated)
+	require.NoError(t, err)
+	require.Equal(t, "Working λ", parsed.State)
+	require.False(t, *parsed.ScopeComplete)
+	require.Contains(t, parsed.Blockers, refreshDiagnostic)
+}
+
+func TestVerifyRefreshRejectsUnlinkedForecastEdit(t *testing.T) {
+	changed := strings.Replace(linkedReport, "outcome: First result, target:", "outcome: Changed, target:", 1)
+	require.ErrorContains(t, verifyRefresh([]byte(linkedReport), []byte(changed), ledgerSource{}, forecastSource{}), "unprojected")
+}
+
+func TestVerifyRefreshRejectsDiagnosticAndCommentLoss(t *testing.T) {
+	original := strings.Replace(linkedReport, "blockers_risks: []", "blockers_risks: [existing] # important note", 1)
+	cases := []struct{ name, text, issue string }{
+		{"diagnostic removed", strings.Replace(original, "[existing]", "[]", 1), "invalid diagnostic change"},
+		{"comment removed", strings.Replace(original, " # important note", "", 1), "comments"},
+		{"comment added", original + "# added unexpectedly\n", "comments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, verifyRefresh([]byte(original), []byte(tc.text), ledgerSource{}, forecastSource{}), tc.issue)
+		})
+	}
+}
+
+func TestYAMLPositionsRejectInvalidEncoding(t *testing.T) {
+	_, err := yamlByteOffset([]byte{0xff}, 1, 1)
+	require.ErrorContains(t, err, "UTF-8")
+	_, err = yamlByteOffset([]byte("line\n"), 3, 1)
+	require.ErrorContains(t, err, "invalid YAML position")
+}
+
+func TestVerifyRefreshRejectsDroppedLane(t *testing.T) {
+	original := linkedReport
+	offset := strings.Index(original, "  - task_id: '2'\n")
+	require.Greater(t, offset, 0)
+	candidate := original[:offset]
+	require.ErrorContains(t, verifyRefresh([]byte(original), []byte(candidate), ledgerSource{}, forecastSource{}), "forecast groups")
+}
+
+func TestFlowDocumentCachesNestedPairs(t *testing.T) {
+	data := []byte("{outer: {inner: [one, two]}, other: [three]}\n")
+	doc := &flowDocument{data: data}
+	outer, err := doc.end(0, token.MappingStartType)
+	require.NoError(t, err)
+	require.Equal(t, strings.LastIndex(string(data), "}"), outer)
+	nested := strings.Index(string(data), "{inner")
+	end, err := doc.end(nested, token.MappingStartType)
+	require.NoError(t, err)
+	require.Equal(t, strings.Index(string(data), "}, other"), end)
+	_, err = doc.end(nested, token.SequenceStartType)
+	require.ErrorContains(t, err, "position mismatch")
+}
+
+func TestFlowDocumentRefusesInvalidTokenStreams(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  []byte
+		issue string
+	}{
+		{"invalid utf8", []byte{0xff}, "UTF-8"},
+		{"unterminated quote", []byte("{a: 'unterminated}\n"), "token"},
+		{"unmatched close", []byte("}\n"), "position mismatch"},
+		{"unmatched open", []byte("{a: one\n"), "unbalanced"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := &flowDocument{data: tc.text}
+			_, err := doc.end(0, token.MappingStartType)
+			require.ErrorContains(t, err, tc.issue)
+		})
+	}
+}
+
+func TestVerifyRefreshRejectsMalformedCandidate(t *testing.T) {
+	malformed := strings.Replace(linkedReport, "state: Working", "state: 'unterminated", 1)
+	require.Error(t, verifyRefresh([]byte(linkedReport), []byte(malformed), ledgerSource{}, forecastSource{}))
+}
+
+func TestVerifyForecastGroupRejectsNonMapping(t *testing.T) {
+	err := verifyForecastGroup("lanes", []any{"unexpected"}, []any{"unexpected"}, ledgerSource{}, forecastSource{})
+	require.ErrorContains(t, err, "unsupported forecast group")
+}
+
+func TestYAMLCommentVerificationRejectsInvalidLexerStream(t *testing.T) {
+	_, err := yamlComments([]byte("state: 'unterminated\n"))
+	require.ErrorContains(t, err, "unsupported YAML token")
 }

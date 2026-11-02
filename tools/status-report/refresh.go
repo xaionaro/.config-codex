@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,6 +103,9 @@ func invalidateStatus(dir string, diagnostics ...string) error {
 	if _, err := parse(updated); err != nil {
 		return fmt.Errorf("refreshed report invalid: %w", err)
 	}
+	if err := verifyRefresh(original, updated, ledgerSource{}, forecastSource{}); err != nil {
+		return fmt.Errorf("unsafe refresh: %w", err)
+	}
 	return publishStatus(dir, path, info, original, updated, nil)
 }
 
@@ -126,12 +130,21 @@ func prepareInvalidation(original []byte, diagnostic string) ([]byte, error) {
 	lines := strings.Split(string(original), "\n")
 	// Only replace the scalar token; retain surrounding comments and layout.
 	line := scope.Line - 1
-	start := scope.Column - 1
+	if line < 0 || line >= len(lines) {
+		return nil, fmt.Errorf("unsupported scope layout")
+	}
+	start, err := yamlByteOffset([]byte(lines[line]), 1, scope.Column)
+	if err != nil {
+		return nil, err
+	}
 	if line < 0 || line >= len(lines) || start < 0 || start+len(scope.Value) > len(lines[line]) || lines[line][start:start+len(scope.Value)] != scope.Value {
 		return nil, fmt.Errorf("unsupported scope layout")
 	}
 	lines[line] = lines[line][:start] + "false" + lines[line][start+len(scope.Value):]
-	lines, err := appendDiagnostic(lines, blockers, diagnostic)
+	if blockers.Line == scope.Line && blockers.Column > scope.Column {
+		blockers.Column += len("false") - len(scope.Value)
+	}
+	lines, err = appendDiagnostic(lines, blockers, diagnostic)
 	if err != nil {
 		return nil, err
 	}
@@ -152,11 +165,14 @@ func appendDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([
 	if i < 0 || i >= len(lines) {
 		return nil, fmt.Errorf("unsupported blockers layout")
 	}
-	start := blockers.Column - 1
+	start, err := yamlByteOffset([]byte(lines[i]), 1, blockers.Column)
+	if err != nil {
+		return nil, err
+	}
 	if start < 0 || start >= len(lines[i]) {
 		return nil, fmt.Errorf("unsupported blockers layout")
 	}
-	end, err := flowSequenceEnd(lines[i], start)
+	end, err := flowEnd([]byte(strings.TrimSuffix(lines[i], "\r")), start, token.SequenceStartType)
 	if err != nil {
 		return nil, err
 	}
@@ -166,37 +182,6 @@ func appendDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([
 	}
 	lines[i] = lines[i][:end] + sep + strconv.Quote(diagnostic) + lines[i][end:]
 	return lines, nil
-}
-
-func flowSequenceEnd(line string, start int) (int, error) {
-	if start >= len(line) || line[start] != '[' {
-		return 0, fmt.Errorf("unsupported blockers layout")
-	}
-	var quote byte
-	for i := start + 1; i < len(line); i++ {
-		c := line[i]
-		if quote == 0 {
-			if c == ']' {
-				return i, nil
-			}
-			if c == '\'' || c == '"' {
-				quote = c
-			}
-			continue
-		}
-		if quote == '"' && c == '\\' {
-			i++
-			continue
-		}
-		if quote == '\'' && c == '\'' && i+1 < len(line) && line[i+1] == '\'' {
-			i++
-			continue
-		}
-		if c == quote {
-			quote = 0
-		}
-	}
-	return 0, fmt.Errorf("unsupported multiline blockers layout")
 }
 
 func appendBlockDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([]string, error) {
@@ -220,7 +205,11 @@ func appendBlockDiagnostic(lines []string, blockers *yaml.Node, diagnostic strin
 	if insert < 0 || insert > len(lines) {
 		return nil, fmt.Errorf("unsupported blockers layout")
 	}
-	return append(lines[:insert], append([]string{indent + "- " + strconv.Quote(diagnostic)}, lines[insert:]...)...), nil
+	ending := ""
+	if len(lines) > 0 && strings.HasSuffix(lines[0], "\r") {
+		ending = "\r"
+	}
+	return append(lines[:insert], append([]string{indent + "- " + strconv.Quote(diagnostic) + ending}, lines[insert:]...)...), nil
 }
 
 func publishStatus(dir, path string, info os.FileInfo, original, updated []byte, inputs map[string][]byte) error {
