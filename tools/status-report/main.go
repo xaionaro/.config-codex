@@ -119,6 +119,7 @@ type report struct {
 	TopPriorities      []taskID             `yaml:"top_priorities"`
 	PriorityOrder      []priorityLabel      `yaml:"priority_order"`
 	Lanes              []lane               `yaml:"lanes"`
+	RootCompletions    []rootCompletion     `yaml:"root_completions"`
 	RootForecasts      []forecast           `yaml:"root_forecasts"`
 	Roster             map[string]any       `yaml:"roster"`
 	Timeline           []timelineEntry      `yaml:"timeline"`
@@ -210,6 +211,14 @@ func parse(data []byte) (report, error) {
 			return r, fmt.Errorf("review for %s requires reporter, critic, 1–5 rounds, estimate, impact, priority and unresolved", review.TaskID)
 		}
 	}
+	for _, c := range r.RootCompletions {
+		if c.WorkRef == "" || c.Outcome == "" {
+			return r, fmt.Errorf("root completion requires work_ref and outcome")
+		}
+		if _, err := parseUTC(c.CompletedAt); err != nil {
+			return r, fmt.Errorf("root completion invalid completed_at: %w", err)
+		}
+	}
 	if err := validateSections(r); err != nil {
 		return r, fmt.Errorf("validate status report: %w", err)
 	}
@@ -297,6 +306,9 @@ func render(r report) string {
 			fmt.Fprintf(&b, "\nForecast %s: unreconciled.\n", lane.Forecast.ForecastRef)
 		}
 		renderForecast(&b, lane)
+	}
+	for _, c := range r.RootCompletions {
+		fmt.Fprintf(&b, "\nRoot outcome: %s\nCompleted: %s; no active forecast deadline.\n", c.Outcome, c.CompletedAt)
 	}
 	for _, f := range r.RootForecasts {
 		if len(r.Incomplete) > 0 {
@@ -436,6 +448,10 @@ func renderForecast(
 	b *strings.Builder,
 	l lane,
 ) {
+	if l.Lifecycle == "cancelled" {
+		fmt.Fprintf(b, "\nCancelled: %s; no active forecast deadline.\n", l.Outcome)
+		return
+	}
 	if l.NextMilestone != "" {
 		fmt.Fprintf(b, "\nNext milestone: %s\n", l.NextMilestone)
 	}

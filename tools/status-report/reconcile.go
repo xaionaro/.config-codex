@@ -23,9 +23,11 @@ type workData struct {
 	ForecastRef string   `yaml:"forecast_ref"`
 }
 type sourceRecord struct {
-	Type    string
-	Section string
-	Data    workData
+	Outcome     string
+	OutcomeRefs []string
+	Type        string
+	Section     string
+	Data        workData
 }
 
 func (r *sourceRecord) UnmarshalYAML(n *yaml.Node) error {
@@ -33,11 +35,24 @@ func (r *sourceRecord) UnmarshalYAML(n *yaml.Node) error {
 		Type    string    `yaml:"type"`
 		Section string    `yaml:"section"`
 		Data    yaml.Node `yaml:"data"`
+		Links   struct {
+			Outcomes []string `yaml:"outcomes"`
+		} `yaml:"links"`
 	}
 	if err := n.Decode(&wire); err != nil {
 		return err
 	}
 	r.Type, r.Section = wire.Type, wire.Section
+	r.OutcomeRefs = wire.Links.Outcomes
+	if wire.Type == "outcome" {
+		var data struct {
+			Description string `yaml:"description"`
+		}
+		if err := wire.Data.Decode(&data); err != nil {
+			return err
+		}
+		r.Outcome = data.Description
+	}
 	if wire.Type == "work" {
 		return wire.Data.Decode(&r.Data)
 	}
@@ -230,6 +245,19 @@ func reconcile(r report, dir string) []string {
 		}
 	}
 	covered := map[string]bool{}
+	remaining := map[string]bool{}
+	children := map[taskID]bool{}
+	for _, t := range r.Tasks {
+		if t.ParentID != "" {
+			children[t.ParentID] = true
+		}
+	}
+	allClosed := true
+	for _, t := range r.Tasks {
+		if !children[t.ID] && t.Status != statusClosed {
+			allClosed = false
+		}
+	}
 	lanes := map[string]lane{}
 	rootRefs := map[string]bool{}
 	resolve := func(ref string) string {
@@ -248,6 +276,36 @@ func reconcile(r report, dir string) []string {
 		for _, ref := range t.WorkRefs {
 			if id := resolve(ref); id != "" {
 				covered[id] = true
+				for _, leaf := range r.Tasks {
+					if !children[leaf.ID] && (leaf.ID == t.ID || strings.HasPrefix(string(leaf.ID), string(t.ID)+".")) && leaf.Status != statusClosed {
+						remaining[id] = true
+					}
+				}
+			}
+		}
+	}
+	rootCompletions := map[string]rootCompletion{}
+	for _, c := range r.RootCompletions {
+		if id := resolve(c.WorkRef); id != "" {
+			if _, ok := rootCompletions[id]; ok {
+				add("duplicate root completion %s", id)
+			}
+			rootCompletions[id] = c
+			w := works[id]
+			if !hasRole(w.Data.Roles, "root") || w.Data.State != "completed" {
+				add("root completion %s does not reference completed root work", id)
+			}
+			matched := false
+			for _, outcomeID := range w.OutcomeRefs {
+				if ledger.Records[outcomeID].Type == "outcome" && ledger.Records[outcomeID].Outcome == c.Outcome {
+					matched = true
+				}
+			}
+			if !matched {
+				add("root completion %s outcome unverified against linked outcomes", id)
+			}
+			if !sameValue(w.Data.CompletedAt, c.CompletedAt) {
+				add("root completion %s completed_at mismatch: source %q; report %q", id, w.Data.CompletedAt, c.CompletedAt)
 			}
 		}
 	}
@@ -429,31 +487,59 @@ func reconcile(r report, dir string) []string {
 			add("active work %s missing from task coverage", id)
 		}
 		l, represented := lanes[id]
+		if open && covered[id] && !remaining[id] {
+			if represented && l.requiredStatus() != statusClosed {
+				if allClosed {
+					add("work %s remaining acceptance is represented by an open lane outside scored leaf packages", id)
+				}
+			} else {
+				add("active work %s has no remaining package or open acceptance lane", id)
+			}
+		}
 		if w.Data.State == "completed" && w.Data.ForecastRef != "" {
 			if _, err := parseUTC(w.Data.CompletedAt); err != nil {
 				add("completed forecasted work %s missing or invalid completed_at", id)
 			} else if represented && !sameValue(w.Data.CompletedAt, l.CompletedAt) {
 				add("work %s completed_at mismatch: source %q; report %q", id, w.Data.CompletedAt, l.CompletedAt)
-			} else if !represented {
+			} else if !represented && !hasRole(w.Data.Roles, "root") {
 				add("completed forecasted work %s completion projection unverified", id)
 			}
 		}
 		if hasRole(w.Data.Roles, "lane") {
 			if !represented {
-				add("declared lane %s missing from report", id)
+				if w.Data.State != "cancelled" {
+					add("declared lane %s missing from report", id)
+				}
+				if w.Data.State == "cancelled" && w.Data.ForecastRef != "" {
+					checkForecast(w.Data.ForecastRef, nil, "lane", false)
+				}
 			} else {
 				if open && l.requiredStatus() == statusClosed {
 					add("open lane %s reported closed", id)
 				}
-				if !open && l.requiredStatus() != statusClosed {
+				if w.Data.State == "completed" && l.requiredStatus() != statusClosed {
 					add("closed lane %s reported open", id)
+				}
+				if w.Data.State == "cancelled" && l.Lifecycle != "cancelled" {
+					add("cancelled lane %s lifecycle is not marked cancelled", id)
+				}
+				if w.Data.State != "cancelled" && l.Lifecycle != "" {
+					add("lane %s lifecycle conflicts with source state", id)
+				}
+				if w.Data.State == "cancelled" && l.CompletedAt != "" {
+					add("cancelled lane %s must not claim completion", id)
 				}
 				if w.Data.ForecastRef != "" || open || l.Forecast != nil {
 					checkForecast(w.Data.ForecastRef, l.Forecast, "lane", open)
 				}
 			}
 		}
-		if hasRole(w.Data.Roles, "root") && !represented {
+		if hasRole(w.Data.Roles, "root") && !represented && !(w.Data.State == "cancelled" && hasRole(w.Data.Roles, "lane")) {
+			if w.Data.State == "completed" {
+				if _, ok := rootCompletions[id]; !ok {
+					add("completed root %s completion missing from report", id)
+				}
+			}
 			if open && !rootRefs[w.Data.ForecastRef] {
 				add("active root %s forecast missing from report", id)
 			}

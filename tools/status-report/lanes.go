@@ -21,6 +21,12 @@ type scenario struct {
 // forecast holds an upstream outcome forecast and associated scenarios.
 //
 // Example: Project a lane deadline and its supporting evidence.
+type rootCompletion struct {
+	WorkRef     string `yaml:"work_ref"`
+	Outcome     string `yaml:"outcome"`
+	CompletedAt string `yaml:"completed_at"`
+}
+
 type forecast struct {
 	SourceProjection map[string]any `yaml:"source_projection"`
 	ForecastRef      string         `yaml:"forecast_ref"`
@@ -39,6 +45,7 @@ type forecast struct {
 //
 // Example: Keep implementation, test, and production readiness separate.
 type lane struct {
+	Lifecycle            string              `yaml:"lifecycle"`
 	WorkRef              string              `yaml:"work_ref"`
 	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
 	TaskID               taskID              `yaml:"task_id"`

@@ -138,7 +138,13 @@ func validateLane(
 	if l.RequiredEnvironment == environmentUnknown {
 		return fmt.Errorf("lane %s: required_environment is required", l.TaskID)
 	}
-	if l.requiredStatus() == statusClosed && l.CompletedAt == "" {
+	if l.Lifecycle != "" && l.Lifecycle != "cancelled" {
+		return fmt.Errorf("lane %s has invalid lifecycle", l.TaskID)
+	}
+	if l.Lifecycle == "cancelled" && (l.CompletedAt != "" || l.Forecast != nil) {
+		return fmt.Errorf("lane %s: cancelled lane cannot claim completion or an active forecast", l.TaskID)
+	}
+	if l.Lifecycle != "cancelled" && l.requiredStatus() == statusClosed && l.CompletedAt == "" {
 		return fmt.Errorf("lane %s: completed lane requires completed_at", l.TaskID)
 	}
 	if l.CompletedAt != "" {
