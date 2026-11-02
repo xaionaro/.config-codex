@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // forecastReconciler holds source and projection checks for one report.
@@ -10,7 +12,7 @@ import (
 // Example: Check the canonical forecast for an active lane.
 type forecastReconciler struct {
 	dir       string
-	timestamp string
+	timestamp time.Time
 	issues    *reconciliationIssues
 	source    forecastSource
 	used      map[string]bool
@@ -67,7 +69,9 @@ func (c *forecastReconciler) check(
 			c.issues.add("forecast %s source missing required %s", id, field)
 		}
 	}
-	c.checkRecalibration(id, src)
+	for _, issue := range validateCanonicalRecalibration(src) {
+		c.issues.add("forecast %s source %s", id, issue)
+	}
 	for _, issue := range forecastStructure(src) {
 		c.issues.add("forecast %s source %s", id, issue)
 	}
@@ -139,38 +143,9 @@ func (c *forecastReconciler) check(
 		}
 	}
 	if target, err := parseUTC(textField(src, "target")); err == nil {
-		at, _ := parseUTC(c.timestamp)
+		at := c.timestamp
 		if !target.After(at) {
 			c.issues.add("forecast %s target elapsed while work open", id)
-		}
-	}
-}
-
-// checkRecalibration checks the canonical history fields for one forecast.
-//
-// Example: Require prior and reason for a changed target.
-func (c *forecastReconciler) checkRecalibration(
-	id string,
-	source map[string]any,
-) {
-	recal, ok := source["recalibration"].(map[string]any)
-	if !ok {
-		c.issues.add("forecast %s source missing recalibration", id)
-		return
-	}
-	status := textField(recal, "status")
-	if status != "unchanged" && status != "changed" {
-		c.issues.add("forecast %s source has invalid recalibration status", id)
-	}
-	if textField(recal, "evidence") == "" {
-		c.issues.add("forecast %s source missing recalibration evidence", id)
-	}
-	if status != "changed" {
-		return
-	}
-	for _, field := range []string{"prior", "current", "reason"} {
-		if textField(recal, field) == "" {
-			c.issues.add("forecast %s source missing recalibration %s", id, field)
 		}
 	}
 }
@@ -202,6 +177,9 @@ func (c *forecastReconciler) compareRecalibration(
 // Example: Flag a root forecast omitted from the ledger's work records.
 func (c *forecastReconciler) checkUnclaimed(works map[string]sourceRecord) {
 	if _, err := os.Stat(filepath.Join(c.dir, "forecasts.yaml")); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			c.issues.add("forecast source stat failed: %v", err)
+		}
 		return
 	}
 	if !c.load() {

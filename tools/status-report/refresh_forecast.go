@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
@@ -46,6 +47,7 @@ func refreshForecastTargets(
 	original []byte,
 	candidate []byte,
 	observer refreshObserver,
+	evaluation time.Time,
 ) error {
 	ledgerPath := filepath.Join(dir, "project-understanding.yaml")
 	forecastPath := filepath.Join(dir, "forecasts.yaml")
@@ -105,7 +107,7 @@ func refreshForecastTargets(
 	if err != nil {
 		return fmt.Errorf("refreshed report invalid: %w", err)
 	}
-	issues := reconcile(report, dir)
+	issues := reconcileAt(report, dir, evaluation)
 	sort.Strings(issues)
 	for _, issue := range issues {
 		if issue == "report declares scope incomplete" {
@@ -167,35 +169,11 @@ func validateRefreshSource(source map[string]any) error {
 	if assessment == "provisional" && textField(source, "target_basis") == "" {
 		return fmt.Errorf("missing target_basis")
 	}
-	recal, ok := source["recalibration"].(map[string]any)
-	if !ok || (textField(recal, "status") != "unchanged" && textField(recal, "status") != "changed") || textField(recal, "evidence") == "" {
-		return fmt.Errorf("invalid recalibration")
-	}
-	if textField(recal, "status") == "changed" {
-		if err := validateChangedRecalibration(recal, source); err != nil {
-			return err
-		}
+	if issues := validateCanonicalRecalibration(source); len(issues) > 0 {
+		return fmt.Errorf("%s", strings.Join(issues, "; "))
 	}
 	if issues := forecastStructure(source); len(issues) > 0 {
 		return fmt.Errorf("%s", strings.Join(issues, "; "))
-	}
-	return nil
-}
-
-// validateChangedRecalibration checks the evidence and current target of a changed forecast.
-//
-// Example: Check that recalibration current equals the target.
-func validateChangedRecalibration(
-	recal map[string]any,
-	source map[string]any,
-) error {
-	for _, key := range []string{"prior", "current", "reason"} {
-		if textField(recal, key) == "" {
-			return fmt.Errorf("recalibration missing %s", key)
-		}
-	}
-	if !sameValue(textField(recal, "current"), textField(source, "target")) {
-		return fmt.Errorf("recalibration current does not match target")
 	}
 	return nil
 }

@@ -49,7 +49,7 @@ func TestSourceReconciliationBoundaries(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.forecasts), 0600))
 				r, err := parse([]byte(tc.report))
 				require.NoError(t, err)
-				issues := reconcile(r, dir)
+				issues := testReconcile(r, dir)
 				if tc.diagnostic == "" {
 					require.Empty(t, issues)
 				} else {

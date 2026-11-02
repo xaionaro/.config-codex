@@ -35,12 +35,12 @@ func TestReconciliationMissingSources(t *testing.T) {
 					require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
 				}
 				var stdout, stderr bytes.Buffer
-				code := run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr)
+				code := testRun([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr)
 				require.Equal(t, 0, code, stderr.String())
 				require.Contains(t, stdout.String(), "INCOMPLETE")
 				stdout.Reset()
 				stderr.Reset()
-				code = run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
+				code = testRun([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
 				require.NotEqual(t, 0, code, stdout.String())
 			})
 	}
@@ -89,14 +89,24 @@ lanes:
 const linkedLedger = `schema: project-understanding/v1
 sections: {progress: {title: Progress}}
 records:
+  outcome:first:
+    section: progress
+    type: outcome
+    data: {description: First result}
+  outcome:second:
+    section: progress
+    type: outcome
+    data: {description: Second result}
   work:first:
     section: progress
     type: work
+    links: {outcomes: ['outcome:first']}
     data: {owner: one, state: active, next_action: Finish, reporting_roles: [lane], forecast_ref: 'forecasts.yaml#/records/first'}
     evidence: []
   work:second:
     section: progress
     type: work
+    links: {outcomes: ['outcome:second']}
     data: {owner: two, state: active, next_action: Finish, reporting_roles: [lane], forecast_ref: 'forecasts.yaml#/records/second'}
     evidence: []
 `
@@ -159,7 +169,7 @@ func TestReconciliationForecasts(t *testing.T) {
 					require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.forecasts), 0o600))
 				}
 				var stdout, stderr bytes.Buffer
-				require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+				require.Equal(t, 0, testRun([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 				if tc.incomplete {
 					require.Contains(t, stdout.String(), "INCOMPLETE")
 				} else {
@@ -167,7 +177,7 @@ func TestReconciliationForecasts(t *testing.T) {
 				}
 				stdout.Reset()
 				stderr.Reset()
-				code := run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
+				code := testRun([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
 				if tc.incomplete {
 					require.NotEqual(t, 0, code, stdout.String())
 				} else {
@@ -188,9 +198,11 @@ func TestReconciliationDirectWorkWithoutForecast(t *testing.T) {
 	ledger := `schema: project-understanding/v1
 sections: {progress: {title: Progress}}
 records:
+  outcome:direct: {section: progress, type: outcome}
   work:direct:
     section: progress
     type: work
+    links: {outcomes: ["outcome:direct"]}
     data: {owner: one, state: active, next_action: Finish, reporting_roles: []}
     evidence: []
 `
@@ -198,11 +210,11 @@ records:
 	require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0o600))
 	var stdout, stderr bytes.Buffer
-	require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+	require.Equal(t, 0, testRun([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 	require.NotContains(t, stdout.String(), "INCOMPLETE")
 	stdout.Reset()
 	stderr.Reset()
-	require.Equal(t, 0, run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+	require.Equal(t, 0, testRun([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 }
 
 // TestReconciliationRichForecast checks that ECI scenario details can be matched without loss.
@@ -246,7 +258,7 @@ func TestReconciliationRichForecast(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0o600))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.source), 0o600))
 				var stdout, stderr bytes.Buffer
-				require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+				require.Equal(t, 0, testRun([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 				if tc.incomplete {
 					require.Contains(t, stdout.String(), "INCOMPLETE")
 				} else {
@@ -270,6 +282,7 @@ func TestReconciliationCompletedPriorityDoesNotExpire(t *testing.T) {
 	ledger := `schema: project-understanding/v1
 sections: {progress: {title: Progress}}
 records:
+  outcome:direct: {section: progress, type: outcome}
   work:done:
     section: progress
     type: work
@@ -278,6 +291,7 @@ records:
   work:open:
     section: progress
     type: work
+    links: {outcomes: ["outcome:direct"]}
     data: {owner: two, state: active, next_action: Finish, reporting_roles: []}
     evidence: []
 `
@@ -286,7 +300,7 @@ records:
 	require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0o600))
 	var stdout, stderr bytes.Buffer
-	require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+	require.Equal(t, 0, testRun([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 	require.NotContains(t, stdout.String(), "INCOMPLETE")
 	require.Contains(t, stdout.String(), "Source freshness: unverified")
 }
@@ -326,7 +340,7 @@ func TestReconciliationClosedLaneCompletion(t *testing.T) {
 				}
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecast), 0o600))
 				var stdout, stderr bytes.Buffer
-				require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+				require.Equal(t, 0, testRun([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 				if tc.incomplete {
 					require.Contains(t, stdout.String(), "INCOMPLETE")
 				} else {

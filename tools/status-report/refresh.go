@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
@@ -49,6 +50,18 @@ func refreshLinkedStatus(
 	event string,
 	observer refreshObserver,
 ) error {
+	return refreshLinkedStatusAt(dir, event, observer, time.Now().UTC())
+}
+
+// refreshLinkedStatusAt refreshes using one supplied evaluation instant.
+//
+// Example: Evaluate all forecasts at the same captured time.
+func refreshLinkedStatusAt(
+	dir string,
+	event string,
+	observer refreshObserver,
+	evaluation time.Time,
+) error {
 	path := filepath.Join(dir, "latest-status-report.yaml")
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -71,7 +84,7 @@ func refreshLinkedStatus(
 			return err
 		}
 	}
-	err = refreshForecastTargets(dir, path, info, original, candidate, observer)
+	err = refreshForecastTargets(dir, path, info, original, candidate, observer, evaluation)
 	if err == nil || errors.Is(err, errRefreshRetry) {
 		return err
 	}
@@ -132,6 +145,17 @@ func refreshStatus(
 	event string,
 ) error {
 	return refreshLinkedStatus(dir, event, nil)
+}
+
+// refreshStatusAt refreshes a session at an explicit evaluation instant.
+//
+// Example: Evaluate a report against a fixed time in a regression test.
+func refreshStatusAt(
+	dir string,
+	event string,
+	evaluation time.Time,
+) error {
+	return refreshLinkedStatusAt(dir, event, nil, evaluation)
 }
 
 // invalidateStatus persists scope and diagnostic updates after a refresh failure.

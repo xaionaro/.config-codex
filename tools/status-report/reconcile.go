@@ -371,11 +371,17 @@ func resolveWorkRef(
 // reconcile checks a report against canonical session sources without mutation.
 //
 // Example: reconcile checks a report against canonical session sources without mutation.
-func reconcile(
+func reconcileAt(
 	r report,
 	dir string,
+	evaluation time.Time,
 ) []string {
 	var issues reconciliationIssues
+	reportTime, _ := parseUTC(r.Timestamp)
+	if reportTime.After(evaluation) {
+		issues.add("report timestamp %s is in the future", r.Timestamp)
+	}
+	issues = append(issues, futureEstimateIssues(r, evaluation)...)
 	if !*r.ScopeComplete {
 		issues.add("report declares scope incomplete")
 	}
@@ -394,8 +400,10 @@ func reconcile(
 		issues = append(issues, ledgerRecordIssues(id, rec, ledger.Sections)...)
 		if rec.Type == "work" {
 			works[id] = rec
+			issues = append(issues, validateWorkOutcomes(id, rec, ledger.Records)...)
 		}
 	}
+	issues = append(issues, checkSharedForecastOwners(works)...)
 	scope := buildTaskWorkIndex(r.Tasks, works)
 	children := map[taskID]bool{}
 	for _, t := range r.Tasks {
@@ -468,7 +476,7 @@ func reconcile(
 			issues.add("duplicate report forecast reference %q", ref)
 		}
 	}
-	forecastChecks := forecastReconciler{dir: dir, timestamp: r.Timestamp, issues: &issues, used: map[string]bool{}}
+	forecastChecks := forecastReconciler{dir: dir, timestamp: evaluation, issues: &issues, used: map[string]bool{}}
 	ids := make([]string, 0, len(works))
 	for id := range works {
 		ids = append(ids, id)
@@ -479,6 +487,16 @@ func reconcile(
 		workChecks.check(id)
 	}
 	forecastChecks.checkUnclaimed(works)
+	for id, l := range lanes {
+		work := works[id]
+		if l.Forecast == nil || !openWork(work.Data.State) || !forecastChecks.load() {
+			continue
+		}
+		source, ok := forecastChecks.source.Records[sourceID(string(work.Data.ForecastRef), "forecasts.yaml")]
+		if ok && !laneSemanticEquivalence(l, work, ledger, source) {
+			issues.add("lane %s forecast semantic equivalence unverified", id)
+		}
+	}
 	for _, f := range r.RootForecasts {
 		if !forecastChecks.used[f.ForecastRef] {
 			issues.add("root forecast %q is not linked to applicable work", f.ForecastRef)
@@ -509,10 +527,7 @@ func reconcile(
 		if err != nil {
 			continue
 		}
-		if base.After(at) {
-			issues.add("completion estimate as_of %s is in the future", e.AsOf)
-		}
-		if !base.After(at) && relevantOpen && e.MaxMinutes != nil && !base.Add(time.Duration(float64(*e.MaxMinutes)*float64(time.Minute))).After(at) {
+		if !base.After(at) && !base.After(evaluation) && relevantOpen && e.MaxMinutes != nil && !base.Add(time.Duration(float64(*e.MaxMinutes)*float64(time.Minute))).After(evaluation) {
 			issues.add("completion estimate as_of %s endpoint elapsed while work open", e.AsOf)
 		}
 	}

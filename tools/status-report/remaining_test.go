@@ -34,13 +34,13 @@ func TestOpenWorkRequiresRemainingCoverage(t *testing.T) {
 	require.NoError(t, err)
 	// The open lane represents remaining acceptance despite its closed package.
 	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
-	issues := strings.Join(reconcile(r, dir), "\n")
+	issues := strings.Join(testReconcile(r, dir), "\n")
 	require.Contains(t, issues, "remaining acceptance")
 	direct := strings.Replace(linkedLedger, "reporting_roles: [lane], forecast_ref: 'forecasts.yaml#/records/first'", "reporting_roles: []", 1)
 	r.Lanes = r.Lanes[1:]
 	r.Tasks[1].Status = statusInProgress // An unrelated sibling cannot cover work:first.
 	dir = writeLinkedSources(t, direct, linkedForecasts)
-	issues = strings.Join(reconcile(r, dir), "\n")
+	issues = strings.Join(testReconcile(r, dir), "\n")
 	require.Contains(t, issues, "no remaining package or open acceptance lane")
 }
 
@@ -54,7 +54,7 @@ func TestCancelledLaneMayBeOmitted(t *testing.T) {
 	r.Lanes = r.Lanes[1:]
 	ledger := strings.Replace(linkedLedger, "state: active", "state: cancelled", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
-	issues := strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n")
+	issues := strings.Join(testReconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n")
 	require.NotContains(t, issues, "declared lane work:first missing")
 	require.NotContains(t, issues, "completion")
 }
@@ -68,18 +68,17 @@ func TestCompletedRootHasOwnCompletionProjection(t *testing.T) {
 	r.Lanes = r.Lanes[1:]
 	r.RootCompletions = []rootCompletion{{WorkRef: "project-understanding.yaml#/records/work:first", Outcome: "First result", CompletedAt: "2026-11-02T15:00:00+00:00"}}
 	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish, reporting_roles: [lane]", "state: completed, completed_at: '2026-11-02T15:00:00Z', reporting_roles: [root]", 1)
-	ledger = strings.Replace(ledger, "    evidence: []\n  work:second:", "    links: {outcomes: ['outcome:first']}\n    evidence: []\n  outcome:first:\n    section: progress\n    type: outcome\n    data: {description: First result}\n    evidence: []\n  work:second:", 1)
 	forecasts := strings.Replace(linkedForecasts, "kind: lane", "kind: root", 1)
 	forecasts = strings.Replace(forecasts, "status: active", "status: inactive", 1)
 	dir := writeLinkedSources(t, ledger, forecasts)
-	require.Empty(t, reconcile(r, dir))
+	require.Empty(t, testReconcile(r, dir))
 	require.Contains(t, render(r), "Root outcome: First result")
 	r.RootCompletions[0].Outcome = "wrong"
-	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "outcome unverified")
+	require.Contains(t, strings.Join(testReconcile(r, dir), "\n"), "outcome unverified")
 	r.RootCompletions[0].CompletedAt = "2026-11-02T15:01:00Z"
-	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "completed_at mismatch")
+	require.Contains(t, strings.Join(testReconcile(r, dir), "\n"), "completed_at mismatch")
 	r.RootCompletions = nil
-	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "completion missing from report")
+	require.Contains(t, strings.Join(testReconcile(r, dir), "\n"), "completion missing from report")
 }
 
 // TestCancelledLaneRetainedHasNoCompletion exercises source reconciliation behavior.
@@ -92,10 +91,10 @@ func TestCancelledLaneRetainedHasNoCompletion(t *testing.T) {
 	r.Lanes[0].Lifecycle = "cancelled"
 	ledger := strings.Replace(linkedLedger, "state: active", "state: cancelled", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
-	require.Empty(t, reconcile(r, writeLinkedSources(t, ledger, forecasts)))
+	require.Empty(t, testReconcile(r, writeLinkedSources(t, ledger, forecasts)))
 	require.Contains(t, render(r), "Cancelled: First result; no active forecast deadline.")
 	r.Lanes[0].CompletedAt = "2026-11-02T15:00:00Z"
-	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "must not claim completion")
+	require.Contains(t, strings.Join(testReconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "must not claim completion")
 }
 
 // TestRootCompletionRequiresIdentityAndTimestamp exercises source reconciliation behavior.
@@ -139,7 +138,7 @@ func TestTerminalReportForecastIsIncomplete(t *testing.T) {
 	r.RootForecasts = []forecast{{ForecastRef: "forecasts.yaml#/records/first", Outcome: "First result", Target: "2026-11-02T16:00:00Z", Assessment: "complete"}}
 	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish, reporting_roles: [lane]", "state: cancelled, reporting_roles: [root]", 1)
 	forecasts := strings.Replace(strings.Replace(linkedForecasts, "kind: lane", "kind: root", 1), "status: active", "status: inactive", 1)
-	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work has report forecast")
+	require.Contains(t, strings.Join(testReconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work has report forecast")
 }
 
 // TestRolelessWorkCannotClaimForecast exercises source reconciliation behavior.
@@ -150,7 +149,7 @@ func TestRolelessWorkCannotClaimForecast(t *testing.T) {
 	require.NoError(t, err)
 	r.Lanes = r.Lanes[1:]
 	ledger := strings.Replace(linkedLedger, "reporting_roles: [lane]", "reporting_roles: []", 1)
-	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, linkedForecasts)), "\n"), "forecast has no applicable reporting role")
+	require.Contains(t, strings.Join(testReconcile(r, writeLinkedSources(t, ledger, linkedForecasts)), "\n"), "forecast has no applicable reporting role")
 }
 
 // TestInheritedWorkPriorityUsesRemainingLeaves exercises source reconciliation behavior.
@@ -177,9 +176,9 @@ func TestLaneWorkMustMatchTaskScope(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
 	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
-	require.Empty(t, reconcile(r, dir))
+	require.Empty(t, testReconcile(r, dir))
 	r.Lanes[0].TaskID = "2"
-	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "outside task scope")
+	require.Contains(t, strings.Join(testReconcile(r, dir), "\n"), "outside task scope")
 }
 
 // TestTerminalLaneCannotRetainFollowup verifies the reconciliation boundary.
@@ -193,11 +192,11 @@ func TestTerminalLaneCannotRetainFollowup(t *testing.T) {
 	r.Lanes[0].RootTaskStatus = rootTaskFollowup
 	ledger := strings.Replace(linkedLedger, "state: active", "state: cancelled", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
-	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work retains followup")
+	require.Contains(t, strings.Join(testReconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work retains followup")
 	r.Lanes[0].RootTaskStatus = rootTaskFollowupPaused
-	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work retains followup")
+	require.Contains(t, strings.Join(testReconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work retains followup")
 	r.Lanes[0].RootTaskStatus = rootTaskNone
-	require.Empty(t, reconcile(r, writeLinkedSources(t, ledger, forecasts)))
+	require.Empty(t, testReconcile(r, writeLinkedSources(t, ledger, forecasts)))
 }
 
 // TestTaskScopeUsesOnlyRelatedBranches verifies the reconciliation boundary.
@@ -224,9 +223,9 @@ func TestCompletedLaneCannotRetainFollowup(t *testing.T) {
 	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish", "state: completed, completed_at: '2026-11-02T15:00:00Z'", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
 	dir := writeLinkedSources(t, ledger, forecasts)
-	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "terminal work retains followup")
+	require.Contains(t, strings.Join(testReconcile(r, dir), "\n"), "terminal work retains followup")
 	r.Lanes[0].RootTaskStatus = rootTaskNone
-	require.Empty(t, reconcile(r, dir))
+	require.Empty(t, testReconcile(r, dir))
 }
 
 // TestActiveLaneMayRetainFollowup preserves ongoing post-Fast work.
@@ -236,5 +235,5 @@ func TestActiveLaneMayRetainFollowup(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
 	r.Lanes[0].RootTaskStatus = rootTaskFollowup
-	require.Empty(t, reconcile(r, writeLinkedSources(t, linkedLedger, linkedForecasts)))
+	require.Empty(t, testReconcile(r, writeLinkedSources(t, linkedLedger, linkedForecasts)))
 }

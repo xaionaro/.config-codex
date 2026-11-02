@@ -28,7 +28,7 @@ func lifecycleResult(
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecasts), 0600))
 	}
 	var out, errOut bytes.Buffer
-	require.Equal(t, 0, run([]string{"render", path}, strings.NewReader(""), &out, &errOut), errOut.String())
+	require.Equal(t, 0, testRun([]string{"render", path}, strings.NewReader(""), &out, &errOut), errOut.String())
 	return out.String()
 }
 
@@ -95,9 +95,11 @@ func TestInheritedWorkPriorityExpiry(t *testing.T) {
 	ledger := `schema: project-understanding/v1
 sections: {progress: {title: Progress}}
 records:
+  outcome:direct: {section: progress, type: outcome}
   work:direct:
     section: progress
     type: work
+    links: {outcomes: ["outcome:direct"]}
     data: {owner: one, state: active, next_action: Finish, reporting_roles: []}
 `
 	out := lifecycleResult(t, report, ledger, "")

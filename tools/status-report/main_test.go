@@ -609,14 +609,14 @@ func TestHierarchicalTaskIDsRejectMismatchedParents(t *testing.T) {
 // Example: Validation and rendering work on stdin and fail on malformed input.
 func TestCLICommands(t *testing.T) {
 	var out, errOut strings.Builder
-	require.Equal(t, 1, run([]string{"validate"}, strings.NewReader(valid), &out, &errOut))
+	require.Equal(t, 1, testRun([]string{"validate"}, strings.NewReader(valid), &out, &errOut))
 	require.Contains(t, out.String(), "INCOMPLETE")
 	out.Reset()
-	require.Equal(t, 0, run([]string{"render", "-"}, strings.NewReader(valid), &out, &errOut))
+	require.Equal(t, 0, testRun([]string{"render", "-"}, strings.NewReader(valid), &out, &errOut))
 	require.Contains(t, out.String(), "Full task tree")
-	require.Equal(t, 2, run([]string{"invalid"}, strings.NewReader(valid), &out, &errOut))
-	require.Equal(t, 1, run([]string{"validate"}, strings.NewReader("[invalid"), &out, &errOut))
-	require.Equal(t, 1, run([]string{"validate", "/nonexistent/status.yaml"}, strings.NewReader(""), &out, &errOut))
+	require.Equal(t, 2, testRun([]string{"invalid"}, strings.NewReader(valid), &out, &errOut))
+	require.Equal(t, 1, testRun([]string{"validate"}, strings.NewReader("[invalid"), &out, &errOut))
+	require.Equal(t, 1, testRun([]string{"validate", "/nonexistent/status.yaml"}, strings.NewReader(""), &out, &errOut))
 }
 
 // TestStatusAndEstimateVariants covers supported report states and time units.
@@ -739,7 +739,7 @@ func TestCLIFileInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report file.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(valid), 0o600))
 	var out, errOut strings.Builder
-	require.Equal(t, 1, run([]string{"validate", path}, strings.NewReader(""), &out, &errOut))
+	require.Equal(t, 1, testRun([]string{"validate", path}, strings.NewReader(""), &out, &errOut))
 	require.Contains(t, out.String(), "INCOMPLETE")
 }
 
@@ -914,7 +914,7 @@ func TestCLIReportsWriteFailures(t *testing.T) {
 		for _, short := range []bool{false, true} {
 			writer := &testWriter{short: short}
 			var errOut strings.Builder
-			code := run([]string{cmd}, strings.NewReader(valid), writer, &errOut)
+			code := testRun([]string{cmd}, strings.NewReader(valid), writer, &errOut)
 			require.NotZero(t, code)
 			require.Equal(t, 1, writer.calls)
 			if short {

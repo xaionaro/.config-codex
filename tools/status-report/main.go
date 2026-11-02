@@ -382,6 +382,19 @@ func run(
 	if len(args) > 0 && args[0] == "refresh" {
 		return runRefresh(args[1:], errOut)
 	}
+	return runAt(args, in, out, errOut, time.Now().UTC())
+}
+
+// runAt executes a command using one captured evaluation time.
+//
+// Example: Validate a report at a deterministic instant.
+func runAt(
+	args []string,
+	in io.Reader,
+	out io.Writer,
+	errOut io.Writer,
+	evaluation time.Time,
+) int {
 	if len(args) < 1 || (args[0] != "validate" && args[0] != "render") {
 		fmt.Fprintln(errOut, "usage: status-report validate|render [--session-dir DIR] [FILE]")
 		return 2
@@ -419,7 +432,7 @@ func run(
 		fmt.Fprintln(errOut, "status-report:", err)
 		return 1
 	}
-	r.Incomplete = reconcile(r, sessionDir)
+	r.Incomplete = reconcileAt(r, sessionDir, evaluation)
 	payload := render(r)
 	if command == "validate" {
 		payload = "Schema valid; source reconciliation complete; source freshness unverified (does not verify factual truth or reviewer independence).\n"

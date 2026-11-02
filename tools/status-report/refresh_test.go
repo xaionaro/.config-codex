@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goccy/go-yaml/token"
 	"github.com/stretchr/testify/require"
@@ -23,13 +24,13 @@ func TestRefreshRequirementChangePreservesReport(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(original), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 	first, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(first), "scope_complete: false")
 	require.Contains(t, string(first), refreshDiagnostic)
 	require.Contains(t, string(first), "status: CLOSED")
-	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 	second, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, first, second)
@@ -40,9 +41,9 @@ func TestRefreshRequirementChangePreservesReport(t *testing.T) {
 // Example: A malformed report is rejected before publication.
 func TestRefreshRejectsMissingOrInvalidReport(t *testing.T) {
 	dir := t.TempDir()
-	require.Error(t, refreshStatus(dir, "requirement_change"))
+	require.Error(t, refreshTestStatus(dir, "requirement_change"))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "latest-status-report.yaml"), []byte("scope_complete: nope\n"), 0600))
-	require.Error(t, refreshStatus(dir, "requirement_change"))
+	require.Error(t, refreshTestStatus(dir, "requirement_change"))
 }
 
 // TestRefreshDetectsConcurrentReportMutation verifies the refresh behavior.
@@ -60,12 +61,12 @@ func TestRefreshDetectsConcurrentReportMutation(t *testing.T) {
 	//
 	// Example: Simulate a concurrent report edit.
 	func() { require.NoError(t, os.WriteFile(path, changed, 0600)) }}
-	require.ErrorContains(t, refreshLinkedStatus(dir, "requirement_change", observer), "retry needed")
+	require.ErrorContains(t, refreshTestLinkedStatus(dir, "requirement_change", observer), "retry needed")
 	actual, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, changed, actual)
 
-	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 }
 
 // TestRefreshProjectsLinkedForecast verifies the refresh behavior.
@@ -78,7 +79,7 @@ func TestRefreshProjectsLinkedForecast(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	changed := strings.Replace(linkedForecasts, "target: '2026-11-02T16:00:00+00:00'", "target: '2026-11-02T16:30:00Z'", 1)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(changed), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "2026-11-02T16:30:00Z")
@@ -101,7 +102,7 @@ func TestForecastRefreshRejectsConcurrentSourceMutation(t *testing.T) {
 	//
 	// Example: Simulate a concurrent forecast edit.
 	func() { require.NoError(t, os.WriteFile(forecastPath, []byte(changed+"# concurrent\n"), 0600)) }}
-	require.ErrorContains(t, refreshLinkedStatus(dir, "forecast_change", observer), "retry needed")
+	require.ErrorContains(t, refreshTestLinkedStatus(dir, "forecast_change", observer), "retry needed")
 	result, err := os.ReadFile(reportPath)
 	require.NoError(t, err)
 	require.Equal(t, linkedReport, string(result))
@@ -118,7 +119,7 @@ func TestRefreshProjectsForecastDetails(t *testing.T) {
 	source := strings.Replace(linkedForecasts, "outcome: First result", "outcome: Updated result", 1)
 	source = strings.Replace(source, "    baseline_evidence: initial\n", "    baseline_evidence: initial\n    target_basis: Conditional on review\n", 1)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "Updated result")
@@ -137,7 +138,7 @@ func TestRefreshProjectsRootAndBlockForecast(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "2026-11-02T16:30:00Z")
@@ -155,7 +156,7 @@ func TestRefreshUpdatesExistingProjectionAndPreservesComment(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "new basis")
@@ -173,7 +174,7 @@ func TestRefreshPersistsUnsupportedProjectionDiagnostic(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.ErrorContains(t, refreshStatus(dir, "forecast_change"), "manual refresh required")
+	require.ErrorContains(t, refreshTestStatus(dir, "forecast_change"), "manual refresh required")
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "scope_complete: false")
@@ -191,7 +192,7 @@ func TestRequirementChangeAtomicallyProjectsForecast(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	source := strings.Replace(linkedForecasts, "target: '2026-11-02T16:00:00+00:00'", "target: '2026-11-02T16:30:00Z'", 1)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "scope_complete: false")
@@ -207,11 +208,11 @@ func TestRefreshDirectWorkWithoutForecast(t *testing.T) {
 	report := strings.Replace(valid, "scope_complete: false", "scope_complete: true", 1)
 	report = strings.Replace(report, "status: unknown", "status: IN PROGRESS", 1)
 	report = strings.Replace(report, "title: Root", "title: Root\n    work_refs: ['project-understanding.yaml#/records/work:direct']", 1)
-	ledger := "schema: project-understanding/v1\nsections: {progress: {title: Progress}}\nrecords:\n  work:direct:\n    section: progress\n    type: work\n    data: {owner: one, state: active, next_action: Finish, reporting_roles: []}\n    evidence: []\n"
+	ledger := "schema: project-understanding/v1\nsections: {progress: {title: Progress}}\nrecords:\n  outcome:direct:\n    section: progress\n    type: outcome\n    data: {description: Direct work}\n  work:direct:\n    section: progress\n    type: work\n    links: {outcomes: ['outcome:direct']}\n    data: {owner: one, state: active, next_action: Finish, reporting_roles: []}\n    evidence: []\n"
 	path := filepath.Join(dir, "latest-status-report.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
-	require.NoError(t, refreshStatus(dir, "decision"))
+	require.NoError(t, refreshTestStatus(dir, "decision"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, report, string(result))
@@ -230,7 +231,7 @@ func TestRefreshPersistsMissingWorkDiagnostic(t *testing.T) {
 	ledger := strings.Replace(linkedLedger, "work:first:", "work:missing:", 1)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "decision"))
+	require.NoError(t, refreshTestStatus(dir, "decision"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "scope_complete: false")
@@ -265,7 +266,7 @@ func TestRefreshRejectsInvalidForecastSources(t *testing.T) {
 				require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(strings.Replace(linkedForecasts, tc.from, tc.to, 1)), 0600))
-				require.ErrorContains(t, refreshStatus(dir, "forecast_change"), tc.issue)
+				require.ErrorContains(t, refreshTestStatus(dir, "forecast_change"), tc.issue)
 				result, err := os.ReadFile(path)
 				require.NoError(t, err)
 				require.Contains(t, string(result), "scope_complete: false")
@@ -303,15 +304,15 @@ func TestRefreshProjectsFullScenario(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "added_duration")
 	require.Contains(t, string(result), "event_time")
 	parsed, err := parse(result)
 	require.NoError(t, err)
-	require.Empty(t, reconcile(parsed, dir))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.Empty(t, testReconcile(parsed, dir))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	again, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, result, again)
@@ -352,13 +353,13 @@ func TestRefreshUpdatesBlockSourceProjection(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "new")
 	parsed, err := parse(result)
 	require.NoError(t, err)
-	require.Empty(t, reconcile(parsed, dir))
+	require.Empty(t, testReconcile(parsed, dir))
 }
 
 // TestRefreshRejectsUnsafeOrMissingSources verifies the refresh behavior.
@@ -374,7 +375,7 @@ func TestRefreshRejectsUnsafeOrMissingSources(t *testing.T) {
 			target := filepath.Join(dir, "target")
 			require.NoError(t, os.WriteFile(target, []byte(linkedReport), 0600))
 			require.NoError(t, os.Symlink(target, filepath.Join(dir, "latest-status-report.yaml")))
-			require.ErrorContains(t, refreshStatus(dir, "requirement_change"), "not a regular file")
+			require.ErrorContains(t, refreshTestStatus(dir, "requirement_change"), "not a regular file")
 			b, err := os.ReadFile(target)
 			require.NoError(t, err)
 			require.Equal(t, linkedReport, string(b))
@@ -388,7 +389,7 @@ func TestRefreshRejectsUnsafeOrMissingSources(t *testing.T) {
 			path := filepath.Join(dir, "latest-status-report.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
-			require.Error(t, refreshStatus(dir, "requirement_change"))
+			require.Error(t, refreshTestStatus(dir, "requirement_change"))
 			b, err := os.ReadFile(path)
 			require.NoError(t, err)
 			require.Contains(t, string(b), refreshDiagnostic)
@@ -403,7 +404,7 @@ func TestRefreshRejectsUnsafeOrMissingSources(t *testing.T) {
 			path := filepath.Join(dir, "latest-status-report.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte("[invalid"), 0600))
-			require.Error(t, refreshStatus(dir, "forecast_change"))
+			require.Error(t, refreshTestStatus(dir, "forecast_change"))
 			b, err := os.ReadFile(path)
 			require.NoError(t, err)
 			require.Contains(t, string(b), "Status refresh incomplete:")
@@ -423,12 +424,12 @@ func TestRefreshProjectsRecalibration(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	parsed, err := parse(result)
 	require.NoError(t, err)
-	require.Empty(t, reconcile(parsed, dir))
+	require.Empty(t, testReconcile(parsed, dir))
 	require.Contains(t, string(result), "conditional")
 	require.Contains(t, string(result), "review")
 }
@@ -444,7 +445,7 @@ func TestRefreshMissingRootForecastPersistsDiagnostic(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.ErrorContains(t, refreshStatus(dir, "forecast_change"), "not an active root forecast")
+	require.ErrorContains(t, refreshTestStatus(dir, "forecast_change"), "not an active root forecast")
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "forecasts.yaml#/records/root")
@@ -502,7 +503,7 @@ func TestRefreshHandlesConcurrentReplacementAndDeletion(t *testing.T) {
 				//
 				// Example: Remove a forecast after it has been read.
 				func() { tc.mutate(t, dir) }}
-				require.Error(t, refreshLinkedStatus(dir, "requirement_change", observer))
+				require.Error(t, refreshTestLinkedStatus(dir, "requirement_change", observer))
 				b, err := os.ReadFile(path)
 				require.NoError(t, err)
 				require.Equal(t, linkedReport, string(b))
@@ -520,7 +521,7 @@ func TestRefreshRejectsStaleRecalibrationFields(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.ErrorContains(t, refreshStatus(dir, "forecast_change"), "stale reason")
+	require.ErrorContains(t, refreshTestStatus(dir, "forecast_change"), "stale reason")
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "Status refresh incomplete:")
@@ -553,7 +554,7 @@ func TestRefreshChangesQuotedOutcomeWithoutDamagingOtherFields(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	parsed, err := parse(result)
@@ -572,9 +573,9 @@ func TestRefreshDoesNotClearScopeOrPriorDiagnostic(t *testing.T) {
 	ledgerPath := filepath.Join(dir, "project-understanding.yaml")
 	require.NoError(t, os.WriteFile(ledgerPath, []byte(strings.Replace(linkedLedger, "work:first:", "work:missing:", 1)), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 	require.NoError(t, os.WriteFile(ledgerPath, []byte(linkedLedger), 0600))
-	require.NoError(t, refreshStatus(dir, "decision"))
+	require.NoError(t, refreshTestStatus(dir, "decision"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "scope_complete: false")
@@ -596,7 +597,7 @@ func TestRequirementChangeSourceFailurePublishesOnce(t *testing.T) {
 	//
 	// Example: Verify that failure diagnostics publish once.
 	func() { publications++ }}
-	require.Error(t, refreshLinkedStatus(dir, "requirement_change", observer))
+	require.Error(t, refreshTestLinkedStatus(dir, "requirement_change", observer))
 	require.Equal(t, 1, publications)
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -616,7 +617,7 @@ func TestRefreshPreservesMultilineForecastScalar(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.ErrorContains(t, refreshStatus(dir, "forecast_change"), "multiline forecast scalar")
+	require.ErrorContains(t, refreshTestStatus(dir, "forecast_change"), "multiline forecast scalar")
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "First result\n        with detail")
@@ -635,14 +636,14 @@ func TestRefreshPreservesFlowCommentWithClosingBrace(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "# context } untouched")
 	parsed, err := parse(result)
 	require.NoError(t, err)
 	require.NotEmpty(t, parsed.Lanes[0].Forecast.SourceProjection)
-	require.Empty(t, reconcile(parsed, dir))
+	require.Empty(t, testReconcile(parsed, dir))
 }
 
 // TestLexerFlowBoundaryIgnoresCommentsAndUnicode verifies the refresh behavior.
@@ -766,7 +767,7 @@ func TestRequirementChangePreservesSingleLineReportWithUnicode(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, append(original, '\n'), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 	updated, err := os.ReadFile(path)
 	require.NoError(t, err)
 	parsed, err := parse(updated)
@@ -909,19 +910,21 @@ func TestRefreshProjectsPlainScalarPunctuation(t *testing.T) {
 				original := "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}"
 				block := "    forecast:\n      forecast_ref: 'forecasts.yaml#/records/first'\n      outcome: " + old + " # preserve comment\n      target: '2026-11-02T16:00:00Z'\n      assessment: complete\n      baseline: '2026-11-02T16:00:00Z'\n      evidence: initial"
 				report := strings.Replace(linkedReport, original, block, 1)
+				report = strings.Replace(report, "    outcome: First result\n", "    outcome: Updated result\n", 1)
+				ledger := strings.Replace(linkedLedger, "data: {description: First result}", "data: {description: Updated result}", 1)
 				source := strings.Replace(linkedForecasts, "outcome: First result", "outcome: Updated result", 1)
 				require.NoError(t, os.WriteFile(path, []byte(report), 0600))
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-				require.NoError(t, refreshStatus(dir, "forecast_change"))
+				require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 				result, err := os.ReadFile(path)
 				require.NoError(t, err)
 				parsed, err := parse(result)
 				require.NoError(t, err)
 				require.Equal(t, "Updated result", parsed.Lanes[0].Forecast.Outcome)
 				require.Contains(t, string(result), "# preserve comment")
-				require.Empty(t, reconcile(parsed, dir))
-				require.NoError(t, refreshStatus(dir, "forecast_change"))
+				require.Empty(t, testReconcile(parsed, dir))
+				require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 				again, err := os.ReadFile(path)
 				require.NoError(t, err)
 				require.Equal(t, result, again)
@@ -942,7 +945,7 @@ func TestRefreshRefusesMultilineQuotedScalar(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
-	require.Error(t, refreshStatus(dir, "forecast_change"))
+	require.Error(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "outcome: 'First\n        result'")
@@ -984,7 +987,7 @@ func TestRefreshDoesNotProjectUndeclaredForecastRole(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	parsed, err := parse(result)
@@ -1004,7 +1007,7 @@ func TestRefreshDoesNotProjectRedundantRoot(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	parsed, err := parse(result)
@@ -1021,4 +1024,105 @@ func TestRemoveUnpublishedReportsUnexpectedFailure(t *testing.T) {
 	require.NoError(t, removeUnpublished(filepath.Join(dir, "already-renamed")))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "child"), []byte("keep"), 0600))
 	require.Error(t, removeUnpublished(dir))
+}
+
+// TestRefreshEvaluatesElapsedForecastsAtCapturedTime checks refresh-time evaluation.
+//
+// Example: An expired target is marked incomplete without changing authored timestamps.
+func TestRefreshEvaluatesElapsedForecastsAtCapturedTime(t *testing.T) {
+	cases := []struct {
+		Name       string
+		Evaluation time.Time
+		Incomplete bool
+	}{
+		{Name: "future target", Evaluation: time.Date(2026, 11, 2, 15, 30, 0, 0, time.UTC)},
+		{Name: "expired target", Evaluation: time.Date(2026, 11, 2, 16, 15, 0, 0, time.UTC), Incomplete: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name,
+			// Callback checks one explicit evaluation instant.
+			//
+			// Example: Evaluate an already elapsed forecast.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
+				require.NoError(t, refreshStatusAt(dir, "forecast_change", tc.Evaluation))
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				report, err := parse(result)
+				require.NoError(t, err)
+				require.Equal(t, !tc.Incomplete, *report.ScopeComplete, string(result))
+				if tc.Incomplete {
+					require.Contains(t, string(result), "target elapsed while work open")
+				} else {
+					require.NotContains(t, string(result), "target elapsed while work open")
+				}
+				require.Contains(t, string(result), "timestamp: '2026-11-02T15:24:00Z'")
+				require.Contains(t, string(result), "as_of: '2026-11-02T15:24:00Z'")
+			})
+	}
+}
+
+// TestRefreshRejectsContradictoryUnchangedRecalibration checks source truth.
+//
+// Example: A prior target differing from an unchanged current target is incomplete.
+func TestRefreshRejectsContradictoryUnchangedRecalibration(t *testing.T) {
+	cases := []struct {
+		Name, Prior string
+		Invalid     bool
+	}{
+		{Name: "matching prior", Prior: "2026-11-02T16:00:00Z"},
+		{Name: "different prior", Prior: "2026-11-02T15:30:00Z", Invalid: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name,
+			// Callback checks one canonical recalibration record.
+			//
+			// Example: Reject an unchanged forecast with a different prior target.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				source := strings.Replace(linkedForecasts, "recalibration: {status: unchanged, evidence: initial}", "recalibration: {status: unchanged, prior: '"+tc.Prior+"', current: '2026-11-02T16:00:00Z', evidence: initial}", 1)
+				require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
+				err := refreshStatusAt(dir, "forecast_change", time.Date(2026, 11, 2, 15, 30, 0, 0, time.UTC))
+				result, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				report, parseErr := parse(result)
+				require.NoError(t, parseErr)
+				if tc.Invalid {
+					require.Error(t, err)
+					require.False(t, *report.ScopeComplete)
+					require.Contains(t, string(result), "recalibration")
+				} else {
+					require.NoError(t, err)
+					require.True(t, *report.ScopeComplete, string(result))
+				}
+			})
+	}
+}
+
+// refreshTestStatus evaluates a fixture at its fixed report time.
+//
+// Example: Keep a forecast fixture independent of the wall clock.
+func refreshTestStatus(
+	dir string,
+	event string,
+) error {
+	return refreshStatusAt(dir, event, time.Date(2026, 11, 2, 15, 24, 0, 0, time.UTC))
+}
+
+// refreshTestLinkedStatus evaluates a fixture using a test publication observer.
+//
+// Example: Simulate a concurrent write at a deterministic evaluation time.
+func refreshTestLinkedStatus(
+	dir string,
+	event string,
+	observer refreshObserver,
+) error {
+	return refreshLinkedStatusAt(dir, event, observer, time.Date(2026, 11, 2, 15, 24, 0, 0, time.UTC))
 }
