@@ -198,6 +198,7 @@ The Supervisor may edit session-local coordination records, ledgers, plans, stat
 | Debugging/test failures/unexpected behavior/performance/build failures | `debugging-discipline` |
 | Writing / modifying / reviewing code in any language, including diffs and PRs | `coding-common` |
 | Go / Python code | `coding-go` / `coding-python` |
+| Questions or investigations about coding instructions | `coding-common` and relevant language skills; inspect available language-specific skills when no language is specified |
 | Tests / code implementation / logic-heavy implementation | `testing-discipline` / `test-driven-development` / `proof-driven-development` |
 | Android device work: `adb`, `fastboot`, flashing, kernel updates | `android-device` |
 | CODEX selects `ECI` | `explore-critique-implement` |
