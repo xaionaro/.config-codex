@@ -173,23 +173,11 @@ func parse(data []byte) (report, error) {
 			return r, fmt.Errorf("task %s: CLOSED requires acceptance evidence", t.ID)
 		}
 	}
-	// Each non-root parent is a strictly shorter prefix, so cycles are impossible.
 	for _, t := range r.Tasks {
-		if at := strings.LastIndex(string(t.ID), "."); at >= 0 {
-			if at == 0 || at == len(t.ID)-1 || strings.Contains(string(t.ID), "..") {
-				return r, fmt.Errorf("task %s: malformed hierarchical ID", t.ID)
-			}
-			if t.ParentID != t.ID[:at] {
-				return r, fmt.Errorf("task %s: parent_id must match hierarchical ancestry", t.ID)
-			}
-		}
-		if !strings.Contains(string(t.ID), ".") && t.ParentID != "" {
-			return r, fmt.Errorf("task %s: root ID cannot name a parent", t.ID)
+		if err := validateTaskAncestry(t, byID); err != nil {
+			return r, err
 		}
 		if t.ParentID != "" {
-			if _, ok := byID[t.ParentID]; !ok {
-				return r, fmt.Errorf("task %s: missing parent %s", t.ID, t.ParentID)
-			}
 			children[t.ParentID]++
 		}
 	}
@@ -335,30 +323,9 @@ func writeValue(
 	pad := strings.Repeat("  ", depth)
 	switch x := v.(type) {
 	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			switch x[k].(type) {
-			case map[string]any, []any:
-				fmt.Fprintf(b, "%s%s:\n", pad, k)
-				writeValue(b, x[k], depth+1)
-			default:
-				fmt.Fprintf(b, "%s%s: %v\n", pad, k, x[k])
-			}
-		}
+		writeDetailMap(b, x, depth)
 	case []any:
-		for _, item := range x {
-			switch item.(type) {
-			case map[string]any, []any:
-				fmt.Fprintf(b, "%s-\n", pad)
-				writeValue(b, item, depth+1)
-			default:
-				fmt.Fprintf(b, "%s- %v\n", pad, item)
-			}
-		}
+		writeDetailList(b, x, depth)
 	case []map[string]any:
 		for _, item := range x {
 			fmt.Fprintf(b, "%s-\n", pad)
@@ -503,5 +470,98 @@ func writeTaskTree(
 	for _, id := range orderTaskIDs(children[parent], byID, order) {
 		writeTaskLine(b, byID[id], strings.Repeat("  ", depth))
 		writeTaskTree(b, byID, children, order, id, depth+1)
+	}
+}
+
+// validateTaskAncestry enforces the strictly shorter parent-prefix invariant.
+//
+// Example: Task 1.2 must refer to existing parent 1.
+func validateTaskAncestry(
+	t task,
+	byID map[taskID]task,
+) error {
+	at := strings.LastIndex(string(t.ID), ".")
+	if at >= 0 && (at == 0 || at == len(t.ID)-1 || strings.Contains(string(t.ID), "..")) {
+		return fmt.Errorf("task %s: malformed hierarchical ID", t.ID)
+	}
+	if at >= 0 && t.ParentID != t.ID[:at] {
+		return fmt.Errorf("task %s: parent_id must match hierarchical ancestry", t.ID)
+	}
+	if at < 0 && t.ParentID != "" {
+		return fmt.Errorf("task %s: root ID cannot name a parent", t.ID)
+	}
+	if t.ParentID != "" {
+		if _, ok := byID[t.ParentID]; !ok {
+			return fmt.Errorf("task %s: missing parent %s", t.ID, t.ParentID)
+		}
+	}
+	return nil
+}
+
+// writeDetailMap renders extensible mappings in deterministic key order.
+//
+// Example: Evidence keys appear in a stable order.
+func writeDetailMap(
+	b *strings.Builder,
+	value map[string]any,
+	depth int,
+) {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		writeDetailField(b, key, value[key], depth)
+	}
+}
+
+// writeDetailField renders one scalar or nested mapping entry.
+//
+// Example: A nested evidence map is rendered beneath its key.
+func writeDetailField(
+	b *strings.Builder,
+	key string,
+	value any,
+	depth int,
+) {
+	pad := strings.Repeat("  ", depth)
+	switch value.(type) {
+	case map[string]any, []any:
+		fmt.Fprintf(b, "%s%s:\n", pad, key)
+		writeValue(b, value, depth+1)
+	default:
+		fmt.Fprintf(b, "%s%s: %v\n", pad, key, value)
+	}
+}
+
+// writeDetailList renders extensible sequence entries in input order.
+//
+// Example: Multiple evidence notes remain separate list items.
+func writeDetailList(
+	b *strings.Builder,
+	values []any,
+	depth int,
+) {
+	for _, value := range values {
+		writeDetailItem(b, value, depth)
+	}
+}
+
+// writeDetailItem renders one scalar or nested sequence item.
+//
+// Example: A nested decision list is rendered beneath its bullet.
+func writeDetailItem(
+	b *strings.Builder,
+	value any,
+	depth int,
+) {
+	pad := strings.Repeat("  ", depth)
+	switch value.(type) {
+	case map[string]any, []any:
+		fmt.Fprintf(b, "%s-\n", pad)
+		writeValue(b, value, depth+1)
+	default:
+		fmt.Fprintf(b, "%s- %v\n", pad, value)
 	}
 }

@@ -137,9 +137,7 @@ func renderForecastDetails(
 	}
 	switch {
 	case f.Prior != "":
-		fmt.Fprintf(b, "Forecast recalibration: %s → %s", f.Prior, f.Target)
-		writeForecastEvidence(b, f)
-		fmt.Fprintln(b, ".")
+		renderPriorForecast(b, f)
 	case f.Baseline != "":
 		renderForecastBaseline(b, f)
 	default:
@@ -210,5 +208,41 @@ func renderForecastBaseline(
 	}
 	if f.Reason != "" {
 		fmt.Fprintf(b, "Forecast reason: %s\n", f.Reason)
+	}
+}
+
+// renderPriorForecast reports movement only when both instants support it.
+//
+// Example: Equivalent Z and +00:00 times render as unchanged.
+func renderPriorForecast(
+	b *strings.Builder,
+	f forecast,
+) {
+	switch {
+	case sameForecastInstant(f.Prior, f.Target):
+		fmt.Fprintf(b, "Forecast recalibration: unchanged — prior %s; current target %s.\n", f.Prior, f.Target)
+		writeForecastContext(b, f)
+	case f.Prior == "unknown" || f.Target == "unknown":
+		fmt.Fprintf(b, "Forecast recalibration: prior %s; current target %s; movement unknown.\n", f.Prior, f.Target)
+		writeForecastContext(b, f)
+	default:
+		fmt.Fprintf(b, "Forecast recalibration: %s → %s", f.Prior, f.Target)
+		writeForecastEvidence(b, f)
+		fmt.Fprintln(b, ".")
+	}
+}
+
+// writeForecastContext preserves context without implying a deadline moved.
+//
+// Example: An unchanged forecast can still have supplied evidence.
+func writeForecastContext(
+	b *strings.Builder,
+	f forecast,
+) {
+	if f.Reason != "" {
+		fmt.Fprintf(b, "Forecast reason: %s\n", f.Reason)
+	}
+	if f.Evidence != "" {
+		fmt.Fprintf(b, "Forecast evidence: %s\n", f.Evidence)
 	}
 }

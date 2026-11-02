@@ -1083,3 +1083,30 @@ func TestForecastPriorAndBaselineValidation(t *testing.T) {
 	require.NotContains(t, out, "why moved: pending")
 	require.NotContains(t, out, "unchanged — baseline 2026-11-02T15:00:00Z")
 }
+
+// TestPriorForecastComparisonDoesNotInventMovement checks prior/current semantics.
+//
+// Example: Equivalent UTC representations do not imply a changed deadline.
+func TestPriorForecastComparisonDoesNotInventMovement(t *testing.T) {
+	for _, tc := range []struct {
+		prior, target, want string
+		moved               bool
+	}{
+		{"2026-11-02T16:00:00Z", "2026-11-02T16:00:00Z", "unchanged", false},
+		{"2026-11-02T16:00:00+00:00", "2026-11-02T16:00:00Z", "unchanged", false},
+		{"2026-11-02T15:00:00Z", "2026-11-02T16:00:00Z", "why moved: reason-marker", true},
+		{"unknown", "2026-11-02T16:00:00Z", "movement unknown", false},
+		{"2026-11-02T15:00:00Z", "unknown", "movement unknown", false},
+	} {
+		doc := valid + "root_forecasts:\n  - {outcome: Work, target: '" + tc.target + "', prior: '" + tc.prior + "', reason: reason-marker, evidence: evidence-marker, assessment: provisional}\n"
+		r, err := parse([]byte(doc))
+		require.NoError(t, err)
+		out := render(r)
+		require.Contains(t, out, tc.want)
+		require.Equal(t, 1, strings.Count(out, "reason-marker"))
+		require.Equal(t, 1, strings.Count(out, "evidence-marker"))
+		if !tc.moved {
+			require.NotContains(t, out, "why moved:")
+		}
+	}
+}
