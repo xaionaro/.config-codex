@@ -19,6 +19,11 @@ import (
 // Example: workState is the lifecycle state recorded in the canonical ledger.
 type workState string
 
+// sourceRef is a canonical document-and-record locator.
+//
+// Example: Identify one forecast record in forecasts.yaml.
+type sourceRef string
+
 // workData holds canonical work facts used for status reconciliation.
 //
 // Example: workData holds canonical work facts used for status reconciliation.
@@ -28,7 +33,7 @@ type workData struct {
 	NextAction  string    `yaml:"next_action"`
 	State       workState `yaml:"state"`
 	Roles       []string  `yaml:"reporting_roles"`
-	ForecastRef string    `yaml:"forecast_ref"`
+	ForecastRef sourceRef `yaml:"forecast_ref"`
 }
 
 // sourceRecord holds the relevant work and outcome fields of a ledger record.
@@ -333,6 +338,41 @@ func ledgerRecordIssues(
 	return issues
 }
 
+// reconciliationIssues accumulates advisory source consistency findings.
+//
+// Example: Collect an unavailable source and a mismatched forecast.
+type reconciliationIssues []string
+
+// add appends one source consistency finding.
+//
+// Example: Record an unresolved work reference.
+func (i *reconciliationIssues) add(
+	format string,
+	args ...any,
+) {
+	*i = append(*i, fmt.Sprintf(format, args...))
+}
+
+// resolveWorkRef resolves one canonical locator against the work inventory.
+//
+// Example: Resolve a task's work reference.
+func resolveWorkRef(
+	ref string,
+	works map[string]sourceRecord,
+	issues *reconciliationIssues,
+) string {
+	if !validRef(ref, "project-understanding.yaml") {
+		issues.add("invalid work reference %q", ref)
+		return ""
+	}
+	id := sourceID(ref, "project-understanding.yaml")
+	if _, ok := works[id]; !ok {
+		issues.add("unknown work reference %q", ref)
+		return ""
+	}
+	return id
+}
+
 // reconcile checks a report against canonical session sources without mutation.
 //
 // Example: reconcile checks a report against canonical session sources without mutation.
@@ -340,13 +380,9 @@ func reconcile(
 	r report,
 	dir string,
 ) []string {
-	var issues []string
-	add := // add appends one source reconciliation issue.
-		//
-		// Example: Record an unresolved forecast.
-		func(format string, args ...any) { issues = append(issues, fmt.Sprintf(format, args...)) }
+	var issues reconciliationIssues
 	if !*r.ScopeComplete {
-		add("report declares scope incomplete")
+		issues.add("report declares scope incomplete")
 	}
 	if dir == "" {
 		return append(issues, "session context unavailable; coverage and forecasts unverified")
@@ -354,7 +390,7 @@ func reconcile(
 	var ledger ledgerSource
 	if err := readSource(filepath.Join(dir, "project-understanding.yaml"), &ledger); err != nil || ledger.Schema != "project-understanding/v1" || ledger.Sections == nil || ledger.Records == nil {
 		if _, err := os.Stat(filepath.Join(dir, "forecasts.yaml")); err != nil {
-			add("forecast source unavailable; applicability unverified")
+			issues.add("forecast source unavailable; applicability unverified")
 		}
 		return append(issues, "ledger unavailable, malformed, or unsupported; coverage and forecasts unverified")
 	}
@@ -380,36 +416,21 @@ func reconcile(
 	}
 	lanes := map[string]lane{}
 	rootRefs := map[string]bool{}
-	resolve := // resolve maps a canonical locator to its work identity.
-		//
-		// Example: Resolve a task work reference.
-		func(ref string) string {
-			if !validRef(ref, "project-understanding.yaml") {
-				add("invalid work reference %q", ref)
-				return ""
-			}
-			id := sourceID(ref, "project-understanding.yaml")
-			if _, ok := works[id]; !ok {
-				add("unknown work reference %q", ref)
-				return ""
-			}
-			return id
-		}
 	for _, t := range r.Tasks {
 		for _, ref := range t.WorkRefs {
-			resolve(ref)
+			resolveWorkRef(ref, works, &issues)
 		}
 	}
 	rootCompletions := map[string]rootCompletion{}
 	for _, c := range r.RootCompletions {
-		if id := resolve(c.WorkRef); id != "" {
+		if id := resolveWorkRef(c.WorkRef, works, &issues); id != "" {
 			if _, ok := rootCompletions[id]; ok {
-				add("duplicate root completion %s", id)
+				issues.add("duplicate root completion %s", id)
 			}
 			rootCompletions[id] = c
 			w := works[id]
 			if !hasRole(w.Data.Roles, "root") || w.Data.State != "completed" {
-				add("root completion %s does not reference completed root work", id)
+				issues.add("root completion %s does not reference completed root work", id)
 			}
 			matched := false
 			for _, outcomeID := range w.OutcomeRefs {
@@ -418,20 +439,20 @@ func reconcile(
 				}
 			}
 			if !matched {
-				add("root completion %s outcome unverified against linked outcomes", id)
+				issues.add("root completion %s outcome unverified against linked outcomes", id)
 			}
 			if !sameValue(w.Data.CompletedAt, c.CompletedAt) {
-				add("root completion %s completed_at mismatch: source %q; report %q", id, w.Data.CompletedAt, c.CompletedAt)
+				issues.add("root completion %s completed_at mismatch: source %q; report %q", id, w.Data.CompletedAt, c.CompletedAt)
 			}
 		}
 	}
 	for _, l := range r.Lanes {
-		if id := resolve(l.WorkRef); id != "" {
+		if id := resolveWorkRef(l.WorkRef, works, &issues); id != "" {
 			if !hasRole(works[id].Data.Roles, "lane") {
-				add("work %s is not declared a lane", id)
+				issues.add("work %s is not declared a lane", id)
 			}
 			if _, ok := lanes[id]; ok {
-				add("duplicate lane for %s", id)
+				issues.add("duplicate lane for %s", id)
 			}
 			lanes[id] = l
 		}
@@ -448,164 +469,10 @@ func reconcile(
 	}
 	for ref, count := range forecastCounts {
 		if count > 1 {
-			add("duplicate report forecast reference %q", ref)
+			issues.add("duplicate report forecast reference %q", ref)
 		}
 	}
-	usedForecasts := map[string]bool{}
-	var forecasts forecastSource
-	loaded := false
-	loadForecasts := // loadForecasts reads the canonical forecasts once.
-		//
-		// Example: Load forecasts for an active lane.
-		func() bool {
-			if !loaded {
-				loaded = true
-				if err := readSource(filepath.Join(dir, "forecasts.yaml"), &forecasts); err != nil || forecasts.Schema != "forecasts/v1" || forecasts.Records == nil {
-					add("forecasts unavailable, malformed, or unsupported")
-					return false
-				}
-			}
-			return forecasts.Records != nil
-		}
-	checkForecast := // checkForecast compares one applicable source and projection.
-		//
-		// Example: Compare an active lane forecast.
-		func(
-			ref string,
-			f *forecast,
-			kind string,
-			open bool,
-		) {
-			if f != nil {
-				usedForecasts[f.ForecastRef] = true
-			}
-			if !validRef(ref, "forecasts.yaml") {
-				add("invalid or missing forecast reference %q", ref)
-				return
-			}
-			if !loadForecasts() {
-				return
-			}
-			id := sourceID(ref, "forecasts.yaml")
-			src, ok := forecasts.Records[id]
-			if !ok {
-				add("forecast %s missing", id)
-				return
-			}
-			if textField(src, "kind") != kind {
-				add("forecast %s kind mismatch", id)
-			}
-			for _, field := range []string{"kind", "status", "outcome", "assessment", "original_baseline", "baseline_evidence"} {
-				if textField(src, field) == "" {
-					add("forecast %s source missing required %s", id, field)
-				}
-			}
-			recal, ok := src["recalibration"].(map[string]any)
-			if !ok {
-				add("forecast %s source missing recalibration", id)
-			}
-			if ok {
-				status := textField(recal, "status")
-				if status != "unchanged" && status != "changed" {
-					add("forecast %s source has invalid recalibration status", id)
-				}
-				if textField(recal, "evidence") == "" {
-					add("forecast %s source missing recalibration evidence", id)
-				}
-				if status == "changed" {
-					for _, field := range []string{"prior", "current", "reason"} {
-						if textField(recal, field) == "" {
-							add("forecast %s source missing recalibration %s", id, field)
-						}
-					}
-				}
-			}
-			for _, issue := range forecastStructure(src) {
-				add("forecast %s source %s", id, issue)
-			}
-			assessment := textField(src, "assessment")
-			if assessment != "complete" && assessment != "provisional" {
-				add("forecast %s source has invalid assessment %q", id, assessment)
-			}
-			if assessment == "provisional" && textField(src, "target_basis") == "" {
-				add("forecast %s provisional source missing target_basis", id)
-			}
-			state := textField(src, "status")
-			if state != "active" && state != "inactive" {
-				add("forecast %s source has invalid status %q", id, state)
-			}
-			if open && textField(src, "target") == "" {
-				add("forecast %s source missing required target", id)
-			}
-			if open && state != "active" {
-				add("forecast %s is not active", id)
-			}
-			if !open && state == "active" {
-				add("closed work has active forecast %s", id)
-			}
-			if !open {
-				if f != nil {
-					add("terminal work has report forecast %s", id)
-				}
-				return
-			}
-			if f == nil {
-				add("forecast %s missing from report", id)
-				return
-			}
-			if f.Target == "unknown" || f.Assessment == "unknown" {
-				add("forecast %s has unknown target or assessment", id)
-			}
-			if f.ForecastRef != ref {
-				add("forecast %s reference mismatch", id)
-			}
-			for _, v := range []struct{ k, got string }{{"outcome", f.Outcome}, {"target", f.Target}, {"assessment", f.Assessment}, {"original_baseline", f.Baseline}} {
-				if !sameValue(textField(src, v.k), v.got) {
-					add("forecast %s %s mismatch: source %q; report %q", id, v.k, textField(src, v.k), v.got)
-				}
-			}
-			if rec, ok := src["recalibration"].(map[string]any); ok {
-				if current := textField(rec, "current"); current != "" && !sameValue(current, f.Target) {
-					add("forecast %s recalibration current mismatch: source %q; report %q", id, current, f.Target)
-				}
-				for _, v := range []struct{ k, got string }{{"prior", f.Prior}, {"reason", f.Reason}, {"evidence", f.Evidence}} {
-					if !sameValue(textField(rec, v.k), v.got) {
-						add("forecast %s recalibration %s mismatch", id, v.k)
-					}
-				}
-			}
-			if len(f.Scenarios) > 0 {
-				add("forecast %s report scenarios cannot be verified against canonical scenarios; use source_projection", id)
-			}
-			for k := range src {
-				switch k {
-				case "kind", "status", "outcome", "target", "assessment", "original_baseline", "recalibration", "target_basis", "baseline_evidence", "base_case", "scenarios":
-				default:
-					add("forecast %s source field %s is unsupported", id, k)
-				}
-			}
-			for k := range f.SourceProjection {
-				if k != "target_basis" && k != "baseline_evidence" && k != "base_case" && k != "scenarios" {
-					add("forecast %s unsupported source_projection field %s", id, k)
-				}
-			}
-			for _, k := range []string{"target_basis", "baseline_evidence", "base_case", "scenarios"} {
-				source, present := src[k]
-				projected, supplied := f.SourceProjection[k]
-				if k == "baseline_evidence" && !supplied && textField(src, k) == f.Evidence {
-					continue
-				}
-				if present != supplied || (present && !projectionEqual(source, projected)) {
-					add("forecast %s %s projection mismatch or missing", id, k)
-				}
-			}
-			if target, err := parseUTC(textField(src, "target")); err == nil {
-				at, _ := parseUTC(r.Timestamp)
-				if !target.After(at) {
-					add("forecast %s target elapsed while work open", id)
-				}
-			}
-		}
+	forecastChecks := forecastReconciler{dir: dir, timestamp: r.Timestamp, issues: &issues, used: map[string]bool{}}
 	ids := make([]string, 0, len(works))
 	for id := range works {
 		ids = append(ids, id)
@@ -615,111 +482,111 @@ func reconcile(
 		w := works[id]
 		open := openWork(w.Data.State)
 		if open && !scope.covered[workID(id)] {
-			add("active work %s missing from task coverage", id)
+			issues.add("active work %s missing from task coverage", id)
 		}
 		l, represented := lanes[id]
 		if open && scope.covered[workID(id)] && !scope.remaining[workID(id)] {
 			if represented && l.requiredStatus() != statusClosed && l.Lifecycle != "cancelled" && allClosed {
-				add("work %s remaining acceptance is represented by an open lane outside scored leaf packages", id)
+				issues.add("work %s remaining acceptance is represented by an open lane outside scored leaf packages", id)
 			}
 			if !represented || l.requiredStatus() == statusClosed || l.Lifecycle == "cancelled" {
-				add("active work %s has no remaining package or open acceptance lane", id)
+				issues.add("active work %s has no remaining package or open acceptance lane", id)
 			}
 		}
-		if w.Data.ForecastRef != "" && !hasRole(w.Data.Roles, "lane") && !hasRole(w.Data.Roles, "root") {
-			if !validRef(w.Data.ForecastRef, "forecasts.yaml") {
-				add("work %s has invalid forecast reference", id)
+		if string(w.Data.ForecastRef) != "" && !hasRole(w.Data.Roles, "lane") && !hasRole(w.Data.Roles, "root") {
+			if !validRef(string(w.Data.ForecastRef), "forecasts.yaml") {
+				issues.add("work %s has invalid forecast reference", id)
 			}
-			if validRef(w.Data.ForecastRef, "forecasts.yaml") && loadForecasts() {
-				source, ok := forecasts.Records[sourceID(w.Data.ForecastRef, "forecasts.yaml")]
+			if validRef(string(w.Data.ForecastRef), "forecasts.yaml") && forecastChecks.load() {
+				source, ok := forecastChecks.source.Records[sourceID(string(w.Data.ForecastRef), "forecasts.yaml")]
 				if !ok || textField(source, "status") != "inactive" {
-					add("work %s forecast has no applicable reporting role", id)
+					issues.add("work %s forecast has no applicable reporting role", id)
 				}
 			}
 		}
 		if w.Data.State == "completed" && (hasRole(w.Data.Roles, "lane") || hasRole(w.Data.Roles, "root")) {
 			if _, err := parseUTC(w.Data.CompletedAt); err != nil {
-				add("completed work %s missing or invalid completed_at", id)
+				issues.add("completed work %s missing or invalid completed_at", id)
 			}
 			if represented && !sameValue(w.Data.CompletedAt, l.CompletedAt) {
-				add("work %s completed_at mismatch: source %q; report %q", id, w.Data.CompletedAt, l.CompletedAt)
+				issues.add("work %s completed_at mismatch: source %q; report %q", id, w.Data.CompletedAt, l.CompletedAt)
 			}
 			if !represented && !hasRole(w.Data.Roles, "root") {
-				add("completed forecasted work %s completion projection unverified", id)
+				issues.add("completed forecasted work %s completion projection unverified", id)
 			}
 		}
 		if hasRole(w.Data.Roles, "lane") {
 			if !represented {
 				if w.Data.State != "cancelled" {
-					add("declared lane %s missing from report", id)
+					issues.add("declared lane %s missing from report", id)
 				}
-				if w.Data.State == "cancelled" && w.Data.ForecastRef != "" {
-					checkForecast(w.Data.ForecastRef, nil, "lane", false)
+				if w.Data.State == "cancelled" && string(w.Data.ForecastRef) != "" {
+					forecastChecks.check(string(w.Data.ForecastRef), nil, "lane", false)
 				}
 			}
 			if represented {
 				if open && l.requiredStatus() == statusClosed {
-					add("open lane %s reported closed", id)
+					issues.add("open lane %s reported closed", id)
 				}
 				if w.Data.State == "completed" && l.requiredStatus() != statusClosed {
-					add("closed lane %s reported open", id)
+					issues.add("closed lane %s reported open", id)
 				}
 				if w.Data.State == "cancelled" && l.Lifecycle != "cancelled" {
-					add("cancelled lane %s lifecycle is not marked cancelled", id)
+					issues.add("cancelled lane %s lifecycle is not marked cancelled", id)
 				}
 				if w.Data.State != "cancelled" && l.Lifecycle != "" {
-					add("lane %s lifecycle conflicts with source state", id)
+					issues.add("lane %s lifecycle conflicts with source state", id)
 				}
 				if w.Data.State == "cancelled" && l.CompletedAt != "" {
-					add("cancelled lane %s must not claim completion", id)
+					issues.add("cancelled lane %s must not claim completion", id)
 				}
-				if w.Data.ForecastRef != "" || forecastApplicable(w, "lane", represented) || l.Forecast != nil {
-					checkForecast(w.Data.ForecastRef, l.Forecast, "lane", open)
+				if string(w.Data.ForecastRef) != "" || forecastApplicable(w, "lane", represented) || l.Forecast != nil {
+					forecastChecks.check(string(w.Data.ForecastRef), l.Forecast, "lane", open)
 				}
 			}
 		}
 		if hasRole(w.Data.Roles, "root") && !represented && !(w.Data.State == "cancelled" && hasRole(w.Data.Roles, "lane")) {
 			if w.Data.State == "completed" {
 				if _, ok := rootCompletions[id]; !ok {
-					add("completed root %s completion missing from report", id)
+					issues.add("completed root %s completion missing from report", id)
 				}
 			}
-			if forecastApplicable(w, "root", represented) && !rootRefs[w.Data.ForecastRef] {
-				add("active root %s forecast missing from report", id)
+			if forecastApplicable(w, "root", represented) && !rootRefs[string(w.Data.ForecastRef)] {
+				issues.add("active root %s forecast missing from report", id)
 			}
 			var f *forecast
 			for i := range r.RootForecasts {
-				if r.RootForecasts[i].ForecastRef == w.Data.ForecastRef {
+				if r.RootForecasts[i].ForecastRef == string(w.Data.ForecastRef) {
 					f = &r.RootForecasts[i]
 					break
 				}
 			}
-			if w.Data.ForecastRef != "" || open {
-				checkForecast(w.Data.ForecastRef, f, "root", open)
+			if string(w.Data.ForecastRef) != "" || open {
+				forecastChecks.check(string(w.Data.ForecastRef), f, "root", open)
 			}
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "forecasts.yaml")); err == nil && loadForecasts() {
+	if _, err := os.Stat(filepath.Join(dir, "forecasts.yaml")); err == nil && forecastChecks.load() {
 		claimed := map[string]bool{}
 		for _, w := range works {
-			if w.Data.ForecastRef != "" {
-				claimed[w.Data.ForecastRef] = true
+			if string(w.Data.ForecastRef) != "" {
+				claimed[string(w.Data.ForecastRef)] = true
 			}
 		}
-		for id, source := range forecasts.Records {
+		for id, source := range forecastChecks.source.Records {
 			if textField(source, "status") == "active" && !claimed["forecasts.yaml#/records/"+id] {
-				add("active canonical forecast %s is not linked to work", id)
+				issues.add("active canonical forecast %s is not linked to work", id)
 			}
 		}
 	}
 	for _, f := range r.RootForecasts {
-		if !usedForecasts[f.ForecastRef] {
-			add("root forecast %q is not linked to applicable work", f.ForecastRef)
+		if !forecastChecks.used[f.ForecastRef] {
+			issues.add("root forecast %q is not linked to applicable work", f.ForecastRef)
 		}
 	}
 	for _, l := range r.Lanes {
-		if l.Forecast != nil && !usedForecasts[l.Forecast.ForecastRef] {
-			add("lane forecast %q is not linked to applicable work", l.Forecast.ForecastRef)
+		if l.Forecast != nil && !forecastChecks.used[l.Forecast.ForecastRef] {
+			issues.add("lane forecast %q is not linked to applicable work", l.Forecast.ForecastRef)
 		}
 	}
 	at, _ := parseUTC(r.Timestamp)
@@ -743,10 +610,10 @@ func reconcile(
 			continue
 		}
 		if base.After(at) {
-			add("completion estimate as_of %s is in the future", e.AsOf)
+			issues.add("completion estimate as_of %s is in the future", e.AsOf)
 		}
 		if !base.After(at) && relevantOpen && e.MaxMinutes != nil && !base.Add(time.Duration(float64(*e.MaxMinutes)*float64(time.Minute))).After(at) {
-			add("completion estimate as_of %s endpoint elapsed while work open", e.AsOf)
+			issues.add("completion estimate as_of %s endpoint elapsed while work open", e.AsOf)
 		}
 	}
 	return issues

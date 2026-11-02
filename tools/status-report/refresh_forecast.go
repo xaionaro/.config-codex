@@ -209,7 +209,7 @@ func hasApplicableRoot(
 	laneRefs []string,
 ) bool {
 	for id, record := range ledger.Records {
-		if record.Data.ForecastRef == ref && forecastApplicable(record, "root", laneReferencesWork(id, laneRefs)) {
+		if record.Data.ForecastRef == sourceRef(ref) && forecastApplicable(record, "root", laneReferencesWork(id, laneRefs)) {
 			return true
 		}
 	}
@@ -570,7 +570,7 @@ func forecastItemEdits(
 			return nil, nil
 		}
 		ref := mapValue(forecast, "forecast_ref")
-		if ref == nil || ref.Value != record.Data.ForecastRef {
+		if ref == nil || sourceRef(ref.Value) != record.Data.ForecastRef {
 			return nil, nil
 		}
 	}

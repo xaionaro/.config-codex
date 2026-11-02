@@ -181,7 +181,7 @@ func linkedForecastMaps(
 		}
 		a, _ = left["forecast"].(map[string]any)
 		b, _ = right["forecast"].(map[string]any)
-		if a == nil || b == nil || a["forecast_ref"] != record.Data.ForecastRef {
+		if a == nil || b == nil || a["forecast_ref"] != string(record.Data.ForecastRef) {
 			return nil, nil, ""
 		}
 	}
