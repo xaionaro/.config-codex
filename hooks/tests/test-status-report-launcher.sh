@@ -70,3 +70,27 @@ for result in relative-stdin.txt relative-dir.txt; do
 	fi
 	grep -q 'Full task tree' "$result"
 done
+mkdir 'session dir'
+cp 'report file.yaml' 'session dir/latest-status-report.yaml'
+cp project-understanding.yaml 'session dir/project-understanding.yaml'
+"$repo_root/bin/status-report" refresh 'session dir' requirement_change
+grep -q 'scope_complete: false' 'session dir/latest-status-report.yaml'
+grep -Fq 'Requirement change requires scope review and status report refresh.' 'session dir/latest-status-report.yaml'
+cp 'session dir/latest-status-report.yaml' before-repeat.yaml
+"$repo_root/bin/status-report" refresh "$test_dir/session dir" requirement_change
+cmp before-repeat.yaml 'session dir/latest-status-report.yaml'
+for invalid in empty extra; do
+	if [[ $invalid == empty ]]; then
+		if "$repo_root/bin/status-report" refresh '' decision >invalid-output.txt 2>&1; then
+			printf 'empty refresh directory unexpectedly succeeded\n' >&2
+			exit 1
+		fi
+	else
+		if "$repo_root/bin/status-report" refresh 'session dir' decision extra >invalid-output.txt 2>&1; then
+			printf 'extra refresh argument unexpectedly succeeded\n' >&2
+			exit 1
+		fi
+	fi
+	grep -q 'usage: status-report refresh' invalid-output.txt
+done
+cmp before-repeat.yaml 'session dir/latest-status-report.yaml'

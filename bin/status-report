@@ -14,6 +14,8 @@ if [[ ${args[0]:-} == validate || ${args[0]:-} == render ]]; then
 			args[i]="$PWD/${args[i]}"
 		fi
 	done
+elif [[ ${args[0]:-} == refresh && -n ${args[1]:-} && ${args[1]} != /* ]]; then
+	args[1]="$PWD/${args[1]}"
 fi
 cd "$module_dir"
 exec go run . "${args[@]}"
