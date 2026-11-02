@@ -215,6 +215,7 @@ func forecastStructure(src map[string]any) []string {
 	if raw, ok := src["scenarios"]; ok {
 		issues = append(issues, checkForecastScenarios(raw)...)
 	}
+	issues = append(issues, forecastSpreadIssues(src)...)
 	return issues
 }
 
