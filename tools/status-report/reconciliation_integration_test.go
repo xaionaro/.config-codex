@@ -272,3 +272,38 @@ records:
 	require.NotContains(t, stdout.String(), "INCOMPLETE")
 	require.Contains(t, stdout.String(), "Source freshness: unverified")
 }
+
+// TestReconciliationClosedLaneCompletion checks the actual completion time against the work record.
+//
+// Example: A different completion instant makes the report incomplete.
+func TestReconciliationClosedLaneCompletion(t *testing.T) {
+	report := strings.Replace(linkedReport, "implementation_status: IN PROGRESS", "implementation_status: CLOSED\n    completed_at: '2026-11-02T15:00:00Z'", 1)
+	report = strings.Replace(report, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "", 1)
+	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish, reporting_roles: [lane]", "state: completed, completed_at: '2026-11-02T15:00:00+00:00', next_action: none, reporting_roles: [lane]", 1)
+	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
+	for _, tc := range []struct {
+		name       string
+		ledger     string
+		incomplete bool
+	}{
+		{name: "matching instant", ledger: ledger},
+		{name: "different instant", ledger: strings.Replace(ledger, "2026-11-02T15:00:00+00:00", "2026-11-02T15:10:00Z", 1), incomplete: true},
+		{name: "missing completion", ledger: strings.Replace(ledger, "completed_at: '2026-11-02T15:00:00+00:00', ", "", 1), incomplete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			reportPath := filepath.Join(dir, "latest-status-report.yaml")
+			require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecasts), 0o600))
+			var stdout, stderr bytes.Buffer
+			require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+			if tc.incomplete {
+				require.Contains(t, stdout.String(), "INCOMPLETE")
+			} else {
+				require.NotContains(t, stdout.String(), "INCOMPLETE")
+				require.Contains(t, stdout.String(), "Completed: 2026-11-02T15:00:00Z")
+			}
+		})
+	}
+}
