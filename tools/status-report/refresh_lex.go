@@ -13,7 +13,11 @@ import (
 // yamlByteOffset maps a one-based YAML line and rune column into UTF-8 bytes.
 //
 // Example: Map a column after a multibyte character.
-func yamlByteOffset(data []byte, line, column int) (int, error) {
+func yamlByteOffset(
+	data []byte,
+	line int,
+	column int,
+) (int, error) {
 	if !utf8.Valid(data) {
 		return 0, fmt.Errorf("unsupported UTF-8 layout")
 	}
@@ -28,7 +32,12 @@ func yamlByteOffset(data []byte, line, column int) (int, error) {
 // yamlOffsetForLines maps a YAML position using precomputed line starts.
 //
 // Example: Resolve a token position using cached line starts.
-func yamlOffsetForLines(lines []string, starts []int, line, column int) (int, error) {
+func yamlOffsetForLines(
+	lines []string,
+	starts []int,
+	line int,
+	column int,
+) (int, error) {
 	if line < 1 || line > len(lines) || column < 1 {
 		return 0, fmt.Errorf("invalid YAML position")
 	}
@@ -49,18 +58,19 @@ func yamlOffsetForLines(lines []string, starts []int, line, column int) (int, er
 //
 // Example: Store the closing brace for an opening brace.
 type flowPair struct {
-	opening token.Type
-	end     int
+	Opening token.Type
+	End     reportByteOffset
 }
 
 // flowDocument indexes flow delimiters in one report.
+// Its private fields keep the cached pairs consistent with the source data.
 //
 // Example: Cache delimiter pairs for a status report.
 type flowDocument struct {
 	data    []byte
 	ready   bool
-	pairs   map[int]flowPair
-	scalars map[int]*token.Token
+	pairs   map[reportByteOffset]flowPair
+	scalars map[reportByteOffset]*token.Token
 	err     error
 }
 
@@ -68,32 +78,39 @@ type flowDocument struct {
 //
 // Example: Track an opening bracket while scanning nested collections.
 type flowStart struct {
-	opening token.Type
-	offset  int
+	Opening token.Type
+	Offset  reportByteOffset
 }
 
 // flowEnd finds a matching lexer delimiter, excluding scalar and comment tokens.
 //
 // Example: Find the closing brace after a quoted delimiter.
-func flowEnd(data []byte, start int, opening token.Type) (int, error) {
+func flowEnd(
+	data []byte,
+	start int,
+	opening token.Type,
+) (int, error) {
 	return (&flowDocument{data: data}).end(start, opening)
 }
 
 // end returns the checked closing delimiter for a flow collection.
 //
 // Example: Resolve a previously indexed flow mapping.
-func (d *flowDocument) end(start int, opening token.Type) (int, error) {
+func (d *flowDocument) end(
+	start int,
+	opening token.Type,
+) (int, error) {
 	if !d.ready {
 		d.build()
 	}
 	if d.err != nil {
 		return 0, d.err
 	}
-	pair, ok := d.pairs[start]
-	if !ok || pair.opening != opening {
+	pair, ok := d.pairs[reportByteOffset(start)]
+	if !ok || pair.Opening != opening {
 		return 0, fmt.Errorf("YAML delimiter position mismatch")
 	}
-	return pair.end, nil
+	return int(pair.End), nil
 }
 
 // scalarSpan locates a proven single-line scalar using the cached lexer tokens.
@@ -110,7 +127,7 @@ func (d *flowDocument) scalarSpan(node *yaml.Node) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	tok, ok := d.scalars[start]
+	tok, ok := d.scalars[reportByteOffset(start)]
 	if !ok || tok.Value != node.Value {
 		return 0, 0, fmt.Errorf("YAML scalar token mismatch")
 	}
@@ -139,8 +156,8 @@ func (d *flowDocument) build() {
 		d.err = fmt.Errorf("unsupported YAML token: %s", bad.Error)
 		return
 	}
-	d.pairs = make(map[int]flowPair)
-	d.scalars = make(map[int]*token.Token)
+	d.pairs = make(map[reportByteOffset]flowPair)
+	d.scalars = make(map[reportByteOffset]*token.Token)
 	lines := strings.Split(string(d.data), "\n")
 	starts := make([]int, len(lines))
 	for i := 1; i < len(lines); i++ {
@@ -148,56 +165,89 @@ func (d *flowDocument) build() {
 	}
 	var stack []flowStart
 	for _, tok := range tokens {
-		if tok.Type == token.StringType || tok.Type == token.SingleQuoteType || tok.Type == token.DoubleQuoteType {
-			if tok.Position == nil {
-				d.err = fmt.Errorf("YAML token lacks position")
-				return
-			}
-			if tok.Position.Column < 1 {
-				continue
-			}
-			pos, err := yamlOffsetForLines(lines, starts, tok.Position.Line, tok.Position.Column)
-			if err != nil {
-				d.err = err
-				return
-			}
-			d.scalars[pos] = tok
-			continue
-		}
-		if tok.Type != token.MappingStartType && tok.Type != token.MappingEndType && tok.Type != token.SequenceStartType && tok.Type != token.SequenceEndType {
-			continue
-		}
-		if tok.Position == nil {
-			d.err = fmt.Errorf("YAML token lacks position")
-			return
-		}
-		pos, err := yamlOffsetForLines(lines, starts, tok.Position.Line, tok.Position.Column)
+		var err error
+		stack, err = d.indexToken(tok, lines, starts, stack)
 		if err != nil {
 			d.err = err
 			return
 		}
-		expected := map[token.Type]byte{token.MappingStartType: '{', token.MappingEndType: '}', token.SequenceStartType: '[', token.SequenceEndType: ']'}[tok.Type]
-		if pos >= len(d.data) || d.data[pos] != expected {
-			d.err = fmt.Errorf("YAML delimiter byte mismatch")
-			return
-		}
-		if tok.Type == token.MappingStartType || tok.Type == token.SequenceStartType {
-			stack = append(stack, flowStart{tok.Type, pos})
-			continue
-		}
-		if len(stack) == 0 {
-			d.err = fmt.Errorf("unbalanced YAML flow delimiters")
-			return
-		}
-		top := stack[len(stack)-1]
-		if (top.opening == token.MappingStartType && tok.Type != token.MappingEndType) || (top.opening == token.SequenceStartType && tok.Type != token.SequenceEndType) {
-			d.err = fmt.Errorf("unbalanced YAML flow delimiters")
-			return
-		}
-		stack = stack[:len(stack)-1]
-		d.pairs[top.offset] = flowPair{top.opening, pos}
 	}
 	if len(stack) > 0 {
 		d.err = fmt.Errorf("unbalanced YAML flow delimiters")
 	}
+}
+
+// indexToken indexes a scalar or pairs one flow delimiter.
+//
+// Example: Match a closing brace to the latest opening brace.
+func (d *flowDocument) indexToken(
+	tok *token.Token,
+	lines []string,
+	starts []int,
+	stack []flowStart,
+) ([]flowStart, error) {
+	switch tok.Type {
+	case token.StringType, token.SingleQuoteType, token.DoubleQuoteType:
+		return stack, d.indexScalar(tok, lines, starts)
+	case token.MappingStartType, token.MappingEndType, token.SequenceStartType, token.SequenceEndType:
+		return d.indexDelimiter(tok, lines, starts, stack)
+	default:
+		return stack, nil
+	}
+}
+
+// indexScalar indexes a scalar with a usable lexer position.
+//
+// Example: Store the token for a plain forecast outcome.
+func (d *flowDocument) indexScalar(
+	tok *token.Token,
+	lines []string,
+	starts []int,
+) error {
+	if tok.Position == nil {
+		return fmt.Errorf("YAML token lacks position")
+	}
+	if tok.Position.Column < 1 {
+		return nil
+	}
+	pos, err := yamlOffsetForLines(lines, starts, tok.Position.Line, tok.Position.Column)
+	if err != nil {
+		return err
+	}
+	d.scalars[reportByteOffset(pos)] = tok
+	return nil
+}
+
+// indexDelimiter validates and pairs a flow delimiter.
+//
+// Example: Reject a closing bracket paired with an opening brace.
+func (d *flowDocument) indexDelimiter(
+	tok *token.Token,
+	lines []string,
+	starts []int,
+	stack []flowStart,
+) ([]flowStart, error) {
+	if tok.Position == nil {
+		return nil, fmt.Errorf("YAML token lacks position")
+	}
+	pos, err := yamlOffsetForLines(lines, starts, tok.Position.Line, tok.Position.Column)
+	if err != nil {
+		return nil, err
+	}
+	expected := map[token.Type]byte{token.MappingStartType: '{', token.MappingEndType: '}', token.SequenceStartType: '[', token.SequenceEndType: ']'}[tok.Type]
+	if pos >= len(d.data) || d.data[pos] != expected {
+		return nil, fmt.Errorf("YAML delimiter byte mismatch")
+	}
+	if tok.Type == token.MappingStartType || tok.Type == token.SequenceStartType {
+		return append(stack, flowStart{Opening: tok.Type, Offset: reportByteOffset(pos)}), nil
+	}
+	if len(stack) == 0 {
+		return nil, fmt.Errorf("unbalanced YAML flow delimiters")
+	}
+	top := stack[len(stack)-1]
+	if (top.Opening == token.MappingStartType && tok.Type != token.MappingEndType) || (top.Opening == token.SequenceStartType && tok.Type != token.SequenceEndType) {
+		return nil, fmt.Errorf("unbalanced YAML flow delimiters")
+	}
+	d.pairs[top.Offset] = flowPair{Opening: top.Opening, End: reportByteOffset(pos)}
+	return stack[:len(stack)-1], nil
 }

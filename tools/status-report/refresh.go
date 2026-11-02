@@ -14,29 +14,41 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// refreshBeforePublish marks the publication boundary for focused concurrency tests.
-//
-// Example: Mutate a source immediately before the final change check.
-var refreshBeforePublish =
-// Callback leaves the publication boundary unchanged.
-//
-// Example: Run a refresh without a test mutation.
-func() {}
+const (
+	// refreshDiagnostic names the required human scope review after a requirement change.
+	//
+	// Example: Mark scope incomplete after a requirement change.
+	refreshDiagnostic = "Requirement change requires scope review and status report refresh."
+
+	// refreshIssuePrefix identifies diagnostics produced by source reconciliation.
+	//
+	// Example: Mark an omitted work record as incomplete.
+	refreshIssuePrefix = "Status refresh incomplete: "
+)
 
 // errRefreshRetry identifies a changed input that requires a fresh retry.
 //
 // Example: Retry after another writer replaces the report.
 var errRefreshRetry = errors.New("retry needed")
 
-// refreshDiagnostic names the required human scope review after a requirement change.
+// refreshObserver observes the moment before publication.
 //
-// Example: Mark scope incomplete after a requirement change.
-const refreshDiagnostic = "Requirement change requires scope review and status report refresh."
+// Example: A test mutates a source before the final change check.
+type refreshObserver interface {
+	// BeforePublish observes the publication boundary.
+	//
+	// Example: Replace a report before its identity is checked.
+	BeforePublish()
+}
 
 // refreshLinkedStatus reads the current sources and prepares a bounded status refresh.
 //
 // Example: Refresh a session after a forecast change.
-func refreshLinkedStatus(dir, event string) error {
+func refreshLinkedStatus(
+	dir string,
+	event string,
+	observer refreshObserver,
+) error {
 	path := filepath.Join(dir, "latest-status-report.yaml")
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -59,16 +71,16 @@ func refreshLinkedStatus(dir, event string) error {
 			return err
 		}
 	}
-	err = refreshForecastTargets(dir, path, info, original, candidate)
+	err = refreshForecastTargets(dir, path, info, original, candidate, observer)
 	if err == nil || errors.Is(err, errRefreshRetry) {
 		return err
 	}
-	diagnostics := []string{"Status refresh incomplete: " + err.Error()}
+	diagnostics := []string{refreshIssuePrefix + err.Error()}
 	if event == "requirement_change" {
 		diagnostics = append([]string{refreshDiagnostic}, diagnostics...)
 	}
-	if markErr := invalidateStatus(dir, diagnostics...); markErr != nil {
-		return fmt.Errorf("%w; could not persist diagnostic: %v", err, markErr)
+	if markErr := invalidateStatus(dir, observer, diagnostics...); markErr != nil {
+		return fmt.Errorf("%w; could not persist diagnostic: %w", err, markErr)
 	}
 	return err
 }
@@ -76,29 +88,60 @@ func refreshLinkedStatus(dir, event string) error {
 // runRefresh updates the current report under the caller's ECI mutation lock.
 //
 // Example: Run a refresh using a session directory and event name.
-func runRefresh(args []string, errOut io.Writer) int {
+func runRefresh(
+	args []string,
+	errOut io.Writer,
+) int {
 	if len(args) != 2 || args[0] == "" || args[1] == "" {
-		fmt.Fprintln(errOut, "usage: status-report refresh SESSION_DIR EVENT")
+		if err := writeRefreshDiagnostic(errOut, "usage: status-report refresh SESSION_DIR EVENT\n"); err != nil {
+			return 1
+		}
 		return 2
 	}
 	if err := refreshStatus(args[0], args[1]); err != nil {
-		fmt.Fprintln(errOut, "status-report refresh:", err)
+		if writeErr := writeRefreshDiagnostic(errOut, fmt.Sprintln("status-report refresh:", err)); writeErr != nil {
+			return 1
+		}
 		return 1
 	}
 	return 0
 }
 
+// writeRefreshDiagnostic writes a complete diagnostic or returns the write failure.
+//
+// Example: Detect a short write to a closed error stream.
+func writeRefreshDiagnostic(
+	out io.Writer,
+	message string,
+) error {
+	written, err := io.WriteString(out, message)
+	if err != nil {
+		return err
+	}
+	if written != len(message) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
 // refreshStatus refreshes source projections and retains scope review requirements.
 //
 // Example: Refresh a report after a requirement change.
-func refreshStatus(dir, event string) error {
-	return refreshLinkedStatus(dir, event)
+func refreshStatus(
+	dir string,
+	event string,
+) error {
+	return refreshLinkedStatus(dir, event, nil)
 }
 
 // invalidateStatus persists scope and diagnostic updates after a refresh failure.
 //
 // Example: Persist a diagnostic when a source cannot be read.
-func invalidateStatus(dir string, diagnostics ...string) error {
+func invalidateStatus(
+	dir string,
+	observer refreshObserver,
+	diagnostics ...string,
+) error {
 	path := filepath.Join(dir, "latest-status-report.yaml")
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -130,13 +173,16 @@ func invalidateStatus(dir string, diagnostics ...string) error {
 	if err := verifyRefresh(original, updated, ledgerSource{}, forecastSource{}); err != nil {
 		return fmt.Errorf("unsafe refresh: %w", err)
 	}
-	return publishStatus(dir, path, info, original, updated, nil)
+	return publishStatus(dir, path, info, original, updated, nil, observer)
 }
 
 // prepareInvalidation prepares a selective scope and diagnostic update.
 //
 // Example: Set scope incomplete and add the scope review diagnostic.
-func prepareInvalidation(original []byte, diagnostic string) ([]byte, error) {
+func prepareInvalidation(
+	original []byte,
+	diagnostic string,
+) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(original, &doc); err != nil {
 		return nil, err
@@ -182,7 +228,11 @@ func prepareInvalidation(original []byte, diagnostic string) ([]byte, error) {
 // appendDiagnostic adds a missing diagnostic without changing existing entries.
 //
 // Example: Add a new risk to a flow-style blocker list.
-func appendDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([]string, error) {
+func appendDiagnostic(
+	lines []string,
+	blockers *yaml.Node,
+	diagnostic string,
+) ([]string, error) {
 	for _, n := range blockers.Content {
 		if n.Value == diagnostic {
 			return lines, nil
@@ -217,7 +267,11 @@ func appendDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([
 // appendBlockDiagnostic adds a diagnostic to a supported block-style list.
 //
 // Example: Append a diagnostic to an indented blocker list.
-func appendBlockDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([]string, error) {
+func appendBlockDiagnostic(
+	lines []string,
+	blockers *yaml.Node,
+	diagnostic string,
+) ([]string, error) {
 	insert := blockers.Line - 1
 	indent := "  "
 	if len(blockers.Content) > 0 {
@@ -248,22 +302,36 @@ func appendBlockDiagnostic(lines []string, blockers *yaml.Node, diagnostic strin
 // publishStatus publishes a checked candidate using same-directory replacement.
 //
 // Example: Replace the report after checking its source files.
-func publishStatus(dir, path string, info os.FileInfo, original, updated []byte, inputs map[string][]byte) error {
+func publishStatus(
+	dir string,
+	path string,
+	info os.FileInfo,
+	original []byte,
+	updated []byte,
+	inputs map[string][]byte,
+	observer refreshObserver,
+) (_err error) {
 	temp, err := os.CreateTemp(dir, ".status-refresh-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temp.Name())
+	defer
+	// Callback removes the temporary file and preserves unexpected cleanup failures.
+	//
+	// Example: A failed rename still removes the unpublished candidate.
+	func() {
+		_err = errors.Join(_err, removeUnpublished(temp.Name()))
+	}()
 	if err = temp.Chmod(info.Mode().Perm()); err == nil {
 		_, err = temp.Write(updated)
 	}
-	if closeErr := temp.Close(); err == nil {
-		err = closeErr
-	}
+	err = errors.Join(err, temp.Close())
 	if err != nil {
 		return err
 	}
-	refreshBeforePublish()
+	if observer != nil {
+		observer.BeforePublish()
+	}
 	for p, before := range inputs {
 		current, err := os.ReadFile(p)
 		if err != nil {
@@ -288,4 +356,15 @@ func publishStatus(dir, path string, info os.FileInfo, original, updated []byte,
 		return fmt.Errorf("report changed during refresh: %w", errRefreshRetry)
 	}
 	return os.Rename(temp.Name(), path)
+}
+
+// removeUnpublished removes a temporary candidate unless it has already been renamed.
+//
+// Example: Ignore a missing temporary path after successful publication.
+func removeUnpublished(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }

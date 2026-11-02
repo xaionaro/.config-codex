@@ -55,31 +55,16 @@ func TestRefreshDetectsConcurrentReportMutation(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
 	changed := []byte(linkedReport + "# concurrent edit\n")
-	refreshBeforePublish =
-		// Callback controls the publication boundary for the current test.
-		//
-		// Example: Mutate an input before publication.
-		func() { require.NoError(t, os.WriteFile(path, changed, 0600)) }
-	t.Cleanup(
-		// Callback restores test state after the scenario.
-		//
-		// Example: Reset the publication hook after a test.
-		func() {
-			refreshBeforePublish =
-				// Callback leaves the publication boundary unchanged.
-				//
-				// Example: Run a refresh without a test mutation.
-				func() {}
-		})
-	require.ErrorContains(t, refreshStatus(dir, "requirement_change"), "retry needed")
+	observer := testRefreshObserver{Action:
+	// Callback mutates the report before publication.
+	//
+	// Example: Simulate a concurrent report edit.
+	func() { require.NoError(t, os.WriteFile(path, changed, 0600)) }}
+	require.ErrorContains(t, refreshLinkedStatus(dir, "requirement_change", observer), "retry needed")
 	actual, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, changed, actual)
-	refreshBeforePublish =
-		// Callback leaves the publication boundary unchanged.
-		//
-		// Example: Run a refresh without a test mutation.
-		func() {}
+
 	require.NoError(t, refreshStatus(dir, "requirement_change"))
 }
 
@@ -111,23 +96,12 @@ func TestForecastRefreshRejectsConcurrentSourceMutation(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	changed := strings.Replace(linkedForecasts, "target: '2026-11-02T16:00:00+00:00'", "target: '2026-11-02T16:30:00Z'", 1)
 	require.NoError(t, os.WriteFile(forecastPath, []byte(changed), 0600))
-	refreshBeforePublish =
-		// Callback controls the publication boundary for the current test.
-		//
-		// Example: Mutate an input before publication.
-		func() { require.NoError(t, os.WriteFile(forecastPath, []byte(changed+"# concurrent\n"), 0600)) }
-	t.Cleanup(
-		// Callback restores test state after the scenario.
-		//
-		// Example: Reset the publication hook after a test.
-		func() {
-			refreshBeforePublish =
-				// Callback leaves the publication boundary unchanged.
-				//
-				// Example: Run a refresh without a test mutation.
-				func() {}
-		})
-	require.ErrorContains(t, refreshStatus(dir, "forecast_change"), "retry needed")
+	observer := testRefreshObserver{Action:
+	// Callback mutates the forecast before publication.
+	//
+	// Example: Simulate a concurrent forecast edit.
+	func() { require.NoError(t, os.WriteFile(forecastPath, []byte(changed+"# concurrent\n"), 0600)) }}
+	require.ErrorContains(t, refreshLinkedStatus(dir, "forecast_change", observer), "retry needed")
 	result, err := os.ReadFile(reportPath)
 	require.NoError(t, err)
 	require.Equal(t, linkedReport, string(result))
@@ -307,6 +281,12 @@ func TestRefreshCLIArgumentsAndFailures(t *testing.T) {
 	var errOut strings.Builder
 	require.Equal(t, 2, runRefresh(nil, &errOut))
 	require.Contains(t, errOut.String(), "usage")
+	broken := &testWriter{}
+	require.Equal(t, 1, runRefresh(nil, broken))
+	require.Equal(t, 1, broken.calls)
+	short := &testWriter{short: true}
+	require.Equal(t, 1, runRefresh(nil, short))
+	require.Equal(t, 1, short.calls)
 	errOut.Reset()
 	require.Equal(t, 1, runRefresh([]string{t.TempDir(), "requirement_change"}, &errOut))
 	require.Contains(t, errOut.String(), "status-report refresh")
@@ -477,23 +457,34 @@ func TestRefreshMissingRootForecastPersistsDiagnostic(t *testing.T) {
 func TestRefreshHandlesConcurrentReplacementAndDeletion(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(*testing.T, string)
+		mutate func(
+			*testing.T,
+			string,
+		)
 	}{
 		{"replace report",
 			// Callback changes a file during a publication test.
 			//
 			// Example: Replace the report before publication.
-			func(t *testing.T, dir string) {
+			func(
+				t *testing.T,
+				dir string,
+			) {
 				path := filepath.Join(dir, "latest-status-report.yaml")
 				replacement := filepath.Join(dir, "replacement")
 				require.NoError(t, os.WriteFile(replacement, []byte(linkedReport), 0600))
 				require.NoError(t, os.Rename(replacement, path))
 			}},
 		{"remove forecast",
-			// Callback runs the callback at its call site.
+			// Callback removes the forecast after it has been read.
 			//
-			// Example: Apply the callback to the current operation.
-			func(t *testing.T, dir string) { require.NoError(t, os.Remove(filepath.Join(dir, "forecasts.yaml"))) }},
+			// Example: Simulate a concurrent source deletion.
+			func(
+				t *testing.T,
+				dir string,
+			) {
+				require.NoError(t, os.Remove(filepath.Join(dir, "forecasts.yaml")))
+			}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name,
@@ -506,23 +497,12 @@ func TestRefreshHandlesConcurrentReplacementAndDeletion(t *testing.T) {
 				require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-				refreshBeforePublish =
-					// Callback controls the publication boundary for the current test.
-					//
-					// Example: Mutate an input before publication.
-					func() { tc.mutate(t, dir) }
-				t.Cleanup(
-					// Callback restores test state after the scenario.
-					//
-					// Example: Reset the publication hook after a test.
-					func() {
-						refreshBeforePublish =
-							// Callback leaves the publication boundary unchanged.
-							//
-							// Example: Run a refresh without a test mutation.
-							func() {}
-					})
-				require.Error(t, refreshStatus(dir, "requirement_change"))
+				observer := testRefreshObserver{Action:
+				// Callback changes a source at the publication boundary.
+				//
+				// Example: Remove a forecast after it has been read.
+				func() { tc.mutate(t, dir) }}
+				require.Error(t, refreshLinkedStatus(dir, "requirement_change", observer))
 				b, err := os.ReadFile(path)
 				require.NoError(t, err)
 				require.Equal(t, linkedReport, string(b))
@@ -611,23 +591,12 @@ func TestRequirementChangeSourceFailurePublishesOnce(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	publications := 0
-	refreshBeforePublish =
-		// Callback controls the publication boundary for the current test.
-		//
-		// Example: Mutate an input before publication.
-		func() { publications++ }
-	t.Cleanup(
-		// Callback restores test state after the scenario.
-		//
-		// Example: Reset the publication hook after a test.
-		func() {
-			refreshBeforePublish =
-				// Callback leaves the publication boundary unchanged.
-				//
-				// Example: Run a refresh without a test mutation.
-				func() {}
-		})
-	require.Error(t, refreshStatus(dir, "requirement_change"))
+	observer := testRefreshObserver{Action:
+	// Callback counts publication attempts.
+	//
+	// Example: Verify that failure diagnostics publish once.
+	func() { publications++ }}
+	require.Error(t, refreshLinkedStatus(dir, "requirement_change", observer))
 	require.Equal(t, 1, publications)
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -913,7 +882,7 @@ func TestVerifyRefreshRejectsMalformedCandidate(t *testing.T) {
 //
 // Example: A non-mapping lane cannot pass forecast verification.
 func TestVerifyForecastGroupRejectsNonMapping(t *testing.T) {
-	err := verifyForecastGroup("lanes", []any{"unexpected"}, []any{"unexpected"}, ledgerSource{}, forecastSource{})
+	err := verifyForecastGroup("lanes", []any{"unexpected"}, []any{"unexpected"}, ledgerSource{}, forecastSource{}, nil)
 	require.ErrorContains(t, err, "unsupported forecast group")
 }
 
@@ -992,4 +961,64 @@ func TestScalarSpanRejectsParserLexerDisagreement(t *testing.T) {
 	node.Value = "different"
 	_, _, err := (&flowDocument{data: data}).scalarSpan(node)
 	require.ErrorContains(t, err, "token mismatch")
+}
+
+// testRefreshObserver carries a test-only publication callback.
+//
+// Example: Mutate a report immediately before its final check.
+type testRefreshObserver struct{ Action func() }
+
+// BeforePublish runs the test's publication callback.
+//
+// Example: Simulate a concurrent source edit.
+func (o testRefreshObserver) BeforePublish() { o.Action() }
+
+// TestRefreshDoesNotProjectUndeclaredForecastRole checks declared role applicability.
+//
+// Example: A roleless work reference cannot authorize a lane forecast update.
+func TestRefreshDoesNotProjectUndeclaredForecastRole(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	ledger := strings.Replace(linkedLedger, "reporting_roles: [lane]", "reporting_roles: []", 1)
+	forecasts := strings.Replace(linkedForecasts, "target: '2026-11-02T16:00:00+00:00'", "target: '2026-11-02T16:30:00Z'", 1)
+	require.NoError(t, os.WriteFile(path, []byte(linkedReport), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecasts), 0600))
+	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, "2026-11-02T16:00:00Z", parsed.Lanes[0].Forecast.Target)
+	require.False(t, *parsed.ScopeComplete)
+}
+
+// TestRefreshDoesNotProjectRedundantRoot checks root and lane representation.
+//
+// Example: A root already represented by a lane keeps its existing projection.
+func TestRefreshDoesNotProjectRedundantRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	report := linkedReport + "root_forecasts:\n  - {forecast_ref: 'forecasts.yaml#/records/first', outcome: Root result, target: '2026-11-02T15:00:00Z', assessment: complete}\n"
+	ledger := strings.Replace(linkedLedger, "reporting_roles: [lane]", "reporting_roles: [lane, root]", 1)
+	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
+	require.NoError(t, refreshStatus(dir, "forecast_change"))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, "2026-11-02T15:00:00Z", parsed.RootForecasts[0].Target)
+	require.False(t, *parsed.ScopeComplete)
+}
+
+// TestRemoveUnpublishedReportsUnexpectedFailure checks cleanup error handling.
+//
+// Example: A nonempty directory cannot be silently treated as a removed candidate.
+func TestRemoveUnpublishedReportsUnexpectedFailure(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, removeUnpublished(filepath.Join(dir, "already-renamed")))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child"), []byte("keep"), 0600))
+	require.Error(t, removeUnpublished(dir))
 }
