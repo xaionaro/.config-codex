@@ -12,6 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Cycle test process deadlines bound parser and refresh regressions.
+//
+// Example: Stop a cyclic parser that fails to return.
+const (
+	// cycleTestDeadline bounds each built-CLI cycle probe.
+	//
+	// Example: Terminate a stalled parser within three seconds.
+	cycleTestDeadline = 3 * time.Second
+)
+
 // TestYAMLCyclesTerminate checks cyclic aliases through the built CLI under a deadline.
 //
 // Example: A self-referential alias must fail rather than loop indefinitely.
@@ -35,7 +45,7 @@ func TestYAMLCyclesTerminate(t *testing.T) {
 			//
 			// Example: A valid alias graph renders normally.
 			func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), cycleTestDeadline)
 				defer cancel()
 				command := exec.CommandContext(ctx, binary, "render")
 				command.Stdin = strings.NewReader(strings.Replace(valid, "lanes: []\n", tc.extra, 1))
@@ -65,7 +75,7 @@ func TestRefreshRejectsCyclicReportWithoutWriting(t *testing.T) {
 	build := exec.Command("go", "build", "-o", binary, ".")
 	output, err := build.CombinedOutput()
 	require.NoError(t, err, string(output))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cycleTestDeadline)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "refresh", dir, "requirement_change")
 	output, err = command.CombinedOutput()
