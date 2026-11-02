@@ -19,11 +19,17 @@ const (
 	//
 	// Example: Use workStateActive when its documented category applies.
 	workStateActive
+	// workStateBlocked marks work awaiting user input.
+	//
+	// Example: A pending user decision blocks the work.
 	workStateBlocked
 	// workStateCompleted identifies this canonical category.
 	//
 	// Example: Use workStateCompleted when its documented category applies.
 	workStateCompleted
+	// workStateCancelled marks work withdrawn without completion.
+	//
+	// Example: A cancelled outcome has no active deadline.
 	workStateCancelled
 )
 
@@ -66,6 +72,9 @@ const (
 	//
 	// Example: Use reportingRoleLane when its documented category applies.
 	reportingRoleLane
+	// reportingRoleRoot identifies a full root outcome.
+	//
+	// Example: Root-only work may need its own forecast.
 	reportingRoleRoot
 )
 
@@ -104,6 +113,9 @@ const (
 	//
 	// Example: Use forecastKindLane when its documented category applies.
 	forecastKindLane
+	// forecastKindRoot identifies a root outcome forecast.
+	//
+	// Example: A root forecast covers an unrepresented outcome.
 	forecastKindRoot
 )
 
@@ -138,6 +150,9 @@ const (
 	//
 	// Example: Use forecastGroupLanes when its documented category applies.
 	forecastGroupLanes
+	// forecastGroupRoots identifies the report root forecast collection.
+	//
+	// Example: Select root_forecasts during refresh.
 	forecastGroupRoots
 )
 
