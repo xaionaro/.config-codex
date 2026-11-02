@@ -204,18 +204,24 @@ func verifyProjectedFields(
 	source map[string]any,
 ) error {
 	expected := map[string]any{}
-	for dst, src := range map[string]string{"outcome": "outcome", "target": "target", "assessment": "assessment", "baseline": "original_baseline"} {
-		if v, ok := source[src]; ok {
-			expected[dst] = v
+	for _, field := range forecastFieldPolicies() {
+		if field.Report == "" {
+			continue
+		}
+		if v, ok := source[field.Source]; ok {
+			expected[field.Report] = v
 		}
 	}
 	if recal, ok := source["recalibration"].(map[string]any); ok {
 		copyRecalibrationFields(expected, recal)
 	}
 	projection := map[string]any{}
-	for _, k := range []string{"target_basis", "baseline_evidence", "base_case", "scenarios"} {
-		if v, ok := source[k]; ok {
-			projection[k] = v
+	for _, field := range forecastFieldPolicies() {
+		if !field.Nested {
+			continue
+		}
+		if v, ok := source[field.Source]; ok {
+			projection[field.Source] = v
 		}
 	}
 	if len(projection) > 0 {
@@ -241,7 +247,7 @@ func copyRecalibrationFields(
 	expected map[string]any,
 	recal map[string]any,
 ) {
-	for _, k := range []string{"prior", "reason", "evidence"} {
+	for _, k := range forecastHistoryFields() {
 		if v, ok := recal[k]; ok {
 			expected[k] = v
 		}

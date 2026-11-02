@@ -149,9 +149,7 @@ func hasForecastReference(ledger ledgerSource) bool {
 // Example: Reject a provisional forecast without a target basis.
 func validateRefreshSource(source map[string]any) error {
 	for key := range source {
-		switch key {
-		case "kind", "status", "outcome", "target", "assessment", "original_baseline", "baseline_evidence", "recalibration", "target_basis", "base_case", "scenarios":
-		default:
+		if !supportedForecastField(key) {
 			return fmt.Errorf("unsupported source field %s", key)
 		}
 	}
@@ -252,9 +250,12 @@ func projectForecast(
 	doc *flowDocument,
 ) ([]scalarEdit, error) {
 	fields := map[string]any{}
-	for dst, src := range map[string]string{"outcome": "outcome", "target": "target", "assessment": "assessment", "baseline": "original_baseline"} {
-		if value := textField(source, src); value != "" {
-			fields[dst] = value
+	for _, field := range forecastFieldPolicies() {
+		if field.Report == "" {
+			continue
+		}
+		if value := textField(source, field.Source); value != "" {
+			fields[field.Report] = value
 		}
 	}
 	if recal, ok := source["recalibration"].(map[string]any); ok {
@@ -263,9 +264,12 @@ func projectForecast(
 		}
 	}
 	projection := map[string]any{}
-	for _, k := range []string{"target_basis", "baseline_evidence", "base_case", "scenarios"} {
-		if v, ok := source[k]; ok {
-			projection[k] = v
+	for _, field := range forecastFieldPolicies() {
+		if !field.Nested {
+			continue
+		}
+		if v, ok := source[field.Source]; ok {
+			projection[field.Source] = v
 		}
 	}
 	if len(projection) > 0 {
@@ -377,7 +381,7 @@ func projectRecalibration(
 	node *yaml.Node,
 	recal map[string]any,
 ) error {
-	for _, k := range []string{"prior", "reason", "evidence"} {
+	for _, k := range forecastHistoryFields() {
 		if value := textField(recal, k); value != "" {
 			fields[k] = value
 			continue

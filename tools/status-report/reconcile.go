@@ -178,27 +178,10 @@ func projectionEqual(
 		return ok && sameValue(x, y)
 	case map[string]any:
 		y, ok := b.(map[string]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for k, v := range x {
-			w, ok := y[k]
-			if !ok || !projectionEqual(v, w) {
-				return false
-			}
-		}
-		return true
+		return ok && projectionMapsEqual(x, y)
 	case []any:
 		y, ok := b.([]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for i := range x {
-			if !projectionEqual(x[i], y[i]) {
-				return false
-			}
-		}
-		return true
+		return ok && projectionListsEqual(x, y)
 	default:
 		return reflect.DeepEqual(a, b)
 	}
@@ -398,14 +381,15 @@ func reconcileAt(
 	works := map[string]sourceRecord{}
 	for id, rec := range ledger.Records {
 		issues = append(issues, ledgerRecordIssues(id, rec, ledger.Sections)...)
-		if rec.Type == "work" {
-			works[id] = rec
-			if openWork(rec.Data.State) {
-				issues = append(issues, validateWorkOutcomes(id, rec, ledger.Records)...)
-			}
-			if issue := canonicalFutureActualIssue(id, rec, evaluation); issue != "" {
-				issues = append(issues, issue)
-			}
+		if rec.Type != "work" {
+			continue
+		}
+		works[id] = rec
+		if openWork(rec.Data.State) {
+			issues = append(issues, validateWorkOutcomes(id, rec, ledger.Records)...)
+		}
+		if issue := canonicalFutureActualIssue(id, rec, evaluation); issue != "" {
+			issues = append(issues, issue)
 		}
 	}
 	issues = append(issues, checkSharedForecastOwners(works)...)
@@ -546,4 +530,41 @@ func reconcileAt(
 		}
 	}
 	return issues
+}
+
+// projectionMapsEqual compares corresponding nested source fields.
+//
+// Example: A missing map entry makes projections unequal.
+func projectionMapsEqual(
+	left map[string]any,
+	right map[string]any,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		other, ok := right[key]
+		if !ok || !projectionEqual(value, other) {
+			return false
+		}
+	}
+	return true
+}
+
+// projectionListsEqual compares ordered nested source fields.
+//
+// Example: A scenario with a changed endpoint makes projections unequal.
+func projectionListsEqual(
+	left []any,
+	right []any,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i, value := range left {
+		if !projectionEqual(value, right[i]) {
+			return false
+		}
+	}
+	return true
 }

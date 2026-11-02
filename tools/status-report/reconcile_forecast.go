@@ -113,9 +113,13 @@ func (c *forecastReconciler) check(
 	if f.ForecastRef != ref {
 		c.issues.add("forecast %s reference mismatch", id)
 	}
-	for _, v := range []struct{ k, got string }{{"outcome", f.Outcome}, {"target", f.Target}, {"assessment", f.Assessment}, {"original_baseline", f.Baseline}} {
-		if !sameValue(textField(src, v.k), v.got) {
-			c.issues.add("forecast %s %s mismatch: source %q; report %q", id, v.k, textField(src, v.k), v.got)
+	for _, field := range forecastFieldPolicies() {
+		if field.Report == "" {
+			continue
+		}
+		got := forecastReportValue(*f, field.Report)
+		if !sameValue(textField(src, field.Source), got) {
+			c.issues.add("forecast %s %s mismatch: source %q; report %q", id, field.Source, textField(src, field.Source), got)
 		}
 	}
 	c.compareRecalibration(id, src, *f)
@@ -123,18 +127,20 @@ func (c *forecastReconciler) check(
 		c.issues.add("forecast %s report scenarios cannot be verified against canonical scenarios; use source_projection", id)
 	}
 	for k := range src {
-		switch k {
-		case "kind", "status", "outcome", "target", "assessment", "original_baseline", "recalibration", "target_basis", "baseline_evidence", "base_case", "scenarios":
-		default:
+		if !supportedForecastField(k) {
 			c.issues.add("forecast %s source field %s is unsupported", id, k)
 		}
 	}
 	for k := range f.SourceProjection {
-		if k != "target_basis" && k != "baseline_evidence" && k != "base_case" && k != "scenarios" {
+		if !nestedForecastField(k) {
 			c.issues.add("forecast %s unsupported source_projection field %s", id, k)
 		}
 	}
-	for _, k := range []string{"target_basis", "baseline_evidence", "base_case", "scenarios"} {
+	for _, field := range forecastFieldPolicies() {
+		if !field.Nested {
+			continue
+		}
+		k := field.Source
 		source, present := src[k]
 		projected, supplied := f.SourceProjection[k]
 		if k == "baseline_evidence" && !supplied && textField(src, k) == f.Evidence {
@@ -167,9 +173,9 @@ func (c *forecastReconciler) compareRecalibration(
 	if current := textField(recal, "current"); current != "" && !sameValue(current, projection.Target) {
 		c.issues.add("forecast %s recalibration current mismatch: source %q; report %q", id, current, projection.Target)
 	}
-	for _, field := range []struct{ k, got string }{{"prior", projection.Prior}, {"reason", projection.Reason}, {"evidence", projection.Evidence}} {
-		if !sameValue(textField(recal, field.k), field.got) {
-			c.issues.add("forecast %s recalibration %s mismatch", id, field.k)
+	for _, field := range forecastHistoryFields() {
+		if !sameValue(textField(recal, field), forecastHistoryValue(projection, field)) {
+			c.issues.add("forecast %s recalibration %s mismatch", id, field)
 		}
 	}
 }
