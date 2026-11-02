@@ -82,10 +82,13 @@ reasoning effort. For every priority, attempt to decompose remaining work into
 packages estimated at 30 minutes or less, including required review, checks,
 repairs, and acceptance. If a package cannot reasonably be decomposed further,
 say why and retain its estimate. Estimate each package from evidence or a
-labeled educated guess. State material assumptions, uncertainty, and
-dependencies, including external waits. Combine serial durations and use the
-latest required parallel endpoint for an overall elapsed estimate; do not sum
-parallel durations. Follow [Work estimates](../../CODEX.md#work-estimates) and,
+labeled educated guess. Report a completion estimate for each priority present,
+including `unknown` priority, and an overall completion estimate for all
+remaining in-scope work. Give each estimate's basis, material assumptions,
+uncertainty, and dependencies, including external waits. Combine serial
+durations and use the latest required parallel endpoint on the critical path;
+do not sum parallel durations or double-count shared work. Follow
+[Work estimates](../../CODEX.md#work-estimates) and,
 for ECI, the [scenario forecast rule](../context-ledger/SKILL.md#eci-scenario-forecasts).
 Mark unsupported priority or impact `unknown`; missing timing evidence calls
 for a labeled educated estimate, not an invented measurement or omitted ETA.
