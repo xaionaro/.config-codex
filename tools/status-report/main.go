@@ -96,6 +96,8 @@ type task struct {
 	Context           string        `yaml:"context"`
 	Priority          priorityLabel `yaml:"priority"`
 	Impact            string        `yaml:"impact"`
+	ImpactPoints      *float64      `yaml:"impact_points"`
+	ImpactBasis       string        `yaml:"impact_basis"`
 	Effort            estimate      `yaml:"effort"`
 	Status            workStatus    `yaml:"status"`
 	Evidence          string        `yaml:"evidence"`
@@ -118,6 +120,7 @@ type report struct {
 	Tasks              []task               `yaml:"tasks"`
 	TopPriorities      []taskID             `yaml:"top_priorities"`
 	PriorityOrder      []priorityLabel      `yaml:"priority_order"`
+	ImpactScale        string               `yaml:"impact_scale"`
 	Lanes              []lane               `yaml:"lanes"`
 	RootCompletions    []rootCompletion     `yaml:"root_completions"`
 	RootForecasts      []forecast           `yaml:"root_forecasts"`
@@ -170,6 +173,9 @@ func parse(data []byte) (report, error) {
 	for _, t := range r.Tasks {
 		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(float64(*t.Effort.MinMinutes)) || math.IsNaN(float64(*t.Effort.MaxMinutes)) || math.IsInf(float64(*t.Effort.MinMinutes), 0) || math.IsInf(float64(*t.Effort.MaxMinutes), 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || t.Effort.Kind == effortUnknown || strings.TrimSpace(t.Effort.Basis) == "" {
 			return r, fmt.Errorf("task requires id, title, priority, impact and effort")
+		}
+		if t.ImpactPoints != nil && (math.IsNaN(*t.ImpactPoints) || math.IsInf(*t.ImpactPoints, 0) || *t.ImpactPoints < 0) {
+			return r, fmt.Errorf("task %s: impact_points must be finite and nonnegative", t.ID)
 		}
 		if _, exists := byID[t.ID]; exists {
 			return r, fmt.Errorf("duplicate task id %q", t.ID)
@@ -252,18 +258,16 @@ func render(r report) string {
 		byID[t.ID] = t
 		children[t.ParentID] = append(children[t.ParentID], t.ID)
 	}
-	if rankingIncomplete(r.Tasks, r.PriorityOrder) {
-		fmt.Fprintln(&b, "Priority ranking unavailable for unranked labels; their positions are preserved.")
-	}
+	fmt.Fprintln(&b, "Calculated priority: impact points / maximum remaining work minutes; unscored positions are preserved.")
 	fmt.Fprintln(&b, "Top priorities:")
 	if len(r.TopPriorities) == 0 {
 		fmt.Fprintln(&b, "- unknown / none identified")
 	}
-	for _, id := range orderTaskIDs(r.TopPriorities, byID, r.PriorityOrder) {
-		writeTaskLine(&b, byID[id], "")
+	for _, id := range orderTaskIDs(r.TopPriorities, byID, r.ImpactScale) {
+		writeTaskLine(&b, byID[id], "", r.ImpactScale)
 	}
 	fmt.Fprintln(&b, "\nFull task tree:")
-	writeTaskTree(&b, byID, children, r.PriorityOrder, "", 0)
+	writeTaskTree(&b, byID, children, r.ImpactScale, "", 0)
 	known, done, unknownCount := 0, 0, 0
 	var unscored, covered, oversized []string
 	for _, t := range r.Tasks {
@@ -303,7 +307,7 @@ func render(r report) string {
 	if len(r.Incomplete) > 0 {
 		fmt.Fprintln(&b, "\nForecasts below are unreconciled; see source reconciliation issues above.")
 	}
-	renderLaneTable(&b, r.Lanes, byID)
+	renderLaneTable(&b, r.Lanes, byID, r.ImpactScale)
 	for _, lane := range r.Lanes {
 		if len(r.Incomplete) > 0 && lane.Forecast != nil {
 			fmt.Fprintf(&b, "\nForecast %s: unreconciled.\n", lane.Forecast.ForecastRef)
@@ -511,8 +515,10 @@ func writeTaskLine(
 	b *strings.Builder,
 	t task,
 	indent string,
+	scale string,
 ) {
-	fmt.Fprintf(b, "%s- %s %s | priority: %s | impact: %s | effort: %g–%g minutes %s (%s) | status: %s", indent, t.ID, t.Title, t.Priority, t.Impact, *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis, t.Status.String())
+	fmt.Fprintf(b, "%s- %s %s | priority group: %s | impact: %s | effort: %g–%g minutes %s (%s) | status: %s", indent, t.ID, t.Title, t.Priority, t.Impact, *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis, t.Status.String())
+	fmt.Fprintf(b, " | calculated priority: %s", priorityText(t, scale))
 	if t.Owner != "" {
 		fmt.Fprintf(b, " | owner: %s", t.Owner)
 	} else {
@@ -537,13 +543,13 @@ func writeTaskTree(
 	b *strings.Builder,
 	byID map[taskID]task,
 	children map[taskID][]taskID,
-	order []priorityLabel,
+	scale string,
 	parent taskID,
 	depth int,
 ) {
-	for _, id := range orderTaskIDs(children[parent], byID, order) {
-		writeTaskLine(b, byID[id], strings.Repeat("  ", depth))
-		writeTaskTree(b, byID, children, order, id, depth+1)
+	for _, id := range orderTaskIDs(children[parent], byID, scale) {
+		writeTaskLine(b, byID[id], strings.Repeat("  ", depth), scale)
+		writeTaskTree(b, byID, children, scale, id, depth+1)
 	}
 }
 

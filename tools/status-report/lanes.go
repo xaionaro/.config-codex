@@ -75,12 +75,13 @@ func renderLaneTable(
 	b *strings.Builder,
 	lanes []lane,
 	tasks map[taskID]task,
+	scale string,
 ) {
 	if len(lanes) == 0 {
 		return
 	}
-	fmt.Fprintln(b, "\n| Task ID | Parent ID | Lane | Lane requirement context | Priority | Impact | Effort | Stage | Required environment | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |")
-	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Fprintln(b, "\n| Task ID | Parent ID | Lane | Lane requirement context | Priority group | Calculated priority | Impact | Effort | Stage | Required environment | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |")
+	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, l := range lanes {
 		t := tasks[l.TaskID]
 		target, dependencies := "", ""
@@ -89,7 +90,7 @@ func renderLaneTable(
 			dependencies = l.Forecast.Dependencies
 		}
 		effort := fmt.Sprintf("%g–%g minutes %s (%s)", *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis)
-		vals := []string{string(l.TaskID), string(t.ParentID), l.Outcome, l.Context, string(t.Priority), t.Impact, effort, l.Stage, l.RequiredEnvironment.String(), l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
+		vals := []string{string(l.TaskID), string(t.ParentID), l.Outcome, l.Context, string(t.Priority), priorityText(t, scale), t.Impact, effort, l.Stage, l.RequiredEnvironment.String(), l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
 		fmt.Fprint(b, "|")
 		for _, v := range vals {
 			fmt.Fprintf(b, " %s |", timelineCell(v))

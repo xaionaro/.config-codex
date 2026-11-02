@@ -6,25 +6,7 @@ import (
 	"strings"
 )
 
-// prioritySorter compares task IDs by an explicitly supplied ranking.
-//
-// Example: A high-ranked task precedes a low-ranked task.
-type prioritySorter struct {
-	Ranks map[priorityLabel]int
-	Tasks map[taskID]task
-}
-
-// compare returns the ordering of two ranked task IDs.
-//
-// Example: Equal ranks preserve their input order.
-func (s prioritySorter) compare(
-	a,
-	b taskID,
-) int {
-	return s.Ranks[s.Tasks[a].Priority] - s.Ranks[s.Tasks[b].Priority]
-}
-
-// validatePriorityOrder rejects ambiguous priority ranking entries.
+// validatePriorityOrder validates the legacy forecast grouping order.
 //
 // Example: Unknown labels cannot be assigned a rank.
 func validatePriorityOrder(order []priorityLabel) error {
@@ -39,60 +21,65 @@ func validatePriorityOrder(order []priorityLabel) error {
 	return nil
 }
 
-// priorityRanks translates explicit ordering into sortable indices.
+// priorityScore computes comparable impact per remaining work minute or explains why it cannot.
 //
-// Example: The first listed label receives the highest rank.
-func priorityRanks(order []priorityLabel) map[priorityLabel]int {
-	ranks := map[priorityLabel]int{}
-	for i, label := range order {
-		ranks[label] = i
+// Example: Nine points over thirty work minutes yields 0.3.
+func priorityScore(t task, scale string) (float64, string) {
+	switch {
+	case strings.TrimSpace(scale) == "":
+		return 0, "missing impact scale"
+	case t.ImpactPoints == nil:
+		return 0, "missing impact points"
+	case strings.TrimSpace(t.ImpactBasis) == "":
+		return 0, "missing impact basis"
+	case t.Effort.Kind != effortWork:
+		return 0, "effort is not work minutes"
+	case t.Effort.MaxMinutes == nil || *t.Effort.MaxMinutes <= 0:
+		return 0, "remaining effort must be positive"
 	}
-	return ranks
+	return *t.ImpactPoints / float64(*t.Effort.MaxMinutes), ""
 }
 
-// orderTaskIDs sorts ranked slots while preserving unranked positions.
+// priorityText displays a calculated score or its missing input.
 //
-// Example: Low, unknown, high becomes high, unknown, low.
-func orderTaskIDs(
-	ids []taskID,
-	tasks map[taskID]task,
-	order []priorityLabel,
-) []taskID {
-	ranks := priorityRanks(order)
-	ranked := make([]taskID, 0, len(ids))
+// Example: A scored task displays points per work-minute.
+func priorityText(t task, scale string) string {
+	score, reason := priorityScore(t, scale)
+	if reason != "" {
+		return "unscored: " + reason
+	}
+	return fmt.Sprintf("%g points/work-minute (%g points; %s; scale: %s)", score, *t.ImpactPoints, t.ImpactBasis, scale)
+}
+
+// orderTaskIDs sorts scored positions while preserving unscored positions and ties.
+//
+// Example: Low, unscored, high becomes high, unscored, low.
+func orderTaskIDs(ids []taskID, tasks map[taskID]task, scale string) []taskID {
 	result := slices.Clone(ids)
+	scored := make([]taskID, 0, len(ids))
 	for _, id := range ids {
-		if _, ok := ranks[tasks[id].Priority]; ok {
-			ranked = append(ranked, id)
+		if _, reason := priorityScore(tasks[id], scale); reason == "" {
+			scored = append(scored, id)
 		}
 	}
-	sorter := prioritySorter{Ranks: ranks, Tasks: tasks}
-	slices.SortStableFunc(ranked, sorter.compare)
+	slices.SortStableFunc(scored, func(a, b taskID) int {
+		x, _ := priorityScore(tasks[a], scale)
+		y, _ := priorityScore(tasks[b], scale)
+		switch {
+		case x > y:
+			return -1
+		case x < y:
+			return 1
+		default:
+			return 0
+		}
+	})
 	next := 0
 	for i, id := range result {
-		if _, ok := ranks[tasks[id].Priority]; ok {
-			result[i] = ranked[next]
+		if _, reason := priorityScore(tasks[id], scale); reason == "" {
+			result[i] = scored[next]
 			next++
 		}
 	}
 	return result
-}
-
-// rankingIncomplete reports when some task labels lack a supported rank.
-//
-// Example: Unknown priority is always disclosed as unranked.
-func rankingIncomplete(
-	tasks []task,
-	order []priorityLabel,
-) bool {
-	ranks := priorityRanks(order)
-	if len(order) == 0 {
-		return true
-	}
-	for _, t := range tasks {
-		if _, ok := ranks[t.Priority]; !ok {
-			return true
-		}
-	}
-	return false
 }
