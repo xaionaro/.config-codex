@@ -108,3 +108,7 @@ Maintenance provenance: [coverage map](references/coverage-map.md).
 - A producer reviews itself, a blind critic reuses context, or review critics run sequentially.
 - A substantive gate finding is patched directly instead of returning through Explore/Critique.
 - A lifecycle is closed to bypass routing or acceptance.
+
+## After compaction
+
+After each ECI compaction, refresh the structured YAML status report and print a proper status report to the user using [writing-status-reports](../writing-status-reports/SKILL.md). Compaction alone does not trigger queue-item critique. Resume safe work after reporting.

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+module_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tools/status-report" && pwd)"
+if [[ $# -eq 2 && $2 != - && $2 != /* ]]; then
+	set -- "$1" "$PWD/$2"
+fi
+cd "$module_dir"
+exec go run . "$@"

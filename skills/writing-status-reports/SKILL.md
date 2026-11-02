@@ -52,10 +52,16 @@ Progress reports changed state and completed outcomes, not files read, commands 
 ## Active work and progress
 
 For a requested status report, include the applicable active-work, timeline,
-and progress bundle below alongside the relevant coverage categories. List top
-priority issues and tasks in supported priority order, with their assigned
-agents or `unowned` and parent/requirement context. Mark unsupported priority
-`unknown`; do not fabricate an ordering among unknowns.
+and progress bundle below alongside the relevant coverage categories. Show the
+full known in-scope task tree, including descendants at every priority and their
+assigned agents or `unowned` and parent/requirement context. Order siblings by
+supported priority. Mark unsupported priority `unknown`; do not fabricate an
+ordering among unknowns. Identify missing task evidence rather than implying
+the tree is complete.
+
+When newly time-estimated items enter the queue, have an independent critic review only those items' estimates, impact, and priority. The reporter repairs findings and requests another review as needed, for at most five reporter–critic rounds. Expose unresolved findings or unavailable review honestly. A report refresh, compaction, or recalibration of existing items alone does not trigger this review; do not critique the whole report under this rule.
+
+Present a separate top-priority list and the full task tree. Both refer to the same task records. Persist structured YAML and use the status-report tool as described in [Latest Status Report](../context-ledger/SKILL.md#latest-status-report).
 
 For an active multi-agent status report, show the recursive roster of actually
 active agents under their parent agents, including each agent's current task, owner or
@@ -72,9 +78,11 @@ In every task list include priority,
 impact, and effort columns. Use supported priority labels and concrete impact;
 give the estimated remaining work effort or elapsed duration with units and a
 range, explicitly identifying which it is and distinguishing it from agent
-reasoning effort. Decompose remaining work into bounded packages, including
-required review, checks, repairs, and acceptance; estimate each from evidence
-or a labeled educated guess. State material assumptions, uncertainty, and
+reasoning effort. For every priority, attempt to decompose remaining work into
+packages estimated at 30 minutes or less, including required review, checks,
+repairs, and acceptance. If a package cannot reasonably be decomposed further,
+say why and retain its estimate. Estimate each package from evidence or a
+labeled educated guess. State material assumptions, uncertainty, and
 dependencies, including external waits. Combine serial durations and use the
 latest required parallel endpoint for an overall elapsed estimate; do not sum
 parallel durations. Follow [Work estimates](../../CODEX.md#work-estimates) and,
@@ -98,29 +106,7 @@ history. Never
 invent events or treat a commit as proof of acceptance. Timeline-only reports
 follow the forecast exception below.
 
-Calculate total progress from achieved workstream scores, not activity,
-elapsed time, agent count, or averages of Fast and normal paths. Identify
-distinct in-scope outcome workstreams, including completed ones, and their weights,
-achieved scores (0–100%), and supporting evidence; calculate
-`total = sum(weight × achieved score) / sum(weight)`. Derive each score from an
-established rubric or evidenced achieved milestone units divided by total units;
-show the units, arithmetic, and evidence. Use stable unit budgets and explicitly
-rebaseline scope changes. A zero denominator is not calculable. Never invent
-stage percentages or infer an ETA from a progress percentage.
-Use established weights when available; otherwise use equal weights and label
-the result an estimate; equal weights do not supply missing scores. Count a shared
-unit or outcome once, including work delivered by
-both paths or a child Job; do not add parent and child representations of the
-same work. Scores reflect achieved acceptance evidence and remaining required
-work, not an unverified claim of completion. If a score or scope is unknown,
-show it as unknown and report a partial calculation with coverage, rather than
-silently assigning zero or presenting a complete total. Show a visual progress
-bar for a calculable total, labeled with its percentage and estimate status. For
-partial evidence, label the bar and percentage as covering only scored
-workstreams, identify those covered and unknown, and do not imply it is an
-overall total. If no scores are supported, show `unknown` without a percentage
-or filled bar. Explain any change in scope or weights when comparing totals over
-time.
+Calculate progress from the report YAML's leaf task statuses using the status report tool. Each known leaf is one estimated package from the best-effort half-hour breakdown; only `CLOSED` with acceptance evidence is complete. Parent tasks are excluded. Flag leaves whose upper estimate exceeds 30 minutes and explain why they cannot be split. Label the result an equal-package estimate, not elapsed-time progress; rebaseline when scope is added or split. Unknown or null statuses are unscored. If scope or any leaf status is unknown, label the result partial and identify coverage and unscored tasks. With no scored leaves, show unknown without a percentage or filled bar. Never store a separate progress percentage or bar or infer an ETA from it.
 
 ## Lane forecasts
 
