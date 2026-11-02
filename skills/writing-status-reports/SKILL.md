@@ -35,7 +35,7 @@ Progress reports changed state and completed outcomes, not files read, commands 
 ## Format Rules
 
 - These formatting rules, including exact forecast lines and tables, apply to rendered user-facing reports. The persisted YAML projection carries equivalent structured fields as described in [Latest Status Report](../context-ledger/SKILL.md#latest-status-report).
-- Keep updates short: one tight paragraph or relevant coverage categories as bullets.
+- Keep ordinary progress commentary short: one tight paragraph or relevant coverage categories as bullets. For a requested status report, use the applicable detailed bundle below by default.
 - Lead with state, then include only categories that changed or matter now.
 - Name exact affected area, requirement, command, file, or decision when relevant.
 - Use "not verified yet" instead of implying unrun checks passed.
@@ -48,6 +48,79 @@ Progress reports changed state and completed outcomes, not files read, commands 
 - Known in-scope work remains in scope while lineage is reconciled; do not infer a new outcome from a missing record.
 - Workflow activity is overhead, not progress.
 - In direct work, include requirement context only when it helps the reader.
+
+## Active work and progress
+
+For a requested status report, include the applicable active-work, timeline,
+and progress bundle below alongside the relevant coverage categories. List top
+priority issues and tasks in supported priority order, with their assigned
+agents or `unowned` and parent/requirement context. Mark unsupported priority
+`unknown`; do not fabricate an ordering among unknowns.
+
+For an active multi-agent status report, show the recursive roster of actually
+active agents under their parent agents, including each agent's current task, owner or
+role, model, and reasoning effort. Include the top-level tasks and their
+owners. Use live roster and assignment evidence; mark unavailable fields
+`unknown` and distinguish an idle agent from an active assignment. If runtime
+telemetry is unavailable, label launch settings as requested, not observed. State
+when no agents are active or roster evidence is unavailable. Show an inactive
+ancestor only as labeled ancestry context, never as an active roster entry; omit
+unassigned idle agents. Do not infer
+model or effort from a parent or a role.
+
+In every task list include priority,
+impact, and effort columns. Use supported priority labels and concrete impact;
+give the estimated remaining work effort or elapsed duration with units and a
+range, explicitly identifying which it is and distinguishing it from agent
+reasoning effort. Decompose remaining work into bounded packages, including
+required review, checks, repairs, and acceptance; estimate each from evidence
+or a labeled educated guess. State material assumptions, uncertainty, and
+dependencies, including external waits. Combine serial durations and use the
+latest required parallel endpoint for an overall elapsed estimate; do not sum
+parallel durations. Follow [Work estimates](../../CODEX.md#work-estimates) and,
+for ECI, the [scenario forecast rule](../context-ledger/SKILL.md#eci-scenario-forecasts).
+Mark unsupported priority or impact `unknown`; missing timing evidence calls
+for a labeled educated estimate, not an invented measurement or omitted ETA.
+
+At report time T, for every Job with evidenced progress in [T−4h, T), including
+Jobs completed within that window and descendant Jobs, show its parent chain and
+one timeline with exactly three columns: `UTC interval`, `Fast`, and `Normal`.
+Divide the window into eight half-hour, half-open intervals; use event occurrence
+time where known. Omit empty intervals and Jobs
+with no evidenced progress. Summarize evidenced progress in its path column and
+include relevant commit short hashes and subjects there. Attribute commits only
+where Job, path, and time are supported; label uncertain attribution. State
+when history is incomplete or unavailable. Use `—` for a path verified empty
+in a displayed interval and `unknown` when its history is unavailable or
+incomplete; omission does not prove no work occurred. State when no Job has
+evidenced progress, distinguishing verified empty history from unavailable
+history. Never
+invent events or treat a commit as proof of acceptance. Timeline-only reports
+follow the forecast exception below.
+
+Calculate total progress from achieved workstream scores, not activity,
+elapsed time, agent count, or averages of Fast and normal paths. Identify
+distinct in-scope outcome workstreams, including completed ones, and their weights,
+achieved scores (0–100%), and supporting evidence; calculate
+`total = sum(weight × achieved score) / sum(weight)`. Derive each score from an
+established rubric or evidenced achieved milestone units divided by total units;
+show the units, arithmetic, and evidence. Use stable unit budgets and explicitly
+rebaseline scope changes. A zero denominator is not calculable. Never invent
+stage percentages or infer an ETA from a progress percentage.
+Use established weights when available; otherwise use equal weights and label
+the result an estimate; equal weights do not supply missing scores. Count a shared
+unit or outcome once, including work delivered by
+both paths or a child Job; do not add parent and child representations of the
+same work. Scores reflect achieved acceptance evidence and remaining required
+work, not an unverified claim of completion. If a score or scope is unknown,
+show it as unknown and report a partial calculation with coverage, rather than
+silently assigning zero or presenting a complete total. Show a visual progress
+bar for a calculable total, labeled with its percentage and estimate status. For
+partial evidence, label the bar and percentage as covering only scored
+workstreams, identify those covered and unknown, and do not imply it is an
+overall total. If no scores are supported, show `unknown` without a percentage
+or filled bar. Explain any change in scope or weights when comparing totals over
+time.
 
 ## Lane forecasts
 
@@ -135,9 +208,9 @@ Use three separate status columns so source readiness cannot be mistaken for E2E
 
 When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. Keep `Lane` followed by `Lane requirement context` when that context would help the reader. Use a known readable reference or `lineage unavailable—reconcile`.
 
-| Task ID | Parent ID | Lane | Lane requirement context | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `normal` for ECI | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`<br>`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`<br>`Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
+| Task ID | Parent ID | Lane | Lane requirement context | Priority | Impact | Effort | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `<supported priority or unknown>` | `<concrete impact or unknown>` | `<remaining work effort or elapsed duration range, units and basis>` | `normal` for ECI | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`<br>`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`<br>`Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
 
 For ECI, record `Stage: normal`. Show main and fast progress under the same task,
 with each owner, provisional evidence, current ECI decision, and adaptation.
