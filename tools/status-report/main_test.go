@@ -991,3 +991,95 @@ func TestTimelineWindowBoundaryAndEquivalentUTCOffsets(t *testing.T) {
 	_, err = parse([]byte(strings.Replace(valid, "timeline: []", duplicate, 1)))
 	require.Error(t, err)
 }
+
+// TestPriorityOrderKeepsUnrankedSlotsStable checks supplied priority ordering.
+//
+// Example: Ranked high and low tasks swap around an unknown task.
+func TestPriorityOrderKeepsUnrankedSlotsStable(t *testing.T) {
+	input := strings.Replace(valid, "top_priorities: [\"1.1\"]", `  - id: "1.3"
+    parent_id: "1"
+    title: Low
+    priority: low
+    impact: Useful
+    effort: {min_minutes: 10, max_minutes: 20, kind: elapsed, basis: guess}
+    status: NEW
+top_priorities: ["1.3", "1.2", "1.1"]
+priority_order: [high, low]`, 1)
+	input = strings.Replace(input, "completion_estimate:", "  - {priority: low, min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: none}\ncompletion_estimate:", 1)
+	// Put low before unknown and high in the tree as well.
+	a := strings.Index(input, "  - id: \"1.1\"")
+	b := strings.Index(input, "  - id: \"1.2\"")
+	c := strings.Index(input, "  - id: \"1.3\"")
+	d := strings.Index(input, "top_priorities:")
+	input = input[:a] + input[c:d] + input[b:c] + input[a:b] + input[d:]
+	r, err := parse([]byte(input))
+	require.NoError(t, err)
+	out := render(r)
+	top := strings.Split(strings.Split(out, "Top priorities:\n")[1], "\nFull task tree:")[0]
+	require.Less(t, strings.Index(top, "1.1 Complete"), strings.Index(top, "1.2 Unknown"))
+	require.Less(t, strings.Index(top, "1.2 Unknown"), strings.Index(top, "1.3 Low"))
+	tree := strings.Split(strings.Split(out, "Full task tree:\n")[1], "\nProgress:")[0]
+	require.Less(t, strings.Index(tree, "1.1 Complete"), strings.Index(tree, "1.2 Unknown"))
+	require.Less(t, strings.Index(tree, "1.2 Unknown"), strings.Index(tree, "1.3 Low"))
+}
+
+// TestForecastBaselineTruth verifies baseline comparisons and explicit uncertainty.
+//
+// Example: Differing UTC offsets for the same instant remain unchanged.
+func TestForecastBaselineTruth(t *testing.T) {
+	for _, tc := range []struct{ baseline, target, want string }{
+		{"2026-11-02T16:00:00+00:00", "2026-11-02T16:00:00Z", "Forecast recalibration: unchanged — baseline"},
+		{"2026-11-02T15:00:00Z", "2026-11-02T16:00:00Z", "Forecast baseline: 2026-11-02T15:00:00Z; current target: 2026-11-02T16:00:00Z; recalibration history unknown"},
+		{"unknown", "2026-11-02T16:00:00Z", "Forecast baseline: unknown; current target: 2026-11-02T16:00:00Z; recalibration history unknown"},
+	} {
+		doc := valid + "root_forecasts:\n  - {outcome: Work, target: '" + tc.target + "', baseline: '" + tc.baseline + "', assessment: complete}\n"
+		r, err := parse([]byte(doc))
+		require.NoError(t, err)
+		require.Contains(t, render(r), tc.want)
+		if strings.Contains(tc.want, "unchanged") {
+			require.Contains(t, render(r), "Intermediate recalibration history unknown")
+		}
+	}
+	doc := valid + "root_forecasts:\n  - {outcome: Work, target: '2026-11-02T16:00:00Z', baseline: nonsense, assessment: complete}\n"
+	_, err := parse([]byte(doc))
+	require.Error(t, err)
+}
+
+// TestPriorityOrderValidationAndStability checks arbitrary labels and absent ranks.
+//
+// Example: An unknown slot stays fixed while two ranked slots are reordered.
+func TestPriorityOrderValidationAndStability(t *testing.T) {
+	tasks := map[taskID]task{"a": {Priority: "later"}, "u": {Priority: "unknown"}, "b": {Priority: "urgent"}, "c": {Priority: "later"}}
+	ids := []taskID{"a", "u", "b", "c"}
+	require.Equal(t, []taskID{"b", "u", "a", "c"}, orderTaskIDs(ids, tasks, []priorityLabel{"urgent", "unused", "later"}))
+	require.Equal(t, ids, orderTaskIDs(ids, tasks, nil))
+	require.True(t, rankingIncomplete([]task{{Priority: "urgent"}}, nil))
+	r, err := parse([]byte(valid))
+	require.NoError(t, err)
+	require.Contains(t, render(r), "Priority ranking unavailable")
+	require.True(t, rankingIncomplete([]task{{Priority: "unknown"}}, []priorityLabel{"urgent"}))
+	for _, order := range []string{"[high, high]", "[high, unknown]", "[high, '']", "[high, UNKNOWN]"} {
+		_, err := parse([]byte(valid + "priority_order: " + order + "\n"))
+		require.Error(t, err, order)
+	}
+	_, err = parse([]byte(valid + "priority_order: [high, unused]\n"))
+	require.NoError(t, err)
+}
+
+// TestForecastPriorAndBaselineValidation checks metadata without invented history.
+//
+// Example: A missing prior never proves intermediate history was unchanged.
+func TestForecastPriorAndBaselineValidation(t *testing.T) {
+	for _, field := range []string{"prior", "baseline"} {
+		doc := valid + "root_forecasts:\n  - {outcome: Work, target: '2026-11-02T16:00:00Z', " + field + ": not-a-time, assessment: complete}\n"
+		_, err := parse([]byte(doc))
+		require.Error(t, err, field)
+	}
+	doc := valid + "root_forecasts:\n  - {outcome: Work, target: '2026-11-02T16:00:00Z', baseline: '2026-11-02T15:00:00Z', reason: pending, evidence: record, assessment: provisional}\n"
+	r, err := parse([]byte(doc))
+	require.NoError(t, err)
+	out := render(r)
+	require.Contains(t, out, "Forecast reason: pending")
+	require.NotContains(t, out, "why moved: pending")
+	require.NotContains(t, out, "unchanged — baseline 2026-11-02T15:00:00Z")
+}

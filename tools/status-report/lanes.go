@@ -141,9 +141,7 @@ func renderForecastDetails(
 		writeForecastEvidence(b, f)
 		fmt.Fprintln(b, ".")
 	case f.Baseline != "":
-		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s", f.Baseline)
-		writeForecastEvidence(b, f)
-		fmt.Fprintln(b, ".")
+		renderForecastBaseline(b, f)
 	default:
 		if f.Reason != "" {
 			fmt.Fprintf(b, "Forecast reason: %s\n", f.Reason)
@@ -169,5 +167,48 @@ func writeForecastEvidence(
 	}
 	if f.Evidence != "" {
 		fmt.Fprintf(b, "; supporting evidence: %s", f.Evidence)
+	}
+}
+
+// sameForecastInstant compares supported UTC forecast endpoints.
+//
+// Example: Z and +00:00 representations of one instant are equal.
+func sameForecastInstant(
+	a,
+	b string,
+) bool {
+	left, err := parseUTC(a)
+	if err != nil {
+		return false
+	}
+	right, err := parseUTC(b)
+	if err != nil {
+		return false
+	}
+	return left.Equal(right)
+}
+
+// renderForecastBaseline compares endpoints without claiming intermediate history.
+//
+// Example: Matching instants still leave intermediate recalibration history unknown.
+func renderForecastBaseline(
+	b *strings.Builder,
+	f forecast,
+) {
+	if sameForecastInstant(f.Baseline, f.Target) {
+		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s", f.Baseline)
+		if f.Evidence != "" {
+			fmt.Fprintf(b, "; supporting evidence: %s", f.Evidence)
+		}
+		fmt.Fprintln(b, ".")
+		fmt.Fprintln(b, "Intermediate recalibration history unknown; endpoints match.")
+	} else {
+		fmt.Fprintf(b, "Forecast baseline: %s; current target: %s; recalibration history unknown.\n", f.Baseline, f.Target)
+		if f.Evidence != "" {
+			fmt.Fprintf(b, "Forecast evidence: %s\n", f.Evidence)
+		}
+	}
+	if f.Reason != "" {
+		fmt.Fprintf(b, "Forecast reason: %s\n", f.Reason)
 	}
 }

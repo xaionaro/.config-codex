@@ -55,9 +55,11 @@ For a requested status report, include the applicable active-work, timeline,
 and progress bundle below alongside the relevant coverage categories. Show the
 full known in-scope task tree, including descendants at every priority and their
 assigned agents or `unowned` and parent/requirement context. Order siblings by
-supported priority. Mark unsupported priority `unknown`; do not fabricate an
-ordering among unknowns. Identify missing task evidence rather than implying
-the tree is complete.
+supported priority using the report YAML `priority_order` when available. Retain
+unknown and unranked tasks in their source positions. Mark unsupported priority
+`unknown`; do not fabricate an ordering among unknowns. If ranking is
+unavailable, say so. Identify missing task evidence rather than implying the
+tree is complete.
 
 When newly time-estimated items enter the queue, have an independent critic review only those items' estimates, impact, and priority. The reporter repairs findings and requests another review as needed, for at most five reporter–critic rounds. Expose unresolved findings or unavailable review honestly. A report refresh, compaction, or recalibration of existing items alone does not trigger this review; do not critique the whole report under this rule.
 

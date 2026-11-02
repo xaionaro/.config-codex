@@ -114,6 +114,7 @@ type report struct {
 	ScopeComplete      *bool                `yaml:"scope_complete"`
 	Tasks              []task               `yaml:"tasks"`
 	TopPriorities      []taskID             `yaml:"top_priorities"`
+	PriorityOrder      []priorityLabel      `yaml:"priority_order"`
 	Lanes              []lane               `yaml:"lanes"`
 	RootForecasts      []forecast           `yaml:"root_forecasts"`
 	Roster             map[string]any       `yaml:"roster"`
@@ -172,6 +173,7 @@ func parse(data []byte) (report, error) {
 			return r, fmt.Errorf("task %s: CLOSED requires acceptance evidence", t.ID)
 		}
 	}
+	// Each non-root parent is a strictly shorter prefix, so cycles are impossible.
 	for _, t := range r.Tasks {
 		if at := strings.LastIndex(string(t.ID), "."); at >= 0 {
 			if at == 0 || at == len(t.ID)-1 || strings.Contains(string(t.ID), "..") {
@@ -190,21 +192,14 @@ func parse(data []byte) (report, error) {
 			}
 			children[t.ParentID]++
 		}
-		seen := map[taskID]bool{}
-		for id := t.ID; id != ""; id = byID[id].ParentID {
-			if seen[id] {
-				return r, fmt.Errorf("task cycle at %s", id)
-			}
-			seen[id] = true
-			if _, ok := byID[id]; !ok {
-				break
-			}
-		}
 	}
 	for _, t := range r.Tasks {
 		if children[t.ID] == 0 && *t.Effort.MaxMinutes > maxLeafMinutes && strings.TrimSpace(t.IndivisibleReason) == "" {
 			return r, fmt.Errorf("task %s: leaf longer than 30 minutes needs indivisible_reason", t.ID)
 		}
+	}
+	if err := validatePriorityOrder(r.PriorityOrder); err != nil {
+		return r, err
 	}
 	seenTop := map[taskID]bool{}
 	for _, id := range r.TopPriorities {
@@ -251,15 +246,18 @@ func render(r report) string {
 		byID[t.ID] = t
 		children[t.ParentID] = append(children[t.ParentID], t.ID)
 	}
+	if rankingIncomplete(r.Tasks, r.PriorityOrder) {
+		fmt.Fprintln(&b, "Priority ranking unavailable for unranked labels; their positions are preserved.")
+	}
 	fmt.Fprintln(&b, "Top priorities:")
 	if len(r.TopPriorities) == 0 {
 		fmt.Fprintln(&b, "- unknown / none identified")
 	}
-	for _, id := range r.TopPriorities {
+	for _, id := range orderTaskIDs(r.TopPriorities, byID, r.PriorityOrder) {
 		writeTaskLine(&b, byID[id], "")
 	}
 	fmt.Fprintln(&b, "\nFull task tree:")
-	writeTaskTree(&b, byID, children, "", 0)
+	writeTaskTree(&b, byID, children, r.PriorityOrder, "", 0)
 	known, done, unknownCount := 0, 0, 0
 	var unscored, covered, oversized []string
 	for _, t := range r.Tasks {
@@ -498,11 +496,12 @@ func writeTaskTree(
 	b *strings.Builder,
 	byID map[taskID]task,
 	children map[taskID][]taskID,
+	order []priorityLabel,
 	parent taskID,
 	depth int,
 ) {
-	for _, id := range children[parent] {
+	for _, id := range orderTaskIDs(children[parent], byID, order) {
 		writeTaskLine(b, byID[id], strings.Repeat("  ", depth))
-		writeTaskTree(b, byID, children, id, depth+1)
+		writeTaskTree(b, byID, children, order, id, depth+1)
 	}
 }

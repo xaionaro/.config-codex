@@ -50,15 +50,7 @@ func writeTimeline(
 			fmt.Fprintf(b, "| %s | %s | %s |\n", timelineCell(interval), timelineCell(row.Fast), timelineCell(row.Normal))
 		}
 		fmt.Fprintln(b)
-		for _, row := range rows {
-			interval := row.Start + " – " + row.End
-			if row.Evidence != "" {
-				fmt.Fprintf(b, "- %s evidence: %s\n", timelineCell(interval), timelineCell(row.Evidence))
-			}
-			if row.Uncertainty != "" {
-				fmt.Fprintf(b, "- %s uncertainty: %s\n", timelineCell(interval), timelineCell(row.Uncertainty))
-			}
-		}
+		writeTimelineEvidence(b, rows)
 		fmt.Fprintln(b)
 	}
 }
@@ -90,4 +82,22 @@ func compareTimelineEntry(
 		return strings.Compare(left.Start, right.Start)
 	}
 	return a.Compare(b)
+}
+
+// writeTimelineEvidence retains evidence and uncertainty beside their interval.
+//
+// Example: An uncertain path attribution appears beneath its table.
+func writeTimelineEvidence(
+	b *strings.Builder,
+	rows []timelineEntry,
+) {
+	for _, row := range rows {
+		interval := row.Start + " – " + row.End
+		if row.Evidence != "" {
+			fmt.Fprintf(b, "- %s evidence: %s\n", timelineCell(interval), timelineCell(row.Evidence))
+		}
+		if row.Uncertainty != "" {
+			fmt.Fprintf(b, "- %s uncertainty: %s\n", timelineCell(interval), timelineCell(row.Uncertainty))
+		}
+	}
 }

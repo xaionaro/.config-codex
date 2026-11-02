@@ -29,9 +29,12 @@ func validateForecast(f forecast) error {
 	if !validForecast(f) {
 		return fmt.Errorf("forecast requires outcome, target and assessment; use unknown when unsupported")
 	}
-	if f.Target != "unknown" {
-		if _, err := parseUTC(f.Target); err != nil {
-			return fmt.Errorf("invalid forecast target: %w", err)
+	if err := validateForecastTime("target", f.Target); err != nil {
+		return err
+	}
+	for _, item := range []struct{ name, value string }{{"baseline", f.Baseline}, {"prior", f.Prior}} {
+		if err := validateForecastTime(item.name, item.value); err != nil {
+			return err
 		}
 	}
 	for _, item := range f.Scenarios {
@@ -108,40 +111,53 @@ func validateLanes(r report) error {
 		byID[t.ID] = t
 	}
 	for _, l := range r.Lanes {
-		_, ok := byID[l.TaskID]
-		if !ok || l.TaskID == "" {
-			return fmt.Errorf("lane references unknown task %s", l.TaskID)
+		if err := validateLane(l, byID); err != nil {
+			return err
 		}
-		if strings.TrimSpace(l.Outcome) == "" {
-			return fmt.Errorf("lane %s requires outcome", l.TaskID)
+	}
+	return nil
+}
+
+// validateLane checks one lane against its referenced task and acceptance boundary.
+//
+// Example: A test-gated lane needs test readiness before completion.
+func validateLane(
+	l lane,
+	byID map[taskID]task,
+) error {
+	_, ok := byID[l.TaskID]
+	if !ok || l.TaskID == "" {
+		return fmt.Errorf("lane references unknown task %s", l.TaskID)
+	}
+	if strings.TrimSpace(l.Outcome) == "" {
+		return fmt.Errorf("lane %s requires outcome", l.TaskID)
+	}
+	if l.ImplementationStatus == statusUnknown || l.TestStatus == statusUnknown || l.ProdStatus == statusUnknown {
+		return fmt.Errorf("lane %s requires three readiness statuses", l.TaskID)
+	}
+	if l.RequiredEnvironment == environmentUnknown {
+		return fmt.Errorf("lane %s: required_environment is required", l.TaskID)
+	}
+	if l.requiredStatus() == statusClosed && l.CompletedAt == "" {
+		return fmt.Errorf("lane %s: completed lane requires completed_at", l.TaskID)
+	}
+	if l.CompletedAt != "" {
+		if _, err := parseUTC(l.CompletedAt); err != nil {
+			return fmt.Errorf("lane %s: invalid completed_at", l.TaskID)
 		}
-		if l.ImplementationStatus == statusUnknown || l.TestStatus == statusUnknown || l.ProdStatus == statusUnknown {
-			return fmt.Errorf("lane %s requires three readiness statuses", l.TaskID)
-		}
-		if l.RequiredEnvironment == environmentUnknown {
-			return fmt.Errorf("lane %s: required_environment is required", l.TaskID)
-		}
-		if l.requiredStatus() == statusClosed && l.CompletedAt == "" {
-			return fmt.Errorf("lane %s: completed lane requires completed_at", l.TaskID)
-		}
-		if l.CompletedAt != "" {
-			if _, err := parseUTC(l.CompletedAt); err != nil {
-				return fmt.Errorf("lane %s: invalid completed_at", l.TaskID)
-			}
-			if l.requiredStatus() != statusClosed {
-				return fmt.Errorf("lane %s: completed_at requires CLOSED required environment", l.TaskID)
-			}
-			if l.Forecast != nil {
-				return fmt.Errorf("lane %s: completion conflicts with active forecast", l.TaskID)
-			}
+		if l.requiredStatus() != statusClosed {
+			return fmt.Errorf("lane %s: completed_at requires CLOSED required environment", l.TaskID)
 		}
 		if l.Forecast != nil {
-			if l.requiredStatus() == statusClosed {
-				return fmt.Errorf("lane %s: CLOSED required environment cannot retain active forecast", l.TaskID)
-			}
-			if err := validateForecast(*l.Forecast); err != nil {
-				return fmt.Errorf("lane %s forecast: %w", l.TaskID, err)
-			}
+			return fmt.Errorf("lane %s: completion conflicts with active forecast", l.TaskID)
+		}
+	}
+	if l.Forecast != nil {
+		if l.requiredStatus() == statusClosed {
+			return fmt.Errorf("lane %s: CLOSED required environment cannot retain active forecast", l.TaskID)
+		}
+		if err := validateForecast(*l.Forecast); err != nil {
+			return fmt.Errorf("lane %s forecast: %w", l.TaskID, err)
 		}
 	}
 	return nil
@@ -237,6 +253,22 @@ func validateScenario(item scenario) error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("scenario %q requires all fields; use unknown where unsupported", item.Case)
 		}
+	}
+	return nil
+}
+
+// validateForecastTime checks an optional or explicitly unknown UTC timestamp.
+//
+// Example: An unsupported prior can be recorded as unknown.
+func validateForecastTime(
+	name string,
+	value string,
+) error {
+	if value == "" || value == "unknown" {
+		return nil
+	}
+	if _, err := parseUTC(value); err != nil {
+		return fmt.Errorf("invalid forecast %s: %w", name, err)
 	}
 	return nil
 }
