@@ -191,7 +191,7 @@ Assign every new tracked repository contribution, including code, documentation,
 
 The Supervisor may edit session-local coordination records, ledgers, plans, status reports, handoffs, and proof notes outside the tracked repository. Resolve routing edge cases through explicit session coordination while hook migration is deferred. Do not call retired self-edit helpers; Producer ownership and index rules still apply.
 
-- Before substantive work, load every installed matching skill from `~/.codex/skills`; slash-paired cells map positionally; matches are cumulative. Skill routing is instruction-only; never port Claude `Skill` `PostToolUse` markers without real Codex skill identity/path fields.
+- Before substantive work or investigating or answering questions about coding instructions, load every installed matching skill from `~/.codex/skills`; slash-paired cells map positionally; matches are cumulative. Skill routing is instruction-only; never port Claude `Skill` `PostToolUse` markers without real Codex skill identity/path fields.
 
 | Trigger | Skill |
 |---|---|
