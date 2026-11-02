@@ -103,3 +103,35 @@ func TestCancelledLifecycleValidation(t *testing.T) {
 	l.Lifecycle = "unknown"
 	require.Error(t, validateLane(l, map[taskID]task{l.TaskID: r.Tasks[0]}))
 }
+
+func TestTerminalReportForecastIsIncomplete(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	r.Lanes = r.Lanes[1:]
+	r.RootForecasts = []forecast{{ForecastRef: "forecasts.yaml#/records/first", Outcome: "First result", Target: "2026-11-02T16:00:00Z", Assessment: "complete"}}
+	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish, reporting_roles: [lane]", "state: cancelled, reporting_roles: [root]", 1)
+	forecasts := strings.Replace(strings.Replace(linkedForecasts, "kind: lane", "kind: root", 1), "status: active", "status: inactive", 1)
+	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work has report forecast")
+}
+
+func TestRolelessWorkCannotClaimForecast(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	r.Lanes = r.Lanes[1:]
+	ledger := strings.Replace(linkedLedger, "reporting_roles: [lane]", "reporting_roles: []", 1)
+	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, linkedForecasts)), "\n"), "forecast has no applicable reporting role")
+}
+
+func TestInheritedWorkPriorityUsesRemainingLeaves(t *testing.T) {
+	r := report{Tasks: []task{
+		{ID: "1", WorkRefs: []string{"project-understanding.yaml#/records/work:first"}},
+		{ID: "1.1", ParentID: "1", Priority: "high", Status: statusClosed},
+		{ID: "1.2", ParentID: "1", Priority: "low", Status: statusInProgress},
+		{ID: "2", Priority: "other", Status: statusInProgress},
+	}}
+	idx := buildTaskWorkIndex(r.Tasks, map[string]sourceRecord{"work:first": {Data: workData{State: "active"}}})
+	require.True(t, idx.remaining["work:first"])
+	require.False(t, idx.priorityOpen("high", nil))
+	require.True(t, idx.priorityOpen("low", nil))
+	require.False(t, idx.priorityOpen("other", nil))
+}
