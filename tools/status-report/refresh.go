@@ -241,12 +241,31 @@ func prepareInvalidation(
 	if blockers.Line == scope.Line && blockers.Column > scope.Column {
 		blockers.Column += len("false") - len(scope.Value)
 	}
-	lines, err = appendDiagnostic(lines, blockers, diagnostic)
+	lines, err = appendDiagnostic(lines, blockers, diagnostic, nextMappingFieldLine(root, "blockers_risks"))
 	if err != nil {
 		return nil, err
 	}
 	updated := []byte(strings.Join(lines, "\n"))
 	return updated, nil
+}
+
+// nextMappingFieldLine identifies the field following a named YAML mapping key.
+//
+// Example: Find the line where verification follows blockers.
+func nextMappingFieldLine(
+	root *yaml.Node,
+	key string,
+) int {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != key {
+			continue
+		}
+		if i+2 < len(root.Content) {
+			return root.Content[i+2].Line
+		}
+		return 0
+	}
+	return 0
 }
 
 // appendDiagnostic adds a missing diagnostic without changing existing entries.
@@ -256,6 +275,7 @@ func appendDiagnostic(
 	lines []string,
 	blockers *yaml.Node,
 	diagnostic string,
+	nextFieldLine int,
 ) ([]string, error) {
 	for _, n := range blockers.Content {
 		if n.Value == diagnostic {
@@ -263,7 +283,7 @@ func appendDiagnostic(
 		}
 	}
 	if blockers.Style&yaml.FlowStyle == 0 {
-		return appendBlockDiagnostic(lines, blockers, diagnostic)
+		return appendBlockDiagnostic(lines, blockers, diagnostic, nextFieldLine)
 	}
 	i := blockers.Line - 1
 	if i < 0 || i >= len(lines) {
@@ -295,23 +315,27 @@ func appendBlockDiagnostic(
 	lines []string,
 	blockers *yaml.Node,
 	diagnostic string,
+	nextFieldLine int,
 ) ([]string, error) {
-	insert := blockers.Line - 1
+	insert := len(lines)
+	if nextFieldLine > 0 {
+		insert = nextFieldLine - 1
+	}
 	indent := "  "
 	if len(blockers.Content) > 0 {
 		last := blockers.Content[len(blockers.Content)-1]
 		if last.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 || strings.Contains(last.Value, "\n") {
 			return nil, fmt.Errorf("multiline blocker requires manual status refresh")
 		}
-		insert = last.Line
-		if insert < 1 || insert > len(lines) {
+		if last.Line < 1 || last.Line > len(lines) || insert < last.Line || insert > len(lines) {
 			return nil, fmt.Errorf("unsupported blockers layout")
 		}
-		dash := strings.Index(lines[insert-1], "- ")
-		if dash < 0 || strings.TrimSpace(lines[insert-1][:dash]) != "" {
+		dash := strings.Index(lines[last.Line-1], "- ")
+		if dash < 0 || strings.TrimSpace(lines[last.Line-1][:dash]) != "" {
 			return nil, fmt.Errorf("unsupported blockers layout")
 		}
-		indent = lines[insert-1][:dash]
+		indent = lines[last.Line-1][:dash]
+		insert = trimFollowingComments(lines, insert, last.Line)
 	}
 	if insert < 0 || insert > len(lines) {
 		return nil, fmt.Errorf("unsupported blockers layout")
@@ -321,6 +345,24 @@ func appendBlockDiagnostic(
 		ending = "\r"
 	}
 	return append(lines[:insert], append([]string{indent + "- " + strconv.Quote(diagnostic) + ending}, lines[insert:]...)...), nil
+}
+
+// trimFollowingComments keeps comments for the next field after a new list item.
+//
+// Example: Insert a diagnostic before a comment introducing verification.
+func trimFollowingComments(
+	lines []string,
+	insert int,
+	minimum int,
+) int {
+	for insert > minimum {
+		line := strings.TrimSpace(lines[insert-1])
+		if line != "" && !strings.HasPrefix(line, "#") {
+			break
+		}
+		insert--
+	}
+	return insert
 }
 
 // publishStatus publishes a checked candidate using same-directory replacement.
