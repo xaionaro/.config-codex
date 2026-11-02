@@ -102,3 +102,7 @@ Evaluate designs against a 10–100× increase in the project's capabilities, fe
 
 - Separate data holders from data handlers.
 - Use a state machine.
+
+### Concurrency
+
+- For shared state, consider optimistic transactions over immutable snapshots: read one version, prepare changes separately, and atomically publish the replacement only if the version is still current; retry safely or report conflicts.
