@@ -15,12 +15,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// scalarEdit describes one bounded byte replacement.
+//
+// Example: Record a byte range and replacement text.
 type scalarEdit struct {
 	start, end int
 	value      string
 }
 
 // refreshForecastTargets projects explicitly linked forecasts and reconciliation issues.
+//
+// Example: Update a linked lane forecast from its canonical record.
 func refreshForecastTargets(dir, path string, info os.FileInfo, original, candidate []byte) error {
 	ledgerPath := filepath.Join(dir, "project-understanding.yaml")
 	forecastPath := filepath.Join(dir, "forecasts.yaml")
@@ -58,7 +63,11 @@ func refreshForecastTargets(dir, path string, info os.FileInfo, original, candid
 	if err != nil {
 		return err
 	}
-	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
+	sort.Slice(edits,
+		// Callback orders edits from later offsets to earlier offsets.
+		//
+		// Example: Apply disjoint edits without shifting later offsets.
+		func(i, j int) bool { return edits[i].start > edits[j].start })
 	updated := append([]byte(nil), candidate...)
 	for _, e := range edits {
 		updated = append(append(append([]byte(nil), updated[:e.start]...), []byte(e.value)...), updated[e.end:]...)
@@ -91,6 +100,9 @@ func refreshForecastTargets(dir, path string, info os.FileInfo, original, candid
 	return publishStatus(dir, path, info, original, updated, inputs)
 }
 
+// hasForecastReference reports whether work references a canonical forecast.
+//
+// Example: Determine whether a session needs a forecast file.
 func hasForecastReference(ledger ledgerSource) bool {
 	for _, record := range ledger.Records {
 		if record.Type == "work" && record.Data.ForecastRef != "" {
@@ -100,6 +112,9 @@ func hasForecastReference(ledger ledgerSource) bool {
 	return false
 }
 
+// validateRefreshSource checks that a forecast source supports a complete projection.
+//
+// Example: Reject a provisional forecast without a target basis.
 func validateRefreshSource(source map[string]any) error {
 	for key := range source {
 		switch key {
@@ -138,6 +153,9 @@ func validateRefreshSource(source map[string]any) error {
 	return nil
 }
 
+// validateChangedRecalibration checks the evidence and current target of a changed forecast.
+//
+// Example: Check that recalibration current equals the target.
 func validateChangedRecalibration(recal, source map[string]any) error {
 	for _, key := range []string{"prior", "current", "reason"} {
 		if textField(recal, key) == "" {
@@ -150,6 +168,9 @@ func validateChangedRecalibration(recal, source map[string]any) error {
 	return nil
 }
 
+// hasOpenRoot finds an open root work record for a forecast reference.
+//
+// Example: Match a root forecast to its active work record.
 func hasOpenRoot(ledger ledgerSource, ref string) bool {
 	for _, record := range ledger.Records {
 		if record.Type != "work" || record.Data.ForecastRef != ref || (record.Data.State != "active" && record.Data.State != "blocked") {
@@ -162,6 +183,9 @@ func hasOpenRoot(ledger ledgerSource, ref string) bool {
 	return false
 }
 
+// mapValue looks up a key in a YAML mapping node.
+//
+// Example: Find the forecast reference in a YAML mapping.
 func mapValue(n *yaml.Node, key string) *yaml.Node {
 	if n == nil || n.Kind != yaml.MappingNode {
 		return nil
@@ -174,6 +198,9 @@ func mapValue(n *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
+// scalarReplacement prepares a bounded edit for a supported scalar.
+//
+// Example: Prepare a target timestamp replacement.
 func scalarReplacement(data []byte, n *yaml.Node, value string) (scalarEdit, error) {
 	if n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return scalarEdit{}, fmt.Errorf("multiline forecast scalar requires manual refresh")
@@ -203,6 +230,9 @@ func scalarReplacement(data []byte, n *yaml.Node, value string) (scalarEdit, err
 	return scalarEdit{start, end, strconv.Quote(value)}, nil
 }
 
+// quotedScalarEnd locates the end of a single-line quoted scalar.
+//
+// Example: Find the end of a quoted forecast outcome.
 func quotedScalarEnd(data []byte, start int) (int, error) {
 	quote := data[start]
 	for i := start + 1; i < len(data) && data[i] != '\n'; i++ {
@@ -221,6 +251,9 @@ func quotedScalarEnd(data []byte, start int) (int, error) {
 	return 0, fmt.Errorf("unsupported quoted scalar")
 }
 
+// projectForecast prepares canonical edits for a linked forecast.
+//
+// Example: Update a linked forecast from its source record.
 func projectForecast(original []byte, node *yaml.Node, source map[string]any, doc *flowDocument) ([]scalarEdit, error) {
 	fields := map[string]any{}
 	for dst, src := range map[string]string{"outcome": "outcome", "target": "target", "assessment": "assessment", "baseline": "original_baseline"} {
@@ -306,6 +339,9 @@ func projectForecast(original []byte, node *yaml.Node, source map[string]any, do
 	return edits, nil
 }
 
+// projectRecalibration prepares supported recalibration fields.
+//
+// Example: Copy the source evidence into a forecast projection.
 func projectRecalibration(fields map[string]any, node *yaml.Node, recal map[string]any) error {
 	for _, k := range []string{"prior", "reason", "evidence"} {
 		if value := textField(recal, k); value != "" {
@@ -317,6 +353,9 @@ func projectRecalibration(fields map[string]any, node *yaml.Node, recal map[stri
 	return nil
 }
 
+// projectionReplacement prepares a safe replacement of a source projection.
+//
+// Example: Replace a comment-free source projection mapping.
 func projectionReplacement(data []byte, node *yaml.Node, value string, doc *flowDocument) (scalarEdit, error) {
 	if node.Kind != yaml.MappingNode {
 		return scalarEdit{}, fmt.Errorf("unsupported source_projection layout")
@@ -345,6 +384,9 @@ func projectionReplacement(data []byte, node *yaml.Node, value string, doc *flow
 	return scalarEdit{start, end, value + "\n"}, nil
 }
 
+// blockMappingEnd finds a supported block mapping boundary.
+//
+// Example: Locate the boundary after a block-style forecast.
 func blockMappingEnd(data []byte, node *yaml.Node) (int, int, error) {
 	lines := strings.Split(string(data), "\n")
 	if node.Line < 1 || node.Line > len(lines) {
@@ -364,10 +406,16 @@ func blockMappingEnd(data []byte, node *yaml.Node) (int, int, error) {
 	return len(data), indent, nil
 }
 
+// flowMappingEnd locates a flow mapping boundary from YAML node coordinates.
+//
+// Example: Locate the closing brace of a flow forecast.
 func flowMappingEnd(data []byte, node *yaml.Node) (int, error) {
 	return flowMappingEndCached(&flowDocument{data: data}, node)
 }
 
+// flowMappingEndCached locates a flow mapping boundary using cached lexer pairs.
+//
+// Example: Reuse paired delimiters for a second forecast.
 func flowMappingEndCached(doc *flowDocument, node *yaml.Node) (int, error) {
 	start, err := yamlByteOffset(doc.data, node.Line, node.Column)
 	if err != nil {
@@ -376,6 +424,9 @@ func flowMappingEndCached(doc *flowDocument, node *yaml.Node) (int, error) {
 	return doc.end(start, token.MappingStartType)
 }
 
+// collectForecastEdits gathers edits for explicitly linked forecasts.
+//
+// Example: Collect linked lane and root forecast updates.
 func collectForecastEdits(candidate []byte, root *yaml.Node, ledger ledgerSource, forecasts forecastSource, doc *flowDocument) ([]scalarEdit, error) {
 	var edits []scalarEdit
 	for _, kind := range []string{"lanes", "root_forecasts"} {
@@ -392,6 +443,9 @@ func collectForecastEdits(candidate []byte, root *yaml.Node, ledger ledgerSource
 	return edits, nil
 }
 
+// collectForecastGroup gathers edits for one forecast group.
+//
+// Example: Collect updates for all report lanes.
 func collectForecastGroup(candidate []byte, collection *yaml.Node, kind string, ledger ledgerSource, forecasts forecastSource, doc *flowDocument) ([]scalarEdit, error) {
 	var edits []scalarEdit
 	for _, item := range collection.Content {
@@ -404,6 +458,9 @@ func collectForecastGroup(candidate []byte, collection *yaml.Node, kind string, 
 	return edits, nil
 }
 
+// forecastItemEdits prepares edits for a single linked forecast.
+//
+// Example: Update the forecast linked to an active lane.
 func forecastItemEdits(candidate []byte, item *yaml.Node, kind string, ledger ledgerSource, forecasts forecastSource, doc *flowDocument) ([]scalarEdit, error) {
 	forecast := item
 	if kind == "lanes" {

@@ -10,6 +10,8 @@ import (
 )
 
 // yamlByteOffset maps a one-based YAML line and rune column into UTF-8 bytes.
+//
+// Example: Map a column after a multibyte character.
 func yamlByteOffset(data []byte, line, column int) (int, error) {
 	if !utf8.Valid(data) {
 		return 0, fmt.Errorf("unsupported UTF-8 layout")
@@ -22,6 +24,9 @@ func yamlByteOffset(data []byte, line, column int) (int, error) {
 	return yamlOffsetForLines(lines, starts, line, column)
 }
 
+// yamlOffsetForLines maps a YAML position using precomputed line starts.
+//
+// Example: Resolve a token position using cached line starts.
 func yamlOffsetForLines(lines []string, starts []int, line, column int) (int, error) {
 	if line < 1 || line > len(lines) || column < 1 {
 		return 0, fmt.Errorf("invalid YAML position")
@@ -39,26 +44,42 @@ func yamlOffsetForLines(lines []string, starts []int, line, column int) (int, er
 	return offset, nil
 }
 
+// flowPair records a matched pair of YAML flow delimiters.
+//
+// Example: Store the closing brace for an opening brace.
 type flowPair struct {
 	opening token.Type
 	end     int
 }
+
+// flowDocument indexes flow delimiters in one report.
+//
+// Example: Cache delimiter pairs for a status report.
 type flowDocument struct {
 	data  []byte
 	ready bool
 	pairs map[int]flowPair
 	err   error
 }
+
+// flowStart records an opening flow delimiter while pairing tokens.
+//
+// Example: Track an opening bracket while scanning nested collections.
 type flowStart struct {
 	opening token.Type
 	offset  int
 }
 
 // flowEnd finds a matching lexer delimiter, excluding scalar and comment tokens.
+//
+// Example: Find the closing brace after a quoted delimiter.
 func flowEnd(data []byte, start int, opening token.Type) (int, error) {
 	return (&flowDocument{data: data}).end(start, opening)
 }
 
+// end returns the checked closing delimiter for a flow collection.
+//
+// Example: Resolve a previously indexed flow mapping.
 func (d *flowDocument) end(start int, opening token.Type) (int, error) {
 	if !d.ready {
 		d.build()
@@ -73,6 +94,9 @@ func (d *flowDocument) end(start int, opening token.Type) (int, error) {
 	return pair.end, nil
 }
 
+// build indexes lexer delimiter pairs for a report.
+//
+// Example: Pair nested brackets and braces in a report.
 func (d *flowDocument) build() {
 	d.ready = true
 	if !utf8.Valid(d.data) {

@@ -11,6 +11,8 @@ import (
 )
 
 // verifyRefresh preserves all nonprojected values and the ordered comment stream.
+//
+// Example: Reject a candidate that changes an unrelated task.
 func verifyRefresh(original, candidate []byte, ledger ledgerSource, forecasts forecastSource) error {
 	beforeComments, err := yamlComments(original)
 	if err != nil {
@@ -42,6 +44,9 @@ func verifyRefresh(original, candidate []byte, ledger ledgerSource, forecasts fo
 	return nil
 }
 
+// yamlComments extracts the ordered YAML comment-token values.
+//
+// Example: Compare comments before and after a report update.
 func yamlComments(data []byte) ([]string, error) {
 	normalized := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\r", "\n")
 	tokens := lexer.Tokenize(normalized)
@@ -57,6 +62,9 @@ func yamlComments(data []byte) ([]string, error) {
 	return comments, nil
 }
 
+// verifyScopeAndDiagnostics checks that scope and blocker changes are permitted.
+//
+// Example: Reject removal of an existing blocker.
 func verifyScopeAndDiagnostics(before, after map[string]any) error {
 	if !reflect.DeepEqual(before["scope_complete"], after["scope_complete"]) && after["scope_complete"] != false {
 		return fmt.Errorf("invalid scope change")
@@ -84,6 +92,9 @@ func verifyScopeAndDiagnostics(before, after map[string]any) error {
 	return nil
 }
 
+// verifyForecastChanges checks forecast changes against their canonical sources.
+//
+// Example: Reject an unlinked forecast change.
 func verifyForecastChanges(before, after map[string]any, ledger ledgerSource, forecasts forecastSource) error {
 	for _, group := range []string{"lanes", "root_forecasts"} {
 		a, _ := before[group].([]any)
@@ -98,6 +109,9 @@ func verifyForecastChanges(before, after map[string]any, ledger ledgerSource, fo
 	return nil
 }
 
+// verifyForecastGroup checks one group of linked forecast changes.
+//
+// Example: Check linked forecasts in the lane list.
 func verifyForecastGroup(group string, before, after []any, ledger ledgerSource, forecasts forecastSource) error {
 	for i := range before {
 		left, ok1 := before[i].(map[string]any)
@@ -120,6 +134,9 @@ func verifyForecastGroup(group string, before, after []any, ledger ledgerSource,
 	return nil
 }
 
+// linkedForecastMaps finds the corresponding maps for an explicitly linked forecast.
+//
+// Example: Find a lane and its referenced forecast mapping.
 func linkedForecastMaps(group string, left, right map[string]any, ledger ledgerSource) (map[string]any, map[string]any, string) {
 	a, b := left, right
 	if group == "lanes" {
@@ -147,6 +164,9 @@ func linkedForecastMaps(group string, left, right map[string]any, ledger ledgerS
 	return a, b, ref
 }
 
+// verifyProjectedFields checks changed fields against canonical forecast values.
+//
+// Example: Reject a target that differs from the source.
 func verifyProjectedFields(before, after, source map[string]any) error {
 	expected := map[string]any{}
 	for dst, src := range map[string]string{"outcome": "outcome", "target": "target", "assessment": "assessment", "baseline": "original_baseline"} {
@@ -179,6 +199,9 @@ func verifyProjectedFields(before, after, source map[string]any) error {
 	return nil
 }
 
+// copyRecalibrationFields copies supported recalibration values into a projection.
+//
+// Example: Copy prior target, reason and evidence.
 func copyRecalibrationFields(expected, recal map[string]any) {
 	for _, k := range []string{"prior", "reason", "evidence"} {
 		if v, ok := recal[k]; ok {

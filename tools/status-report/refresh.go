@@ -14,11 +14,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var refreshBeforePublish = func() {}
+// refreshBeforePublish marks the publication boundary for focused concurrency tests.
+//
+// Example: Mutate a source immediately before the final change check.
+var refreshBeforePublish =
+// Callback leaves the publication boundary unchanged.
+//
+// Example: Run a refresh without a test mutation.
+func() {}
+
+// errRefreshRetry identifies a changed input that requires a fresh retry.
+//
+// Example: Retry after another writer replaces the report.
 var errRefreshRetry = errors.New("retry needed")
 
+// refreshDiagnostic names the required human scope review after a requirement change.
+//
+// Example: Mark scope incomplete after a requirement change.
 const refreshDiagnostic = "Requirement change requires scope review and status report refresh."
 
+// refreshLinkedStatus reads the current sources and prepares a bounded status refresh.
+//
+// Example: Refresh a session after a forecast change.
 func refreshLinkedStatus(dir, event string) error {
 	path := filepath.Join(dir, "latest-status-report.yaml")
 	info, err := os.Lstat(path)
@@ -57,6 +74,8 @@ func refreshLinkedStatus(dir, event string) error {
 }
 
 // runRefresh updates the current report under the caller's ECI mutation lock.
+//
+// Example: Run a refresh using a session directory and event name.
 func runRefresh(args []string, errOut io.Writer) int {
 	if len(args) != 2 || args[0] == "" || args[1] == "" {
 		fmt.Fprintln(errOut, "usage: status-report refresh SESSION_DIR EVENT")
@@ -70,10 +89,15 @@ func runRefresh(args []string, errOut io.Writer) int {
 }
 
 // refreshStatus refreshes source projections and retains scope review requirements.
+//
+// Example: Refresh a report after a requirement change.
 func refreshStatus(dir, event string) error {
 	return refreshLinkedStatus(dir, event)
 }
 
+// invalidateStatus persists scope and diagnostic updates after a refresh failure.
+//
+// Example: Persist a diagnostic when a source cannot be read.
 func invalidateStatus(dir string, diagnostics ...string) error {
 	path := filepath.Join(dir, "latest-status-report.yaml")
 	info, err := os.Lstat(path)
@@ -109,6 +133,9 @@ func invalidateStatus(dir string, diagnostics ...string) error {
 	return publishStatus(dir, path, info, original, updated, nil)
 }
 
+// prepareInvalidation prepares a selective scope and diagnostic update.
+//
+// Example: Set scope incomplete and add the scope review diagnostic.
 func prepareInvalidation(original []byte, diagnostic string) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(original, &doc); err != nil {
@@ -152,6 +179,9 @@ func prepareInvalidation(original []byte, diagnostic string) ([]byte, error) {
 	return updated, nil
 }
 
+// appendDiagnostic adds a missing diagnostic without changing existing entries.
+//
+// Example: Add a new risk to a flow-style blocker list.
 func appendDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([]string, error) {
 	for _, n := range blockers.Content {
 		if n.Value == diagnostic {
@@ -184,6 +214,9 @@ func appendDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([
 	return lines, nil
 }
 
+// appendBlockDiagnostic adds a diagnostic to a supported block-style list.
+//
+// Example: Append a diagnostic to an indented blocker list.
 func appendBlockDiagnostic(lines []string, blockers *yaml.Node, diagnostic string) ([]string, error) {
 	insert := blockers.Line - 1
 	indent := "  "
@@ -212,6 +245,9 @@ func appendBlockDiagnostic(lines []string, blockers *yaml.Node, diagnostic strin
 	return append(lines[:insert], append([]string{indent + "- " + strconv.Quote(diagnostic) + ending}, lines[insert:]...)...), nil
 }
 
+// publishStatus publishes a checked candidate using same-directory replacement.
+//
+// Example: Replace the report after checking its source files.
 func publishStatus(dir, path string, info os.FileInfo, original, updated []byte, inputs map[string][]byte) error {
 	temp, err := os.CreateTemp(dir, ".status-refresh-*")
 	if err != nil {
