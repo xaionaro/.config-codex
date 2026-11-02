@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 )
 
@@ -111,16 +112,7 @@ func (c *forecastReconciler) check(
 			c.issues.add("forecast %s %s mismatch: source %q; report %q", id, v.k, textField(src, v.k), v.got)
 		}
 	}
-	if rec, ok := src["recalibration"].(map[string]any); ok {
-		if current := textField(rec, "current"); current != "" && !sameValue(current, f.Target) {
-			c.issues.add("forecast %s recalibration current mismatch: source %q; report %q", id, current, f.Target)
-		}
-		for _, v := range []struct{ k, got string }{{"prior", f.Prior}, {"reason", f.Reason}, {"evidence", f.Evidence}} {
-			if !sameValue(textField(rec, v.k), v.got) {
-				c.issues.add("forecast %s recalibration %s mismatch", id, v.k)
-			}
-		}
-	}
+	c.compareRecalibration(id, src, *f)
 	if len(f.Scenarios) > 0 {
 		c.issues.add("forecast %s report scenarios cannot be verified against canonical scenarios; use source_projection", id)
 	}
@@ -179,6 +171,51 @@ func (c *forecastReconciler) checkRecalibration(
 	for _, field := range []string{"prior", "current", "reason"} {
 		if textField(recal, field) == "" {
 			c.issues.add("forecast %s source missing recalibration %s", id, field)
+		}
+	}
+}
+
+// compareRecalibration compares projected history with the canonical record.
+//
+// Example: Detect a prior target added only in the report.
+func (c *forecastReconciler) compareRecalibration(
+	id string,
+	source map[string]any,
+	projection forecast,
+) {
+	recal, ok := source["recalibration"].(map[string]any)
+	if !ok {
+		return
+	}
+	if current := textField(recal, "current"); current != "" && !sameValue(current, projection.Target) {
+		c.issues.add("forecast %s recalibration current mismatch: source %q; report %q", id, current, projection.Target)
+	}
+	for _, field := range []struct{ k, got string }{{"prior", projection.Prior}, {"reason", projection.Reason}, {"evidence", projection.Evidence}} {
+		if !sameValue(textField(recal, field.k), field.got) {
+			c.issues.add("forecast %s recalibration %s mismatch", id, field.k)
+		}
+	}
+}
+
+// checkUnclaimed detects active canonical forecasts with no work owner.
+//
+// Example: Flag a root forecast omitted from the ledger's work records.
+func (c *forecastReconciler) checkUnclaimed(works map[string]sourceRecord) {
+	if _, err := os.Stat(filepath.Join(c.dir, "forecasts.yaml")); err != nil {
+		return
+	}
+	if !c.load() {
+		return
+	}
+	claimed := map[sourceRef]bool{}
+	for _, work := range works {
+		if work.Data.ForecastRef != "" {
+			claimed[work.Data.ForecastRef] = true
+		}
+	}
+	for id, source := range c.source.Records {
+		if textField(source, "status") == "active" && !claimed[sourceRef("forecasts.yaml#/records/"+id)] {
+			c.issues.add("active canonical forecast %s is not linked to work", id)
 		}
 	}
 }

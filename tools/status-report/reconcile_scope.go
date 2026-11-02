@@ -149,3 +149,20 @@ func laneReferencesWork(
 	}
 	return false
 }
+
+// workHasOutcome verifies a completion against explicitly linked outcome records.
+//
+// Example: Match a root completion to its ledger outcome.
+func workHasOutcome(
+	work sourceRecord,
+	outcome string,
+	records map[string]sourceRecord,
+) bool {
+	for _, id := range work.OutcomeRefs {
+		record := records[id]
+		if record.Type == "outcome" && record.Outcome == outcome {
+			return true
+		}
+	}
+	return false
+}
