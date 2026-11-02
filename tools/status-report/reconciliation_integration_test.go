@@ -281,11 +281,14 @@ func TestReconciliationClosedLaneCompletion(t *testing.T) {
 	report = strings.Replace(report, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "", 1)
 	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish, reporting_roles: [lane]", "state: completed, completed_at: '2026-11-02T15:00:00+00:00', next_action: none, reporting_roles: [lane]", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
+	forecasts = strings.Replace(forecasts, "    target: '2026-11-02T16:00:00+00:00'\n", "", 1)
 	for _, tc := range []struct {
 		name       string
 		ledger     string
+		forecast   string
 		incomplete bool
 	}{
+		{name: "unknown forecast status", ledger: ledger, forecast: strings.Replace(forecasts, "status: inactive", "status: unknown", 1), incomplete: true},
 		{name: "matching instant", ledger: ledger},
 		{name: "different instant", ledger: strings.Replace(ledger, "2026-11-02T15:00:00+00:00", "2026-11-02T15:10:00Z", 1), incomplete: true},
 		{name: "missing completion", ledger: strings.Replace(ledger, "completed_at: '2026-11-02T15:00:00+00:00', ", "", 1), incomplete: true},
@@ -295,7 +298,11 @@ func TestReconciliationClosedLaneCompletion(t *testing.T) {
 			reportPath := filepath.Join(dir, "latest-status-report.yaml")
 			require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecasts), 0o600))
+			forecast := tc.forecast
+			if forecast == "" {
+				forecast = forecasts
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecast), 0o600))
 			var stdout, stderr bytes.Buffer
 			require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
 			if tc.incomplete {
