@@ -114,7 +114,7 @@ func TestZeroKnownProgress(t *testing.T) {
 //
 // Example: Verify lane and unknown coverage through the public behavior.
 func TestLaneAndUnknownCoverage(t *testing.T) {
-	input := strings.Replace(valid, "lanes: []", "lanes:\n  - task_id: 'missing'\n    outcome: Test\n    implementation_status: NEW\n    test_status: NEW\n    prod_status: NEW", 1)
+	input := strings.Replace(valid, "lanes: []", "lanes:\n  - task_id: 'missing'\n    outcome: Test\n    required_environment: implementation\n    implementation_status: NEW\n    test_status: NEW\n    prod_status: NEW", 1)
 	if _, err := parse([]byte(input)); err == nil {
 		t.Fatal("accepted lane referencing missing task")
 	}
@@ -136,6 +136,7 @@ func TestLaneForecastRendering(t *testing.T) {
 	input := strings.Replace(valid, "lanes: []", `lanes:
   - task_id: '1'
     outcome: Finish work
+    required_environment: implementation
     implementation_status: IN PROGRESS
     test_status: NEW
     prod_status: NEW
@@ -205,8 +206,8 @@ func TestEmptyTimelineEvidence(t *testing.T) {
 // Example: Verify nested schema validation through the public behavior.
 func TestNestedSchemaValidation(t *testing.T) {
 	for _, replacement := range []string{
-		"lanes:\n  - {task_id: '1', outcome: X, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: 42}",
-		"lanes:\n  - {task_id: '1', outcome: X, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: {target: [bad]}}",
+		"lanes:\n  - {task_id: '1', outcome: X, required_environment: implementation, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: 42}",
+		"lanes:\n  - {task_id: '1', outcome: X, required_environment: implementation, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: {target: [bad]}}",
 		"timeline:\n  - {job: X, parent_chain: X, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: X, normal: X, lost_field: X}",
 	} {
 		source := "lanes: []"
@@ -248,6 +249,7 @@ func TestLaneScenarioAndRootForecastOutput(t *testing.T) {
 	input := strings.Replace(valid, "lanes: []", `lanes:
   - task_id: '1'
     outcome: Finish work
+    required_environment: implementation
     implementation_status: IN PROGRESS
     test_status: NEW
     prod_status: NEW
@@ -294,6 +296,7 @@ func TestRepairRegressionInputs(t *testing.T) {
 	lane := `lanes:
   - task_id: '1'
     outcome: Work
+    required_environment: implementation
     implementation_status: IN PROGRESS
     test_status: NEW
     prod_status: NEW
@@ -301,7 +304,7 @@ func TestRepairRegressionInputs(t *testing.T) {
     forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
 `
 	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", lane, 1))); err == nil {
-		t.Error("accepted active task with completed_at and active forecast")
+		t.Error("accepted active lane with completed_at and active forecast")
 	}
 	if _, err := parse([]byte(valid + "root_forecasts: [{}]\n")); err == nil {
 		t.Error("accepted empty root forecast")
@@ -371,7 +374,7 @@ func TestTimelineUTCAndLifecycle(t *testing.T) {
 		}
 	}
 	closed := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: CLOSED\n    evidence: accepted\n  - id:", 1)
-	lane := "lanes:\n  - {task_id: '1', outcome: Work, implementation_status: CLOSED, test_status: IN PROGRESS, prod_status: NEW, forecasted: true}"
+	lane := "lanes:\n  - {task_id: '1', outcome: Work, required_environment: implementation, implementation_status: CLOSED, test_status: IN PROGRESS, prod_status: NEW, forecasted: true}"
 	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err == nil {
 		t.Error("missing completed_at accepted")
 	}
@@ -397,12 +400,13 @@ func TestEstimateCoverageRejectsMissing(t *testing.T) {
 
 // TestClosedLifecycleRejectsContradictoryForecast verifies separate readiness and completion.
 //
-// Example: A closed forecasted task cannot retain an active target.
+// Example: A lane closed in its required environment cannot retain an active target.
 func TestClosedLifecycleRejectsContradictoryForecast(t *testing.T) {
 	closed := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: CLOSED\n    evidence: accepted\n  - id:", 1)
 	lane := `lanes:
   - task_id: '1'
     outcome: Work
+    required_environment: implementation
     implementation_status: CLOSED
     test_status: IN PROGRESS
     prod_status: NEW
@@ -411,6 +415,74 @@ func TestClosedLifecycleRejectsContradictoryForecast(t *testing.T) {
     forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
 `
 	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err == nil {
-		t.Error("accepted closed task with active forecast")
+		t.Error("accepted closed lane with active forecast")
+	}
+}
+
+// TestLaneRequiredEnvironmentSeparatesPackageProgress checks environment-based closure.
+//
+// Example: A closed source package still has an active test lane forecast.
+func TestLaneRequiredEnvironmentSeparatesPackageProgress(t *testing.T) {
+	closed := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: CLOSED\n    evidence: accepted\n  - id:", 1)
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    required_environment: test
+    implementation_status: CLOSED
+    test_status: IN PROGRESS
+    prod_status: NEW
+    forecasted: true
+    forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
+`
+	input := strings.Replace(closed, "lanes: []", lane, 1)
+	r, err := parse([]byte(input))
+	if err != nil {
+		t.Fatalf("active test lane rejected: %v", err)
+	}
+	if !strings.Contains(render(r), "Forecast deadline: Work will be finished") {
+		t.Fatal(render(r))
+	}
+	if !strings.Contains(render(r), "| Required environment |") || !strings.Contains(render(r), "| test |") {
+		t.Error("required environment missing from lane table")
+	}
+	bad := strings.Replace(lane, "forecasted: true", "completed_at: '2026-11-02T15:00:00Z'", 1)
+	bad = strings.Replace(bad, "    forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}\n", "", 1)
+	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", bad, 1))); err == nil {
+		t.Error("accepted completion before required test readiness")
+	}
+	source := strings.Replace(bad, "required_environment: test", "required_environment: implementation", 1)
+	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", source, 1))); err != nil {
+		t.Errorf("source-only lane rejected despite implementation CLOSED: %v", err)
+	}
+	prod := strings.Replace(source, "required_environment: implementation", "required_environment: prod", 1)
+	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", prod, 1))); err == nil {
+		t.Error("accepted completion with prod NEW")
+	}
+	prod = strings.Replace(prod, "prod_status: NEW", "prod_status: CLOSED", 1)
+	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", prod, 1))); err != nil {
+		t.Errorf("prod CLOSED rejected: %v", err)
+	}
+}
+
+// TestScenarioFieldsAreExplicit checks complete scenario projections.
+//
+// Example: Unsupported fields are supplied as unknown rather than omitted.
+func TestScenarioFieldsAreExplicit(t *testing.T) {
+	prefix := "root_forecasts:\n  - outcome: Work\n    target: '2026-11-02T16:00:00Z'\n    assessment: complete\n    scenarios:\n"
+	for _, row := range []string{"      - {}\n", "      - {case: base}\n"} {
+		if _, err := parse([]byte(valid + prefix + row)); err == nil {
+			t.Error("accepted incomplete scenario")
+		}
+	}
+	complete := "      - {case: base, trigger: unknown, affected_work: unknown, duration_basis: unknown, evidence_assumptions: unknown, endpoint: unknown, evidence_gap_next_action: unknown}\n"
+	if _, err := parse([]byte(valid + prefix + complete)); err != nil {
+		t.Errorf("explicit unknown scenario rejected: %v", err)
+	}
+	r, err := parse([]byte(valid + prefix + complete))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(render(r), "| Work — base | unknown | unknown |") {
+		t.Error("explicit unknown scenario not rendered")
 	}
 }

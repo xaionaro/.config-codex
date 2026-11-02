@@ -117,23 +117,24 @@ type forecast struct {
 //
 // Example: Keep implementation, test, and production readiness separate.
 type lane struct {
-	ID                   string         `yaml:"id"`
-	TaskID               string         `yaml:"task_id"`
-	ParentID             string         `yaml:"parent_id"`
-	Outcome              string         `yaml:"outcome"`
-	Owner                string         `yaml:"owner"`
-	Stage                string         `yaml:"stage"`
-	ImplementationStatus workStatus     `yaml:"implementation_status"`
-	TestStatus           workStatus     `yaml:"test_status"`
-	ProdStatus           workStatus     `yaml:"prod_status"`
-	NextMilestone        string         `yaml:"next_milestone"`
-	CompletedAt          string         `yaml:"completed_at"`
-	Forecasted           bool           `yaml:"forecasted"`
-	Blocker              string         `yaml:"blocker"`
-	NextAction           string         `yaml:"next_action"`
-	Context              string         `yaml:"context"`
-	RootTaskStatus       rootTaskStatus `yaml:"root_task_status"`
-	Forecast             *forecast      `yaml:"forecast"`
+	ID                   string              `yaml:"id"`
+	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
+	TaskID               string              `yaml:"task_id"`
+	ParentID             string              `yaml:"parent_id"`
+	Outcome              string              `yaml:"outcome"`
+	Owner                string              `yaml:"owner"`
+	Stage                string              `yaml:"stage"`
+	ImplementationStatus workStatus          `yaml:"implementation_status"`
+	TestStatus           workStatus          `yaml:"test_status"`
+	ProdStatus           workStatus          `yaml:"prod_status"`
+	NextMilestone        string              `yaml:"next_milestone"`
+	CompletedAt          string              `yaml:"completed_at"`
+	Forecasted           bool                `yaml:"forecasted"`
+	Blocker              string              `yaml:"blocker"`
+	NextAction           string              `yaml:"next_action"`
+	Context              string              `yaml:"context"`
+	RootTaskStatus       rootTaskStatus      `yaml:"root_task_status"`
+	Forecast             *forecast           `yaml:"forecast"`
 }
 
 // timelineEntry records one UTC half-hour and its independent path evidence.
@@ -322,4 +323,80 @@ func (s *rootTaskStatus) UnmarshalYAML(n *yaml.Node) error {
 		return fmt.Errorf("invalid root_task_status %q", n.Value)
 	}
 	return nil
+}
+
+// requiredEnvironment selects the readiness column that determines lane closure.
+//
+// Example: A test-gated lane remains active while its test status is open.
+type requiredEnvironment int
+
+// Required environments define the acceptance boundary for a lane.
+//
+// Example: Source-only work uses the implementation environment.
+const (
+	// environmentUnknown indicates a missing acceptance boundary.
+	//
+	// Example: Validation rejects a lane without an explicit environment.
+	environmentUnknown requiredEnvironment = iota
+	// environmentImplementation selects source-level acceptance.
+	//
+	// Example: A source-only lane closes when implementation is CLOSED.
+	environmentImplementation
+	// environmentTest selects test-environment acceptance.
+	//
+	// Example: An integration lane closes when test readiness is CLOSED.
+	environmentTest
+	// environmentProd selects production acceptance.
+	//
+	// Example: A deployed lane closes when production readiness is CLOSED.
+	environmentProd
+)
+
+// UnmarshalYAML decodes an explicitly selected lane acceptance boundary.
+//
+// Example: The value test selects the test status column.
+func (e *requiredEnvironment) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Value {
+	case "implementation":
+		*e = environmentImplementation
+	case "test":
+		*e = environmentTest
+	case "prod":
+		*e = environmentProd
+	default:
+		return fmt.Errorf("invalid required_environment %q", n.Value)
+	}
+	return nil
+}
+
+// String returns the documented environment name.
+//
+// Example: A production lane displays prod.
+func (e requiredEnvironment) String() string {
+	switch e {
+	case environmentImplementation:
+		return "implementation"
+	case environmentTest:
+		return "test"
+	case environmentProd:
+		return "prod"
+	default:
+		return "unknown"
+	}
+}
+
+// requiredStatus returns the lane readiness selected by its acceptance boundary.
+//
+// Example: A test-gated lane returns its test status.
+func (l lane) requiredStatus() workStatus {
+	switch l.RequiredEnvironment {
+	case environmentImplementation:
+		return l.ImplementationStatus
+	case environmentTest:
+		return l.TestStatus
+	case environmentProd:
+		return l.ProdStatus
+	default:
+		return statusUnknown
+	}
 }

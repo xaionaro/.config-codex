@@ -34,6 +34,13 @@ func validateForecast(f forecast) error {
 			return fmt.Errorf("invalid forecast target: %w", err)
 		}
 	}
+	for _, scenario := range f.Scenarios {
+		for _, value := range []string{scenario.Case, scenario.Trigger, scenario.AffectedWork, scenario.DurationBasis, scenario.EvidenceAssumptions, scenario.Endpoint, scenario.EvidenceGapNextAction} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("scenario requires all fields; use unknown where unsupported")
+			}
+		}
+	}
 	return nil
 }
 
@@ -81,7 +88,7 @@ func validateSections(r report) error {
 		byID[t.ID] = t
 	}
 	for _, l := range r.Lanes {
-		t, ok := byID[l.TaskID]
+		_, ok := byID[l.TaskID]
 		if !ok || l.TaskID == "" {
 			return fmt.Errorf("lane references unknown task %s", l.TaskID)
 		}
@@ -91,23 +98,26 @@ func validateSections(r report) error {
 		if l.ImplementationStatus == statusUnknown || l.TestStatus == statusUnknown || l.ProdStatus == statusUnknown {
 			return fmt.Errorf("lane %s requires three readiness statuses", l.TaskID)
 		}
-		if t.Status == statusClosed && l.Forecasted && l.CompletedAt == "" {
-			return fmt.Errorf("lane %s: completed forecasted task requires completed_at", l.TaskID)
+		if l.RequiredEnvironment == environmentUnknown {
+			return fmt.Errorf("lane %s: required_environment is required", l.TaskID)
+		}
+		if l.requiredStatus() == statusClosed && l.Forecasted && l.CompletedAt == "" {
+			return fmt.Errorf("lane %s: completed forecasted lane requires completed_at", l.TaskID)
 		}
 		if l.CompletedAt != "" {
 			if _, err := parseUTC(l.CompletedAt); err != nil {
 				return fmt.Errorf("lane %s: invalid completed_at", l.TaskID)
 			}
-			if t.Status != statusClosed {
-				return fmt.Errorf("lane %s: completed_at requires CLOSED task", l.TaskID)
+			if l.requiredStatus() != statusClosed {
+				return fmt.Errorf("lane %s: completed_at requires CLOSED required environment", l.TaskID)
 			}
 			if l.Forecast != nil {
 				return fmt.Errorf("lane %s: completion conflicts with active forecast", l.TaskID)
 			}
 		}
 		if l.Forecast != nil {
-			if t.Status == statusClosed {
-				return fmt.Errorf("lane %s: CLOSED task cannot retain active forecast", l.TaskID)
+			if l.requiredStatus() == statusClosed {
+				return fmt.Errorf("lane %s: CLOSED required environment cannot retain active forecast", l.TaskID)
 			}
 			if err := validateForecast(*l.Forecast); err != nil {
 				return err

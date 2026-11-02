@@ -16,8 +16,8 @@ func renderLaneTable(
 	if len(lanes) == 0 {
 		return
 	}
-	fmt.Fprintln(b, "\n| Task ID | Parent ID | Lane | Lane requirement context | Priority | Impact | Effort | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |")
-	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	fmt.Fprintln(b, "\n| Task ID | Parent ID | Lane | Lane requirement context | Priority | Impact | Effort | Stage | Required environment | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |")
+	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, l := range lanes {
 		t := tasks[l.TaskID]
 		target, dependencies := "", ""
@@ -26,7 +26,7 @@ func renderLaneTable(
 			dependencies = l.Forecast.Dependencies
 		}
 		effort := fmt.Sprintf("%g–%g minutes %s (%s)", *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis)
-		vals := []string{l.TaskID, t.ParentID, l.Outcome, l.Context, t.Priority, t.Impact, effort, l.Stage, l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
+		vals := []string{l.TaskID, t.ParentID, l.Outcome, l.Context, t.Priority, t.Impact, effort, l.Stage, l.RequiredEnvironment.String(), l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
 		fmt.Fprint(b, "|")
 		for _, v := range vals {
 			fmt.Fprintf(b, " %s |", timelineCell(v))

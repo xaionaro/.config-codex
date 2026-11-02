@@ -186,6 +186,7 @@ completion_estimate: {min_minutes: 20, max_minutes: 30, earliest: '2026-10-26T12
 lanes:
   - id: '1.2'
     task_id: '1.2'
+    required_environment: test
     parent_id: '1'
     outcome: 'Complete the service integration.'
     owner: 'integration owner'
