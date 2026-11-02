@@ -13,7 +13,12 @@ import (
 // lifecycleResult renders a report against disposable canonical records.
 //
 // Example: Compare a stale projection with its source ledger.
-func lifecycleResult(t *testing.T, report, ledger, forecasts string) string {
+func lifecycleResult(
+	t *testing.T,
+	report string,
+	ledger string,
+	forecasts string,
+) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "latest-status-report.yaml")

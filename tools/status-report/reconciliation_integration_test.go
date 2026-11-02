@@ -23,26 +23,32 @@ func TestReconciliationMissingSources(t *testing.T) {
 		{name: "multiple documents", ledger: linkedLedger + "\n---\nschema: other\n"},
 		{name: "partial schema", ledger: "schema: project-understanding/v1\n"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			reportPath := filepath.Join(dir, "latest-status-report.yaml")
-			require.NoError(t, os.WriteFile(reportPath, []byte(valid), 0o600))
-			if tc.ledger != "" {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
-			}
-			var stdout, stderr bytes.Buffer
-			code := run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr)
-			require.Equal(t, 0, code, stderr.String())
-			require.Contains(t, stdout.String(), "INCOMPLETE")
-			stdout.Reset()
-			stderr.Reset()
-			code = run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
-			require.NotEqual(t, 0, code, stdout.String())
-		})
+		t.Run(tc.name,
+			// Exercise one source reconciliation case.
+			//
+			// Example: Report unavailable source evidence.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				reportPath := filepath.Join(dir, "latest-status-report.yaml")
+				require.NoError(t, os.WriteFile(reportPath, []byte(valid), 0o600))
+				if tc.ledger != "" {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
+				}
+				var stdout, stderr bytes.Buffer
+				code := run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr)
+				require.Equal(t, 0, code, stderr.String())
+				require.Contains(t, stdout.String(), "INCOMPLETE")
+				stdout.Reset()
+				stderr.Reset()
+				code = run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
+				require.NotEqual(t, 0, code, stdout.String())
+			})
 	}
 }
 
 // linkedReport is a two-lane report with separately owned work and forecasts.
+//
+// Example: Reconcile two active lanes.
 const linkedReport = `timestamp: '2026-11-02T15:24:00Z'
 state: Working
 progress: [Implementation started]
@@ -78,6 +84,8 @@ lanes:
 `
 
 // linkedLedger contains the two active lane work records projected by linkedReport.
+//
+// Example: Resolve each lane to its work record.
 const linkedLedger = `schema: project-understanding/v1
 sections: {progress: {title: Progress}}
 records:
@@ -94,6 +102,8 @@ records:
 `
 
 // linkedForecasts contains current forecasts corresponding to linkedLedger.
+//
+// Example: Compare projected deadlines with canonical forecasts.
 const linkedForecasts = `schema: forecasts/v1
 records:
   first:
@@ -132,34 +142,38 @@ func TestReconciliationForecasts(t *testing.T) {
 		{name: "inactive forecast", forecasts: strings.Replace(linkedForecasts, "status: active", "status: inactive", 1), incomplete: true},
 		{name: "changed target", forecasts: strings.Replace(linkedForecasts, "2026-11-02T16:00:00+00:00", "2026-11-02T16:30:00Z", 1), incomplete: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			reportPath := filepath.Join(dir, "latest-status-report.yaml")
-			report := tc.report
-			if report == "" {
-				report = linkedReport
-			}
-			require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0o600))
-			if tc.forecasts != "" {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.forecasts), 0o600))
-			}
-			var stdout, stderr bytes.Buffer
-			require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
-			if tc.incomplete {
-				require.Contains(t, stdout.String(), "INCOMPLETE")
-			} else {
-				require.NotContains(t, stdout.String(), "INCOMPLETE")
-			}
-			stdout.Reset()
-			stderr.Reset()
-			code := run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
-			if tc.incomplete {
-				require.NotEqual(t, 0, code, stdout.String())
-			} else {
-				require.Equal(t, 0, code, stderr.String())
-			}
-		})
+		t.Run(tc.name,
+			// Exercise one source reconciliation case.
+			//
+			// Example: Report unavailable source evidence.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				reportPath := filepath.Join(dir, "latest-status-report.yaml")
+				report := tc.report
+				if report == "" {
+					report = linkedReport
+				}
+				require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0o600))
+				if tc.forecasts != "" {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.forecasts), 0o600))
+				}
+				var stdout, stderr bytes.Buffer
+				require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+				if tc.incomplete {
+					require.Contains(t, stdout.String(), "INCOMPLETE")
+				} else {
+					require.NotContains(t, stdout.String(), "INCOMPLETE")
+				}
+				stdout.Reset()
+				stderr.Reset()
+				code := run([]string{"validate", reportPath}, strings.NewReader(""), &stdout, &stderr)
+				if tc.incomplete {
+					require.NotEqual(t, 0, code, stdout.String())
+				} else {
+					require.Equal(t, 0, code, stderr.String())
+				}
+			})
 	}
 }
 
@@ -221,21 +235,25 @@ func TestReconciliationRichForecast(t *testing.T) {
 		{name: "matching", source: forecasts},
 		{name: "changed scenario", source: strings.Replace(forecasts, "endpoint: '2026-11-02T16:00:00Z', basis: guess", "endpoint: '2026-11-02T16:15:00Z', basis: guess", 1), incomplete: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			reportPath := filepath.Join(dir, "latest-status-report.yaml")
-			require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0o600))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.source), 0o600))
-			var stdout, stderr bytes.Buffer
-			require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
-			if tc.incomplete {
-				require.Contains(t, stdout.String(), "INCOMPLETE")
-			} else {
-				require.NotContains(t, stdout.String(), "INCOMPLETE")
-				require.Contains(t, stdout.String(), "Delay")
-			}
-		})
+		t.Run(tc.name,
+			// Exercise one source reconciliation case.
+			//
+			// Example: Report unavailable source evidence.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				reportPath := filepath.Join(dir, "latest-status-report.yaml")
+				require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.source), 0o600))
+				var stdout, stderr bytes.Buffer
+				require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+				if tc.incomplete {
+					require.Contains(t, stdout.String(), "INCOMPLETE")
+				} else {
+					require.NotContains(t, stdout.String(), "INCOMPLETE")
+					require.Contains(t, stdout.String(), "Delay")
+				}
+			})
 	}
 }
 
@@ -293,24 +311,28 @@ func TestReconciliationClosedLaneCompletion(t *testing.T) {
 		{name: "different instant", ledger: strings.Replace(ledger, "2026-11-02T15:00:00+00:00", "2026-11-02T15:10:00Z", 1), incomplete: true},
 		{name: "missing completion", ledger: strings.Replace(ledger, "completed_at: '2026-11-02T15:00:00+00:00', ", "", 1), incomplete: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			reportPath := filepath.Join(dir, "latest-status-report.yaml")
-			require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
-			forecast := tc.forecast
-			if forecast == "" {
-				forecast = forecasts
-			}
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecast), 0o600))
-			var stdout, stderr bytes.Buffer
-			require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
-			if tc.incomplete {
-				require.Contains(t, stdout.String(), "INCOMPLETE")
-			} else {
-				require.NotContains(t, stdout.String(), "INCOMPLETE")
-				require.Contains(t, stdout.String(), "Completed: 2026-11-02T15:00:00Z")
-			}
-		})
+		t.Run(tc.name,
+			// Exercise one source reconciliation case.
+			//
+			// Example: Report unavailable source evidence.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				reportPath := filepath.Join(dir, "latest-status-report.yaml")
+				require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0o600))
+				forecast := tc.forecast
+				if forecast == "" {
+					forecast = forecasts
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecast), 0o600))
+				var stdout, stderr bytes.Buffer
+				require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+				if tc.incomplete {
+					require.Contains(t, stdout.String(), "INCOMPLETE")
+				} else {
+					require.NotContains(t, stdout.String(), "INCOMPLETE")
+					require.Contains(t, stdout.String(), "Completed: 2026-11-02T15:00:00Z")
+				}
+			})
 	}
 }
