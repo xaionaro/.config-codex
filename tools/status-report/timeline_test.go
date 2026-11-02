@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWriteTimeline checks that each Job retains its parent chain and path columns.
@@ -18,7 +22,7 @@ func TestWriteTimeline(t *testing.T) {
 	got := b.String()
 	for _, want := range []string{"1 → 1.1", "1 → 1.2", "| UTC interval | Fast | Normal |", "| 15:00 – 15:30 | checkpoint | unknown |", "| 15:30 – 16:00 | — | review |"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in %q", want, got)
+			assert.Fail(t, fmt.Sprintf("missing %q in %q", want, got))
 		}
 	}
 }
@@ -30,7 +34,7 @@ func TestWriteTimelineUnknown(t *testing.T) {
 	var b strings.Builder
 	writeTimeline(&b, []timelineEntry{{Job: "1", Start: "15:00", End: "15:30"}})
 	if !strings.Contains(b.String(), "| 15:00 – 15:30 | unknown | unknown |") {
-		t.Fatal(b.String())
+		require.FailNow(t, fmt.Sprint(b.String()))
 	}
 }
 
@@ -42,7 +46,7 @@ func TestWriteTimelineExtraEvidence(t *testing.T) {
 	writeTimeline(&b, []timelineEntry{{Job: "1", ParentChain: "1", Start: "15:00", End: "15:30", Fast: "checkpoint", Normal: "unknown", Evidence: "log entry", Uncertainty: "path uncertain"}})
 	for _, want := range []string{"log entry", "path uncertain"} {
 		if !strings.Contains(b.String(), want) {
-			t.Errorf("missing %q in %q", want, b.String())
+			assert.Fail(t, fmt.Sprintf("missing %q in %q", want, b.String()))
 		}
 	}
 }

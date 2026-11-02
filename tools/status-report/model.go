@@ -7,11 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// workStatus is the closed set of task and readiness states.
-//
-// Example: A NEW task can become CLOSED after acceptance.
-type workStatus int
-
 // The unknown state represents absent or explicitly unknown task status.
 //
 // Example: The zero value represents an unknown or absent state.
@@ -41,6 +36,91 @@ const (
 	// Example: Use it when the report marks accepted work.
 	statusClosed
 )
+
+// Timeline states distinguish unavailable, empty, and present evidence.
+//
+// Example: The zero value represents an unknown or absent state.
+const (
+	// timelineUnknown marks unknown history coverage.
+	//
+	// Example: Use it when the report marks unknown history coverage.
+	timelineUnknown timelineState = iota
+	// timelineUnavailable marks unavailable or incomplete history.
+	//
+	// Example: Use it when the report marks unavailable or incomplete history.
+	timelineUnavailable
+	// timelineVerifiedEmpty marks verified absence of evidenced activity.
+	//
+	// Example: Use it when the report marks verified absence of evidenced activity.
+	timelineVerifiedEmpty
+	// timelinePresent marks supplied timeline rows.
+	//
+	// Example: Use it when the report marks supplied timeline rows.
+	timelinePresent
+)
+
+// Estimate kinds identify how a duration range should be interpreted.
+//
+// Example: The zero value represents an unknown or absent state.
+const (
+	// effortUnknown marks an unspecified effort kind.
+	//
+	// Example: Use it when the report marks an unspecified effort kind.
+	effortUnknown effortKind = iota
+	// effortElapsed marks an elapsed duration.
+	//
+	// Example: Use it when the report marks an elapsed duration.
+	effortElapsed
+	// effortWork marks work effort.
+	//
+	// Example: Use it when the report marks work effort.
+	effortWork
+)
+
+// Root-task statuses describe the remaining post-Fast sequence.
+//
+// Example: The zero value represents an unknown or absent state.
+const (
+	// rootTaskNone omits post-Fast follow-up status.
+	//
+	// Example: Use it when the report omits post-Fast follow-up status.
+	rootTaskNone rootTaskStatus = iota
+	// rootTaskFollowup marks pending post-Fast work.
+	//
+	// Example: Use it when the report marks pending post-Fast work.
+	rootTaskFollowup
+	// rootTaskFollowupPaused marks post-Fast work awaiting a dependency.
+	//
+	// Example: Use it when the report marks post-Fast work awaiting a dependency.
+	rootTaskFollowupPaused
+)
+
+// Required environments define the acceptance boundary for a lane.
+//
+// Example: Source-only work uses the implementation environment.
+const (
+	// environmentUnknown indicates a missing acceptance boundary.
+	//
+	// Example: Validation rejects a lane without an explicit environment.
+	environmentUnknown requiredEnvironment = iota
+	// environmentImplementation selects source-level acceptance.
+	//
+	// Example: A source-only lane closes when implementation is CLOSED.
+	environmentImplementation
+	// environmentTest selects test-environment acceptance.
+	//
+	// Example: An integration lane closes when test readiness is CLOSED.
+	environmentTest
+	// environmentProd selects production acceptance.
+	//
+	// Example: A deployed lane closes when production readiness is CLOSED.
+	environmentProd
+)
+
+// workStatus is the closed set of task and readiness states.
+//
+// Example: A NEW task can become CLOSED after acceptance.
+type workStatus int
 
 // String returns the human-readable wire value.
 //
@@ -117,10 +197,8 @@ type forecast struct {
 //
 // Example: Keep implementation, test, and production readiness separate.
 type lane struct {
-	ID                   string              `yaml:"id"`
 	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
-	TaskID               string              `yaml:"task_id"`
-	ParentID             string              `yaml:"parent_id"`
+	TaskID               taskID              `yaml:"task_id"`
 	Outcome              string              `yaml:"outcome"`
 	Owner                string              `yaml:"owner"`
 	Stage                string              `yaml:"stage"`
@@ -162,43 +240,20 @@ func validForecast(f forecast) bool {
 //
 // Example: Record the overall elapsed range and critical path.
 type completionEstimate struct {
-	Priority     string   `yaml:"priority"`
-	MinMinutes   *float64 `yaml:"min_minutes"`
-	MaxMinutes   *float64 `yaml:"max_minutes"`
-	Earliest     string   `yaml:"earliest"`
-	Latest       string   `yaml:"latest"`
-	Basis        string   `yaml:"basis"`
-	Assumptions  string   `yaml:"assumptions"`
-	Dependencies string   `yaml:"dependencies"`
-	CriticalPath string   `yaml:"critical_path"`
+	Priority     priorityLabel `yaml:"priority"`
+	MinMinutes   *float64      `yaml:"min_minutes"`
+	MaxMinutes   *float64      `yaml:"max_minutes"`
+	AsOf         string        `yaml:"as_of"`
+	Basis        string        `yaml:"basis"`
+	Assumptions  string        `yaml:"assumptions"`
+	Dependencies string        `yaml:"dependencies"`
+	CriticalPath string        `yaml:"critical_path"`
 }
 
 // timelineState describes the coverage of supplied timeline evidence.
 //
 // Example: Distinguish verified empty history from unavailable history.
 type timelineState int
-
-// Timeline states distinguish unavailable, empty, and present evidence.
-//
-// Example: The zero value represents an unknown or absent state.
-const (
-	// timelineUnknown marks unknown history coverage.
-	//
-	// Example: Use it when the report marks unknown history coverage.
-	timelineUnknown timelineState = iota
-	// timelineUnavailable marks unavailable or incomplete history.
-	//
-	// Example: Use it when the report marks unavailable or incomplete history.
-	timelineUnavailable
-	// timelineVerifiedEmpty marks verified absence of evidenced activity.
-	//
-	// Example: Use it when the report marks verified absence of evidenced activity.
-	timelineVerifiedEmpty
-	// timelinePresent marks supplied timeline rows.
-	//
-	// Example: Use it when the report marks supplied timeline rows.
-	timelinePresent
-)
 
 // UnmarshalYAML decodes the supported timeline coverage states.
 //
@@ -223,24 +278,6 @@ func (s *timelineState) UnmarshalYAML(n *yaml.Node) error {
 //
 // Example: Distinguish elapsed duration from work effort.
 type effortKind int
-
-// Estimate kinds identify how a duration range should be interpreted.
-//
-// Example: The zero value represents an unknown or absent state.
-const (
-	// effortUnknown marks an unspecified effort kind.
-	//
-	// Example: Use it when the report marks an unspecified effort kind.
-	effortUnknown effortKind = iota
-	// effortElapsed marks an elapsed duration.
-	//
-	// Example: Use it when the report marks an elapsed duration.
-	effortElapsed
-	// effortWork marks work effort.
-	//
-	// Example: Use it when the report marks work effort.
-	effortWork
-)
 
 // String returns the documented effort kind.
 //
@@ -275,24 +312,6 @@ func (k *effortKind) UnmarshalYAML(n *yaml.Node) error {
 //
 // Example: Record FOLLOWUP while post-Fast work remains.
 type rootTaskStatus int
-
-// Root-task statuses describe the remaining post-Fast sequence.
-//
-// Example: The zero value represents an unknown or absent state.
-const (
-	// rootTaskNone omits post-Fast follow-up status.
-	//
-	// Example: Use it when the report omits post-Fast follow-up status.
-	rootTaskNone rootTaskStatus = iota
-	// rootTaskFollowup marks pending post-Fast work.
-	//
-	// Example: Use it when the report marks pending post-Fast work.
-	rootTaskFollowup
-	// rootTaskFollowupPaused marks post-Fast work awaiting a dependency.
-	//
-	// Example: Use it when the report marks post-Fast work awaiting a dependency.
-	rootTaskFollowupPaused
-)
 
 // String returns the status label or an empty string when absent.
 //
@@ -329,28 +348,6 @@ func (s *rootTaskStatus) UnmarshalYAML(n *yaml.Node) error {
 //
 // Example: A test-gated lane remains active while its test status is open.
 type requiredEnvironment int
-
-// Required environments define the acceptance boundary for a lane.
-//
-// Example: Source-only work uses the implementation environment.
-const (
-	// environmentUnknown indicates a missing acceptance boundary.
-	//
-	// Example: Validation rejects a lane without an explicit environment.
-	environmentUnknown requiredEnvironment = iota
-	// environmentImplementation selects source-level acceptance.
-	//
-	// Example: A source-only lane closes when implementation is CLOSED.
-	environmentImplementation
-	// environmentTest selects test-environment acceptance.
-	//
-	// Example: An integration lane closes when test readiness is CLOSED.
-	environmentTest
-	// environmentProd selects production acceptance.
-	//
-	// Example: A deployed lane closes when production readiness is CLOSED.
-	environmentProd
-)
 
 // UnmarshalYAML decodes an explicitly selected lane acceptance boundary.
 //
@@ -400,3 +397,18 @@ func (l lane) requiredStatus() workStatus {
 		return statusUnknown
 	}
 }
+
+// taskID identifies a task in the report hierarchy.
+//
+// Example: Task 1.2 belongs to parent 1.
+type taskID string
+
+// priorityLabel records the supported priority or an explicit unknown.
+//
+// Example: An unranked package uses unknown.
+type priorityLabel string
+
+// reviewRounds counts the scoped reporter–critic iterations.
+//
+// Example: One review uses one round.
+type reviewRounds int

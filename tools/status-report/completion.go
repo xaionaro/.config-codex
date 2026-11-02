@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // renderCompletionEstimates reports supplied projections without adding parallel durations.
@@ -12,11 +13,11 @@ func renderCompletionEstimates(
 	b *strings.Builder,
 	r report,
 ) {
-	estimates := map[string]completionEstimate{}
+	estimates := map[priorityLabel]completionEstimate{}
 	for _, e := range r.PriorityEstimates {
 		estimates[e.Priority] = e
 	}
-	seen := map[string]bool{}
+	seen := map[priorityLabel]bool{}
 	fmt.Fprintln(b, "\nCompletion estimates:")
 	for _, t := range r.Tasks {
 		if seen[t.Priority] {
@@ -28,7 +29,7 @@ func renderCompletionEstimates(
 			fmt.Fprintf(b, "Priority %s completion estimate: unknown\n", t.Priority)
 			continue
 		}
-		writeCompletionEstimate(b, "Priority "+t.Priority+" completion estimate", e)
+		writeCompletionEstimate(b, "Priority "+string(t.Priority)+" completion estimate", e)
 	}
 	if r.CompletionEstimate == nil {
 		fmt.Fprintln(b, "Overall completion estimate: unknown")
@@ -45,5 +46,10 @@ func writeCompletionEstimate(
 	label string,
 	e completionEstimate,
 ) {
-	fmt.Fprintf(b, "%s: %g–%g minutes elapsed; endpoint %s–%s; basis: %s; assumptions: %s; dependencies: %s; critical path: %s\n", label, *e.MinMinutes, *e.MaxMinutes, e.Earliest, e.Latest, e.Basis, e.Assumptions, e.Dependencies, e.CriticalPath)
+	earliest, latest, err := completionEndpoints(e)
+	if err != nil {
+		fmt.Fprintf(b, "%s: unknown (invalid estimate: %v)\n", label, err)
+		return
+	}
+	fmt.Fprintf(b, "%s: %g–%g minutes elapsed; endpoint %s–%s; basis: %s; assumptions: %s; dependencies: %s; critical path: %s\n", label, *e.MinMinutes, *e.MaxMinutes, earliest.Format(time.RFC3339Nano), latest.Format(time.RFC3339Nano), e.Basis, e.Assumptions, e.Dependencies, e.CriticalPath)
 }

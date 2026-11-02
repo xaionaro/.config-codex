@@ -48,19 +48,19 @@ func validateForecast(f forecast) error {
 //
 // Example: Reject a timeline interval outside the report window.
 func validateSections(r report) error {
-	priorities := map[string]bool{}
+	priorities := map[priorityLabel]bool{}
 	for _, e := range r.PriorityEstimates {
-		if strings.TrimSpace(e.Priority) == "" || priorities[e.Priority] {
+		if strings.TrimSpace(string(e.Priority)) == "" || priorities[e.Priority] {
 			return fmt.Errorf("priority estimates require unique priority")
 		}
 		priorities[e.Priority] = true
 		if err := validateCompletionEstimate(e); err != nil {
-			return err
+			return fmt.Errorf("priority %s estimate: %w", e.Priority, err)
 		}
 	}
 	if r.CompletionEstimate != nil {
 		if err := validateCompletionEstimate(*r.CompletionEstimate); err != nil {
-			return err
+			return fmt.Errorf("overall completion estimate: %w", err)
 		}
 	}
 	for priority := range priorities {
@@ -83,7 +83,7 @@ func validateSections(r report) error {
 			return fmt.Errorf("missing completion estimate for priority %s", t.Priority)
 		}
 	}
-	byID := map[string]task{}
+	byID := map[taskID]task{}
 	for _, t := range r.Tasks {
 		byID[t.ID] = t
 	}
@@ -101,8 +101,8 @@ func validateSections(r report) error {
 		if l.RequiredEnvironment == environmentUnknown {
 			return fmt.Errorf("lane %s: required_environment is required", l.TaskID)
 		}
-		if l.requiredStatus() == statusClosed && l.Forecasted && l.CompletedAt == "" {
-			return fmt.Errorf("lane %s: completed forecasted lane requires completed_at", l.TaskID)
+		if l.requiredStatus() == statusClosed && l.CompletedAt == "" {
+			return fmt.Errorf("lane %s: completed lane requires completed_at", l.TaskID)
 		}
 		if l.CompletedAt != "" {
 			if _, err := parseUTC(l.CompletedAt); err != nil {
@@ -120,13 +120,13 @@ func validateSections(r report) error {
 				return fmt.Errorf("lane %s: CLOSED required environment cannot retain active forecast", l.TaskID)
 			}
 			if err := validateForecast(*l.Forecast); err != nil {
-				return err
+				return fmt.Errorf("lane %s forecast: %w", l.TaskID, err)
 			}
 		}
 	}
 	for _, f := range r.RootForecasts {
 		if err := validateForecast(f); err != nil {
-			return err
+			return fmt.Errorf("root forecast %s: %w", f.Outcome, err)
 		}
 	}
 	now, err := parseUTC(r.Timestamp)
@@ -164,16 +164,34 @@ func validateCompletionEstimate(e completionEstimate) error {
 	if e.MinMinutes == nil || e.MaxMinutes == nil || math.IsNaN(*e.MinMinutes) || math.IsNaN(*e.MaxMinutes) || math.IsInf(*e.MinMinutes, 0) || math.IsInf(*e.MaxMinutes, 0) || *e.MinMinutes < 0 || *e.MaxMinutes < *e.MinMinutes {
 		return fmt.Errorf("completion estimate requires ordered finite minute range")
 	}
-	early, err := parseUTC(e.Earliest)
-	if err != nil {
-		return fmt.Errorf("invalid earliest endpoint: %w", err)
-	}
-	late, err := parseUTC(e.Latest)
-	if err != nil || late.Before(early) {
-		return fmt.Errorf("invalid latest endpoint")
+	if _, _, err := completionEndpoints(e); err != nil {
+		return err
 	}
 	if strings.TrimSpace(e.Basis) == "" || strings.TrimSpace(e.Assumptions) == "" || strings.TrimSpace(e.Dependencies) == "" || strings.TrimSpace(e.CriticalPath) == "" {
 		return fmt.Errorf("completion estimate requires basis, assumptions, dependencies and critical_path")
 	}
 	return nil
+}
+
+// completionEndpoints derives UTC endpoints from the estimate's as-of time.
+//
+// Example: Thirty minutes after midnight renders as 00:30 UTC.
+func completionEndpoints(e completionEstimate) (time.Time, time.Time, error) {
+	base, err := parseUTC(e.AsOf)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid estimate as_of: %w", err)
+	}
+	if e.MinMinutes == nil || e.MaxMinutes == nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("missing minute range")
+	}
+	minNanos, maxNanos := *e.MinMinutes*float64(time.Minute), *e.MaxMinutes*float64(time.Minute)
+	if math.IsNaN(minNanos) || math.IsNaN(maxNanos) || math.IsInf(minNanos, 0) || math.IsInf(maxNanos, 0) || minNanos < 0 || maxNanos < minNanos || maxNanos >= float64(math.MaxInt64) {
+		return time.Time{}, time.Time{}, fmt.Errorf("estimate duration outside supported range")
+	}
+	earliest := base.Add(time.Duration(math.Round(minNanos)))
+	latest := base.Add(time.Duration(math.Round(maxNanos)))
+	if earliest.Year() > 9999 || latest.Year() > 9999 {
+		return time.Time{}, time.Time{}, fmt.Errorf("estimate endpoint outside RFC3339 range")
+	}
+	return earliest, latest, nil
 }

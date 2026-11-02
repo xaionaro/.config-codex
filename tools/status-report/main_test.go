@@ -1,9 +1,15 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // validCore is a representative report before completion estimates.
@@ -50,9 +56,9 @@ reviews: []
 //
 // Example: Combine it with validCore for a complete report.
 const estimates = `priority_estimates:
-  - {priority: high, min_minutes: 20, max_minutes: 40, earliest: "2026-11-02T15:44:00Z", latest: "2026-11-02T16:04:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
-  - {priority: unknown, min_minutes: 20, max_minutes: 40, earliest: "2026-11-02T15:44:00Z", latest: "2026-11-02T16:04:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
-completion_estimate: {min_minutes: 20, max_minutes: 40, earliest: "2026-11-02T15:44:00Z", latest: "2026-11-02T16:04:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
+  - {priority: high, min_minutes: 20, max_minutes: 40, as_of: "2026-11-02T15:24:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
+  - {priority: unknown, min_minutes: 20, max_minutes: 40, as_of: "2026-11-02T15:24:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
+completion_estimate: {min_minutes: 20, max_minutes: 40, as_of: "2026-11-02T15:24:00Z", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}
 `
 
 // valid combines the report and its estimates.
@@ -66,12 +72,12 @@ const valid = validCore + estimates
 func TestRenderProgressAndSeparateLists(t *testing.T) {
 	r, err := parse([]byte(valid))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	out := render(r)
 	for _, s := range []string{"Top priorities", "Full task tree", "100%", "partial", "1/1", "1.2", "equal-package"} {
 		if !strings.Contains(out, s) {
-			t.Errorf("missing %q in %s", s, out)
+			assert.Fail(t, fmt.Sprintf("missing %q in %s", s, out))
 		}
 	}
 }
@@ -90,7 +96,7 @@ func TestRejectInvalidStructures(t *testing.T) {
 	}
 	for _, input := range cases {
 		if _, err := parse([]byte(input)); err == nil {
-			t.Errorf("accepted invalid input: %s", input)
+			assert.Fail(t, fmt.Sprintf("accepted invalid input: %s", input))
 		}
 	}
 }
@@ -102,11 +108,11 @@ func TestZeroKnownProgress(t *testing.T) {
 	input := strings.Replace(valid, "status: CLOSED\n    evidence: accepted test", "status: unknown", 1)
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	out := render(r)
 	if !strings.Contains(out, "Progress: unknown") {
-		t.Fatal(out)
+		require.FailNow(t, fmt.Sprint(out))
 	}
 }
 
@@ -116,16 +122,16 @@ func TestZeroKnownProgress(t *testing.T) {
 func TestLaneAndUnknownCoverage(t *testing.T) {
 	input := strings.Replace(valid, "lanes: []", "lanes:\n  - task_id: 'missing'\n    outcome: Test\n    required_environment: implementation\n    implementation_status: NEW\n    test_status: NEW\n    prod_status: NEW", 1)
 	if _, err := parse([]byte(input)); err == nil {
-		t.Fatal("accepted lane referencing missing task")
+		require.FailNow(t, fmt.Sprint("accepted lane referencing missing task"))
 	}
 	input = strings.Replace(input, "task_id: 'missing'", "task_id: '1'", 1)
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	out := render(r)
 	if !strings.Contains(out, "covered: 1.1") {
-		t.Fatal(out)
+		require.FailNow(t, fmt.Sprint(out))
 	}
 }
 
@@ -151,12 +157,12 @@ func TestLaneForecastRendering(t *testing.T) {
 `, 1)
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	out := render(r)
 	for _, want := range []string{"Next milestone: Checks pass", "Forecast deadline: Finish work will be finished by 2026-11-02T17:22:00Z.", "Forecast assessment: provisional", "Forecast recalibration: unchanged — baseline", "Dependencies / critical path: Review"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
+			assert.Fail(t, fmt.Sprintf("missing %q", want))
 		}
 	}
 }
@@ -172,16 +178,16 @@ func TestPackageAndReviewValidation(t *testing.T) {
 		strings.Replace(valid, "reviews: []", "reviews:\n  - {task_id: missing, reporter: A, critic: B, rounds: 1, estimate: checked, impact: checked, priority: checked, unresolved: none}", 1),
 	} {
 		if _, err := parse([]byte(input)); err == nil {
-			t.Errorf("accepted invalid structure: %s", input)
+			assert.Fail(t, fmt.Sprintf("accepted invalid structure: %s", input))
 		}
 	}
 	oversized := strings.Replace(valid, "max_minutes: 30, kind: elapsed, basis: guess}\n    status: CLOSED", "max_minutes: 60, kind: elapsed, basis: guess}\n    indivisible_reason: Cannot split\n    status: CLOSED", 1)
 	r, err := parse([]byte(oversized))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	if !strings.Contains(render(r), "Larger indivisible packages: 1.1: Cannot split") {
-		t.Fatal(render(r))
+		require.FailNow(t, fmt.Sprint(render(r)))
 	}
 }
 
@@ -191,13 +197,13 @@ func TestPackageAndReviewValidation(t *testing.T) {
 func TestEmptyTimelineEvidence(t *testing.T) {
 	r, err := parse([]byte(valid + "timeline_state: verified_empty\n"))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	if !strings.Contains(render(r), "Timeline: verified no evidenced activity") {
-		t.Fatal(render(r))
+		require.FailNow(t, fmt.Sprint(render(r)))
 	}
 	if _, err := parse([]byte(valid + "timeline_state: invented\n")); err == nil {
-		t.Fatal("accepted invented timeline state")
+		require.FailNow(t, fmt.Sprint("accepted invented timeline state"))
 	}
 }
 
@@ -215,7 +221,7 @@ func TestNestedSchemaValidation(t *testing.T) {
 			source = "timeline: []"
 		}
 		if _, err := parse([]byte(strings.Replace(valid, source, replacement, 1))); err == nil {
-			t.Errorf("accepted %s", replacement)
+			assert.Fail(t, fmt.Sprintf("accepted %s", replacement))
 		}
 	}
 }
@@ -227,7 +233,7 @@ func TestRejectNonFiniteEffort(t *testing.T) {
 	for _, value := range []string{".nan", ".inf", "-.inf"} {
 		input := strings.Replace(valid, "min_minutes: 30", "min_minutes: "+value, 1)
 		if _, err := parse([]byte(input)); err == nil {
-			t.Errorf("accepted %s", value)
+			assert.Fail(t, fmt.Sprintf("accepted %s", value))
 		}
 	}
 }
@@ -238,7 +244,7 @@ func TestRejectNonFiniteEffort(t *testing.T) {
 func TestTimelineParentChainConsistency(t *testing.T) {
 	input := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}\n  - {job: X, parent_chain: B, start: '2026-11-02T14:30:00Z', end: '2026-11-02T15:00:00Z', fast: unknown, normal: unknown}", 1)
 	if _, err := parse([]byte(input)); err == nil {
-		t.Fatal("accepted inconsistent chain")
+		require.FailNow(t, fmt.Sprint("accepted inconsistent chain"))
 	}
 }
 
@@ -265,12 +271,12 @@ root_forecasts:
 `, 1)
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	out := render(r)
 	for _, want := range []string{"| Task ID |", "| Lane/root and case |", "Root-task status [1 / Finish work]: FOLLOWUP", "Root completion forecast: Complete root will be finished by 2026-11-02T18:00:00Z."} {
 		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
+			assert.Fail(t, fmt.Sprintf("missing %q", want))
 		}
 	}
 }
@@ -282,10 +288,10 @@ func TestPartialTimelineDisclosure(t *testing.T) {
 	input := strings.Replace(valid, "timeline: []", "timeline_state: unavailable\ntimeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}", 1)
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	if !strings.Contains(render(r), "History is incomplete or unavailable") {
-		t.Fatal(render(r))
+		require.FailNow(t, fmt.Sprint(render(r)))
 	}
 }
 
@@ -304,18 +310,18 @@ func TestRepairRegressionInputs(t *testing.T) {
     forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
 `
 	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", lane, 1))); err == nil {
-		t.Error("accepted active lane with completed_at and active forecast")
+		assert.Fail(t, fmt.Sprint("accepted active lane with completed_at and active forecast"))
 	}
 	if _, err := parse([]byte(valid + "root_forecasts: [{}]\n")); err == nil {
-		t.Error("accepted empty root forecast")
+		assert.Fail(t, fmt.Sprint("accepted empty root forecast"))
 	}
 	bad := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-02T13:00:00Z', end: '2026-11-02T14:00:00Z', fast: unknown, normal: unknown}", 1)
 	if _, err := parse([]byte(bad)); err == nil {
-		t.Error("accepted one-hour interval")
+		assert.Fail(t, fmt.Sprint("accepted one-hour interval"))
 	}
 	utc := strings.Replace(valid, "2026-11-02T15:24:00Z", "2026-11-02T15:24:00+00:00", 1)
 	if _, err := parse([]byte(utc)); err != nil {
-		t.Errorf("rejected zero-offset UTC: %v", err)
+		assert.Fail(t, fmt.Sprintf("rejected zero-offset UTC: %v", err))
 	}
 }
 
@@ -324,12 +330,11 @@ func TestRepairRegressionInputs(t *testing.T) {
 // Example: Verify completion estimates through the public behavior.
 func TestCompletionEstimates(t *testing.T) {
 	input := validCore + `priority_estimates:
-  - {priority: unknown, min_minutes: 10, max_minutes: 30, earliest: "2026-11-02T15:34:00Z", latest: "2026-11-02T15:54:00Z", basis: educated guess, assumptions: review available, dependencies: none, critical_path: unknown}
+  - {priority: unknown, min_minutes: 10, max_minutes: 30, as_of: "2026-11-02T15:24:00Z", basis: educated guess, assumptions: review available, dependencies: none, critical_path: unknown}
   - priority: high
     min_minutes: 20
     max_minutes: 40
-    earliest: '2026-11-02T15:44:00Z'
-    latest: '2026-11-02T16:04:00Z'
+    as_of: '2026-11-02T15:24:00Z'
     basis: educated guess
     assumptions: review available
     dependencies: review
@@ -337,8 +342,7 @@ func TestCompletionEstimates(t *testing.T) {
 completion_estimate:
   min_minutes: 20
   max_minutes: 50
-  earliest: '2026-11-02T15:44:00Z'
-  latest: '2026-11-02T16:14:00Z'
+  as_of: '2026-11-02T15:24:00Z'
   basis: educated guess
   assumptions: reviewers available
   dependencies: review
@@ -346,12 +350,12 @@ completion_estimate:
 `
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	out := render(r)
 	for _, want := range []string{"Priority high completion estimate", "Priority unknown completion estimate", "Overall completion estimate", "latest parallel endpoint"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
+			assert.Fail(t, fmt.Sprintf("missing %q", want))
 		}
 	}
 }
@@ -365,22 +369,22 @@ func TestTimelineUTCAndLifecycle(t *testing.T) {
 	base := strings.Replace(valid, "2026-11-02T15:24:00Z", "2026-11-02T00:15:00+00:00", 1)
 	row := "timeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-01T23:30:00Z', end: '2026-11-02T00:00:00+00:00', fast: unknown, normal: unknown}"
 	if _, err := parse([]byte(strings.Replace(base, "timeline: []", row, 1))); err != nil {
-		t.Errorf("valid midnight UTC: %v", err)
+		assert.Fail(t, fmt.Sprintf("valid midnight UTC: %v", err))
 	}
 	for _, replacement := range []string{"2026-11-02T00:01:00Z", "2026-11-01T19:00:00Z", "2026-11-02T00:00:00+01:00"} {
 		bad := strings.Replace(row, "2026-11-02T00:00:00+00:00", replacement, 1)
 		if _, err := parse([]byte(strings.Replace(base, "timeline: []", bad, 1))); err == nil {
-			t.Errorf("accepted invalid end %s", replacement)
+			assert.Fail(t, fmt.Sprintf("accepted invalid end %s", replacement))
 		}
 	}
 	closed := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: CLOSED\n    evidence: accepted\n  - id:", 1)
 	lane := "lanes:\n  - {task_id: '1', outcome: Work, required_environment: implementation, implementation_status: CLOSED, test_status: IN PROGRESS, prod_status: NEW, forecasted: true}"
 	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err == nil {
-		t.Error("missing completed_at accepted")
+		assert.Fail(t, fmt.Sprint("missing completed_at accepted"))
 	}
 	lane = strings.Replace(lane, "forecasted: true}", "forecasted: true, completed_at: '2026-11-02T15:00:00+00:00'}", 1)
 	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err != nil {
-		t.Errorf("valid closed lane: %v", err)
+		assert.Fail(t, fmt.Sprintf("valid closed lane: %v", err))
 	}
 	time.Local = oldTZ
 }
@@ -390,11 +394,11 @@ func TestTimelineUTCAndLifecycle(t *testing.T) {
 // Example: An unknown-priority task still needs a labeled educated estimate.
 func TestEstimateCoverageRejectsMissing(t *testing.T) {
 	if _, err := parse([]byte(validCore)); err == nil {
-		t.Error("accepted missing estimates")
+		assert.Fail(t, fmt.Sprint("accepted missing estimates"))
 	}
-	input := strings.Replace(valid, "  - {priority: unknown, min_minutes: 20, max_minutes: 40, earliest: \"2026-11-02T15:44:00Z\", latest: \"2026-11-02T16:04:00Z\", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}\n", "", 1)
+	input := strings.Replace(valid, "  - {priority: unknown, min_minutes: 20, max_minutes: 40, as_of: \"2026-11-02T15:24:00Z\", basis: educated guess, assumptions: review available, dependencies: review, critical_path: latest parallel endpoint}\n", "", 1)
 	if _, err := parse([]byte(input)); err == nil {
-		t.Error("accepted missing unknown-priority estimate")
+		assert.Fail(t, fmt.Sprint("accepted missing unknown-priority estimate"))
 	}
 }
 
@@ -415,7 +419,7 @@ func TestClosedLifecycleRejectsContradictoryForecast(t *testing.T) {
     forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}
 `
 	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", lane, 1))); err == nil {
-		t.Error("accepted closed lane with active forecast")
+		assert.Fail(t, fmt.Sprint("accepted closed lane with active forecast"))
 	}
 }
 
@@ -437,30 +441,30 @@ func TestLaneRequiredEnvironmentSeparatesPackageProgress(t *testing.T) {
 	input := strings.Replace(closed, "lanes: []", lane, 1)
 	r, err := parse([]byte(input))
 	if err != nil {
-		t.Fatalf("active test lane rejected: %v", err)
+		require.FailNow(t, fmt.Sprintf("active test lane rejected: %v", err))
 	}
 	if !strings.Contains(render(r), "Forecast deadline: Work will be finished") {
-		t.Fatal(render(r))
+		require.FailNow(t, fmt.Sprint(render(r)))
 	}
 	if !strings.Contains(render(r), "| Required environment |") || !strings.Contains(render(r), "| test |") {
-		t.Error("required environment missing from lane table")
+		assert.Fail(t, fmt.Sprint("required environment missing from lane table"))
 	}
 	bad := strings.Replace(lane, "forecasted: true", "completed_at: '2026-11-02T15:00:00Z'", 1)
 	bad = strings.Replace(bad, "    forecast: {outcome: Work, target: '2026-11-02T16:00:00Z', assessment: complete}\n", "", 1)
 	if _, err := parse([]byte(strings.Replace(closed, "lanes: []", bad, 1))); err == nil {
-		t.Error("accepted completion before required test readiness")
+		assert.Fail(t, fmt.Sprint("accepted completion before required test readiness"))
 	}
 	source := strings.Replace(bad, "required_environment: test", "required_environment: implementation", 1)
 	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", source, 1))); err != nil {
-		t.Errorf("source-only lane rejected despite implementation CLOSED: %v", err)
+		assert.Fail(t, fmt.Sprintf("source-only lane rejected despite implementation CLOSED: %v", err))
 	}
 	prod := strings.Replace(source, "required_environment: implementation", "required_environment: prod", 1)
 	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", prod, 1))); err == nil {
-		t.Error("accepted completion with prod NEW")
+		assert.Fail(t, fmt.Sprint("accepted completion with prod NEW"))
 	}
 	prod = strings.Replace(prod, "prod_status: NEW", "prod_status: CLOSED", 1)
 	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", prod, 1))); err != nil {
-		t.Errorf("prod CLOSED rejected: %v", err)
+		assert.Fail(t, fmt.Sprintf("prod CLOSED rejected: %v", err))
 	}
 }
 
@@ -471,18 +475,289 @@ func TestScenarioFieldsAreExplicit(t *testing.T) {
 	prefix := "root_forecasts:\n  - outcome: Work\n    target: '2026-11-02T16:00:00Z'\n    assessment: complete\n    scenarios:\n"
 	for _, row := range []string{"      - {}\n", "      - {case: base}\n"} {
 		if _, err := parse([]byte(valid + prefix + row)); err == nil {
-			t.Error("accepted incomplete scenario")
+			assert.Fail(t, fmt.Sprint("accepted incomplete scenario"))
 		}
 	}
 	complete := "      - {case: base, trigger: unknown, affected_work: unknown, duration_basis: unknown, evidence_assumptions: unknown, endpoint: unknown, evidence_gap_next_action: unknown}\n"
 	if _, err := parse([]byte(valid + prefix + complete)); err != nil {
-		t.Errorf("explicit unknown scenario rejected: %v", err)
+		assert.Fail(t, fmt.Sprintf("explicit unknown scenario rejected: %v", err))
 	}
 	r, err := parse([]byte(valid + prefix + complete))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, fmt.Sprint(err))
 	}
 	if !strings.Contains(render(r), "| Work — base | unknown | unknown |") {
-		t.Error("explicit unknown scenario not rendered")
+		assert.Fail(t, fmt.Sprint("explicit unknown scenario not rendered"))
 	}
+}
+
+// TestStrictStatusRepair reproduces invalid enum kinds and closed-lane timestamps.
+//
+// Example: A mapping cannot masquerade as an unknown task status.
+func TestStrictStatusRepair(t *testing.T) {
+	for _, bad := range []string{"{}", "[]", "!custom unknown"} {
+		input := strings.Replace(valid, "status: unknown", "status: "+bad, 1)
+		if _, err := parse([]byte(input)); err == nil {
+			assert.Fail(t, fmt.Sprintf("accepted status %s", bad))
+		}
+	}
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    required_environment: test
+    implementation_status: CLOSED
+    test_status: CLOSED
+    prod_status: NEW
+`
+	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", lane, 1))); err == nil {
+		assert.Fail(t, fmt.Sprint("closed lane accepted without completed_at"))
+	}
+	if _, err := parse([]byte(strings.Replace(valid, "lanes: []", strings.Replace(lane, "    outcome:", "    id: duplicate\n    outcome:", 1), 1))); err == nil {
+		assert.Fail(t, fmt.Sprint("accepted lane id alias"))
+	}
+}
+
+// TestCompletionEstimateAsOf requires duration endpoints to be derived.
+//
+// Example: A 30-minute range beginning at midnight ends at 00:30 UTC.
+func TestCompletionEstimateAsOf(t *testing.T) {
+	input := valid
+	r, err := parse([]byte(input))
+	if err != nil {
+		require.FailNow(t, fmt.Sprint(err))
+	}
+	out := render(r)
+	if !strings.Contains(out, "2026-11-02T15:44:00Z–2026-11-02T16:04:00Z") {
+		require.FailNow(t, fmt.Sprint(out))
+	}
+	if _, err := parse([]byte(strings.Replace(valid, "as_of:", "earliest:", 1))); err == nil {
+		assert.Fail(t, fmt.Sprint("accepted independently mutable endpoints"))
+	}
+}
+
+// TestEnumNodeKinds enforces the documented wire types for every enum family.
+//
+// Example: An empty mapping cannot select a lane environment or effort kind.
+func TestEnumNodeKinds(t *testing.T) {
+	cases := []struct{ old, new string }{
+		{"status: unknown", "status: {}"}, {"status: unknown", "status: []"}, {"status: unknown", "status: !custom unknown"},
+		{"kind: elapsed", "kind: {}"}, {"kind: elapsed", "kind: !custom elapsed"},
+		{"timeline: []", "timeline_state: []\ntimeline: []"}, {"timeline: []", "timeline_state: null\ntimeline: []"},
+	}
+	for _, tc := range cases {
+		_, err := parse([]byte(strings.Replace(valid, tc.old, tc.new, 1)))
+		require.Error(t, err, tc.new)
+	}
+	_, err := parse([]byte(strings.Replace(valid, "status: unknown", "status: null", 1)))
+	require.NoError(t, err)
+}
+
+// TestEstimateDurationBoundaries checks UTC arithmetic and overflow rejection.
+//
+// Example: Half a minute from midnight produces a 30-second endpoint.
+func TestEstimateDurationBoundaries(t *testing.T) {
+	e := completionEstimate{AsOf: "2026-11-01T23:59:45+00:00", MinMinutes: floatPointer(0.5), MaxMinutes: floatPointer(1.5)}
+	first, last, err := completionEndpoints(e)
+	require.NoError(t, err)
+	require.Equal(t, "2026-11-02T00:00:15Z", first.Format(time.RFC3339Nano))
+	require.Equal(t, "2026-11-02T00:01:15Z", last.Format(time.RFC3339Nano))
+	e.AsOf = "2026-11-01T23:59:45-05:00"
+	_, _, err = completionEndpoints(e)
+	require.Error(t, err)
+	e.AsOf = "9999-12-31T23:59:45Z"
+	_, _, err = completionEndpoints(e)
+	require.Error(t, err)
+	e.AsOf = "2026-11-01T23:59:45Z"
+	e.MaxMinutes = floatPointer(1e100)
+	_, _, err = completionEndpoints(e)
+	require.Error(t, err)
+}
+
+// floatPointer supplies an optional numeric field for focused test cases.
+//
+// Example: Build a fractional minute range.
+func floatPointer(value float64) *float64 { return &value }
+
+// TestHierarchicalTaskIDsRejectMismatchedParents checks identity lineage.
+//
+// Example: Task 1.2 cannot claim a missing or unrelated parent.
+func TestHierarchicalTaskIDsRejectMismatchedParents(t *testing.T) {
+	for _, replacement := range []string{"parent_id: ''", "parent_id: '1.2'", "parent_id: 'other'"} {
+		input := strings.Replace(valid, `parent_id: "1"`, replacement, 1)
+		_, err := parse([]byte(input))
+		require.Error(t, err, replacement)
+	}
+}
+
+// TestCLICommands exercises the supported command paths and useful errors.
+//
+// Example: Validation and rendering work on stdin and fail on malformed input.
+func TestCLICommands(t *testing.T) {
+	var out, errOut strings.Builder
+	require.Equal(t, 0, run([]string{"validate"}, strings.NewReader(valid), &out, &errOut))
+	require.Contains(t, out.String(), "Schema valid")
+	out.Reset()
+	require.Equal(t, 0, run([]string{"render", "-"}, strings.NewReader(valid), &out, &errOut))
+	require.Contains(t, out.String(), "Full task tree")
+	require.Equal(t, 2, run([]string{"invalid"}, strings.NewReader(valid), &out, &errOut))
+	require.Equal(t, 1, run([]string{"validate"}, strings.NewReader("[invalid"), &out, &errOut))
+	require.Equal(t, 1, run([]string{"validate", "/nonexistent/status.yaml"}, strings.NewReader(""), &out, &errOut))
+}
+
+// TestStatusAndEstimateVariants covers supported report states and time units.
+//
+// Example: Paused and blocked packages remain incomplete in the progress bar.
+func TestStatusAndEstimateVariants(t *testing.T) {
+	for _, state := range []string{"NEW", "IN PROGRESS", "PAUSED", "BLOCKED", "CLOSED", "unknown"} {
+		input := strings.Replace(valid, "status: unknown", "status: "+state, 1)
+		if state == "CLOSED" {
+			input = strings.Replace(input, "status: CLOSED\ntop_priorities:", "status: CLOSED\n    evidence: accepted\ntop_priorities:", 1)
+		}
+		r, err := parse([]byte(input))
+		require.NoError(t, err, state)
+		require.Contains(t, render(r), "status: "+state)
+	}
+	work := strings.Replace(valid, "kind: elapsed", "kind: work", 1)
+	r, err := parse([]byte(work))
+	require.NoError(t, err)
+	require.Contains(t, render(r), "minutes work")
+	for _, state := range []string{"unavailable", "present"} {
+		input := strings.Replace(valid, "timeline: []", "timeline_state: "+state+"\ntimeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}", 1)
+		_, err = parse([]byte(input))
+		require.NoError(t, err, state)
+	}
+}
+
+// TestEstimateValidationRejectsInvalidFields checks actual estimate boundaries.
+//
+// Example: Missing basis or non-finite durations cannot validate.
+func TestEstimateValidationRejectsInvalidFields(t *testing.T) {
+	cases := []struct{ old, new string }{
+		{"min_minutes: 20", "min_minutes: -1"}, {"max_minutes: 40", "max_minutes: .nan"},
+		{"basis: educated guess", "basis: ''"}, {"assumptions: review available", "assumptions: ''"},
+		{"dependencies: review", "dependencies: ''"}, {"critical_path: latest parallel endpoint", "critical_path: ''"},
+		{"as_of: \"2026-11-02T15:24:00Z\"", "as_of: 'invalid'"},
+	}
+	for _, tc := range cases {
+		_, err := parse([]byte(strings.Replace(valid, tc.old, tc.new, 1)))
+		require.Error(t, err, tc.new)
+	}
+}
+
+// TestRichDetailsAndForecastRendering preserves supplied content.
+//
+// Example: Recalibration and nested evidence survive the rendered report.
+func TestRichDetailsAndForecastRendering(t *testing.T) {
+	report := valid + `details:
+  evidence:
+    - item: first
+      notes: [one, two]
+root_forecasts:
+  - outcome: Root
+    target: unknown
+    assessment: provisional
+    prior: '2026-11-02T15:00:00Z'
+    reason: review
+    evidence: changed
+    dependencies: owner
+`
+	r, err := parse([]byte(report))
+	require.NoError(t, err)
+	out := render(r)
+	for _, v := range []string{"Root completion forecast: Root — unknown", "Forecast recalibration:", "first", "one", "two"} {
+		require.Contains(t, out, v)
+	}
+}
+
+// TestAliasAndInvalidEnumsRejected prevents bypassing scalar validation.
+//
+// Example: A merged status mapping cannot enter a task record.
+func TestAliasAndInvalidEnumsRejected(t *testing.T) {
+	input := strings.Replace(valid, "  - id: \"1\"", "  - <<: &base {status: NEW}\n    id: \"1\"", 1)
+	_, err := parse([]byte(input))
+	require.Error(t, err)
+	for _, replacement := range []string{"kind: null", "kind: bogus", "status: !x CLOSED"} {
+		old := "kind: elapsed"
+		if strings.HasPrefix(replacement, "status") {
+			old = "status: unknown"
+		}
+		_, err = parse([]byte(strings.Replace(valid, old, replacement, 1)))
+		require.Error(t, err)
+	}
+}
+
+// TestLaneStatusVariantsPreserveReadiness exercises independent lane fields.
+//
+// Example: A production-gated lane can pause follow-up while implementation is complete.
+func TestLaneStatusVariantsPreserveReadiness(t *testing.T) {
+	lane := `lanes:
+  - task_id: '1'
+    outcome: Work
+    required_environment: prod
+    implementation_status: CLOSED
+    test_status: PAUSED
+    prod_status: BLOCKED
+    root_task_status: FOLLOWUP_PAUSED
+    forecast: {outcome: Work, target: unknown, assessment: provisional}
+`
+	r, err := parse([]byte(strings.Replace(valid, "lanes: []", lane, 1)))
+	require.NoError(t, err)
+	out := render(r)
+	for _, v := range []string{"| prod |", "| PAUSED |", "| BLOCKED |", "FOLLOWUP_PAUSED", "Forecast deadline: Work — unknown"} {
+		require.Contains(t, out, v)
+	}
+	for _, field := range []string{"required_environment: []", "implementation_status: {}", "root_task_status: !bad FOLLOWUP"} {
+		old := "required_environment: prod"
+		if strings.HasPrefix(field, "implementation") {
+			old = "implementation_status: CLOSED"
+		}
+		if strings.HasPrefix(field, "root_task") {
+			old = "root_task_status: FOLLOWUP_PAUSED"
+		}
+		_, err = parse([]byte(strings.Replace(strings.Replace(valid, "lanes: []", lane, 1), old, field, 1)))
+		require.Error(t, err, field)
+	}
+}
+
+// TestCLIFileInput verifies the file path used by the installed launcher.
+//
+// Example: A YAML file with spaces in its name validates successfully.
+func TestCLIFileInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report file.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(valid), 0o600))
+	var out, errOut strings.Builder
+	require.Equal(t, 0, run([]string{"validate", path}, strings.NewReader(""), &out, &errOut))
+	require.Contains(t, out.String(), "Schema valid")
+}
+
+// TestUTCOffsetAtDaylightSavingBoundary rejects non-UTC offsets.
+//
+// Example: An RFC3339 daylight-saving offset is not a UTC timestamp.
+func TestUTCOffsetAtDaylightSavingBoundary(t *testing.T) {
+	_, err := parseUTC("2026-03-08T03:30:00-04:00")
+	require.Error(t, err)
+	utc, err := parseUTC("2026-03-08T07:30:00+00:00")
+	require.NoError(t, err)
+	require.Equal(t, "2026-03-08T07:30:00Z", utc.Format(time.RFC3339))
+}
+
+// TestInvalidLaneEnumLabels rejects unsupported status and environment labels.
+//
+// Example: A lane cannot use an unrecognized production acceptance boundary.
+func TestInvalidLaneEnumLabels(t *testing.T) {
+	lane := "lanes:\n  - {task_id: '1', outcome: Work, required_environment: prod, implementation_status: NEW, test_status: NEW, prod_status: NEW, root_task_status: FOLLOWUP}"
+	for _, change := range []struct{ old, new string }{{"required_environment: prod", "required_environment: staging"}, {"root_task_status: FOLLOWUP", "root_task_status: INVALID"}, {"implementation_status: NEW", "implementation_status: INVALID"}} {
+		input := strings.Replace(strings.Replace(valid, "lanes: []", lane, 1), change.old, change.new, 1)
+		_, err := parse([]byte(input))
+		require.Error(t, err)
+	}
+}
+
+// TestInvalidCompletionRenderFailsClosed covers malformed in-memory estimates.
+//
+// Example: Invalid data cannot produce a fabricated endpoint.
+func TestInvalidCompletionRenderFailsClosed(t *testing.T) {
+	var out strings.Builder
+	writeCompletionEstimate(&out, "Overall", completionEstimate{})
+	require.Contains(t, out.String(), "unknown (invalid estimate:")
 }

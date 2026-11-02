@@ -24,8 +24,8 @@ tasks:
     evidence: acceptance verified
 top_priorities: ['1']
 priority_estimates:
-  - {priority: high, min_minutes: 20, max_minutes: 30, earliest: '2026-11-02T15:44:00Z', latest: '2026-11-02T15:54:00Z', basis: educated guess, assumptions: review available, dependencies: none, critical_path: latest parallel endpoint}
-completion_estimate: {min_minutes: 20, max_minutes: 30, earliest: '2026-11-02T15:44:00Z', latest: '2026-11-02T15:54:00Z', basis: educated guess, assumptions: review available, dependencies: none, critical_path: latest parallel endpoint}
+  - {priority: high, min_minutes: 20, max_minutes: 30, as_of: '2026-11-02T15:24:00Z', basis: educated guess, assumptions: review available, dependencies: none, critical_path: latest parallel endpoint}
+completion_estimate: {min_minutes: 20, max_minutes: 30, as_of: '2026-11-02T15:24:00Z', basis: educated guess, assumptions: review available, dependencies: none, critical_path: latest parallel endpoint}
 timeline:
   - job: '1'
     parent_chain: '1'

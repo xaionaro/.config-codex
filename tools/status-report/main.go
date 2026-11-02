@@ -26,31 +26,31 @@ type estimate struct {
 //
 // Example: Record a critic check for a newly queued item.
 type queueReview struct {
-	TaskID     string `yaml:"task_id"`
-	Reporter   string `yaml:"reporter"`
-	Critic     string `yaml:"critic"`
-	Rounds     int    `yaml:"rounds"`
-	Estimate   string `yaml:"estimate"`
-	Impact     string `yaml:"impact"`
-	Priority   string `yaml:"priority"`
-	Unresolved string `yaml:"unresolved"`
+	TaskID     taskID        `yaml:"task_id"`
+	Reporter   string        `yaml:"reporter"`
+	Critic     string        `yaml:"critic"`
+	Rounds     reviewRounds  `yaml:"rounds"`
+	Estimate   string        `yaml:"estimate"`
+	Impact     string        `yaml:"impact"`
+	Priority   priorityLabel `yaml:"priority"`
+	Unresolved string        `yaml:"unresolved"`
 }
 
 // task records one node of the package hierarchy.
 //
 // Example: Represent one leaf package or its parent.
 type task struct {
-	ID                string     `yaml:"id"`
-	ParentID          string     `yaml:"parent_id"`
-	Title             string     `yaml:"title"`
-	Owner             string     `yaml:"owner"`
-	Context           string     `yaml:"context"`
-	Priority          string     `yaml:"priority"`
-	Impact            string     `yaml:"impact"`
-	Effort            estimate   `yaml:"effort"`
-	Status            workStatus `yaml:"status"`
-	Evidence          string     `yaml:"evidence"`
-	IndivisibleReason string     `yaml:"indivisible_reason"`
+	ID                taskID        `yaml:"id"`
+	ParentID          taskID        `yaml:"parent_id"`
+	Title             string        `yaml:"title"`
+	Owner             string        `yaml:"owner"`
+	Context           string        `yaml:"context"`
+	Priority          priorityLabel `yaml:"priority"`
+	Impact            string        `yaml:"impact"`
+	Effort            estimate      `yaml:"effort"`
+	Status            workStatus    `yaml:"status"`
+	Evidence          string        `yaml:"evidence"`
+	IndivisibleReason string        `yaml:"indivisible_reason"`
 }
 
 // report holds one persisted status projection.
@@ -66,7 +66,7 @@ type report struct {
 	NextFocus          string               `yaml:"next_focus"`
 	ScopeComplete      *bool                `yaml:"scope_complete"`
 	Tasks              []task               `yaml:"tasks"`
-	TopPriorities      []string             `yaml:"top_priorities"`
+	TopPriorities      []taskID             `yaml:"top_priorities"`
 	Lanes              []lane               `yaml:"lanes"`
 	RootForecasts      []forecast           `yaml:"root_forecasts"`
 	Roster             map[string]any       `yaml:"roster"`
@@ -83,6 +83,9 @@ type report struct {
 // Example: Reject a report with a missing task reference.
 func parse(data []byte) (report, error) {
 	var r report
+	if err := validateEnumNodes(data); err != nil {
+		return r, fmt.Errorf("invalid YAML schema: %w", err)
+	}
 	d := yaml.NewDecoder(bytes.NewReader(data))
 	d.KnownFields(true)
 	if err := d.Decode(&r); err != nil {
@@ -107,8 +110,8 @@ func parse(data []byte) (report, error) {
 	if r.TimelineState == timelinePresent && len(r.Timeline) == 0 {
 		return r, fmt.Errorf("present timeline requires entries")
 	}
-	byID := map[string]task{}
-	children := map[string]int{}
+	byID := map[taskID]task{}
+	children := map[taskID]int{}
 	for _, t := range r.Tasks {
 		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(*t.Effort.MinMinutes) || math.IsNaN(*t.Effort.MaxMinutes) || math.IsInf(*t.Effort.MinMinutes, 0) || math.IsInf(*t.Effort.MaxMinutes, 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || t.Effort.Kind == effortUnknown || strings.TrimSpace(t.Effort.Basis) == "" {
 			return r, fmt.Errorf("task requires id, title, priority, impact and effort")
@@ -123,13 +126,24 @@ func parse(data []byte) (report, error) {
 		}
 	}
 	for _, t := range r.Tasks {
+		if at := strings.LastIndex(string(t.ID), "."); at >= 0 {
+			if at == 0 || at == len(t.ID)-1 || strings.Contains(string(t.ID), "..") {
+				return r, fmt.Errorf("task %s: malformed hierarchical ID", t.ID)
+			}
+			if t.ParentID != t.ID[:at] {
+				return r, fmt.Errorf("task %s: parent_id must match hierarchical ancestry", t.ID)
+			}
+		}
+		if !strings.Contains(string(t.ID), ".") && t.ParentID != "" {
+			return r, fmt.Errorf("task %s: root ID cannot name a parent", t.ID)
+		}
 		if t.ParentID != "" {
 			if _, ok := byID[t.ParentID]; !ok {
 				return r, fmt.Errorf("task %s: missing parent %s", t.ID, t.ParentID)
 			}
 			children[t.ParentID]++
 		}
-		seen := map[string]bool{}
+		seen := map[taskID]bool{}
 		for id := t.ID; id != ""; id = byID[id].ParentID {
 			if seen[id] {
 				return r, fmt.Errorf("task cycle at %s", id)
@@ -145,7 +159,7 @@ func parse(data []byte) (report, error) {
 			return r, fmt.Errorf("task %s: leaf longer than 30 minutes needs indivisible_reason", t.ID)
 		}
 	}
-	seenTop := map[string]bool{}
+	seenTop := map[taskID]bool{}
 	for _, id := range r.TopPriorities {
 		if _, ok := byID[id]; !ok {
 			return r, fmt.Errorf("unknown top priority task %s", id)
@@ -184,8 +198,8 @@ func render(r report) string {
 	writeList(&b, "Blockers / risks", r.Blockers)
 	writeList(&b, "Verification", r.Verification)
 	fmt.Fprintf(&b, "Next focus: %s\n\n", r.NextFocus)
-	byID := map[string]task{}
-	children := map[string][]string{}
+	byID := map[taskID]task{}
+	children := map[taskID][]taskID{}
 	for _, t := range r.Tasks {
 		byID[t.ID] = t
 		children[t.ParentID] = append(children[t.ParentID], t.ID)
@@ -206,14 +220,14 @@ func render(r report) string {
 			continue
 		}
 		if *t.Effort.MaxMinutes > 30 {
-			oversized = append(oversized, t.ID+": "+t.IndivisibleReason)
+			oversized = append(oversized, string(t.ID)+": "+t.IndivisibleReason)
 		}
 		if t.Status == statusUnknown {
 			unknownCount++
-			unscored = append(unscored, t.ID)
+			unscored = append(unscored, string(t.ID))
 			continue
 		}
-		covered = append(covered, t.ID)
+		covered = append(covered, string(t.ID))
 		known++
 		if t.Status == statusClosed {
 			done++
@@ -265,16 +279,6 @@ func render(r report) string {
 	return b.String()
 }
 
-// unknown supplies a readable label for absent values.
-//
-// Example: Show unknown when a field is empty.
-func unknown(s string) string {
-	if s == "" {
-		return "unknown"
-	}
-	return s
-}
-
 // writeValue renders extensible nested report details.
 //
 // Example: Show nested extension details without dropping fields.
@@ -322,34 +326,46 @@ func writeValue(
 
 // main routes validation and rendering from a file or stdin.
 //
-// Example: Run validate on a YAML file from the command line.
+// Example: Run status-report validate with a YAML file.
 func main() {
-	if len(os.Args) < 2 || len(os.Args) > 3 || (os.Args[1] != "validate" && os.Args[1] != "render") {
-		fmt.Fprintln(os.Stderr, "usage: status-report validate|render [FILE] (default: stdin)")
-		os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+// run executes one command and returns its CLI exit status.
+//
+// Example: Render a report read from stdin.
+func run(
+	args []string,
+	in io.Reader,
+	out io.Writer,
+	errOut io.Writer,
+) int {
+	if len(args) < 1 || len(args) > 2 || (args[0] != "validate" && args[0] != "render") {
+		fmt.Fprintln(errOut, "usage: status-report validate|render [FILE] (default: stdin)")
+		return 2
 	}
 	var data []byte
 	var err error
-	if len(os.Args) == 3 && os.Args[2] != "-" {
-		data, err = os.ReadFile(os.Args[2])
+	if len(args) == 2 && args[1] != "-" {
+		data, err = os.ReadFile(args[1])
 	} else {
-		data, err = io.ReadAll(os.Stdin)
-	}
-	if err == nil {
-		var r report
-		r, err = parse(data)
-		if err == nil {
-			if os.Args[1] == "validate" {
-				fmt.Println("Schema valid (does not verify factual truth or reviewer independence).")
-			} else {
-				fmt.Print(render(r))
-			}
-		}
+		data, err = io.ReadAll(in)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "status-report:", err)
-		os.Exit(1)
+		fmt.Fprintln(errOut, "status-report:", err)
+		return 1
 	}
+	r, err := parse(data)
+	if err != nil {
+		fmt.Fprintln(errOut, "status-report:", err)
+		return 1
+	}
+	if args[0] == "validate" {
+		fmt.Fprintln(out, "Schema valid (does not verify factual truth or reviewer independence).")
+	} else {
+		fmt.Fprint(out, render(r))
+	}
+	return 0
 }
 
 // renderForecast projects the supplied forecast; it does not estimate deadlines.
@@ -426,9 +442,9 @@ func writeTaskLine(
 // Example: Print child packages beneath their parent.
 func writeTaskTree(
 	b *strings.Builder,
-	byID map[string]task,
-	children map[string][]string,
-	parent string,
+	byID map[taskID]task,
+	children map[taskID][]taskID,
+	parent taskID,
 	depth int,
 ) {
 	for _, id := range children[parent] {
