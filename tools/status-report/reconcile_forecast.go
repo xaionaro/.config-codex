@@ -39,7 +39,7 @@ func (c *forecastReconciler) load() bool {
 func (c *forecastReconciler) check(
 	ref string,
 	f *forecast,
-	kind string,
+	kind forecastKind,
 	open bool,
 ) {
 
@@ -59,7 +59,7 @@ func (c *forecastReconciler) check(
 		c.issues.add("forecast %s missing", id)
 		return
 	}
-	if textField(src, "kind") != kind {
+	if textField(src, "kind") != kind.String() {
 		c.issues.add("forecast %s kind mismatch", id)
 	}
 	for _, field := range []string{"kind", "status", "outcome", "assessment", "original_baseline", "baseline_evidence"} {

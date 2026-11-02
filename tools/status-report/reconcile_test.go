@@ -9,6 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestSourceReconciliationBoundaries exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestSourceReconciliationBoundaries(t *testing.T) {
 	cases := []struct{ name, report, ledger, forecasts, diagnostic string }{
 		{"omitted active work", strings.Replace(linkedReport, "work_refs: ['project-understanding.yaml#/records/work:second']", "work_refs: []", 1), linkedLedger, linkedForecasts, "active work work:second missing"},
@@ -37,22 +40,28 @@ func TestSourceReconciliationBoundaries(t *testing.T) {
 		{"orphan forecast", linkedReport + "root_forecasts:\n  - {forecast_ref: 'forecasts.yaml#/records/orphan', outcome: Orphan, target: '2026-11-02T18:00:00Z', assessment: complete}\n", linkedLedger, linkedForecasts, "root forecast \"forecasts.yaml#/records/orphan\" is not linked"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0600))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.forecasts), 0600))
-			r, err := parse([]byte(tc.report))
-			require.NoError(t, err)
-			issues := reconcile(r, dir)
-			if tc.diagnostic == "" {
-				require.Empty(t, issues)
-			} else {
-				require.Contains(t, strings.Join(issues, "\n"), tc.diagnostic)
-			}
-		})
+		t.Run(tc.name, // The callback checks one source consistency boundary.
+			//
+			// Example: Detect a missing work reference.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(tc.ledger), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(tc.forecasts), 0600))
+				r, err := parse([]byte(tc.report))
+				require.NoError(t, err)
+				issues := reconcile(r, dir)
+				if tc.diagnostic == "" {
+					require.Empty(t, issues)
+				} else {
+					require.Contains(t, strings.Join(issues, "\n"), tc.diagnostic)
+				}
+			})
 	}
 }
 
+// TestForecastStructureRejectsIncompleteDetail exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestForecastStructureRejectsIncompleteDetail(t *testing.T) {
 	issues := forecastStructure(map[string]any{
 		"base_case": map[string]any{"packages": []any{map[string]any{"work": "work"}}},

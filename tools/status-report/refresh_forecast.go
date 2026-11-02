@@ -209,7 +209,7 @@ func hasApplicableRoot(
 	laneRefs []string,
 ) bool {
 	for id, record := range ledger.Records {
-		if record.Data.ForecastRef == sourceRef(ref) && forecastApplicable(record, "root", laneReferencesWork(id, laneRefs)) {
+		if record.Data.ForecastRef == sourceRef(ref) && forecastApplicable(record, reportingRoleRoot, laneReferencesWork(id, laneRefs)) {
 			return true
 		}
 	}
@@ -509,8 +509,8 @@ func collectForecastEdits(
 	laneRefs []string,
 ) ([]scalarEdit, error) {
 	var edits []scalarEdit
-	for _, kind := range []string{"lanes", "root_forecasts"} {
-		collection := mapValue(root, kind)
+	for _, kind := range []forecastGroup{forecastGroupLanes, forecastGroupRoots} {
+		collection := mapValue(root, kind.String())
 		if collection == nil || collection.Kind != yaml.SequenceNode {
 			continue
 		}
@@ -529,7 +529,7 @@ func collectForecastEdits(
 func collectForecastGroup(
 	candidate []byte,
 	collection *yaml.Node,
-	kind string,
+	kind forecastGroup,
 	ledger ledgerSource,
 	forecasts forecastSource,
 	doc *flowDocument,
@@ -552,21 +552,21 @@ func collectForecastGroup(
 func forecastItemEdits(
 	candidate []byte,
 	item *yaml.Node,
-	kind string,
+	kind forecastGroup,
 	ledger ledgerSource,
 	forecasts forecastSource,
 	doc *flowDocument,
 	laneRefs []string,
 ) ([]scalarEdit, error) {
 	forecast := item
-	if kind == "lanes" {
+	if kind == forecastGroupLanes {
 		forecast = mapValue(item, "forecast")
 		work := mapValue(item, "work_ref")
 		if forecast == nil || work == nil || !validRef(work.Value, "project-understanding.yaml") {
 			return nil, nil
 		}
 		record, ok := ledger.Records[sourceID(work.Value, "project-understanding.yaml")]
-		if !ok || !forecastApplicable(record, "lane", false) {
+		if !ok || !forecastApplicable(record, reportingRoleLane, false) {
 			return nil, nil
 		}
 		ref := mapValue(forecast, "forecast_ref")
@@ -578,15 +578,15 @@ func forecastItemEdits(
 	if ref == nil || !validRef(ref.Value, "forecasts.yaml") {
 		return nil, nil
 	}
-	expected := "lane"
-	if kind == "root_forecasts" {
-		expected = "root"
+	expected := forecastKindLane
+	if kind == forecastGroupRoots {
+		expected = forecastKindRoot
 		if !hasApplicableRoot(ledger, ref.Value, laneRefs) {
 			return nil, nil
 		}
 	}
 	source, ok := forecasts.Records[sourceID(ref.Value, "forecasts.yaml")]
-	if !ok || textField(source, "kind") != expected || textField(source, "status") != "active" {
+	if !ok || textField(source, "kind") != expected.String() || textField(source, "status") != "active" {
 		return nil, fmt.Errorf("forecast %s missing or not an active %s forecast", ref.Value, expected)
 	}
 	if err := validateRefreshSource(source); err != nil {

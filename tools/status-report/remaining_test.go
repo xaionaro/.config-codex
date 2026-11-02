@@ -9,7 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func writeLinkedSources(t *testing.T, ledger, forecasts string) string {
+// writeLinkedSources writes disposable source fixtures for reconciliation.
+//
+// Example: Compare a report against linked ledger and forecasts.
+func writeLinkedSources(
+	t *testing.T,
+	ledger string,
+	forecasts string,
+) string {
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0600))
@@ -17,6 +24,9 @@ func writeLinkedSources(t *testing.T, ledger, forecasts string) string {
 	return dir
 }
 
+// TestOpenWorkRequiresRemainingCoverage exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestOpenWorkRequiresRemainingCoverage(t *testing.T) {
 	reportText := strings.ReplaceAll(linkedReport, "status: IN PROGRESS, work_refs:", "status: CLOSED, evidence: accepted, work_refs:")
 	reportText = strings.Replace(reportText, "  - task_id: '1'", "  - task_id: '1'", 1)
@@ -34,6 +44,9 @@ func TestOpenWorkRequiresRemainingCoverage(t *testing.T) {
 	require.Contains(t, issues, "no remaining package or open acceptance lane")
 }
 
+// TestCancelledLaneMayBeOmitted exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestCancelledLaneMayBeOmitted(t *testing.T) {
 	reportText := strings.Replace(linkedReport, "  - task_id: '1'", "  - task_id: '1'", 1)
 	r, err := parse([]byte(reportText))
@@ -46,6 +59,9 @@ func TestCancelledLaneMayBeOmitted(t *testing.T) {
 	require.NotContains(t, issues, "completion")
 }
 
+// TestCompletedRootHasOwnCompletionProjection exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestCompletedRootHasOwnCompletionProjection(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
@@ -66,6 +82,9 @@ func TestCompletedRootHasOwnCompletionProjection(t *testing.T) {
 	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "completion missing from report")
 }
 
+// TestCancelledLaneRetainedHasNoCompletion exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestCancelledLaneRetainedHasNoCompletion(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
@@ -79,6 +98,9 @@ func TestCancelledLaneRetainedHasNoCompletion(t *testing.T) {
 	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "must not claim completion")
 }
 
+// TestRootCompletionRequiresIdentityAndTimestamp exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestRootCompletionRequiresIdentityAndTimestamp(t *testing.T) {
 	for _, extra := range []string{
 		"root_completions: [{work_ref: '', outcome: Root, completed_at: '2026-11-02T15:00:00Z'}]\n",
@@ -90,6 +112,9 @@ func TestRootCompletionRequiresIdentityAndTimestamp(t *testing.T) {
 	}
 }
 
+// TestCancelledLifecycleValidation exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestCancelledLifecycleValidation(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
@@ -104,6 +129,9 @@ func TestCancelledLifecycleValidation(t *testing.T) {
 	require.Error(t, validateLane(l, map[taskID]task{l.TaskID: r.Tasks[0]}))
 }
 
+// TestTerminalReportForecastIsIncomplete exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestTerminalReportForecastIsIncomplete(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
@@ -114,6 +142,9 @@ func TestTerminalReportForecastIsIncomplete(t *testing.T) {
 	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work has report forecast")
 }
 
+// TestRolelessWorkCannotClaimForecast exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestRolelessWorkCannotClaimForecast(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
@@ -122,6 +153,9 @@ func TestRolelessWorkCannotClaimForecast(t *testing.T) {
 	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, linkedForecasts)), "\n"), "forecast has no applicable reporting role")
 }
 
+// TestInheritedWorkPriorityUsesRemainingLeaves exercises source reconciliation behavior.
+//
+// Example: Detect an inconsistent status projection.
 func TestInheritedWorkPriorityUsesRemainingLeaves(t *testing.T) {
 	r := report{Tasks: []task{
 		{ID: "1", WorkRefs: []string{"project-understanding.yaml#/records/work:first"}},
@@ -129,9 +163,78 @@ func TestInheritedWorkPriorityUsesRemainingLeaves(t *testing.T) {
 		{ID: "1.2", ParentID: "1", Priority: "low", Status: statusInProgress},
 		{ID: "2", Priority: "other", Status: statusInProgress},
 	}}
-	idx := buildTaskWorkIndex(r.Tasks, map[string]sourceRecord{"work:first": {Data: workData{State: "active"}}})
+	idx := buildTaskWorkIndex(r.Tasks, map[string]sourceRecord{"work:first": {Data: workData{State: workStateActive}}})
 	require.True(t, idx.remaining["work:first"])
 	require.False(t, idx.priorityOpen("high", nil))
 	require.True(t, idx.priorityOpen("low", nil))
 	require.False(t, idx.priorityOpen("other", nil))
+}
+
+// TestLaneWorkMustMatchTaskScope verifies the reconciliation boundary.
+//
+// Example: Reject a contradictory report projection.
+func TestLaneWorkMustMatchTaskScope(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	require.Empty(t, reconcile(r, dir))
+	r.Lanes[0].TaskID = "2"
+	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "outside task scope")
+}
+
+// TestTerminalLaneCannotRetainFollowup verifies the reconciliation boundary.
+//
+// Example: Reject a contradictory report projection.
+func TestTerminalLaneCannotRetainFollowup(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	r.Lanes[0].Forecast = nil
+	r.Lanes[0].Lifecycle = "cancelled"
+	r.Lanes[0].RootTaskStatus = rootTaskFollowup
+	ledger := strings.Replace(linkedLedger, "state: active", "state: cancelled", 1)
+	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
+	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work retains followup")
+	r.Lanes[0].RootTaskStatus = rootTaskFollowupPaused
+	require.Contains(t, strings.Join(reconcile(r, writeLinkedSources(t, ledger, forecasts)), "\n"), "terminal work retains followup")
+	r.Lanes[0].RootTaskStatus = rootTaskNone
+	require.Empty(t, reconcile(r, writeLinkedSources(t, ledger, forecasts)))
+}
+
+// TestTaskScopeUsesOnlyRelatedBranches verifies the reconciliation boundary.
+//
+// Example: Reject a contradictory report projection.
+func TestTaskScopeUsesOnlyRelatedBranches(t *testing.T) {
+	tasks := []task{{ID: "1", WorkRefs: []string{"project-understanding.yaml#/records/work:a"}}, {ID: "1.1", ParentID: "1"}, {ID: "2"}, {ID: "2.1", ParentID: "2", WorkRefs: []string{"project-understanding.yaml#/records/work:b"}}}
+	idx := buildTaskWorkIndex(tasks, map[string]sourceRecord{"work:a": {}, "work:b": {}})
+	require.True(t, idx.containsWork("1.1", "work:a"))
+	require.True(t, idx.containsWork("2", "work:b"))
+	require.False(t, idx.containsWork("2.1", "work:a"))
+}
+
+// TestCompletedLaneCannotRetainFollowup checks completion against follow-up status.
+//
+// Example: Accepted work cannot still claim post-Fast follow-up.
+func TestCompletedLaneCannotRetainFollowup(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	r.Lanes[0].Forecast = nil
+	r.Lanes[0].ImplementationStatus = statusClosed
+	r.Lanes[0].CompletedAt = "2026-11-02T15:00:00Z"
+	r.Lanes[0].RootTaskStatus = rootTaskFollowup
+	ledger := strings.Replace(linkedLedger, "state: active, next_action: Finish", "state: completed, completed_at: '2026-11-02T15:00:00Z'", 1)
+	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
+	dir := writeLinkedSources(t, ledger, forecasts)
+	require.Contains(t, strings.Join(reconcile(r, dir), "\n"), "terminal work retains followup")
+	r.Lanes[0].RootTaskStatus = rootTaskNone
+	require.Empty(t, reconcile(r, dir))
+}
+
+// TestActiveLaneMayRetainFollowup preserves ongoing post-Fast work.
+//
+// Example: An active source lane may report FOLLOWUP.
+func TestActiveLaneMayRetainFollowup(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	r.Lanes[0].RootTaskStatus = rootTaskFollowup
+	require.Empty(t, reconcile(r, writeLinkedSources(t, linkedLedger, linkedForecasts)))
 }

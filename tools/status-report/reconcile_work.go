@@ -64,7 +64,7 @@ func (c *workReconciler) checkRolelessForecast(
 	work sourceRecord,
 ) {
 	ref := string(work.Data.ForecastRef)
-	if ref == "" || hasRole(work.Data.Roles, "lane") || hasRole(work.Data.Roles, "root") {
+	if ref == "" || hasRole(work.Data.Roles, reportingRoleLane) || hasRole(work.Data.Roles, reportingRoleRoot) {
 		return
 	}
 	if !validRef(ref, "forecasts.yaml") {
@@ -89,7 +89,7 @@ func (c *workReconciler) checkCompletion(
 	l lane,
 	represented bool,
 ) {
-	if work.Data.State != "completed" || (!hasRole(work.Data.Roles, "lane") && !hasRole(work.Data.Roles, "root")) {
+	if work.Data.State != workStateCompleted || (!hasRole(work.Data.Roles, reportingRoleLane) && !hasRole(work.Data.Roles, reportingRoleRoot)) {
 		return
 	}
 	if _, err := parseUTC(work.Data.CompletedAt); err != nil {
@@ -98,7 +98,7 @@ func (c *workReconciler) checkCompletion(
 	if represented && !sameValue(work.Data.CompletedAt, l.CompletedAt) {
 		c.issues.add("work %s completed_at mismatch: source %q; report %q", id, work.Data.CompletedAt, l.CompletedAt)
 	}
-	if !represented && !hasRole(work.Data.Roles, "root") {
+	if !represented && !hasRole(work.Data.Roles, reportingRoleRoot) {
 		c.issues.add("completed forecasted work %s completion projection unverified", id)
 	}
 }
@@ -112,7 +112,7 @@ func (c *workReconciler) checkLane(
 	l lane,
 	represented bool,
 ) {
-	if !hasRole(work.Data.Roles, "lane") {
+	if !hasRole(work.Data.Roles, reportingRoleLane) {
 		return
 	}
 	ref := string(work.Data.ForecastRef)
@@ -121,23 +121,26 @@ func (c *workReconciler) checkLane(
 		return
 	}
 	open := openWork(work.Data.State)
+	if (work.Data.State == workStateCompleted || work.Data.State == workStateCancelled) && l.RootTaskStatus != rootTaskNone {
+		c.issues.add("terminal work retains followup: %s", id)
+	}
 	if open && l.requiredStatus() == statusClosed {
 		c.issues.add("open lane %s reported closed", id)
 	}
-	if work.Data.State == "completed" && l.requiredStatus() != statusClosed {
+	if work.Data.State == workStateCompleted && l.requiredStatus() != statusClosed {
 		c.issues.add("closed lane %s reported open", id)
 	}
-	if work.Data.State == "cancelled" && l.Lifecycle != "cancelled" {
+	if work.Data.State == workStateCancelled && l.Lifecycle != "cancelled" {
 		c.issues.add("cancelled lane %s lifecycle is not marked cancelled", id)
 	}
-	if work.Data.State != "cancelled" && l.Lifecycle != "" {
+	if work.Data.State != workStateCancelled && l.Lifecycle != "" {
 		c.issues.add("lane %s lifecycle conflicts with source state", id)
 	}
-	if work.Data.State == "cancelled" && l.CompletedAt != "" {
+	if work.Data.State == workStateCancelled && l.CompletedAt != "" {
 		c.issues.add("cancelled lane %s must not claim completion", id)
 	}
-	if ref != "" || forecastApplicable(work, "lane", represented) || l.Forecast != nil {
-		c.forecasts.check(ref, l.Forecast, "lane", open)
+	if ref != "" || forecastApplicable(work, reportingRoleLane, represented) || l.Forecast != nil {
+		c.forecasts.check(ref, l.Forecast, forecastKindLane, open)
 	}
 }
 
@@ -149,12 +152,12 @@ func (c *workReconciler) checkOmittedLane(
 	work sourceRecord,
 	ref string,
 ) {
-	if work.Data.State != "cancelled" {
+	if work.Data.State != workStateCancelled {
 		c.issues.add("declared lane %s missing from report", id)
 		return
 	}
 	if ref != "" {
-		c.forecasts.check(ref, nil, "lane", false)
+		c.forecasts.check(ref, nil, forecastKindLane, false)
 	}
 }
 
@@ -166,17 +169,17 @@ func (c *workReconciler) checkRoot(
 	work sourceRecord,
 	represented bool,
 ) {
-	if !hasRole(work.Data.Roles, "root") || represented {
+	if !hasRole(work.Data.Roles, reportingRoleRoot) || represented {
 		return
 	}
-	if work.Data.State == "cancelled" && hasRole(work.Data.Roles, "lane") {
+	if work.Data.State == workStateCancelled && hasRole(work.Data.Roles, reportingRoleLane) {
 		return
 	}
-	if _, ok := c.rootCompletions[id]; work.Data.State == "completed" && !ok {
+	if _, ok := c.rootCompletions[id]; work.Data.State == workStateCompleted && !ok {
 		c.issues.add("completed root %s completion missing from report", id)
 	}
 	ref := string(work.Data.ForecastRef)
-	if forecastApplicable(work, "root", represented) && !c.rootRefs[ref] {
+	if forecastApplicable(work, reportingRoleRoot, represented) && !c.rootRefs[ref] {
 		c.issues.add("active root %s forecast missing from report", id)
 	}
 	var found *forecast
@@ -187,6 +190,6 @@ func (c *workReconciler) checkRoot(
 		}
 	}
 	if ref != "" || openWork(work.Data.State) {
-		c.forecasts.check(ref, found, "root", openWork(work.Data.State))
+		c.forecasts.check(ref, found, forecastKindRoot, openWork(work.Data.State))
 	}
 }

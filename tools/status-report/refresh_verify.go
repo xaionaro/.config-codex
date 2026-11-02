@@ -114,9 +114,9 @@ func verifyForecastChanges(
 	forecasts forecastSource,
 	laneRefs []string,
 ) error {
-	for _, group := range []string{"lanes", "root_forecasts"} {
-		a, _ := before[group].([]any)
-		b, _ := after[group].([]any)
+	for _, group := range []forecastGroup{forecastGroupLanes, forecastGroupRoots} {
+		a, _ := before[group.String()].([]any)
+		b, _ := after[group.String()].([]any)
 		if len(a) != len(b) {
 			return fmt.Errorf("refresh would change forecast groups")
 		}
@@ -131,7 +131,7 @@ func verifyForecastChanges(
 //
 // Example: Check linked forecasts in the lane list.
 func verifyForecastGroup(
-	group string,
+	group forecastGroup,
 	before []any,
 	after []any,
 	ledger ledgerSource,
@@ -163,20 +163,20 @@ func verifyForecastGroup(
 //
 // Example: Find a lane and its referenced forecast mapping.
 func linkedForecastMaps(
-	group string,
+	group forecastGroup,
 	left map[string]any,
 	right map[string]any,
 	ledger ledgerSource,
 	laneRefs []string,
 ) (map[string]any, map[string]any, string) {
 	a, b := left, right
-	if group == "lanes" {
+	if group == forecastGroupLanes {
 		work, _ := left["work_ref"].(string)
 		if !validRef(work, "project-understanding.yaml") {
 			return nil, nil, ""
 		}
 		record, ok := ledger.Records[sourceID(work, "project-understanding.yaml")]
-		if !ok || !forecastApplicable(record, "lane", false) {
+		if !ok || !forecastApplicable(record, reportingRoleLane, false) {
 			return nil, nil, ""
 		}
 		a, _ = left["forecast"].(map[string]any)
@@ -189,7 +189,7 @@ func linkedForecastMaps(
 	if !ok || !validRef(ref, "forecasts.yaml") || b["forecast_ref"] != ref {
 		return nil, nil, ""
 	}
-	if group == "root_forecasts" && !hasApplicableRoot(ledger, ref, laneRefs) {
+	if group == forecastGroupRoots && !hasApplicableRoot(ledger, ref, laneRefs) {
 		return nil, nil, ""
 	}
 	return a, b, ref

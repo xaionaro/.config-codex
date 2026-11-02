@@ -18,15 +18,18 @@ type scenario struct {
 	EvidenceGapNextAction string `yaml:"evidence_gap_next_action"`
 }
 
-// forecast holds an upstream outcome forecast and associated scenarios.
+// rootCompletion projects an actual completion for root-only work.
 //
-// Example: Project a lane deadline and its supporting evidence.
+// Example: Show a completed root without inventing a lane.
 type rootCompletion struct {
 	WorkRef     string `yaml:"work_ref"`
 	Outcome     string `yaml:"outcome"`
 	CompletedAt string `yaml:"completed_at"`
 }
 
+// forecast holds an upstream outcome forecast and associated scenarios.
+//
+// Example: Project a lane deadline and its supporting evidence.
 type forecast struct {
 	SourceProjection map[string]any `yaml:"source_projection"`
 	ForecastRef      string         `yaml:"forecast_ref"`

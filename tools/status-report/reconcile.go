@@ -14,11 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// workState is the lifecycle state recorded in the canonical ledger.
-//
-// Example: workState is the lifecycle state recorded in the canonical ledger.
-type workState string
-
 // sourceRef is a canonical document-and-record locator.
 //
 // Example: Identify one forecast record in forecasts.yaml.
@@ -28,12 +23,12 @@ type sourceRef string
 //
 // Example: workData holds canonical work facts used for status reconciliation.
 type workData struct {
-	CompletedAt string    `yaml:"completed_at"`
-	Owner       string    `yaml:"owner"`
-	NextAction  string    `yaml:"next_action"`
-	State       workState `yaml:"state"`
-	Roles       []string  `yaml:"reporting_roles"`
-	ForecastRef sourceRef `yaml:"forecast_ref"`
+	CompletedAt string          `yaml:"completed_at"`
+	Owner       string          `yaml:"owner"`
+	NextAction  string          `yaml:"next_action"`
+	State       workState       `yaml:"state"`
+	Roles       []reportingRole `yaml:"reporting_roles"`
+	ForecastRef sourceRef       `yaml:"forecast_ref"`
 }
 
 // sourceRecord holds the relevant work and outcome fields of a ledger record.
@@ -287,8 +282,8 @@ func checkForecastFields(
 //
 // Example: hasRole checks an explicitly declared reporting responsibility.
 func hasRole(
-	roles []string,
-	role string,
+	roles []reportingRole,
+	role reportingRole,
 ) bool {
 	for _, r := range roles {
 		if r == role {
@@ -323,7 +318,7 @@ func ledgerRecordIssues(
 		issues = append(issues, fmt.Sprintf("work %s missing next action", id))
 	}
 	switch record.Data.State {
-	case "active", "blocked", "completed", "cancelled":
+	case workStateActive, workStateBlocked, workStateCompleted, workStateCancelled:
 	default:
 		issues = append(issues, fmt.Sprintf("work %s has unknown state", id))
 	}
@@ -331,8 +326,8 @@ func ledgerRecordIssues(
 		issues = append(issues, fmt.Sprintf("work %s reporting roles unverified", id))
 	}
 	for _, role := range record.Data.Roles {
-		if role != "lane" && role != "root" {
-			issues = append(issues, fmt.Sprintf("work %s has unknown reporting role %s", id, role))
+		if role != reportingRoleLane && role != reportingRoleRoot {
+			issues = append(issues, fmt.Sprintf("work %s has unknown reporting role %v", id, role))
 		}
 	}
 	return issues
@@ -432,7 +427,7 @@ func reconcile(
 		}
 		rootCompletions[id] = c
 		w := works[id]
-		if !hasRole(w.Data.Roles, "root") || w.Data.State != "completed" {
+		if !hasRole(w.Data.Roles, reportingRoleRoot) || w.Data.State != workStateCompleted {
 			issues.add("root completion %s does not reference completed root work", id)
 		}
 		if !workHasOutcome(w, c.Outcome, ledger.Records) {
@@ -447,7 +442,10 @@ func reconcile(
 		if id == "" {
 			continue
 		}
-		if !hasRole(works[id].Data.Roles, "lane") {
+		if !scope.containsWork(l.TaskID, workID(id)) {
+			issues.add("lane %s work %s is outside task scope", l.TaskID, id)
+		}
+		if !hasRole(works[id].Data.Roles, reportingRoleLane) {
 			issues.add("work %s is not declared a lane", id)
 		}
 		if _, ok := lanes[id]; ok {
@@ -498,7 +496,7 @@ func reconcile(
 	}
 	anyOpen := false
 	for _, w := range works {
-		if w.Data.State == "active" || w.Data.State == "blocked" {
+		if w.Data.State == workStateActive || w.Data.State == workStateBlocked {
 			anyOpen = true
 		}
 	}

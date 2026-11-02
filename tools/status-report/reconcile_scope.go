@@ -16,6 +16,7 @@ type taskWorkIndex struct {
 	priorityWorks map[priorityLabel]map[workID]bool
 	works         map[string]sourceRecord
 	taskPriority  map[taskID]priorityLabel
+	taskWorks     map[taskID]map[workID]bool
 }
 
 // buildTaskWorkIndex resolves inherited task scope without linking siblings.
@@ -25,7 +26,7 @@ func buildTaskWorkIndex(
 	tasks []task,
 	works map[string]sourceRecord,
 ) taskWorkIndex {
-	index := taskWorkIndex{covered: map[workID]bool{}, remaining: map[workID]bool{}, priorityWorks: map[priorityLabel]map[workID]bool{}, works: works, taskPriority: map[taskID]priorityLabel{}}
+	index := taskWorkIndex{covered: map[workID]bool{}, remaining: map[workID]bool{}, priorityWorks: map[priorityLabel]map[workID]bool{}, works: works, taskPriority: map[taskID]priorityLabel{}, taskWorks: map[taskID]map[workID]bool{}}
 	parents := map[taskID]bool{}
 	for _, t := range tasks {
 		index.taskPriority[t.ID] = t.Priority
@@ -69,6 +70,10 @@ func (i taskWorkIndex) includeReference(
 		return
 	}
 	i.covered[id] = true
+	if i.taskWorks[ancestor.ID] == nil {
+		i.taskWorks[ancestor.ID] = map[workID]bool{}
+	}
+	i.taskWorks[ancestor.ID][id] = true
 	for _, leaf := range tasks {
 		i.includeLeaf(ancestor, leaf, id, parents)
 	}
@@ -109,7 +114,7 @@ func (i taskWorkIndex) priorityOpen(
 		}
 	}
 	for id, l := range lanes {
-		if l.requiredStatus() != statusClosed && l.Lifecycle != "cancelled" && forecastApplicable(i.works[string(id)], "lane", true) && i.taskPriority[l.TaskID] == priority {
+		if l.requiredStatus() != statusClosed && l.Lifecycle != "cancelled" && forecastApplicable(i.works[string(id)], reportingRoleLane, true) && i.taskPriority[l.TaskID] == priority {
 			return true
 		}
 	}
@@ -119,20 +124,20 @@ func (i taskWorkIndex) priorityOpen(
 // openWork identifies canonical work with remaining action.
 //
 // Example: openWork identifies canonical work with remaining action.
-func openWork(state workState) bool { return state == "active" || state == "blocked" }
+func openWork(state workState) bool { return state == workStateActive || state == workStateBlocked }
 
 // forecastApplicable uses declared roles and representation to select an active forecast.
 //
 // Example: forecastApplicable uses declared roles and representation to select an active forecast.
 func forecastApplicable(
 	record sourceRecord,
-	role string,
+	role reportingRole,
 	laneRepresented bool,
 ) bool {
 	if record.Type != "work" || !openWork(record.Data.State) || !hasRole(record.Data.Roles, role) {
 		return false
 	}
-	return role != "root" || !laneRepresented
+	return role != reportingRoleRoot || !laneRepresented
 }
 
 // laneReferencesWork tests representation by an exact canonical work reference.
@@ -161,6 +166,24 @@ func workHasOutcome(
 	for _, id := range work.OutcomeRefs {
 		record := records[id]
 		if record.Type == "outcome" && record.Outcome == outcome {
+			return true
+		}
+	}
+	return false
+}
+
+// containsWork checks inherited or aggregate work scope for a task.
+//
+// Example: A lane task may inherit a work reference from its parent.
+func (i taskWorkIndex) containsWork(
+	task taskID,
+	work workID,
+) bool {
+	for owner, refs := range i.taskWorks {
+		if !refs[work] {
+			continue
+		}
+		if task == owner || strings.HasPrefix(string(task), string(owner)+".") || strings.HasPrefix(string(owner), string(task)+".") {
 			return true
 		}
 	}

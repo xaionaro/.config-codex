@@ -882,7 +882,7 @@ func TestVerifyRefreshRejectsMalformedCandidate(t *testing.T) {
 //
 // Example: A non-mapping lane cannot pass forecast verification.
 func TestVerifyForecastGroupRejectsNonMapping(t *testing.T) {
-	err := verifyForecastGroup("lanes", []any{"unexpected"}, []any{"unexpected"}, ledgerSource{}, forecastSource{}, nil)
+	err := verifyForecastGroup(forecastGroupLanes, []any{"unexpected"}, []any{"unexpected"}, ledgerSource{}, forecastSource{}, nil)
 	require.ErrorContains(t, err, "unsupported forecast group")
 }
 
