@@ -166,7 +166,7 @@ func TestInheritedWorkPriorityUsesRemainingLeaves(t *testing.T) {
 	require.True(t, idx.remaining["work:first"])
 	require.False(t, idx.priorityOpen("high", nil))
 	require.True(t, idx.priorityOpen("low", nil))
-	require.False(t, idx.priorityOpen("other", nil))
+	require.True(t, idx.priorityOpen("other", nil))
 }
 
 // TestLaneWorkMustMatchTaskScope verifies the reconciliation boundary.
@@ -236,4 +236,42 @@ func TestActiveLaneMayRetainFollowup(t *testing.T) {
 	require.NoError(t, err)
 	r.Lanes[0].RootTaskStatus = rootTaskFollowup
 	require.Empty(t, testReconcile(r, writeLinkedSources(t, linkedLedger, linkedForecasts)))
+}
+
+// TestScoredLeavesNeedTheirOwnInheritedWork checks link scope at leaf granularity.
+//
+// Example: A sibling's work reference cannot cover a closed package.
+func TestScoredLeavesNeedTheirOwnInheritedWork(t *testing.T) {
+	tasks := []task{{ID: "1", WorkRefs: []string{"project-understanding.yaml#/records/a"}}, {ID: "1.1", ParentID: "1", Status: statusClosed}, {ID: "2", Status: statusInProgress}, {ID: "3", Status: statusUnknown}}
+	idx := buildTaskWorkIndex(tasks, map[string]sourceRecord{"a": {}})
+	issues := strings.Join(unlinkedScoredLeaves(tasks, idx), "\n")
+	require.Contains(t, issues, "scored leaf 2 lacks a valid inherited work reference")
+	require.NotContains(t, issues, "scored leaf 1.1")
+	require.NotContains(t, issues, "scored leaf 3")
+}
+
+// TestReportOpenWorkAffectsPriorityExpiry checks report packages independently of source lifecycle.
+//
+// Example: A new report leaf can keep a priority open after an earlier work record closed.
+func TestReportOpenWorkAffectsPriorityExpiry(t *testing.T) {
+	tasks := []task{{ID: "1", Priority: "high", Status: statusClosed}, {ID: "2", Priority: "low", Status: statusInProgress}}
+	idx := buildTaskWorkIndex(tasks, nil)
+	require.False(t, idx.priorityOpen("high", nil))
+	require.True(t, idx.priorityOpen("low", nil))
+	require.True(t, idx.reportOpen)
+}
+
+// TestEmptyTaskScopeNeedsNoInventedWorkReference checks an empty inventory.
+//
+// Example: No scored leaves means no leaf references are required.
+func TestEmptyTaskScopeNeedsNoInventedWorkReference(t *testing.T) {
+	r, err := parse([]byte(linkedReport))
+	require.NoError(t, err)
+	r.Tasks = []task{}
+	r.Lanes = nil
+	r.TopPriorities = []taskID{}
+	r.PriorityEstimates = nil
+	ledger := "schema: project-understanding/v1\nsections: {}\nrecords: {}\n"
+	dir := writeLinkedSources(t, ledger, "schema: forecasts/v1\nrecords: {}\n")
+	require.Empty(t, testReconcile(r, dir))
 }

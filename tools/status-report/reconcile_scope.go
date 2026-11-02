@@ -11,12 +11,15 @@ type workID string
 //
 // Example: taskWorkIndex ties each leaf to the work referenced by its own ancestry.
 type taskWorkIndex struct {
-	covered       map[workID]bool
-	remaining     map[workID]bool
-	priorityWorks map[priorityLabel]map[workID]bool
-	works         map[string]sourceRecord
-	taskPriority  map[taskID]priorityLabel
-	taskWorks     map[taskID]map[workID]bool
+	covered          map[workID]bool
+	remaining        map[workID]bool
+	priorityWorks    map[priorityLabel]map[workID]bool
+	works            map[string]sourceRecord
+	taskPriority     map[taskID]priorityLabel
+	taskWorks        map[taskID]map[workID]bool
+	leafLinked       map[taskID]bool
+	reportPriorities map[priorityLabel]bool
+	reportOpen       bool
 }
 
 // buildTaskWorkIndex resolves inherited task scope without linking siblings.
@@ -26,12 +29,18 @@ func buildTaskWorkIndex(
 	tasks []task,
 	works map[string]sourceRecord,
 ) taskWorkIndex {
-	index := taskWorkIndex{covered: map[workID]bool{}, remaining: map[workID]bool{}, priorityWorks: map[priorityLabel]map[workID]bool{}, works: works, taskPriority: map[taskID]priorityLabel{}, taskWorks: map[taskID]map[workID]bool{}}
+	index := taskWorkIndex{covered: map[workID]bool{}, remaining: map[workID]bool{}, priorityWorks: map[priorityLabel]map[workID]bool{}, works: works, taskPriority: map[taskID]priorityLabel{}, taskWorks: map[taskID]map[workID]bool{}, leafLinked: map[taskID]bool{}, reportPriorities: map[priorityLabel]bool{}}
 	parents := map[taskID]bool{}
 	for _, t := range tasks {
 		index.taskPriority[t.ID] = t.Priority
 		if t.ParentID != "" {
 			parents[t.ParentID] = true
+		}
+	}
+	for _, leaf := range tasks {
+		if !parents[leaf.ID] && leaf.Status != statusClosed {
+			index.reportOpen = true
+			index.reportPriorities[leaf.Priority] = true
 		}
 	}
 	for _, ancestor := range tasks {
@@ -88,10 +97,14 @@ func (i taskWorkIndex) includeLeaf(
 	id workID,
 	parents map[taskID]bool,
 ) {
-	if parents[leaf.ID] || leaf.Status == statusClosed {
+	if parents[leaf.ID] {
 		return
 	}
 	if leaf.ID != ancestor.ID && !strings.HasPrefix(string(leaf.ID), string(ancestor.ID)+".") {
+		return
+	}
+	i.leafLinked[leaf.ID] = true
+	if leaf.Status == statusClosed {
 		return
 	}
 	i.remaining[id] = true
@@ -108,6 +121,9 @@ func (i taskWorkIndex) priorityOpen(
 	priority priorityLabel,
 	lanes map[string]lane,
 ) bool {
+	if i.reportPriorities[priority] {
+		return true
+	}
 	for id := range i.priorityWorks[priority] {
 		if openWork(i.works[string(id)].Data.State) {
 			return true
@@ -171,4 +187,26 @@ func (i taskWorkIndex) containsWork(
 		}
 	}
 	return false
+}
+
+// unlinkedScoredLeaves identifies scored packages lacking source-backed coverage.
+//
+// Example: A sibling reference cannot cover a closed leaf.
+func unlinkedScoredLeaves(
+	tasks []task,
+	index taskWorkIndex,
+) []string {
+	parents := map[taskID]bool{}
+	for _, t := range tasks {
+		if t.ParentID != "" {
+			parents[t.ParentID] = true
+		}
+	}
+	var issues []string
+	for _, t := range tasks {
+		if !parents[t.ID] && t.Status != statusUnknown && !index.leafLinked[t.ID] {
+			issues = append(issues, "scored leaf "+string(t.ID)+" lacks a valid inherited work reference")
+		}
+	}
+	return issues
 }

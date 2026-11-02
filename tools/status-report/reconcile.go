@@ -394,6 +394,7 @@ func reconcileAt(
 	}
 	issues = append(issues, checkSharedForecastOwners(works)...)
 	scope := buildTaskWorkIndex(r.Tasks, works)
+	issues = append(issues, unlinkedScoredLeaves(r.Tasks, scope)...)
 	children := map[taskID]bool{}
 	for _, t := range r.Tasks {
 		if t.ParentID != "" {
@@ -510,7 +511,7 @@ func reconcileAt(
 	if r.CompletionEstimate != nil {
 		estimates = append(estimates, *r.CompletionEstimate)
 	}
-	anyOpen := false
+	anyOpen := scope.reportOpen
 	for _, w := range works {
 		if w.Data.State == workStateActive || w.Data.State == workStateBlocked {
 			anyOpen = true
