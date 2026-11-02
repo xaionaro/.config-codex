@@ -47,7 +47,7 @@ func (c *workReconciler) checkCoverage(
 	if c.scope.remaining[workID(id)] {
 		return
 	}
-	laneOpen := represented && l.requiredStatus() != statusClosed && l.Lifecycle != "cancelled"
+	laneOpen := represented && l.requiredStatus() != statusClosed && l.Lifecycle != laneLifecycleCancelled
 	if laneOpen && c.allClosed {
 		c.issues.add("work %s remaining acceptance is represented by an open lane outside scored leaf packages", id)
 	}
@@ -130,10 +130,10 @@ func (c *workReconciler) checkLane(
 	if work.Data.State == workStateCompleted && l.requiredStatus() != statusClosed {
 		c.issues.add("closed lane %s reported open", id)
 	}
-	if work.Data.State == workStateCancelled && l.Lifecycle != "cancelled" {
+	if work.Data.State == workStateCancelled && l.Lifecycle != laneLifecycleCancelled {
 		c.issues.add("cancelled lane %s lifecycle is not marked cancelled", id)
 	}
-	if work.Data.State != workStateCancelled && l.Lifecycle != "" {
+	if work.Data.State != workStateCancelled && l.Lifecycle != laneLifecycleNone {
 		c.issues.add("lane %s lifecycle conflicts with source state", id)
 	}
 	if work.Data.State == workStateCancelled && l.CompletedAt != "" {

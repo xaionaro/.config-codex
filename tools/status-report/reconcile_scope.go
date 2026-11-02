@@ -114,7 +114,7 @@ func (i taskWorkIndex) priorityOpen(
 		}
 	}
 	for id, l := range lanes {
-		if l.requiredStatus() != statusClosed && l.Lifecycle != "cancelled" && forecastApplicable(i.works[string(id)], reportingRoleLane, true) && i.taskPriority[l.TaskID] == priority {
+		if l.requiredStatus() != statusClosed && l.Lifecycle != laneLifecycleCancelled && forecastApplicable(i.works[string(id)], reportingRoleLane, true) && i.taskPriority[l.TaskID] == priority {
 			return true
 		}
 	}
@@ -149,23 +149,6 @@ func laneReferencesWork(
 ) bool {
 	for _, ref := range refs {
 		if validRef(ref, "project-understanding.yaml") && sourceID(ref, "project-understanding.yaml") == workID {
-			return true
-		}
-	}
-	return false
-}
-
-// workHasOutcome verifies a completion against explicitly linked outcome records.
-//
-// Example: Match a root completion to its ledger outcome.
-func workHasOutcome(
-	work sourceRecord,
-	outcome string,
-	records map[string]sourceRecord,
-) bool {
-	for _, id := range work.OutcomeRefs {
-		record := records[id]
-		if record.Type == "outcome" && record.Outcome == outcome {
 			return true
 		}
 	}

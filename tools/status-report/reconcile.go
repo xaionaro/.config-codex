@@ -114,26 +114,24 @@ func validRef(
 // readSource decodes exactly one canonical YAML document.
 //
 // Example: readSource decodes exactly one canonical YAML document.
-func readSource(
-	path string,
-	dst any,
-) error {
+func readSource[T any](path string) (T, error) {
+	var result T
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return result, err
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(b))
-	if err := decoder.Decode(dst); err != nil {
-		return err
+	if err := decoder.Decode(&result); err != nil {
+		return result, err
 	}
-	var extra any
+	var extra yaml.Node
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("multiple YAML documents")
+			return result, fmt.Errorf("multiple YAML documents")
 		}
-		return err
+		return result, err
 	}
-	return nil
+	return result, nil
 }
 
 // textField returns a string source field or an empty value.
@@ -382,14 +380,15 @@ func reconcileAt(
 		issues.add("report timestamp %s is in the future", r.Timestamp)
 	}
 	issues = append(issues, futureEstimateIssues(r, evaluation)...)
+	issues = append(issues, futureActualIssues(r, evaluation)...)
 	if !*r.ScopeComplete {
 		issues.add("report declares scope incomplete")
 	}
 	if dir == "" {
 		return append(issues, "session context unavailable; coverage and forecasts unverified")
 	}
-	var ledger ledgerSource
-	if err := readSource(filepath.Join(dir, "project-understanding.yaml"), &ledger); err != nil || ledger.Schema != "project-understanding/v1" || ledger.Sections == nil || ledger.Records == nil {
+	ledger, ledgerErr := readSource[ledgerSource](filepath.Join(dir, "project-understanding.yaml"))
+	if ledgerErr != nil || ledger.Schema != "project-understanding/v1" || ledger.Sections == nil || ledger.Records == nil {
 		if _, err := os.Stat(filepath.Join(dir, "forecasts.yaml")); err != nil {
 			issues.add("forecast source unavailable; applicability unverified")
 		}
@@ -400,7 +399,12 @@ func reconcileAt(
 		issues = append(issues, ledgerRecordIssues(id, rec, ledger.Sections)...)
 		if rec.Type == "work" {
 			works[id] = rec
-			issues = append(issues, validateWorkOutcomes(id, rec, ledger.Records)...)
+			if openWork(rec.Data.State) {
+				issues = append(issues, validateWorkOutcomes(id, rec, ledger.Records)...)
+			}
+			if issue := canonicalFutureActualIssue(id, rec, evaluation); issue != "" {
+				issues = append(issues, issue)
+			}
 		}
 	}
 	issues = append(issues, checkSharedForecastOwners(works)...)
@@ -435,10 +439,13 @@ func reconcileAt(
 		}
 		rootCompletions[id] = c
 		w := works[id]
+		if !openWork(w.Data.State) {
+			issues = append(issues, validateWorkOutcomes(id, w, ledger.Records)...)
+		}
 		if !hasRole(w.Data.Roles, reportingRoleRoot) || w.Data.State != workStateCompleted {
 			issues.add("root completion %s does not reference completed root work", id)
 		}
-		if !workHasOutcome(w, c.Outcome, ledger.Records) {
+		if !outcomeCorresponds(w, ledger.Records, c.Outcome) {
 			issues.add("root completion %s outcome unverified against linked outcomes", id)
 		}
 		if !sameValue(w.Data.CompletedAt, c.CompletedAt) {
@@ -489,13 +496,19 @@ func reconcileAt(
 	forecastChecks.checkUnclaimed(works)
 	for id, l := range lanes {
 		work := works[id]
-		if l.Forecast == nil || !openWork(work.Data.State) || !forecastChecks.load() {
-			continue
+		if !openWork(work.Data.State) {
+			issues = append(issues, validateWorkOutcomes(id, work, ledger.Records)...)
 		}
-		source, ok := forecastChecks.source.Records[sourceID(string(work.Data.ForecastRef), "forecasts.yaml")]
-		if ok && !laneSemanticEquivalence(l, work, ledger, source) {
-			issues.add("lane %s forecast semantic equivalence unverified", id)
+		claims := []string{l.Outcome}
+		if l.Forecast != nil {
+			claims = append(claims, l.Forecast.Outcome)
 		}
+		if !outcomeCorresponds(work, ledger.Records, claims...) {
+			issues.add("lane %s outcome semantic equivalence unverified", id)
+		}
+	}
+	for id, work := range works {
+		issues = append(issues, rootOutcomeIssues(id, work, ledger.Records, r.RootForecasts)...)
 	}
 	for _, f := range r.RootForecasts {
 		if !forecastChecks.used[f.ForecastRef] {

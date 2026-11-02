@@ -88,7 +88,7 @@ func TestCancelledLaneRetainedHasNoCompletion(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
 	r.Lanes[0].Forecast = nil
-	r.Lanes[0].Lifecycle = "cancelled"
+	r.Lanes[0].Lifecycle = laneLifecycleCancelled
 	ledger := strings.Replace(linkedLedger, "state: active", "state: cancelled", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)
 	require.Empty(t, testReconcile(r, writeLinkedSources(t, ledger, forecasts)))
@@ -118,13 +118,13 @@ func TestCancelledLifecycleValidation(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
 	l := r.Lanes[0]
-	l.Lifecycle = "cancelled"
+	l.Lifecycle = laneLifecycleCancelled
 	l.Forecast = nil
 	l.ImplementationStatus = statusClosed
 	require.NoError(t, validateLane(l, map[taskID]task{l.TaskID: r.Tasks[0]}))
 	l.CompletedAt = "2026-11-02T15:00:00Z"
 	require.Error(t, validateLane(l, map[taskID]task{l.TaskID: r.Tasks[0]}))
-	l.Lifecycle = "unknown"
+	l.Lifecycle = laneLifecycle(99)
 	require.Error(t, validateLane(l, map[taskID]task{l.TaskID: r.Tasks[0]}))
 }
 
@@ -188,7 +188,7 @@ func TestTerminalLaneCannotRetainFollowup(t *testing.T) {
 	r, err := parse([]byte(linkedReport))
 	require.NoError(t, err)
 	r.Lanes[0].Forecast = nil
-	r.Lanes[0].Lifecycle = "cancelled"
+	r.Lanes[0].Lifecycle = laneLifecycleCancelled
 	r.Lanes[0].RootTaskStatus = rootTaskFollowup
 	ledger := strings.Replace(linkedLedger, "state: active", "state: cancelled", 1)
 	forecasts := strings.Replace(linkedForecasts, "status: active", "status: inactive", 1)

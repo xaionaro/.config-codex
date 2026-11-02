@@ -27,7 +27,9 @@ func (c *forecastReconciler) load() bool {
 		return c.source.Records != nil
 	}
 	c.loaded = true
-	if err := readSource(filepath.Join(c.dir, "forecasts.yaml"), &c.source); err != nil || c.source.Schema != "forecasts/v1" || c.source.Records == nil {
+	var err error
+	c.source, err = readSource[forecastSource](filepath.Join(c.dir, "forecasts.yaml"))
+	if err != nil || c.source.Schema != "forecasts/v1" || c.source.Records == nil {
 		c.issues.add("forecasts unavailable, malformed, or unsupported")
 		c.source.Records = nil
 		return false

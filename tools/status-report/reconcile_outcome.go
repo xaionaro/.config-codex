@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-// validateWorkOutcomes checks canonical active work outcome links by record identity.
+// validateWorkOutcomes checks canonical work outcome links by record identity.
 //
 // Example: Reject a dangling link even if its text resembles an outcome ID.
 func validateWorkOutcomes(
@@ -13,21 +13,18 @@ func validateWorkOutcomes(
 	work sourceRecord,
 	records map[string]sourceRecord,
 ) []string {
-	if !openWork(work.Data.State) {
-		return nil
-	}
 	if len(work.OutcomeRefs) == 0 {
-		return []string{"active work " + id + " missing outcome links"}
+		return []string{"work " + id + " missing outcome links"}
 	}
 	var issues []string
 	seen := map[string]bool{}
 	for _, ref := range work.OutcomeRefs {
 		record, ok := records[ref]
 		if !ok || record.Type != "outcome" {
-			issues = append(issues, "active work "+id+" has invalid outcome link "+ref)
+			issues = append(issues, "work "+id+" has invalid outcome link "+ref)
 		}
 		if seen[ref] {
-			issues = append(issues, "active work "+id+" has duplicate outcome link "+ref)
+			issues = append(issues, "work "+id+" has duplicate outcome link "+ref)
 		}
 		seen[ref] = true
 	}
@@ -65,22 +62,55 @@ func checkSharedForecastOwners(works map[string]sourceRecord) []string {
 	return issues
 }
 
-// laneSemanticEquivalence checks whether canonical descriptions establish one identity.
+// outcomeCorresponds checks every linked outcome against each displayed claim.
 //
-// Example: A lane and forecast matching one linked outcome are source-backed.
-func laneSemanticEquivalence(
-	l lane,
+// Example: A full canonical outcome description supports an identical claim.
+func outcomeCorresponds(
 	work sourceRecord,
-	ledger ledgerSource,
-	source map[string]any,
+	records map[string]sourceRecord,
+	claims ...string,
 ) bool {
-	forecastOutcome := textField(source, "outcome")
-	matches := 0
+	if len(work.OutcomeRefs) == 0 || len(claims) == 0 {
+		return false
+	}
 	for _, id := range work.OutcomeRefs {
-		record, ok := ledger.Records[id]
-		if ok && record.Type == "outcome" && record.Outcome == l.Outcome && record.Outcome == forecastOutcome {
-			matches++
+		record, ok := records[id]
+		if !ok || record.Type != "outcome" || record.Outcome == "" || !matchesClaims(record.Outcome, claims) {
+			return false
 		}
 	}
-	return matches == 1
+	return true
+}
+
+// matchesClaims verifies that each claim is backed by the same description.
+//
+// Example: A distinct unverified paraphrase remains incomplete.
+func matchesClaims(description string, claims []string) bool {
+	for _, claim := range claims {
+		if claim != description {
+			return false
+		}
+	}
+	return true
+}
+
+// rootOutcomeIssues checks every displayed active root forecast claim.
+//
+// Example: An unrelated root label is semantically unverified.
+func rootOutcomeIssues(
+	id string,
+	work sourceRecord,
+	records map[string]sourceRecord,
+	forecasts []forecast,
+) []string {
+	if !openWork(work.Data.State) || !hasRole(work.Data.Roles, reportingRoleRoot) {
+		return nil
+	}
+	var issues []string
+	for _, f := range forecasts {
+		if f.ForecastRef == string(work.Data.ForecastRef) && !outcomeCorresponds(work, records, f.Outcome) {
+			issues = append(issues, "root "+id+" forecast semantic equivalence unverified")
+		}
+	}
+	return issues
 }

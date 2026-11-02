@@ -48,7 +48,7 @@ type forecast struct {
 //
 // Example: Keep implementation, test, and production readiness separate.
 type lane struct {
-	Lifecycle            string              `yaml:"lifecycle"`
+	Lifecycle            laneLifecycle       `yaml:"lifecycle"`
 	WorkRef              string              `yaml:"work_ref"`
 	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
 	TaskID               taskID              `yaml:"task_id"`

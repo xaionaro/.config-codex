@@ -63,17 +63,17 @@ func TestFutureAnchorsWithoutSessionStayVisible(t *testing.T) {
 	require.Contains(t, issues, "session context unavailable")
 }
 
-// TestLaneProseNeedsUniqueCanonicalIdentity avoids guessing from different labels.
+// TestLaneProseNeedsCompleteCanonicalCorrespondence avoids guessing from different labels.
 //
-// Example: Ambiguous duplicate descriptions cannot establish one outcome identity.
-func TestLaneProseNeedsUniqueCanonicalIdentity(t *testing.T) {
+// Example: Each linked outcome must support the complete claim.
+func TestLaneProseNeedsCompleteCanonicalCorrespondence(t *testing.T) {
 	ledger := ledgerSource{Records: map[string]sourceRecord{"a": {Type: "outcome", Outcome: "Result"}, "b": {Type: "outcome", Outcome: "Result"}}}
 	work := sourceRecord{OutcomeRefs: []string{"a"}}
 	source := map[string]any{"outcome": "Result"}
-	require.True(t, laneSemanticEquivalence(lane{Outcome: "Result"}, work, ledger, source))
-	require.False(t, laneSemanticEquivalence(lane{Outcome: "Other wording"}, work, ledger, source))
+	require.True(t, outcomeCorresponds(work, ledger.Records, "Result", textField(source, "outcome")))
+	require.False(t, outcomeCorresponds(work, ledger.Records, "Other wording", textField(source, "outcome")))
 	work.OutcomeRefs = []string{"a", "b"}
-	require.False(t, laneSemanticEquivalence(lane{Outcome: "Result"}, work, ledger, source))
+	require.True(t, outcomeCorresponds(work, ledger.Records, "Result", textField(source, "outcome")))
 }
 
 // TestHistoricalAnchorsAreEvaluatedAtCurrentTime preserves saved time anchors.

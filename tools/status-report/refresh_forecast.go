@@ -55,11 +55,11 @@ func refreshForecastTargets(
 	if err != nil {
 		return err
 	}
-	var ledger ledgerSource
-	var forecasts forecastSource
-	if err := readSource(ledgerPath, &ledger); err != nil {
+	ledger, err := readSource[ledgerSource](ledgerPath)
+	if err != nil {
 		return err
 	}
+	var forecasts forecastSource
 	if ledger.Schema != "project-understanding/v1" || ledger.Records == nil {
 		return fmt.Errorf("unsupported sources")
 	}
@@ -69,7 +69,8 @@ func refreshForecastTargets(
 		if err != nil {
 			return err
 		}
-		if err := readSource(forecastPath, &forecasts); err != nil {
+		forecasts, err = readSource[forecastSource](forecastPath)
+		if err != nil {
 			return err
 		}
 		if forecasts.Schema != "forecasts/v1" || forecasts.Records == nil {

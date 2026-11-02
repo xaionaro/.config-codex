@@ -135,6 +135,9 @@ type report struct {
 // Example: Reject a report with a missing task reference.
 func parse(data []byte) (report, error) {
 	var r report
+	if err := validateLifecycleScalars(data); err != nil {
+		return r, fmt.Errorf("invalid YAML/schema: %w", err)
+	}
 	d := yaml.NewDecoder(bytes.NewReader(data))
 	d.KnownFields(true)
 	if err := d.Decode(&r); err != nil {
@@ -461,7 +464,7 @@ func renderForecast(
 	b *strings.Builder,
 	l lane,
 ) {
-	if l.Lifecycle == "cancelled" {
+	if l.Lifecycle == laneLifecycleCancelled {
 		fmt.Fprintf(b, "\nCancelled: %s; no active forecast deadline.\n", l.Outcome)
 		return
 	}

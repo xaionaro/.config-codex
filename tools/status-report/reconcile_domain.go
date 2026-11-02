@@ -1,6 +1,9 @@
 package main
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+	"gopkg.in/yaml.v3"
+)
 
 // workState describes the lifecycle of canonical work.
 //
@@ -168,4 +171,41 @@ func (g forecastGroup) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// laneLifecycle identifies an optional terminal lane lifecycle marker.
+//
+// Example: A cancelled lane does not claim completion.
+type laneLifecycle int
+
+// Supported optional lane lifecycle values.
+//
+// Example: laneLifecycleCancelled marks a cancelled lane.
+const (
+	// laneLifecycleNone indicates no lifecycle marker.
+	//
+	// Example: Active lanes omit the optional marker.
+	laneLifecycleNone laneLifecycle = iota
+	// laneLifecycleCancelled indicates cancelled work.
+	//
+	// Example: A cancelled lane has no active deadline.
+	laneLifecycleCancelled
+)
+
+// UnmarshalYAML decodes only the supported lifecycle string labels.
+//
+// Example: Decode cancelled as laneLifecycleCancelled.
+func (l *laneLifecycle) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
+	switch n.Value {
+	case "":
+		*l = laneLifecycleNone
+	case "cancelled":
+		*l = laneLifecycleCancelled
+	default:
+		return fmt.Errorf("invalid lane lifecycle %q", n.Value)
+	}
+	return nil
 }
