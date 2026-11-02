@@ -55,12 +55,12 @@ For a requested status report, include the applicable active-work, timeline,
 and progress bundle below alongside the relevant coverage categories. Show the
 full known in-scope task tree, including descendants at every priority and their
 assigned agents or `unowned` and parent/requirement context. Calculate priority
-as impact score points divided by estimated remaining effort; order siblings
-by descending ratio. Use one declared impact scale and effort unit for compared
-items. Give missing inputs labeled educated estimates with their rationale;
-never present estimates as measured facts. If an input cannot yet be estimated,
-mark priority `unknown` and state the gap without inventing an ordering. A zero
-effort denominator produces no finite priority. Identify missing task evidence
+as impact points on a declared shared scale divided by maximum estimated
+remaining work minutes; order siblings by descending ratio. This compares
+expected benefit per unit of remaining work. State score and estimate bases;
+use labeled evidence-backed guesses for missing inputs or mark the item
+`unscored` with a reason. Elapsed duration is not comparable to work effort;
+zero work minutes produces no finite priority. Identify missing task evidence
 rather than implying the tree is complete.
 
 When newly time-estimated items enter the queue, have an independent critic review only those items' estimates, impact, and priority. The reporter repairs findings and requests another review as needed, for at most five reporter–critic rounds. Expose unresolved findings or unavailable review honestly. A report refresh, compaction, or recalibration of existing items alone does not trigger this review; do not critique the whole report under this rule.
@@ -80,8 +80,8 @@ model or effort from a parent or a role.
 
 In every task list include priority,
 impact, and effort columns. Show the calculated priority and its input values;
-include concrete impact and its score points. Priority labels may supplement
-the ratio but never replace its calculation or reverse its ordering;
+include concrete impact and its score points. Priority labels group forecasts
+only; they do not rank work. Separately,
 give the estimated remaining work effort or elapsed duration with units and a
 range, explicitly identifying which it is and distinguishing it from agent
 reasoning effort. For every priority, attempt to decompose remaining work into
@@ -89,15 +89,15 @@ packages estimated at 30 minutes or less, including required review, checks,
 repairs, and acceptance. If a package cannot reasonably be decomposed further,
 say why and retain its estimate. Estimate each package from evidence or a
 labeled educated guess. Report a completion estimate for each priority present,
-including `unknown` priority, and an overall completion estimate for all
+including unscored items, and an overall completion estimate for all
 remaining in-scope work. Give each estimate's basis, material assumptions,
 uncertainty, and dependencies, including external waits. Combine serial
 durations and use the latest required parallel endpoint on the critical path;
 do not sum parallel durations or double-count shared work. Follow
 [Work estimates](../../CODEX.md#work-estimates) and,
 for ECI, the [scenario forecast rule](../context-ledger/SKILL.md#eci-scenario-forecasts).
-Estimate missing impact and effort inputs with a labeled educated basis; retain
-`unknown` only when an input cannot yet be estimated. Never invent measurements
+Use evidence-backed guesses for missing impact and work inputs, labeled as
+estimates, or leave priority unscored with a reason. Never invent measurements
 or omit the completion estimate.
 
 At report time T, for every Job with evidenced progress in [T−4h, T), including
@@ -206,7 +206,7 @@ When work is flat and has no task IDs, omit `Task ID` and `Parent ID`. Keep `Lan
 
 | Task ID | Parent ID | Lane | Lane requirement context | Priority | Impact | Effort | Stage | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `<impact points / effort = ratio, or unknown>` | `<concrete impact, score points and basis>` | `<remaining work effort or elapsed duration range, units and basis>` | `normal` for ECI | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`<br>`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`<br>`Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
+| `1.3.2` or `none` | `1.3` or `none` | `<human-readable lane result wanted>` | `<known requirement or lineage unavailable—reconcile>` | `<impact points / maximum work minutes = ratio, or unscored with reason>` | `<concrete impact, score points and basis>` | `<remaining work effort range in minutes and basis; elapsed duration separately>` | `normal` for ECI | `<person/agent or unowned>` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `NEW` / `IN PROGRESS` / `PAUSED` / `BLOCKED` / `CLOSED` | `none` or `PAUSED: <dependency lane; impact; owner; resume condition>` or `BLOCKED: <exact user input/decision; impact; owner: user; exact unblock action; target artifact/path>` | `Next milestone: <named outcome>` | `Forecast deadline: <named lane/task outcome> will be finished by <UTC ISO8601>.`<br>`Root completion forecast: <named active root-task outcome> will be finished by <UTC ISO8601>.`<br>`Forecast recalibration: <prior UTC ISO8601> → <current UTC ISO8601>; why moved: <why>; supporting evidence: <evidence>.` | `Dependencies / critical path: <none, named dependency + owner/resume, or critical path>` | `<next evidence/action>` |
 
 For ECI, record `Stage: normal`. Show main and fast progress under the same task,
 with each owner, provisional evidence, current ECI decision, and adaptation.
