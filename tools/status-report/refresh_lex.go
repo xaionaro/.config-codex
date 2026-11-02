@@ -7,6 +7,7 @@ import (
 
 	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/token"
+	"gopkg.in/yaml.v3"
 )
 
 // yamlByteOffset maps a one-based YAML line and rune column into UTF-8 bytes.
@@ -56,10 +57,11 @@ type flowPair struct {
 //
 // Example: Cache delimiter pairs for a status report.
 type flowDocument struct {
-	data  []byte
-	ready bool
-	pairs map[int]flowPair
-	err   error
+	data    []byte
+	ready   bool
+	pairs   map[int]flowPair
+	scalars map[int]*token.Token
+	err     error
 }
 
 // flowStart records an opening flow delimiter while pairing tokens.
@@ -94,6 +96,31 @@ func (d *flowDocument) end(start int, opening token.Type) (int, error) {
 	return pair.end, nil
 }
 
+// scalarSpan locates a proven single-line scalar using the cached lexer tokens.
+//
+// Example: Locate a block-style outcome containing a comma.
+func (d *flowDocument) scalarSpan(node *yaml.Node) (int, int, error) {
+	if !d.ready {
+		d.build()
+	}
+	if d.err != nil {
+		return 0, 0, d.err
+	}
+	start, err := yamlByteOffset(d.data, node.Line, node.Column)
+	if err != nil {
+		return 0, 0, err
+	}
+	tok, ok := d.scalars[start]
+	if !ok || tok.Value != node.Value {
+		return 0, 0, fmt.Errorf("YAML scalar token mismatch")
+	}
+	raw := strings.TrimSpace(tok.Origin)
+	if raw == "" || strings.ContainsAny(raw, "\r\n") || start+len(raw) > len(d.data) || string(d.data[start:start+len(raw)]) != raw {
+		return 0, 0, fmt.Errorf("unsupported YAML scalar span")
+	}
+	return start, start + len(raw), nil
+}
+
 // build indexes lexer delimiter pairs for a report.
 //
 // Example: Pair nested brackets and braces in a report.
@@ -113,6 +140,7 @@ func (d *flowDocument) build() {
 		return
 	}
 	d.pairs = make(map[int]flowPair)
+	d.scalars = make(map[int]*token.Token)
 	lines := strings.Split(string(d.data), "\n")
 	starts := make([]int, len(lines))
 	for i := 1; i < len(lines); i++ {
@@ -120,6 +148,22 @@ func (d *flowDocument) build() {
 	}
 	var stack []flowStart
 	for _, tok := range tokens {
+		if tok.Type == token.StringType || tok.Type == token.SingleQuoteType || tok.Type == token.DoubleQuoteType {
+			if tok.Position == nil {
+				d.err = fmt.Errorf("YAML token lacks position")
+				return
+			}
+			if tok.Position.Column < 1 {
+				continue
+			}
+			pos, err := yamlOffsetForLines(lines, starts, tok.Position.Line, tok.Position.Column)
+			if err != nil {
+				d.err = err
+				return
+			}
+			d.scalars[pos] = tok
+			continue
+		}
 		if tok.Type != token.MappingStartType && tok.Type != token.MappingEndType && tok.Type != token.SequenceStartType && tok.Type != token.SequenceEndType {
 			continue
 		}

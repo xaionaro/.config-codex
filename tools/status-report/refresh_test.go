@@ -924,3 +924,72 @@ func TestYAMLCommentVerificationRejectsInvalidLexerStream(t *testing.T) {
 	_, err := yamlComments([]byte("state: 'unterminated\n"))
 	require.ErrorContains(t, err, "unsupported YAML token")
 }
+
+// TestRefreshProjectsPlainScalarPunctuation checks lexer-backed scalar spans.
+//
+// Example: A comma or embedded hash in a block scalar is replaced in full.
+func TestRefreshProjectsPlainScalarPunctuation(t *testing.T) {
+	for _, old := range []string{"First, second", "issue#123"} {
+		t.Run(old,
+			// Callback runs a plain-scalar projection case.
+			//
+			// Example: Update an outcome containing a comma.
+			func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				original := "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}"
+				block := "    forecast:\n      forecast_ref: 'forecasts.yaml#/records/first'\n      outcome: " + old + " # preserve comment\n      target: '2026-11-02T16:00:00Z'\n      assessment: complete\n      baseline: '2026-11-02T16:00:00Z'\n      evidence: initial"
+				report := strings.Replace(linkedReport, original, block, 1)
+				source := strings.Replace(linkedForecasts, "outcome: First result", "outcome: Updated result", 1)
+				require.NoError(t, os.WriteFile(path, []byte(report), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
+				require.NoError(t, refreshStatus(dir, "forecast_change"))
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				parsed, err := parse(result)
+				require.NoError(t, err)
+				require.Equal(t, "Updated result", parsed.Lanes[0].Forecast.Outcome)
+				require.Contains(t, string(result), "# preserve comment")
+				require.Empty(t, reconcile(parsed, dir))
+				require.NoError(t, refreshStatus(dir, "forecast_change"))
+				again, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.Equal(t, result, again)
+			})
+	}
+}
+
+// TestRefreshRefusesMultilineQuotedScalar preserves unsupported scalar text.
+//
+// Example: A quoted outcome spanning lines remains available for manual review.
+func TestRefreshRefusesMultilineQuotedScalar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	original := "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}"
+	block := "    forecast:\n      forecast_ref: 'forecasts.yaml#/records/first'\n      outcome: 'First\n        result'\n      target: '2026-11-02T16:00:00Z'\n      assessment: complete\n      baseline: '2026-11-02T16:00:00Z'\n      evidence: initial"
+	report := strings.Replace(linkedReport, original, block, 1)
+	source := strings.Replace(linkedForecasts, "outcome: First result", "outcome: Updated result", 1)
+	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(source), 0600))
+	require.Error(t, refreshStatus(dir, "forecast_change"))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(result), "outcome: 'First\n        result'")
+	require.Contains(t, string(result), "scope_complete: false")
+	require.Contains(t, string(result), "Status refresh incomplete:")
+}
+
+// TestScalarSpanRejectsParserLexerDisagreement checks the scalar identity guard.
+//
+// Example: A node value that differs from its lexer token cannot be replaced.
+func TestScalarSpanRejectsParserLexerDisagreement(t *testing.T) {
+	data := []byte("outcome: one\n")
+	var parsed yaml.Node
+	require.NoError(t, yaml.Unmarshal(data, &parsed))
+	node := mapValue(parsed.Content[0], "outcome")
+	node.Value = "different"
+	_, _, err := (&flowDocument{data: data}).scalarSpan(node)
+	require.ErrorContains(t, err, "token mismatch")
+}

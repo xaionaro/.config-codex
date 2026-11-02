@@ -198,57 +198,18 @@ func mapValue(n *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// scalarReplacement prepares a bounded edit for a supported scalar.
+// scalarReplacement prepares a bounded edit for a proven single-line scalar.
 //
 // Example: Prepare a target timestamp replacement.
-func scalarReplacement(data []byte, n *yaml.Node, value string) (scalarEdit, error) {
-	if n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+func scalarReplacement(doc *flowDocument, node *yaml.Node, value string) (scalarEdit, error) {
+	if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return scalarEdit{}, fmt.Errorf("multiline forecast scalar requires manual refresh")
 	}
-	start, err := yamlByteOffset(data, n.Line, n.Column)
+	start, end, err := doc.scalarSpan(node)
 	if err != nil {
 		return scalarEdit{}, err
 	}
-	if start < 0 || start >= len(data) {
-		return scalarEdit{}, fmt.Errorf("unsupported scalar location")
-	}
-	end := start
-	if data[start] == '\'' || data[start] == '"' {
-		var err error
-		end, err = quotedScalarEnd(data, start)
-		if err != nil {
-			return scalarEdit{}, err
-		}
-	} else {
-		for end < len(data) && !strings.ContainsRune(",}]#\n", rune(data[end])) {
-			end++
-		}
-		for end > start && (data[end-1] == ' ' || data[end-1] == '	') {
-			end--
-		}
-	}
 	return scalarEdit{start, end, strconv.Quote(value)}, nil
-}
-
-// quotedScalarEnd locates the end of a single-line quoted scalar.
-//
-// Example: Find the end of a quoted forecast outcome.
-func quotedScalarEnd(data []byte, start int) (int, error) {
-	quote := data[start]
-	for i := start + 1; i < len(data) && data[i] != '\n'; i++ {
-		if quote == '"' && data[i] == '\\' {
-			i++
-			continue
-		}
-		if quote == '\'' && data[i] == '\'' && i+1 < len(data) && data[i+1] == '\'' {
-			i++
-			continue
-		}
-		if data[i] == quote {
-			return i + 1, nil
-		}
-	}
-	return 0, fmt.Errorf("unsupported quoted scalar")
 }
 
 // projectForecast prepares canonical edits for a linked forecast.
@@ -305,7 +266,7 @@ func projectForecast(original []byte, node *yaml.Node, source map[string]any, do
 		if !ok || existing.Kind != yaml.ScalarNode || sameValue(existing.Value, str) {
 			continue
 		}
-		edit, err := scalarReplacement(original, existing, str)
+		edit, err := scalarReplacement(doc, existing, str)
 		if err != nil {
 			return nil, err
 		}
