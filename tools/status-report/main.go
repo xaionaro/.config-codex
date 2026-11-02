@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -87,6 +88,7 @@ type queueReview struct {
 //
 // Example: Represent one leaf package or its parent.
 type task struct {
+	WorkRefs          []string      `yaml:"work_refs"`
 	ID                taskID        `yaml:"id"`
 	ParentID          taskID        `yaml:"parent_id"`
 	Title             string        `yaml:"title"`
@@ -104,6 +106,7 @@ type task struct {
 //
 // Example: Load the current status projection from YAML.
 type report struct {
+	Incomplete         []string             `yaml:"-"`
 	Timestamp          string               `yaml:"timestamp"`
 	State              string               `yaml:"state"`
 	Progress           []string             `yaml:"progress"`
@@ -218,7 +221,10 @@ func parse(data []byte) (report, error) {
 // Example: Produce a human-readable report and derived progress bar.
 func render(r report) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Status (%s)\n%s\n\n", r.Timestamp, r.State)
+	fmt.Fprintf(&b, "Status (%s)\n%s\n\nSource freshness: unverified (no freshness marker checked).\n\n", r.Timestamp, r.State)
+	if len(r.Incomplete) > 0 {
+		writeList(&b, "INCOMPLETE — source reconciliation", r.Incomplete)
+	}
 	writeList(&b, "Progress updates", r.Progress)
 	fmt.Fprintln(&b, "Decisions:")
 	for _, v := range r.Decisions {
@@ -267,26 +273,35 @@ func render(r report) string {
 		}
 	}
 	if known == 0 {
-		fmt.Fprintf(&b, "\nProgress: unknown (no scored leaf packages; equal-package estimate from half-hour breakdown; partial coverage; unscored: %s; scope complete: %t)\n", strings.Join(unscored, ", "), *r.ScopeComplete)
+		fmt.Fprintf(&b, "\nProgress: unknown (no scored leaf packages; equal-package estimate from half-hour breakdown; partial coverage; unscored: %s; scope complete: %t)\n", strings.Join(unscored, ", "), (*r.ScopeComplete && len(r.Incomplete) == 0))
 	} else {
 		pct := done * percentageScale / known
 		filled := done * progressBarWidth / known
-		partial := unknownCount > 0 || !*r.ScopeComplete
+		partial := unknownCount > 0 || !*r.ScopeComplete || len(r.Incomplete) > 0
 		qualifier := ""
 		if partial {
 			qualifier = "; partial coverage"
 		}
-		fmt.Fprintf(&b, "\nProgress: [%s%s] %d%% (%d/%d known leaf tasks; equal-package estimate from half-hour breakdown%s; covered: %s; unscored: %s; scope complete: %t)\n", strings.Repeat("#", filled), strings.Repeat("-", progressBarWidth-filled), pct, done, known, qualifier, strings.Join(covered, ", "), strings.Join(unscored, ", "), *r.ScopeComplete)
+		fmt.Fprintf(&b, "\nProgress: [%s%s] %d%% (%d/%d known leaf tasks; equal-package estimate from half-hour breakdown%s; covered: %s; unscored: %s; scope complete: %t)\n", strings.Repeat("#", filled), strings.Repeat("-", progressBarWidth-filled), pct, done, known, qualifier, strings.Join(covered, ", "), strings.Join(unscored, ", "), (*r.ScopeComplete && len(r.Incomplete) == 0))
 	}
 	if len(oversized) > 0 {
 		fmt.Fprintf(&b, "Larger indivisible packages: %s\n", strings.Join(oversized, "; "))
 	}
 	renderCompletionEstimates(&b, r)
+	if len(r.Incomplete) > 0 {
+		fmt.Fprintln(&b, "\nForecasts below are unreconciled; see source reconciliation issues above.")
+	}
 	renderLaneTable(&b, r.Lanes, byID)
 	for _, lane := range r.Lanes {
+		if len(r.Incomplete) > 0 && lane.Forecast != nil {
+			fmt.Fprintf(&b, "\nForecast %s: unreconciled.\n", lane.Forecast.ForecastRef)
+		}
 		renderForecast(&b, lane)
 	}
 	for _, f := range r.RootForecasts {
+		if len(r.Incomplete) > 0 {
+			fmt.Fprintf(&b, "\nForecast %s: unreconciled.\n", f.ForecastRef)
+		}
 		renderRootForecast(&b, f)
 	}
 	for _, section := range []struct {
@@ -352,14 +367,31 @@ func run(
 	out io.Writer,
 	errOut io.Writer,
 ) int {
-	if len(args) < 1 || len(args) > 2 || (args[0] != "validate" && args[0] != "render") {
-		fmt.Fprintln(errOut, "usage: status-report validate|render [FILE] (default: stdin)")
+	if len(args) < 1 || (args[0] != "validate" && args[0] != "render") {
+		fmt.Fprintln(errOut, "usage: status-report validate|render [--session-dir DIR] [FILE]")
 		return 2
+	}
+	command := args[0]
+	var file, sessionDir string
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--session-dir" && i+1 < len(args) && sessionDir == "" {
+			i++
+			sessionDir = args[i]
+			continue
+		}
+		if file != "" || strings.HasPrefix(args[i], "--") {
+			fmt.Fprintln(errOut, "invalid arguments")
+			return 2
+		}
+		file = args[i]
+	}
+	if sessionDir == "" && file != "" && file != "-" && filepath.Base(file) == "latest-status-report.yaml" {
+		sessionDir = filepath.Dir(file)
 	}
 	var data []byte
 	var err error
-	if len(args) == 2 && args[1] != "-" {
-		data, err = os.ReadFile(args[1])
+	if file != "" && file != "-" {
+		data, err = os.ReadFile(file)
 	} else {
 		data, err = io.ReadAll(in)
 	}
@@ -372,9 +404,13 @@ func run(
 		fmt.Fprintln(errOut, "status-report:", err)
 		return 1
 	}
+	r.Incomplete = reconcile(r, sessionDir)
 	payload := render(r)
-	if args[0] == "validate" {
-		payload = "Schema valid (does not verify factual truth or reviewer independence).\n"
+	if command == "validate" {
+		payload = "Schema valid; source reconciliation complete; source freshness unverified (does not verify factual truth or reviewer independence).\n"
+		if len(r.Incomplete) > 0 {
+			payload = "INCOMPLETE — source reconciliation:\n- " + strings.Join(r.Incomplete, "\n- ") + "\n"
+		}
 	}
 	written, err := out.Write([]byte(payload))
 	if err == nil && written != len(payload) {
@@ -382,6 +418,9 @@ func run(
 	}
 	if err != nil {
 		fmt.Fprintln(errOut, "status-report: writing report:", err)
+		return 1
+	}
+	if command == "validate" && len(r.Incomplete) > 0 {
 		return 1
 	}
 	return 0

@@ -33,6 +33,9 @@ func renderCompletionEstimates(
 	}
 	seen := map[priorityLabel]bool{}
 	fmt.Fprintln(b, "\nCompletion estimates:")
+	if len(r.Incomplete) > 0 {
+		fmt.Fprintln(b, "Estimates unverified; see source reconciliation issues above.")
+	}
 	for _, t := range r.Tasks {
 		if seen[t.Priority] {
 			continue

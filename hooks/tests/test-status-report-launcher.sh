@@ -36,8 +36,13 @@ timeline:
 YAML
 
 cd "$test_dir"
-"$repo_root/bin/status-report" validate 'report file.yaml' | grep -q 'Schema valid'
+if "$repo_root/bin/status-report" validate 'report file.yaml' >validation.txt; then
+	printf 'missing session unexpectedly validated\n' >&2
+	exit 1
+fi
+grep -q 'INCOMPLETE' validation.txt
 "$repo_root/bin/status-report" render <'report file.yaml' >output.txt
+grep -q 'INCOMPLETE' output.txt
 grep -q 'Full task tree' output.txt
 grep -q '100%' output.txt
 grep -Fq '| 2026-11-02T14:24:00Z – 2026-11-02T14:54:00Z | checkpoint | unknown |' output.txt

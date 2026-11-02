@@ -609,8 +609,8 @@ func TestHierarchicalTaskIDsRejectMismatchedParents(t *testing.T) {
 // Example: Validation and rendering work on stdin and fail on malformed input.
 func TestCLICommands(t *testing.T) {
 	var out, errOut strings.Builder
-	require.Equal(t, 0, run([]string{"validate"}, strings.NewReader(valid), &out, &errOut))
-	require.Contains(t, out.String(), "Schema valid")
+	require.Equal(t, 1, run([]string{"validate"}, strings.NewReader(valid), &out, &errOut))
+	require.Contains(t, out.String(), "INCOMPLETE")
 	out.Reset()
 	require.Equal(t, 0, run([]string{"render", "-"}, strings.NewReader(valid), &out, &errOut))
 	require.Contains(t, out.String(), "Full task tree")
@@ -739,8 +739,8 @@ func TestCLIFileInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report file.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(valid), 0o600))
 	var out, errOut strings.Builder
-	require.Equal(t, 0, run([]string{"validate", path}, strings.NewReader(""), &out, &errOut))
-	require.Contains(t, out.String(), "Schema valid")
+	require.Equal(t, 1, run([]string{"validate", path}, strings.NewReader(""), &out, &errOut))
+	require.Contains(t, out.String(), "INCOMPLETE")
 }
 
 // TestUTCOffsetAtDaylightSavingBoundary rejects non-UTC offsets.

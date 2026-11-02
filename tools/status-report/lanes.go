@@ -22,21 +22,24 @@ type scenario struct {
 //
 // Example: Project a lane deadline and its supporting evidence.
 type forecast struct {
-	Outcome      string     `yaml:"outcome"`
-	Target       string     `yaml:"target"`
-	Assessment   string     `yaml:"assessment"`
-	Baseline     string     `yaml:"baseline"`
-	Prior        string     `yaml:"prior"`
-	Reason       string     `yaml:"reason"`
-	Evidence     string     `yaml:"evidence"`
-	Dependencies string     `yaml:"dependencies"`
-	Scenarios    []scenario `yaml:"scenarios"`
+	SourceProjection map[string]any `yaml:"source_projection"`
+	ForecastRef      string         `yaml:"forecast_ref"`
+	Outcome          string         `yaml:"outcome"`
+	Target           string         `yaml:"target"`
+	Assessment       string         `yaml:"assessment"`
+	Baseline         string         `yaml:"baseline"`
+	Prior            string         `yaml:"prior"`
+	Reason           string         `yaml:"reason"`
+	Evidence         string         `yaml:"evidence"`
+	Dependencies     string         `yaml:"dependencies"`
+	Scenarios        []scenario     `yaml:"scenarios"`
 }
 
 // lane preserves the separate readiness states for an outcome.
 //
 // Example: Keep implementation, test, and production readiness separate.
 type lane struct {
+	WorkRef              string              `yaml:"work_ref"`
 	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
 	TaskID               taskID              `yaml:"task_id"`
 	Outcome              string              `yaml:"outcome"`
@@ -132,6 +135,10 @@ func renderForecastDetails(
 	b *strings.Builder,
 	f forecast,
 ) {
+	if len(f.SourceProjection) > 0 {
+		fmt.Fprintln(b, "Forecast source projection:")
+		writeValue(b, f.SourceProjection, 1)
+	}
 	if f.Assessment != "" {
 		fmt.Fprintf(b, "Forecast assessment: %s\n", f.Assessment)
 	}
