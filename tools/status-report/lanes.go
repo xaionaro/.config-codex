@@ -111,6 +111,9 @@ func renderScenarios(
 	name string,
 	f forecast,
 ) {
+	if renderNativeSpread(b, name, f.SourceProjection) {
+		return
+	}
 	if len(f.Scenarios) == 0 {
 		return
 	}
@@ -149,7 +152,11 @@ func renderForecastDetails(
 		fmt.Fprintln(b, "Forecast source projection:")
 		writeValue(b, f.SourceProjection, 1)
 	}
-	if f.Assessment != "" {
+	switch f.Assessment {
+	case "provisional":
+		fmt.Fprintf(b, "Forecast assessment: provisional — %s; target conditional.\n", provisionalRisk(f.SourceProjection))
+	case "":
+	default:
 		fmt.Fprintf(b, "Forecast assessment: %s\n", f.Assessment)
 	}
 	switch {
