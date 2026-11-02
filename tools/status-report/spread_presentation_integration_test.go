@@ -106,14 +106,16 @@ func TestSpreadPresentationMissingAndLegacy(t *testing.T) {
 	require.Contains(t, out.String(), "| First result — legacy |")
 }
 
-// TestNativeSpreadTakesPrecedence checks that native and legacy projections do not produce duplicate case rows.
+// TestNativeSpreadRetainsLegacy checks coexisting native and legacy information.
 //
-// Example: A native base case replaces the legacy spread table.
-func TestNativeSpreadTakesPrecedence(t *testing.T) {
+// Example: An unverified legacy scenario remains visible beside the native spread.
+func TestNativeSpreadRetainsLegacy(t *testing.T) {
 	forecast := "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}"
-	report := strings.Replace(linkedReport, forecast, strings.TrimSuffix(forecast, "}")+", source_projection: {base_case: {endpoint: unknown}}, scenarios: [{case: legacy, trigger: old, affected_work: work, duration_basis: guess, evidence_assumptions: pending, endpoint: unknown, evidence_gap_next_action: next}]}", 1)
+	report := strings.Replace(linkedReport, forecast, strings.TrimSuffix(forecast, "}")+", source_projection: {base_case: {endpoint: unknown}}, scenarios: [{case: legacy, trigger: legacy-only-proof-42, affected_work: legacy-work-42, duration_basis: legacy-duration-42, evidence_assumptions: legacy-evidence-42, endpoint: legacy-endpoint-42, evidence_gap_next_action: legacy-next-42}]}", 1)
 	var out, errOut bytes.Buffer
 	require.Equal(t, 0, testRun([]string{"render"}, strings.NewReader(report), &out, &errOut), errOut.String())
 	require.Contains(t, out.String(), "| First result — base case |")
-	require.NotContains(t, out.String(), "| First result — legacy |")
+	require.Contains(t, out.String(), "Legacy scenarios (unverified)")
+	require.Contains(t, out.String(), "| First result — legacy |")
+	require.Contains(t, out.String(), "| First result — legacy | legacy-only-proof-42 | legacy-work-42 | legacy-duration-42 | legacy-evidence-42 | legacy-endpoint-42 | legacy-next-42 |")
 }

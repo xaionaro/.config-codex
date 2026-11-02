@@ -111,11 +111,12 @@ func renderScenarios(
 	name string,
 	f forecast,
 ) {
-	if renderNativeSpread(b, name, f.SourceProjection) {
-		return
-	}
+	nativeShown := renderNativeSpread(b, name, f.SourceProjection)
 	if len(f.Scenarios) == 0 {
 		return
+	}
+	if nativeShown {
+		fmt.Fprintln(b, "\nLegacy scenarios (unverified):")
 	}
 	fmt.Fprintln(b, "\n| Lane/root and case | Trigger/evidence | Affected work/dependency | Added duration/range and basis | Evidence assessed; assumptions/limits | Endpoint/range | Evidence gap / next fact-finding action |")
 	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- |")
