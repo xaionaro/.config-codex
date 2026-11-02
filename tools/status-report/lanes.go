@@ -82,7 +82,15 @@ func renderLaneTable(
 	}
 	fmt.Fprintln(b, "\n| Task ID | Parent ID | Lane | Lane requirement context | Priority group | Calculated priority | Impact | Effort | Stage | Required environment | Owner | Implementation Status | Test Status | Prod Status | Blocker | Next milestone | Forecast deadline / recalibration | Dependencies / critical path | Next proof/action |")
 	fmt.Fprintln(b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	ids := make([]taskID, 0, len(lanes))
+	byTask := map[taskID][]lane{}
 	for _, l := range lanes {
+		ids = append(ids, l.TaskID)
+		byTask[l.TaskID] = append(byTask[l.TaskID], l)
+	}
+	for _, id := range orderTaskIDs(ids, tasks, scale) {
+		l := byTask[id][0]
+		byTask[id] = byTask[id][1:]
 		t := tasks[l.TaskID]
 		target, dependencies := "", ""
 		if l.Forecast != nil {

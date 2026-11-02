@@ -39,7 +39,8 @@ func TestPriorityScoreRejectsInvalidPoints(t *testing.T) {
 //
 // Example: Zero impact is scored, while zero effort is unscored.
 func TestPriorityScoreBoundaries(t *testing.T) {
-	zero, one, two := 0.0, 1.0, 2.0
+	zero, one, two := impactPoints(0), impactPoints(1), impactPoints(2)
+	zeroMinutes := fractionalMinutes(0)
 	ten := fractionalMinutes(10)
 	base := task{ImpactPoints: &one, ImpactBasis: "guess", Effort: estimate{MaxMinutes: &ten, Kind: effortWork}}
 	for _, tc := range []struct {
@@ -51,7 +52,7 @@ func TestPriorityScoreBoundaries(t *testing.T) {
 		{"points", task{ImpactBasis: "guess", Effort: base.Effort}, "scale", "missing impact points"},
 		{"basis", task{ImpactPoints: &one, Effort: base.Effort}, "scale", "missing impact basis"},
 		{"kind", task{ImpactPoints: &one, ImpactBasis: "guess", Effort: estimate{MaxMinutes: &ten, Kind: effortElapsed}}, "scale", "effort is not work minutes"},
-		{"zero effort", task{ImpactPoints: &one, ImpactBasis: "guess", Effort: estimate{MaxMinutes: (*fractionalMinutes)(&zero), Kind: effortWork}}, "scale", "remaining effort must be positive"},
+		{"zero effort", task{ImpactPoints: &one, ImpactBasis: "guess", Effort: estimate{MaxMinutes: &zeroMinutes, Kind: effortWork}}, "scale", "remaining effort must be positive"},
 	} {
 		_, reason := priorityScore(tc.task, tc.scale)
 		require.Equal(t, tc.reason, reason, tc.name)
@@ -65,11 +66,52 @@ func TestPriorityScoreBoundaries(t *testing.T) {
 //
 // Example: A lane displays its task's points per work-minute.
 func TestLaneCalculatedPriority(t *testing.T) {
-	points := 6.0
+	points := impactPoints(6)
 	minutes := fractionalMinutes(20)
 	tasks := map[taskID]task{"1": {ImpactPoints: &points, ImpactBasis: "guess", Effort: estimate{MinMinutes: &minutes, MaxMinutes: &minutes, Kind: effortWork}}}
 	var out strings.Builder
 	renderLaneTable(&out, []lane{{TaskID: "1"}}, tasks, "benefit")
 	require.Contains(t, out.String(), "0.3 points/work-minute")
 	require.NotContains(t, out.String(), "unscored:")
+}
+
+// TestPriorityOverflowIsUnscored checks a finite input cannot produce an infinite ranking.
+//
+// Example: A huge impact divided by a tiny effort is reported as unscored.
+func TestPriorityOverflowIsUnscored(t *testing.T) {
+	points := impactPoints(1e308)
+	minutes := fractionalMinutes(1e-308)
+	item := task{ImpactPoints: &points, ImpactBasis: "guess", Effort: estimate{MinMinutes: &minutes, MaxMinutes: &minutes, Kind: effortWork}}
+	require.Contains(t, priorityText(item, "benefit"), "unscored:")
+	require.NotContains(t, priorityText(item, "benefit"), "+Inf")
+}
+
+// TestLanePriorityOrdering checks stable ranking including repeated task references.
+//
+// Example: High-scoring lanes move past low-scoring lanes around an unscored lane.
+func TestLanePriorityOrdering(t *testing.T) {
+	low, high := impactPoints(1), impactPoints(3)
+	minutes := fractionalMinutes(10)
+	effort := estimate{MinMinutes: &minutes, MaxMinutes: &minutes, Kind: effortWork}
+	tasks := map[taskID]task{"low": {ImpactPoints: &low, ImpactBasis: "guess", Effort: effort}, "high": {ImpactPoints: &high, ImpactBasis: "guess", Effort: effort}, "unknown": {Effort: effort}}
+	lanes := []lane{{TaskID: "low", Outcome: "low lane"}, {TaskID: "unknown", Outcome: "unknown lane"}, {TaskID: "high", Outcome: "first high"}, {TaskID: "high", Outcome: "second high"}}
+	var out strings.Builder
+	renderLaneTable(&out, lanes, tasks, "benefit")
+	text := out.String()
+	require.Less(t, strings.Index(text, "first high"), strings.Index(text, "unknown lane"))
+	require.Less(t, strings.Index(text, "unknown lane"), strings.Index(text, "second high"))
+	require.Less(t, strings.Index(text, "second high"), strings.Index(text, "low lane"))
+}
+
+// TestSiblingPriorityOrdering checks the report's tree orders siblings by score.
+//
+// Example: A later high-scoring child appears above a lower-scoring child.
+func TestSiblingPriorityOrdering(t *testing.T) {
+	input := strings.Replace(valid, "tasks:\n", "impact_scale: benefit\ntasks:\n", 1)
+	input = strings.Replace(input, "impact: Useful\n    effort: {min_minutes: 30, max_minutes: 30, kind: elapsed, basis: guess}", "impact: Useful\n    impact_points: 1\n    impact_basis: guess\n    effort: {min_minutes: 30, max_minutes: 30, kind: work, basis: guess}", 1)
+	input = strings.Replace(input, "impact: unknown\n    effort: {min_minutes: 10, max_minutes: 30, kind: elapsed, basis: educated guess}", "impact: unknown\n    impact_points: 9\n    impact_basis: guess\n    effort: {min_minutes: 10, max_minutes: 30, kind: work, basis: educated guess}", 1)
+	r, err := parse([]byte(input))
+	require.NoError(t, err)
+	tree := strings.Split(strings.Split(render(r), "Full task tree:\n")[1], "\nProgress:")[0]
+	require.Less(t, strings.Index(tree, "1.2 Unknown"), strings.Index(tree, "1.1 Complete"))
 }

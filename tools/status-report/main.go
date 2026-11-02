@@ -96,7 +96,7 @@ type task struct {
 	Context           string        `yaml:"context"`
 	Priority          priorityLabel `yaml:"priority"`
 	Impact            string        `yaml:"impact"`
-	ImpactPoints      *float64      `yaml:"impact_points"`
+	ImpactPoints      *impactPoints `yaml:"impact_points"`
 	ImpactBasis       string        `yaml:"impact_basis"`
 	Effort            estimate      `yaml:"effort"`
 	Status            workStatus    `yaml:"status"`
@@ -174,7 +174,7 @@ func parse(data []byte) (report, error) {
 		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(float64(*t.Effort.MinMinutes)) || math.IsNaN(float64(*t.Effort.MaxMinutes)) || math.IsInf(float64(*t.Effort.MinMinutes), 0) || math.IsInf(float64(*t.Effort.MaxMinutes), 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || t.Effort.Kind == effortUnknown || strings.TrimSpace(t.Effort.Basis) == "" {
 			return r, fmt.Errorf("task requires id, title, priority, impact and effort")
 		}
-		if t.ImpactPoints != nil && (math.IsNaN(*t.ImpactPoints) || math.IsInf(*t.ImpactPoints, 0) || *t.ImpactPoints < 0) {
+		if t.ImpactPoints != nil && (math.IsNaN(float64(*t.ImpactPoints)) || math.IsInf(float64(*t.ImpactPoints), 0) || *t.ImpactPoints < 0) {
 			return r, fmt.Errorf("task %s: impact_points must be finite and nonnegative", t.ID)
 		}
 		if _, exists := byID[t.ID]; exists {
