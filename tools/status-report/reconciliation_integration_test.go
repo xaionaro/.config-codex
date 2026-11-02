@@ -20,6 +20,8 @@ func TestReconciliationMissingSources(t *testing.T) {
 	}{
 		{name: "missing ledger"},
 		{name: "malformed ledger", ledger: "[malformed"},
+		{name: "multiple documents", ledger: linkedLedger + "\n---\nschema: other\n"},
+		{name: "partial schema", ledger: "schema: project-understanding/v1\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -235,4 +237,38 @@ func TestReconciliationRichForecast(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReconciliationCompletedPriorityDoesNotExpire checks that another priority's open work does not stale a completed priority.
+//
+// Example: A past high-priority endpoint is harmless after high-priority work completes.
+func TestReconciliationCompletedPriorityDoesNotExpire(t *testing.T) {
+	report := strings.Replace(valid, "scope_complete: false", "scope_complete: true", 1)
+	report = strings.Replace(report, "title: Root", "title: Root\n    work_refs: ['project-understanding.yaml#/records/work:done']", 1)
+	report = strings.Replace(report, "status: IN PROGRESS\n  - id: \"1.1\"", "status: CLOSED\n    evidence: accepted\n  - id: \"1.1\"", 1)
+	report = strings.Replace(report, "title: Unknown", "title: Unknown\n    work_refs: ['project-understanding.yaml#/records/work:open']", 1)
+	report = strings.Replace(report, "status: unknown", "status: IN PROGRESS", 1)
+	report = strings.Replace(report, "priority: high, min_minutes: 20, max_minutes: 40, as_of: \"2026-11-02T15:24:00Z\"", "priority: high, min_minutes: 20, max_minutes: 40, as_of: \"2026-11-02T14:00:00Z\"", 1)
+	ledger := `schema: project-understanding/v1
+sections: {progress: {title: Progress}}
+records:
+  work:done:
+    section: progress
+    type: work
+    data: {owner: one, state: completed, next_action: none, reporting_roles: []}
+    evidence: []
+  work:open:
+    section: progress
+    type: work
+    data: {owner: two, state: active, next_action: Finish, reporting_roles: []}
+    evidence: []
+`
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(ledger), 0o600))
+	var stdout, stderr bytes.Buffer
+	require.Equal(t, 0, run([]string{"render", reportPath}, strings.NewReader(""), &stdout, &stderr), stderr.String())
+	require.NotContains(t, stdout.String(), "INCOMPLETE")
+	require.Contains(t, stdout.String(), "Source freshness: unverified")
 }
