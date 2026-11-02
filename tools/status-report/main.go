@@ -135,12 +135,12 @@ type report struct {
 // Example: Reject a report with a missing task reference.
 func parse(data []byte) (report, error) {
 	var r report
-	if err := validateLifecycleScalars(data); err != nil {
-		return r, fmt.Errorf("invalid YAML/schema: %w", err)
-	}
 	d := yaml.NewDecoder(bytes.NewReader(data))
 	d.KnownFields(true)
 	if err := d.Decode(&r); err != nil {
+		return r, fmt.Errorf("invalid YAML/schema: %w", err)
+	}
+	if err := validateLifecycleScalars(data); err != nil {
 		return r, fmt.Errorf("invalid YAML/schema: %w", err)
 	}
 	var extra any

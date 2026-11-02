@@ -5,7 +5,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// validateLifecycleScalars rejects null and tagged lifecycle nodes before decoding.
+// validateLifecycleScalars rejects null and tagged lifecycle nodes after typed decoding.
+// Typed decoding first rejects cyclic aliases before the merge traversal.
 //
 // Example: An omitted lifecycle is allowed, while a YAML null is not.
 func validateLifecycleScalars(data []byte) error {
