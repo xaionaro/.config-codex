@@ -61,11 +61,11 @@ For an active multi-agent status report, show the recursive roster of actually
 active agents under their parent agents, including each agent's current task, owner or
 role, model, and reasoning effort. Include the top-level tasks and their
 owners. Use live roster and assignment evidence; mark unavailable fields
-`unknown` and distinguish an idle agent from an active assignment. If runtime
+`unknown`. Exclude idle agents from the active roster even when they have assigned
+tasks; retain those assignments in the task list. If runtime
 telemetry is unavailable, label launch settings as requested, not observed. State
 when no agents are active or roster evidence is unavailable. Show an inactive
-ancestor only as labeled ancestry context, never as an active roster entry; omit
-unassigned idle agents. Do not infer
+ancestor only as labeled ancestry context, never as an active roster entry. Do not infer
 model or effort from a parent or a role.
 
 In every task list include priority,
