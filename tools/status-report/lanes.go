@@ -5,6 +5,56 @@ import (
 	"strings"
 )
 
+// scenario holds a supplied forecast scenario and its evidence.
+//
+// Example: Record the trigger and endpoint of a downside case.
+type scenario struct {
+	Case                  string `yaml:"case"`
+	Trigger               string `yaml:"trigger"`
+	AffectedWork          string `yaml:"affected_work"`
+	DurationBasis         string `yaml:"duration_basis"`
+	EvidenceAssumptions   string `yaml:"evidence_assumptions"`
+	Endpoint              string `yaml:"endpoint"`
+	EvidenceGapNextAction string `yaml:"evidence_gap_next_action"`
+}
+
+// forecast holds an upstream outcome forecast and associated scenarios.
+//
+// Example: Project a lane deadline and its supporting evidence.
+type forecast struct {
+	Outcome      string     `yaml:"outcome"`
+	Target       string     `yaml:"target"`
+	Assessment   string     `yaml:"assessment"`
+	Baseline     string     `yaml:"baseline"`
+	Prior        string     `yaml:"prior"`
+	Reason       string     `yaml:"reason"`
+	Evidence     string     `yaml:"evidence"`
+	Dependencies string     `yaml:"dependencies"`
+	Scenarios    []scenario `yaml:"scenarios"`
+}
+
+// lane preserves the separate readiness states for an outcome.
+//
+// Example: Keep implementation, test, and production readiness separate.
+type lane struct {
+	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
+	TaskID               taskID              `yaml:"task_id"`
+	Outcome              string              `yaml:"outcome"`
+	Owner                string              `yaml:"owner"`
+	Stage                string              `yaml:"stage"`
+	ImplementationStatus workStatus          `yaml:"implementation_status"`
+	TestStatus           workStatus          `yaml:"test_status"`
+	ProdStatus           workStatus          `yaml:"prod_status"`
+	NextMilestone        string              `yaml:"next_milestone"`
+	CompletedAt          string              `yaml:"completed_at"`
+	Forecasted           bool                `yaml:"forecasted"`
+	Blocker              string              `yaml:"blocker"`
+	NextAction           string              `yaml:"next_action"`
+	Context              string              `yaml:"context"`
+	RootTaskStatus       rootTaskStatus      `yaml:"root_task_status"`
+	Forecast             *forecast           `yaml:"forecast"`
+}
+
 // renderLaneTable displays readiness and task context without combining statuses.
 //
 // Example: Show independent readiness columns for a lane.
@@ -87,11 +137,37 @@ func renderForecastDetails(
 	}
 	switch {
 	case f.Prior != "":
-		fmt.Fprintf(b, "Forecast recalibration: %s → %s; why moved: %s; supporting evidence: %s.\n", f.Prior, f.Target, timelineCell(f.Reason), timelineCell(f.Evidence))
+		fmt.Fprintf(b, "Forecast recalibration: %s → %s", f.Prior, f.Target)
+		writeForecastEvidence(b, f)
+		fmt.Fprintln(b, ".")
 	case f.Baseline != "":
-		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s; supporting evidence: %s.\n", f.Baseline, timelineCell(f.Evidence))
+		fmt.Fprintf(b, "Forecast recalibration: unchanged — baseline %s", f.Baseline)
+		writeForecastEvidence(b, f)
+		fmt.Fprintln(b, ".")
+	default:
+		if f.Reason != "" {
+			fmt.Fprintf(b, "Forecast reason: %s\n", f.Reason)
+		}
+		if f.Evidence != "" {
+			fmt.Fprintf(b, "Forecast evidence: %s\n", f.Evidence)
+		}
 	}
 	if f.Dependencies != "" {
 		fmt.Fprintf(b, "Dependencies / critical path: %s\n", f.Dependencies)
+	}
+}
+
+// writeForecastEvidence appends only supplied explanation and evidence.
+//
+// Example: Preserve the reason and evidence of a changed forecast once.
+func writeForecastEvidence(
+	b *strings.Builder,
+	f forecast,
+) {
+	if f.Reason != "" {
+		fmt.Fprintf(b, "; why moved: %s", f.Reason)
+	}
+	if f.Evidence != "" {
+		fmt.Fprintf(b, "; supporting evidence: %s", f.Evidence)
 	}
 }

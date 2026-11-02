@@ -46,6 +46,24 @@ func validateForecast(f forecast) error {
 //
 // Example: Reject a timeline interval outside the report window.
 func validateSections(r report) error {
+	if err := validatePriorities(r); err != nil {
+		return err
+	}
+	if err := validateLanes(r); err != nil {
+		return err
+	}
+	for _, f := range r.RootForecasts {
+		if err := validateForecast(f); err != nil {
+			return fmt.Errorf("root forecast %s: %w", f.Outcome, err)
+		}
+	}
+	return validateTimeline(r)
+}
+
+// validatePriorities checks coverage and each supplied completion estimate.
+//
+// Example: Every listed priority has its own estimate.
+func validatePriorities(r report) error {
 	priorities := map[priorityLabel]bool{}
 	for _, e := range r.PriorityEstimates {
 		if strings.TrimSpace(string(e.Priority)) == "" || priorities[e.Priority] {
@@ -61,15 +79,12 @@ func validateSections(r report) error {
 			return fmt.Errorf("overall completion estimate: %w", err)
 		}
 	}
+	present := map[priorityLabel]bool{}
+	for _, t := range r.Tasks {
+		present[t.Priority] = true
+	}
 	for priority := range priorities {
-		found := false
-		for _, t := range r.Tasks {
-			if t.Priority == priority {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !present[priority] {
 			return fmt.Errorf("priority estimate %s has no matching task", priority)
 		}
 	}
@@ -81,6 +96,13 @@ func validateSections(r report) error {
 			return fmt.Errorf("missing completion estimate for priority %s", t.Priority)
 		}
 	}
+	return nil
+}
+
+// validateLanes checks references and the selected acceptance environment.
+//
+// Example: A closed production lane needs a completion timestamp.
+func validateLanes(r report) error {
 	byID := map[taskID]task{}
 	for _, t := range r.Tasks {
 		byID[t.ID] = t
@@ -122,16 +144,19 @@ func validateSections(r report) error {
 			}
 		}
 	}
-	for _, f := range r.RootForecasts {
-		if err := validateForecast(f); err != nil {
-			return fmt.Errorf("root forecast %s: %w", f.Outcome, err)
-		}
-	}
+	return nil
+}
+
+// validateTimeline checks report-relative intervals and duplicate job slots.
+//
+// Example: A job cannot report the same half-hour twice.
+func validateTimeline(r report) error {
 	now, err := parseUTC(r.Timestamp)
 	if err != nil {
 		return err
 	}
 	chains := map[string]string{}
+	seenSlots := map[string]map[time.Time]bool{}
 	for _, row := range r.Timeline {
 		if strings.TrimSpace(row.Job) == "" || strings.TrimSpace(row.ParentChain) == "" {
 			return fmt.Errorf("timeline requires job and parent_chain")
@@ -151,6 +176,16 @@ func validateSections(r report) error {
 		if end.Sub(start) != timelineInterval || start.Before(now.Add(-timelineWindow)) || end.After(now) {
 			return fmt.Errorf("timeline interval must be 30 minutes within the preceding four hours")
 		}
+		if start.Sub(now.Add(-timelineWindow))%timelineInterval != 0 {
+			return fmt.Errorf("timeline job %s: interval is not aligned to report bins", row.Job)
+		}
+		if seenSlots[row.Job] == nil {
+			seenSlots[row.Job] = map[time.Time]bool{}
+		}
+		if seenSlots[row.Job][start] {
+			return fmt.Errorf("timeline job %s: duplicate interval", row.Job)
+		}
+		seenSlots[row.Job][start] = true
 	}
 	return nil
 }
@@ -159,7 +194,7 @@ func validateSections(r report) error {
 //
 // Example: Reject a reversed duration range.
 func validateCompletionEstimate(e completionEstimate) error {
-	if e.MinMinutes == nil || e.MaxMinutes == nil || math.IsNaN(*e.MinMinutes) || math.IsNaN(*e.MaxMinutes) || math.IsInf(*e.MinMinutes, 0) || math.IsInf(*e.MaxMinutes, 0) || *e.MinMinutes < 0 || *e.MaxMinutes < *e.MinMinutes {
+	if e.MinMinutes == nil || e.MaxMinutes == nil || math.IsNaN(float64(*e.MinMinutes)) || math.IsNaN(float64(*e.MaxMinutes)) || math.IsInf(float64(*e.MinMinutes), 0) || math.IsInf(float64(*e.MaxMinutes), 0) || *e.MinMinutes < 0 || *e.MaxMinutes < *e.MinMinutes {
 		return fmt.Errorf("completion estimate requires ordered finite minute range")
 	}
 	if _, _, err := completionEndpoints(e); err != nil {
@@ -182,7 +217,7 @@ func completionEndpoints(e completionEstimate) (time.Time, time.Time, error) {
 	if e.MinMinutes == nil || e.MaxMinutes == nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("missing minute range")
 	}
-	minNanos, maxNanos := *e.MinMinutes*float64(time.Minute), *e.MaxMinutes*float64(time.Minute)
+	minNanos, maxNanos := float64(*e.MinMinutes)*float64(time.Minute), float64(*e.MaxMinutes)*float64(time.Minute)
 	if math.IsNaN(minNanos) || math.IsNaN(maxNanos) || math.IsInf(minNanos, 0) || math.IsInf(maxNanos, 0) || minNanos < 0 || maxNanos < minNanos || maxNanos >= float64(math.MaxInt64) {
 		return time.Time{}, time.Time{}, fmt.Errorf("estimate duration outside supported range")
 	}

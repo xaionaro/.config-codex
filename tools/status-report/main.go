@@ -25,6 +25,11 @@ const (
 	//
 	// Example: A sixth round is rejected.
 	maxCriticRounds reviewRounds = 5
+	// percentageScale converts a unit ratio to percent.
+	//
+	// Example: One complete unit of two yields 50 percent.
+	percentageScale = 100
+
 	// progressBarWidth is the number of characters in the derived bar.
 	//
 	// Example: Half of twenty positions are filled for 50 percent.
@@ -39,14 +44,29 @@ const (
 	timelineInterval = 30 * time.Minute
 )
 
+// taskID identifies a task in the report hierarchy.
+//
+// Example: Task 1.2 belongs to parent 1.
+type taskID string
+
+// priorityLabel records the supported priority or an explicit unknown.
+//
+// Example: An unranked package uses unknown.
+type priorityLabel string
+
+// reviewRounds counts the scoped reporter–critic iterations.
+//
+// Example: One review uses one round.
+type reviewRounds int
+
 // estimate describes the remaining work range and its basis.
 //
 // Example: Record a 20–30 minute elapsed package.
 type estimate struct {
-	MinMinutes *float64   `yaml:"min_minutes"`
-	MaxMinutes *float64   `yaml:"max_minutes"`
-	Kind       effortKind `yaml:"kind"`
-	Basis      string     `yaml:"basis"`
+	MinMinutes *fractionalMinutes `yaml:"min_minutes"`
+	MaxMinutes *fractionalMinutes `yaml:"max_minutes"`
+	Kind       effortKind         `yaml:"kind"`
+	Basis      string             `yaml:"basis"`
 }
 
 // queueReview records the scoped review of one newly estimated queue item.
@@ -117,10 +137,13 @@ func parse(data []byte) (report, error) {
 	}
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return r, fmt.Errorf("decode trailing YAML: %w", err)
+		}
 		return r, fmt.Errorf("expected one YAML document")
 	}
 	if _, err := parseUTC(r.Timestamp); err != nil {
-		return r, fmt.Errorf("timestamp must be RFC3339 UTC")
+		return r, fmt.Errorf("timestamp must be RFC3339 UTC: %w", err)
 	}
 	if strings.TrimSpace(r.State) == "" || strings.TrimSpace(r.NextFocus) == "" || r.ScopeComplete == nil {
 		return r, fmt.Errorf("state, next_focus and scope_complete are required")
@@ -137,7 +160,7 @@ func parse(data []byte) (report, error) {
 	byID := map[taskID]task{}
 	children := map[taskID]int{}
 	for _, t := range r.Tasks {
-		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(*t.Effort.MinMinutes) || math.IsNaN(*t.Effort.MaxMinutes) || math.IsInf(*t.Effort.MinMinutes, 0) || math.IsInf(*t.Effort.MaxMinutes, 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || t.Effort.Kind == effortUnknown || strings.TrimSpace(t.Effort.Basis) == "" {
+		if t.ID == "" || t.Title == "" || t.Priority == "" || t.Impact == "" || t.Effort.MinMinutes == nil || t.Effort.MaxMinutes == nil || math.IsNaN(float64(*t.Effort.MinMinutes)) || math.IsNaN(float64(*t.Effort.MaxMinutes)) || math.IsInf(float64(*t.Effort.MinMinutes), 0) || math.IsInf(float64(*t.Effort.MaxMinutes), 0) || *t.Effort.MinMinutes < 0 || *t.Effort.MaxMinutes < *t.Effort.MinMinutes || t.Effort.Kind == effortUnknown || strings.TrimSpace(t.Effort.Basis) == "" {
 			return r, fmt.Errorf("task requires id, title, priority, impact and effort")
 		}
 		if _, exists := byID[t.ID]; exists {
@@ -202,7 +225,7 @@ func parse(data []byte) (report, error) {
 		}
 	}
 	if err := validateSections(r); err != nil {
-		return r, err
+		return r, fmt.Errorf("validate status report: %w", err)
 	}
 	return r, nil
 }
@@ -260,7 +283,7 @@ func render(r report) string {
 	if known == 0 {
 		fmt.Fprintf(&b, "\nProgress: unknown (no scored leaf packages; equal-package estimate from half-hour breakdown; partial coverage; unscored: %s; scope complete: %t)\n", strings.Join(unscored, ", "), *r.ScopeComplete)
 	} else {
-		pct := done * 100 / known
+		pct := done * percentageScale / known
 		filled := done * progressBarWidth / known
 		partial := unknownCount > 0 || !*r.ScopeComplete
 		qualifier := ""
@@ -384,10 +407,17 @@ func run(
 		fmt.Fprintln(errOut, "status-report:", err)
 		return 1
 	}
+	payload := render(r)
 	if args[0] == "validate" {
-		fmt.Fprintln(out, "Schema valid (does not verify factual truth or reviewer independence).")
-	} else {
-		fmt.Fprint(out, render(r))
+		payload = "Schema valid (does not verify factual truth or reviewer independence).\n"
+	}
+	written, err := out.Write([]byte(payload))
+	if err == nil && written != len(payload) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		fmt.Fprintln(errOut, "status-report: writing report:", err)
+		return 1
 	}
 	return 0
 }

@@ -2,8 +2,23 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
+
+// timelineEntry records one UTC half-hour and its independent path evidence.
+//
+// Example: Record both paths for one UTC half-hour.
+type timelineEntry struct {
+	Job         string `yaml:"job"`
+	ParentChain string `yaml:"parent_chain"`
+	Start       string `yaml:"start"`
+	End         string `yaml:"end"`
+	Fast        string `yaml:"fast"`
+	Normal      string `yaml:"normal"`
+	Evidence    string `yaml:"evidence"`
+	Uncertainty string `yaml:"uncertainty"`
+}
 
 // writeTimeline renders each Job's supplied history in three columns.
 //
@@ -26,6 +41,7 @@ func writeTimeline(
 	}
 	for _, job := range jobs {
 		rows := groups[job]
+		slices.SortFunc(rows, compareTimelineEntry)
 		fmt.Fprintf(b, "Job %s (parent chain: %s)\n\n", timelineCell(job), timelineCell(rows[0].ParentChain))
 		fmt.Fprintln(b, "| UTC interval | Fast | Normal |")
 		fmt.Fprintln(b, "| --- | --- | --- |")
@@ -56,4 +72,22 @@ func timelineCell(value string) string {
 	}
 	cell := strings.ReplaceAll(value, "|", "\\|")
 	return strings.ReplaceAll(cell, "\n", "<br>")
+}
+
+// compareTimelineEntry orders validated UTC intervals by their start times.
+//
+// Example: A 13:54 row precedes a 14:54 row regardless of input order.
+func compareTimelineEntry(
+	left timelineEntry,
+	right timelineEntry,
+) int {
+	a, err := parseUTC(left.Start)
+	if err != nil {
+		return strings.Compare(left.Start, right.Start)
+	}
+	b, err := parseUTC(right.Start)
+	if err != nil {
+		return strings.Compare(left.Start, right.Start)
+	}
+	return a.Compare(b)
 }

@@ -168,89 +168,11 @@ func (s *workStatus) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// scenario holds a supplied forecast scenario and its evidence.
-//
-// Example: Record the trigger and endpoint of a downside case.
-type scenario struct {
-	Case                  string `yaml:"case"`
-	Trigger               string `yaml:"trigger"`
-	AffectedWork          string `yaml:"affected_work"`
-	DurationBasis         string `yaml:"duration_basis"`
-	EvidenceAssumptions   string `yaml:"evidence_assumptions"`
-	Endpoint              string `yaml:"endpoint"`
-	EvidenceGapNextAction string `yaml:"evidence_gap_next_action"`
-}
-
-// forecast holds an upstream outcome forecast and associated scenarios.
-//
-// Example: Project a lane deadline and its supporting evidence.
-type forecast struct {
-	Outcome      string     `yaml:"outcome"`
-	Target       string     `yaml:"target"`
-	Assessment   string     `yaml:"assessment"`
-	Baseline     string     `yaml:"baseline"`
-	Prior        string     `yaml:"prior"`
-	Reason       string     `yaml:"reason"`
-	Evidence     string     `yaml:"evidence"`
-	Dependencies string     `yaml:"dependencies"`
-	Scenarios    []scenario `yaml:"scenarios"`
-}
-
-// lane preserves the separate readiness states for an outcome.
-//
-// Example: Keep implementation, test, and production readiness separate.
-type lane struct {
-	RequiredEnvironment  requiredEnvironment `yaml:"required_environment"`
-	TaskID               taskID              `yaml:"task_id"`
-	Outcome              string              `yaml:"outcome"`
-	Owner                string              `yaml:"owner"`
-	Stage                string              `yaml:"stage"`
-	ImplementationStatus workStatus          `yaml:"implementation_status"`
-	TestStatus           workStatus          `yaml:"test_status"`
-	ProdStatus           workStatus          `yaml:"prod_status"`
-	NextMilestone        string              `yaml:"next_milestone"`
-	CompletedAt          string              `yaml:"completed_at"`
-	Forecasted           bool                `yaml:"forecasted"`
-	Blocker              string              `yaml:"blocker"`
-	NextAction           string              `yaml:"next_action"`
-	Context              string              `yaml:"context"`
-	RootTaskStatus       rootTaskStatus      `yaml:"root_task_status"`
-	Forecast             *forecast           `yaml:"forecast"`
-}
-
-// timelineEntry records one UTC half-hour and its independent path evidence.
-//
-// Example: Record both paths for one UTC half-hour.
-type timelineEntry struct {
-	Job         string `yaml:"job"`
-	ParentChain string `yaml:"parent_chain"`
-	Start       string `yaml:"start"`
-	End         string `yaml:"end"`
-	Fast        string `yaml:"fast"`
-	Normal      string `yaml:"normal"`
-	Evidence    string `yaml:"evidence"`
-	Uncertainty string `yaml:"uncertainty"`
-}
-
 // validForecast requires either explicit unknown or a complete supplied forecast.
 //
 // Example: Reject a forecast missing its outcome or target.
 func validForecast(f forecast) bool {
 	return strings.TrimSpace(f.Outcome) != "" && strings.TrimSpace(f.Target) != "" && strings.TrimSpace(f.Assessment) != ""
-}
-
-// completionEstimate records a projected elapsed completion range and basis.
-//
-// Example: Record the overall elapsed range and critical path.
-type completionEstimate struct {
-	Priority     priorityLabel `yaml:"priority"`
-	MinMinutes   *float64      `yaml:"min_minutes"`
-	MaxMinutes   *float64      `yaml:"max_minutes"`
-	AsOf         string        `yaml:"as_of"`
-	Basis        string        `yaml:"basis"`
-	Assumptions  string        `yaml:"assumptions"`
-	Dependencies string        `yaml:"dependencies"`
-	CriticalPath string        `yaml:"critical_path"`
 }
 
 // timelineState describes the coverage of supplied timeline evidence.
@@ -412,21 +334,6 @@ func (l lane) requiredStatus() workStatus {
 		return statusUnknown
 	}
 }
-
-// taskID identifies a task in the report hierarchy.
-//
-// Example: Task 1.2 belongs to parent 1.
-type taskID string
-
-// priorityLabel records the supported priority or an explicit unknown.
-//
-// Example: An unranked package uses unknown.
-type priorityLabel string
-
-// reviewRounds counts the scoped reporter–critic iterations.
-//
-// Example: One review uses one round.
-type reviewRounds int
 
 // checkEnumScalar rejects mappings, sequences, and non-string YAML tags.
 //

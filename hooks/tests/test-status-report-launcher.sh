@@ -29,8 +29,8 @@ completion_estimate: {min_minutes: 20, max_minutes: 30, as_of: '2026-11-02T15:24
 timeline:
   - job: '1'
     parent_chain: '1'
-    start: '2026-11-02T14:30:00Z'
-    end: '2026-11-02T15:00:00Z'
+    start: '2026-11-02T14:24:00Z'
+    end: '2026-11-02T14:54:00Z'
     fast: 'checkpoint'
     normal: 'unknown'
 YAML
@@ -40,7 +40,7 @@ cd "$test_dir"
 "$repo_root/bin/status-report" render <'report file.yaml' >output.txt
 grep -q 'Full task tree' output.txt
 grep -q '100%' output.txt
-grep -Fq '| 2026-11-02T14:30:00Z – 2026-11-02T15:00:00Z | checkpoint | unknown |' output.txt
+grep -Fq '| 2026-11-02T14:24:00Z – 2026-11-02T14:54:00Z | checkpoint | unknown |' output.txt
 if "$repo_root/bin/status-report" validate missing.yaml >/dev/null 2>&1; then
 	printf 'missing input unexpectedly succeeded\n' >&2
 	exit 1

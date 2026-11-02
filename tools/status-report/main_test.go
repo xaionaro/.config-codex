@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,13 @@ func TestZeroKnownProgress(t *testing.T) {
 	if !strings.Contains(out, "Progress: unknown") {
 		require.FailNow(t, fmt.Sprint(out))
 	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "Progress:") {
+			require.NotContains(t, line, "%")
+			require.NotContains(t, line, "[")
+			require.NotContains(t, line, "#")
+		}
+	}
 }
 
 // TestLaneAndUnknownCoverage checks the corresponding status report behavior.
@@ -214,7 +222,7 @@ func TestNestedSchemaValidation(t *testing.T) {
 	for _, replacement := range []string{
 		"lanes:\n  - {task_id: '1', outcome: X, required_environment: implementation, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: 42}",
 		"lanes:\n  - {task_id: '1', outcome: X, required_environment: implementation, implementation_status: NEW, test_status: NEW, prod_status: NEW, forecast: {target: [bad]}}",
-		"timeline:\n  - {job: X, parent_chain: X, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: X, normal: X, lost_field: X}",
+		"timeline:\n  - {job: X, parent_chain: X, start: '2026-11-02T13:54:00Z', end: '2026-11-02T14:24:00Z', fast: X, normal: X, lost_field: X}",
 	} {
 		source := "lanes: []"
 		if strings.HasPrefix(replacement, "timeline:") {
@@ -242,7 +250,7 @@ func TestRejectNonFiniteEffort(t *testing.T) {
 //
 // Example: Verify timeline parent chain consistency through the public behavior.
 func TestTimelineParentChainConsistency(t *testing.T) {
-	input := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}\n  - {job: X, parent_chain: B, start: '2026-11-02T14:30:00Z', end: '2026-11-02T15:00:00Z', fast: unknown, normal: unknown}", 1)
+	input := strings.Replace(valid, "timeline: []", "timeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T13:54:00Z', end: '2026-11-02T14:24:00Z', fast: unknown, normal: unknown}\n  - {job: X, parent_chain: B, start: '2026-11-02T14:24:00Z', end: '2026-11-02T14:54:00Z', fast: unknown, normal: unknown}", 1)
 	if _, err := parse([]byte(input)); err == nil {
 		require.FailNow(t, fmt.Sprint("accepted inconsistent chain"))
 	}
@@ -285,7 +293,7 @@ root_forecasts:
 //
 // Example: Verify partial timeline disclosure through the public behavior.
 func TestPartialTimelineDisclosure(t *testing.T) {
-	input := strings.Replace(valid, "timeline: []", "timeline_state: unavailable\ntimeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}", 1)
+	input := strings.Replace(valid, "timeline: []", "timeline_state: unavailable\ntimeline:\n  - {job: X, parent_chain: A, start: '2026-11-02T13:54:00Z', end: '2026-11-02T14:24:00Z', fast: unknown, normal: unknown}", 1)
 	r, err := parse([]byte(input))
 	if err != nil {
 		require.FailNow(t, fmt.Sprint(err))
@@ -367,12 +375,16 @@ func TestTimelineUTCAndLifecycle(t *testing.T) {
 	oldTZ := time.Local
 	time.Local = time.FixedZone("local", -5*3600)
 	base := strings.Replace(valid, "2026-11-02T15:24:00Z", "2026-11-02T00:15:00+00:00", 1)
-	row := "timeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-01T23:30:00Z', end: '2026-11-02T00:00:00+00:00', fast: unknown, normal: unknown}"
+	row := "timeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-01T23:15:00Z', end: '2026-11-01T23:45:00+00:00', fast: unknown, normal: unknown}"
 	if _, err := parse([]byte(strings.Replace(base, "timeline: []", row, 1))); err != nil {
 		assert.Fail(t, fmt.Sprintf("valid midnight UTC: %v", err))
 	}
+	cross := strings.Replace(row, "2026-11-01T23:15:00Z", "2026-11-01T23:45:00Z", 1)
+	cross = strings.Replace(cross, "2026-11-01T23:45:00+00:00", "2026-11-02T00:15:00+00:00", 1)
+	_, crossErr := parse([]byte(strings.Replace(base, "timeline: []", cross, 1)))
+	require.NoError(t, crossErr)
 	for _, replacement := range []string{"2026-11-02T00:01:00Z", "2026-11-01T19:00:00Z", "2026-11-02T00:00:00+01:00"} {
-		bad := strings.Replace(row, "2026-11-02T00:00:00+00:00", replacement, 1)
+		bad := strings.Replace(row, "2026-11-01T23:45:00+00:00", replacement, 1)
 		if _, err := parse([]byte(strings.Replace(base, "timeline: []", bad, 1))); err == nil {
 			assert.Fail(t, fmt.Sprintf("accepted invalid end %s", replacement))
 		}
@@ -576,7 +588,10 @@ func TestEstimateDurationBoundaries(t *testing.T) {
 // floatPointer supplies an optional numeric field for focused test cases.
 //
 // Example: Build a fractional minute range.
-func floatPointer(value float64) *float64 { return &value }
+func floatPointer(value float64) *fractionalMinutes {
+	result := fractionalMinutes(value)
+	return &result
+}
 
 // TestHierarchicalTaskIDsRejectMismatchedParents checks identity lineage.
 //
@@ -622,7 +637,7 @@ func TestStatusAndEstimateVariants(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, render(r), "minutes work")
 	for _, state := range []string{"unavailable", "present"} {
-		input := strings.Replace(valid, "timeline: []", "timeline_state: "+state+"\ntimeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-02T14:00:00Z', end: '2026-11-02T14:30:00Z', fast: unknown, normal: unknown}", 1)
+		input := strings.Replace(valid, "timeline: []", "timeline_state: "+state+"\ntimeline:\n  - {job: '1', parent_chain: '1', start: '2026-11-02T13:54:00Z', end: '2026-11-02T14:24:00Z', fast: unknown, normal: unknown}", 1)
 		_, err = parse([]byte(input))
 		require.NoError(t, err, state)
 	}
@@ -870,4 +885,109 @@ func TestOptionalMergedStatusesAndRequiredNull(t *testing.T) {
 			require.Error(t, err, tc.fields)
 		}
 	}
+}
+
+// testWriter models failed and short writes to the CLI output stream.
+//
+// Example: A broken pipe must cause a nonzero exit status.
+type testWriter struct {
+	short bool
+	calls int
+}
+
+// Write records one attempted output and simulates a failure or short write.
+//
+// Example: A short write returns fewer bytes without a reported error.
+func (w *testWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.short {
+		return len(p) - 1, nil
+	}
+	return 0, io.ErrClosedPipe
+}
+
+// TestCLIReportsWriteFailures rejects broken or short output writes.
+//
+// Example: Both validate and render report an output failure.
+func TestCLIReportsWriteFailures(t *testing.T) {
+	for _, cmd := range []string{"validate", "render"} {
+		for _, short := range []bool{false, true} {
+			writer := &testWriter{short: short}
+			var errOut strings.Builder
+			code := run([]string{cmd}, strings.NewReader(valid), writer, &errOut)
+			require.NotZero(t, code)
+			require.Equal(t, 1, writer.calls)
+			if short {
+				require.Contains(t, errOut.String(), io.ErrShortWrite.Error())
+			} else {
+				require.Contains(t, errOut.String(), io.ErrClosedPipe.Error())
+			}
+		}
+	}
+}
+
+// TestForecastEvidenceAndAsOfRemainVisible checks supplied forecast facts.
+//
+// Example: Evidence without a baseline still appears once.
+func TestForecastEvidenceAndAsOfRemainVisible(t *testing.T) {
+	for _, metadata := range []string{"", "    prior: '2026-11-02T14:00:00Z'\n", "    baseline: '2026-11-02T14:00:00Z'\n"} {
+		root := "root_forecasts:\n  - outcome: Work\n    target: '2026-11-02T16:00:00Z'\n    assessment: provisional\n    reason: unique-reason\n    evidence: unique-evidence\n" + metadata
+		r, err := parse([]byte(valid + root))
+		require.NoError(t, err)
+		out := render(r)
+		require.Equal(t, 1, strings.Count(out, "unique-reason"))
+		require.Equal(t, 1, strings.Count(out, "unique-evidence"))
+		require.Contains(t, out, "as of 2026-11-02T15:24:00Z")
+	}
+}
+
+// TestTimelineGridAndDuplicateJobs checks report-relative bins.
+//
+// Example: Two jobs can report work in the same half-hour interval.
+func TestTimelineGridAndDuplicateJobs(t *testing.T) {
+	row := "  - {job: '%s', parent_chain: '1', start: '2026-11-02T14:24:00Z', end: '2026-11-02T14:54:00Z', fast: unknown, normal: unknown}\n"
+	rows := fmt.Sprintf(row, "A") + fmt.Sprintf(row, "B")
+	_, err := parse([]byte(strings.Replace(valid, "timeline: []", "timeline:\n"+rows, 1)))
+	require.NoError(t, err)
+	duplicate := fmt.Sprintf(row, "A") + fmt.Sprintf(row, "A")
+	_, err = parse([]byte(strings.Replace(valid, "timeline: []", "timeline:\n"+duplicate, 1)))
+	require.Error(t, err)
+	offgrid := strings.ReplaceAll(fmt.Sprintf(row, "A"), ":24:00Z", ":25:00Z")
+	offgrid = strings.ReplaceAll(offgrid, ":54:00Z", ":55:00Z")
+	_, err = parse([]byte(strings.Replace(valid, "timeline: []", "timeline:\n"+offgrid, 1)))
+	require.Error(t, err)
+}
+
+// TestTimelineRowsRenderChronologically checks ordering of supplied entries.
+//
+// Example: A later reported event cannot precede an earlier event in the table.
+func TestTimelineRowsRenderChronologically(t *testing.T) {
+	rows := `timeline:
+  - {job: A, parent_chain: '1', start: '2026-11-02T14:54:00Z', end: '2026-11-02T15:24:00Z', fast: later-marker, normal: unknown}
+  - {job: A, parent_chain: '1', start: '2026-11-02T13:54:00Z', end: '2026-11-02T14:24:00Z', fast: earlier-marker, normal: unknown}
+`
+	r, err := parse([]byte(strings.Replace(valid, "timeline: []", rows, 1)))
+	require.NoError(t, err)
+	out := render(r)
+	require.Less(t, strings.Index(out, "earlier-marker"), strings.Index(out, "later-marker"))
+	require.Contains(t, out, "earlier-marker")
+	require.Contains(t, out, "later-marker")
+}
+
+// TestTimelineWindowBoundaryAndEquivalentUTCOffsets validates bin endpoints.
+//
+// Example: The first and last half-hours fit the report's four-hour window.
+func TestTimelineWindowBoundaryAndEquivalentUTCOffsets(t *testing.T) {
+	rows := `timeline:
+  - {job: A, parent_chain: '1', start: '2026-11-02T11:24:00Z', end: '2026-11-02T11:54:00Z', fast: first, normal: unknown}
+  - {job: A, parent_chain: '1', start: '2026-11-02T14:54:00+00:00', end: '2026-11-02T15:24:00+00:00', fast: last, normal: unknown}
+`
+	input := strings.Replace(valid, "timeline: []", rows, 1)
+	r, err := parse([]byte(input))
+	require.NoError(t, err)
+	out := render(r)
+	require.Less(t, strings.Index(out, "first"), strings.Index(out, "last"))
+	duplicate := rows + "  - {job: A, parent_chain: '1', start: '2026-11-02T14:54:00Z', end: '2026-11-02T15:24:00Z', fast: duplicate, normal: unknown}\n"
+	_, err = parse([]byte(strings.Replace(valid, "timeline: []", duplicate, 1)))
+	require.Error(t, err)
 }
