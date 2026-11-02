@@ -29,7 +29,11 @@ func TestSourceReconciliationBoundaries(t *testing.T) {
 		{"invalid recalibration", linkedReport, linkedLedger, strings.Replace(linkedForecasts, "status: unchanged", "status: mystery", 1), "invalid recalibration status"},
 		{"changed recalibration without evidence", linkedReport, linkedLedger, strings.Replace(linkedForecasts, "status: unchanged, evidence: initial", "status: changed", 1), "source missing recalibration evidence"},
 		{"elapsed forecast", linkedReport, linkedLedger, strings.Replace(linkedForecasts, "target: '2026-11-02T16:00:00+00:00'", "target: '2026-11-02T15:00:00Z'", 1), "target elapsed while work open"},
+		{"invalid assessment", linkedReport, linkedLedger, strings.Replace(linkedForecasts, "assessment: complete", "assessment: mystery", 1), "invalid assessment"},
+		{"provisional without basis", strings.Replace(linkedReport, "assessment: complete", "assessment: provisional", 1), linkedLedger, strings.Replace(linkedForecasts, "assessment: complete", "assessment: provisional", 1), "provisional source missing target_basis"},
+		{"invented recalibration", strings.Replace(linkedReport, "assessment: complete, baseline: '2026-11-02T16:00:00Z'", "assessment: complete, prior: '2026-11-02T15:00:00Z', reason: invented, baseline: '2026-11-02T16:00:00Z'", 1), linkedLedger, linkedForecasts, "recalibration prior mismatch"},
 		{"duplicate forecast", linkedReport + "root_forecasts:\n  - {forecast_ref: 'forecasts.yaml#/records/first', outcome: Conflict, target: '2026-11-02T18:00:00Z', assessment: complete}\n", linkedLedger, linkedForecasts, "duplicate report forecast reference"},
+		{"orphan canonical forecast", linkedReport, linkedLedger, linkedForecasts + "  orphan:\n    status: active\n", "active canonical forecast orphan is not linked"},
 		{"orphan forecast", linkedReport + "root_forecasts:\n  - {forecast_ref: 'forecasts.yaml#/records/orphan', outcome: Orphan, target: '2026-11-02T18:00:00Z', assessment: complete}\n", linkedLedger, linkedForecasts, "root forecast \"forecasts.yaml#/records/orphan\" is not linked"},
 	}
 	for _, tc := range cases {
@@ -47,4 +51,15 @@ func TestSourceReconciliationBoundaries(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestForecastStructureRejectsIncompleteDetail(t *testing.T) {
+	issues := forecastStructure(map[string]any{
+		"base_case": map[string]any{"packages": []any{map[string]any{"work": "work"}}},
+		"scenarios": []any{map[string]any{"name": "delay"}},
+	})
+	require.Contains(t, issues, "base_case missing endpoint")
+	require.Contains(t, issues, "base_case package missing basis")
+	require.Contains(t, issues, "scenario missing event_time")
+	require.Contains(t, issues, "scenario missing basis")
 }

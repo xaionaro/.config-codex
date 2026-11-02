@@ -125,6 +125,55 @@ func projectionEqual(a, b any) bool {
 		return reflect.DeepEqual(a, b)
 	}
 }
+func forecastStructure(src map[string]any) []string {
+	var issues []string
+	if raw, present := src["base_case"]; present {
+		base, ok := raw.(map[string]any)
+		if !ok {
+			issues = append(issues, "base_case must be a mapping")
+		} else {
+			if textField(base, "endpoint") == "" {
+				issues = append(issues, "base_case missing endpoint")
+			}
+			packages, ok := base["packages"].([]any)
+			if !ok || len(packages) == 0 {
+				issues = append(issues, "base_case missing packages")
+			}
+			for _, rawPackage := range packages {
+				p, ok := rawPackage.(map[string]any)
+				if !ok {
+					issues = append(issues, "invalid base_case package")
+					continue
+				}
+				for _, k := range []string{"work", "duration", "basis"} {
+					if textField(p, k) == "" {
+						issues = append(issues, "base_case package missing "+k)
+					}
+				}
+			}
+		}
+	}
+	if raw, present := src["scenarios"]; present {
+		scenarios, ok := raw.([]any)
+		if !ok {
+			issues = append(issues, "scenarios must be a list")
+		}
+		for _, rawScenario := range scenarios {
+			s, ok := rawScenario.(map[string]any)
+			if !ok {
+				issues = append(issues, "invalid scenario")
+				continue
+			}
+			for _, k := range []string{"name", "trigger", "affected_work", "evidence", "assumptions", "added_duration", "event_time", "endpoint", "basis"} {
+				if textField(s, k) == "" {
+					issues = append(issues, "scenario missing "+k)
+				}
+			}
+		}
+	}
+	return issues
+}
+
 func hasRole(roles []string, role string) bool {
 	for _, r := range roles {
 		if r == role {
@@ -261,7 +310,7 @@ func reconcile(r report, dir string) []string {
 		if textField(src, "kind") != kind {
 			add("forecast %s kind mismatch", id)
 		}
-		for _, field := range []string{"kind", "status", "outcome", "target", "assessment", "original_baseline", "baseline_evidence"} {
+		for _, field := range []string{"kind", "status", "outcome", "assessment", "original_baseline", "baseline_evidence"} {
 			if textField(src, field) == "" {
 				add("forecast %s source missing required %s", id, field)
 			}
@@ -285,7 +334,23 @@ func reconcile(r report, dir string) []string {
 				}
 			}
 		}
+		for _, issue := range forecastStructure(src) {
+			add("forecast %s source %s", id, issue)
+		}
+		assessment := textField(src, "assessment")
+		if assessment != "complete" && assessment != "provisional" {
+			add("forecast %s source has invalid assessment %q", id, assessment)
+		}
+		if assessment == "provisional" && textField(src, "target_basis") == "" {
+			add("forecast %s provisional source missing target_basis", id)
+		}
 		state := textField(src, "status")
+		if state != "active" && state != "inactive" {
+			add("forecast %s source has invalid status %q", id, state)
+		}
+		if open && textField(src, "target") == "" {
+			add("forecast %s source missing required target", id)
+		}
 		if open && state != "active" {
 			add("forecast %s is not active", id)
 		}
@@ -315,7 +380,7 @@ func reconcile(r report, dir string) []string {
 				add("forecast %s recalibration current mismatch: source %q; report %q", id, current, f.Target)
 			}
 			for _, v := range []struct{ k, got string }{{"prior", f.Prior}, {"reason", f.Reason}, {"evidence", f.Evidence}} {
-				if textField(rec, v.k) != "" && !sameValue(textField(rec, v.k), v.got) {
+				if !sameValue(textField(rec, v.k), v.got) {
 					add("forecast %s recalibration %s mismatch", id, v.k)
 				}
 			}
@@ -401,6 +466,19 @@ func reconcile(r report, dir string) []string {
 			}
 			if w.Data.ForecastRef != "" || open {
 				checkForecast(w.Data.ForecastRef, f, "root", open)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "forecasts.yaml")); err == nil && loadForecasts() {
+		claimed := map[string]bool{}
+		for _, w := range works {
+			if w.Data.ForecastRef != "" {
+				claimed[w.Data.ForecastRef] = true
+			}
+		}
+		for id, source := range forecasts.Records {
+			if textField(source, "status") == "active" && !claimed["forecasts.yaml#/records/"+id] {
+				add("active canonical forecast %s is not linked to work", id)
 			}
 		}
 	}
