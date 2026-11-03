@@ -127,7 +127,8 @@ priority from those points and remaining work.
 
 Append events in order. Correct a mistaken projected field with a new `correction`
 event and its update's `corrects` set to the one-based line of the latest update
-for that field; never edit the earlier entry. Refresh tracks pending updates and
+for that field; when that update was not first on its line, also supply its
+zero-based `corrects_ordinal`. Never edit the earlier entry. Refresh tracks pending updates and
 preserves detected owner edits and unrelated content. Reconcile diagnostics and
 pending changes manually when needed. If automatic refresh fails after append, run
 the provided retry command without appending again.

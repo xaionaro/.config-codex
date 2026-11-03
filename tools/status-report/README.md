@@ -60,7 +60,7 @@ Run the Go refresh command under the existing ECI mutation lock; `eci-active sta
 
 ### Log-driven report updates
 
-Producers can include an explicit `details.status_update` object in a high-level log event. Its `updates` and `additions` are arrays; omit either when unused. Each update has a `target`, stable `id`, and `fields` object whose values are nonempty strings. Supply known facts and evidence: prose elsewhere in the event is not interpreted as a report update. This payload closes a task and supplies its acceptance evidence in the same update:
+Producers can include an explicit `details.status_update` object in a high-level log event. Its `updates` and `additions` are arrays; omit either when unused. Each update has a `target` and stable `id`; `fields` supplies nonempty string values, and the typed operations below use `values` or `clear`. Supply known facts and evidence: prose elsewhere in the event is not interpreted as a report update. This payload closes a task and supplies its acceptance evidence in the same update:
 
 ```json
 {"updates":[{"target":"task","id":"1","fields":{"status":"CLOSED","evidence":"Acceptance check passed: checks.out"}},{"target":"verification","id":"acceptance-check","fields":{"text":"Acceptance check passed.","evidence":"checks.out"}}]}
@@ -81,13 +81,30 @@ For example, a lane completion update after the canonical work and forecast are 
 
 `additions` accepts `{"target":"task","record":{...}}` or `{"target":"review","record":{...}}` with a complete report-schema record. IDs must be unique; a review uses `task_id`. When a task introduces a new priority, add its complete `priority_estimate` record in the same event; the task and estimate are inserted together. These operations do not derive impact points: the producer assigns supported points and basis on the shared scale, and the renderer calculates priority from those points and remaining work.
 
+Additions also accept complete `lane`, `root_completion`, and `root_forecast` records. Their work, reporting role, outcome and forecast must agree with canonical sources; terminal additions require addition-level `evidence`. For a terminal lane update, the canonical work must match and any referenced canonical forecast must be inactive before its report forecast can be retired. Reopening a lane clears its `completed_at`.
+
+To replace an existing root forecast with a completion, the `root_completion` addition supplies `retire_forecast: true`, `expected_prior` containing the complete existing forecast record, and evidence. To reopen a completed root, the `root_forecast` addition supplies `reopen_work_ref`, `expected_prior` containing the complete existing completion record, and evidence. The prior record must match exactly and canonical work and forecast states must support the transition. Comments or conflicting edits can leave the transition pending.
+
+Typed updates use `values` for supplied JSON values and `clear` for explicit removal of supported fields. Supported typed targets and fields are:
+
+- `task` by task ID: `effort`, `impact`, `impact_points`, `impact_basis`, `priority`, `work_refs`, `indivisible_reason`, `title`, `parent_id`.
+- `priority_estimate` by priority: `min_minutes`, `max_minutes`, `as_of`, `basis`, `assumptions`, `dependencies`, `critical_path`.
+- `review` by task ID: `reporter`, `critic`, `rounds`, `estimate`, `impact`, `priority`, `unresolved`.
+- `report` with ID `current`: `completion_estimate`, `top_priorities`, `roster`, `priority_order`, `impact_scale`.
+
+For example, `{"target":"task","id":"1","values":{"impact_points":5,"impact_basis":"educated guess"},"clear":["indivisible_reason"]}` supplies points and explicitly removes the optional reason. Resulting reports still must validate; a clear does not invent a replacement.
+
+Task updates can also clear `lifecycle`, `context`, `owner`, or `evidence`; clearing `lifecycle` requires an explicit non-unknown status in `fields`. Lane updates can clear `blocker`, `next_action`, `lifecycle`, or `completed_at` alongside scalar `fields`. Clearing lane `lifecycle` requires event evidence and canonical work in active or blocked state. Supply readiness changes as needed for a valid report; clearing `completed_at` while the lane remains closed is invalid. A field cannot be supplied and cleared in the same update.
+
+A complete timeline snapshot can be supplied as `details.status_update.timeline` with UTC `as_of`, `state` (`present` or `verified_empty`), and `entries`. A present snapshot supplies all eight consecutive half-hour bins for every included job, with both `fast` and `normal` values; `verified_empty` has no entries. The snapshot replaces the timeline and its anchor as a unit.
+
 For example, this payload adds a task and its review, using supplied estimates and review facts:
 
 ```json
 {"additions":[{"target":"task","record":{"id":"2","title":"Check result","priority":"high","impact":"Acceptance remains open","effort":{"min_minutes":10,"max_minutes":20,"kind":"work","basis":"educated guess"},"status":"NEW"}},{"target":"review","record":{"task_id":"2","reporter":"owner","critic":"reviewer","rounds":1,"estimate":"10–20 minutes","impact":"Acceptance remains open","priority":"high","unresolved":"none"}}]}
 ```
 
-Sync consumes events in append order and retains the latest update per target field. A correction is a new `correction` event whose update includes `corrects`, the one-based log line containing the latest update for each corrected field. Keep earlier entries unchanged. The report stores its sync cursor and pending state in `status_sync`; do not edit it as a substitute for an event. Conflicting owner edits, missing targets, invalid records, and unsupported or unsafe changes may remain pending or produce diagnostics for manual reconciliation. Sync preserves unrelated content and owner edits it detects; it does not infer missing facts. Review diagnostics and reconcile sources before claiming completion. If refresh fails after append, use the emitted retry command without appending the event again. A typed event can advance the report timestamp; an existing timeline keeps its original anchor in `timeline_as_of`.
+Sync consumes events in append order and applies each target update as an ordered transaction. A correction is a new `correction` event whose update includes `corrects`, the one-based log line containing the latest update for each corrected field. If that version is not the first update on its line, also supply `corrects_ordinal`, its zero-based position in that line's `updates` array; omission means zero. Keep earlier entries unchanged. The report stores its sync cursor and pending state in `status_sync`; do not edit it as a substitute for an event. Conflicting owner edits, missing targets, invalid records, and unsupported or unsafe changes may remain pending or produce diagnostics for manual reconciliation. Sync preserves unrelated content and owner edits it detects; it does not infer missing facts. Review diagnostics and reconcile sources before claiming completion. If refresh fails after append, use the emitted retry command without appending the event again. A typed event can advance the report timestamp; an existing timeline keeps its original anchor in `timeline_as_of` unless a new snapshot is supplied.
 
 For example, when line 12 was the latest update to task 1's owner, a correction event can include `details.corrects` identifying that mistaken entry and `details.status_update` containing:
 
