@@ -351,19 +351,16 @@ func retractBlockNarrative(
 	if yamlRangeHasComment(data, startOffset, endOffset) {
 		return data, false
 	}
-	replacement := []string{}
-	if len(list.Content) == 1 {
-		ending := ""
-		if end > start && strings.HasSuffix(lines[end-1], "\r") {
-			ending = "\r"
-		}
-		indent := emptyNarrativeIndent(root, section, lines[start][:dash])
-		replacement = []string{indent + "[]" + ending}
+	if len(list.Content) != 1 {
+		return append(append([]byte(nil), data[:startOffset]...), data[endOffset:]...), true
 	}
+	ending := ""
+	if end > start && strings.HasSuffix(lines[end-1], "\r") {
+		ending = "\r"
+	}
+	indent := emptyNarrativeIndent(root, section, lines[start][:dash])
+	replacement := []string{indent + "[]" + ending}
 	result := append(append(append([]string(nil), lines[:start]...), replacement...), lines[end:]...)
-	if len(replacement) == 0 && end == len(lines) && len(result) > 0 {
-		result[len(result)-1] = strings.TrimSuffix(result[len(result)-1], "\r")
-	}
 	return []byte(strings.Join(result, "\n")), true
 }
 

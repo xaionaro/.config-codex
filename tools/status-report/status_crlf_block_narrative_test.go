@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // TestCRLFBlockNarrativeAppendPreservesLineEndings checks real refresh output.
@@ -122,7 +123,7 @@ func TestCRLFMultilineNarrativeRetractionKeepsFinalBoundary(t *testing.T) {
 // Example: Removing the final managed entry keeps the preceding legacy item intact.
 func TestCRLFRetractionOfLastEntryKeepsSurvivorBoundary(t *testing.T) {
 	for _, tc := range []struct{ name, suffix, want string }{
-		{"unterminated", "", "progress:\r\n  - legacy"},
+		{"unterminated", "", "progress:\r\n  - legacy\r\n"},
 		{"terminated", "\r\n", "progress:\r\n  - legacy\r\n"},
 		{"following field", "\r\ndecisions: []\r\n", "progress:\r\n  - legacy\r\ndecisions: []\r\n"},
 	} {
@@ -135,6 +136,27 @@ func TestCRLFRetractionOfLastEntryKeepsSurvivorBoundary(t *testing.T) {
 				out, ok := retractNarrativeSync([]byte(input), syncUpdate{Target: syncTargetProgress, ID: "one"}, "done", true, "", false)
 				require.True(t, ok)
 				require.Equal(t, tc.want, string(out))
+			})
+	}
+}
+
+// TestRetractionPreservesBlockScalarSurvivor checks unowned narrative values.
+//
+// Example: A clipped literal retains its final newline after a later item is removed.
+func TestRetractionPreservesBlockScalarSurvivor(t *testing.T) {
+	for _, style := range []string{"|", ">", "|-", ">-"} {
+		t.Run(style,
+			// check compares the surviving scalar before and after retraction.
+			//
+			// Example: A clipped folded scalar retains its newline.
+			func(t *testing.T) {
+				input := []byte("progress:\r\n  - " + style + "\r\n    legacy scalar\r\n  - subject_ref: one\r\n    text: done")
+				var before, after yaml.Node
+				require.NoError(t, yaml.Unmarshal(input, &before))
+				out, ok := retractNarrativeSync(input, syncUpdate{Target: syncTargetProgress, ID: "one"}, "done", true, "", false)
+				require.True(t, ok)
+				require.NoError(t, yaml.Unmarshal(out, &after))
+				require.Equal(t, mapValue(before.Content[0], "progress").Content[0].Value, mapValue(after.Content[0], "progress").Content[0].Value)
 			})
 	}
 }
