@@ -1012,16 +1012,28 @@ func taskHasEvidence(
 	return false
 }
 
+// scalarSyncFields returns the allowed scalar fields for a projection target.
+//
+// Example: A task update may set its owner.
+func scalarSyncFields(target syncTarget) map[string]bool {
+	switch target {
+	case syncTargetTask:
+		return map[string]bool{"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true}
+	case syncTargetLane:
+		return map[string]bool{"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true, "root_task_status": true}
+	case syncTargetReport:
+		return map[string]bool{"state": true, "next_focus": true}
+	default:
+		return nil
+	}
+}
+
 // validSyncUpdate rejects unsupported and incomplete operations without rejecting the log.
 //
 // Example: A task closure without acceptance evidence remains unapplied.
 func validSyncUpdate(update syncUpdate) bool {
-	allowed := map[syncTarget]map[string]bool{
-		syncTargetTask:   {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true},
-		syncTargetLane:   {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true, "root_task_status": true},
-		syncTargetReport: {"state": true, "next_focus": true},
-	}
-	if strings.TrimSpace(update.ID) == "" || len(update.Fields) == 0 || allowed[update.Target] == nil {
+	allowed := scalarSyncFields(update.Target)
+	if strings.TrimSpace(update.ID) == "" || len(update.Fields) == 0 || allowed == nil {
 		return false
 	}
 	if update.Target == syncTargetLane && (strings.TrimSpace(update.WorkRef) == "" || update.RequiredEnvironment == syncEnvironmentUnknown) {
@@ -1051,7 +1063,7 @@ func validSyncUpdate(update syncUpdate) bool {
 		}
 	}
 	for field, value := range update.Fields {
-		if !allowed[update.Target][field] || strings.TrimSpace(value) == "" {
+		if !allowed[field] || strings.TrimSpace(value) == "" {
 			return false
 		}
 		if field == "root_task_status" {
@@ -1146,8 +1158,8 @@ func applySyncField(
 	hasPrevious bool,
 ) ([]byte, bool) {
 	target, id := update.Target, update.ID
-	allowed := map[syncTarget]map[string]bool{syncTargetTask: {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true}, syncTargetLane: {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true, "root_task_status": true}, syncTargetReport: {"state": true, "next_focus": true}}
-	if !allowed[target][field] || strings.TrimSpace(id) == "" || strings.TrimSpace(value) == "" {
+	allowed := scalarSyncFields(target)
+	if !allowed[field] || strings.TrimSpace(id) == "" || strings.TrimSpace(value) == "" {
 		return data, false
 	}
 	var doc yaml.Node
