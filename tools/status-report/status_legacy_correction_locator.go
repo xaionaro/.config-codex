@@ -89,7 +89,46 @@ func legacyCorrectionLocatorValid(
 	if match < 0 {
 		return false, false
 	}
-	return syncCorrectionLocatorPrecedes(u, pending.Line, match), true
+	if !syncCorrectionLocatorPrecedes(u, pending.Line, match) {
+		return false, true
+	}
+	priorOrdinal := 0
+	if u.CorrectsOrdinal != nil {
+		priorOrdinal = *u.CorrectsOrdinal
+	}
+	if priorOrdinal >= len(event.Details.StatusUpdate.Updates) {
+		return false, true
+	}
+	prior := event.Details.StatusUpdate.Updates[priorOrdinal]
+	if prior.Target == syncTargetUnknown {
+		return false, false
+	}
+	return legacyCorrectionPriorMatches(u, prior), true
+}
+
+// legacyCorrectionPriorMatches checks that the named update owns the field.
+//
+// Example: An owner correction cannot name another task's assignment.
+func legacyCorrectionPriorMatches(
+	pending syncUpdate,
+	prior syncUpdate,
+) bool {
+	if syncTargetKey(pending, "") != syncTargetKey(prior, "") {
+		return false
+	}
+	fields := map[string]bool{}
+	for _, field := range syncGroupFields(prior) {
+		fields[field] = true
+	}
+	if pending.Retract {
+		return fields["text"] || fields["evidence"]
+	}
+	for field := range pending.Fields {
+		if !fields[field] {
+			return false
+		}
+	}
+	return true
 }
 
 // legacyCorrectionUpdateMatches identifies a field-wise update in its source event.

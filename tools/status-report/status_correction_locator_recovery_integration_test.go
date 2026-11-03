@@ -197,3 +197,40 @@ func TestLegacyCancellationRejectsSelfCorrectionsBeforeAtomicReplay(t *testing.T
 	require.Empty(t, report.StatusSync.Pending)
 	require.Contains(t, report.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
 }
+
+// TestLegacySameLineCorrectionRequiresMatchingPriorField checks provenance.
+//
+// Example: A different task or field cannot authorize an owner correction.
+func TestLegacySameLineCorrectionRequiresMatchingPriorField(t *testing.T) {
+	for _, tc := range []struct {
+		name, prior string
+	}{
+		{"other task", `{"target":"task","id":"2","corrects":1,"fields":{"owner":"other"}}`},
+		{"other field", `{"target":"task","id":"1","corrects":1,"fields":{"status":"IN PROGRESS"}}`},
+	} {
+		t.Run(tc.name,
+			// Check an unrelated predecessor beside a saved legacy correction.
+			//
+			// Example: The existing owner remains unchanged.
+			func(t *testing.T) {
+				// saved is a field-wise correction naming ordinal zero of line two.
+				//
+				// Example: The saved owner remains "second" when its locator is invalid.
+				const saved = `status_sync: {"cursor":2,"applied":{"[\"task\",\"1\",\"\",\"\"]/owner":"second"},"latest":{"[\"task\",\"1\",\"\",\"\"]/owner":2},"pending":{"[\"task\",\"1\",\"\",\"\"]/owner":{"line":2,"update":{"target":"task","id":"1","corrects":2,"corrects_ordinal":0,"fields":{"owner":"third"}}}}}`
+				log := `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"first"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[` + tc.prior + `,{"target":"task","id":"1","corrects":2,"corrects_ordinal":0,"fields":{"owner":"third"}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				input := strings.Replace(linkedReport, "title: First,", `title: First, owner: second,`, 1)
+				require.NoError(t, os.WriteFile(path, []byte(input+saved+"\n"), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				require.NoError(t, refreshTestStatus(dir, "correction"))
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				report, err := parse(result)
+				require.NoError(t, err)
+				require.Equal(t, "second", report.Tasks[0].Owner)
+				require.Empty(t, report.StatusSync.Pending)
+				require.Contains(t, report.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
+			})
+	}
+}
