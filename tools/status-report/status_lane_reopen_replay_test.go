@@ -71,3 +71,22 @@ func TestLaneFollowupProjectsOnlyExplicitValue(t *testing.T) {
 		t.Fatal("unsupplied followup was inferred away")
 	}
 }
+
+// TestLaneCompletionTimeCorrectionRequiresCanonicalTime checks isolated time updates.
+//
+// Example: A different actual completion time stays pending until the source agrees.
+func TestLaneCompletionTimeCorrectionRequiresCanonicalTime(t *testing.T) {
+	original := strings.Replace(linkedReport, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "    completed_at: '2026-11-02T15:25:00Z'\n", 1)
+	original = strings.Replace(original, "implementation_status: IN PROGRESS", "implementation_status: CLOSED", 1)
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:25:00Z"}}}}
+	event := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","fields":{"completed_at":"2026-11-02T15:45:00Z"}}]}}}`
+	r := explorationProjection(t, original, event, ledger, forecastSource{})
+	if r.Lanes[0].CompletedAt != "2026-11-02T15:25:00Z" || len(r.StatusSync.Groups) != 1 {
+		t.Fatalf("mismatched completion published: completed=%q pending=%d", r.Lanes[0].CompletedAt, len(r.StatusSync.Groups))
+	}
+	ledger.Records["work:first"] = sourceRecord{Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:45:00Z"}}
+	r = explorationProjection(t, original, event, ledger, forecastSource{})
+	if r.Lanes[0].CompletedAt != "2026-11-02T15:45:00Z" || len(r.StatusSync.Groups) != 0 {
+		t.Fatal("canonical correction rejected")
+	}
+}

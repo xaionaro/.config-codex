@@ -94,6 +94,15 @@ func applyLaneSyncUpdateRaw(
 		}
 	}
 	statusField := update.RequiredEnvironment.String() + "_status"
+	if completed, supplied := update.Fields["completed_at"]; supplied {
+		if !validRef(update.WorkRef, "project-understanding.yaml") {
+			return data, false
+		}
+		work, ok := ledger.Records[sourceID(update.WorkRef, "project-understanding.yaml")]
+		if !ok || work.Type != "work" || work.Data.State != workStateCompleted || work.Data.CompletedAt == "" || !sameValue(completed, work.Data.CompletedAt) {
+			return data, false
+		}
+	}
 	terminal := update.Fields[statusField] == "CLOSED" || update.Fields["lifecycle"] == "cancelled"
 	candidate := data
 	if terminal {
