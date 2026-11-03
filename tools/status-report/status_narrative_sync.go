@@ -37,6 +37,7 @@ func applyNarrativeSyncField(
 	field string,
 	value string,
 	previous string,
+	previousPresent bool,
 	itemOwned bool,
 ) ([]byte, bool) {
 	if !validNarrativeSyncUpdate(syncUpdate{Target: u.Target, ID: u.ID, Fields: map[string]string{field: value}}) {
@@ -65,7 +66,7 @@ func applyNarrativeSyncField(
 		}
 	}
 	if item == nil {
-		if field != "text" || previous != "" {
+		if field != "text" || previousPresent {
 			return data, false
 		}
 		entry := "{subject_ref: " + strconv.Quote(u.ID) + ", text: " + strconv.Quote(value) + "}"
@@ -76,11 +77,11 @@ func applyNarrativeSyncField(
 	}
 	existing := mapValue(item, field)
 	if existing != nil {
-		if previous == "" || existing.Kind != yaml.ScalarNode || existing.Value != previous {
+		if !previousPresent || previous == "" || existing.Kind != yaml.ScalarNode || existing.Value != previous {
 			return data, false
 		}
 	}
-	if existing == nil && (previous != "" || !itemOwned) {
+	if existing == nil && (previousPresent || !itemOwned) {
 		return data, false
 	}
 	var fields forecastFieldEdits
@@ -171,8 +172,9 @@ func narrativeSyncItemOwned(
 	data []byte,
 	u syncUpdate,
 	previousText string,
+	previousTextPresent bool,
 ) bool {
-	if previousText == "" {
+	if !previousTextPresent || previousText == "" {
 		return false
 	}
 	var doc yaml.Node
@@ -211,9 +213,11 @@ func retractNarrativeSync(
 	data []byte,
 	update syncUpdate,
 	previousText string,
+	previousTextPresent bool,
 	previousEvidence string,
+	previousEvidencePresent bool,
 ) ([]byte, bool) {
-	if !narrativeSyncItemOwned(data, update, previousText) {
+	if !narrativeSyncItemOwned(data, update, previousText, previousTextPresent) {
 		return data, false
 	}
 	var doc yaml.Node
@@ -231,10 +235,10 @@ func retractNarrativeSync(
 			continue
 		}
 		evidence := mapValue(item, "evidence")
-		if evidence == nil && previousEvidence != "" {
+		if evidence == nil && previousEvidencePresent {
 			return data, false
 		}
-		if evidence != nil && (previousEvidence == "" || evidence.Kind != yaml.ScalarNode || evidence.Value != previousEvidence) {
+		if evidence != nil && (!previousEvidencePresent || previousEvidence == "" || evidence.Kind != yaml.ScalarNode || evidence.Value != previousEvidence) {
 			return data, false
 		}
 		if len(item.Content) != 4 && len(item.Content) != 6 {

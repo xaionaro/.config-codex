@@ -14,17 +14,17 @@ func TestNarrativeSyncPreservesOwnerText(t *testing.T) {
 	original := []byte("progress: [legacy, {subject_ref: owner, text: 'owner text'}] # keep\n")
 	u := syncUpdate{Target: syncTargetProgress, ID: "work:one", Fields: map[string]string{"text": "Started"}}
 	require.True(t, validNarrativeSyncUpdate(u))
-	got, ok := applyNarrativeSyncField(original, u, "text", "Started", "", false)
+	got, ok := applyNarrativeSyncField(original, u, "text", "Started", "", false, false)
 	require.True(t, ok)
 	require.Contains(t, string(got), "legacy")
 	require.Contains(t, string(got), "# keep")
 	require.Contains(t, string(got), "Started")
-	changed, ok := applyNarrativeSyncField(got, u, "text", "Finished", "Started", true)
+	changed, ok := applyNarrativeSyncField(got, u, "text", "Finished", "Started", true, true)
 	require.True(t, ok)
 	require.Contains(t, string(changed), "Finished")
 	require.NotContains(t, string(changed), "Started")
 	u.ID = "owner"
-	unchanged, ok := applyNarrativeSyncField(changed, u, "text", "Overwrite", "", false)
+	unchanged, ok := applyNarrativeSyncField(changed, u, "text", "Overwrite", "", false, false)
 	require.False(t, ok)
 	require.Equal(t, changed, unchanged)
 }
@@ -35,14 +35,14 @@ func TestNarrativeSyncPreservesOwnerText(t *testing.T) {
 func TestNarrativeSyncEvidenceAndDuplicateSubjects(t *testing.T) {
 	u := syncUpdate{Target: syncTargetVerification, ID: "one", Fields: map[string]string{"evidence": "proof"}}
 	source := []byte("verification:\n  - subject_ref: one\n    text: checked\nnext_focus: [next]\n")
-	_, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", false)
+	_, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", false, false)
 	require.False(t, ok)
-	got, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", true)
+	got, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", false, true)
 	require.True(t, ok)
 	require.Contains(t, string(got), `"evidence": "proof"`)
 	require.Contains(t, string(got), "next_focus: [next]")
 	duplicate := []byte("verification: [{subject_ref: one, text: a}, {subject_ref: one, text: b}]\n")
-	_, ok = applyNarrativeSyncField(duplicate, u, "evidence", "proof", "", true)
+	_, ok = applyNarrativeSyncField(duplicate, u, "evidence", "proof", "", false, true)
 	require.False(t, ok)
 }
 
@@ -52,7 +52,7 @@ func TestNarrativeSyncEvidenceAndDuplicateSubjects(t *testing.T) {
 func TestNarrativeSyncBlockAppend(t *testing.T) {
 	source := []byte("progress:\n  - legacy\n# following\nverification: []\n")
 	u := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"text": "new"}}
-	got, ok := applyNarrativeSyncField(source, u, "text", "new", "", false)
+	got, ok := applyNarrativeSyncField(source, u, "text", "new", "", false, false)
 	require.True(t, ok)
 	require.Contains(t, string(got), "  - legacy\n  - {subject_ref: \"one\", text: \"new\"}\n# following\nverification: []")
 }
@@ -63,9 +63,9 @@ func TestNarrativeSyncBlockAppend(t *testing.T) {
 func TestNarrativeSyncItemOwnedRejectsEditedText(t *testing.T) {
 	u := syncUpdate{Target: syncTargetProgress, ID: "one"}
 	data := []byte("progress: [{subject_ref: one, text: changed}]\n")
-	require.False(t, narrativeSyncItemOwned(data, u, "original"))
-	require.False(t, narrativeSyncItemOwned(data, u, ""))
-	require.True(t, narrativeSyncItemOwned(data, u, "changed"))
+	require.False(t, narrativeSyncItemOwned(data, u, "original", true))
+	require.False(t, narrativeSyncItemOwned(data, u, "", false))
+	require.True(t, narrativeSyncItemOwned(data, u, "changed", true))
 }
 
 // TestNarrativeSyncSameValueIsApplied checks repeated managed values terminate successfully.
@@ -74,7 +74,7 @@ func TestNarrativeSyncItemOwnedRejectsEditedText(t *testing.T) {
 func TestNarrativeSyncSameValueIsApplied(t *testing.T) {
 	source := []byte("progress: [{subject_ref: one, text: same}]\n")
 	u := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"text": "same"}}
-	got, ok := applyNarrativeSyncField(source, u, "text", "same", "same", true)
+	got, ok := applyNarrativeSyncField(source, u, "text", "same", "same", true, true)
 	require.True(t, ok)
 	require.Equal(t, source, got)
 }
@@ -85,15 +85,15 @@ func TestNarrativeSyncSameValueIsApplied(t *testing.T) {
 func TestRetractNarrativeSyncPreservesOtherEntries(t *testing.T) {
 	u := syncUpdate{Target: syncTargetProgress, ID: "one"}
 	source := []byte("progress: [legacy, {subject_ref: one, text: done, evidence: proof}, other] # keep\n")
-	got, ok := retractNarrativeSync(source, u, "done", "proof")
+	got, ok := retractNarrativeSync(source, u, "done", true, "proof", true)
 	require.True(t, ok)
 	require.Contains(t, string(got), "legacy")
 	require.Contains(t, string(got), "other")
 	require.Contains(t, string(got), "# keep")
 	require.NotContains(t, string(got), "subject_ref")
-	_, ok = retractNarrativeSync(source, u, "old", "proof")
+	_, ok = retractNarrativeSync(source, u, "old", true, "proof", true)
 	require.False(t, ok)
-	_, ok = retractNarrativeSync(source, u, "done", "old proof")
+	_, ok = retractNarrativeSync(source, u, "done", true, "old proof", true)
 	require.False(t, ok)
 }
 
@@ -103,7 +103,7 @@ func TestRetractNarrativeSyncPreservesOtherEntries(t *testing.T) {
 func TestRetractNarrativeSyncBlockList(t *testing.T) {
 	u := syncUpdate{Target: syncTargetProgress, ID: "one"}
 	source := []byte("progress:\n  - subject_ref: one\n    text: done\n# next section\nverification: []\n")
-	got, ok := retractNarrativeSync(source, u, "done", "")
+	got, ok := retractNarrativeSync(source, u, "done", true, "", false)
 	require.True(t, ok)
 	require.Contains(t, string(got), "# next section\nverification: []")
 	require.NotContains(t, string(got), "subject_ref")
@@ -118,7 +118,7 @@ func TestRetractNarrativeSyncBlockList(t *testing.T) {
 func TestNarrativeEvidenceProtectsEditedText(t *testing.T) {
 	source := []byte("progress: [{subject_ref: one, text: revised, evidence: proof}]\n")
 	update := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"evidence": "new"}}
-	got, ok := applyNarrativeSyncField(source, update, "evidence", "new", "proof", false)
+	got, ok := applyNarrativeSyncField(source, update, "evidence", "new", "proof", true, false)
 	require.False(t, ok)
 	require.Equal(t, source, got)
 }
@@ -129,7 +129,21 @@ func TestNarrativeEvidenceProtectsEditedText(t *testing.T) {
 func TestRetractNarrativePreservesInlineComment(t *testing.T) {
 	source := []byte("progress: [{subject_ref: one, # owner comment\n text: done}]\n")
 	update := syncUpdate{Target: syncTargetProgress, ID: "one"}
-	got, ok := retractNarrativeSync(source, update, "done", "")
+	got, ok := retractNarrativeSync(source, update, "done", true, "", false)
 	require.False(t, ok)
 	require.Equal(t, source, got)
+}
+
+// TestNarrativeOwnershipRequiresMembership checks that matching text alone grants no ownership.
+//
+// Example: A value without an applied metadata entry remains owner-authored.
+func TestNarrativeOwnershipRequiresMembership(t *testing.T) {
+	source := []byte("progress: [{subject_ref: one, text: same}]\n")
+	update := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"text": "new"}}
+	require.False(t, narrativeSyncItemOwned(source, update, "same", false))
+	got, ok := applyNarrativeSyncField(source, update, "text", "new", "same", false, false)
+	require.False(t, ok)
+	require.Equal(t, source, got)
+	_, ok = retractNarrativeSync(source, update, "same", false, "", false)
+	require.False(t, ok)
 }
