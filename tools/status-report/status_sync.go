@@ -84,16 +84,17 @@ type syncPendingAddition struct {
 //
 // Example: Resume pending fields after their targets appear.
 type syncState struct {
-	Cursor              int                            `json:"cursor" yaml:"cursor"`
-	Applied             map[string]string              `json:"applied" yaml:"applied"`
-	Latest              map[string]int                 `json:"latest" yaml:"latest"`
-	AppliedOrdinals     map[string]int                 `json:"applied_ordinals,omitempty" yaml:"applied_ordinals,omitempty"`
-	Pending             map[string]syncPending         `json:"pending" yaml:"pending"`
-	PendingAdditions    map[string]syncPendingAddition `json:"pending_additions,omitempty" yaml:"pending_additions,omitempty"`
-	Groups              map[string]syncPendingGroup    `json:"groups,omitempty" yaml:"groups,omitempty"`
-	PendingTimeline     *syncPendingTimeline           `json:"pending_timeline,omitempty" yaml:"pending_timeline,omitempty"`
-	PendingTimelines    map[string]syncPendingTimeline `json:"pending_timelines,omitempty" yaml:"pending_timelines,omitempty"`
-	TimelineAppliedLine int                            `json:"timeline_applied_line,omitempty" yaml:"timeline_applied_line,omitempty"`
+	Cursor               int                                `json:"cursor" yaml:"cursor"`
+	Applied              map[string]string                  `json:"applied" yaml:"applied"`
+	Latest               map[string]int                     `json:"latest" yaml:"latest"`
+	AppliedOrdinals      map[string]int                     `json:"applied_ordinals,omitempty" yaml:"applied_ordinals,omitempty"`
+	Pending              map[string]syncPending             `json:"pending" yaml:"pending"`
+	PendingAdditions     map[string]syncPendingAddition     `json:"pending_additions,omitempty" yaml:"pending_additions,omitempty"`
+	PendingRootAdditions map[string]syncPendingRootAddition `json:"pending_root_additions,omitempty" yaml:"pending_root_additions,omitempty"`
+	Groups               map[string]syncPendingGroup        `json:"groups,omitempty" yaml:"groups,omitempty"`
+	PendingTimeline      *syncPendingTimeline               `json:"pending_timeline,omitempty" yaml:"pending_timeline,omitempty"`
+	PendingTimelines     map[string]syncPendingTimeline     `json:"pending_timelines,omitempty" yaml:"pending_timelines,omitempty"`
+	TimelineAppliedLine  int                                `json:"timeline_applied_line,omitempty" yaml:"timeline_applied_line,omitempty"`
 }
 
 // syncPendingTimeline retains an unapplied complete timeline snapshot.
@@ -256,6 +257,10 @@ func projectLogStatusStep(
 	if state.PendingAdditions == nil {
 		state.PendingAdditions = map[string]syncPendingAddition{}
 	}
+	if state.PendingRootAdditions == nil {
+		state.PendingRootAdditions = map[string]syncPendingRootAddition{}
+	}
+	migratePendingRootAdditions(state.PendingAdditions, state.PendingRootAdditions, fullLog)
 	if state.Groups == nil {
 		state.Groups = map[string]syncPendingGroup{}
 	}
@@ -316,7 +321,7 @@ func projectLogStatusStep(
 				state.PendingTimelines[strconv.Itoa(i+1)] = syncPendingTimeline{Line: i + 1, Snapshot: string(encoded)}
 			}
 		}
-		for _, addition := range event.Details.StatusUpdate.Additions {
+		for ordinal, addition := range event.Details.StatusUpdate.Additions {
 			if addition.Target != syncTargetRootCompletion && addition.Target != syncTargetRootForecast && addition.Target != syncTargetPriorityEstimate && (addition.RetireForecast || addition.ReopenWorkRef != "" || len(addition.ExpectedPrior) > 0 || addition.RetirePriority != "") {
 				invalidUpdate = true
 				continue
@@ -336,6 +341,12 @@ func projectLogStatusStep(
 			var record map[string]json.RawMessage
 			if json.Unmarshal(addition.Record, &record) != nil {
 				invalidUpdate = true
+				continue
+			}
+			if addition.Target == syncTargetRootCompletion || addition.Target == syncTargetRootForecast {
+				if !queueRootAddition(state.PendingRootAdditions, i+1, ordinal, addition) {
+					invalidUpdate = true
+				}
 				continue
 			}
 			idKey := "id"
@@ -419,6 +430,9 @@ func projectLogStatusStep(
 	}
 	state.Cursor = startLine + len(lines)
 	result := original
+	var rootEffects []syncEffect
+	result, rootEffects = applyPendingRootChains(result, &state, fullLog, ledger, forecasts)
+	effects = append(effects, rootEffects...)
 	additionKeys := make([]string, 0, len(state.PendingAdditions))
 	for key := range state.PendingAdditions {
 		additionKeys = append(additionKeys, key)
@@ -625,7 +639,7 @@ func projectLogStatusStep(
 	effects = append(effects, legacyEffects...)
 	var groupEffects []syncEffect
 	var groupInvalid bool
-	result, groupEffects, groupInvalid = applyPendingSyncGroups(result, &state, ledger, forecasts)
+	result, groupEffects, groupInvalid = applyPendingSyncGroups(result, &state, ledger, forecasts, fullLog)
 	effects = append(effects, groupEffects...)
 	invalidUpdate = invalidUpdate || groupInvalid
 	if latestTimestamp != "" {
@@ -701,7 +715,7 @@ func projectLogStatusStep(
 		}
 		effects = append(effects, syncEffect{Operation: syncEffectDiagnostic, Value: refreshIssuePrefix + "invalid status_update requires manual review"})
 	}
-	if len(state.Pending) > 0 || len(state.PendingAdditions) > 0 || len(state.Groups) > 0 || len(state.PendingTimelines) > 0 {
+	if len(state.Pending) > 0 || len(state.PendingAdditions) > 0 || len(state.PendingRootAdditions) > 0 || len(state.Groups) > 0 || len(state.PendingTimelines) > 0 {
 		result, err = prepareInvalidation(result, refreshIssuePrefix+"status updates remain pending manual reconciliation")
 		if err != nil {
 			return nil, nil, err

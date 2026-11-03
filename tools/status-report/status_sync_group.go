@@ -330,6 +330,7 @@ func applyPendingSyncGroups(
 	state *syncState,
 	ledger ledgerSource,
 	forecasts forecastSource,
+	fullLog []byte,
 ) ([]byte, []syncEffect, bool) {
 	keys := make([]string, 0, len(state.Groups))
 	for key := range state.Groups {
@@ -450,6 +451,12 @@ func applyPendingSyncGroups(
 		previous := syncGroupPriorValues(*state, update)
 		candidate, changes, ok := applySyncGroup(data, update, ledger, forecasts, previous)
 		if !ok {
+			chainResult, chainEffects, applied := applyPendingLaneLifecycleChain(data, state, key, keys, fullLog, ledger, forecasts)
+			if applied {
+				data = chainResult
+				effects = append(effects, chainEffects...)
+				continue
+			}
 			corrected, correctionEffects, correctionKey, applied := applyPendingLaneCorrection(data, state, update, group, keys, ledger, forecasts)
 			if applied {
 				data = corrected

@@ -125,12 +125,12 @@ func TestRootTransitionsReplay(t *testing.T) {
 					t.Fatal(err)
 				}
 				if mode != "valid" {
-					if len(report.StatusSync.PendingAdditions) != 1 {
+					if len(report.StatusSync.PendingRootAdditions) != 1 {
 						t.Fatal("mismatched prior did not remain pending")
 					}
 					continue
 				}
-				if len(report.StatusSync.PendingAdditions) != 0 {
+				if len(report.StatusSync.PendingRootAdditions) != 0 {
 					t.Fatal("valid transition pending")
 				}
 				if tc.name == "complete" && (len(report.RootCompletions) != 1 || len(report.RootForecasts) != 0) {
