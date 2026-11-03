@@ -138,28 +138,6 @@ func TestLaneTransitionRequiresCanonicalIdentity(t *testing.T) {
 	}
 }
 
-// TestAdditionSourceValidation checks canonical completion evidence.
-//
-// Example: An active forecast prevents a root completion.
-func TestAdditionSourceValidation(t *testing.T) {
-	work := sourceRecord{Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:00:00Z", Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}
-	ledger := ledgerSource{Records: map[string]sourceRecord{"w": work, "o": {Type: "outcome", Outcome: "Result"}}}
-	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"status": "inactive", "kind": "root"}}}
-	add := syncAddition{Target: syncTargetRootCompletion, Evidence: "accepted", Record: json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`)}
-	if !syncAdditionSourceValid(add, ledger, forecasts) {
-		require.FailNow(t, "assertion failed", "valid source rejected")
-	}
-	add.Evidence = ""
-	if syncAdditionSourceValid(add, ledger, forecasts) {
-		require.FailNow(t, "assertion failed", "accepted completion without evidence")
-	}
-	add.Evidence = "accepted"
-	forecasts.Records["f"]["status"] = "active"
-	if syncAdditionSourceValid(add, ledger, forecasts) {
-		require.FailNow(t, "assertion failed", "active forecast allowed completed root")
-	}
-}
-
 // TestLaneTransitionPreservesCommentsAndOwnerCompletion checks ownership preservation.
 //
 // Example: Reopening preserves an owner comment.

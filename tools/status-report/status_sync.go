@@ -420,10 +420,6 @@ func projectLogStatusStep(
 				idKey = "priority"
 			case syncTargetLane:
 				idKey = "task_id"
-			case syncTargetRootCompletion:
-				idKey = "work_ref"
-			case syncTargetRootForecast:
-				idKey = "forecast_ref"
 			case syncTargetTask:
 			default:
 				invalidUpdate = true
