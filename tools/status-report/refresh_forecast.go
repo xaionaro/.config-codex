@@ -130,6 +130,10 @@ func refreshForecastTargets(
 	if err := verifyRefresh(candidate, updated, ledger, forecasts); err != nil {
 		return fmt.Errorf("unsafe refresh: %w", err)
 	}
+	updated, err = refreshOwnedForecasts(candidate, updated)
+	if err != nil {
+		return err
+	}
 	inputs := map[string][]byte{ledgerPath: ledgerBytes}
 	if logBytes != nil {
 		inputs[filepath.Join(dir, "high_level_log.jsonl")] = logBytes

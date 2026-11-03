@@ -142,6 +142,18 @@ func syncGroupPriorValues(
 	}
 	if update.Target == syncTargetLane {
 		field := update.RequiredEnvironment.String() + "_status"
+		_, statusChanged := update.Fields[field]
+		lifecycleChanged := update.Fields["lifecycle"] != ""
+		for _, cleared := range update.Clear {
+			if cleared == "lifecycle" {
+				lifecycleChanged = true
+			}
+		}
+		if statusChanged || lifecycleChanged {
+			if value, ok := state.Applied[syncTargetKey(update, "forecast")]; ok {
+				previous["forecast"] = value
+			}
+		}
 		if value, ok := update.Fields[field]; ok && value != "CLOSED" {
 			if value, ok := state.Applied[syncTargetKey(update, "completed_at")]; ok {
 				previous["completed_at"] = value
@@ -401,6 +413,17 @@ func applyPendingSyncGroups(
 		if !ok {
 			continue
 		}
+		validEffects := true
+		for _, change := range changes {
+			if change.Operation == syncEffectLaneForecastRestore {
+				if _, ok := change.Value.(json.RawMessage); !ok {
+					validEffects = false
+				}
+			}
+		}
+		if !validEffects {
+			continue
+		}
 		data = candidate
 		effects = append(effects, changes...)
 		for _, field := range syncGroupFields(update) {
@@ -413,6 +436,19 @@ func applyPendingSyncGroups(
 			if change.Operation == syncEffectCompletedAtClear {
 				key := syncTargetKey(update, "completed_at")
 				state.Applied[key] = syncAbsentValue
+				state.Latest[key] = group.Line
+				state.AppliedOrdinals[key] = group.Ordinal
+			}
+			if change.Operation == syncEffectForecastRetire {
+				key := syncTargetKey(update, "forecast")
+				state.Applied[key] = syncAbsentValue
+				state.Latest[key] = group.Line
+				state.AppliedOrdinals[key] = group.Ordinal
+			}
+			if change.Operation == syncEffectLaneForecastRestore {
+				raw := change.Value.(json.RawMessage)
+				key := syncTargetKey(update, "forecast")
+				state.Applied[key] = string(raw)
 				state.Latest[key] = group.Line
 				state.AppliedOrdinals[key] = group.Ordinal
 			}
