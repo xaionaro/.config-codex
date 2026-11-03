@@ -41,6 +41,7 @@ func TestPendingLaneCorrectionRequiresExactLocator(t *testing.T) {
 	dir := t.TempDir()
 	old := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:25:00Z"}}]}}}` + "\n"
 	next := strings.Replace(old, "15:25:00Z", "15:45:00Z", 1)
+	next = strings.Replace(next, `"event":"lifecycle_change"`, `"event":"correction"`, 1)
 	next = strings.Replace(next, `"evidence":"accepted"`, `"corrects":1,"corrects_ordinal":1,"evidence":"corrected"`, 1)
 	if err := os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(old+next), 0600); err != nil {
 		t.Fatal(err)
