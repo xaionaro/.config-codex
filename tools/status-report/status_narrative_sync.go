@@ -13,7 +13,7 @@ import (
 // Example: A progress update identifies its subject and supplies text.
 func validNarrativeSyncUpdate(u syncUpdate) bool {
 	switch u.Target {
-	case "progress", "decisions", "blockers_risks", "verification":
+	case syncTargetProgress, syncTargetDecisions, syncTargetBlockers, syncTargetVerification:
 	default:
 		return false
 	}
@@ -47,7 +47,7 @@ func applyNarrativeSyncField(
 		return data, false
 	}
 	root := doc.Content[0]
-	list := mapValue(root, u.Target)
+	list := mapValue(root, u.Target.String())
 	if list == nil || list.Kind != yaml.SequenceNode {
 		return data, false
 	}
@@ -69,7 +69,7 @@ func applyNarrativeSyncField(
 			return data, false
 		}
 		entry := "{subject_ref: " + strconv.Quote(u.ID) + ", text: " + strconv.Quote(value) + "}"
-		return appendNarrativeEntry(data, root, list, u.Target, entry)
+		return appendNarrativeEntry(data, root, list, u.Target.String(), entry)
 	}
 	existing := mapValue(item, field)
 	if existing != nil {
@@ -176,7 +176,7 @@ func narrativeSyncItemOwned(
 	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {
 		return false
 	}
-	list := mapValue(doc.Content[0], u.Target)
+	list := mapValue(doc.Content[0], u.Target.String())
 	if list == nil || list.Kind != yaml.SequenceNode {
 		return false
 	}
@@ -199,4 +199,131 @@ func narrativeSyncItemOwned(
 		found = true
 	}
 	return found
+}
+
+// retractNarrativeSync removes an unchanged managed subject and its managed evidence.
+//
+// Example: A correction removes its own keyed progress entry while preserving legacy bullets.
+func retractNarrativeSync(
+	data []byte,
+	update syncUpdate,
+	previousText string,
+	previousEvidence string,
+) ([]byte, bool) {
+	if !narrativeSyncItemOwned(data, update, previousText) {
+		return data, false
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {
+		return data, false
+	}
+	root := doc.Content[0]
+	list := mapValue(root, update.Target.String())
+	for index, item := range list.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		ref := mapValue(item, "subject_ref")
+		if ref == nil || ref.Value != update.ID {
+			continue
+		}
+		evidence := mapValue(item, "evidence")
+		if evidence == nil && previousEvidence != "" {
+			return data, false
+		}
+		if evidence != nil && (previousEvidence == "" || evidence.Kind != yaml.ScalarNode || evidence.Value != previousEvidence) {
+			return data, false
+		}
+		if len(item.Content) != 4 && len(item.Content) != 6 {
+			return data, false
+		}
+		for i := 0; i < len(item.Content); i += 2 {
+			switch item.Content[i].Value {
+			case "subject_ref", "text", "evidence":
+			default:
+				return data, false
+			}
+		}
+		if list.Style&yaml.FlowStyle == 0 {
+			return retractBlockNarrative(data, root, list, item, update.Target.String(), index)
+		}
+		if item.Style&yaml.FlowStyle == 0 {
+			return data, false
+		}
+		start, err := yamlByteOffset(data, item.Line, item.Column)
+		if err != nil {
+			return data, false
+		}
+		end, err := flowMappingEndCached(&flowDocument{data: data}, item)
+		if err != nil {
+			return data, false
+		}
+		end++
+		switch {
+		case index+1 < len(list.Content):
+			next, err := yamlByteOffset(data, list.Content[index+1].Line, list.Content[index+1].Column)
+			if err != nil || strings.TrimSpace(string(data[end:next])) != "," {
+				return data, false
+			}
+			end = next
+		case index > 0:
+			before := start - 1
+			for before >= 0 && (data[before] == ' ' || data[before] == '\t') {
+				before--
+			}
+			if before < 0 || data[before] != ',' {
+				return data, false
+			}
+			start = before
+		}
+		return append(append([]byte(nil), data[:start]...), data[end:]...), true
+	}
+	return data, false
+}
+
+// retractBlockNarrative removes a block entry without consuming adjacent comments.
+//
+// Example: An emptied sequence remains an explicit empty list.
+func retractBlockNarrative(
+	data []byte,
+	root *yaml.Node,
+	list *yaml.Node,
+	item *yaml.Node,
+	section string,
+	index int,
+) ([]byte, bool) {
+	lines := strings.Split(string(data), "\n")
+	start := item.Line - 1
+	if start < 0 || start >= len(lines) {
+		return data, false
+	}
+	dash := strings.Index(lines[start], "- ")
+	if dash < 0 || strings.TrimSpace(lines[start][:dash]) != "" {
+		return data, false
+	}
+	end := len(lines)
+	next := nextMappingFieldLine(root, section)
+	switch {
+	case index+1 < len(list.Content):
+		end = list.Content[index+1].Line - 1
+	case next > 0:
+		end = next - 1
+	case end > 0 && lines[end-1] == "":
+		end--
+	}
+	if end < start || end > len(lines) {
+		return data, false
+	}
+	end = trimFollowingComments(lines, end, item.Line)
+	for _, line := range lines[start:end] {
+		if strings.Contains(line, "#") {
+			return data, false
+		}
+	}
+	replacement := []string{}
+	if len(list.Content) == 1 {
+		replacement = []string{lines[start][:dash] + "[]"}
+	}
+	result := append(append(append([]string(nil), lines[:start]...), replacement...), lines[end:]...)
+	return []byte(strings.Join(result, "\n")), true
 }

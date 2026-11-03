@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // TestNarrativeSyncPreservesOwnerText checks keyed updates and owner-authored entries.
@@ -11,7 +12,7 @@ import (
 // Example: An event updates its own subject while legacy bullets remain intact.
 func TestNarrativeSyncPreservesOwnerText(t *testing.T) {
 	original := []byte("progress: [legacy, {subject_ref: owner, text: 'owner text'}] # keep\n")
-	u := syncUpdate{Target: "progress", ID: "work:one", Fields: map[string]string{"text": "Started"}}
+	u := syncUpdate{Target: syncTargetProgress, ID: "work:one", Fields: map[string]string{"text": "Started"}}
 	require.True(t, validNarrativeSyncUpdate(u))
 	got, ok := applyNarrativeSyncField(original, u, "text", "Started", "", false)
 	require.True(t, ok)
@@ -32,7 +33,7 @@ func TestNarrativeSyncPreservesOwnerText(t *testing.T) {
 //
 // Example: Evidence is attached only to a subject owned by the synchronizer.
 func TestNarrativeSyncEvidenceAndDuplicateSubjects(t *testing.T) {
-	u := syncUpdate{Target: "verification", ID: "one", Fields: map[string]string{"evidence": "proof"}}
+	u := syncUpdate{Target: syncTargetVerification, ID: "one", Fields: map[string]string{"evidence": "proof"}}
 	source := []byte("verification:\n  - subject_ref: one\n    text: checked\nnext_focus: [next]\n")
 	_, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", false)
 	require.False(t, ok)
@@ -50,7 +51,7 @@ func TestNarrativeSyncEvidenceAndDuplicateSubjects(t *testing.T) {
 // Example: A block sequence gains a keyed item before the next section.
 func TestNarrativeSyncBlockAppend(t *testing.T) {
 	source := []byte("progress:\n  - legacy\n# following\nverification: []\n")
-	u := syncUpdate{Target: "progress", ID: "one", Fields: map[string]string{"text": "new"}}
+	u := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"text": "new"}}
 	got, ok := applyNarrativeSyncField(source, u, "text", "new", "", false)
 	require.True(t, ok)
 	require.Contains(t, string(got), "  - legacy\n  - {subject_ref: \"one\", text: \"new\"}\n# following\nverification: []")
@@ -60,7 +61,7 @@ func TestNarrativeSyncBlockAppend(t *testing.T) {
 //
 // Example: Owner changes to the text prevent evidence updates.
 func TestNarrativeSyncItemOwnedRejectsEditedText(t *testing.T) {
-	u := syncUpdate{Target: "progress", ID: "one"}
+	u := syncUpdate{Target: syncTargetProgress, ID: "one"}
 	data := []byte("progress: [{subject_ref: one, text: changed}]\n")
 	require.False(t, narrativeSyncItemOwned(data, u, "original"))
 	require.False(t, narrativeSyncItemOwned(data, u, ""))
@@ -72,8 +73,41 @@ func TestNarrativeSyncItemOwnedRejectsEditedText(t *testing.T) {
 // Example: An event repeating the current text does not remain pending.
 func TestNarrativeSyncSameValueIsApplied(t *testing.T) {
 	source := []byte("progress: [{subject_ref: one, text: same}]\n")
-	u := syncUpdate{Target: "progress", ID: "one", Fields: map[string]string{"text": "same"}}
+	u := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"text": "same"}}
 	got, ok := applyNarrativeSyncField(source, u, "text", "same", "same", true)
 	require.True(t, ok)
 	require.Equal(t, source, got)
+}
+
+// TestRetractNarrativeSyncPreservesOtherEntries checks exact managed retraction.
+//
+// Example: A corrected subject disappears while legacy text and comments remain.
+func TestRetractNarrativeSyncPreservesOtherEntries(t *testing.T) {
+	u := syncUpdate{Target: syncTargetProgress, ID: "one"}
+	source := []byte("progress: [legacy, {subject_ref: one, text: done, evidence: proof}, other] # keep\n")
+	got, ok := retractNarrativeSync(source, u, "done", "proof")
+	require.True(t, ok)
+	require.Contains(t, string(got), "legacy")
+	require.Contains(t, string(got), "other")
+	require.Contains(t, string(got), "# keep")
+	require.NotContains(t, string(got), "subject_ref")
+	_, ok = retractNarrativeSync(source, u, "old", "proof")
+	require.False(t, ok)
+	_, ok = retractNarrativeSync(source, u, "done", "old proof")
+	require.False(t, ok)
+}
+
+// TestRetractNarrativeSyncBlockList checks block entry removal and comment retention.
+//
+// Example: A following section's comment survives retraction of the only keyed item.
+func TestRetractNarrativeSyncBlockList(t *testing.T) {
+	u := syncUpdate{Target: syncTargetProgress, ID: "one"}
+	source := []byte("progress:\n  - subject_ref: one\n    text: done\n# next section\nverification: []\n")
+	got, ok := retractNarrativeSync(source, u, "done", "")
+	require.True(t, ok)
+	require.Contains(t, string(got), "# next section\nverification: []")
+	require.NotContains(t, string(got), "subject_ref")
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal(got, &doc))
+	require.Empty(t, mapValue(doc.Content[0], "progress").Content)
 }
