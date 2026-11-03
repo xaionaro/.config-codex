@@ -32,6 +32,7 @@ func TestReprioritizeIntoExistingEstimateReplaysAtomically(t *testing.T) {
 	}{
 		{"matching destination", report, true},
 		{"unquoted timestamp", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "as_of: 2026-11-02T15:24:00Z, basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), true},
+		{"equivalent quoted offset", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "as_of: '2026-11-02T15:24:00+00:00', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), true},
 		{"unquoted retired timestamp", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess", "as_of: 2026-11-02T15:24:00Z, basis: guess", 1), true},
 		{"changed timestamp", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "as_of: 2026-11-02T15:23:00Z, basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), false},
 		{"changed destination", strings.Replace(report, "basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "basis: owner edit, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), false},
@@ -63,6 +64,9 @@ func TestReprioritizeIntoExistingEstimateReplaysAtomically(t *testing.T) {
 				require.Equal(t, priorityLabel("low"), parsed.Tasks[0].Priority)
 				require.Len(t, parsed.PriorityEstimates, 1)
 				require.Equal(t, priorityLabel("low"), parsed.PriorityEstimates[0].Priority)
+				if tc.name == "equivalent quoted offset" {
+					require.Contains(t, string(result), "as_of: '2026-11-02T15:24:00+00:00'")
+				}
 				require.Empty(t, parsed.StatusSync.Groups)
 				require.Empty(t, parsed.StatusSync.PendingAdditions)
 				require.NotContains(t, parsed.StatusSync.Applied, "addition/priority_estimate/low")

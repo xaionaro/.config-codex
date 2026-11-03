@@ -179,15 +179,27 @@ func equalPriorityEstimateRecord(
 	existing map[string]any,
 	supplied map[string]any,
 ) bool {
-	stamp, ok := existing["as_of"].(time.Time)
-	if !ok {
-		return reflect.DeepEqual(existing, supplied)
+	if reflect.DeepEqual(existing, supplied) {
+		return true
+	}
+	var stamp time.Time
+	switch value := existing["as_of"].(type) {
+	case time.Time:
+		stamp = value
+	case string:
+		var err error
+		stamp, err = parseUTC(value)
+		if err != nil {
+			return false
+		}
+	default:
+		return false
 	}
 	text, ok := supplied["as_of"].(string)
 	if !ok {
 		return false
 	}
-	parsed, err := time.Parse(time.RFC3339Nano, text)
+	parsed, err := parseUTC(text)
 	if err != nil || !stamp.Equal(parsed) {
 		return false
 	}
