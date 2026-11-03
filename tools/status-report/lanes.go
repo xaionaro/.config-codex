@@ -98,7 +98,11 @@ func renderLaneTable(
 			dependencies = l.Forecast.Dependencies
 		}
 		effort := fmt.Sprintf("%g–%g minutes %s (%s)", *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis)
-		vals := []string{string(l.TaskID), string(t.ParentID), l.Outcome, l.Context, string(t.Priority), priorityText(t, scale), t.Impact, effort, l.Stage, l.RequiredEnvironment.String(), l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
+		context := l.Context
+		if strings.TrimSpace(context) == "" || strings.EqualFold(strings.TrimSpace(context), "unknown") {
+			context = "lineage unavailable—reconcile"
+		}
+		vals := []string{string(l.TaskID), string(t.ParentID), l.Outcome, context, string(t.Priority), priorityText(t, scale), t.Impact, effort, l.Stage, l.RequiredEnvironment.String(), l.Owner, l.ImplementationStatus.String(), l.TestStatus.String(), l.ProdStatus.String(), l.Blocker, l.NextMilestone, target, dependencies, l.NextAction}
 		fmt.Fprint(b, "|")
 		for _, v := range vals {
 			fmt.Fprintf(b, " %s |", timelineCell(v))

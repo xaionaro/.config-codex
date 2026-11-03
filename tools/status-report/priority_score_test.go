@@ -115,3 +115,18 @@ func TestSiblingPriorityOrdering(t *testing.T) {
 	tree := strings.Split(strings.Split(render(r), "Full task tree:\n")[1], "\nProgress:")[0]
 	require.Less(t, strings.Index(tree, "1.2 Unknown"), strings.Index(tree, "1.1 Complete"))
 }
+
+// TestLaneRequirementContextFallback preserves readable context and marks missing lineage.
+//
+// Example: A lane without context asks for reconciliation in the report.
+func TestLaneRequirementContextFallback(t *testing.T) {
+	minutes := fractionalMinutes(10)
+	effort := estimate{MinMinutes: &minutes, MaxMinutes: &minutes, Kind: effortWork}
+	tasks := map[taskID]task{"1": {Effort: effort}, "2": {Effort: effort}, "3": {Effort: effort}}
+	lanes := []lane{{TaskID: "1", Outcome: "missing"}, {TaskID: "2", Outcome: "unknown", Context: "unknown"}, {TaskID: "3", Outcome: "known", Context: "Checkout requirement"}}
+	var out strings.Builder
+	renderLaneTable(&out, lanes, tasks, "benefit")
+	require.Contains(t, out.String(), "| missing | lineage unavailable—reconcile |")
+	require.Contains(t, out.String(), "| unknown | lineage unavailable—reconcile |")
+	require.Contains(t, out.String(), "| known | Checkout requirement |")
+}
