@@ -14,7 +14,8 @@ import (
 //
 // Example: Reject a retained field whose supplying log update differs.
 func verifyLaneLifecycleChain(
-	original, candidate []byte,
+	original []byte,
+	candidate []byte,
 	groups []syncPendingGroup,
 	effects []syncEffect,
 	provenance map[string]syncPendingGroup,
@@ -22,6 +23,7 @@ func verifyLaneLifecycleChain(
 	log []byte,
 	ledger ledgerSource,
 	forecasts forecastSource,
+	states ...*syncState,
 ) error {
 	if len(groups) == 0 {
 		return fmt.Errorf("empty lane chain")
@@ -153,7 +155,20 @@ func verifyLaneLifecycleChain(
 				continue
 			}
 			if update.Target == syncTargetLane && syncTargetKey(update, "") == syncTargetKey(first, "") && syncDependenciesOverlap(dependencies, syncGroupDependencies(update)) {
-				return fmt.Errorf("chain skips dependent update")
+				if len(states) != 1 || states[0] == nil || update.Corrects != 0 || update.Retract || len(update.Values) != 0 || !validLaneSyncUpdate(update) {
+					return fmt.Errorf("chain skips dependent update")
+				}
+				for _, field := range syncGroupFields(update) {
+					key := syncTargetKey(update, field)
+					value := syncAbsentValue
+					if supplied, ok := update.Fields[field]; ok {
+						value = scalarSyncStoredValue(supplied)
+					}
+					applied, exists := states[0].Applied[key]
+					if !exists || states[0].Latest[key] != line || states[0].AppliedOrdinals[key] != ordinal || applied != value || scalarSyncOwnership(mapValue(lane, field)) != value {
+						return fmt.Errorf("skipped update lacks applied ownership")
+					}
+				}
 			}
 		}
 	}
