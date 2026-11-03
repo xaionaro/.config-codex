@@ -10,14 +10,14 @@ import (
 //
 // Example: Record both paths for one UTC half-hour.
 type timelineEntry struct {
-	Job         string `yaml:"job"`
-	ParentChain string `yaml:"parent_chain"`
-	Start       string `yaml:"start"`
-	End         string `yaml:"end"`
-	Fast        string `yaml:"fast"`
-	Normal      string `yaml:"normal"`
-	Evidence    string `yaml:"evidence"`
-	Uncertainty string `yaml:"uncertainty"`
+	Job         string `yaml:"job" json:"job"`
+	ParentChain string `yaml:"parent_chain" json:"parent_chain"`
+	Start       string `yaml:"start" json:"start"`
+	End         string `yaml:"end" json:"end"`
+	Fast        string `yaml:"fast" json:"fast"`
+	Normal      string `yaml:"normal" json:"normal"`
+	Evidence    string `yaml:"evidence" json:"evidence"`
+	Uncertainty string `yaml:"uncertainty" json:"uncertainty"`
 }
 
 // writeTimeline renders each Job's supplied history in three columns.
