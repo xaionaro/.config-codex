@@ -22,7 +22,7 @@ while IFS= read -r clause; do
     remainder="${clause#*"${BASH_REMATCH[0]}"}"
     # A following noun makes the report a modifier (for example, a template).
     if [[ "$remainder" =~ ^[[:space:]]*$ ]] ||
-       [[ "$remainder" =~ ^[[:space:]]+(on|about|for|of|with|please)([[:space:]]|$) ]]; then
+       [[ "$remainder" =~ ^[[:space:]]+(on|about|for|of|with|please|now|and)([[:space:]]|$) ]]; then
       reminder=true
       break
     fi
@@ -34,7 +34,7 @@ while IFS= read -r clause; do
     continue
   fi
   if [[ "$clause" =~ ^[[:space:]]*(status|sitrep|progress|checkpoint)[[:space:]]*$ ]] ||
-     [[ "$clause" =~ (give|show|provide|write|send|want|need|request|what.s|how.s).*(status|progress|sitrep|checkpoint)[[:space:]]*$ ]] ||
+     [[ "$clause" =~ (give|show|provide|write|send|want|need|request|what.s|what[[:space:]]+is|how.s|how[[:space:]]+is).*(status|progress|sitrep|checkpoint)[[:space:]]*$ ]] ||
      [[ "$clause" =~ ^[[:space:]]*(a[[:space:]]+)?(status|progress)[[:space:]]+report([[:space:]]+please)?[[:space:]]*$ ]]; then
     reminder=true
     break
