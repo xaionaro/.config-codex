@@ -100,8 +100,8 @@ func TestLaneTransitionRequiresCanonicalIdentity(t *testing.T) {
 	got, ok := applyLaneSyncUpdateRaw([]byte(linkedReport), update, ledger, forecasts, nil)
 	if !ok {
 		removed, rok := removeLaneSyncField([]byte(linkedReport), update, "forecast")
-		timed, tok := applySyncField(removed, update, "completed_at", update.Fields["completed_at"], "")
-		closed, cok := applySyncField(timed, update, "implementation_status", "CLOSED", "")
+		timed, tok := applySyncField(removed, update, "completed_at", update.Fields["completed_at"], "", false)
+		closed, cok := applySyncField(timed, update, "implementation_status", "CLOSED", "", false)
 		_, err := parse(closed)
 		t.Fatalf("valid transition rejected: remove=%v time=%v close=%v parse=%v candidate=%s", rok, tok, cok, err, closed)
 	}

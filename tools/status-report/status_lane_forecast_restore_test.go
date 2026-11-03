@@ -86,3 +86,18 @@ func TestLaneTerminalPreservesOwnerForecastEdit(t *testing.T) {
 		t.Fatal("owner-added forecast was removed")
 	}
 }
+
+// TestLaneEmptyPriorValuePreservesOwnerEdit checks an empty projected baseline.
+//
+// Example: An owner name added after an empty baseline is not overwritten.
+func TestLaneEmptyPriorValuePreservesOwnerEdit(t *testing.T) {
+	edited := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    owner: owner-edit\n    implementation_status: IN PROGRESS", 1)
+	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Fields: map[string]string{"owner": "projected"}}
+	if _, _, ok := applyLaneSyncUpdate([]byte(edited), update, ledgerSource{}, forecastSource{}, map[string]string{"owner": ""}); ok {
+		t.Fatal("owner edit overwritten after empty baseline")
+	}
+	original := strings.Replace(edited, "owner: owner-edit", `owner: ""`, 1)
+	if _, _, ok := applyLaneSyncUpdate([]byte(original), update, ledgerSource{}, forecastSource{}, map[string]string{"owner": ""}); !ok {
+		t.Fatal("matching empty baseline rejected")
+	}
+}
