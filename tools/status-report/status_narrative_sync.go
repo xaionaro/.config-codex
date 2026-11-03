@@ -162,6 +162,7 @@ func appendNarrativeEntry(
 		}
 		indent = lines[last.Line-1][:dash]
 		insert = trimFollowingComments(lines, insert, last.Line)
+		insert = scalarAppendPosition(lines, root, section, last, insert)
 	}
 	if insert < 0 || insert > len(lines) {
 		return data, false
@@ -171,6 +172,10 @@ func appendNarrativeEntry(
 		ending = "\r"
 	}
 	if insert == len(lines) && len(data) > 0 && data[len(data)-1] != '\n' {
+		if len(list.Content) > 0 && list.Content[len(list.Content)-1].Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 && strings.TrimSpace(lines[insert-1]) == "" {
+			lines[insert-1] = indent + "- " + entry
+			return []byte(strings.Join(lines, "\n")), true
+		}
 		if len(list.Content) > 0 {
 			preserveUnterminatedBlockScalar(lines, list.Content[len(list.Content)-1])
 		}
@@ -179,6 +184,26 @@ func appendNarrativeEntry(
 	}
 	lines = append(lines[:insert], append([]string{indent + "- " + entry + ending}, lines[insert:]...)...)
 	return []byte(strings.Join(lines, "\n")), true
+}
+
+// scalarAppendPosition retains trailing body lines of a final block scalar.
+//
+// Example: A kept blank line remains before the next appended item.
+func scalarAppendPosition(
+	lines []string,
+	root *yaml.Node,
+	section string,
+	last *yaml.Node,
+	insert int,
+) int {
+	if nextMappingFieldLine(root, section) != 0 || last.Kind != yaml.ScalarNode || last.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0 {
+		return insert
+	}
+	insert = len(lines)
+	if lines[insert-1] == "" {
+		insert--
+	}
+	return insert
 }
 
 // preserveUnterminatedBlockScalar retains a scalar's value when adding a line at EOF.

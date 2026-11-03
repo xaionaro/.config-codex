@@ -218,3 +218,29 @@ func TestAppendAfterScalarWithSeparatePropertiesPreservesOwnerData(t *testing.T)
 			})
 	}
 }
+
+// TestAppendAfterKeptScalarBlankLinesPreservesValue checks EOF replay.
+//
+// Example: Keep-chomping retains blank body lines before a new progress item.
+func TestAppendAfterKeptScalarBlankLinesPreservesValue(t *testing.T) {
+	for _, tc := range []struct{ style, tail string }{
+		{"|+", "\r\n    \r\n    "}, {">+", "\r\n    \r\n    "},
+		{"|+", "\r\n    legacy scalar\r\n\r\n"}, {">+", "\r\n    legacy scalar\r\n\r\n"},
+		{"|+", "\r\n    legacy scalar\r\n    "}, {">+", "\r\n    legacy scalar\r\n    "},
+	} {
+		t.Run(tc.style+tc.tail,
+			// check compares the scalar value and retains its header comment.
+			//
+			// Example: A trailing empty line remains part of a kept scalar.
+			func(t *testing.T) {
+				input := []byte("progress:\r\n  - " + tc.style + " # owner note" + tc.tail)
+				var before, after yaml.Node
+				require.NoError(t, yaml.Unmarshal(input, &before))
+				out, ok := applyNarrativeSyncField(input, syncUpdate{Target: syncTargetProgress, ID: "one"}, "text", "new progress", "", false, false)
+				require.True(t, ok)
+				require.NoError(t, yaml.Unmarshal(out, &after))
+				require.Equal(t, mapValue(before.Content[0], "progress").Content[0].Value, mapValue(after.Content[0], "progress").Content[0].Value)
+				require.Contains(t, string(out), "# owner note\r\n")
+			})
+	}
+}
