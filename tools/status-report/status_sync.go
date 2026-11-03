@@ -848,7 +848,6 @@ func removeCancelledPriority(
 	if list == nil || list.Kind != yaml.SequenceNode {
 		return data, false
 	}
-	remaining := make([]string, 0, len(list.Content))
 	found := false
 	for _, item := range list.Content {
 		if item.Kind != yaml.ScalarNode {
@@ -856,17 +855,23 @@ func removeCancelledPriority(
 		}
 		if item.Value == string(id) {
 			found = true
-			continue
 		}
-		remaining = append(remaining, item.Value)
 	}
 	if !found {
 		return data, true
 	}
-	encoded, err := json.Marshal(remaining)
-	if err != nil {
-		return data, false
+	remaining := make([]string, 0, len(list.Content))
+	for _, item := range list.Content {
+		if item.Value == string(id) {
+			continue
+		}
+		raw, ok := priorityScalarSource(data, item)
+		if !ok {
+			return data, false
+		}
+		remaining = append(remaining, raw)
 	}
+	encoded := []byte("[" + strings.Join(remaining, ", ") + "]")
 	if list.Style&yaml.FlowStyle != 0 {
 		start, err := yamlAnchoredCollectionStart(data, list)
 		if err != nil {
@@ -910,6 +915,34 @@ func removeCancelledPriority(
 	}
 	value := strings.Repeat(" ", indent) + string(encoded) + ending
 	return append(append(append([]byte(nil), data[:start]...), []byte(value)...), data[end:]...), true
+}
+
+// priorityScalarSource retains the original scalar spelling for a surviving task ID.
+//
+// Example: An unquoted numeric 1.10 is not rewritten as a quoted string.
+func priorityScalarSource(
+	data []byte,
+	node *yaml.Node,
+) (string, bool) {
+	if node.Anchor != "" || node.Style&(yaml.TaggedStyle|yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return "", false
+	}
+	start, err := yamlByteOffset(data, node.Line, node.Column)
+	if err != nil || start >= len(data) {
+		return "", false
+	}
+	end := start + len(node.Value)
+	if data[start] == '\'' || data[start] == '"' {
+		end, err = quotedNullYAMLValueEnd(data, start)
+		if err != nil {
+			return "", false
+		}
+		return string(data[start:end]), true
+	}
+	if end > len(data) || string(data[start:end]) != node.Value {
+		return "", false
+	}
+	return string(data[start:end]), true
 }
 
 // syncTargetKey keeps target identity distinct even when an ID contains slashes.

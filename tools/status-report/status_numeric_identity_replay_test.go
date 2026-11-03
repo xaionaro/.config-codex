@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,29 @@ func TestNumericTopPriorityCancellation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, taskLifecycleCancelled, parsed.Tasks[0].Lifecycle)
 	require.Equal(t, []taskID{"2"}, parsed.TopPriorities)
+	require.Contains(t, string(result), "top_priorities: ['2']")
+}
+
+// TestVerificationRetainsTopPriorityRepresentation checks unrelated scalar styles.
+//
+// Example: A task owner update cannot rewrite numeric priority 2 as a string.
+func TestVerificationRetainsTopPriorityRepresentation(t *testing.T) {
+	before := []byte("tasks: [{id: 1, owner: old}, {id: 2, owner: keep}]\ntop_priorities: [1, 2]\n")
+	effects := []syncEffect{{Target: syncTargetTask, ID: "1", Field: "owner", Value: "new", Operation: syncEffectSet}}
+	good := []byte("tasks: [{id: 1, owner: new}, {id: 2, owner: keep}]\ntop_priorities: [1, 2]\n")
+	changed := []byte("tasks: [{id: 1, owner: new}, {id: 2, owner: keep}]\ntop_priorities: [1, '2']\n")
+	require.NoError(t, verifyStatusSyncEffects(before, good, effects))
+	require.Error(t, verifyStatusSyncEffects(before, changed, effects))
+}
+
+// TestExplicitTopPriorityReplacementCanChangeStyles checks authorized replacement.
+//
+// Example: A supplied list of string IDs may replace a numeric YAML list.
+func TestExplicitTopPriorityReplacementCanChangeStyles(t *testing.T) {
+	before := []byte("top_priorities: [1, 2]\n")
+	after := []byte("top_priorities: ['2']\n")
+	effects := []syncEffect{{Target: syncTargetReport, ID: "current", Field: "top_priorities", Value: json.RawMessage(`["2"]`), Operation: syncEffectSet}}
+	require.NoError(t, verifyStatusSyncEffects(before, after, effects))
 }
 
 // TestVerificationRetainsUnchangedIdentityRepresentation checks owner-authored IDs.
@@ -127,4 +151,58 @@ func TestVerificationRetainsOtherSectionIdentityStyles(t *testing.T) {
 	changedReview := strings.Replace(good, "reviews: [{task_id: 1,", "reviews: [{task_id: '1',", 1)
 	require.Error(t, verifyStatusSyncEffects(before, []byte(changedLane), effects))
 	require.Error(t, verifyStatusSyncEffects(before, []byte(changedReview), effects))
+}
+
+// TestVerificationRetainsDuplicateReviewIdentityStyles checks every occurrence.
+//
+// Example: Rewriting the first of two review IDs is still detected.
+func TestVerificationRetainsDuplicateReviewIdentityStyles(t *testing.T) {
+	before := strings.Replace(linkedReport, "id: '1', title: First", "id: '1', owner: old, title: First", 1)
+	before += "reviews: [{task_id: 1, reporter: A, critic: B, rounds: 1, estimate: checked, impact: checked, priority: checked, unresolved: none}, {task_id: '1', reporter: C, critic: D, rounds: 1, estimate: checked, impact: checked, priority: checked, unresolved: none}]\n"
+	_, err := parse([]byte(before))
+	require.NoError(t, err)
+	candidate := strings.Replace(strings.Replace(before, "owner: old", "owner: new", 1), "task_id: 1,", "task_id: '1',", 1)
+	effects := []syncEffect{{Target: syncTargetTask, ID: "1", Field: "owner", Value: "new", Operation: syncEffectSet}}
+	require.Error(t, verifyStatusSyncEffects([]byte(before), []byte(candidate), effects))
+}
+
+// TestVerificationRetainsParentAliasIdentity checks an aliased parent ID.
+//
+// Example: Updating a task owner cannot replace a parent alias with a string.
+func TestVerificationRetainsParentAliasIdentity(t *testing.T) {
+	before := strings.Replace(linkedReport, "id: '1', title: First", "id: &id 1, owner: old, title: First", 1)
+	before = strings.Replace(before, "id: '2', title: Second", "id: '1.1', parent_id: *id, title: Second", 1)
+	before = strings.Replace(before, "task_id: '2'", "task_id: '1.1'", 1)
+	before = strings.Replace(before, "top_priorities: ['1', '2']", "top_priorities: ['1', '1.1']", 1)
+	_, err := parse([]byte(before))
+	require.NoError(t, err)
+	candidate := strings.Replace(strings.Replace(before, "owner: old", "owner: new", 1), "parent_id: *id", "parent_id: '1'", 1)
+	effects := []syncEffect{{Target: syncTargetTask, ID: "1", Field: "owner", Value: "new", Operation: syncEffectSet}}
+	require.Error(t, verifyStatusSyncEffects([]byte(before), []byte(candidate), effects))
+}
+
+// TestNumericDottedPriorityCancellationPreservesSibling checks lexical separation.
+//
+// Example: Cancelling 1.1 does not rewrite or remove numeric-looking 1.10.
+func TestNumericDottedPriorityCancellationPreservesSibling(t *testing.T) {
+	report := strings.Replace(linkedReport, "id: '1', title: First", "id: 1, title: First", 1)
+	report = strings.Replace(report, "id: '2', title: Second", "id: 1.1, parent_id: 1, title: Second", 1)
+	report = strings.Replace(report, "top_priorities: ['1', '2']", "  - {id: 1.10, parent_id: 1, title: Third, priority: high, impact: Useful, effort: {min_minutes: 10, max_minutes: 20, kind: elapsed, basis: guess}, status: IN PROGRESS, work_refs: ['project-understanding.yaml#/records/work:second']}\ntop_priorities: [1, 1.1, 1.10]", 1)
+	report = strings.Replace(report, "task_id: '1'", "task_id: 1", 1)
+	report = strings.Replace(report, "task_id: '2'", "task_id: 1.1", 1)
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
+	event := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"task","id":"1.1","fields":{"status":"unknown","lifecycle":"cancelled","evidence":"withdrawn"}}]}}}` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+	var out, errOut bytes.Buffer
+	require.Equal(t, 0, run([]string{"refresh", dir, "lifecycle_change"}, strings.NewReader(""), &out, &errOut), errOut.String())
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, []taskID{"1", "1.10"}, parsed.TopPriorities)
+	require.Contains(t, string(result), "top_priorities: [1, 1.10]")
+	require.Equal(t, taskLifecycleCancelled, parsed.Tasks[1].Lifecycle)
+	require.Equal(t, statusInProgress, parsed.Tasks[2].Status)
 }

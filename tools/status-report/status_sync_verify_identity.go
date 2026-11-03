@@ -14,6 +14,7 @@ type syncIdentityStyle struct {
 	Tag   string
 	Value string
 	Style yaml.Style
+	Alias string
 }
 
 // verifyTaskIdentityStyles protects the original representation of existing IDs.
@@ -31,12 +32,31 @@ func verifyTaskIdentityStyles(
 	if err != nil {
 		return err
 	}
-	for id, old := range before {
+	for id, previous := range before {
 		current, exists := after[id]
 		if !exists {
 			continue
 		}
-		if err := verifyTaskIdentityFields(id, old, current); err != nil {
+		if err := verifyIdentityOccurrences(id, previous, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyIdentityOccurrences compares every retained record with the same key.
+//
+// Example: Two reviews for one task retain both original identity styles.
+func verifyIdentityOccurrences(
+	id string,
+	before []map[string]syncIdentityStyle,
+	after []map[string]syncIdentityStyle,
+) error {
+	for i, old := range before {
+		if i >= len(after) {
+			break
+		}
+		if err := verifyTaskIdentityFields(id, old, after[i]); err != nil {
 			return err
 		}
 	}
@@ -63,12 +83,12 @@ func verifyTaskIdentityFields(
 // taskIdentityNodes captures lexical identity types for existing task records.
 //
 // Example: A YAML integer ID and a quoted string ID remain distinguishable.
-func taskIdentityNodes(data []byte) (map[string]map[string]syncIdentityStyle, error) {
+func taskIdentityNodes(data []byte) (map[string][]map[string]syncIdentityStyle, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	result := map[string]map[string]syncIdentityStyle{}
+	result := map[string][]map[string]syncIdentityStyle{}
 	if len(doc.Content) == 0 {
 		return result, nil
 	}
@@ -82,7 +102,7 @@ func taskIdentityNodes(data []byte) (map[string]map[string]syncIdentityStyle, er
 //
 // Example: Two lanes sharing a task stay distinct by work and environment.
 func collectSyncIdentityNodes(
-	result map[string]map[string]syncIdentityStyle,
+	result map[string][]map[string]syncIdentityStyle,
 	root *yaml.Node,
 	section string,
 ) {
@@ -102,19 +122,96 @@ func collectSyncIdentityNodes(
 			field = "id"
 		}
 		id := mapValue(item, field)
-		if id == nil || id.Kind != yaml.ScalarNode {
+		idStyle, ok := syncIdentityNodeStyle(id)
+		if !ok {
 			continue
 		}
-		fields := map[string]syncIdentityStyle{field: {Kind: id.Kind, Tag: id.Tag, Value: id.Value, Style: id.Style}}
-		if parent := mapValue(item, "parent_id"); section == "tasks" && parent != nil && parent.Kind == yaml.ScalarNode {
-			fields["parent_id"] = syncIdentityStyle{Kind: parent.Kind, Tag: parent.Tag, Value: parent.Value, Style: parent.Style}
+		fields := map[string]syncIdentityStyle{field: idStyle}
+		if parent, ok := syncIdentityNodeStyle(mapValue(item, "parent_id")); section == "tasks" && ok {
+			fields["parent_id"] = parent
 		}
-		key := section + "\x00" + id.Value
+		key := section + "\x00" + idStyle.Value
 		if section == "lanes" {
 			key += "\x00" + syncNodeText(mapValue(item, "work_ref")) + "\x00" + syncNodeText(mapValue(item, "required_environment"))
 		}
-		result[key] = fields
+		result[key] = append(result[key], fields)
 	}
+}
+
+// syncIdentityNodeStyle captures both the decoded ID and its source representation.
+//
+// Example: A parent alias retains its alias name and decoded task identifier.
+func syncIdentityNodeStyle(node *yaml.Node) (syncIdentityStyle, bool) {
+	if node == nil || (node.Kind != yaml.ScalarNode && node.Kind != yaml.AliasNode) {
+		return syncIdentityStyle{}, false
+	}
+	var value string
+	if node.Decode(&value) != nil {
+		return syncIdentityStyle{}, false
+	}
+	style := syncIdentityStyle{Kind: node.Kind, Tag: node.Tag, Value: value, Style: node.Style}
+	if node.Kind == yaml.AliasNode {
+		style.Alias = node.Value
+	}
+	return style, true
+}
+
+// verifyTopPriorityStyles protects retained IDs unless the full list was supplied.
+//
+// Example: An unrelated task update cannot rewrite a numeric priority as text.
+func verifyTopPriorityStyles(
+	original []byte,
+	candidate []byte,
+	effects []syncEffect,
+) error {
+	for _, effect := range effects {
+		if effect.Operation == syncEffectSet && effect.Target == syncTargetReport && effect.ID == "current" && effect.Field == "top_priorities" {
+			return nil
+		}
+	}
+	before, err := topPriorityIdentityStyles(original)
+	if err != nil {
+		return err
+	}
+	after, err := topPriorityIdentityStyles(candidate)
+	if err != nil {
+		return err
+	}
+	for id, previous := range before {
+		if err := verifyIdentityOccurrences("top_priorities\x00"+id, previous, after[id]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// topPriorityIdentityStyles records each priority scalar's lexical representation.
+//
+// Example: An alias and an integer with the same ID remain distinguishable.
+func topPriorityIdentityStyles(data []byte) (map[string][]map[string]syncIdentityStyle, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	result := map[string][]map[string]syncIdentityStyle{}
+	if len(doc.Content) == 0 {
+		return result, nil
+	}
+	list := mapValue(doc.Content[0], "top_priorities")
+	if list != nil && list.Kind == yaml.AliasNode {
+		list = list.Alias
+	}
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return result, nil
+	}
+	for _, item := range list.Content {
+		style, ok := syncIdentityNodeStyle(item)
+		if !ok {
+			continue
+		}
+		result[style.Value] = append(result[style.Value], map[string]syncIdentityStyle{"value": style})
+	}
+	return result, nil
 }
 
 // syncNodeText reads a scalar selector without inventing a missing value.

@@ -247,6 +247,9 @@ func verifyStatusSyncEffects(
 	if err := verifyTaskIdentityStyles(original, candidate); err != nil {
 		return err
 	}
+	if err := verifyTopPriorityStyles(original, candidate, effects); err != nil {
+		return err
+	}
 	beforeComments, err := yamlComments(original)
 	if err != nil {
 		return err

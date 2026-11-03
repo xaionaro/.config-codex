@@ -74,7 +74,7 @@ func TestAnchoredTopPrioritiesAllowCancellation(t *testing.T) {
 	input := strings.Replace(linkedReport, "top_priorities: ['1', '2']", "top_priorities: &owner ['1', '2'] # owner note", 1)
 	out, ok := removeCancelledPriority([]byte(input), taskID("1"))
 	require.True(t, ok)
-	require.Contains(t, string(out), `top_priorities: &owner ["2"] # owner note`)
+	require.Contains(t, string(out), "top_priorities: &owner ['2'] # owner note")
 	_, err := parse(out)
 	require.NoError(t, err)
 }
