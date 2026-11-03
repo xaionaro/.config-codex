@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// TestLaneChainProvenanceRejectsForgedLogPosition checks event locators.
+//
+// Example: Reject an ordinal outside the logged updates.
 func TestLaneChainProvenanceRejectsForgedLogPosition(t *testing.T) {
 	u := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Evidence: "done", Fields: map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:45:00Z"}}
 	encoded, err := encodeSyncGroup(u)
@@ -29,6 +32,9 @@ func TestLaneChainProvenanceRejectsForgedLogPosition(t *testing.T) {
 	}
 }
 
+// TestLaneChainProvenanceChecksLogAndOwner checks source and ownership.
+//
+// Example: Reject a changed log payload or owner conflict.
 func TestLaneChainProvenanceChecksLogAndOwner(t *testing.T) {
 	raw := []string{
 		`{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"cancelled","fields":{"lifecycle":"cancelled"}}]}}}`,
@@ -101,6 +107,14 @@ func TestLaneChainProvenanceRepeatedTransitions(t *testing.T) {
 	withOmitted[2] = omitted
 	if err := verifyLaneLifecycleChain([]byte(linkedReport), candidate, groups, effects, provenance, nil, []byte(strings.Join(withOmitted, "\n")), ledger, forecasts); err == nil {
 		t.Fatal("accepted omitted dependent update")
+	}
+	withOmitted[2] = strings.Replace(omitted, `"fields":{"blocker":"omitted"}`, `"evidence":42,"fields":{"blocker":"omitted"}`, 1)
+	if err := verifyLaneLifecycleChain([]byte(linkedReport), candidate, groups, effects, provenance, nil, []byte(strings.Join(withOmitted, "\n")), ledger, forecasts); err == nil {
+		t.Fatal("accepted malformed omitted lane update")
+	}
+	withOmitted[2] = strings.Replace(withOmitted[2], `"evidence":42`, `"id":"other","evidence":42`, 1)
+	if err := verifyLaneLifecycleChain([]byte(linkedReport), candidate, groups, effects, provenance, nil, []byte(strings.Join(withOmitted, "\n")), ledger, forecasts); err != nil {
+		t.Fatalf("rejected unrelated malformed sibling: %v", err)
 	}
 	withOmitted[2] = strings.Replace(omitted, `"blocker":"omitted"`, `"owner":"other"`, 1)
 	if err := verifyLaneLifecycleChain([]byte(linkedReport), candidate, groups, effects, provenance, nil, []byte(strings.Join(withOmitted, "\n")), ledger, forecasts); err != nil {

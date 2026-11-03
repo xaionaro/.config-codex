@@ -66,15 +66,19 @@ func verifyLaneLifecycleChain(
 		if group.Line < 1 || group.Line > len(lines) || group.Ordinal < 0 || (i > 0 && (group.Line < groups[i-1].Line || (group.Line == groups[i-1].Line && group.Ordinal <= groups[i-1].Ordinal))) {
 			return fmt.Errorf("invalid chain position")
 		}
-		var event syncEvent
-		if json.Unmarshal(lines[group.Line-1], &event) != nil || event.Event == "correction" || event.Details.StatusUpdate == nil || group.Ordinal >= len(event.Details.StatusUpdate.Updates) {
+		var envelope struct {
+			Event string `json:"event"`
+		}
+		updates, array := laneRawUpdates(lines[group.Line-1])
+		if json.Unmarshal(lines[group.Line-1], &envelope) != nil || envelope.Event == "correction" || !array || group.Ordinal >= len(updates) {
 			return fmt.Errorf("missing log update")
 		}
 		update, err := decodeSyncGroup(group.Update)
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(update, event.Details.StatusUpdate.Updates[group.Ordinal]) || update.Target != syncTargetLane || syncTargetKey(update, "") != syncTargetKey(first, "") || !validLaneSyncUpdate(update) || update.Corrects != 0 || update.Retract {
+		var logged syncUpdate
+		if json.Unmarshal(updates[group.Ordinal], &logged) != nil || !reflect.DeepEqual(update, logged) || update.Target != syncTargetLane || syncTargetKey(update, "") != syncTargetKey(first, "") || !validLaneSyncUpdate(update) || update.Corrects != 0 || update.Retract {
 			return fmt.Errorf("chain update differs from log")
 		}
 		status := update.RequiredEnvironment.String() + "_status"
@@ -146,13 +150,17 @@ func verifyLaneLifecycleChain(
 	}
 	start, end := groups[0], groups[len(groups)-1]
 	for line := start.Line; line <= end.Line; line++ {
-		var event syncEvent
-		if json.Unmarshal(lines[line-1], &event) != nil || event.Details.StatusUpdate == nil {
-			continue
-		}
-		for ordinal, update := range event.Details.StatusUpdate.Updates {
+		updates, array := laneRawUpdates(lines[line-1])
+		for ordinal, raw := range updates {
 			if (line == start.Line && ordinal <= start.Ordinal) || (line == end.Line && ordinal >= end.Ordinal) || selected[syncGroupKey(line, ordinal)] {
 				continue
+			}
+			if !laneRawIdentifies(raw, first) {
+				continue
+			}
+			var update syncUpdate
+			if !array || json.Unmarshal(raw, &update) != nil {
+				return fmt.Errorf("malformed intervening lane update")
 			}
 			if update.Target == syncTargetLane && syncTargetKey(update, "") == syncTargetKey(first, "") && syncDependenciesOverlap(dependencies, syncGroupDependencies(update)) {
 				if len(states) != 1 || states[0] == nil || update.Corrects != 0 || update.Retract || len(update.Values) != 0 || !validLaneSyncUpdate(update) {

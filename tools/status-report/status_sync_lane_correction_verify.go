@@ -27,8 +27,12 @@ func verifyPendingLaneCorrection(
 	if oldGroup.Line < 1 || newGroup.Line > len(lines) || oldGroup.Ordinal < 0 || newGroup.Ordinal < 0 || newGroup.Line < oldGroup.Line || (newGroup.Line == oldGroup.Line && newGroup.Ordinal <= oldGroup.Ordinal) {
 		return fmt.Errorf("invalid correction positions")
 	}
-	var oldEvent, newEvent syncEvent
-	if json.Unmarshal(lines[oldGroup.Line-1], &oldEvent) != nil || json.Unmarshal(lines[newGroup.Line-1], &newEvent) != nil || oldEvent.Event == "correction" || newEvent.Event != "correction" || oldEvent.Details.StatusUpdate == nil || newEvent.Details.StatusUpdate == nil || oldGroup.Ordinal >= len(oldEvent.Details.StatusUpdate.Updates) || newGroup.Ordinal >= len(newEvent.Details.StatusUpdate.Updates) {
+	var oldEvent, newEvent struct {
+		Event string `json:"event"`
+	}
+	oldUpdates, oldArray := laneRawUpdates(lines[oldGroup.Line-1])
+	newUpdates, newArray := laneRawUpdates(lines[newGroup.Line-1])
+	if json.Unmarshal(lines[oldGroup.Line-1], &oldEvent) != nil || json.Unmarshal(lines[newGroup.Line-1], &newEvent) != nil || oldEvent.Event == "correction" || newEvent.Event != "correction" || !oldArray || !newArray || oldGroup.Ordinal >= len(oldUpdates) || newGroup.Ordinal >= len(newUpdates) {
 		return fmt.Errorf("invalid correction log")
 	}
 	old, err := decodeSyncGroup(oldGroup.Update)
@@ -39,7 +43,8 @@ func verifyPendingLaneCorrection(
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(old, oldEvent.Details.StatusUpdate.Updates[oldGroup.Ordinal]) || !reflect.DeepEqual(next, newEvent.Details.StatusUpdate.Updates[newGroup.Ordinal]) || old.Target != syncTargetLane || !validLaneSyncUpdate(old) || !validLaneSyncUpdate(next) || old.Corrects != 0 || next.Corrects != oldGroup.Line || next.Retract || syncTargetKey(old, "") != syncTargetKey(next, "") || !reflect.DeepEqual(syncGroupFields(old), syncGroupFields(next)) {
+	var oldLogged, newLogged syncUpdate
+	if json.Unmarshal(oldUpdates[oldGroup.Ordinal], &oldLogged) != nil || json.Unmarshal(newUpdates[newGroup.Ordinal], &newLogged) != nil || !reflect.DeepEqual(old, oldLogged) || !reflect.DeepEqual(next, newLogged) || old.Target != syncTargetLane || !validLaneSyncUpdate(old) || !validLaneSyncUpdate(next) || old.Corrects != 0 || next.Corrects != oldGroup.Line || next.Retract || syncTargetKey(old, "") != syncTargetKey(next, "") || !reflect.DeepEqual(syncGroupFields(old), syncGroupFields(next)) {
 		return fmt.Errorf("correction differs from log or original fields")
 	}
 	if (next.CorrectsOrdinal == nil && oldGroup.Ordinal != 0) || (next.CorrectsOrdinal != nil && *next.CorrectsOrdinal != oldGroup.Ordinal) {
@@ -54,13 +59,17 @@ func verifyPendingLaneCorrection(
 		return fmt.Errorf("old completion is not stale")
 	}
 	for line := oldGroup.Line; line <= newGroup.Line; line++ {
-		var event syncEvent
-		if json.Unmarshal(lines[line-1], &event) != nil || event.Details.StatusUpdate == nil {
-			continue
-		}
-		for ordinal, update := range event.Details.StatusUpdate.Updates {
+		updates, array := laneRawUpdates(lines[line-1])
+		for ordinal, raw := range updates {
 			if (line == oldGroup.Line && ordinal <= oldGroup.Ordinal) || (line == newGroup.Line && ordinal >= newGroup.Ordinal) {
 				continue
+			}
+			if !laneRawIdentifies(raw, old) {
+				continue
+			}
+			var update syncUpdate
+			if !array || json.Unmarshal(raw, &update) != nil {
+				return fmt.Errorf("malformed intervening lane update")
 			}
 			if update.Target == syncTargetLane && syncTargetKey(update, "") == syncTargetKey(old, "") && syncDependenciesOverlap(syncGroupDependencies(old), syncGroupDependencies(update)) {
 				return fmt.Errorf("intervening dependent update")
