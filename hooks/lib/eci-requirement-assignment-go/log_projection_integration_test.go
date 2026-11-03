@@ -43,6 +43,7 @@ completion_estimate: {min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24
 		output, err := command.CombinedOutput()
 		require.NoError(t, err, string(output))
 	}
+	appendEvent(`{"event":"decision","summary":"Malformed optional update","details":{"status_update":{"updates":[{"target":"unknown","id":"1","fields":{"status":"CLOSED"}}]}}}`)
 	appendEvent(`{"event":"verification_result","summary":"First accepted","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"status":"CLOSED","evidence":"acceptance proof"}}]}}}`)
 	updated, err := os.ReadFile(reportPath)
 	require.NoError(t, err)
@@ -53,7 +54,10 @@ completion_estimate: {min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24
 	logPath := filepath.Join(dir, "high_level_log.jsonl")
 	logged, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, 1, strings.Count(string(logged), "\n"))
+	require.Equal(t, 2, strings.Count(string(logged), "\n"))
+	require.Contains(t, string(logged), "Malformed optional update")
+	require.Contains(t, string(updated), "invalid status_update requires manual review")
+	require.Contains(t, string(updated), "scope_complete: false")
 	retry := exec.Command(f.CLI, "status-refresh", "--event", "verification_result")
 	retry.Env = env
 	output, err := retry.CombinedOutput()

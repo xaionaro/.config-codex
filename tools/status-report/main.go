@@ -111,6 +111,7 @@ type report struct {
 	Incomplete         []string             `yaml:"-"`
 	Timestamp          string               `yaml:"timestamp"`
 	TimelineAsOf       string               `yaml:"timeline_as_of"`
+	StatusSync         *syncState           `yaml:"status_sync"`
 	State              string               `yaml:"state"`
 	Progress           []string             `yaml:"progress"`
 	Decisions          []any                `yaml:"decisions"`
