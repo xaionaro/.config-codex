@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -165,10 +166,37 @@ func existingPriorityEstimate(
 	}
 	for _, estimate := range report.Estimates {
 		if estimate["priority"] == priority {
-			return true, reflect.DeepEqual(estimate, supplied)
+			return true, equalPriorityEstimateRecord(estimate, supplied)
 		}
 	}
 	return false, false
+}
+
+// equalPriorityEstimateRecord compares every supplied field and YAML timestamp value.
+//
+// Example: An unquoted YAML timestamp matches the same JSON timestamp string.
+func equalPriorityEstimateRecord(
+	existing map[string]any,
+	supplied map[string]any,
+) bool {
+	stamp, ok := existing["as_of"].(time.Time)
+	if !ok {
+		return reflect.DeepEqual(existing, supplied)
+	}
+	text, ok := supplied["as_of"].(string)
+	if !ok {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || !stamp.Equal(parsed) {
+		return false
+	}
+	normalized := make(map[string]any, len(existing))
+	for key, value := range existing {
+		normalized[key] = value
+	}
+	normalized["as_of"] = text
+	return reflect.DeepEqual(normalized, supplied)
 }
 
 // syncTaskHasPriority confirms an explicit retirement belongs to the selected task.

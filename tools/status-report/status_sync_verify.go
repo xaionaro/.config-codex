@@ -825,7 +825,7 @@ func priorityRetirementReusesEstimate(
 		if !ok || estimate["priority"] != priority {
 			continue
 		}
-		if !reflect.DeepEqual(estimate, supplied) {
+		if !equalPriorityEstimateRecord(estimate, supplied) {
 			return false
 		}
 		matched++

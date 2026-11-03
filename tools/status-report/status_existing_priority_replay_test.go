@@ -31,6 +31,9 @@ func TestReprioritizeIntoExistingEstimateReplaysAtomically(t *testing.T) {
 		succeeds bool
 	}{
 		{"matching destination", report, true},
+		{"unquoted timestamp", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "as_of: 2026-11-02T15:24:00Z, basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), true},
+		{"unquoted retired timestamp", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess", "as_of: 2026-11-02T15:24:00Z, basis: guess", 1), true},
+		{"changed timestamp", strings.Replace(report, "as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "as_of: 2026-11-02T15:23:00Z, basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), false},
 		{"changed destination", strings.Replace(report, "basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner low", "basis: owner edit, assumptions: none, dependencies: none, critical_path: latest} # owner low", 1), false},
 		{"changed retired estimate", strings.Replace(report, "basis: guess, assumptions: none", "basis: owner edit, assumptions: none", 1), false},
 		{"another high priority task", strings.Replace(report, "top_priorities:", "  - {id: '3', title: Other, priority: high, impact: Useful, effort: {min_minutes: 10, max_minutes: 20, kind: elapsed, basis: guess}, status: IN PROGRESS}\ntop_priorities:", 1), false},
