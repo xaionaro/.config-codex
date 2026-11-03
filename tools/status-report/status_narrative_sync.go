@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
@@ -191,11 +192,14 @@ func preserveUnterminatedBlockScalar(
 		return
 	}
 	line := item.Line - 1
-	column := item.Column - 1
-	if line < 0 || line >= len(lines) || column < 0 || column >= len(lines[line]) {
+	if line < 0 || line >= len(lines) {
 		return
 	}
 	header := lines[line]
+	column := blockScalarIndicator(lines, item.Line)
+	if column < 0 || column >= len(header) {
+		return
+	}
 	end := column + 1
 	for end < len(header) && (header[end] == '+' || header[end] == '-' || header[end] >= '1' && header[end] <= '9') {
 		end++
@@ -210,6 +214,45 @@ func preserveUnterminatedBlockScalar(
 		modifiers += "-"
 	}
 	lines[line] = header[:column+1] + modifiers + header[end:]
+}
+
+// blockScalarIndicator locates the lexer token on a scalar's header line.
+//
+// Example: An anchor and tag can precede the literal indicator.
+func blockScalarIndicator(
+	lines []string,
+	line int,
+) int {
+	data := []byte(strings.Join(lines, "\n"))
+	scan, err := flowScanBytes(data)
+	if err != nil {
+		return -1
+	}
+	tokens := lexer.Tokenize(string(scan))
+	if tokens.InvalidToken() != nil {
+		return -1
+	}
+	start, err := yamlByteOffset(data, line, 1)
+	if err != nil {
+		return -1
+	}
+	for _, tok := range tokens {
+		if tok.Position.Line != line || (tok.Type != token.LiteralType && tok.Type != token.FoldedType) {
+			continue
+		}
+		offset, err := yamlByteOffset(data, line, tok.Position.Column)
+		if err != nil {
+			return -1
+		}
+		for offset < len(data) && (data[offset] == ' ' || data[offset] == '\t') {
+			offset++
+		}
+		if offset >= len(data) || (data[offset] != '|' && data[offset] != '>') {
+			return -1
+		}
+		return offset - start
+	}
+	return -1
 }
 
 // narrativeSyncItemOwned verifies that exactly one subject retains its managed text.

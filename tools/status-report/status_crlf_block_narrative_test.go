@@ -165,7 +165,7 @@ func TestRetractionPreservesBlockScalarSurvivor(t *testing.T) {
 //
 // Example: A clipped literal without a final newline remains unchanged when appending.
 func TestAppendAfterUnterminatedBlockScalarPreservesValue(t *testing.T) {
-	for _, style := range []string{"|", ">", "|+", ">+", "|-", ">-", "|2 # owner note", ">+2 # owner note"} {
+	for _, style := range []string{"|", ">", "|+", ">+", "|-", ">-", "|2 # owner note", ">+2 # owner note", "&owner |", "!!str |", "&owner !!str |", "!!str &owner |", "!<tag:yaml.org,2002:str> |", "!!str &item |2+"} {
 		t.Run(style,
 			// check compares the existing value across the public projection.
 			//
