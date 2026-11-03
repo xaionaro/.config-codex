@@ -5,8 +5,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/goccy/go-yaml/lexer"
-	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
 
@@ -307,16 +305,7 @@ func laneRemovalHasComment(
 	start int,
 	end int,
 ) bool {
-	for _, item := range lexer.Tokenize(string(data)) {
-		if item.Type != token.CommentType || item.Position == nil {
-			continue
-		}
-		offset, err := yamlByteOffset(data, item.Position.Line, item.Position.Column)
-		if err != nil || (offset >= start && offset < end) {
-			return true
-		}
-	}
-	return false
+	return yamlRangeHasComment(data, start, end)
 }
 
 // findSyncLane locates the lane selected by an update.

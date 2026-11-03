@@ -6,7 +6,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
@@ -277,7 +276,7 @@ func yamlRangeHasComment(
 	if err != nil {
 		return true
 	}
-	tokens := lexer.Tokenize(string(scan))
+	tokens := tokenizeReport(string(scan))
 	if tokens.InvalidToken() != nil {
 		return true
 	}

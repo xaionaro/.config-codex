@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
@@ -260,7 +259,7 @@ func blockScalarIndicator(
 	if err != nil {
 		return -1, -1
 	}
-	tokens := lexer.Tokenize(string(scan))
+	tokens := tokenizeReport(string(scan))
 	if tokens.InvalidToken() != nil {
 		return -1, -1
 	}

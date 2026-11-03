@@ -362,3 +362,45 @@ func TestRefreshEmptyKeptScalarWithReconciliation(t *testing.T) {
 	require.Contains(t, string(out), "|+ # owner note\r\n")
 	require.NotEmpty(t, report.Blockers)
 }
+
+// TestReplayBesideEmptyKeptScalarPreservesExistingItems checks shared scanning.
+//
+// Example: Appending and retracting a managed item preserves neighboring scalars.
+func TestReplayBesideEmptyKeptScalarPreservesExistingItems(t *testing.T) {
+	input := []byte("progress:\r\n  - |+ # empty owner\r\n  - | # last owner\r\n    legacy scalar")
+	var before, appended, retracted yaml.Node
+	require.NoError(t, yaml.Unmarshal(input, &before))
+	update := syncUpdate{Target: syncTargetProgress, ID: "one"}
+	out, ok := applyNarrativeSyncField(input, update, "text", "new progress", "", false, false)
+	require.True(t, ok)
+	require.NoError(t, yaml.Unmarshal(out, &appended))
+	oldItems := mapValue(before.Content[0], "progress").Content
+	newItems := mapValue(appended.Content[0], "progress").Content
+	require.Equal(t, oldItems[0].Value, newItems[0].Value)
+	require.Equal(t, oldItems[1].Value, newItems[1].Value)
+	out, ok = retractNarrativeSync(out, update, "new progress", true, "", false)
+	require.True(t, ok)
+	require.NoError(t, yaml.Unmarshal(out, &retracted))
+	require.Equal(t, oldItems[1].Value, mapValue(retracted.Content[0], "progress").Content[1].Value)
+	require.Contains(t, string(out), "# empty owner")
+	require.Contains(t, string(out), "# last owner")
+}
+
+// TestRefreshForecastProjectionBesideEmptyKeptScalar checks comment range scanning.
+//
+// Example: A forecast basis can update while an empty progress item retains its comment.
+func TestRefreshForecastProjectionBesideEmptyKeptScalar(t *testing.T) {
+	input := strings.Replace(linkedReport, "evidence: initial}", "evidence: initial, source_projection: {baseline_evidence: initial, target_basis: old}}", 1)
+	input = strings.Replace(input, "progress: [Implementation started]\n", "progress:\n  - |+ # empty owner item\n  - Implementation started\n", 1)
+	forecasts := strings.Replace(linkedForecasts, "    baseline_evidence: initial\n", "    baseline_evidence: initial\n    target_basis: new basis\n", 1)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(input), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(forecasts), 0600))
+	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
+	out, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "new basis")
+	require.Contains(t, string(out), "# empty owner item")
+}

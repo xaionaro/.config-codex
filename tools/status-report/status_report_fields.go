@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
@@ -70,7 +69,7 @@ func flowMappingHasTrailingComma(
 	if err != nil {
 		return false, err
 	}
-	tokens := lexer.Tokenize(string(scan))
+	tokens := tokenizeReport(string(scan))
 	if bad := tokens.InvalidToken(); bad != nil {
 		return false, fmt.Errorf("invalid YAML token: %s", bad.Error)
 	}
