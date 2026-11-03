@@ -104,6 +104,11 @@ func verifyStatusSyncCanonicalEffects(
 		return err
 	}
 	for _, effect := range effects {
+		if effect.Target == syncTargetLane && effect.Operation == syncEffectSet && effect.Field == "completed_at" {
+			if err := verifyLaneCompletionTime(after, effect, ledger); err != nil {
+				return err
+			}
+		}
 		if effect.Operation == syncEffectCancelledRootForecastRetire {
 			if err := verifyCancelledRootForecastRetirement(before, effect, ledger, forecasts); err != nil {
 				return err
@@ -176,6 +181,37 @@ func verifyStatusSyncCanonicalEffects(
 				return fmt.Errorf("retired forecast does not match canonical work")
 			}
 		}
+	}
+	return nil
+}
+
+// verifyLaneCompletionTime checks a lane completion timestamp against canonical work.
+//
+// Example: Reject a correction that differs from the canonical completion instant.
+func verifyLaneCompletionTime(after map[string]any, effect syncEffect, ledger ledgerSource) error {
+	if !validRef(effect.WorkRef, "project-understanding.yaml") || effect.RequiredEnvironment == syncEnvironmentUnknown {
+		return fmt.Errorf("invalid lane completion identity")
+	}
+	work, ok := ledger.Records[sourceID(effect.WorkRef, "project-understanding.yaml")]
+	if !ok || work.Type != "work" || work.Data.State != workStateCompleted || work.Data.CompletedAt == "" {
+		return fmt.Errorf("lane completion lacks completed canonical work")
+	}
+	value, ok := effect.Value.(string)
+	if !ok || !sameValue(value, work.Data.CompletedAt) {
+		return fmt.Errorf("lane completion time differs from canonical work")
+	}
+	items, ok := after["lanes"].([]any)
+	if !ok {
+		return fmt.Errorf("lane completion target missing")
+	}
+	index, err := syncEffectIndex(items, "task_id", effect)
+	if err != nil || index < 0 {
+		return fmt.Errorf("lane completion identity missing or ambiguous")
+	}
+	lane := items[index].(map[string]any)
+	completed, ok := lane["completed_at"].(string)
+	if !ok || !sameValue(completed, work.Data.CompletedAt) || lane[effect.RequiredEnvironment.String()+"_status"] != "CLOSED" {
+		return fmt.Errorf("lane completion state differs from canonical work")
 	}
 	return nil
 }

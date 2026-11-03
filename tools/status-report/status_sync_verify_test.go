@@ -321,3 +321,29 @@ func TestVerifyCancelledRootForecastRetirement(t *testing.T) {
 		t.Fatal("accepted missing removal authorization")
 	}
 }
+
+// TestVerifyLaneCompletionTimeCorrectionChecksCanonicalWork checks standalone timestamp updates.
+//
+// Example: Reject a correction that differs from canonical completion.
+func TestVerifyLaneCompletionTimeCorrectionChecksCanonicalWork(t *testing.T) {
+	ref := "project-understanding.yaml#/records/w"
+	original := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: CLOSED, completed_at: '2026-11-02T15:00:00Z'}]\n")
+	candidate := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: CLOSED, completed_at: '2026-11-02T15:05:00Z'}]\n")
+	effect := syncEffect{Target: syncTargetLane, ID: "a", WorkRef: ref, RequiredEnvironment: syncEnvironmentImplementation, Field: "completed_at", Value: "2026-11-02T15:05:00Z", Operation: syncEffectSet}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:05:00Z"}}}}
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecastSource{}); err != nil {
+		t.Fatal(err)
+	}
+	work := ledger.Records["w"]
+	work.Data.CompletedAt = "2026-11-02T15:06:00Z"
+	ledger.Records["w"] = work
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted noncanonical timestamp")
+	}
+	work.Data.CompletedAt = "2026-11-02T15:05:00Z"
+	work.Data.State = workStateActive
+	ledger.Records["w"] = work
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted active canonical work")
+	}
+}
