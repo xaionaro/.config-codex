@@ -28,6 +28,10 @@ func holdAmbiguousLegacyCorrections(
 			delete(state.Pending, key)
 			delete(before, key)
 			invalid = true
+			continue
+		}
+		if legacyCorrectionHasStructuredCompanions(pending, log) {
+			held[key] = pending
 		}
 	}
 	for _, pending := range held {
@@ -37,6 +41,32 @@ func holdAmbiguousLegacyCorrections(
 		delete(state.Pending, key)
 	}
 	return held, invalid
+}
+
+// legacyCorrectionHasStructuredCompanions prevents partial legacy projection.
+//
+// Example: A saved owner field cannot apply separately from a typed effort update.
+func legacyCorrectionHasStructuredCompanions(
+	pending syncPending,
+	log []byte,
+) bool {
+	if pending.Update.Corrects == 0 {
+		return false
+	}
+	lines := bytes.Split(log, []byte("\n"))
+	if pending.Line <= 0 || pending.Line > len(lines) {
+		return true
+	}
+	var event syncEvent
+	if json.Unmarshal(lines[pending.Line-1], &event) != nil || event.Details.StatusUpdate == nil {
+		return true
+	}
+	for _, candidate := range event.Details.StatusUpdate.Updates {
+		if legacyCorrectionUpdateMatches(pending.Update, candidate) {
+			return len(candidate.Values) > 0 || len(candidate.Clear) > 0
+		}
+	}
+	return true
 }
 
 // legacyRetractionIsSuperseded recognizes a later recorded narrative version.

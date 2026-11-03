@@ -574,3 +574,42 @@ func TestLegacyCorrectionRequiresValidCurrentTransaction(t *testing.T) {
 			})
 	}
 }
+
+// TestLegacyCorrectionHoldsStructuredCompanions checks atomic legacy recovery.
+//
+// Example: An owner fragment cannot apply without its accompanying effort change.
+func TestLegacyCorrectionHoldsStructuredCompanions(t *testing.T) {
+	for _, tc := range []struct {
+		name, companion string
+	}{
+		{"invalid effort", `"values":{"effort":{"min_minutes":10,"max_minutes":5,"kind":"elapsed","basis":"guess"}}`},
+		{"valid effort", `"values":{"effort":{"min_minutes":10,"max_minutes":20,"kind":"elapsed","basis":"guess"}}`},
+		{"clear context", `"clear":["context"]`},
+	} {
+		t.Run(tc.name,
+			// Preserve the whole unresolved transaction and its existing owner.
+			//
+			// Example: Both valid and invalid effort values remain reviewable.
+			func(t *testing.T) {
+				log := `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"first"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"owner":"third"},` + tc.companion + `}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				update := syncUpdate{Target: syncTargetTask, ID: "1", Corrects: 1, Fields: map[string]string{"owner": "third"}}
+				key := syncTargetKey(update, "owner")
+				state := syncState{Cursor: 2, Applied: map[string]string{key: "first"}, Latest: map[string]int{key: 2}, Pending: map[string]syncPending{key: {Line: 2, Update: update}}}
+				encoded, err := json.Marshal(state)
+				require.NoError(t, err)
+				input := strings.Replace(linkedReport, "title: First,", "title: First, owner: first,", 1)
+				initial, err := putSyncState([]byte(input), string(encoded))
+				require.NoError(t, err)
+				result, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				report, err := parse(result)
+				require.NoError(t, err)
+				require.Equal(t, "first", report.Tasks[0].Owner)
+				require.NotEmpty(t, report.StatusSync.Pending)
+				require.Contains(t, report.Blockers, "Status refresh incomplete: status updates remain pending manual reconciliation")
+				require.NotContains(t, report.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
+			})
+	}
+}
