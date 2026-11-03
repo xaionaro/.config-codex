@@ -339,7 +339,7 @@ func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 		if err != nil {
 			return err
 		}
-		if identity != "subject_ref" && effect.Target != syncTargetRootForecast && effect.Target != syncTargetRootCompletion {
+		if identity != "subject_ref" && effect.Target != syncTargetRootForecast && effect.Target != syncTargetRootCompletion && effect.Target != syncTargetPriorityEstimate {
 			return fmt.Errorf("unsupported removal")
 		}
 		items, ok := root[section].([]any)
@@ -353,7 +353,10 @@ func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 		if identity != "subject_ref" {
 			addition, ok := effect.Value.(syncAddition)
 			if !ok {
-				return fmt.Errorf("root removal lacks authorization")
+				return fmt.Errorf("record removal lacks authorization")
+			}
+			if effect.Target == syncTargetPriorityEstimate && addition.RetirePriority != effect.ID {
+				return fmt.Errorf("priority retirement not authorized")
 			}
 			var expected any
 			if err := json.Unmarshal(addition.ExpectedPrior, &expected); err != nil {

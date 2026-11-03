@@ -216,3 +216,27 @@ func TestVerifyCanonicalRootReopening(t *testing.T) {
 		t.Fatal("accepted inactive reopened forecast")
 	}
 }
+
+// TestVerifyPriorityRemovalRequiresExplicitPrior checks estimate retirement authorization.
+//
+// Example: Reject retirement when the supplied prior estimate differs.
+func TestVerifyPriorityRemovalRequiresExplicitPrior(t *testing.T) {
+	original := []byte("priority_estimates: [{priority: P1, basis: old}]\n")
+	candidate := []byte("priority_estimates: []\n")
+	addition := syncAddition{RetirePriority: "P1", ExpectedPrior: json.RawMessage(`{"priority":"P1","basis":"old"}`)}
+	effect := syncEffect{Target: syncTargetPriorityEstimate, ID: "P1", Operation: syncEffectRemove, Value: addition}
+	if err := verifyStatusSyncEffects(original, candidate, []syncEffect{effect}); err != nil {
+		t.Fatal(err)
+	}
+	addition.ExpectedPrior = json.RawMessage(`{"priority":"P1","basis":"wrong"}`)
+	effect.Value = addition
+	if err := verifyStatusSyncEffects(original, candidate, []syncEffect{effect}); err == nil {
+		t.Fatal("accepted mismatched prior")
+	}
+	addition.ExpectedPrior = json.RawMessage(`{"priority":"P1","basis":"old"}`)
+	addition.RetirePriority = "P2"
+	effect.Value = addition
+	if err := verifyStatusSyncEffects(original, candidate, []syncEffect{effect}); err == nil {
+		t.Fatal("accepted wrong priority")
+	}
+}
