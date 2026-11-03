@@ -8,9 +8,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// syncAbsentValue marks a field previously removed by projection.
+//
+// Example: Reject an owner-added blocker after a projected clear.
 const syncAbsentValue = "\x00absent"
 
 // validLaneSyncUpdate accepts scalar fields and explicit optional-field removals.
+//
+// Example: Accept a lane update that clears a blocker.
 func validLaneSyncUpdate(update syncUpdate) bool {
 	if update.Target != syncTargetLane || len(update.Values) != 0 || update.Retract || (len(update.Fields) == 0 && len(update.Clear) == 0) {
 		return false
@@ -36,6 +41,8 @@ func validLaneSyncUpdate(update syncUpdate) bool {
 }
 
 // applyLaneSyncUpdateRaw builds one validated lane transition.
+//
+// Example: Retire an inactive forecast while closing its canonical work.
 func applyLaneSyncUpdateRaw(
 	data []byte,
 	update syncUpdate,
@@ -155,6 +162,8 @@ func applyLaneSyncUpdateRaw(
 }
 
 // removeLaneSyncField removes a supplied field only when its bytes are unambiguous.
+//
+// Example: Remove a comment-free completion time when reopening a lane.
 func removeLaneSyncField(
 	data []byte,
 	update syncUpdate,
@@ -224,6 +233,8 @@ func removeLaneSyncField(
 }
 
 // laneRemovalHasComment protects comments while allowing hash characters in references.
+//
+// Example: Preserve an inline owner comment during forecast retirement.
 func laneRemovalHasComment(
 	data []byte,
 	start int,
@@ -242,6 +253,8 @@ func laneRemovalHasComment(
 }
 
 // applyLaneSyncUpdate records the authorized changes accompanying a lane transition.
+//
+// Example: Record the forecast removal and status update for verification.
 func applyLaneSyncUpdate(
 	data []byte,
 	update syncUpdate,
@@ -257,16 +270,20 @@ func applyLaneSyncUpdate(
 	if yaml.Unmarshal(data, &before) != nil || yaml.Unmarshal(candidate, &after) != nil {
 		return data, nil, false
 	}
-	find := func(doc *yaml.Node) *yaml.Node {
-		list := mapValue(doc.Content[0], "lanes")
-		for _, item := range list.Content {
-			id, ref, env := mapValue(item, "task_id"), mapValue(item, "work_ref"), mapValue(item, "required_environment")
-			if id != nil && ref != nil && env != nil && id.Value == update.ID && ref.Value == update.WorkRef && env.Value == update.RequiredEnvironment.String() {
-				return item
+	find :=
+		// Locate the uniquely selected lane in a report document.
+		//
+		// Example: Match task, work reference, and required environment.
+		func(doc *yaml.Node) *yaml.Node {
+			list := mapValue(doc.Content[0], "lanes")
+			for _, item := range list.Content {
+				id, ref, env := mapValue(item, "task_id"), mapValue(item, "work_ref"), mapValue(item, "required_environment")
+				if id != nil && ref != nil && env != nil && id.Value == update.ID && ref.Value == update.WorkRef && env.Value == update.RequiredEnvironment.String() {
+					return item
+				}
 			}
+			return nil
 		}
-		return nil
-	}
 	oldLane, newLane := find(&before), find(&after)
 	if oldLane == nil || newLane == nil {
 		return data, nil, false
