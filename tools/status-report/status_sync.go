@@ -57,6 +57,7 @@ type syncAddition struct {
 	RetireForecast bool            `json:"retire_forecast,omitempty" yaml:"retire_forecast,omitempty"`
 	ReopenWorkRef  string          `json:"reopen_work_ref,omitempty" yaml:"reopen_work_ref,omitempty"`
 	ExpectedPrior  json.RawMessage `json:"expected_prior,omitempty" yaml:"expected_prior,omitempty"`
+	RetirePriority string          `json:"retire_priority,omitempty" yaml:"retire_priority,omitempty"`
 }
 
 // syncPendingAddition retains an unapplied insertion and its log position.
@@ -73,6 +74,7 @@ type syncPendingAddition struct {
 	RetireForecast      bool            `json:"retire_forecast,omitempty" yaml:"retire_forecast,omitempty"`
 	ReopenWorkRef       string          `json:"reopen_work_ref,omitempty" yaml:"reopen_work_ref,omitempty"`
 	ExpectedPrior       string          `json:"expected_prior,omitempty" yaml:"expected_prior,omitempty"`
+	RetirePriority      string          `json:"retire_priority,omitempty" yaml:"retire_priority,omitempty"`
 }
 
 // syncState stores replay progress alongside the report it describes.
@@ -274,7 +276,15 @@ func projectLogStatusStep(
 			}
 		}
 		for _, addition := range event.Details.StatusUpdate.Additions {
-			if addition.Target != syncTargetRootCompletion && addition.Target != syncTargetRootForecast && (addition.RetireForecast || addition.ReopenWorkRef != "" || len(addition.ExpectedPrior) > 0) {
+			if addition.Target != syncTargetRootCompletion && addition.Target != syncTargetRootForecast && addition.Target != syncTargetPriorityEstimate && (addition.RetireForecast || addition.ReopenWorkRef != "" || len(addition.ExpectedPrior) > 0 || addition.RetirePriority != "") {
+				invalidUpdate = true
+				continue
+			}
+			if addition.Target != syncTargetPriorityEstimate && addition.RetirePriority != "" {
+				invalidUpdate = true
+				continue
+			}
+			if addition.Target == syncTargetPriorityEstimate && (addition.RetireForecast || addition.ReopenWorkRef != "" || (len(addition.ExpectedPrior) > 0 && addition.RetirePriority == "")) {
 				invalidUpdate = true
 				continue
 			}
@@ -321,7 +331,7 @@ func projectLogStatusStep(
 				key = "addition/lane/" + string(selector)
 			}
 			state.Latest[key] = i + 1
-			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior)}
+			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority}
 		}
 		for ordinal, update := range event.Details.StatusUpdate.Updates {
 			if update.Retract {
@@ -388,7 +398,7 @@ func projectLogStatusStep(
 				}
 				if json.Unmarshal([]byte(p.Record), &record) == nil {
 					estimateKey := "addition/priority_estimate/" + record.Priority
-					if estimate, ok := state.PendingAdditions[estimateKey]; ok && estimate.Line == p.Line && state.Latest[estimateKey] == estimate.Line {
+					if estimate, ok := state.PendingAdditions[estimateKey]; ok && estimate.Line == p.Line && state.Latest[estimateKey] == estimate.Line && estimate.RetirePriority == "" {
 						groupKeys = append(groupKeys, estimateKey)
 						group = append(group, syncAddition{Target: estimate.Target, Record: json.RawMessage(estimate.Record)})
 					}
@@ -528,11 +538,16 @@ func projectLogStatusStep(
 		return nil, nil, err
 	}
 	effects = append(effects, legacyEffects...)
+	var reprioritizationEffects []syncEffect
+	result, reprioritizationEffects = applyPendingReprioritizations(result, &state, ledger, forecasts)
+	effects = append(effects, reprioritizationEffects...)
 	var groupEffects []syncEffect
 	var groupInvalid bool
 	result, groupEffects, groupInvalid = applyPendingSyncGroups(result, &state, ledger, forecasts)
 	effects = append(effects, groupEffects...)
 	invalidUpdate = invalidUpdate || groupInvalid
+	result, reprioritizationEffects = applyPendingReprioritizations(result, &state, ledger, forecasts)
+	effects = append(effects, reprioritizationEffects...)
 	if latestTimestamp != "" {
 		before, err := parse(result)
 		if err != nil {
@@ -889,7 +904,7 @@ func taskHasEvidence(
 func validSyncUpdate(update syncUpdate) bool {
 	allowed := map[syncTarget]map[string]bool{
 		syncTargetTask:   {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true},
-		syncTargetLane:   {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true},
+		syncTargetLane:   {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true, "root_task_status": true},
 		syncTargetReport: {"state": true, "next_focus": true},
 	}
 	if strings.TrimSpace(update.ID) == "" || len(update.Fields) == 0 || allowed[update.Target] == nil {
@@ -924,6 +939,12 @@ func validSyncUpdate(update syncUpdate) bool {
 	for field, value := range update.Fields {
 		if !allowed[update.Target][field] || strings.TrimSpace(value) == "" {
 			return false
+		}
+		if field == "root_task_status" {
+			if value != "FOLLOWUP" && value != "FOLLOWUP_PAUSED" {
+				return false
+			}
+			continue
 		}
 		if strings.HasSuffix(field, "status") {
 			switch value {
@@ -1010,7 +1031,7 @@ func applySyncField(
 	previous string,
 ) ([]byte, bool) {
 	target, id := update.Target, update.ID
-	allowed := map[syncTarget]map[string]bool{syncTargetTask: {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true}, syncTargetLane: {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true}, syncTargetReport: {"state": true, "next_focus": true}}
+	allowed := map[syncTarget]map[string]bool{syncTargetTask: {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true}, syncTargetLane: {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true, "root_task_status": true}, syncTargetReport: {"state": true, "next_focus": true}}
 	if !allowed[target][field] || strings.TrimSpace(id) == "" || strings.TrimSpace(value) == "" {
 		return data, false
 	}

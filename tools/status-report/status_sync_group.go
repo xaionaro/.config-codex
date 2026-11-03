@@ -140,6 +140,14 @@ func syncGroupPriorValues(
 			previous[field] = value
 		}
 	}
+	if update.Target == syncTargetLane {
+		field := update.RequiredEnvironment.String() + "_status"
+		if value, ok := update.Fields[field]; ok && value != "CLOSED" {
+			if value, ok := state.Applied[syncTargetKey(update, "completed_at")]; ok {
+				previous["completed_at"] = value
+			}
+		}
+	}
 	if validNarrativeSyncUpdate(update) {
 		if value, ok := state.Applied[syncTargetKey(update, "text")]; ok {
 			previous["text"] = value
@@ -328,11 +336,12 @@ func applyPendingSyncGroups(
 		if update.Retract {
 			textKey, evidenceKey := syncTargetKey(update, "text"), syncTargetKey(update, "evidence")
 			latest := state.Latest[textKey]
-			if state.Latest[evidenceKey] > latest {
-				latest = state.Latest[evidenceKey]
-			}
 			ordinal := state.AppliedOrdinals[textKey]
-			if state.Latest[evidenceKey] == latest && state.AppliedOrdinals[evidenceKey] > ordinal {
+			switch {
+			case state.Latest[evidenceKey] > latest:
+				latest = state.Latest[evidenceKey]
+				ordinal = state.AppliedOrdinals[evidenceKey]
+			case state.Latest[evidenceKey] == latest && state.AppliedOrdinals[evidenceKey] > ordinal:
 				ordinal = state.AppliedOrdinals[evidenceKey]
 			}
 			ordinalMatches := (update.CorrectsOrdinal == nil && ordinal == 0) || (update.CorrectsOrdinal != nil && *update.CorrectsOrdinal == ordinal)
@@ -399,6 +408,14 @@ func applyPendingSyncGroups(
 			state.Latest[target] = group.Line
 			state.AppliedOrdinals[target] = group.Ordinal
 			state.Applied[target] = values[field]
+		}
+		for _, change := range changes {
+			if change.Operation == syncEffectCompletedAtClear {
+				key := syncTargetKey(update, "completed_at")
+				state.Applied[key] = syncAbsentValue
+				state.Latest[key] = group.Line
+				state.AppliedOrdinals[key] = group.Ordinal
+			}
 		}
 		delete(state.Groups, key)
 	}

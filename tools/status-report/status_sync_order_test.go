@@ -191,3 +191,107 @@ func TestSyncTaskCancellationCanBeReversed(t *testing.T) {
 	require.Equal(t, taskLifecycleNone, parsed.Tasks[0].Lifecycle)
 	require.Equal(t, statusInProgress, parsed.Tasks[0].Status)
 }
+
+// TestSyncRetractionUsesOrdinalOfLatestLine checks version ordering.
+//
+// Example: A newer evidence update supersedes an older text ordinal.
+func TestSyncRetractionUsesOrdinalOfLatestLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "high_level_log.jsonl")
+	first := `{"event":"decision","details":{"status_update":{"updates":[{"target":"report","id":"current","fields":{"state":"Updated"}},{"target":"progress","id":"work","fields":{"text":"managed"}}]}}}` + "\n"
+	second := `{"event":"verification_result","details":{"status_update":{"updates":[{"target":"progress","id":"work","fields":{"evidence":"latest proof"}}]}}}` + "\n"
+	third := `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"work","corrects":2,"retract":true}]}}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(first+second+third), 0600))
+	result, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, []string{"Implementation started"}, parsed.Progress)
+}
+
+// TestSyncReprioritizationAddsItsEstimateAtomically checks existing tasks.
+//
+// Example: A task moves to a new priority with its supplied estimate.
+func TestSyncReprioritizationAddsItsEstimateAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "high_level_log.jsonl")
+	entry := `{"event":"decision","details":{"status_update":{"updates":[{"target":"task","id":"1","values":{"priority":"low"}}],"additions":[{"target":"priority_estimate","record":{"priority":"low","min_minutes":10,"max_minutes":20,"as_of":"2026-11-02T15:24:00Z","basis":"guess","assumptions":"none","dependencies":"none","critical_path":"work"}}]}}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(entry), 0600))
+	result, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, priorityLabel("low"), parsed.Tasks[0].Priority)
+	require.Len(t, parsed.PriorityEstimates, 2)
+	require.Empty(t, parsed.StatusSync.Groups)
+	require.Empty(t, parsed.StatusSync.PendingAdditions)
+	retry, _, err := projectLogStatus(dir, result, ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	require.Equal(t, result, retry)
+}
+
+// TestSyncReopenRecordsImplicitCompletionRemoval checks provenance watermarks.
+//
+// Example: An old completion correction cannot target the pre-reopen version.
+func TestSyncReopenRecordsImplicitCompletionRemoval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "high_level_log.jsonl")
+	report := strings.Replace(linkedReport, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "", 1)
+	first := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:25:00Z"}}]}}}` + "\n"
+	second := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","fields":{"implementation_status":"IN PROGRESS"}}]}}}` + "\n"
+	third := `{"event":"correction","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","corrects":1,"evidence":"old proof","fields":{"completed_at":"2026-11-02T15:25:00Z"}}]}}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(first+second+third), 0600))
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:25:00Z"}}}}
+	result, _, err := projectLogStatus(dir, []byte(report), ledger, forecastSource{})
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	selector := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation}
+	key := syncTargetKey(selector, "completed_at")
+	require.Equal(t, 2, parsed.StatusSync.Latest[key])
+	require.Equal(t, syncAbsentValue, parsed.StatusSync.Applied[key])
+	require.Empty(t, parsed.Lanes[0].CompletedAt)
+	require.Contains(t, strings.Join(parsed.Blockers, " "), "invalid status_update requires manual review")
+}
+
+// TestSyncLastPriorityRetirementRequiresExactPrior checks explicit removal.
+//
+// Example: Replace the last high-priority estimate while moving its task to low.
+func TestSyncLastPriorityRetirementRequiresExactPrior(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "high_level_log.jsonl")
+	report := `timestamp: '2026-11-02T15:24:00Z'
+state: Working
+progress: []
+decisions: []
+blockers_risks: []
+verification: []
+next_focus: Finish
+scope_complete: true
+tasks:
+  - {id: '1', title: Work, priority: high, impact: Useful, effort: {min_minutes: 10, max_minutes: 20, kind: elapsed, basis: guess}, status: IN PROGRESS}
+top_priorities: ['1']
+priority_estimates:
+  - {priority: high, min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: work}
+completion_estimate: {min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: work}
+`
+	prior := `{"priority":"high","min_minutes":10,"max_minutes":20,"as_of":"2026-11-02T15:24:00Z","basis":"guess","assumptions":"none","dependencies":"none","critical_path":"work"}`
+	entry := `{"event":"decision","details":{"status_update":{"updates":[{"target":"task","id":"1","values":{"priority":"low"}}],"additions":[{"target":"priority_estimate","retire_priority":"high","expected_prior":` + prior + `,"record":{"priority":"low","min_minutes":1,"max_minutes":2,"as_of":"2026-11-02T15:24:00Z","basis":"guess","assumptions":"none","dependencies":"none","critical_path":"work"}}]}}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(entry), 0600))
+	result, _, err := projectLogStatus(dir, []byte(report), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, priorityLabel("low"), parsed.Tasks[0].Priority)
+	require.Len(t, parsed.PriorityEstimates, 1)
+	require.Equal(t, priorityLabel("low"), parsed.PriorityEstimates[0].Priority)
+	mismatch := strings.Replace(entry, `"basis":"guess","assumptions"`, `"basis":"wrong","assumptions"`, 1)
+	require.NoError(t, os.WriteFile(path, []byte(mismatch), 0600))
+	result, _, err = projectLogStatus(dir, []byte(report), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	parsed, err = parse(result)
+	require.NoError(t, err)
+	require.Equal(t, priorityLabel("high"), parsed.Tasks[0].Priority)
+	require.Len(t, parsed.StatusSync.Groups, 1)
+	require.Len(t, parsed.StatusSync.PendingAdditions, 1)
+}
