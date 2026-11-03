@@ -154,6 +154,16 @@ func insertSyncAddition(
 	}
 	for _, item := range list.Content {
 		if existing := mapValue(item, identity); existing != nil && existing.Value == id {
+			if addition.Target == syncTargetLane {
+				var ref, environment string
+				if json.Unmarshal(record["work_ref"], &ref) != nil || json.Unmarshal(record["required_environment"], &environment) != nil {
+					return data, false
+				}
+				oldRef, oldEnvironment := mapValue(item, "work_ref"), mapValue(item, "required_environment")
+				if oldRef != nil && oldEnvironment != nil && (oldRef.Value != ref || oldEnvironment.Value != environment) {
+					continue
+				}
+			}
 			return data, false
 		}
 	}
