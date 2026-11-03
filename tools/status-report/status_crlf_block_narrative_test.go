@@ -191,3 +191,30 @@ func TestAppendAfterUnterminatedBlockScalarPreservesValue(t *testing.T) {
 			})
 	}
 }
+
+// TestAppendAfterScalarWithSeparatePropertiesPreservesOwnerData checks EOF replay.
+//
+// Example: An anchor on the preceding line remains attached to the existing scalar.
+func TestAppendAfterScalarWithSeparatePropertiesPreservesOwnerData(t *testing.T) {
+	for _, property := range []string{"&owner", "!!str", "&owner !!str"} {
+		t.Run(property,
+			// check verifies the value, properties, and comments after appending.
+			//
+			// Example: A tagged literal retains its owner note and value.
+			func(t *testing.T) {
+				input := []byte("progress:\r\n  - " + property + " # property note\r\n    | # scalar note\r\n      legacy scalar")
+				var before, after yaml.Node
+				require.NoError(t, yaml.Unmarshal(input, &before))
+				out, ok := applyNarrativeSyncField(input, syncUpdate{Target: syncTargetProgress, ID: "one"}, "text", "new progress", "", false, false)
+				require.True(t, ok)
+				require.NoError(t, yaml.Unmarshal(out, &after))
+				original := mapValue(before.Content[0], "progress").Content[0]
+				updated := mapValue(after.Content[0], "progress").Content[0]
+				require.Equal(t, original.Value, updated.Value)
+				require.Equal(t, original.Anchor, updated.Anchor)
+				require.Equal(t, original.Tag, updated.Tag)
+				require.Contains(t, string(out), "# property note\r\n")
+				require.Contains(t, string(out), "# scalar note\r\n")
+			})
+	}
+}
