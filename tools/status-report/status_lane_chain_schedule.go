@@ -46,9 +46,6 @@ func applyPendingLaneLifecycleChain(
 			reached = true
 			break
 		}
-		if len(selected) >= 3 {
-			return data, nil, false
-		}
 	}
 	if !reached {
 		return data, nil, false
