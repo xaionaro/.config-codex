@@ -454,6 +454,11 @@ func projectLogStatusStep(
 			if !exists {
 				continue
 			}
+			// Root entries remaining after migration lack a uniquely proven source
+			// occurrence and must not fall back to identity-only replay.
+			if p.Target == syncTargetRootCompletion || p.Target == syncTargetRootForecast {
+				continue
+			}
 			if p.Line != state.Latest[key] {
 				delete(state.PendingAdditions, key)
 				continue
@@ -478,25 +483,11 @@ func projectLogStatusStep(
 					}
 				}
 			}
-			var updated []byte
-			var implicitEffects []syncEffect
-			var ok bool
-			if len(group) == 1 && (p.Target == syncTargetRootCompletion || p.Target == syncTargetRootForecast) {
-				addition := group[0]
-				if p.PriorLine > 0 {
-					if err := verifyPendingRootCorrection(original, fullLog, p.PriorLine, p.Line, addition, ledger, forecasts); err != nil {
-						continue
-					}
-					addition.ExpectedPrior = nil
-				}
-				updated, implicitEffects, ok = applyRootSyncAddition(result, addition, ledger, forecasts)
-			} else {
-				updated, ok = applySyncAdditionGroup(result, group)
-			}
+			updated, ok := applySyncAdditionGroup(result, group)
 			if !ok {
 				continue
 			}
-			additionEffects := implicitEffects
+			var additionEffects []syncEffect
 			for _, appliedKey := range groupKeys {
 				item := state.PendingAdditions[appliedKey]
 				id := item.ID
