@@ -77,3 +77,18 @@ func TestVerifyRootLifecycleChainUnpublishedCorrection(t *testing.T) {
 		t.Fatal("accepted wrong correction locator")
 	}
 }
+
+// TestRootChainIgnoresUnrelatedMalformedRecords checks identity-aware isolation.
+//
+// Example: A malformed sibling does not hide an explicitly identified conflict.
+func TestRootChainIgnoresUnrelatedMalformedRecords(t *testing.T) {
+	locators := []rootLifecycleLocator{{Line: 1, Ordinal: 0, Target: syncTargetRootCompletion}, {Line: 1, Ordinal: 2, Target: syncTargetRootForecast}}
+	lines := [][]byte{[]byte(`{"details":{"status_update":{"additions":[{"target":"root_completion","record":{"work_ref":"w"}},{"target":"root_completion","record":42},{"target":"root_forecast","record":{"forecast_ref":"f"}}]}}}`)}
+	if err := verifyRootChainNoSkippedEvents(lines, locators, "w", "f"); err != nil {
+		t.Fatal(err)
+	}
+	lines[0] = []byte(`{"details":{"status_update":{"additions":[{"target":"root_completion","record":{"work_ref":"w"}},{"target":"root_completion","record":{"work_ref":"w","forecast_ref":42}},{"target":"root_forecast","record":{"forecast_ref":"f"}}]}}}`)
+	if err := verifyRootChainNoSkippedEvents(lines, locators, "w", "f"); err == nil {
+		t.Fatal("accepted skipped same-identity record")
+	}
+}

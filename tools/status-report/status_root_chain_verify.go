@@ -240,14 +240,7 @@ func verifyRootChainNoSkippedEvents(
 			if addition.Target != syncTargetRootForecast && addition.Target != syncTargetRootCompletion {
 				continue
 			}
-			var record struct {
-				WorkRef     string `json:"work_ref"`
-				ForecastRef string `json:"forecast_ref"`
-			}
-			if json.Unmarshal(addition.Record, &record) != nil {
-				return fmt.Errorf("invalid intervening root record")
-			}
-			if (record.WorkRef == workRef && workRef != "") || (record.ForecastRef == forecastRef && forecastRef != "") || (addition.ReopenWorkRef == workRef && workRef != "") {
+			if rootRecordIdentifies(addition.Record, workRef, forecastRef) || rootRecordIdentifies(addition.ExpectedPrior, workRef, forecastRef) || (addition.ReopenWorkRef == workRef && workRef != "") {
 				locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: addition.Target}
 				if !selected[locator] {
 					return fmt.Errorf("root chain skips an intervening addition")
@@ -265,6 +258,24 @@ func verifyRootChainNoSkippedEvents(
 		}
 	}
 	return nil
+}
+
+// rootRecordIdentifies checks only usable identity fields in a supplied record.
+//
+// Example: Detect a matching work reference despite another malformed field.
+func rootRecordIdentifies(
+	raw json.RawMessage,
+	workRef string,
+	forecastRef string,
+) bool {
+	var record map[string]json.RawMessage
+	if json.Unmarshal(raw, &record) != nil {
+		return false
+	}
+	var work, forecast string
+	_ = json.Unmarshal(record["work_ref"], &work)
+	_ = json.Unmarshal(record["forecast_ref"], &forecast)
+	return (workRef != "" && work == workRef) || (forecastRef != "" && forecast == forecastRef)
 }
 
 // verifyRootChainEffects limits the net plan to its exact boundary records.
