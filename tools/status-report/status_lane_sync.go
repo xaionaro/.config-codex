@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 
 	"github.com/goccy/go-yaml/lexer"
@@ -112,6 +113,9 @@ func applyLaneSyncUpdateRaw(
 			return data, false
 		}
 		if forecast := mapValue(lane, "forecast"); forecast != nil {
+			if prior, exists := previous["forecast"]; exists && !laneForecastMatchesPrior(forecast, prior) {
+				return data, false
+			}
 			ref := mapValue(forecast, "forecast_ref")
 			if ref == nil || ref.Value != string(work.Data.ForecastRef) || !validRef(ref.Value, "forecasts.yaml") || textField(forecasts.Records[sourceID(ref.Value, "forecasts.yaml")], "status") != "inactive" {
 				return data, false
@@ -189,6 +193,31 @@ func applyLaneSyncUpdateRaw(
 		return data, false
 	}
 	return candidate, true
+}
+
+// laneForecastMatchesPrior compares the complete current forecast with its projected value.
+//
+// Example: Detect an owner edit before retiring an inactive forecast.
+func laneForecastMatchesPrior(
+	node *yaml.Node,
+	prior string,
+) bool {
+	if prior == syncAbsentValue {
+		return false
+	}
+	var current any
+	if node.Decode(&current) != nil {
+		return false
+	}
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return false
+	}
+	var actual, expected any
+	if json.Unmarshal(encoded, &actual) != nil || json.Unmarshal([]byte(prior), &expected) != nil {
+		return false
+	}
+	return reflect.DeepEqual(actual, expected)
 }
 
 // removeLaneSyncField removes a supplied field only when its bytes are unambiguous.

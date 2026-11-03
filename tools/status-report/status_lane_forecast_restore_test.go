@@ -66,3 +66,23 @@ func TestLaneRestoreRejectsInvalidSourceAndPreservesOwnerForecast(t *testing.T) 
 		t.Fatal("owner removal overwritten")
 	}
 }
+
+// TestLaneTerminalPreservesOwnerForecastEdit verifies retained projection ownership.
+//
+// Example: A changed forecast stays visible and the closure remains pending.
+func TestLaneTerminalPreservesOwnerForecastEdit(t *testing.T) {
+	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Evidence: "accepted", Fields: map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:25:00Z"}}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:25:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"first": {"status": "inactive"}}}
+	prior := `{"forecast_ref":"forecasts.yaml#/records/first","outcome":"First result","target":"2026-11-02T16:00:00Z","assessment":"complete","baseline":"2026-11-02T16:00:00Z","evidence":"initial"}`
+	if _, _, ok := applyLaneSyncUpdate([]byte(linkedReport), update, ledger, forecasts, map[string]string{"forecast": prior}); !ok {
+		t.Fatal("unchanged forecast was not retired")
+	}
+	edited := strings.Replace(linkedReport, "outcome: First result, target:", "outcome: owner edit, target:", 1)
+	if _, _, ok := applyLaneSyncUpdate([]byte(edited), update, ledger, forecasts, map[string]string{"forecast": prior}); ok {
+		t.Fatal("owner-edited forecast was removed")
+	}
+	if _, _, ok := applyLaneSyncUpdate([]byte(linkedReport), update, ledger, forecasts, map[string]string{"forecast": syncAbsentValue}); ok {
+		t.Fatal("owner-added forecast was removed")
+	}
+}
