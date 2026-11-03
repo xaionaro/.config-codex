@@ -31,7 +31,14 @@ func validNarrativeSyncUpdate(u syncUpdate) bool {
 // applyNarrativeSyncField projects one field without replacing owner-authored content.
 //
 // Example: A previously projected subject can receive newer text.
-func applyNarrativeSyncField(data []byte, u syncUpdate, field, value, previous string, itemOwned bool) ([]byte, bool) {
+func applyNarrativeSyncField(
+	data []byte,
+	u syncUpdate,
+	field string,
+	value string,
+	previous string,
+	itemOwned bool,
+) ([]byte, bool) {
 	if !validNarrativeSyncUpdate(syncUpdate{Target: u.Target, ID: u.ID, Fields: map[string]string{field: value}}) {
 		return data, false
 	}
@@ -69,7 +76,8 @@ func applyNarrativeSyncField(data []byte, u syncUpdate, field, value, previous s
 		if previous == "" || existing.Kind != yaml.ScalarNode || existing.Value != previous {
 			return data, false
 		}
-	} else if previous != "" || !itemOwned {
+	}
+	if existing == nil && (previous != "" || !itemOwned) {
 		return data, false
 	}
 	var fields forecastFieldEdits
@@ -106,7 +114,13 @@ func applyNarrativeSyncField(data []byte, u syncUpdate, field, value, previous s
 // appendNarrativeEntry appends a keyed item while preserving surrounding report bytes.
 //
 // Example: A flow list retains its existing scalar bullets and comments.
-func appendNarrativeEntry(data []byte, root, list *yaml.Node, section, entry string) ([]byte, bool) {
+func appendNarrativeEntry(
+	data []byte,
+	root *yaml.Node,
+	list *yaml.Node,
+	section string,
+	entry string,
+) ([]byte, bool) {
 	if list.Style&yaml.FlowStyle != 0 {
 		start, err := yamlByteOffset(data, list.Line, list.Column)
 		if err != nil {
@@ -150,7 +164,11 @@ func appendNarrativeEntry(data []byte, root, list *yaml.Node, section, entry str
 // narrativeSyncItemOwned verifies that exactly one subject retains its managed text.
 //
 // Example: An owner edit prevents subsequent automatic evidence changes.
-func narrativeSyncItemOwned(data []byte, u syncUpdate, previousText string) bool {
+func narrativeSyncItemOwned(
+	data []byte,
+	u syncUpdate,
+	previousText string,
+) bool {
 	if previousText == "" {
 		return false
 	}
