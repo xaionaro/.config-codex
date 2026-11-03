@@ -158,3 +158,64 @@ func TestPriorityEstimateRemovalRequiresExactPrior(t *testing.T) {
 		t.Fatal("owner comment not preserved")
 	}
 }
+
+// TestRootCompletionCorrectionReplay requires an exact prior and canonical replacement.
+//
+// Example: A corrected completion time replaces only the previously supplied record.
+func TestRootCompletionCorrectionReplay(t *testing.T) {
+	old := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
+	newer := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}`
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:00:00Z", Roles: []reportingRole{reportingRoleRoot}}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "high_level_log.jsonl")
+	first := `{"event":"lifecycle_change","details":{"status_update":{"additions":[{"target":"root_completion","evidence":"accepted","record":` + old + `}]}}}` + "\n"
+	if err := os.WriteFile(path, []byte(first), 0600); err != nil {
+		t.Fatal(err)
+	}
+	projected, _, err := projectLogStatus(dir, []byte(valid), ledger, forecastSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := ledger.Records["w"]
+	work.Data.CompletedAt = "2026-11-02T15:05:00Z"
+	ledger.Records["w"] = work
+	second := `{"event":"correction","details":{"corrects":1,"status_update":{"additions":[{"target":"root_completion","evidence":"corrected","expected_prior":` + old + `,"record":` + newer + `}]}}}` + "\n"
+	if err := os.WriteFile(path, []byte(first+second), 0600); err != nil {
+		t.Fatal(err)
+	}
+	corrected, _, err := projectLogStatus(dir, projected, ledger, forecastSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := parse(corrected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.RootCompletions) != 1 || r.RootCompletions[0].CompletedAt != "2026-11-02T15:05:00Z" || len(r.StatusSync.PendingAdditions) != 0 {
+		t.Fatalf("correction not applied: %+v pending=%d", r.RootCompletions, len(r.StatusSync.PendingAdditions))
+	}
+}
+
+// TestRootCompletionCorrectionPreservesConflictingPrior rejects unsupported replacements.
+//
+// Example: An owner-edited completion cannot be replaced using an older prior.
+func TestRootCompletionCorrectionPreservesConflictingPrior(t *testing.T) {
+	old := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
+	newer := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}`
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:05:00Z", Roles: []reportingRole{reportingRoleRoot}}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	add := syncAddition{Target: syncTargetRootCompletion, Evidence: "corrected", Record: json.RawMessage(newer), ExpectedPrior: json.RawMessage(old)}
+	edited := strings.Replace(old, "15:00:00Z", "15:01:00Z", 1)
+	if _, _, ok := applyRootSyncAddition([]byte(valid+"root_completions: ["+edited+"]\n"), add, ledger, forecastSource{}); ok {
+		t.Fatal("owner edit overwritten")
+	}
+	commented := []byte(valid + "root_completions:\n  - " + old + " # keep\n")
+	if _, _, ok := applyRootSyncAddition(commented, add, ledger, forecastSource{}); ok {
+		t.Fatal("owner comment removed")
+	}
+	work := ledger.Records["w"]
+	work.Data.CompletedAt = "2026-11-02T15:06:00Z"
+	ledger.Records["w"] = work
+	if _, _, ok := applyRootSyncAddition([]byte(valid+"root_completions: ["+old+"]\n"), add, ledger, forecastSource{}); ok {
+		t.Fatal("noncanonical correction accepted")
+	}
+}

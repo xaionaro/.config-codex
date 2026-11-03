@@ -28,8 +28,8 @@ func applyRootSyncAddition(
 	if json.Unmarshal(addition.Record, &supplied) != nil {
 		return data, nil, false
 	}
-	if !addition.RetireForecast && addition.ReopenWorkRef == "" {
-		if len(addition.ExpectedPrior) != 0 || rootAdditionHasCounterpart(data, addition, ledger) {
+	if !addition.RetireForecast && addition.ReopenWorkRef == "" && len(addition.ExpectedPrior) == 0 {
+		if rootAdditionHasCounterpart(data, addition, ledger) {
 			return data, nil, false
 		}
 		candidate, ok := applySyncAddition(data, addition)
@@ -44,6 +44,8 @@ func applyRootSyncAddition(
 	case addition.Target == syncTargetRootCompletion && addition.RetireForecast && addition.ReopenWorkRef == "":
 		work := ledger.Records[sourceID(supplied.WorkRef, "project-understanding.yaml")]
 		target, id = syncTargetRootForecast, string(work.Data.ForecastRef)
+	case addition.Target == syncTargetRootCompletion && !addition.RetireForecast && addition.ReopenWorkRef == "":
+		target, id = syncTargetRootCompletion, supplied.WorkRef
 	case addition.Target == syncTargetRootForecast && !addition.RetireForecast && validRef(addition.ReopenWorkRef, "project-understanding.yaml"):
 		if strings.TrimSpace(addition.Evidence) == "" {
 			return data, nil, false
@@ -70,7 +72,11 @@ func applyRootSyncAddition(
 	if !ok {
 		return data, nil, false
 	}
-	return candidate, []syncEffect{{Target: target, ID: id, Value: addition, Evidence: addition.Evidence, Operation: syncEffectRemove}}, true
+	operation := syncEffectRemove
+	if target == syncTargetRootCompletion && addition.Target == syncTargetRootCompletion {
+		operation = syncEffectRootCompletionCorrection
+	}
+	return candidate, []syncEffect{{Target: target, ID: id, Value: addition, Evidence: addition.Evidence, Operation: operation}}, true
 }
 
 // rootAdditionHasCounterpart detects terminal/open representations of the same work.

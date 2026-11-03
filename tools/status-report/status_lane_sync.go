@@ -88,7 +88,7 @@ func applyLaneSyncUpdateRaw(
 		}
 		existing := mapValue(lane, field)
 		if prior, ok := previous[field]; ok {
-			if (existing == nil && prior != syncAbsentValue) || (existing != nil && (prior == syncAbsentValue || existing.Value != prior)) {
+			if scalarSyncOwnership(existing) != prior {
 				return data, false
 			}
 		}
@@ -139,7 +139,7 @@ func applyLaneSyncUpdateRaw(
 		}
 	}
 	if status, ok := update.Fields[statusField]; ok && status != "CLOSED" && mapValue(lane, "completed_at") != nil {
-		if prior, exists := previous["completed_at"]; exists && mapValue(lane, "completed_at").Value != prior {
+		if prior, exists := previous["completed_at"]; exists && scalarSyncOwnership(mapValue(lane, "completed_at")) != prior {
 			return data, false
 		}
 		var removed bool

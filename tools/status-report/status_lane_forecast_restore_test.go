@@ -101,3 +101,18 @@ func TestLaneEmptyPriorValuePreservesOwnerEdit(t *testing.T) {
 		t.Fatal("matching empty baseline rejected")
 	}
 }
+
+// TestLaneClearDistinguishesNullFromLiteralText protects projected ownership.
+//
+// Example: A quoted null added after a null baseline stays untouched.
+func TestLaneClearDistinguishesNullFromLiteralText(t *testing.T) {
+	original := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    blocker: null\n    implementation_status: IN PROGRESS", 1)
+	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Clear: []string{"blocker"}}
+	if _, _, ok := applyLaneSyncUpdate([]byte(original), update, ledgerSource{}, forecastSource{}, map[string]string{"blocker": syncNullValue}); !ok {
+		t.Fatal("matching null baseline rejected")
+	}
+	edited := strings.Replace(original, "blocker: null", `blocker: "null"`, 1)
+	if _, _, ok := applyLaneSyncUpdate([]byte(edited), update, ledgerSource{}, forecastSource{}, map[string]string{"blocker": syncNullValue}); ok {
+		t.Fatal("literal null overwrote null baseline")
+	}
+}
