@@ -378,6 +378,7 @@ func applyPendingSyncGroups(
 		targetIdentity := syncTargetKey(update, "")
 		dependencies := syncGroupDependencies(update)
 		if syncDependenciesOverlap(blocked[targetIdentity], dependencies) {
+			markSyncBlocked(blocked, targetIdentity, dependencies)
 			continue
 		}
 		if update.Retract {
