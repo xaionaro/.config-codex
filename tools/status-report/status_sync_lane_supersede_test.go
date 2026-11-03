@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestReview8DelayedLaneReopen checks a delayed explicit reversal.
+// TestDelayedLaneReopen checks a delayed explicit reversal.
 //
 // Example: Reopen active work without projecting its stale historical closure.
-func TestReview8DelayedLaneReopen(t *testing.T) {
+func TestDelayedLaneReopen(t *testing.T) {
 	dir := t.TempDir()
 	events := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:25:00Z"}}]}}}` + "\n" + `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","fields":{"implementation_status":"PAUSED"}}]}}}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(events), 0600); err != nil {

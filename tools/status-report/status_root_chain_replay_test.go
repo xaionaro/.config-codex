@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReview10DelayedRootCloseReopenClose checks delayed root lifecycle replay.
+// TestDelayedRootCloseReopenClose checks delayed root lifecycle replay.
 //
 // Example: The last closure replaces the reopened forecast.
-func TestReview10DelayedRootCloseReopenClose(t *testing.T) {
+func TestDelayedRootCloseReopenClose(t *testing.T) {
 	forecast := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}`
 	completion := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
 	later := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:10:00Z"}`

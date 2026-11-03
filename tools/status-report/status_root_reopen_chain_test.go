@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReview9DelayedRootReopening checks delayed root reopening replay.
+// TestDelayedRootReopening checks delayed root reopening replay.
 //
 // Example: Reopening replaces a completed root with its forecast.
-func TestReview9DelayedRootReopening(t *testing.T) {
+func TestDelayedRootReopening(t *testing.T) {
 	dir := t.TempDir()
 	forecast := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}`
 	completion := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`

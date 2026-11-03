@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReview11RepeatedCancellation checks repeated explicit lifecycle transitions.
+// TestLaneRepeatedCancellation checks repeated explicit lifecycle transitions.
 //
 // Example: Two cancellation and reactivation cycles end at a canonical closure.
-func TestReview11RepeatedCancellation(t *testing.T) {
+func TestLaneRepeatedCancellation(t *testing.T) {
 	dir := t.TempDir()
 	cancel := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"cancelled","fields":{"lifecycle":"cancelled"}}]}}}` + "\n"
 	reopen := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"resumed","clear":["lifecycle"],"fields":{"implementation_status":"PAUSED"}}]}}}` + "\n"

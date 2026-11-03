@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestReview9RepeatedTerminal checks replay against the final canonical state.
+// TestLaneRepeatedTerminal checks replay against the final canonical state.
 //
 // Example: A later completion replaces an obsolete close and reopening.
-func TestReview9RepeatedTerminal(t *testing.T) {
+func TestLaneRepeatedTerminal(t *testing.T) {
 	dir := t.TempDir()
 	events := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:25:00Z"}}]}}}` + "\n" + `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","fields":{"implementation_status":"PAUSED"}}]}}}` + "\n" + `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted again","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:45:00Z"}}]}}}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(events), 0600); err != nil {
