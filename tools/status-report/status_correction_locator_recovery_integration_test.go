@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -91,4 +93,107 @@ func TestCorrectionCanNameEarlierSameLineOrdinal(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "third", report.Tasks[0].Owner)
 	require.Empty(t, report.StatusSync.Groups)
+}
+
+// TestLegacyFieldSelfCorrectionIsRejected checks field-wise persisted state.
+//
+// Example: A saved correction cannot authorize its own owner value.
+func TestLegacyFieldSelfCorrectionIsRejected(t *testing.T) {
+	// saved is a legacy field pending entry with a self-referencing locator.
+	//
+	// Example: The invalid correction must never be projected on retry.
+	const saved = `status_sync: {"cursor":1,"applied":{},"latest":{"[\"task\",\"1\",\"\",\"\"]/owner":1},"pending":{"[\"task\",\"1\",\"\",\"\"]/owner":{"line":1,"update":{"target":"task","id":"1","corrects":1,"fields":{"owner":"mistaken"}}}}}`
+	// log is the exact immutable source for the saved field.
+	//
+	// Example: Its only update cannot precede itself.
+	const log = `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"owner":"mistaken"}}]}}}` + "\n"
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(linkedReport+saved+"\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+	require.NoError(t, refreshTestStatus(dir, "correction"))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	report, err := parse(result)
+	require.NoError(t, err)
+	require.Empty(t, report.Tasks[0].Owner)
+	require.Empty(t, report.StatusSync.Pending)
+	require.Contains(t, report.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
+}
+
+// TestLegacySameLineCorrectionUsesUniqueSourceOrdinal checks old pending compatibility.
+//
+// Example: A uniquely identified later update can correct ordinal zero.
+func TestLegacySameLineCorrectionUsesUniqueSourceOrdinal(t *testing.T) {
+	for _, tc := range []struct {
+		name, duplicate string
+		applies         bool
+	}{
+		{"unique", "", true},
+		{"ambiguous", `,{"target":"task","id":"1","corrects":2,"corrects_ordinal":0,"fields":{"owner":"third"}}`, false},
+	} {
+		t.Run(tc.name,
+			// Replay one field saved without an ordinal.
+			//
+			// Example: Two indistinguishable occurrences remain pending.
+			func(t *testing.T) {
+				// saved is the field-wise state produced before ordinal storage.
+				//
+				// Example: The previous owner was projected on line two.
+				const saved = `status_sync: {"cursor":2,"applied":{"[\"task\",\"1\",\"\",\"\"]/owner":"second"},"latest":{"[\"task\",\"1\",\"\",\"\"]/owner":2},"pending":{"[\"task\",\"1\",\"\",\"\"]/owner":{"line":2,"update":{"target":"task","id":"1","corrects":2,"corrects_ordinal":0,"fields":{"owner":"third"}}}}}`
+				log := `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"first"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"owner":"second"}},{"target":"task","id":"1","corrects":2,"corrects_ordinal":0,"fields":{"owner":"third"}}` + tc.duplicate + `]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				input := strings.Replace(linkedReport, "title: First,", `title: First, owner: second,`, 1)
+				require.NoError(t, os.WriteFile(path, []byte(input+saved+"\n"), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				require.NoError(t, refreshTestStatus(dir, "correction"))
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				report, err := parse(result)
+				require.NoError(t, err)
+				if tc.applies {
+					require.Equal(t, "third", report.Tasks[0].Owner)
+					require.Empty(t, report.StatusSync.Pending)
+				} else {
+					require.Equal(t, "second", report.Tasks[0].Owner)
+					require.NotEmpty(t, report.StatusSync.Pending)
+				}
+			})
+	}
+}
+
+// TestLegacyCancellationRejectsSelfCorrectionsBeforeAtomicReplay checks grouped fields.
+//
+// Example: An invalid lifecycle correction cannot cancel a task through legacy pending state.
+func TestLegacyCancellationRejectsSelfCorrectionsBeforeAtomicReplay(t *testing.T) {
+	// log contains a cancellation whose correction names itself.
+	//
+	// Example: All three fields must remain unapplied.
+	const log = `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"lifecycle":"cancelled","status":"unknown","evidence":"withdrawn"}}]}}}` + "\n"
+	state := syncState{Cursor: 1, Applied: map[string]string{}, Latest: map[string]int{}, Pending: map[string]syncPending{}}
+	for field, value := range map[string]string{"lifecycle": "cancelled", "status": "unknown", "evidence": "withdrawn"} {
+		update := syncUpdate{Target: syncTargetTask, ID: "1", Corrects: 1, Fields: map[string]string{field: value}}
+		key := syncTargetKey(update, field)
+		state.Latest[key] = 1
+		state.Pending[key] = syncPending{Line: 1, Update: update}
+	}
+	encoded, err := json.Marshal(state)
+	require.NoError(t, err)
+	input, err := putSyncState([]byte(linkedReport), string(encoded))
+	require.NoError(t, err)
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(path, input, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+	require.NoError(t, refreshTestStatus(dir, "correction"))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	report, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, statusInProgress, report.Tasks[0].Status)
+	require.NotEqual(t, taskLifecycleCancelled, report.Tasks[0].Lifecycle)
+	require.Empty(t, report.Tasks[0].Evidence)
+	require.Empty(t, report.StatusSync.Pending)
+	require.Contains(t, report.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
 }

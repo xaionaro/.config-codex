@@ -573,6 +573,10 @@ func projectLogStatusStep(
 			}
 		}
 	}
+	// Legacy field entries have no saved ordinal. Hold ambiguous same-line
+	// corrections until their source occurrence can be identified uniquely.
+	heldLegacy, invalidLegacy := holdAmbiguousLegacyCorrections(&state, legacyPending, fullLog)
+	invalidUpdate = invalidUpdate || invalidLegacy
 	result = applyTaskCancellations(result, &state)
 	result = applyLaneCompletions(result, ledger, forecasts, &state)
 	keys := make([]string, 0, len(state.Pending))
@@ -681,6 +685,9 @@ func projectLogStatusStep(
 			}
 			delete(state.Pending, key)
 		}
+	}
+	for key, pending := range heldLegacy {
+		state.Pending[key] = pending
 	}
 	legacyEffects := legacySyncEffects(legacyPending, state, legacyRemovals)
 	if err := verifyStatusSyncCanonicalEffects(original, result, legacyEffects, ledger, forecasts); err != nil {
