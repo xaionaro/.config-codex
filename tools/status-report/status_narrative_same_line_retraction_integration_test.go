@@ -50,7 +50,7 @@ func TestNarrativeRetractionUsesLatestSameLineOrdinal(t *testing.T) {
 				require.Equal(t, "Updated", after.State)
 				require.Equal(t, 2, after.StatusSync.Cursor)
 				if tc.removes {
-					require.NotContains(t, after.Progress, "managed claim (evidence: latest proof)")
+					require.Equal(t, []string{"Implementation started"}, after.Progress)
 				} else {
 					require.Contains(t, after.Progress, "managed claim (evidence: latest proof)")
 					require.Contains(t, after.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
