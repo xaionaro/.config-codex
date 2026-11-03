@@ -1,0 +1,900 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/goccy/go-yaml/token"
+	"gopkg.in/yaml.v3"
+)
+
+// syncUpdate describes an explicit report target and its supplied fields.
+//
+// Example: Close one named task with supplied acceptance evidence.
+type syncUpdate struct {
+	Target              syncTarget        `json:"target" yaml:"target"`
+	ID                  string            `json:"id" yaml:"id"`
+	WorkRef             string            `json:"work_ref,omitempty" yaml:"work_ref,omitempty"`
+	RequiredEnvironment syncEnvironment   `json:"required_environment,omitempty" yaml:"required_environment,omitempty"`
+	Corrects            int               `json:"corrects,omitempty" yaml:"corrects,omitempty"`
+	Retract             bool              `json:"retract,omitempty" yaml:"retract,omitempty"`
+	Evidence            string            `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Fields              map[string]string `json:"fields" yaml:"fields"`
+}
+
+// syncEvent selects the status payload and envelope from one log entry.
+//
+// Example: Read an explicitly supplied status update from a decision event.
+type syncEvent struct {
+	Event     string `json:"event"`
+	Timestamp string `json:"timestamp"`
+	Details   struct {
+		StatusUpdate *struct {
+			Updates   []syncUpdate   `json:"updates"`
+			Additions []syncAddition `json:"additions"`
+		} `json:"status_update"`
+	} `json:"details"`
+}
+
+// syncAddition carries a complete record to insert into the report.
+//
+// Example: Add a newly scoped task.
+type syncAddition struct {
+	Target syncTarget      `json:"target" yaml:"target"`
+	Record json.RawMessage `json:"record" yaml:"record"`
+}
+
+// syncPendingAddition retains an unapplied insertion and its log position.
+//
+// Example: Retry a review whose task does not yet exist.
+type syncPendingAddition struct {
+	Line   int        `json:"line" yaml:"line"`
+	Target syncTarget `json:"target" yaml:"target"`
+	Record string     `json:"record" yaml:"record"`
+}
+
+// syncState stores replay progress alongside the report it describes.
+//
+// Example: Resume pending fields after their targets appear.
+type syncState struct {
+	Cursor           int                            `json:"cursor" yaml:"cursor"`
+	Applied          map[string]string              `json:"applied" yaml:"applied"`
+	Latest           map[string]int                 `json:"latest" yaml:"latest"`
+	Pending          map[string]syncPending         `json:"pending" yaml:"pending"`
+	PendingAdditions map[string]syncPendingAddition `json:"pending_additions,omitempty" yaml:"pending_additions,omitempty"`
+}
+
+// syncPending retains one unapplied field and its log position.
+//
+// Example: Retry a task field after a manual conflict is resolved.
+type syncPending struct {
+	Line       int        `json:"line" yaml:"line"`
+	Update     syncUpdate `json:"update" yaml:"update"`
+	Acceptance string     `json:"acceptance,omitempty" yaml:"acceptance,omitempty"`
+}
+
+// projectLogStatus applies explicit log updates to the supplied report snapshot.
+//
+// Example: Replay new task updates before publishing a report.
+func projectLogStatus(
+	dir string,
+	original []byte,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) ([]byte, []byte, error) {
+	logBytes, err := os.ReadFile(filepath.Join(dir, "high_level_log.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return original, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(original, &root); err != nil {
+		return nil, nil, err
+	}
+	var state syncState
+	existingState := mapValue(root.Content[0], "status_sync")
+	if n := existingState; n != nil {
+		if err := n.Decode(&state); err != nil {
+			return nil, nil, err
+		}
+	}
+	if state.Applied == nil {
+		state.Applied = map[string]string{}
+	}
+	if state.Latest == nil {
+		state.Latest = map[string]int{}
+	}
+	if state.Pending == nil {
+		state.Pending = map[string]syncPending{}
+	}
+	if state.PendingAdditions == nil {
+		state.PendingAdditions = map[string]syncPendingAddition{}
+	}
+	lines := bytes.Split(logBytes, []byte("\n"))
+	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	if state.Cursor < 0 || state.Cursor > len(lines) {
+		return nil, nil, fmt.Errorf("status sync cursor exceeds log")
+	}
+	sawUpdate := false
+	invalidUpdate := false
+	latestTimestamp := ""
+	for i := state.Cursor; i < len(lines); i++ {
+		var event syncEvent
+		if err := json.Unmarshal(lines[i], &event); err != nil {
+			if bytes.Contains(lines[i], []byte(`"status_update"`)) {
+				invalidUpdate = true
+			}
+			continue
+		}
+		if event.Details.StatusUpdate == nil {
+			continue
+		}
+		sawUpdate = true
+		if _, err := parseUTC(event.Timestamp); err == nil {
+			if latestTimestamp == "" {
+				latestTimestamp = event.Timestamp
+			} else {
+				previous, _ := parseUTC(latestTimestamp)
+				current, _ := parseUTC(event.Timestamp)
+				if current.After(previous) {
+					latestTimestamp = event.Timestamp
+				}
+			}
+		}
+		if len(event.Details.StatusUpdate.Updates) == 0 && len(event.Details.StatusUpdate.Additions) == 0 {
+			invalidUpdate = true
+		}
+		for _, addition := range event.Details.StatusUpdate.Additions {
+			var record map[string]json.RawMessage
+			if json.Unmarshal(addition.Record, &record) != nil {
+				invalidUpdate = true
+				continue
+			}
+			idKey := "id"
+			switch addition.Target {
+			case syncTargetReview:
+				idKey = "task_id"
+			case syncTargetPriorityEstimate:
+				idKey = "priority"
+			case syncTargetTask:
+			default:
+				invalidUpdate = true
+				continue
+			}
+			var id string
+			if json.Unmarshal(record[idKey], &id) != nil || strings.TrimSpace(id) == "" {
+				invalidUpdate = true
+				continue
+			}
+			key := "addition/" + addition.Target.String() + "/" + id
+			state.Latest[key] = i + 1
+			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record)}
+		}
+		for _, update := range event.Details.StatusUpdate.Updates {
+			if update.Retract {
+				textKey, evidenceKey := syncTargetKey(update, "text"), syncTargetKey(update, "evidence")
+				latest := state.Latest[textKey]
+				if state.Latest[evidenceKey] > latest {
+					latest = state.Latest[evidenceKey]
+				}
+				probe := update
+				probe.Fields = map[string]string{"text": "probe"}
+				if event.Event != "correction" || len(update.Fields) != 0 || !validNarrativeSyncUpdate(probe) || latest == 0 || update.Corrects != latest {
+					invalidUpdate = true
+					continue
+				}
+				key := syncTargetKey(update, "$retract")
+				state.Latest[key] = i + 1
+				state.Pending[key] = syncPending{Line: i + 1, Update: update}
+				continue
+			}
+			if (!validSyncUpdate(update) && !validNarrativeSyncUpdate(update)) || update.Corrects < 0 || (event.Event == "correction" && update.Corrects == 0) || (event.Event != "correction" && update.Corrects != 0) {
+				invalidUpdate = true
+				continue
+			}
+			for field, value := range update.Fields {
+				key := syncTargetKey(update, field)
+				if update.Corrects != 0 && state.Latest[key] != update.Corrects {
+					invalidUpdate = true
+					continue
+				}
+				state.Latest[key] = i + 1
+				copy := update
+				copy.Fields = map[string]string{field: value}
+				state.Pending[key] = syncPending{Line: i + 1, Update: copy, Acceptance: update.Fields["evidence"]}
+			}
+		}
+	}
+	if existingState == nil && !sawUpdate && !invalidUpdate {
+		return original, logBytes, nil
+	}
+	state.Cursor = len(lines)
+	result := original
+	additionKeys := make([]string, 0, len(state.PendingAdditions))
+	for key := range state.PendingAdditions {
+		additionKeys = append(additionKeys, key)
+	}
+	sort.Strings(additionKeys)
+	// Repeat while insertions unlock dependent tasks or reviews in this batch.
+	for progress := true; progress; {
+		progress = false
+		for _, key := range additionKeys {
+			p, exists := state.PendingAdditions[key]
+			if !exists {
+				continue
+			}
+			if p.Line != state.Latest[key] {
+				delete(state.PendingAdditions, key)
+				continue
+			}
+			if p.Target == syncTargetPriorityEstimate {
+				continue
+			}
+			groupKeys := []string{key}
+			group := []syncAddition{{Target: p.Target, Record: json.RawMessage(p.Record)}}
+			if p.Target == syncTargetTask {
+				var record struct {
+					Priority string `json:"priority"`
+				}
+				if json.Unmarshal([]byte(p.Record), &record) == nil {
+					estimateKey := "addition/priority_estimate/" + record.Priority
+					if estimate, ok := state.PendingAdditions[estimateKey]; ok && estimate.Line == p.Line && state.Latest[estimateKey] == estimate.Line {
+						groupKeys = append(groupKeys, estimateKey)
+						group = append(group, syncAddition{Target: estimate.Target, Record: json.RawMessage(estimate.Record)})
+					}
+				}
+			}
+			updated, ok := applySyncAdditionGroup(result, group)
+			if !ok {
+				continue
+			}
+			result, progress = updated, true
+			for _, appliedKey := range groupKeys {
+				state.Applied[appliedKey] = state.PendingAdditions[appliedKey].Record
+				delete(state.PendingAdditions, appliedKey)
+			}
+		}
+	}
+	result = applyTaskCancellations(result, &state)
+	result = applyLaneCompletions(result, ledger, forecasts, &state)
+	keys := make([]string, 0, len(state.Pending))
+	for k := range state.Pending {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys,
+		// Order text before evidence for a newly inserted subject.
+		//
+		// Example: Insert a progress text before its evidence field.
+		func(i, j int) bool {
+			// New keyed narratives need their text before their evidence.
+			a, b := strings.TrimSuffix(keys[i], "/text"), strings.TrimSuffix(keys[j], "/text")
+			if strings.HasSuffix(keys[i], "/text") && strings.TrimSuffix(keys[j], "/evidence") == a {
+				return true
+			}
+			if strings.HasSuffix(keys[j], "/text") && strings.TrimSuffix(keys[i], "/evidence") == b {
+				return false
+			}
+			return keys[i] < keys[j]
+		})
+	for _, key := range keys {
+		pending := state.Pending[key]
+		if state.Latest[key] != pending.Line {
+			delete(state.Pending, key)
+			continue
+		}
+		if pending.Update.Retract {
+			textKey, evidenceKey := syncTargetKey(pending.Update, "text"), syncTargetKey(pending.Update, "evidence")
+			latest := state.Latest[textKey]
+			if state.Latest[evidenceKey] > latest {
+				latest = state.Latest[evidenceKey]
+			}
+			if latest != pending.Update.Corrects {
+				delete(state.Pending, key)
+				continue
+			}
+			if state.Applied[textKey] == "" {
+				delete(state.Pending, textKey)
+				delete(state.Pending, evidenceKey)
+				state.Latest[textKey], state.Latest[evidenceKey] = pending.Line, pending.Line
+				delete(state.Pending, key)
+				continue
+			}
+			updated, ok := retractNarrativeSync(result, pending.Update, state.Applied[textKey], state.Applied[evidenceKey])
+			if ok {
+				if _, err := parse(updated); err != nil {
+					continue
+				}
+				result = updated
+				delete(state.Applied, textKey)
+				delete(state.Applied, evidenceKey)
+				state.Latest[textKey], state.Latest[evidenceKey] = pending.Line, pending.Line
+				delete(state.Pending, key)
+			}
+			continue
+		}
+		field := ""
+		value := ""
+		for field, value = range pending.Update.Fields {
+			break
+		}
+		if pending.Update.Target == syncTargetTask {
+			lifecycle := state.Pending[syncTargetKey(pending.Update, "lifecycle")]
+			if lifecycle.Line == pending.Line && (field == "lifecycle" || field == "status" || field == "evidence") {
+				continue
+			}
+		}
+		if pending.Update.Target == syncTargetLane && (field == "completed_at" || (strings.HasSuffix(field, "_status") && field == pending.Update.RequiredEnvironment.String()+"_status" && value == "CLOSED")) {
+			continue
+		}
+		if pending.Update.Target == syncTargetTask && field == "status" && value == "CLOSED" && !taskHasEvidence(result, pending.Update.ID, pending.Acceptance) {
+			continue
+		}
+		if pending.Update.Target == syncTargetLane && !laneSyncAllowed(result, ledger, forecasts, pending.Update, field, value) {
+			continue
+		}
+		var updated []byte
+		var applied bool
+		if validNarrativeSyncUpdate(pending.Update) {
+			textKey := syncTargetKey(pending.Update, "text")
+			owned := narrativeSyncItemOwned(result, pending.Update, state.Applied[textKey])
+			updated, applied = applyNarrativeSyncField(result, pending.Update, field, value, state.Applied[key], owned)
+		} else {
+			updated, applied = applySyncField(result, pending.Update, field, value, state.Applied[key])
+		}
+		if applied {
+			if _, err := parse(updated); err != nil {
+				continue
+			}
+			result = updated
+			state.Applied[key] = value
+			delete(state.Pending, key)
+		}
+	}
+	// Store state in the report itself so report values and cursor publish atomically.
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return nil, nil, err
+	}
+	result, err = putSyncState(result, string(encoded))
+	if err != nil {
+		return nil, nil, err
+	}
+	if latestTimestamp != "" {
+		result, err = advanceSyncTimestamp(result, latestTimestamp)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if invalidUpdate {
+		result, err = prepareInvalidation(result, refreshIssuePrefix+"invalid status_update requires manual review")
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if len(state.Pending) > 0 || len(state.PendingAdditions) > 0 {
+		result, err = prepareInvalidation(result, refreshIssuePrefix+"status updates remain pending manual reconciliation")
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return result, logBytes, nil
+}
+
+// applyTaskCancellations atomically records cancellation without completing children.
+//
+// Example: Cancel one task, retaining its independent descendants.
+func applyTaskCancellations(
+	data []byte,
+	state *syncState,
+) []byte {
+	keys := make([]string, 0, len(state.Pending))
+	for key := range state.Pending {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, lifecycleKey := range keys {
+		pending, ok := state.Pending[lifecycleKey]
+		if !ok || pending.Update.Target != syncTargetTask || pending.Update.Fields["lifecycle"] != "cancelled" {
+			continue
+		}
+		statusKey, evidenceKey := syncTargetKey(pending.Update, "status"), syncTargetKey(pending.Update, "evidence")
+		status, hasStatus := state.Pending[statusKey]
+		evidence, hasEvidence := state.Pending[evidenceKey]
+		if !hasStatus || !hasEvidence || status.Line != pending.Line || evidence.Line != pending.Line || status.Update.Fields["status"] != "unknown" {
+			continue
+		}
+		if state.Latest[lifecycleKey] != pending.Line || state.Latest[statusKey] != pending.Line || state.Latest[evidenceKey] != pending.Line {
+			continue
+		}
+		candidate, applied := applySyncField(data, evidence.Update, "evidence", evidence.Update.Fields["evidence"], state.Applied[evidenceKey])
+		if !applied {
+			continue
+		}
+		candidate, applied = applySyncField(candidate, status.Update, "status", "unknown", state.Applied[statusKey])
+		if !applied {
+			continue
+		}
+		candidate, applied = applySyncField(candidate, pending.Update, "lifecycle", "cancelled", state.Applied[lifecycleKey])
+		if !applied {
+			continue
+		}
+		candidate, applied = removeCancelledPriority(candidate, taskID(pending.Update.ID))
+		if !applied {
+			continue
+		}
+		if _, err := parse(candidate); err != nil {
+			continue
+		}
+		data = candidate
+		state.Applied[lifecycleKey], state.Applied[statusKey], state.Applied[evidenceKey] = "cancelled", "unknown", evidence.Update.Fields["evidence"]
+		delete(state.Pending, lifecycleKey)
+		delete(state.Pending, statusKey)
+		delete(state.Pending, evidenceKey)
+	}
+	return data
+}
+
+// removeCancelledPriority removes one cancelled task from the priority list.
+//
+// Example: Cancelling a top-priority task preserves the remaining priority IDs.
+func removeCancelledPriority(
+	data []byte,
+	id taskID,
+) ([]byte, bool) {
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {
+		return data, false
+	}
+	root := doc.Content[0]
+	list := mapValue(root, "top_priorities")
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return data, false
+	}
+	remaining := make([]string, 0, len(list.Content))
+	found := false
+	for _, item := range list.Content {
+		if item.Kind != yaml.ScalarNode {
+			return data, false
+		}
+		if item.Value == string(id) {
+			found = true
+			continue
+		}
+		remaining = append(remaining, item.Value)
+	}
+	if !found {
+		return data, true
+	}
+	encoded, err := json.Marshal(remaining)
+	if err != nil {
+		return data, false
+	}
+	if list.Style&yaml.FlowStyle != 0 {
+		start, err := yamlByteOffset(data, list.Line, list.Column)
+		if err != nil {
+			return data, false
+		}
+		end, err := flowEnd(data, start, token.SequenceStartType)
+		if err != nil || bytes.Contains(data[start:end+1], []byte("#")) {
+			return data, false
+		}
+		return append(append(append([]byte(nil), data[:start]...), encoded...), data[end+1:]...), true
+	}
+	lines := strings.Split(string(data), "\n")
+	startLine := list.Line - 1
+	endLine := nextMappingFieldLine(root, "top_priorities") - 1
+	if endLine < 0 {
+		endLine = len(lines)
+	}
+	if startLine < 0 || startLine >= len(lines) || endLine < startLine || endLine > len(lines) {
+		return data, false
+	}
+	start := 0
+	for _, line := range lines[:startLine] {
+		start += len(line) + 1
+	}
+	end := start
+	for _, line := range lines[startLine:endLine] {
+		end += len(line) + 1
+	}
+	if end > len(data) {
+		end = len(data)
+	}
+	if bytes.Contains(data[start:end], []byte("#")) {
+		return data, false
+	}
+	indent := len(lines[startLine]) - len(strings.TrimLeft(lines[startLine], " "))
+	value := strings.Repeat(" ", indent) + string(encoded) + "\n"
+	return append(append(append([]byte(nil), data[:start]...), []byte(value)...), data[end:]...), true
+}
+
+// syncTargetKey keeps target identity distinct even when an ID contains slashes.
+//
+// Example: Distinguish a task field from the same field on another task.
+func syncTargetKey(
+	update syncUpdate,
+	field string,
+) string {
+	encoded, _ := json.Marshal([]string{update.Target.String(), update.ID, update.WorkRef, update.RequiredEnvironment.String()})
+	return string(encoded) + "/" + field
+}
+
+// advanceSyncTimestamp preserves the original anchor of any existing timeline.
+//
+// Example: Advance a report without changing its timeline bins.
+func advanceSyncTimestamp(
+	data []byte,
+	timestamp string,
+) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	root := doc.Content[0]
+	old := mapValue(root, "timestamp")
+	if old == nil {
+		return nil, fmt.Errorf("status report timestamp missing")
+	}
+	previous, err := parseUTC(old.Value)
+	if err != nil {
+		return nil, err
+	}
+	next, err := parseUTC(timestamp)
+	if err != nil {
+		return nil, err
+	}
+	if !next.After(previous) {
+		return data, nil
+	}
+	if timeline := mapValue(root, "timeline"); timeline != nil && len(timeline.Content) > 0 && mapValue(root, "timeline_as_of") == nil {
+		suffix := "timeline_as_of: " + strconv.Quote(old.Value) + "\n"
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			suffix = "\n" + suffix
+		}
+		data = append(append([]byte(nil), data...), []byte(suffix)...)
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	old = mapValue(doc.Content[0], "timestamp")
+	edit, err := scalarReplacement(&flowDocument{data: data}, old, timestamp)
+	if err != nil {
+		return nil, err
+	}
+	return append(append(append([]byte(nil), data[:edit.Start]...), []byte(edit.Value)...), data[edit.End:]...), nil
+}
+
+// applyLaneCompletions publishes the required status and completion time together.
+//
+// Example: Close a lane only after canonical work completion.
+func applyLaneCompletions(
+	data []byte,
+	ledger ledgerSource,
+	forecasts forecastSource,
+	state *syncState,
+) []byte {
+	keys := make([]string, 0, len(state.Pending))
+	for key := range state.Pending {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, timeKey := range keys {
+		if !strings.HasSuffix(timeKey, "/completed_at") {
+			continue
+		}
+		timePending, exists := state.Pending[timeKey]
+		if !exists || timePending.Update.Target != syncTargetLane {
+			continue
+		}
+		u := timePending.Update
+		field := u.RequiredEnvironment.String() + "_status"
+		statusKey := strings.TrimSuffix(timeKey, "/completed_at") + "/" + field
+		statusPending, exists := state.Pending[statusKey]
+		if !exists || statusPending.Line != timePending.Line || statusPending.Update.Fields[field] != "CLOSED" {
+			continue
+		}
+		if state.Latest[timeKey] != timePending.Line || state.Latest[statusKey] != statusPending.Line {
+			continue
+		}
+		completed := u.Fields["completed_at"]
+		if !laneSyncAllowed(data, ledger, forecasts, u, "completed_at", completed) {
+			continue
+		}
+		candidate, ok := applySyncField(data, u, "completed_at", completed, state.Applied[timeKey])
+		if !ok || !laneSyncAllowed(candidate, ledger, forecasts, statusPending.Update, field, "CLOSED") {
+			continue
+		}
+		candidate, ok = applySyncField(candidate, statusPending.Update, field, "CLOSED", state.Applied[statusKey])
+		if !ok {
+			continue
+		}
+		if _, err := parse(candidate); err != nil {
+			continue
+		}
+		data = candidate
+		state.Applied[timeKey], state.Applied[statusKey] = completed, "CLOSED"
+		delete(state.Pending, timeKey)
+		delete(state.Pending, statusKey)
+	}
+	return data
+}
+
+// taskHasEvidence requires the exact accompanying acceptance before closing a task.
+//
+// Example: Verify the evidence supplied with a closure is present.
+func taskHasEvidence(
+	data []byte,
+	id string,
+	evidence string,
+) bool {
+	if strings.TrimSpace(evidence) == "" {
+		return false
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	tasks := mapValue(doc.Content[0], "tasks")
+	if tasks == nil || tasks.Kind != yaml.SequenceNode {
+		return false
+	}
+	for _, node := range tasks.Content {
+		key, value := mapValue(node, "id"), mapValue(node, "evidence")
+		if key != nil && key.Value == id && value != nil && value.Value == evidence {
+			return true
+		}
+	}
+	return false
+}
+
+// validSyncUpdate rejects unsupported and incomplete operations without rejecting the log.
+//
+// Example: A task closure without acceptance evidence remains unapplied.
+func validSyncUpdate(update syncUpdate) bool {
+	allowed := map[syncTarget]map[string]bool{
+		syncTargetTask:   {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true},
+		syncTargetLane:   {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true},
+		syncTargetReport: {"state": true, "next_focus": true},
+	}
+	if strings.TrimSpace(update.ID) == "" || len(update.Fields) == 0 || allowed[update.Target] == nil {
+		return false
+	}
+	if update.Target == syncTargetLane && (strings.TrimSpace(update.WorkRef) == "" || update.RequiredEnvironment == syncEnvironmentUnknown) {
+		return false
+	}
+	if update.Target == syncTargetReport && update.ID != "current" {
+		return false
+	}
+	if update.Target == syncTargetTask && update.Fields["lifecycle"] != "" {
+		if update.Fields["lifecycle"] != "cancelled" || update.Fields["status"] != "unknown" || strings.TrimSpace(update.Fields["evidence"]) == "" {
+			return false
+		}
+	}
+	if update.Target == syncTargetLane {
+		if update.Fields["lifecycle"] != "" && update.Fields["lifecycle"] != "cancelled" {
+			return false
+		}
+		if update.Fields["lifecycle"] == "cancelled" && strings.TrimSpace(update.Evidence) == "" {
+			return false
+		}
+		statusField := update.RequiredEnvironment.String() + "_status"
+		if update.RequiredEnvironment == syncEnvironmentProd {
+			statusField = "prod_status"
+		}
+		if update.Fields[statusField] == "CLOSED" && (strings.TrimSpace(update.Evidence) == "" || strings.TrimSpace(update.Fields["completed_at"]) == "") {
+			return false
+		}
+	}
+	for field, value := range update.Fields {
+		if !allowed[update.Target][field] || strings.TrimSpace(value) == "" {
+			return false
+		}
+		if strings.HasSuffix(field, "status") {
+			switch value {
+			case "NEW", "IN PROGRESS", "PAUSED", "BLOCKED", "CLOSED", "unknown":
+			default:
+				return false
+			}
+		}
+	}
+	if update.Target == syncTargetTask && update.Fields["status"] == "CLOSED" && strings.TrimSpace(update.Fields["evidence"]) == "" {
+		return false
+	}
+	return true
+}
+
+// laneSyncAllowed keeps terminal readiness aligned with the canonical work record.
+//
+// Example: Reject closure while the canonical work is active.
+func laneSyncAllowed(
+	data []byte,
+	ledger ledgerSource,
+	forecasts forecastSource,
+	update syncUpdate,
+	field string,
+	value string,
+) bool {
+	terminal := field == "lifecycle" || field == "completed_at" || (strings.HasSuffix(field, "_status") && value == "CLOSED" && field == update.RequiredEnvironment.String()+"_status")
+	if !terminal {
+		return true
+	}
+	// These fields are applied as an atomic pair by applyLaneCompletions.
+	if field == "completed_at" && update.Fields["completed_at"] == "" {
+		return false
+	}
+	if !validRef(update.WorkRef, "project-understanding.yaml") {
+		return false
+	}
+	work, ok := ledger.Records[sourceID(update.WorkRef, "project-understanding.yaml")]
+	if !ok || work.Type != "work" || strings.TrimSpace(update.Evidence) == "" {
+		return false
+	}
+	if work.Data.ForecastRef != "" {
+		ref := string(work.Data.ForecastRef)
+		if !validRef(ref, "forecasts.yaml") || textField(forecasts.Records[sourceID(ref, "forecasts.yaml")], "status") != "inactive" {
+			return false
+		}
+	}
+	if field == "lifecycle" {
+		return work.Data.State == workStateCancelled
+	}
+	if work.Data.State != workStateCompleted || work.Data.CompletedAt == "" {
+		return false
+	}
+	if field == "completed_at" {
+		return sameValue(value, work.Data.CompletedAt)
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	lanes := mapValue(doc.Content[0], "lanes")
+	if lanes == nil {
+		return false
+	}
+	for _, lane := range lanes.Content {
+		id, ref, env := mapValue(lane, "task_id"), mapValue(lane, "work_ref"), mapValue(lane, "required_environment")
+		if id == nil || ref == nil || env == nil || id.Value != update.ID || ref.Value != update.WorkRef || env.Value != update.RequiredEnvironment.String() {
+			continue
+		}
+		completed := mapValue(lane, "completed_at")
+		return completed != nil && sameValue(completed.Value, work.Data.CompletedAt) && mapValue(lane, "forecast") == nil
+	}
+	return false
+}
+
+// applySyncField changes one explicitly identified scalar while preserving other bytes.
+//
+// Example: Update the named task owner if its prior projection remains intact.
+func applySyncField(
+	data []byte,
+	update syncUpdate,
+	field string,
+	value string,
+	previous string,
+) ([]byte, bool) {
+	target, id := update.Target, update.ID
+	allowed := map[syncTarget]map[string]bool{syncTargetTask: {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true}, syncTargetLane: {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true}, syncTargetReport: {"state": true, "next_focus": true}}
+	if !allowed[target][field] || strings.TrimSpace(id) == "" || strings.TrimSpace(value) == "" {
+		return data, false
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(data, &doc) != nil {
+		return data, false
+	}
+	root := doc.Content[0]
+	if target == syncTargetReport {
+		node := mapValue(root, field)
+		if node == nil || (previous != "" && node.Value != previous) {
+			return data, false
+		}
+		if node.Value == value {
+			return data, true
+		}
+		edit, err := scalarReplacement(&flowDocument{data: data}, node, value)
+		if err != nil {
+			return data, false
+		}
+		return append(append(append([]byte(nil), data[:edit.Start]...), []byte(edit.Value)...), data[edit.End:]...), true
+	}
+	list := mapValue(root, target.String()+"s")
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return data, false
+	}
+	var node *yaml.Node
+	for _, n := range list.Content {
+		key := "id"
+		if target == syncTargetLane {
+			key = "task_id"
+		}
+		if v := mapValue(n, key); v != nil && v.Value == id {
+			if target == syncTargetLane {
+				work, environment := mapValue(n, "work_ref"), mapValue(n, "required_environment")
+				if work == nil || environment == nil || work.Value != update.WorkRef || environment.Value != update.RequiredEnvironment.String() {
+					continue
+				}
+			}
+			if node != nil {
+				return data, false
+			}
+			node = n
+		}
+	}
+	if node == nil {
+		return data, false
+	}
+	existing := mapValue(node, field)
+	// Owner-authored content remains untouched once it diverges from our last value.
+	if previous != "" && (existing == nil || existing.Value != previous) {
+		return data, false
+	}
+	var fields forecastFieldEdits
+	if err := fields.add(data, node, field, value, &flowDocument{data: data}); err != nil {
+		return data, false
+	}
+	edits := fields.Edits
+	if len(fields.Missing) > 0 {
+		docflow := &flowDocument{data: data}
+		if node.Style&yaml.FlowStyle != 0 {
+			end, e := flowMappingEndCached(docflow, node)
+			if e != nil {
+				return data, false
+			}
+			edits = append(edits, scalarEdit{Start: reportByteOffset(end), End: reportByteOffset(end), Value: ", " + strings.Join(fields.Missing, ", ")})
+		} else {
+			end, indent, e := blockMappingEnd(data, node)
+			if e != nil {
+				return data, false
+			}
+			edits = append(edits, scalarEdit{Start: reportByteOffset(end), End: reportByteOffset(end), Value: strings.Repeat(" ", indent) + fields.Missing[0] + "\n"})
+		}
+	}
+	sort.Slice(edits,
+		// Apply later byte offsets before earlier offsets.
+		//
+		// Example: Insert a field without shifting a later replacement.
+		func(i, j int) bool { return edits[i].Start > edits[j].Start })
+	out := append([]byte(nil), data...)
+	for _, e := range edits {
+		out = append(append(append([]byte(nil), out[:e.Start]...), []byte(e.Value)...), out[e.End:]...)
+	}
+	return out, true
+}
+
+// putSyncState saves replay state in the same report snapshot as its effects.
+//
+// Example: Atomically publish an advanced cursor with updated task fields.
+func putSyncState(
+	data []byte,
+	state string,
+) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	root := doc.Content[0]
+	node := mapValue(root, "status_sync")
+	if node == nil {
+		suffix := "status_sync: " + state + "\n"
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			suffix = "\n" + suffix
+		}
+		return append(append([]byte(nil), data...), []byte(suffix)...), nil
+	}
+	edit, err := projectionReplacement(data, node, state, &flowDocument{data: data})
+	if err != nil {
+		return nil, err
+	}
+	return append(append(append([]byte(nil), data[:edit.Start]...), []byte(edit.Value)...), data[edit.End:]...), nil
+}

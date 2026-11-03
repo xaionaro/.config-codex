@@ -77,6 +77,11 @@ func refreshForecastTargets(
 			return fmt.Errorf("unsupported forecasts")
 		}
 	}
+	projected, logBytes, err := projectLogStatus(dir, candidate, ledger, forecasts)
+	if err != nil {
+		return err
+	}
+	candidate = projected
 	var doc yaml.Node
 	if err := yaml.Unmarshal(candidate, &doc); err != nil {
 		return err
@@ -122,10 +127,13 @@ func refreshForecastTargets(
 	if bytes.Equal(updated, original) {
 		return nil
 	}
-	if err := verifyRefresh(original, updated, ledger, forecasts); err != nil {
+	if err := verifyRefresh(candidate, updated, ledger, forecasts); err != nil {
 		return fmt.Errorf("unsafe refresh: %w", err)
 	}
 	inputs := map[string][]byte{ledgerPath: ledgerBytes}
+	if logBytes != nil {
+		inputs[filepath.Join(dir, "high_level_log.jsonl")] = logBytes
+	}
 	if forecastBytes != nil {
 		inputs[forecastPath] = forecastBytes
 	}
