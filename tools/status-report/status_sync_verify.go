@@ -1,0 +1,360 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+type syncEffectOperation int
+
+const (
+	syncEffectSet syncEffectOperation = iota
+	syncEffectAdd
+	syncEffectRemove
+	syncEffectMetadata
+	syncEffectTimestamp
+	syncEffectTimelineAnchor
+	syncEffectDiagnostic
+	syncEffectPriorityRemove
+	syncEffectTimeline
+	syncEffectClear
+	syncEffectForecastRetire
+	syncEffectCompletedAtClear
+)
+
+type syncEffect struct {
+	Target              syncTarget
+	ID, WorkRef         string
+	Evidence            string
+	RequiredEnvironment syncEnvironment
+	Field               string
+	Value               any
+	Operation           syncEffectOperation
+}
+
+// verifyStatusSyncCanonicalEffects checks terminal lane effects against canonical work and forecasts.
+func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+	var before, after map[string]any
+	if err := yaml.Unmarshal(original, &before); err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal(candidate, &after); err != nil {
+		return err
+	}
+	for _, effect := range effects {
+		terminal := effect.Target == syncTargetLane && effect.Operation == syncEffectSet && ((effect.Field == effect.RequiredEnvironment.String()+"_status" && effect.Value == "CLOSED") || (effect.Field == "lifecycle" && effect.Value == "cancelled"))
+		if !terminal && effect.Operation != syncEffectForecastRetire {
+			continue
+		}
+		if effect.Target != syncTargetLane || !validRef(effect.WorkRef, "project-understanding.yaml") || strings.TrimSpace(effect.Evidence) == "" {
+			return fmt.Errorf("terminal lane effect lacks canonical identity or evidence")
+		}
+		work, ok := ledger.Records[sourceID(effect.WorkRef, "project-understanding.yaml")]
+		if !ok || work.Type != "work" {
+			return fmt.Errorf("terminal lane work missing")
+		}
+		items, ok := after["lanes"].([]any)
+		if !ok {
+			return fmt.Errorf("terminal lane missing")
+		}
+		index, err := syncEffectIndex(items, "task_id", effect)
+		if err != nil || index < 0 {
+			return fmt.Errorf("terminal lane identity missing or ambiguous")
+		}
+		lane := items[index].(map[string]any)
+		cancelled := lane["lifecycle"] == "cancelled"
+		if cancelled {
+			if work.Data.State != workStateCancelled {
+				return fmt.Errorf("lane cancellation disagrees with canonical work")
+			}
+		} else {
+			completed, ok := lane["completed_at"].(string)
+			if work.Data.State != workStateCompleted || !ok || !sameValue(completed, work.Data.CompletedAt) || lane[effect.RequiredEnvironment.String()+"_status"] != "CLOSED" {
+				return fmt.Errorf("lane completion disagrees with canonical work")
+			}
+		}
+		ref := string(work.Data.ForecastRef)
+		if ref != "" && (!validRef(ref, "forecasts.yaml") || textField(forecasts.Records[sourceID(ref, "forecasts.yaml")], "status") != "inactive") {
+			return fmt.Errorf("terminal lane forecast is not inactive")
+		}
+		if effect.Operation == syncEffectForecastRetire {
+			oldItems, _ := before["lanes"].([]any)
+			oldIndex, err := syncEffectIndex(oldItems, "task_id", effect)
+			if err != nil || oldIndex < 0 {
+				return fmt.Errorf("retired forecast lane missing")
+			}
+			oldLane := oldItems[oldIndex].(map[string]any)
+			forecast, ok := oldLane["forecast"].(map[string]any)
+			if !ok || forecast["forecast_ref"] != ref || ref == "" {
+				return fmt.Errorf("retired forecast does not match canonical work")
+			}
+		}
+	}
+	return nil
+}
+
+// verifyStatusSyncEffects checks the entire original-to-candidate semantic delta
+// against explicit accepted effects and preserves the ordered YAML comments.
+func verifyStatusSyncEffects(original, candidate []byte, effects []syncEffect) error {
+	beforeComments, err := yamlComments(original)
+	if err != nil {
+		return err
+	}
+	afterComments, err := yamlComments(candidate)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(beforeComments, afterComments) {
+		return fmt.Errorf("status sync would change YAML comments")
+	}
+	var before, after map[string]any
+	if err := yaml.Unmarshal(original, &before); err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal(candidate, &after); err != nil {
+		return err
+	}
+	for _, effect := range effects {
+		if err := applyExpectedSyncEffect(before, effect); err != nil {
+			return fmt.Errorf("invalid status sync effect: %w", err)
+		}
+	}
+	if !reflect.DeepEqual(before, after) {
+		return fmt.Errorf("status sync candidate differs from authorized effects")
+	}
+	return nil
+}
+
+func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
+	switch effect.Operation {
+	case syncEffectMetadata:
+		encoded, err := json.Marshal(effect.Value)
+		if err != nil {
+			return err
+		}
+		var value any
+		if err := yaml.Unmarshal(encoded, &value); err != nil {
+			return err
+		}
+		root["status_sync"] = value
+		return nil
+	case syncEffectTimestamp, syncEffectTimelineAnchor:
+		value, ok := effect.Value.(string)
+		if !ok {
+			return fmt.Errorf("timestamp must be a string")
+		}
+		field := "timestamp"
+		if effect.Operation == syncEffectTimelineAnchor {
+			field = "timeline_as_of"
+		}
+		root[field] = value
+		return nil
+	case syncEffectTimeline:
+		snapshot, ok := effect.Value.(syncTimelineSnapshot)
+		if !ok {
+			return fmt.Errorf("invalid timeline snapshot")
+		}
+		encoded, err := yaml.Marshal(snapshot.Entries)
+		if err != nil {
+			return err
+		}
+		var entries any
+		if err := yaml.Unmarshal(encoded, &entries); err != nil {
+			return err
+		}
+		root["timeline"] = entries
+		root["timeline_state"] = snapshot.State
+		root["timeline_as_of"] = snapshot.AsOf
+		return nil
+	case syncEffectPriorityRemove:
+		items, ok := root["top_priorities"].([]any)
+		if !ok {
+			return fmt.Errorf("missing top priorities")
+		}
+		remaining := make([]any, 0, len(items))
+		for _, item := range items {
+			id, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("invalid top priority")
+			}
+			if id != effect.ID {
+				remaining = append(remaining, item)
+			}
+		}
+		root["top_priorities"] = remaining
+		return nil
+	case syncEffectDiagnostic:
+		value, ok := effect.Value.(string)
+		if !ok {
+			return fmt.Errorf("diagnostic must be a string")
+		}
+		items, ok := root["blockers_risks"].([]any)
+		if !ok {
+			return fmt.Errorf("missing blockers")
+		}
+		root["scope_complete"] = false
+		for _, item := range items {
+			if text, ok := item.(string); ok && text == value {
+				return nil
+			}
+		}
+		root["blockers_risks"] = append(items, value)
+		return nil
+	case syncEffectSet:
+		value := effect.Value
+		if raw, ok := value.(json.RawMessage); ok {
+			if err := yaml.Unmarshal(raw, &value); err != nil {
+				return err
+			}
+		} else if _, ok := value.(string); !ok {
+			return fmt.Errorf("invalid field value")
+		}
+		if effect.Target == syncTargetReport {
+			if effect.ID != "current" {
+				return fmt.Errorf("bad report identity")
+			}
+			root[effect.Field] = value
+			return nil
+		}
+		section, identity, err := syncEffectSection(effect.Target)
+		if err != nil {
+			return err
+		}
+		items, ok := root[section].([]any)
+		if !ok {
+			return fmt.Errorf("missing %s", section)
+		}
+		index, err := syncEffectIndex(items, identity, effect)
+		if err != nil {
+			return err
+		}
+		if index < 0 {
+			if identity != "subject_ref" || effect.Field != "text" {
+				return fmt.Errorf("missing target %s", effect.ID)
+			}
+			items = append(items, map[string]any{identity: effect.ID, effect.Field: value})
+			root[section] = items
+			return nil
+		}
+		items[index].(map[string]any)[effect.Field] = value
+		return nil
+	case syncEffectAdd:
+		section, identity, err := syncEffectSection(effect.Target)
+		if err != nil {
+			return err
+		}
+		raw, ok := effect.Value.(json.RawMessage)
+		if !ok {
+			return fmt.Errorf("addition must be raw JSON")
+		}
+		var record map[string]any
+		if err := yaml.Unmarshal(raw, &record); err != nil {
+			return err
+		}
+		if record[identity] != effect.ID {
+			return fmt.Errorf("addition identity mismatch")
+		}
+		items, exists := root[section].([]any)
+		if !exists && section != "reviews" && section != "lanes" && section != "root_completions" && section != "root_forecasts" {
+			return fmt.Errorf("missing %s", section)
+		}
+		index, err := syncEffectIndex(items, identity, effect)
+		if err != nil || index >= 0 {
+			return fmt.Errorf("duplicate addition")
+		}
+		root[section] = append(items, record)
+		return nil
+	case syncEffectRemove:
+		section, identity, err := syncEffectSection(effect.Target)
+		if err != nil {
+			return err
+		}
+		if identity != "subject_ref" {
+			return fmt.Errorf("unsupported removal")
+		}
+		items, ok := root[section].([]any)
+		if !ok {
+			return fmt.Errorf("missing %s", section)
+		}
+		index, err := syncEffectIndex(items, identity, effect)
+		if err != nil || index < 0 {
+			return fmt.Errorf("missing removal target")
+		}
+		root[section] = append(items[:index], items[index+1:]...)
+		return nil
+	case syncEffectClear, syncEffectForecastRetire, syncEffectCompletedAtClear:
+		field := effect.Field
+		if effect.Operation == syncEffectForecastRetire {
+			field = "forecast"
+		}
+		if effect.Operation == syncEffectCompletedAtClear {
+			field = "completed_at"
+		}
+		if effect.Target == syncTargetReport {
+			if effect.ID != "current" {
+				return fmt.Errorf("bad report identity")
+			}
+			delete(root, field)
+			return nil
+		}
+		section, identity, err := syncEffectSection(effect.Target)
+		if err != nil {
+			return err
+		}
+		items, ok := root[section].([]any)
+		if !ok {
+			return fmt.Errorf("missing %s", section)
+		}
+		index, err := syncEffectIndex(items, identity, effect)
+		if err != nil || index < 0 {
+			return fmt.Errorf("missing target")
+		}
+		delete(items[index].(map[string]any), field)
+		return nil
+	default:
+		return fmt.Errorf("unknown effect")
+	}
+}
+
+func syncEffectSection(target syncTarget) (string, string, error) {
+	switch target {
+	case syncTargetTask:
+		return "tasks", "id", nil
+	case syncTargetLane:
+		return "lanes", "task_id", nil
+	case syncTargetReview:
+		return "reviews", "task_id", nil
+	case syncTargetPriorityEstimate:
+		return "priority_estimates", "priority", nil
+	case syncTargetRootCompletion:
+		return "root_completions", "work_ref", nil
+	case syncTargetRootForecast:
+		return "root_forecasts", "forecast_ref", nil
+	case syncTargetProgress, syncTargetDecisions, syncTargetBlockers, syncTargetVerification:
+		return target.String(), "subject_ref", nil
+	default:
+		return "", "", fmt.Errorf("unknown target")
+	}
+}
+
+func syncEffectIndex(items []any, identity string, effect syncEffect) (int, error) {
+	found := -1
+	for i, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok || record[identity] != effect.ID {
+			continue
+		}
+		if effect.Target == syncTargetLane && (record["work_ref"] != effect.WorkRef || record["required_environment"] != effect.RequiredEnvironment.String()) {
+			continue
+		}
+		if found >= 0 {
+			return -1, fmt.Errorf("duplicate target")
+		}
+		found = i
+	}
+	return found, nil
+}

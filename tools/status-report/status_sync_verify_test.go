@@ -1,0 +1,100 @@
+package main
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestVerifyStatusSyncEffectsRejectsCollateralChangeAndLostComment(t *testing.T) {
+	original := []byte("state: old # keep\nnext_focus: unchanged\n")
+	effect := syncEffect{Target: syncTargetReport, ID: "current", Field: "state", Value: "new", Operation: syncEffectSet}
+	for _, candidate := range []string{"state: new # keep\nnext_focus: changed\n", "state: new\nnext_focus: unchanged\n"} {
+		if verifyStatusSyncEffects(original, []byte(candidate), []syncEffect{effect}) == nil {
+			t.Fatalf("accepted collateral change: %s", candidate)
+		}
+	}
+	if err := verifyStatusSyncEffects(original, []byte("state: new # keep\nnext_focus: unchanged\n"), []syncEffect{effect}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyStatusSyncEffectsChecksIdentitiesAndAdditions(t *testing.T) {
+	original := []byte("tasks: [{id: a, status: NEW}, {id: b, status: NEW}]\nprogress: []\n")
+	effects := []syncEffect{
+		{Target: syncTargetTask, ID: "a", Field: "status", Value: "CLOSED", Operation: syncEffectSet},
+		{Target: syncTargetProgress, ID: "p", Field: "text", Value: "done", Operation: syncEffectSet},
+	}
+	good := []byte("tasks: [{id: a, status: CLOSED}, {id: b, status: NEW}]\nprogress: [{subject_ref: p, text: done}]\n")
+	if err := verifyStatusSyncEffects(original, good, effects); err != nil {
+		t.Fatal(err)
+	}
+	wrong := []byte("tasks: [{id: a, status: NEW}, {id: b, status: CLOSED}]\nprogress: [{subject_ref: p, text: done}]\n")
+	if err := verifyStatusSyncEffects(original, wrong, effects); err == nil {
+		t.Fatal("accepted wrong target")
+	}
+	extra := []byte("tasks: [{id: a, status: CLOSED}, {id: b, status: NEW}]\nprogress: [{subject_ref: p, text: done, owner: unexpected}]\n")
+	if err := verifyStatusSyncEffects(original, extra, effects); err == nil {
+		t.Fatal("accepted extra field")
+	}
+}
+
+func TestVerifyStatusSyncEffectsRetractionKeepsUnrelatedItem(t *testing.T) {
+	original := []byte("progress: [{subject_ref: a, text: old}, {subject_ref: b, text: keep}]\n")
+	effects := []syncEffect{{Target: syncTargetProgress, ID: "a", Operation: syncEffectRemove}}
+	if err := verifyStatusSyncEffects(original, []byte("progress: [{subject_ref: b, text: keep}]\n"), effects); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyStatusSyncEffects(original, []byte("progress: []\n"), effects); err == nil {
+		t.Fatal("accepted unrelated removal")
+	}
+}
+
+func TestVerifyStatusSyncEffectsChecksFullRecordAndMetadata(t *testing.T) {
+	original := []byte("tasks: []\ntop_priorities: [a, b]\n")
+	effects := []syncEffect{
+		{Target: syncTargetTask, ID: "c", Operation: syncEffectAdd, Value: json.RawMessage(`{"id":"c","effort":2}`)},
+		{ID: "a", Operation: syncEffectPriorityRemove},
+		{Operation: syncEffectMetadata, Value: syncState{Cursor: 1}},
+	}
+	good := []byte("tasks: [{id: c, effort: 2}]\ntop_priorities: [b]\nstatus_sync: {cursor: 1, applied: null, latest: null, pending: null}\n")
+	if err := verifyStatusSyncEffects(original, good, effects); err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte("tasks: [{id: c, effort: 3}]\ntop_priorities: [b]\nstatus_sync: {cursor: 1, applied: null, latest: null, pending: null}\n")
+	if err := verifyStatusSyncEffects(original, bad, effects); err == nil {
+		t.Fatal("accepted altered record")
+	}
+}
+
+func TestVerifyStatusSyncEffectsChecksAtomicTimeline(t *testing.T) {
+	original := []byte("other: keep\n")
+	effects := []syncEffect{{Operation: syncEffectTimeline, Value: syncTimelineSnapshot{AsOf: "2026-11-02T15:24:00Z", State: "verified_empty"}}}
+	good := []byte("other: keep\ntimeline: []\ntimeline_state: verified_empty\ntimeline_as_of: '2026-11-02T15:24:00Z'\n")
+	if err := verifyStatusSyncEffects(original, good, effects); err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte("other: keep\ntimeline: []\ntimeline_state: present\ntimeline_as_of: '2026-11-02T15:24:00Z'\n")
+	if err := verifyStatusSyncEffects(original, bad, effects); err == nil {
+		t.Fatal("accepted incomplete timeline effect")
+	}
+}
+
+func TestVerifyStatusSyncCanonicalEffectsRejectsActiveForecast(t *testing.T) {
+	ref := "project-understanding.yaml#/records/work:first"
+	original := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: 'IN PROGRESS', forecast: {forecast_ref: 'forecasts.yaml#/records/first'}}]\n")
+	candidate := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: CLOSED, completed_at: '2026-11-02T15:25:00Z'}]\n")
+	effect := syncEffect{Target: syncTargetLane, ID: "a", WorkRef: ref, RequiredEnvironment: syncEnvironmentImplementation, Evidence: "accepted", Operation: syncEffectForecastRetire}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:25:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"first": {"status": "active"}}}
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err == nil {
+		t.Fatal("accepted active forecast")
+	}
+	forecasts.Records["first"]["status"] = "inactive"
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	ledger.Records["work:first"] = sourceRecord{Type: "work", Data: workData{State: workStateActive}}
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err == nil {
+		t.Fatal("accepted active work")
+	}
+}
