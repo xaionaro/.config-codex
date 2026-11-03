@@ -286,6 +286,30 @@ func syncGroupCorrectionMatches(
 	return true
 }
 
+// syncCorrectionLocatorPrecedes checks that a correction names an earlier update.
+//
+// Example: An earlier ordinal on the same line can be corrected.
+func syncCorrectionLocatorPrecedes(
+	update syncUpdate,
+	line int,
+	ordinal int,
+) bool {
+	if update.Corrects == 0 {
+		return update.CorrectsOrdinal == nil
+	}
+	if update.Corrects < 0 || (update.CorrectsOrdinal != nil && *update.CorrectsOrdinal < 0) {
+		return false
+	}
+	if update.Corrects != line {
+		return update.Corrects < line
+	}
+	priorOrdinal := 0
+	if update.CorrectsOrdinal != nil {
+		priorOrdinal = *update.CorrectsOrdinal
+	}
+	return priorOrdinal < ordinal
+}
+
 // syncCorrectionAwaitsPending checks whether a correction's named version is unresolved.
 //
 // Example: Retain a correction until its referenced assignment can be projected.
@@ -295,6 +319,9 @@ func syncCorrectionAwaitsPending(
 ) bool {
 	for _, pending := range state.Groups {
 		if pending.Line != update.Corrects {
+			continue
+		}
+		if (update.CorrectsOrdinal == nil && pending.Ordinal != 0) || (update.CorrectsOrdinal != nil && pending.Ordinal != *update.CorrectsOrdinal) {
 			continue
 		}
 		prior, err := decodeSyncGroup(pending.Update)
@@ -360,6 +387,11 @@ func applyPendingSyncGroups(
 		}
 		update, err := decodeSyncGroup(group.Update)
 		if err != nil {
+			invalid = true
+			continue
+		}
+		if !syncCorrectionLocatorPrecedes(update, group.Line, group.Ordinal) {
+			delete(state.Groups, key)
 			invalid = true
 			continue
 		}

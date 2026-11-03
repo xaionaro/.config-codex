@@ -449,6 +449,10 @@ func projectLogStatusStep(
 			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority}
 		}
 		for ordinal, update := range event.Details.StatusUpdate.Updates {
+			if !syncCorrectionLocatorPrecedes(update, i+1, ordinal) {
+				invalidUpdate = true
+				continue
+			}
 			if !syncUpdateSelectorValid(update) {
 				invalidUpdate = true
 				continue
