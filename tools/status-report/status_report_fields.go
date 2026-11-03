@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/goccy/go-yaml/lexer"
+	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,11 +36,11 @@ func appendReportField(
 		sep := ""
 		if len(root.Content) > 0 {
 			sep = ", "
-			last := end - 1
-			for last >= 0 && (data[last] == ' ' || data[last] == '\t' || data[last] == '\n' || data[last] == '\r') {
-				last--
+			trailing, err := flowMappingHasTrailingComma(data, end)
+			if err != nil {
+				return nil, err
 			}
-			if last >= 0 && data[last] == ',' {
+			if trailing {
 				sep = " "
 			}
 		}
@@ -50,4 +52,40 @@ func appendReportField(
 		suffix = "\n" + suffix
 	}
 	return append(append([]byte(nil), data...), []byte(suffix)...), nil
+}
+
+// flowMappingHasTrailingComma checks the final syntax token before a flow mapping closes.
+//
+// Example: A comma in a trailing comment does not count as a separator.
+func flowMappingHasTrailingComma(
+	data []byte,
+	end int,
+) (bool, error) {
+	tokens := lexer.Tokenize(string(data))
+	if bad := tokens.InvalidToken(); bad != nil {
+		return false, fmt.Errorf("invalid YAML token: %s", bad.Error)
+	}
+	for i := len(tokens) - 1; i >= 0; i-- {
+		current := tokens[i]
+		if current.Type != token.MappingEndType {
+			continue
+		}
+		if current.Position == nil {
+			return false, fmt.Errorf("YAML mapping end lacks position")
+		}
+		pos, err := yamlByteOffset(data, current.Position.Line, current.Position.Column)
+		if err != nil {
+			return false, err
+		}
+		if pos != end {
+			return false, fmt.Errorf("YAML mapping end mismatch")
+		}
+		for j := i - 1; j >= 0; j-- {
+			if tokens[j].Type != token.CommentType {
+				return tokens[j].Type == token.CollectEntryType, nil
+			}
+		}
+		break
+	}
+	return false, fmt.Errorf("YAML mapping end not found")
 }
