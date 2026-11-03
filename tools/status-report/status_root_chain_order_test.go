@@ -19,4 +19,8 @@ func TestEarlierPendingRootConflictPreservesOrder(t *testing.T) {
 	require.True(t, earlierPendingRootConflict(state, start))
 	start.Addition.ReopenWorkRef = "project-understanding.yaml#/records/other"
 	require.False(t, earlierPendingRootConflict(state, start))
+	state.Groups = nil
+	state.PendingAdditions = map[string]syncPendingAddition{"legacy": {Line: 1, Target: syncTargetRootCompletion, Record: `{"work_ref":"project-understanding.yaml#/records/w"}`}}
+	start.Addition.ReopenWorkRef = update.WorkRef
+	require.True(t, earlierPendingRootConflict(state, start))
 }

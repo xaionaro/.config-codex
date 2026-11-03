@@ -195,6 +195,19 @@ func applyPendingRootChains(
 func earlierPendingRootConflict(state syncState, start syncPendingRootAddition) bool {
 	work := rootChainAdditionWorkRef(start.Addition)
 	forecast := rootChainAdditionForecastRef(start.Addition)
+	for _, prior := range state.PendingAdditions {
+		if prior.Line > start.Locator.Line || (prior.Target != syncTargetRootCompletion && prior.Target != syncTargetRootForecast) {
+			continue
+		}
+		addition := syncAddition{Target: prior.Target, Record: json.RawMessage(prior.Record), ReopenWorkRef: prior.ReopenWorkRef, ExpectedPrior: json.RawMessage(prior.ExpectedPrior)}
+		priorWork := rootChainAdditionWorkRef(addition)
+		if work != "" && priorWork == work {
+			return true
+		}
+		if forecast != "" && rootChainAdditionForecastRef(addition) == forecast && (work == "" || priorWork == "") {
+			return true
+		}
+	}
 	for _, prior := range state.PendingRootAdditions {
 		if prior.Locator.Line > start.Locator.Line || (prior.Locator.Line == start.Locator.Line && prior.Locator.Ordinal >= start.Locator.Ordinal) {
 			continue
