@@ -337,3 +337,28 @@ func TestEmptyKeptScalarCommentScanPreservesOrderedComments(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, comments, other)
 }
+
+// TestRefreshEmptyKeptScalarWithReconciliation checks the full refresh path.
+//
+// Example: An incomplete ledger can add a diagnostic while preserving an empty scalar.
+func TestRefreshEmptyKeptScalarWithReconciliation(t *testing.T) {
+	input := strings.Replace(linkedReport, "progress: [Implementation started]\n", "", 1)
+	input = strings.ReplaceAll(input, "\n", "\r\n") + "progress:\r\n  - |+ # owner note\r\n"
+	// event records a separate progress item.
+	//
+	// Example: The report can replay progress and reconcile its source.
+	const event = `{"event":"worker_progress","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"new progress"}}]}}}` + "\n"
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(reportPath, []byte(input), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte("schema: project-understanding/v1\nrecords: {}\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+	require.NoError(t, refreshTestStatus(dir, "worker_progress"))
+	out, err := os.ReadFile(reportPath)
+	require.NoError(t, err)
+	report, err := parse(out)
+	require.NoError(t, err)
+	require.Equal(t, []string{"", "new progress"}, report.Progress)
+	require.Contains(t, string(out), "|+ # owner note\r\n")
+	require.NotEmpty(t, report.Blockers)
+}

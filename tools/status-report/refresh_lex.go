@@ -164,7 +164,7 @@ func (d *flowDocument) build() {
 		d.err = err
 		return
 	}
-	tokens := lexer.Tokenize(string(scan))
+	tokens := tokenizeReport(string(scan))
 	if bad := tokens.InvalidToken(); bad != nil {
 		d.err = fmt.Errorf("unsupported YAML token: %s", bad.Error)
 		return

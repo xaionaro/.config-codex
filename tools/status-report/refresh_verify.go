@@ -62,11 +62,7 @@ func yamlComments(data []byte) ([]string, error) {
 	if !strings.HasSuffix(normalized, "\n") {
 		normalized += "\n"
 	}
-	tokens := lexer.Tokenize(normalized)
-	if bad := tokens.InvalidToken(); bad != nil && bad.Error == "could not find multi-line content" {
-		normalized = normalizeEmptyKeptScalars(normalized, tokens)
-		tokens = lexer.Tokenize(normalized)
-	}
+	tokens := tokenizeReport(normalized)
 	if bad := tokens.InvalidToken(); bad != nil {
 		return nil, fmt.Errorf("unsupported YAML token: %s", bad.Error)
 	}
@@ -77,6 +73,17 @@ func yamlComments(data []byte) ([]string, error) {
 		}
 	}
 	return comments, nil
+}
+
+// tokenizeReport retries the known empty-block lexer error on a scanner-only copy.
+//
+// Example: An empty kept scalar does not prevent comment or delimiter scanning.
+func tokenizeReport(input string) token.Tokens {
+	tokens := lexer.Tokenize(input)
+	if bad := tokens.InvalidToken(); bad != nil && bad.Error == "could not find multi-line content" {
+		return lexer.Tokenize(normalizeEmptyKeptScalars(input, tokens))
+	}
+	return tokens
 }
 
 // normalizeEmptyKeptScalars works around a lexer error using a scanner-only copy.
