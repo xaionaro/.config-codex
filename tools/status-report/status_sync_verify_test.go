@@ -380,3 +380,31 @@ func TestVerifyRootCompletionCorrection(t *testing.T) {
 		t.Fatal("accepted noncanonical replacement time")
 	}
 }
+
+// TestVerifyPendingRootCorrection checks log-backed correction lineage.
+//
+// Example: Reject a correction that points to an unrelated earlier completion.
+func TestVerifyPendingRootCorrection(t *testing.T) {
+	old := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
+	current := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}`
+	addition := syncAddition{Target: syncTargetRootCompletion, Evidence: "corrected", ExpectedPrior: json.RawMessage(old), Record: json.RawMessage(current)}
+	log := []byte(`{"event":"lifecycle_change","details":{"status_update":{"additions":[{"target":"root_completion","evidence":"accepted","record":` + old + `}]}}}` + "\n" + `{"event":"correction","details":{"corrects":1,"status_update":{"additions":[{"target":"root_completion","evidence":"corrected","expected_prior":` + old + `,"record":` + current + `}]}}}` + "\n")
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:05:00Z", Roles: []reportingRole{reportingRoleRoot}}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	if err := verifyPendingRootCorrection([]byte("root_completions: []\n"), log, 1, 2, addition, ledger, forecastSource{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyPendingRootCorrection([]byte("root_completions: []\n"), log, 2, 2, addition, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted invalid prior line")
+	}
+	if err := verifyPendingRootCorrection([]byte("root_completions: ["+old+"]\n"), log, 1, 2, addition, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted existing completion")
+	}
+	if err := verifyPendingRootCorrection([]byte("root_completions: []\nstatus_sync: {cursor: 1, applied: {'addition/root_completion/project-understanding.yaml#/records/w': old}}\n"), log, 1, 2, addition, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted already applied completion")
+	}
+	wrong := addition
+	wrong.ExpectedPrior = json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/other"}`)
+	if err := verifyPendingRootCorrection([]byte("root_completions: []\n"), log, 1, 2, wrong, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted unrelated prior identity")
+	}
+}
