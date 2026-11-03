@@ -159,17 +159,30 @@ func projectLogStatus(
 	}
 	result := original
 	var effects []syncEffect
+	start := cursor
 	for i := cursor; i < len(boundaries); i++ {
+		lineStart := 0
+		if i > 0 {
+			lineStart = boundaries[i-1]
+		}
+		if i+1 < len(boundaries) && !syncLineHasUpdate(logBytes[lineStart:boundaries[i]]) {
+			continue
+		}
+		chunkStart := 0
+		if start > 0 {
+			chunkStart = boundaries[start-1]
+		}
 		var stepEffects []syncEffect
-		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes[:boundaries[i]])
+		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes[chunkStart:boundaries[i]], start)
 		if err != nil {
 			return nil, nil, err
 		}
 		effects = append(effects, stepEffects...)
+		start = i + 1
 	}
 	if cursor == len(boundaries) {
 		var stepEffects []syncEffect
-		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes)
+		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, nil, cursor)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -181,6 +194,24 @@ func projectLogStatus(
 	return result, logBytes, nil
 }
 
+// syncLineHasUpdate identifies a log entry requiring an ordered projection step.
+//
+// Example: Legacy events can be scanned together before the next typed update.
+func syncLineHasUpdate(line []byte) bool {
+	var envelope struct {
+		Details json.RawMessage `json:"details"`
+	}
+	if json.Unmarshal(line, &envelope) != nil {
+		return bytes.Contains(line, []byte(`"status_update"`))
+	}
+	var details map[string]json.RawMessage
+	if json.Unmarshal(envelope.Details, &details) != nil {
+		return false
+	}
+	_, exists := details["status_update"]
+	return exists
+}
+
 // projectLogStatusStep applies one newly observed event and retries pending work.
 //
 // Example: A closure is applied before a later evidence update.
@@ -189,6 +220,7 @@ func projectLogStatusStep(
 	ledger ledgerSource,
 	forecasts forecastSource,
 	logBytes []byte,
+	startLine int,
 ) ([]byte, []syncEffect, error) {
 	var effects []syncEffect
 	var root yaml.Node
@@ -210,6 +242,9 @@ func projectLogStatusStep(
 	}
 	if state.AppliedOrdinals == nil {
 		state.AppliedOrdinals = map[string]int{}
+	}
+	if err := normalizeSyncOwnership(&state); err != nil {
+		return nil, nil, err
 	}
 	if state.Pending == nil {
 		state.Pending = map[string]syncPending{}
@@ -235,16 +270,19 @@ func projectLogStatusStep(
 	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1]
 	}
-	if state.Cursor < 0 || state.Cursor > len(lines) {
-		return nil, nil, fmt.Errorf("status sync cursor exceeds log")
+	if state.Cursor != startLine {
+		return nil, nil, fmt.Errorf("status sync cursor changed during replay")
 	}
-	sawUpdate := false
+	if len(lines) == 0 && existingState == nil {
+		return original, nil, nil
+	}
 	invalidUpdate := false
 	latestTimestamp := ""
-	for i := state.Cursor; i < len(lines); i++ {
+	for offset := range lines {
+		i := startLine + offset
 		var event syncEvent
-		if err := json.Unmarshal(lines[i], &event); err != nil {
-			if bytes.Contains(lines[i], []byte(`"status_update"`)) {
+		if err := json.Unmarshal(lines[offset], &event); err != nil {
+			if bytes.Contains(lines[offset], []byte(`"status_update"`)) {
 				invalidUpdate = true
 			}
 			continue
@@ -252,7 +290,6 @@ func projectLogStatusStep(
 		if event.Details.StatusUpdate == nil {
 			continue
 		}
-		sawUpdate = true
 		if _, err := parseUTC(event.Timestamp); err == nil {
 			if latestTimestamp == "" {
 				latestTimestamp = event.Timestamp
@@ -334,6 +371,10 @@ func projectLogStatusStep(
 			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority}
 		}
 		for ordinal, update := range event.Details.StatusUpdate.Updates {
+			if !syncUpdateSelectorValid(update) {
+				invalidUpdate = true
+				continue
+			}
 			if update.Retract {
 				probe := update
 				probe.Fields = map[string]string{"text": "probe"}
@@ -350,7 +391,7 @@ func projectLogStatusStep(
 				state.Groups[syncGroupKey(i+1, ordinal)] = syncPendingGroup{Line: i + 1, Ordinal: ordinal, Update: encoded}
 				continue
 			}
-			if (!validSyncUpdate(update) && !validNarrativeSyncUpdate(update) && !validStructuredSyncUpdate(update) && !validLaneSyncUpdate(update)) || update.Corrects < 0 || (update.CorrectsOrdinal != nil && (*update.CorrectsOrdinal < 0 || update.Corrects == 0)) || (event.Event == "correction" && update.Corrects == 0) || (event.Event != "correction" && update.Corrects != 0) {
+			if (!validSyncUpdate(update) && !validNarrativeSyncUpdate(update) && !validStructuredSyncUpdate(update) && !validLaneSyncUpdate(update) && !validRootRetirementSyncUpdate(update)) || update.Corrects < 0 || (update.CorrectsOrdinal != nil && (*update.CorrectsOrdinal < 0 || update.Corrects == 0)) || (event.Event == "correction" && update.Corrects == 0) || (event.Event != "correction" && update.Corrects != 0) {
 				invalidUpdate = true
 				continue
 			}
@@ -362,10 +403,7 @@ func projectLogStatusStep(
 			state.Groups[syncGroupKey(i+1, ordinal)] = syncPendingGroup{Line: i + 1, Ordinal: ordinal, Update: encoded}
 		}
 	}
-	if existingState == nil && !sawUpdate && !invalidUpdate {
-		return original, nil, nil
-	}
-	state.Cursor = len(lines)
+	state.Cursor = startLine + len(lines)
 	result := original
 	additionKeys := make([]string, 0, len(state.PendingAdditions))
 	for key := range state.PendingAdditions {
@@ -427,8 +465,23 @@ func projectLogStatusStep(
 			if err := verifyStatusSyncCanonicalEffects(result, updated, additionEffects, ledger, forecasts); err != nil {
 				continue
 			}
+			var taskOwnership map[string]string
+			if p.Target == syncTargetTask {
+				var valid bool
+				taskOwnership, valid = taskAdditionOwnership(json.RawMessage(p.Record))
+				if !valid {
+					continue
+				}
+			}
 			result, progress = updated, true
 			effects = append(effects, additionEffects...)
+			if taskOwnership != nil {
+				id := p.ID
+				if id == "" {
+					id = strings.TrimPrefix(key, "addition/task/")
+				}
+				recordTaskAdditionOwnership(&state, id, p.Line, taskOwnership)
+			}
 			for _, appliedKey := range groupKeys {
 				state.Applied[appliedKey] = state.PendingAdditions[appliedKey].Record
 				delete(state.PendingAdditions, appliedKey)
@@ -538,16 +591,11 @@ func projectLogStatusStep(
 		return nil, nil, err
 	}
 	effects = append(effects, legacyEffects...)
-	var reprioritizationEffects []syncEffect
-	result, reprioritizationEffects = applyPendingReprioritizations(result, &state, ledger, forecasts)
-	effects = append(effects, reprioritizationEffects...)
 	var groupEffects []syncEffect
 	var groupInvalid bool
 	result, groupEffects, groupInvalid = applyPendingSyncGroups(result, &state, ledger, forecasts)
 	effects = append(effects, groupEffects...)
 	invalidUpdate = invalidUpdate || groupInvalid
-	result, reprioritizationEffects = applyPendingReprioritizations(result, &state, ledger, forecasts)
-	effects = append(effects, reprioritizationEffects...)
 	if latestTimestamp != "" {
 		before, err := parse(result)
 		if err != nil {
@@ -766,7 +814,11 @@ func syncTargetKey(
 	update syncUpdate,
 	field string,
 ) string {
-	encoded, _ := json.Marshal([]string{update.Target.String(), update.ID, update.WorkRef, update.RequiredEnvironment.String()})
+	workRef, environment := "", ""
+	if update.Target == syncTargetLane {
+		workRef, environment = update.WorkRef, update.RequiredEnvironment.String()
+	}
+	encoded, _ := json.Marshal([]string{update.Target.String(), update.ID, workRef, environment})
 	return string(encoded) + "/" + field
 }
 

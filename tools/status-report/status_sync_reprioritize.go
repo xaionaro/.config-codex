@@ -13,6 +13,7 @@ func applyPendingReprioritizations(
 	state *syncState,
 	ledger ledgerSource,
 	forecasts forecastSource,
+	onlyKey string,
 ) ([]byte, []syncEffect) {
 	keys := make([]string, 0, len(state.Groups))
 	for key := range state.Groups {
@@ -34,6 +35,9 @@ func applyPendingReprioritizations(
 		})
 	var effects []syncEffect
 	for _, key := range keys {
+		if key != onlyKey {
+			continue
+		}
 		group, exists := state.Groups[key]
 		if !exists {
 			continue
@@ -140,7 +144,7 @@ func syncHasPriorTargetGroup(
 		if err != nil {
 			continue
 		}
-		if prior.Target == update.Target && prior.ID == update.ID && prior.WorkRef == update.WorkRef && prior.RequiredEnvironment == update.RequiredEnvironment {
+		if syncTargetKey(prior, "") == syncTargetKey(update, "") {
 			return true
 		}
 	}

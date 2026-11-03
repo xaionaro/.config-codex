@@ -16,6 +16,9 @@ func applySyncGroup(
 	forecasts forecastSource,
 	previous map[string]string,
 ) ([]byte, []syncEffect, bool) {
+	if validRootRetirementSyncUpdate(update) {
+		return applyRootRetirementSyncUpdate(data, update, ledger, forecasts, previous)
+	}
 	if update.Target == syncTargetLane {
 		return applyLaneSyncUpdate(data, update, ledger, forecasts, previous)
 	}
@@ -115,6 +118,9 @@ func applySyncGroup(
 //
 // Example: A clear participates in supersession alongside a supplied value.
 func syncGroupFields(update syncUpdate) []string {
+	if validRootRetirementSyncUpdate(update) {
+		return []string{"record"}
+	}
 	var fields []string
 	for field := range update.Fields {
 		fields = append(fields, field)
@@ -175,6 +181,9 @@ func syncGroupAppliedValues(
 	data []byte,
 	update syncUpdate,
 ) (map[string]string, bool) {
+	if validRootRetirementSyncUpdate(update) {
+		return map[string]string{"record": syncAbsentValue}, true
+	}
 	values := map[string]string{}
 	for field, value := range update.Fields {
 		values[field] = value
@@ -335,6 +344,7 @@ func applyPendingSyncGroups(
 		})
 	var effects []syncEffect
 	invalid := false
+	blocked := map[string]bool{}
 	for _, key := range keys {
 		group, ok := state.Groups[key]
 		if !ok {
@@ -343,6 +353,23 @@ func applyPendingSyncGroups(
 		update, err := decodeSyncGroup(group.Update)
 		if err != nil {
 			invalid = true
+			continue
+		}
+		if !syncUpdateSelectorValid(update) {
+			// Older queued non-lane updates may contain selectors that did not
+			// participate in locating their target. Preserve their payload while
+			// applying them through the actual target identity.
+			if update.Target != syncTargetLane && update.Target != syncTargetRootForecast {
+				update.WorkRef = ""
+				update.RequiredEnvironment = syncEnvironmentUnknown
+			}
+			if !syncUpdateSelectorValid(update) {
+				invalid = true
+				continue
+			}
+		}
+		targetIdentity := syncTargetKey(update, "")
+		if blocked[targetIdentity] {
 			continue
 		}
 		if update.Retract {
@@ -361,19 +388,23 @@ func applyPendingSyncGroups(
 				probe := update
 				probe.Fields = map[string]string{"text": "probe", "evidence": "probe"}
 				if syncCorrectionAwaitsPending(*state, probe) {
+					blocked[targetIdentity] = true
 					continue
 				}
 				if latest > update.Corrects || (latest == update.Corrects && !ordinalMatches) {
 					delete(state.Groups, key)
 					invalid = true
 				}
+				blocked[targetIdentity] = true
 				continue
 			}
 			candidate, ok := retractNarrativeSync(data, update, state.Applied[textKey], state.Applied[evidenceKey])
 			if !ok {
+				blocked[targetIdentity] = true
 				continue
 			}
 			if _, err := parse(candidate); err != nil {
+				blocked[targetIdentity] = true
 				continue
 			}
 			data = candidate
@@ -392,25 +423,35 @@ func applyPendingSyncGroups(
 		}
 		if !syncGroupCorrectionMatches(*state, update) {
 			if syncCorrectionAwaitsPending(*state, update) {
+				blocked[targetIdentity] = true
 				continue
 			}
 			invalid = true
 			delete(state.Groups, key)
 			continue
 		}
+		var groupedEffects []syncEffect
+		data, groupedEffects = applyPendingReprioritizations(data, state, ledger, forecasts, key)
+		if _, exists := state.Groups[key]; !exists {
+			effects = append(effects, groupedEffects...)
+			continue
+		}
 		previous := syncGroupPriorValues(*state, update)
 		candidate, changes, ok := applySyncGroup(data, update, ledger, forecasts, previous)
 		if !ok {
+			blocked[targetIdentity] = true
 			continue
 		}
 		for i := range changes {
 			changes[i].Evidence = syncGroupEvidence(update)
 		}
 		if err := verifyStatusSyncCanonicalEffects(data, candidate, changes, ledger, forecasts); err != nil {
+			blocked[targetIdentity] = true
 			continue
 		}
 		values, ok := syncGroupAppliedValues(candidate, update)
 		if !ok {
+			blocked[targetIdentity] = true
 			continue
 		}
 		validEffects := true
@@ -422,6 +463,7 @@ func applyPendingSyncGroups(
 			}
 		}
 		if !validEffects {
+			blocked[targetIdentity] = true
 			continue
 		}
 		data = candidate
