@@ -373,3 +373,79 @@ func TestLegacyCorrectionRespectsInterveningRetraction(t *testing.T) {
 			})
 	}
 }
+
+// TestLegacyRetractionUsesLatestNarrativeEvidence checks subject-level chronology.
+//
+// Example: A retraction names later evidence rather than the older text update.
+func TestLegacyRetractionUsesLatestNarrativeEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, locator string
+		withdraws     bool
+	}{
+		{"latest evidence", `"corrects":2`, true},
+		{"stale text", `"corrects":1`, false},
+		{"self reference", `"corrects":3`, false},
+	} {
+		t.Run(tc.name,
+			// Compare fresh and saved-field replay after separate evidence.
+			//
+			// Example: A stale retraction does not prevent a valid correction.
+			func(t *testing.T) {
+				log := `{"event":"decision","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"first"}}]}}}` + "\n" + `{"event":"verification_result","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"evidence":"proof"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"one",` + tc.locator + `,"retract":true}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"one","corrects":1,"fields":{"text":"third"}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				update := syncUpdate{Target: syncTargetProgress, ID: "one", Corrects: 1, Fields: map[string]string{"text": "third"}}
+				key := syncTargetKey(update, "text")
+				state := syncState{Cursor: 4, Applied: map[string]string{}, Latest: map[string]int{key: 4}, Pending: map[string]syncPending{key: {Line: 4, Update: update}}}
+				input := linkedReport
+				if !tc.withdraws {
+					state.Applied[key] = "first"
+					state.Applied[syncTargetKey(update, "evidence")] = "proof"
+					input = strings.Replace(input, "progress: [Implementation started]", `progress: [Implementation started, {subject_ref: one, text: first, evidence: proof}]`, 1)
+				}
+				encoded, err := json.Marshal(state)
+				require.NoError(t, err)
+				initial, err := putSyncState([]byte(input), string(encoded))
+				require.NoError(t, err)
+				replayed, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				freshReport, err := parse(fresh)
+				require.NoError(t, err)
+				replayedReport, err := parse(replayed)
+				require.NoError(t, err)
+				require.Equal(t, freshReport.Progress, replayedReport.Progress)
+			})
+	}
+}
+
+// TestLegacyTaskRetractionCannotAuthorizeCorrection checks predecessor validity.
+//
+// Example: A task evidence correction cannot name an invalid task retraction.
+func TestLegacyTaskRetractionCannotAuthorizeCorrection(t *testing.T) {
+	// log names a task retraction, which is not an allowed narrative operation.
+	//
+	// Example: Fresh and legacy replay both retain the original evidence.
+	const log = `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"evidence":"first proof"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"retract":true}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":2,"fields":{"evidence":"new proof"}}]}}}` + "\n"
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+	fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	update := syncUpdate{Target: syncTargetTask, ID: "1", Corrects: 2, Fields: map[string]string{"evidence": "new proof"}}
+	key := syncTargetKey(update, "evidence")
+	state := syncState{Cursor: 3, Applied: map[string]string{key: "first proof"}, Latest: map[string]int{key: 3}, Pending: map[string]syncPending{key: {Line: 3, Update: update}}}
+	encoded, err := json.Marshal(state)
+	require.NoError(t, err)
+	input := strings.Replace(linkedReport, "title: First,", "title: First, evidence: first proof,", 1)
+	initial, err := putSyncState([]byte(input), string(encoded))
+	require.NoError(t, err)
+	replayed, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	freshReport, err := parse(fresh)
+	require.NoError(t, err)
+	replayedReport, err := parse(replayed)
+	require.NoError(t, err)
+	require.Equal(t, "first proof", freshReport.Tasks[0].Evidence)
+	require.Equal(t, freshReport.Tasks[0].Evidence, replayedReport.Tasks[0].Evidence)
+}

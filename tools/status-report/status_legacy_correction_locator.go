@@ -126,7 +126,24 @@ func legacyCorrectionLocatorValid(
 	if !legacyCorrectionPriorMatches(u, prior) {
 		return false, true
 	}
+	if prior.Retract && !legacyValidNarrativeRetraction(prior, priorEvent.Event) {
+		return false, true
+	}
+	if prior.Corrects != 0 {
+		valid, known := legacyCorrectionLocatorValid(syncPending{Line: u.Corrects, Update: prior}, log)
+		if !valid || !known {
+			return valid, known
+		}
+	}
 	return legacyCorrectionHasNoInterveningUpdate(u, lines, pending.Line, priorOrdinal, match)
+}
+
+// legacyNarrativeVersion tracks the latest text or evidence occurrence.
+//
+// Example: A later evidence update becomes the version a retraction must name.
+type legacyNarrativeVersion struct {
+	line    int
+	ordinal int
 }
 
 // legacyCorrectionHasNoInterveningUpdate verifies that the predecessor is latest.
@@ -139,6 +156,7 @@ func legacyCorrectionHasNoInterveningUpdate(
 	priorOrdinal int,
 	currentOrdinal int,
 ) (bool, bool) {
+	latest := legacyNarrativeVersion{line: update.Corrects, ordinal: priorOrdinal}
 	for index := update.Corrects - 1; index < line; index++ {
 		var event syncEvent
 		if json.Unmarshal(lines[index], &event) != nil {
@@ -154,7 +172,7 @@ func legacyCorrectionHasNoInterveningUpdate(
 		if index == line-1 {
 			end = currentOrdinal
 		}
-		valid, known := legacyCorrectionInterveningFields(update, event.Event, index+1, start, priorOrdinal, event.Details.StatusUpdate.Updates[start:end])
+		valid, known := legacyCorrectionInterveningFields(update, event.Event, index+1, start, priorOrdinal, &latest, event.Details.StatusUpdate.Updates[start:end])
 		if !valid || !known {
 			return valid, known
 		}
@@ -171,6 +189,7 @@ func legacyCorrectionInterveningFields(
 	line int,
 	startOrdinal int,
 	priorOrdinal int,
+	latest *legacyNarrativeVersion,
 	intervening []syncUpdate,
 ) (bool, bool) {
 	for offset, candidate := range intervening {
@@ -178,14 +197,48 @@ func legacyCorrectionInterveningFields(
 			return false, false
 		}
 		if !legacyCorrectionPriorMatches(update, candidate) {
+			known := legacyObserveNarrativeVersion(update, candidate, eventName, line, startOrdinal+offset, latest)
+			if !known {
+				return false, false
+			}
 			continue
 		}
-		if !legacyInterveningUpdateEligible(candidate, eventName, line, startOrdinal+offset, update.Corrects, priorOrdinal) {
+		priorLine, priorIndex := update.Corrects, priorOrdinal
+		if candidate.Retract {
+			priorLine, priorIndex = latest.line, latest.ordinal
+		}
+		if !legacyInterveningUpdateEligible(candidate, eventName, line, startOrdinal+offset, priorLine, priorIndex) {
 			continue
 		}
 		return false, true
 	}
 	return true, true
+}
+
+// legacyObserveNarrativeVersion tracks an independent text or evidence update.
+//
+// Example: Evidence after text is the latest version for a later retraction.
+func legacyObserveNarrativeVersion(
+	pending syncUpdate,
+	candidate syncUpdate,
+	eventName string,
+	line int,
+	ordinal int,
+	latest *legacyNarrativeVersion,
+) bool {
+	if syncTargetKey(pending, "") != syncTargetKey(candidate, "") || !validNarrativeSyncUpdate(candidate) {
+		return true
+	}
+	if candidate.Corrects != 0 {
+		if eventName != "correction" || !syncCorrectionLocatorPrecedes(candidate, line, ordinal) {
+			return true
+		}
+		return false
+	}
+	if legacyInterveningUpdateEligible(candidate, eventName, line, ordinal, latest.line, latest.ordinal) {
+		*latest = legacyNarrativeVersion{line: line, ordinal: ordinal}
+	}
+	return true
 }
 
 // legacyInterveningUpdateEligible excludes updates that fresh replay rejects.
@@ -216,12 +269,22 @@ func legacyInterveningUpdateEligible(
 		return false
 	}
 	if update.Retract {
-		probe := update
-		probe.Fields = map[string]string{"text": "probe"}
-		probe.Retract = false
-		return len(update.Fields) == 0 && len(update.Values) == 0 && len(update.Clear) == 0 && validNarrativeSyncUpdate(probe)
+		return legacyValidNarrativeRetraction(update, eventName)
 	}
 	return validSyncUpdate(update) || validNarrativeSyncUpdate(update) || validStructuredSyncUpdate(update) || validLaneSyncUpdate(update) || validRootRetirementSyncUpdate(update)
+}
+
+// legacyValidNarrativeRetraction checks the explicit withdrawal shape and target.
+//
+// Example: A task field cannot be retracted as a narrative subject.
+func legacyValidNarrativeRetraction(
+	update syncUpdate,
+	eventName string,
+) bool {
+	probe := update
+	probe.Fields = map[string]string{"text": "probe"}
+	probe.Retract = false
+	return eventName == "correction" && len(update.Fields) == 0 && len(update.Values) == 0 && len(update.Clear) == 0 && validNarrativeSyncUpdate(probe)
 }
 
 // legacyCorrectionPriorMatches checks that the named update owns the field.
