@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,4 +37,25 @@ func TestTimelineAsOfPreservesHistoricalBins(t *testing.T) {
 	bad := strings.Replace(input, "timeline_as_of: '2026-11-02T15:24:00Z'", "timeline_as_of: '2026-11-02T17:24:00Z'", 1)
 	_, err = parse([]byte(bad))
 	require.Error(t, err)
+}
+
+// TestKeyedNarrativeRejectsTrailingDocument protects the single-document contract.
+//
+// Example: Rendering a keyed report followed by another YAML document fails.
+func TestKeyedNarrativeRejectsTrailingDocument(t *testing.T) {
+	input := strings.Replace(linkedReport, "progress: [Implementation started]", "progress: [{subject_ref: 'work:one', text: Done}]", 1)
+	_, err := parse([]byte(input))
+	require.NoError(t, err)
+	invalid := input + "\n---\nstate: concealed\n"
+	_, err = parse([]byte(invalid))
+	require.Error(t, err)
+	binary := filepath.Join(t.TempDir(), "status-report")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	output, err := build.CombinedOutput()
+	require.NoError(t, err, string(output))
+	command := exec.Command(binary, "render")
+	command.Stdin = strings.NewReader(invalid)
+	output, err = command.CombinedOutput()
+	require.Error(t, err, string(output))
+	require.NotContains(t, string(output), "Full task tree")
 }

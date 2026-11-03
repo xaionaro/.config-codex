@@ -113,7 +113,11 @@ func applySyncTimeline(data []byte, snapshot syncTimelineSnapshot) ([]byte, bool
 		}
 		edits = append(edits, scalarEdit{Start: reportByteOffset(start), End: reportByteOffset(end), Value: replacement})
 	}
-	sort.Slice(edits, func(i, j int) bool { return edits[i].Start > edits[j].Start })
+	sort.Slice(edits,
+		// Sort later offsets first so edits cannot shift later positions.
+		//
+		// Example: Replace a trailing timeline field before an earlier field.
+		func(i, j int) bool { return edits[i].Start > edits[j].Start })
 	out := append([]byte(nil), data...)
 	for _, edit := range edits {
 		out = append(append(append([]byte(nil), out[:edit.Start]...), edit.Value...), out[edit.End:]...)
