@@ -15,6 +15,67 @@ func applySyncAddition(
 	data []byte,
 	addition syncAddition,
 ) ([]byte, bool) {
+	return applySyncAdditionGroup(data, []syncAddition{addition})
+}
+
+// applySyncAdditionGroup publishes a task and its matching priority estimate together.
+//
+// Example: A new priority and its first task become valid in one projection.
+func applySyncAdditionGroup(
+	data []byte,
+	additions []syncAddition,
+) ([]byte, bool) {
+	if len(additions) == 0 || len(additions) > 2 {
+		return data, false
+	}
+	var taskPriority, estimatePriority string
+	var tasks, estimates, reviews int
+	for _, addition := range additions {
+		var record map[string]json.RawMessage
+		if json.Unmarshal(addition.Record, &record) != nil {
+			return data, false
+		}
+		switch addition.Target {
+		case "task":
+			tasks++
+			if json.Unmarshal(record["priority"], &taskPriority) != nil {
+				return data, false
+			}
+		case "priority_estimate":
+			estimates++
+			if json.Unmarshal(record["priority"], &estimatePriority) != nil {
+				return data, false
+			}
+		case "review":
+			reviews++
+		default:
+			return data, false
+		}
+	}
+	if !((tasks == 1 && reviews == 0 && estimates <= 1) || (reviews == 1 && tasks == 0 && estimates == 0)) || (estimates == 1 && taskPriority != estimatePriority) {
+		return data, false
+	}
+	candidate := data
+	for _, addition := range additions {
+		var ok bool
+		candidate, ok = insertSyncAddition(candidate, addition)
+		if !ok {
+			return data, false
+		}
+	}
+	if _, err := parse(candidate); err != nil {
+		return data, false
+	}
+	return candidate, true
+}
+
+// insertSyncAddition inserts one complete record before group validation.
+//
+// Example: Append an estimate alongside its task before validating the report.
+func insertSyncAddition(
+	data []byte,
+	addition syncAddition,
+) ([]byte, bool) {
 	var record map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(addition.Record))
 	if decoder.Decode(&record) != nil || len(record) == 0 {
@@ -29,6 +90,9 @@ func applySyncAddition(
 	case "review":
 		section, identity = "reviews", "task_id"
 		required = []string{"task_id", "reporter", "critic", "rounds", "estimate", "impact", "priority", "unresolved"}
+	case "priority_estimate":
+		section, identity = "priority_estimates", "priority"
+		required = []string{"priority", "as_of", "min_minutes", "max_minutes", "basis", "assumptions", "dependencies", "critical_path"}
 	default:
 		return data, false
 	}
@@ -37,7 +101,7 @@ func applySyncAddition(
 		if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return data, false
 		}
-		if field != "effort" && field != "rounds" {
+		if field != "effort" && field != "rounds" && field != "min_minutes" && field != "max_minutes" {
 			var text string
 			if json.Unmarshal(value, &text) != nil || strings.TrimSpace(text) == "" {
 				return data, false
@@ -64,9 +128,6 @@ func applySyncAddition(
 			separator = "\n"
 		}
 		candidate := append(append([]byte(nil), data...), []byte(separator+"reviews: ["+string(entry)+"]\n")...)
-		if _, err := parse(candidate); err != nil {
-			return data, false
-		}
 		return candidate, true
 	}
 	if list == nil || list.Kind != yaml.SequenceNode {
@@ -83,9 +144,6 @@ func applySyncAddition(
 	}
 	candidate, ok := appendNarrativeEntry(data, root, list, section, string(entry))
 	if !ok {
-		return data, false
-	}
-	if _, err := parse(candidate); err != nil {
 		return data, false
 	}
 	return candidate, true

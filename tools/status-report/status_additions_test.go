@@ -61,3 +61,22 @@ func TestSyncReviewAdditionCreatesMissingList(t *testing.T) {
 		t.Fatal("duplicate review accepted")
 	}
 }
+
+// TestSyncAdditionGroupRequiresMatchingEstimate verifies atomic novel-priority projection.
+//
+// Example: A task and its complete estimate publish together.
+func TestSyncAdditionGroupRequiresMatchingEstimate(t *testing.T) {
+	task := syncAddition{Target: "task", Record: json.RawMessage(`{"id":"3","title":"New","priority":"urgent","impact":"Useful","effort":{"min_minutes":1,"max_minutes":2,"kind":"work","basis":"guess"},"status":"NEW"}`)}
+	estimate := syncAddition{Target: "priority_estimate", Record: json.RawMessage(`{"priority":"urgent","as_of":"2026-11-02T15:24:00Z","min_minutes":1,"max_minutes":2,"basis":"guess","assumptions":"none","dependencies":"none","critical_path":"task"}`)}
+	data := []byte(valid)
+	got, ok := applySyncAdditionGroup(data, []syncAddition{task, estimate})
+	if !ok || !strings.Contains(string(got), `"urgent"`) {
+		t.Fatalf("valid group rejected: %s", got)
+	}
+	for _, additions := range [][]syncAddition{{task}, {task, {Target: "priority_estimate", Record: json.RawMessage(`{"priority":"urgent"}`)}}, {task, {Target: "priority_estimate", Record: json.RawMessage(`{"priority":"other","as_of":"2026-11-02T15:24:00Z","min_minutes":1,"max_minutes":2,"basis":"guess","assumptions":"none","dependencies":"none","critical_path":"task"}`)}}} {
+		got, ok := applySyncAdditionGroup(data, additions)
+		if ok || string(got) != string(data) {
+			t.Fatalf("invalid group partially published: %s", got)
+		}
+	}
+}
