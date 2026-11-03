@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // rootLifecycleLocator identifies one exact addition or update in the source log.
@@ -22,6 +25,52 @@ type rootLifecycleLocator struct {
 type syncPendingRootAddition struct {
 	Locator  rootLifecycleLocator `json:"locator" yaml:"locator"`
 	Addition syncAddition         `json:"addition" yaml:"addition"`
+}
+
+// UnmarshalYAML restores JSON record values from persisted YAML replay metadata.
+//
+// Example: A pending root completion survives a second status refresh.
+func (p *syncPendingRootAddition) UnmarshalYAML(node *yaml.Node) error {
+	var wire struct {
+		Locator  rootLifecycleLocator `yaml:"locator"`
+		Addition struct {
+			Target         syncTarget `yaml:"target"`
+			Record         yaml.Node  `yaml:"record"`
+			Evidence       string     `yaml:"evidence"`
+			RetireForecast bool       `yaml:"retire_forecast"`
+			ReopenWorkRef  string     `yaml:"reopen_work_ref"`
+			ExpectedPrior  yaml.Node  `yaml:"expected_prior"`
+			RetirePriority string     `yaml:"retire_priority"`
+		} `yaml:"addition"`
+	}
+	if err := node.Decode(&wire); err != nil {
+		return err
+	}
+	record, err := rootPendingJSON(&wire.Addition.Record)
+	if err != nil {
+		return err
+	}
+	prior, err := rootPendingJSON(&wire.Addition.ExpectedPrior)
+	if err != nil {
+		return err
+	}
+	p.Locator = wire.Locator
+	p.Addition = syncAddition{Target: wire.Addition.Target, Record: record, Evidence: wire.Addition.Evidence, RetireForecast: wire.Addition.RetireForecast, ReopenWorkRef: wire.Addition.ReopenWorkRef, ExpectedPrior: prior, RetirePriority: wire.Addition.RetirePriority}
+	return nil
+}
+
+// rootPendingJSON converts one persisted YAML value to its JSON representation.
+//
+// Example: A stored mapping becomes a raw JSON object.
+func rootPendingJSON(node *yaml.Node) (json.RawMessage, error) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	var value any
+	if err := node.Decode(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 // queueRootAddition retains a valid root occurrence without overwriting another.
@@ -180,13 +229,17 @@ func legacyRootAdditionMatches(
 	return sameRootPendingJSON([]byte(old.ExpectedPrior), addition.ExpectedPrior)
 }
 
-// sameRootPendingJSON compares JSON bytes after removing insignificant whitespace.
+// sameRootPendingJSON compares JSON values without relying on object key order.
 //
 // Example: A recorded object matches its whitespace-formatted log form.
 func sameRootPendingJSON(
 	left []byte,
 	right []byte,
 ) bool {
-	var a, b bytes.Buffer
-	return json.Compact(&a, left) == nil && json.Compact(&b, right) == nil && bytes.Equal(a.Bytes(), b.Bytes())
+	var a, b any
+	leftDecoder := json.NewDecoder(bytes.NewReader(left))
+	rightDecoder := json.NewDecoder(bytes.NewReader(right))
+	leftDecoder.UseNumber()
+	rightDecoder.UseNumber()
+	return leftDecoder.Decode(&a) == nil && rightDecoder.Decode(&b) == nil && reflect.DeepEqual(a, b)
 }

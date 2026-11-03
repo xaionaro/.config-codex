@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestRootPendingRetainsOrderedOccurrences verifies distinct locators retain repeated roots.
@@ -49,5 +51,23 @@ func TestRootPendingMigrationPreservesCorrectionChain(t *testing.T) {
 	pending := map[string]syncPendingRootAddition{}
 	if !migratePendingRootAdditions(legacy, pending, []byte(log)) || len(legacy) != 0 || len(pending) != 2 {
 		t.Fatalf("lost correction provenance: %v %v", legacy, pending)
+	}
+}
+
+// TestRootPendingYAMLRoundTrip restores structured JSON fields from persisted state.
+//
+// Example: A pending transition survives report decoding.
+func TestRootPendingYAMLRoundTrip(t *testing.T) {
+	original := syncPendingRootAddition{Locator: rootLifecycleLocator{Line: 1, Ordinal: 0, Target: syncTargetRootCompletion}, Addition: syncAddition{Target: syncTargetRootCompletion, Record: json.RawMessage(`{"work_ref":"w","outcome":"x"}`), ExpectedPrior: json.RawMessage(`{"forecast_ref":"f"}`), Evidence: "accepted"}}
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded syncPendingRootAddition
+	if err := yaml.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !sameRootPendingJSON(original.Addition.Record, decoded.Addition.Record) || !sameRootPendingJSON(original.Addition.ExpectedPrior, decoded.Addition.ExpectedPrior) || decoded.Locator != original.Locator {
+		t.Fatalf("round trip changed entry: %+v", decoded)
 	}
 }
