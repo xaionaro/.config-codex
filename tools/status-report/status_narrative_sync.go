@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 
@@ -164,7 +165,15 @@ func appendNarrativeEntry(
 	if insert < 0 || insert > len(lines) {
 		return data, false
 	}
-	lines = append(lines[:insert], append([]string{indent + "- " + entry}, lines[insert:]...)...)
+	ending := ""
+	if bytes.Contains(data, []byte("\r\n")) {
+		ending = "\r"
+	}
+	if insert == len(lines) && len(data) > 0 && data[len(data)-1] != '\n' {
+		lines[insert-1] += ending
+		ending = ""
+	}
+	lines = append(lines[:insert], append([]string{indent + "- " + entry + ending}, lines[insert:]...)...)
 	return []byte(strings.Join(lines, "\n")), true
 }
 
@@ -344,7 +353,11 @@ func retractBlockNarrative(
 	}
 	replacement := []string{}
 	if len(list.Content) == 1 {
-		replacement = []string{lines[start][:dash] + "[]"}
+		ending := ""
+		if strings.HasSuffix(lines[start], "\r") {
+			ending = "\r"
+		}
+		replacement = []string{lines[start][:dash] + "[]" + ending}
 	}
 	result := append(append(append([]string(nil), lines[:start]...), replacement...), lines[end:]...)
 	return []byte(strings.Join(result, "\n")), true
