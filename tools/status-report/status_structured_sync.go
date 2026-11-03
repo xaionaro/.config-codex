@@ -122,8 +122,8 @@ func structuredSyncValues(
 			result[field] = syncAbsentValue
 			continue
 		}
-		var decoded any
-		if value.Decode(&decoded) != nil {
+		decoded, err := decodeStructuredSyncValue(value, u, field)
+		if err != nil {
 			return nil, false
 		}
 		encoded, err := json.Marshal(decoded)
@@ -144,6 +144,29 @@ func structuredSyncValues(
 		}
 	}
 	return result, true
+}
+
+// decodeStructuredSyncValue preserves lexical task labels for ownership checks.
+//
+// Example: Numeric 1.10 is not conflated with 1.1 in stored ownership.
+func decodeStructuredSyncValue(
+	value *yaml.Node,
+	update syncUpdate,
+	field string,
+) (any, error) {
+	if update.Target == syncTargetTask && (field == "priority" || field == "parent_id") {
+		var text string
+		err := value.Decode(&text)
+		return text, err
+	}
+	if update.Target == syncTargetReport && (field == "top_priorities" || field == "priority_order") {
+		var labels []string
+		err := value.Decode(&labels)
+		return labels, err
+	}
+	var decoded any
+	err := value.Decode(&decoded)
+	return decoded, err
 }
 
 // applyStructuredSyncUpdate applies a validated group without rewriting unrelated bytes.

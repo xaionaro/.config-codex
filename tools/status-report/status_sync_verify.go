@@ -244,7 +244,7 @@ func verifyStatusSyncEffects(
 	candidate []byte,
 	effects []syncEffect,
 ) error {
-	if err := verifyTaskIdentityStyles(original, candidate); err != nil {
+	if err := verifyTaskIdentityStyles(original, candidate, effects); err != nil {
 		return err
 	}
 	if err := verifyTopPriorityStyles(original, candidate, effects); err != nil {
@@ -380,15 +380,9 @@ func applyExpectedSyncEffect(
 		root["blockers_risks"] = append(items, value)
 		return nil
 	case syncEffectSet:
-		value := effect.Value
-		switch raw := value.(type) {
-		case json.RawMessage:
-			if err := yaml.Unmarshal(raw, &value); err != nil {
-				return err
-			}
-		case string:
-		default:
-			return fmt.Errorf("invalid field value")
+		value, err := decodeSyncEffectValue(effect)
+		if err != nil {
+			return err
 		}
 		if effect.Target == syncTargetReport {
 			if effect.ID != "current" {
@@ -520,6 +514,45 @@ func applyExpectedSyncEffect(
 	default:
 		return fmt.Errorf("unknown effect")
 	}
+}
+
+// decodeSyncEffectValue retains lexical task labels in explicitly supplied values.
+//
+// Example: A numeric JSON priority 1.10 remains the task label "1.10".
+func decodeSyncEffectValue(effect syncEffect) (any, error) {
+	switch raw := effect.Value.(type) {
+	case json.RawMessage:
+		if effect.Target == syncTargetTask && (effect.Field == "priority" || effect.Field == "parent_id") {
+			var text string
+			err := yaml.Unmarshal(raw, &text)
+			return text, err
+		}
+		if effect.Target == syncTargetReport && (effect.Field == "top_priorities" || effect.Field == "priority_order") {
+			return decodeSyncStringList(raw)
+		}
+		var value any
+		err := yaml.Unmarshal(raw, &value)
+		return value, err
+	case string:
+		return raw, nil
+	default:
+		return nil, fmt.Errorf("invalid field value")
+	}
+}
+
+// decodeSyncStringList converts supplied labels to generic verifier list values.
+//
+// Example: A lexical priority label remains a string in the expected report.
+func decodeSyncStringList(raw json.RawMessage) ([]any, error) {
+	var labels []string
+	if err := yaml.Unmarshal(raw, &labels); err != nil {
+		return nil, err
+	}
+	values := make([]any, len(labels))
+	for i, label := range labels {
+		values[i] = label
+	}
+	return values, nil
 }
 
 // syncEffectSection maps a target to its report section and identity key.

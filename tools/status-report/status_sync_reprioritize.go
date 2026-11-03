@@ -157,14 +157,20 @@ func existingPriorityEstimate(
 	priority string,
 	record json.RawMessage,
 ) (bool, bool) {
-	var report struct {
-		Estimates []map[string]any `yaml:"priority_estimates"`
-	}
+	report, err := decodeSyncVerificationReport(data)
 	var supplied map[string]any
-	if yaml.Unmarshal(data, &report) != nil || yaml.Unmarshal(record, &supplied) != nil {
+	if err != nil || yaml.Unmarshal(record, &supplied) != nil {
 		return true, false
 	}
-	for _, estimate := range report.Estimates {
+	estimates, ok := report["priority_estimates"].([]any)
+	if !ok {
+		return true, false
+	}
+	for _, item := range estimates {
+		estimate, ok := item.(map[string]any)
+		if !ok {
+			return true, false
+		}
 		if estimate["priority"] == priority {
 			return true, equalPriorityEstimateRecord(estimate, supplied)
 		}

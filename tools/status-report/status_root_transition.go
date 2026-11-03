@@ -63,7 +63,21 @@ func removeRootSyncRecord(
 		return data, false
 	}
 	var normalized any
-	if json.Unmarshal(encoded, &normalized) != nil || !equalSyncPriorRecord(target, normalized, expectedValue) {
+	if json.Unmarshal(encoded, &normalized) != nil {
+		return data, false
+	}
+	if target == syncTargetPriorityEstimate {
+		value, ok := normalized.(map[string]any)
+		if !ok {
+			return data, false
+		}
+		priority, ok := priorityNodeID(mapValue(list.Content[index], identity))
+		if !ok {
+			return data, false
+		}
+		value[identity] = priority
+	}
+	if !equalSyncPriorRecord(target, normalized, expectedValue) {
 		return data, false
 	}
 	item := list.Content[index]

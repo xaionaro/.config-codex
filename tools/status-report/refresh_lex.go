@@ -204,7 +204,9 @@ func (d *flowDocument) indexToken(
 	stack []flowStart,
 ) ([]flowStart, error) {
 	switch tok.Type {
-	case token.StringType, token.SingleQuoteType, token.DoubleQuoteType, token.NullType:
+	case token.StringType, token.SingleQuoteType, token.DoubleQuoteType, token.NullType,
+		token.IntegerType, token.BinaryIntegerType, token.OctetIntegerType, token.HexIntegerType,
+		token.FloatType, token.BoolType, token.InfinityType, token.NanType:
 		return stack, d.indexScalar(tok, lines, starts)
 	case token.MappingStartType, token.MappingEndType, token.SequenceStartType, token.SequenceEndType:
 		return d.indexDelimiter(tok, lines, starts, stack)

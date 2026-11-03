@@ -24,6 +24,7 @@ type syncIdentityStyle struct {
 func verifyTaskIdentityStyles(
 	original []byte,
 	candidate []byte,
+	effects []syncEffect,
 ) error {
 	before, err := taskIdentityNodes(original)
 	if err != nil {
@@ -33,16 +34,30 @@ func verifyTaskIdentityStyles(
 	if err != nil {
 		return err
 	}
+	authorized := syncIdentityStyleEffects(effects)
 	for id, previous := range before {
 		current, exists := after[id]
 		if !exists {
 			continue
 		}
-		if err := verifyIdentityOccurrences(id, previous, current); err != nil {
+		if err := verifyIdentityOccurrences(id, previous, current, authorized); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// syncIdentityStyleEffects identifies explicitly supplied mutable task fields.
+//
+// Example: A task priority update may replace the prior scalar representation.
+func syncIdentityStyleEffects(effects []syncEffect) map[string]bool {
+	allowed := map[string]bool{}
+	for _, effect := range effects {
+		if effect.Operation == syncEffectSet && effect.Target == syncTargetTask && (effect.Field == "priority" || effect.Field == "parent_id") {
+			allowed["tasks\x00"+effect.ID+"\x00"+effect.Field] = true
+		}
+	}
+	return allowed
 }
 
 // verifyIdentityOccurrences compares every retained record with the same key.
@@ -52,12 +67,13 @@ func verifyIdentityOccurrences(
 	id string,
 	before []map[string]syncIdentityStyle,
 	after []map[string]syncIdentityStyle,
+	authorized map[string]bool,
 ) error {
 	for i, old := range before {
 		if i >= len(after) {
 			break
 		}
-		if err := verifyTaskIdentityFields(id, old, after[i]); err != nil {
+		if err := verifyTaskIdentityFields(id, old, after[i], authorized); err != nil {
 			return err
 		}
 	}
@@ -71,10 +87,11 @@ func verifyTaskIdentityFields(
 	id string,
 	before map[string]syncIdentityStyle,
 	after map[string]syncIdentityStyle,
+	authorized map[string]bool,
 ) error {
 	for field, previous := range before {
 		next, exists := after[field]
-		if exists && previous.Value == next.Value && previous != next {
+		if exists && previous.Value == next.Value && previous != next && !authorized[id+"\x00"+field] {
 			return fmt.Errorf("task identity %q field %s representation changed", id, field)
 		}
 	}
@@ -93,7 +110,7 @@ func taskIdentityNodes(data []byte) (map[string][]map[string]syncIdentityStyle, 
 	if len(doc.Content) == 0 {
 		return result, nil
 	}
-	for _, section := range []string{"tasks", "lanes", "reviews"} {
+	for _, section := range []string{"tasks", "lanes", "reviews", "priority_estimates"} {
 		collectSyncIdentityNodes(result, doc.Content[0], section)
 	}
 	return result, nil
@@ -122,6 +139,9 @@ func collectSyncIdentityNodes(
 		if section == "tasks" {
 			field = "id"
 		}
+		if section == "priority_estimates" {
+			field = "priority"
+		}
 		id := mapValue(item, field)
 		idStyle, ok := syncIdentityNodeStyle(id)
 		if !ok {
@@ -130,6 +150,9 @@ func collectSyncIdentityNodes(
 		fields := map[string]syncIdentityStyle{field: idStyle}
 		if parent, ok := syncIdentityNodeStyle(mapValue(item, "parent_id")); section == "tasks" && ok {
 			fields["parent_id"] = parent
+		}
+		if priority, ok := syncIdentityNodeStyle(mapValue(item, "priority")); section == "tasks" && ok {
+			fields["priority"] = priority
 		}
 		key := section + "\x00" + idStyle.Value
 		if section == "lanes" {
@@ -165,31 +188,51 @@ func verifyTopPriorityStyles(
 	candidate []byte,
 	effects []syncEffect,
 ) error {
-	for _, effect := range effects {
-		if effect.Operation == syncEffectSet && effect.Target == syncTargetReport && effect.ID == "current" && effect.Field == "top_priorities" {
-			return nil
-		}
-	}
-	before, err := topPriorityIdentityStyles(original)
-	if err != nil {
-		return err
-	}
-	after, err := topPriorityIdentityStyles(candidate)
-	if err != nil {
-		return err
-	}
-	for id, previous := range before {
-		if err := verifyIdentityOccurrences("top_priorities\x00"+id, previous, after[id]); err != nil {
+	for _, field := range []string{"top_priorities", "priority_order"} {
+		if err := verifyStringListStyles(original, candidate, effects, field); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// topPriorityIdentityStyles records each priority scalar's lexical representation.
+// verifyStringListStyles protects untouched lexical labels in one report list.
+//
+// Example: A numeric priority order label cannot be silently rewritten as text.
+func verifyStringListStyles(
+	original []byte,
+	candidate []byte,
+	effects []syncEffect,
+	field string,
+) error {
+	for _, effect := range effects {
+		if effect.Operation == syncEffectSet && effect.Target == syncTargetReport && effect.ID == "current" && effect.Field == field {
+			return nil
+		}
+	}
+	before, err := stringListIdentityStyles(original, field)
+	if err != nil {
+		return err
+	}
+	after, err := stringListIdentityStyles(candidate, field)
+	if err != nil {
+		return err
+	}
+	for id, previous := range before {
+		if err := verifyIdentityOccurrences(field+"\x00"+id, previous, after[id], nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stringListIdentityStyles records each supplied label's lexical representation.
 //
 // Example: An alias and an integer with the same ID remain distinguishable.
-func topPriorityIdentityStyles(data []byte) (map[string][]map[string]syncIdentityStyle, error) {
+func stringListIdentityStyles(
+	data []byte,
+	field string,
+) (map[string][]map[string]syncIdentityStyle, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -198,7 +241,7 @@ func topPriorityIdentityStyles(data []byte) (map[string][]map[string]syncIdentit
 	if len(doc.Content) == 0 {
 		return result, nil
 	}
-	list := mapValue(doc.Content[0], "top_priorities")
+	list := mapValue(doc.Content[0], field)
 	if list != nil && list.Kind == yaml.AliasNode {
 		list = list.Alias
 	}
@@ -232,6 +275,7 @@ type syncVerificationIDs struct {
 	Tasks []struct {
 		ID       string `yaml:"id"`
 		ParentID string `yaml:"parent_id"`
+		Priority string `yaml:"priority"`
 	} `yaml:"tasks"`
 	Lanes []struct {
 		TaskID string `yaml:"task_id"`
@@ -239,7 +283,11 @@ type syncVerificationIDs struct {
 	Reviews []struct {
 		TaskID string `yaml:"task_id"`
 	} `yaml:"reviews"`
+	PriorityEstimates []struct {
+		Priority string `yaml:"priority"`
+	} `yaml:"priority_estimates"`
 	TopPriorities []string `yaml:"top_priorities"`
+	PriorityOrder []string `yaml:"priority_order"`
 }
 
 // decodeSyncVerificationReport keeps task IDs as the report schema interprets them.
@@ -256,14 +304,19 @@ func decodeSyncVerificationReport(data []byte) (map[string]any, error) {
 	}
 	taskIDs := make([]string, len(ids.Tasks))
 	parentIDs := make([]string, len(ids.Tasks))
+	taskPriorities := make([]string, len(ids.Tasks))
 	for i, item := range ids.Tasks {
 		taskIDs[i] = item.ID
 		parentIDs[i] = item.ParentID
+		taskPriorities[i] = item.Priority
 	}
 	if err := normalizeSyncVerificationIDs(report, "tasks", "id", taskIDs); err != nil {
 		return nil, err
 	}
 	if err := normalizeSyncVerificationIDs(report, "tasks", "parent_id", parentIDs); err != nil {
+		return nil, err
+	}
+	if err := normalizeSyncVerificationIDs(report, "tasks", "priority", taskPriorities); err != nil {
 		return nil, err
 	}
 	laneIDs := make([]string, len(ids.Lanes))
@@ -280,25 +333,36 @@ func decodeSyncVerificationReport(data []byte) (map[string]any, error) {
 	if err := normalizeSyncVerificationIDs(report, "reviews", "task_id", reviewIDs); err != nil {
 		return nil, err
 	}
-	if err := normalizeSyncTopPriorities(report, ids.TopPriorities); err != nil {
+	priorities := make([]string, len(ids.PriorityEstimates))
+	for i, item := range ids.PriorityEstimates {
+		priorities[i] = item.Priority
+	}
+	if err := normalizeSyncVerificationIDs(report, "priority_estimates", "priority", priorities); err != nil {
+		return nil, err
+	}
+	if err := normalizeSyncStringList(report, "top_priorities", ids.TopPriorities); err != nil {
+		return nil, err
+	}
+	if err := normalizeSyncStringList(report, "priority_order", ids.PriorityOrder); err != nil {
 		return nil, err
 	}
 	return report, nil
 }
 
-// normalizeSyncTopPriorities keeps each priority's lexical task identifier.
+// normalizeSyncStringList keeps each supplied label's lexical identifier.
 //
 // Example: A numeric-looking 1.10 remains distinct from 1.1.
-func normalizeSyncTopPriorities(
+func normalizeSyncStringList(
 	report map[string]any,
+	field string,
 	ids []string,
 ) error {
-	items, ok := report["top_priorities"].([]any)
+	items, ok := report[field].([]any)
 	if !ok {
 		return nil
 	}
 	if len(items) != len(ids) {
-		return fmt.Errorf("top priority identity count mismatch")
+		return fmt.Errorf("%s identity count mismatch", field)
 	}
 	for i := range items {
 		if items[i] != nil {
