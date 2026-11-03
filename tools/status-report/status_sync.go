@@ -186,6 +186,12 @@ func projectLogStatus(
 		return nil, nil, fmt.Errorf("status sync cursor exceeds log")
 	}
 	result := original
+	if len(boundaries) > cursor {
+		result, err = prepareNullSyncState(result)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	var effects []syncEffect
 	start := cursor
 	for i := cursor; i < len(boundaries); i++ {
@@ -228,6 +234,24 @@ func projectLogStatus(
 		return nil, nil, err
 	}
 	return result, logBytes, nil
+}
+
+// prepareNullSyncState normalizes null syntax for token-based event projection.
+//
+// Example: An implicit flow null remains null while the first event is applied.
+func prepareNullSyncState(data []byte) ([]byte, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+	node := mapValue(root.Content[0], "status_sync")
+	if node == nil || node.Kind != yaml.ScalarNode || node.Tag != "!!null" {
+		return data, nil
+	}
+	if node.Value != "" && node.Style&yaml.TaggedStyle == 0 && node.Anchor == "" {
+		return data, nil
+	}
+	return replaceNullSyncState(data, node, "null")
 }
 
 // syncLineHasUpdate identifies a log entry requiring an ordered projection step.
@@ -1292,12 +1316,15 @@ func putSyncState(
 	if node == nil {
 		return appendReportField(data, "status_sync", state)
 	}
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		return replaceNullSyncState(data, node, state)
+	}
 	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 {
-		start, err := yamlByteOffset(data, node.Line, node.Column)
+		start, err := syncMappingStart(data, node)
 		if err != nil {
 			return nil, err
 		}
-		end, err := flowMappingEndCached(&flowDocument{data: data}, node)
+		end, err := flowEnd(data, start, token.MappingStartType)
 		if err != nil {
 			return nil, err
 		}
@@ -1312,4 +1339,92 @@ func putSyncState(
 		return nil, err
 	}
 	return append(append(append([]byte(nil), data[:edit.Start]...), []byte(edit.Value)...), data[edit.End:]...), nil
+}
+
+// syncMappingStart locates the opening delimiter after any preserved anchor.
+//
+// Example: An anchored flow mapping keeps its anchor when metadata advances.
+func syncMappingStart(
+	data []byte,
+	node *yaml.Node,
+) (int, error) {
+	start, err := yamlByteOffset(data, node.Line, node.Column)
+	if err != nil || node.Anchor == "" {
+		return start, err
+	}
+	prefix := "&" + node.Anchor
+	if !strings.HasPrefix(string(data[start:]), prefix) {
+		return 0, fmt.Errorf("unsupported anchored sync metadata")
+	}
+	start += len(prefix)
+	for start < len(data) && (data[start] == ' ' || data[start] == '\t') {
+		start++
+	}
+	return start, nil
+}
+
+// replaceNullSyncState initializes explicitly or implicitly null replay metadata.
+//
+// Example: Replace a null value without consuming its adjacent owner comment.
+func replaceNullSyncState(
+	data []byte,
+	node *yaml.Node,
+	state string,
+) ([]byte, error) {
+	start, err := yamlByteOffset(data, node.Line, node.Column)
+	if err != nil {
+		return nil, err
+	}
+	end := start
+	if node.Style&yaml.TaggedStyle != 0 || node.Anchor != "" {
+		return replaceDecoratedNullSyncState(data, node, state, start)
+	}
+	if node.Value != "" {
+		start, end, err = (&flowDocument{data: data}).scalarSpan(node)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if node.Value == "" && start > 0 && data[start-1] == ':' {
+		state = " " + state
+	}
+	return append(append(append([]byte(nil), data[:start]...), []byte(state)...), data[end:]...), nil
+}
+
+// replaceDecoratedNullSyncState retains an anchor while replacing null's type tag.
+//
+// Example: A tagged null becomes a mapping without consuming the following comment.
+func replaceDecoratedNullSyncState(
+	data []byte,
+	node *yaml.Node,
+	state string,
+	start int,
+) ([]byte, error) {
+	end := start
+	propertyEnd := start
+	for _, property := range strings.Fields(string(data[start:])) {
+		if property != "!!null" && property != "!<tag:yaml.org,2002:null>" && property != "&"+node.Anchor {
+			break
+		}
+		if !strings.HasPrefix(string(data[end:]), property) {
+			return nil, fmt.Errorf("unsupported null metadata properties")
+		}
+		end += len(property)
+		propertyEnd = end
+		for end < len(data) && (data[end] == ' ' || data[end] == '\t') {
+			end++
+		}
+	}
+	if node.Value != "" {
+		if !strings.HasPrefix(string(data[end:]), node.Value) {
+			return nil, fmt.Errorf("unsupported null metadata layout")
+		}
+		end += len(node.Value)
+	} else {
+		end = propertyEnd
+	}
+	if node.Anchor != "" {
+		state = "&" + node.Anchor + " " + state
+	}
+	return append(append(append([]byte(nil), data[:start]...), []byte(state)...), data[end:]...), nil
 }
