@@ -10,11 +10,12 @@ import (
 //
 // Example: An integer scalar differs from a quoted string with the same text.
 type syncIdentityStyle struct {
-	Kind  yaml.Kind
-	Tag   string
-	Value string
-	Style yaml.Style
-	Alias string
+	Kind   yaml.Kind
+	Tag    string
+	Value  string
+	Style  yaml.Style
+	Alias  string
+	Anchor string
 }
 
 // verifyTaskIdentityStyles protects the original representation of existing IDs.
@@ -149,7 +150,7 @@ func syncIdentityNodeStyle(node *yaml.Node) (syncIdentityStyle, bool) {
 	if node.Decode(&value) != nil {
 		return syncIdentityStyle{}, false
 	}
-	style := syncIdentityStyle{Kind: node.Kind, Tag: node.Tag, Value: value, Style: node.Style}
+	style := syncIdentityStyle{Kind: node.Kind, Tag: node.Tag, Value: value, Style: node.Style, Anchor: node.Anchor}
 	if node.Kind == yaml.AliasNode {
 		style.Alias = node.Value
 	}

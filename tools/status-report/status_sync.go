@@ -850,10 +850,11 @@ func removeCancelledPriority(
 	}
 	found := false
 	for _, item := range list.Content {
-		if item.Kind != yaml.ScalarNode {
+		value, ok := priorityNodeID(item)
+		if !ok {
 			return data, false
 		}
-		if item.Value == string(id) {
+		if value == string(id) {
 			found = true
 		}
 	}
@@ -862,7 +863,11 @@ func removeCancelledPriority(
 	}
 	remaining := make([]string, 0, len(list.Content))
 	for _, item := range list.Content {
-		if item.Value == string(id) {
+		value, ok := priorityNodeID(item)
+		if !ok {
+			return data, false
+		}
+		if value == string(id) {
 			continue
 		}
 		raw, ok := priorityScalarSource(data, item)
@@ -878,7 +883,7 @@ func removeCancelledPriority(
 			return data, false
 		}
 		end, err := flowEnd(data, start, token.SequenceStartType)
-		if err != nil || bytes.Contains(data[start:end+1], []byte("#")) {
+		if err != nil || yamlRangeHasComment(data, start, end+1) {
 			return data, false
 		}
 		return append(append(append([]byte(nil), data[:start]...), encoded...), data[end+1:]...), true
@@ -900,7 +905,7 @@ func removeCancelledPriority(
 	if end < start || end > len(data) {
 		return data, false
 	}
-	if bytes.Contains(data[start:end], []byte("#")) {
+	if yamlRangeHasComment(data, start, end) {
 		return data, false
 	}
 	indent := len(lines[startLine]) - len(strings.TrimLeft(lines[startLine], " "))
@@ -917,6 +922,20 @@ func removeCancelledPriority(
 	return append(append(append([]byte(nil), data[:start]...), []byte(value)...), data[end:]...), true
 }
 
+// priorityNodeID reads the task identity from a scalar or its YAML alias.
+//
+// Example: A priority alias resolves to the original task identifier.
+func priorityNodeID(node *yaml.Node) (string, bool) {
+	if node == nil || (node.Kind != yaml.ScalarNode && node.Kind != yaml.AliasNode) {
+		return "", false
+	}
+	var value string
+	if node.Decode(&value) != nil {
+		return "", false
+	}
+	return value, true
+}
+
 // priorityScalarSource retains the original scalar spelling for a surviving task ID.
 //
 // Example: An unquoted numeric 1.10 is not rewritten as a quoted string.
@@ -924,25 +943,64 @@ func priorityScalarSource(
 	data []byte,
 	node *yaml.Node,
 ) (string, bool) {
-	if node.Anchor != "" || node.Style&(yaml.TaggedStyle|yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+	if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return "", false
 	}
 	start, err := yamlByteOffset(data, node.Line, node.Column)
 	if err != nil || start >= len(data) {
 		return "", false
 	}
-	end := start + len(node.Value)
-	if data[start] == '\'' || data[start] == '"' {
-		end, err = quotedNullYAMLValueEnd(data, start)
+	if node.Kind == yaml.AliasNode {
+		alias := "*" + node.Value
+		if !strings.HasPrefix(string(data[start:]), alias) {
+			return "", false
+		}
+		return alias, true
+	}
+	valueStart, ok := priorityScalarValueStart(data, node, start)
+	if !ok || valueStart >= len(data) {
+		return "", false
+	}
+	end := valueStart + len(node.Value)
+	if data[valueStart] == '\'' || data[valueStart] == '"' {
+		end, err = quotedNullYAMLValueEnd(data, valueStart)
 		if err != nil {
 			return "", false
 		}
 		return string(data[start:end]), true
 	}
-	if end > len(data) || string(data[start:end]) != node.Value {
+	if end > len(data) || string(data[valueStart:end]) != node.Value {
 		return "", false
 	}
 	return string(data[start:end]), true
+}
+
+// priorityScalarValueStart skips a scalar's retained anchor and explicit tag.
+//
+// Example: Both !!str and &owner remain in the copied source spelling.
+func priorityScalarValueStart(
+	data []byte,
+	node *yaml.Node,
+	start int,
+) (int, bool) {
+	position := start
+	for i := 0; i < 2; i++ {
+		position = skipNullPropertyTrivia(data, position)
+		if node.Anchor != "" && strings.HasPrefix(string(data[position:]), "&"+node.Anchor) {
+			position += len(node.Anchor) + 1
+			continue
+		}
+		if position < len(data) && data[position] == '!' {
+			end, err := yamlTagEnd(data, position)
+			if err != nil {
+				return 0, false
+			}
+			position = end
+			continue
+		}
+		break
+	}
+	return skipNullPropertyTrivia(data, position), true
 }
 
 // syncTargetKey keeps target identity distinct even when an ID contains slashes.

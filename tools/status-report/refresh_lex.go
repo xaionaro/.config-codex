@@ -18,6 +18,11 @@ func flowScanBytes(data []byte) ([]byte, error) {
 	if bytes.ContainsRune(scan, '\r') {
 		return nil, fmt.Errorf("unsupported bare CR layout")
 	}
+	if bytes.ContainsRune(scan, '!') {
+		if err := maskYAMLTagPositions(scan); err != nil {
+			return nil, err
+		}
+	}
 	return scan, nil
 }
 

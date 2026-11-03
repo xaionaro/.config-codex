@@ -206,3 +206,85 @@ func TestNumericDottedPriorityCancellationPreservesSibling(t *testing.T) {
 	require.Equal(t, taskLifecycleCancelled, parsed.Tasks[1].Lifecycle)
 	require.Equal(t, statusInProgress, parsed.Tasks[2].Status)
 }
+
+// TestCancellationRetainsDecoratedPrioritySurvivors checks valid owner syntax.
+//
+// Example: A surviving tagged or anchored priority retains its original spelling.
+func TestCancellationRetainsDecoratedPrioritySurvivors(t *testing.T) {
+	for _, tc := range []struct {
+		name, priority string
+		alias          bool
+	}{
+		{"anchor", "&owner '1'", false},
+		{"tag", "!!str '1'", false},
+		{"tag and anchor", "!!str &owner '1'", false},
+		{"alias", "*owner", true},
+	} {
+		t.Run(tc.name,
+			// Replay a cancellation while retaining a decorated survivor.
+			//
+			// Example: A task ID alias still resolves to its original anchor.
+			func(t *testing.T) {
+				report := linkedReport
+				if tc.alias {
+					report = strings.Replace(report, "id: '1', title: First", "id: &owner '1', title: First", 1)
+				}
+				report = strings.Replace(report, "top_priorities: ['1', '2']", "top_priorities: ["+tc.priority+", '2'] # owner note", 1)
+				_, err := parse([]byte(report))
+				require.NoError(t, err)
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				require.NoError(t, os.WriteFile(path, []byte(report), 0600))
+				event := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"task","id":"2","fields":{"status":"unknown","lifecycle":"cancelled","evidence":"withdrawn"}}]}}}` + "\n"
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+				var out, errOut bytes.Buffer
+				require.Equal(t, 0, run([]string{"refresh", dir, "lifecycle_change"}, strings.NewReader(""), &out, &errOut), errOut.String())
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				parsed, err := parse(result)
+				require.NoError(t, err)
+				require.Equal(t, taskLifecycleCancelled, parsed.Tasks[1].Lifecycle)
+				require.Equal(t, []taskID{"1"}, parsed.TopPriorities)
+				require.Contains(t, string(result), "top_priorities: ["+tc.priority+"] # owner note")
+			})
+	}
+}
+
+// TestCancellationDoesNotDeleteReferencedPriorityAnchor checks alias safety.
+//
+// Example: A live review alias prevents removing its referenced priority anchor.
+func TestCancellationDoesNotDeleteReferencedPriorityAnchor(t *testing.T) {
+	report := strings.Replace(linkedReport, "top_priorities: ['1', '2']", "top_priorities: [&owner '1', '2'] # owner note", 1)
+	report += "reviews: [{task_id: *owner, reporter: A, critic: B, rounds: 1, estimate: checked, impact: checked, priority: checked, unresolved: none}]\n"
+	_, err := parse([]byte(report))
+	require.NoError(t, err)
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	path := filepath.Join(dir, "latest-status-report.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
+	event := `{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"status":"unknown","lifecycle":"cancelled","evidence":"withdrawn"}}]}}}` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+	var out, errOut bytes.Buffer
+	code := run([]string{"refresh", dir, "lifecycle_change"}, strings.NewReader(""), &out, &errOut)
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	parsed, err := parse(result)
+	require.NoError(t, err)
+	require.Equal(t, statusInProgress, parsed.Tasks[0].Status)
+	require.Equal(t, []taskID{"1", "2"}, parsed.TopPriorities)
+	require.Contains(t, string(result), "top_priorities: [&owner '1', '2'] # owner note")
+	require.Equal(t, taskID("1"), parsed.Reviews[0].TaskID)
+	if code == 0 {
+		require.NotNil(t, parsed.StatusSync)
+		require.NotEmpty(t, parsed.StatusSync.Groups)
+	}
+}
+
+// TestVerificationProtectsPriorityAnchorIdentity checks owner-authored anchors.
+//
+// Example: An unrelated task edit cannot rename a surviving priority anchor.
+func TestVerificationProtectsPriorityAnchorIdentity(t *testing.T) {
+	before := []byte("tasks: [{id: 1, owner: old}]\ntop_priorities: [&owner '1']\n")
+	after := []byte("tasks: [{id: 1, owner: new}]\ntop_priorities: [&other '1']\n")
+	effects := []syncEffect{{Target: syncTargetTask, ID: "1", Field: "owner", Value: "new", Operation: syncEffectSet}}
+	require.Error(t, verifyStatusSyncEffects(before, after, effects))
+}
