@@ -7,6 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCancelledTaskLifecycle checks cancellation rendering and validation.
+//
+// Example: A cancelled task is excluded from remaining work.
 func TestCancelledTaskLifecycle(t *testing.T) {
 	cancelled := strings.Replace(valid, "status: unknown\ntop_priorities:", "status: unknown\n    lifecycle: cancelled\n    evidence: user withdrew\ntop_priorities:", 1)
 	cancelled = strings.Replace(cancelled, `top_priorities: ["1.1"]`, `top_priorities: ["1.2"]`, 1)
@@ -27,6 +30,9 @@ func TestCancelledTaskLifecycle(t *testing.T) {
 	}
 }
 
+// TestCancelledParentKeepsChildAndReportsContradiction checks child preservation.
+//
+// Example: An active child of a cancelled parent remains visible.
 func TestCancelledParentKeepsChildAndReportsContradiction(t *testing.T) {
 	doc := strings.Replace(valid, "status: IN PROGRESS\n  - id:", "status: unknown\n    lifecycle: cancelled\n    evidence: user withdrew\n  - id:", 1)
 	r, err := parse([]byte(doc))

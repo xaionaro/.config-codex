@@ -21,7 +21,10 @@ type syncTimelineSnapshot struct {
 // applySyncTimeline replaces an entire validated timeline snapshot.
 //
 // Example: Publish a complete source-supplied snapshot atomically.
-func applySyncTimeline(data []byte, snapshot syncTimelineSnapshot) ([]byte, bool) {
+func applySyncTimeline(
+	data []byte,
+	snapshot syncTimelineSnapshot,
+) ([]byte, bool) {
 	_, err := parseUTC(snapshot.AsOf)
 	if err != nil {
 		return data, false
@@ -114,7 +117,12 @@ func applySyncTimeline(data []byte, snapshot syncTimelineSnapshot) ([]byte, bool
 		// Sort later offsets first so edits cannot shift later positions.
 		//
 		// Example: Replace a trailing timeline field before an earlier field.
-		func(i, j int) bool { return edits[i].Start > edits[j].Start })
+		func(
+			i int,
+			j int,
+		) bool {
+			return edits[i].Start > edits[j].Start
+		})
 	out := append([]byte(nil), data...)
 	for _, edit := range edits {
 		out = append(append(append([]byte(nil), out[:edit.Start]...), edit.Value...), out[edit.End:]...)

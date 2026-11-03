@@ -8,7 +8,16 @@ import (
 	"testing"
 )
 
-func explorationProjection(t *testing.T, report, log string, ledger ledgerSource, forecasts forecastSource) report {
+// explorationProjection applies one log event to a report for testing.
+//
+// Example: Project a lane closure against its canonical sources.
+func explorationProjection(
+	t *testing.T,
+	report string,
+	log string,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) report {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log+"\n"), 0600); err != nil {

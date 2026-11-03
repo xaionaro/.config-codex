@@ -311,6 +311,23 @@ func laneRemovalHasComment(
 	return false
 }
 
+// findSyncLane locates the lane selected by an update.
+//
+// Example: Match task, work reference, and required environment.
+func findSyncLane(
+	doc *yaml.Node,
+	update syncUpdate,
+) *yaml.Node {
+	list := mapValue(doc.Content[0], "lanes")
+	for _, item := range list.Content {
+		id, ref, env := mapValue(item, "task_id"), mapValue(item, "work_ref"), mapValue(item, "required_environment")
+		if id != nil && ref != nil && env != nil && id.Value == update.ID && ref.Value == update.WorkRef && env.Value == update.RequiredEnvironment.String() {
+			return item
+		}
+	}
+	return nil
+}
+
 // applyLaneSyncUpdate records the authorized changes accompanying a lane transition.
 //
 // Example: Record the forecast removal and status update for verification.
@@ -329,21 +346,7 @@ func applyLaneSyncUpdate(
 	if yaml.Unmarshal(data, &before) != nil || yaml.Unmarshal(candidate, &after) != nil {
 		return data, nil, false
 	}
-	find :=
-		// Locate the uniquely selected lane in a report document.
-		//
-		// Example: Match task, work reference, and required environment.
-		func(doc *yaml.Node) *yaml.Node {
-			list := mapValue(doc.Content[0], "lanes")
-			for _, item := range list.Content {
-				id, ref, env := mapValue(item, "task_id"), mapValue(item, "work_ref"), mapValue(item, "required_environment")
-				if id != nil && ref != nil && env != nil && id.Value == update.ID && ref.Value == update.WorkRef && env.Value == update.RequiredEnvironment.String() {
-					return item
-				}
-			}
-			return nil
-		}
-	oldLane, newLane := find(&before), find(&after)
+	oldLane, newLane := findSyncLane(&before, update), findSyncLane(&after, update)
 	if oldLane == nil || newLane == nil {
 		return data, nil, false
 	}

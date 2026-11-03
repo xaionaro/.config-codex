@@ -501,6 +501,22 @@ func syncEffectIndex(
 	return found, nil
 }
 
+// syncForecastMatches checks the referenced source status and kind.
+//
+// Example: Require an inactive root forecast.
+func syncForecastMatches(
+	forecasts forecastSource,
+	ref string,
+	status string,
+	kind string,
+) bool {
+	if !validRef(ref, "forecasts.yaml") {
+		return false
+	}
+	source := forecasts.Records[sourceID(ref, "forecasts.yaml")]
+	return textField(source, "status") == status && textField(source, "kind") == kind
+}
+
 // verifyCanonicalSyncAddition validates source-owned records independently of insertion.
 //
 // Example: Reject a root completion without canonical evidence.
@@ -526,18 +542,8 @@ func verifyCanonicalSyncAddition(
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return err
 	}
-	forecastMatches := // forecastMatches checks the referenced source status and kind.
-		//
-		// Example: Require an inactive root forecast.
-		func(ref, status, kind string) bool {
-			if !validRef(ref, "forecasts.yaml") {
-				return false
-			}
-			source := forecasts.Records[sourceID(ref, "forecasts.yaml")]
-			return textField(source, "status") == status && textField(source, "kind") == kind
-		}
 	if effect.Target == syncTargetRootForecast {
-		if !forecastMatches(record.ForecastRef, "active", "root") {
+		if !syncForecastMatches(forecasts, record.ForecastRef, "active", "root") {
 			return fmt.Errorf("invalid canonical root forecast")
 		}
 		found := false
@@ -563,7 +569,7 @@ func verifyCanonicalSyncAddition(
 	}
 	ref := string(work.Data.ForecastRef)
 	if effect.Target == syncTargetRootCompletion {
-		if strings.TrimSpace(effect.Evidence) == "" || !hasRole(work.Data.Roles, reportingRoleRoot) || work.Data.State != workStateCompleted || !sameValue(work.Data.CompletedAt, record.CompletedAt) || (ref != "" && !forecastMatches(ref, "inactive", "root")) {
+		if strings.TrimSpace(effect.Evidence) == "" || !hasRole(work.Data.Roles, reportingRoleRoot) || work.Data.State != workStateCompleted || !sameValue(work.Data.CompletedAt, record.CompletedAt) || (ref != "" && !syncForecastMatches(forecasts, ref, "inactive", "root")) {
 			return fmt.Errorf("invalid canonical root completion")
 		}
 		return nil
@@ -572,12 +578,12 @@ func verifyCanonicalSyncAddition(
 		return fmt.Errorf("canonical work is not a lane")
 	}
 	if openWork(work.Data.State) {
-		if record.Forecast == nil || record.Forecast.ForecastRef != ref || !forecastMatches(ref, "active", "lane") {
+		if record.Forecast == nil || record.Forecast.ForecastRef != ref || !syncForecastMatches(forecasts, ref, "active", "lane") {
 			return fmt.Errorf("invalid active lane forecast")
 		}
 		return nil
 	}
-	if record.Forecast != nil || strings.TrimSpace(effect.Evidence) == "" || (ref != "" && !forecastMatches(ref, "inactive", "lane")) {
+	if record.Forecast != nil || strings.TrimSpace(effect.Evidence) == "" || (ref != "" && !syncForecastMatches(forecasts, ref, "inactive", "lane")) {
 		return fmt.Errorf("invalid terminal lane forecast or evidence")
 	}
 	if work.Data.State == workStateCompleted && sameValue(work.Data.CompletedAt, record.CompletedAt) {

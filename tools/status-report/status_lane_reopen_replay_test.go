@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// TestLaneCloseReopenCloseReplay checks repeated lane transitions.
+//
+// Example: A reopened lane can close again.
 func TestLaneCloseReopenCloseReplay(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "high_level_log.jsonl")
@@ -36,6 +39,9 @@ func TestLaneCloseReopenCloseReplay(t *testing.T) {
 	}
 }
 
+// TestLaneCompletionClearsExplicitFollowup checks explicit followup removal.
+//
+// Example: Closing a lane clears a supplied followup marker.
 func TestLaneCompletionClearsExplicitFollowup(t *testing.T) {
 	original := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    root_task_status: FOLLOWUP\n    implementation_status: IN PROGRESS", 1)
 	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:25:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
@@ -47,6 +53,9 @@ func TestLaneCompletionClearsExplicitFollowup(t *testing.T) {
 	}
 }
 
+// TestLaneFollowupProjectsOnlyExplicitValue checks explicit followup projection.
+//
+// Example: Closing alone preserves an existing followup marker.
 func TestLaneFollowupProjectsOnlyExplicitValue(t *testing.T) {
 	event := `{"event":"worker_progress","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","fields":{"root_task_status":"FOLLOWUP_PAUSED"}}]}}}`
 	r := explorationProjection(t, linkedReport, event, ledgerSource{}, forecastSource{})
