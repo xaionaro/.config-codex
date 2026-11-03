@@ -232,15 +232,16 @@ func verifyRootChainNoSkippedEvents(
 		var event struct {
 			Details struct {
 				StatusUpdate struct {
-					Additions []json.RawMessage `json:"additions"`
-					Updates   []json.RawMessage `json:"updates"`
+					Additions json.RawMessage `json:"additions"`
+					Updates   json.RawMessage `json:"updates"`
 				} `json:"status_update"`
 			} `json:"details"`
 		}
 		if err := json.Unmarshal(lines[line-1], &event); err != nil {
 			return fmt.Errorf("invalid intervening root log event")
 		}
-		for ordinal, raw := range event.Details.StatusUpdate.Additions {
+		additions, additionsArray := rootRawCollection(event.Details.StatusUpdate.Additions)
+		for ordinal, raw := range additions {
 			var item map[string]json.RawMessage
 			if json.Unmarshal(raw, &item) != nil {
 				continue
@@ -257,12 +258,13 @@ func verifyRootChainNoSkippedEvents(
 					return fmt.Errorf("ambiguous intervening root addition")
 				}
 				locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: target}
-				if !selected[locator] {
+				if !additionsArray || !selected[locator] {
 					return fmt.Errorf("root chain skips an intervening addition")
 				}
 			}
 		}
-		for ordinal, raw := range event.Details.StatusUpdate.Updates {
+		updates, updatesArray := rootRawCollection(event.Details.StatusUpdate.Updates)
+		for ordinal, raw := range updates {
 			var item map[string]json.RawMessage
 			if json.Unmarshal(raw, &item) != nil {
 				continue
@@ -284,12 +286,27 @@ func verifyRootChainNoSkippedEvents(
 				return fmt.Errorf("ambiguous intervening root update")
 			}
 			locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: target, Update: true}
-			if !selected[locator] {
+			if !updatesArray || !selected[locator] {
 				return fmt.Errorf("root chain skips an intervening update")
 			}
 		}
 	}
 	return nil
+}
+
+// rootRawCollection isolates malformed sibling collections while retaining object identity.
+//
+// Example: A malformed object still exposes its work reference for conflict checks.
+func rootRawCollection(raw json.RawMessage) ([]json.RawMessage, bool) {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) == nil {
+		return items, true
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil && object != nil {
+		return []json.RawMessage{raw}, false
+	}
+	return nil, false
 }
 
 // rootRecordIdentifies checks only usable identity fields in a supplied record.

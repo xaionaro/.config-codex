@@ -103,3 +103,22 @@ func TestRootChainFindsIdentityInMalformedItem(t *testing.T) {
 		t.Fatal("accepted skipped malformed same-root item")
 	}
 }
+
+// TestRootChainIsolatesMalformedCollections checks independent collection decoding.
+//
+// Example: An invalid sibling collection cannot hide an identifiable root update.
+func TestRootChainIsolatesMalformedCollections(t *testing.T) {
+	locators := []rootLifecycleLocator{{Line: 1, Ordinal: 0, Target: syncTargetRootCompletion}}
+	lines := [][]byte{[]byte(`{"details":{"status_update":{"updates":7,"additions":[{"target":"root_completion","record":{"work_ref":"w"}}]}}}`)}
+	if err := verifyRootChainNoSkippedEvents(lines, locators, "w", "f"); err != nil {
+		t.Fatal(err)
+	}
+	lines[0] = []byte(`{"details":{"status_update":{"updates":[{"target":"root_forecast","work_ref":"w","evidence":7}],"additions":[{"target":"root_completion","record":{"work_ref":"w"}}]}}}`)
+	if err := verifyRootChainNoSkippedEvents(lines, locators, "w", "f"); err == nil {
+		t.Fatal("accepted identifiable malformed update")
+	}
+	lines[0] = []byte(`{"details":{"status_update":{"updates":{"target":"root_forecast","work_ref":"w"},"additions":[{"target":"root_completion","record":{"work_ref":"w"}}]}}}`)
+	if err := verifyRootChainNoSkippedEvents(lines, locators, "w", "f"); err == nil {
+		t.Fatal("accepted identifiable malformed update collection")
+	}
+}
