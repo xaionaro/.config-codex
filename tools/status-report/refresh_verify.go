@@ -63,6 +63,10 @@ func yamlComments(data []byte) ([]string, error) {
 		normalized += "\n"
 	}
 	tokens := lexer.Tokenize(normalized)
+	if bad := tokens.InvalidToken(); bad != nil && bad.Error == "could not find multi-line content" {
+		normalized = normalizeEmptyKeptScalars(normalized, tokens)
+		tokens = lexer.Tokenize(normalized)
+	}
 	if bad := tokens.InvalidToken(); bad != nil {
 		return nil, fmt.Errorf("unsupported YAML token: %s", bad.Error)
 	}
@@ -73,6 +77,80 @@ func yamlComments(data []byte) ([]string, error) {
 		}
 	}
 	return comments, nil
+}
+
+// normalizeEmptyKeptScalars works around a lexer error using a scanner-only copy.
+//
+// Example: An empty kept literal followed by another item can be scanned for comments.
+func normalizeEmptyKeptScalars(
+	input string,
+	tokens token.Tokens,
+) string {
+	var root yaml.Node
+	if yaml.Unmarshal([]byte(input), &root) != nil {
+		return input
+	}
+	data := []byte(input)
+	maskEmptyKeptScalars(data, &root, tokens)
+	return string(data)
+}
+
+// maskEmptyKeptScalars changes only proven empty block headers in a scanner copy.
+//
+// Example: Change the keep marker on an empty literal before scanning comments.
+func maskEmptyKeptScalars(
+	data []byte,
+	node *yaml.Node,
+	tokens token.Tokens,
+) {
+	if node.Kind == yaml.ScalarNode && node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 && strings.Trim(node.Value, "\n") == "" {
+		maskEmptyKeptHeader(data, node, tokens)
+	}
+	for _, child := range node.Content {
+		maskEmptyKeptScalars(data, child, tokens)
+	}
+}
+
+// maskEmptyKeptHeader locates the scalar token and replaces its keep marker.
+//
+// Example: A tagged empty `|+` header is scanned as `|-` without changing the report.
+func maskEmptyKeptHeader(
+	data []byte,
+	node *yaml.Node,
+	tokens token.Tokens,
+) {
+	for _, tok := range tokens {
+		if tok.Position.Line < node.Line || (tok.Type != token.LiteralType && tok.Type != token.FoldedType) {
+			continue
+		}
+		offset, err := yamlByteOffset(data, tok.Position.Line, tok.Position.Column)
+		if err != nil {
+			return
+		}
+		for offset < len(data) && (data[offset] == ' ' || data[offset] == '\t') {
+			offset++
+		}
+		if offset >= len(data) || (data[offset] != '|' && data[offset] != '>') {
+			return
+		}
+		maskKeepModifier(data, offset+1)
+		return
+	}
+}
+
+// maskKeepModifier replaces a keep marker within block scalar modifiers.
+//
+// Example: An explicit indent and keep header is scanned with strip chomping.
+func maskKeepModifier(
+	data []byte,
+	offset int,
+) {
+	for ; offset < len(data) && (data[offset] == '+' || data[offset] == '-' || data[offset] >= '1' && data[offset] <= '9'); offset++ {
+		if data[offset] == '+' {
+			data[offset] = '-'
+			return
+		}
+	}
 }
 
 // verifyScopeAndDiagnostics checks that scope and blocker changes are permitted.

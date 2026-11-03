@@ -301,3 +301,39 @@ func TestReplayEOFScalarCommentsAndIndent(t *testing.T) {
 			})
 	}
 }
+
+// TestReplayEmptyKeptScalarWithComment preserves empty scalar and comment.
+//
+// Example: A new progress item follows an empty owner-authored block scalar.
+func TestReplayEmptyKeptScalarWithComment(t *testing.T) {
+	input := strings.Replace(linkedReport, "progress: [Implementation started]\n", "", 1)
+	input = strings.ReplaceAll(input, "\n", "\r\n") + "progress:\r\n  - |+ # owner note\r\n"
+	// event records a separate progress item.
+	//
+	// Example: Replay a worker update without altering an empty legacy item.
+	const event = `{"event":"worker_progress","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"new progress"}}]}}}` + "\n"
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+	out, _, err := projectLogStatus(dir, []byte(input), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	before, err := parse([]byte(input))
+	require.NoError(t, err)
+	after, err := parse(out)
+	require.NoError(t, err)
+	require.Equal(t, append(before.Progress, "new progress"), after.Progress)
+	require.Contains(t, string(out), "|+ # owner note\r\n")
+}
+
+// TestEmptyKeptScalarCommentScanPreservesOrderedComments checks scanner fallback.
+//
+// Example: A changed comment after an empty scalar remains detectable.
+func TestEmptyKeptScalarCommentScanPreservesOrderedComments(t *testing.T) {
+	input := []byte("# first\nprogress:\n  - &owner |+ # scalar\n  - {subject_ref: one, text: '# text'} # item\n# last\n")
+	comments, err := yamlComments(input)
+	require.NoError(t, err)
+	require.Equal(t, []string{" first", " scalar", " item", " last"}, comments)
+	changed := strings.Replace(string(input), "# item", "# changed", 1)
+	other, err := yamlComments([]byte(changed))
+	require.NoError(t, err)
+	require.NotEqual(t, comments, other)
+}
