@@ -59,17 +59,35 @@ func planLaneLifecycleChain(
 		return data, nil, nil, false
 	}
 	stateCancelled := cancelled
+	stateClosed := mapValue(lane, statusField) != nil && mapValue(lane, statusField).Value == "CLOSED"
 	reactivated := false
 	for i, update := range updates[:len(updates)-1] {
-		if update.Fields[statusField] == "CLOSED" || update.Fields["completed_at"] != "" {
-			return data, nil, nil, false
-		}
 		if update.Fields["lifecycle"] == "cancelled" {
-			if stateCancelled || strings.TrimSpace(update.Evidence) == "" {
+			if stateCancelled || stateClosed || strings.TrimSpace(update.Evidence) == "" {
 				return data, nil, nil, false
 			}
 			stateCancelled = true
 			continue
+		}
+		if status, supplied := update.Fields[statusField]; supplied {
+			if status == "CLOSED" {
+				if stateCancelled || stateClosed || strings.TrimSpace(update.Fields["completed_at"]) == "" || strings.TrimSpace(update.Evidence) == "" {
+					return data, nil, nil, false
+				}
+				stateClosed = true
+			}
+			if status != "CLOSED" && update.Fields["completed_at"] != "" {
+				return data, nil, nil, false
+			}
+			if status != "CLOSED" && stateClosed {
+				if strings.TrimSpace(update.Evidence) == "" {
+					return data, nil, nil, false
+				}
+				stateClosed, reactivated = false, true
+			}
+		}
+		if _, supplied := update.Fields[statusField]; !supplied && update.Fields["completed_at"] != "" {
+			return data, nil, nil, false
 		}
 		for _, field := range update.Clear {
 			if field == "lifecycle" {
@@ -79,11 +97,11 @@ func planLaneLifecycleChain(
 				stateCancelled, reactivated = false, true
 			}
 		}
-		if i == 0 && !cancelled && !reactivated {
+		if i == 0 && !cancelled && !reactivated && !stateClosed {
 			return data, nil, nil, false
 		}
 	}
-	if stateCancelled || !reactivated {
+	if stateCancelled || stateClosed || !reactivated {
 		return data, nil, nil, false
 	}
 	combined := final

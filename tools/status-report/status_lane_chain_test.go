@@ -128,3 +128,46 @@ func TestLaneLifecycleChainRepeatedCancellation(t *testing.T) {
 		t.Fatalf("closure missing: %v", err)
 	}
 }
+
+// TestLaneLifecycleChainPreservesPriorClosureMetadata checks delayed completion replay.
+//
+// Example: A historical closure's context survives a reopen and later final closure.
+func TestLaneLifecycleChainPreservesPriorClosureMetadata(t *testing.T) {
+	base := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation}
+	first := base
+	first.Evidence = "accepted first"
+	first.Fields = map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:25:00Z", "context": "first result"}
+	reopen := base
+	reopen.Evidence = "resumed"
+	reopen.Fields = map[string]string{"implementation_status": "IN PROGRESS"}
+	final := base
+	final.Evidence = "accepted final"
+	final.Fields = map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:45:00Z"}
+	var groups []syncPendingGroup
+	var log strings.Builder
+	for i, update := range []syncUpdate{first, reopen, final} {
+		encoded, err := encodeSyncGroup(update)
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, syncPendingGroup{Line: i + 1, Update: encoded})
+		raw, err := json.Marshal(update)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log.WriteString(`{"event":"lifecycle_change","details":{"status_update":{"updates":[` + string(raw) + `]}}}` + "\n")
+	}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:45:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"first": {"status": "inactive"}}}
+	got, effects, provenance, ok := planLaneLifecycleChain([]byte(linkedReport), groups, ledger, forecasts, nil)
+	if !ok {
+		t.Fatal("explicit close-reopen-close chain rejected")
+	}
+	if err := verifyLaneLifecycleChain([]byte(linkedReport), got, groups, effects, provenance, nil, []byte(log.String()), ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	r, err := parse(got)
+	if err != nil || r.Lanes[0].Context != "first result" || r.Lanes[0].CompletedAt != "2026-11-02T15:45:00Z" {
+		t.Fatalf("metadata or completion lost: %v", err)
+	}
+}
