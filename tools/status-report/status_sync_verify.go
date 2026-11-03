@@ -203,7 +203,11 @@ func verifyStatusSyncCanonicalEffects(
 // verifyLaneCompletionTime checks a lane completion timestamp against canonical work.
 //
 // Example: Reject a correction that differs from the canonical completion instant.
-func verifyLaneCompletionTime(after map[string]any, effect syncEffect, ledger ledgerSource) error {
+func verifyLaneCompletionTime(
+	after map[string]any,
+	effect syncEffect,
+	ledger ledgerSource,
+) error {
 	if !validRef(effect.WorkRef, "project-understanding.yaml") || effect.RequiredEnvironment == syncEnvironmentUnknown {
 		return fmt.Errorf("invalid lane completion identity")
 	}
@@ -902,7 +906,12 @@ func verifyLaneForecastRestore(
 // verifyCancelledRootForecastRetirement checks explicit removal against prior and canonical sources.
 //
 // Example: Reject retirement while the canonical forecast remains active.
-func verifyCancelledRootForecastRetirement(before map[string]any, effect syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyCancelledRootForecastRetirement(
+	before map[string]any,
+	effect syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	update, ok := effect.Value.(syncUpdate)
 	if !ok || effect.Target != syncTargetRootForecast || update.Target != effect.Target || update.ID != effect.ID || update.WorkRef != effect.WorkRef || update.Evidence != effect.Evidence || strings.TrimSpace(effect.Evidence) == "" || len(update.Clear) != 1 || update.Clear[0] != "record" || len(update.Values) != 1 || len(update.Fields) != 0 || update.Retract {
 		return fmt.Errorf("invalid root forecast retirement authorization")
@@ -940,7 +949,13 @@ func verifyCancelledRootForecastRetirement(before map[string]any, effect syncEff
 // verifyRootCompletionCorrection checks the exact prior and source-backed replacement.
 //
 // Example: Reject a completion correction whose timestamp differs from canonical work.
-func verifyRootCompletionCorrection(before map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyRootCompletionCorrection(
+	before map[string]any,
+	effect syncEffect,
+	effects []syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	addition, ok := effect.Value.(syncAddition)
 	if !ok || effect.Target != syncTargetRootCompletion || addition.Target != effect.Target || strings.TrimSpace(addition.Evidence) == "" || addition.Evidence != effect.Evidence || addition.RetireForecast || addition.ReopenWorkRef != "" {
 		return fmt.Errorf("invalid root completion correction")
@@ -988,7 +1003,15 @@ func verifyRootCompletionCorrection(before map[string]any, effect syncEffect, ef
 // verifyPendingRootCorrection proves a correction directly from the original log and report.
 //
 // Example: Accept a canonical correction to an earlier unpublished completion.
-func verifyPendingRootCorrection(original, logBytes []byte, priorLine, correctionLine int, addition syncAddition, ledger ledgerSource, forecasts forecastSource) error {
+func verifyPendingRootCorrection(
+	original []byte,
+	logBytes []byte,
+	priorLine int,
+	correctionLine int,
+	addition syncAddition,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	lines := bytes.Split(bytes.TrimSuffix(logBytes, []byte("\n")), []byte("\n"))
 	if priorLine < 1 || correctionLine <= priorLine || correctionLine > len(lines) {
 		return fmt.Errorf("invalid correction lineage")

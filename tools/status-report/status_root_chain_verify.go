@@ -13,7 +13,15 @@ import (
 // verifyRootLifecycleChain proves ordered root facts against original log and current sources.
 //
 // Example: Verify a delayed completion followed by an explicit reopening.
-func verifyRootLifecycleChain(original, candidate, logBytes []byte, locators []rootLifecycleLocator, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyRootLifecycleChain(
+	original []byte,
+	candidate []byte,
+	logBytes []byte,
+	locators []rootLifecycleLocator,
+	effects []syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	if len(locators) == 0 {
 		return fmt.Errorf("empty root lifecycle chain")
 	}
@@ -210,7 +218,12 @@ func verifyRootLifecycleChain(original, candidate, logBytes []byte, locators []r
 // verifyRootChainNoSkippedEvents rejects omitted root operations between chain endpoints.
 //
 // Example: Keep a later correction from bypassing an intervening root update.
-func verifyRootChainNoSkippedEvents(lines [][]byte, locators []rootLifecycleLocator, workRef, forecastRef string) error {
+func verifyRootChainNoSkippedEvents(
+	lines [][]byte,
+	locators []rootLifecycleLocator,
+	workRef string,
+	forecastRef string,
+) error {
 	selected := map[rootLifecycleLocator]bool{}
 	for _, locator := range locators {
 		selected[locator] = true
@@ -257,7 +270,15 @@ func verifyRootChainNoSkippedEvents(lines [][]byte, locators []rootLifecycleLoca
 // verifyRootChainEffects limits the net plan to its exact boundary records.
 //
 // Example: Reject a plan that changes an unrelated task.
-func verifyRootChainEffects(initialTarget syncTarget, initial json.RawMessage, finalTarget syncTarget, final json.RawMessage, workRef, forecastRef string, effects []syncEffect) error {
+func verifyRootChainEffects(
+	initialTarget syncTarget,
+	initial json.RawMessage,
+	finalTarget syncTarget,
+	final json.RawMessage,
+	workRef string,
+	forecastRef string,
+	effects []syncEffect,
+) error {
 	if initialTarget == finalTarget && rootChainJSONEqual(initial, final) {
 		if len(effects) != 0 {
 			return fmt.Errorf("unchanged root chain has effects")
@@ -301,7 +322,10 @@ func verifyRootChainEffects(initialTarget syncTarget, initial json.RawMessage, f
 // rootChainJSONEqual compares complete JSON records by value.
 //
 // Example: Ignore key order while checking a predecessor.
-func rootChainJSONEqual(a, b []byte) bool {
+func rootChainJSONEqual(
+	a []byte,
+	b []byte,
+) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return len(a) == 0 && len(b) == 0
 	}
@@ -323,7 +347,13 @@ func rootChainOutcome(raw []byte) string {
 // verifyRootChainBoundary checks the exact managed record at one chain boundary.
 //
 // Example: Refuse to replace an owner-edited root forecast.
-func verifyRootChainBoundary(report map[string]any, target syncTarget, expected json.RawMessage, workRef, forecastRef string) error {
+func verifyRootChainBoundary(
+	report map[string]any,
+	target syncTarget,
+	expected json.RawMessage,
+	workRef string,
+	forecastRef string,
+) error {
 	found := 0
 	for _, section := range []struct {
 		name, key, id string

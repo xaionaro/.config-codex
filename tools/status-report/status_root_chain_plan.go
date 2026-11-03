@@ -192,7 +192,10 @@ func applyPendingRootChains(
 // earlierPendingRootConflict keeps unresolved earlier transactions ahead of the same root.
 //
 // Example: A later addition cannot bypass a pending retirement of its forecast.
-func earlierPendingRootConflict(state syncState, start syncPendingRootAddition) bool {
+func earlierPendingRootConflict(
+	state syncState,
+	start syncPendingRootAddition,
+) bool {
 	work := rootChainAdditionWorkRef(start.Addition)
 	forecast := rootChainAdditionForecastRef(start.Addition)
 	for _, prior := range state.PendingAdditions {
