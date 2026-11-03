@@ -78,6 +78,16 @@ func TestLaneTransitionRequiresCanonicalIdentity(t *testing.T) {
 	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Evidence: "accepted", Fields: map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:25:00Z"}}
 	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:25:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
 	forecasts := forecastSource{Records: map[string]map[string]any{"first": {"status": "inactive"}}}
+	candidate, effects, accepted := applyLaneSyncUpdate([]byte(linkedReport), update, ledger, forecasts, nil)
+	if !accepted {
+		t.Fatal("transition effects rejected")
+	}
+	if err := verifyStatusSyncEffects([]byte(linkedReport), candidate, effects); err != nil {
+		t.Fatalf("effects disagree with transition: %v", err)
+	}
+	if err := verifyStatusSyncCanonicalEffects([]byte(linkedReport), candidate, effects, ledger, forecasts); err != nil {
+		t.Fatalf("canonical effects rejected: %v", err)
+	}
 	got, ok := applyLaneSyncUpdateRaw([]byte(linkedReport), update, ledger, forecasts, nil)
 	if !ok {
 		removed, rok := removeLaneSyncField([]byte(linkedReport), update, "forecast")

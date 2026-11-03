@@ -213,13 +213,16 @@ func applyLaneSyncUpdate(
 	if oldLane == nil || newLane == nil {
 		return data, nil, false
 	}
-	base := syncEffect{Target: syncTargetLane, ID: update.ID, WorkRef: update.WorkRef, RequiredEnvironment: update.RequiredEnvironment}
+	base := syncEffect{Target: syncTargetLane, ID: update.ID, WorkRef: update.WorkRef, RequiredEnvironment: update.RequiredEnvironment, Evidence: update.Evidence}
 	var effects []syncEffect
 	for _, field := range []string{"forecast", "completed_at"} {
 		if mapValue(oldLane, field) != nil && mapValue(newLane, field) == nil {
 			effect := base
 			effect.Field = field
-			effect.Operation = syncEffectRemove
+			effect.Operation = syncEffectCompletedAtClear
+			if field == "forecast" {
+				effect.Operation = syncEffectForecastRetire
+			}
 			effects = append(effects, effect)
 		}
 	}
