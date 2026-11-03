@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -9,6 +10,23 @@ import (
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
+
+// flowScanBytes prepares byte-stable CRLF input for the flow lexer.
+//
+// Example: Replace each CR in a CRLF pair with a space while retaining offsets.
+func flowScanBytes(data []byte) ([]byte, error) {
+	scan := bytes.Clone(data)
+	for i := 0; i < len(scan); i++ {
+		if scan[i] != '\r' {
+			continue
+		}
+		if i+1 >= len(scan) || scan[i+1] != '\n' {
+			return nil, fmt.Errorf("unsupported bare CR layout")
+		}
+		scan[i] = ' '
+	}
+	return scan, nil
+}
 
 // yamlByteOffset maps a one-based YAML line and rune column into UTF-8 bytes.
 //
@@ -147,11 +165,12 @@ func (d *flowDocument) build() {
 		d.err = fmt.Errorf("unsupported UTF-8 layout")
 		return
 	}
-	if strings.ContainsRune(string(d.data), '\r') {
-		d.err = fmt.Errorf("unsupported CRLF layout")
+	scan, err := flowScanBytes(d.data)
+	if err != nil {
+		d.err = err
 		return
 	}
-	tokens := lexer.Tokenize(string(d.data))
+	tokens := lexer.Tokenize(string(scan))
 	if bad := tokens.InvalidToken(); bad != nil {
 		d.err = fmt.Errorf("unsupported YAML token: %s", bad.Error)
 		return
@@ -260,7 +279,11 @@ func yamlRangeHasComment(
 	start int,
 	end int,
 ) bool {
-	tokens := lexer.Tokenize(string(data))
+	scan, err := flowScanBytes(data)
+	if err != nil {
+		return true
+	}
+	tokens := lexer.Tokenize(string(scan))
 	if tokens.InvalidToken() != nil {
 		return true
 	}

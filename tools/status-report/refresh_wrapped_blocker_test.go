@@ -65,8 +65,7 @@ func TestRefreshPreservesLastWrappedBlocker(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(report), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(linkedLedger), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "forecasts.yaml"), []byte(linkedForecasts), 0600))
-	// Forecast projection rejects CRLF, then the independently safe scope update must still succeed.
-	require.Error(t, refreshTestStatus(dir, "requirement_change"))
+	require.NoError(t, refreshTestStatus(dir, "requirement_change"))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	parsed, err := parse(result)

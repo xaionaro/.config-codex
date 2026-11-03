@@ -293,14 +293,7 @@ func appendDiagnostic(
 	if start < 0 || start >= len(data) {
 		return nil, fmt.Errorf("unsupported blockers layout")
 	}
-	// Keep byte positions stable while allowing the flow lexer to scan CRLF input.
-	scanData := bytes.Clone(data)
-	for i := 0; i+1 < len(scanData); i++ {
-		if scanData[i] == '\r' && scanData[i+1] == '\n' {
-			scanData[i] = ' '
-		}
-	}
-	end, err := flowEnd(scanData, start, token.SequenceStartType)
+	end, err := flowEnd(data, start, token.SequenceStartType)
 	if err != nil {
 		return nil, err
 	}

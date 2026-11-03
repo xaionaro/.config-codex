@@ -61,7 +61,11 @@ func flowMappingHasTrailingComma(
 	data []byte,
 	end int,
 ) (bool, error) {
-	tokens := lexer.Tokenize(string(data))
+	scan, err := flowScanBytes(data)
+	if err != nil {
+		return false, err
+	}
+	tokens := lexer.Tokenize(string(scan))
 	if bad := tokens.InvalidToken(); bad != nil {
 		return false, fmt.Errorf("invalid YAML token: %s", bad.Error)
 	}

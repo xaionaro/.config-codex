@@ -744,12 +744,15 @@ func TestVerifyRefreshPreservesBlockersAndLinkedFields(t *testing.T) {
 
 // TestFlowLexerRejectsUnprovableBoundaries verifies the refresh behavior.
 //
-// Example: CRLF flow boundaries take the safe refusal path.
+// Example: Unbalanced flow boundaries and bare carriage returns are rejected.
 func TestFlowLexerRejectsUnprovableBoundaries(t *testing.T) {
 	_, err := flowEnd([]byte("label: {a: [one}\n"), 7, token.MappingStartType)
 	require.Error(t, err)
-	_, err = flowEnd([]byte("label: {a: one}\r\n"), 7, token.MappingStartType)
-	require.ErrorContains(t, err, "CRLF")
+	end, err := flowEnd([]byte("label: {a: one}\r\n"), 7, token.MappingStartType)
+	require.NoError(t, err)
+	require.Equal(t, 14, end)
+	_, err = flowEnd([]byte("label: {a: one}\r"), 7, token.MappingStartType)
+	require.ErrorContains(t, err, "bare CR")
 	_, err = yamlByteOffset([]byte("label: x\n"), 1, 30)
 	require.ErrorContains(t, err, "exceeds")
 }
