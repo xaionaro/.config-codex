@@ -326,3 +326,50 @@ func TestLegacyCorrectionIgnoresInvalidInterveningUpdates(t *testing.T) {
 			})
 	}
 }
+
+// TestLegacyCorrectionRespectsInterveningRetraction checks narrative version ordering.
+//
+// Example: A valid withdrawal cannot be undone by correcting an older claim.
+func TestLegacyCorrectionRespectsInterveningRetraction(t *testing.T) {
+	for _, tc := range []struct {
+		name, event, subject, locator string
+		withdraws                     bool
+	}{
+		{"valid", "correction", "one", `"corrects":1`, true},
+		{"self", "correction", "one", `"corrects":2`, false},
+		{"other subject", "correction", "other", `"corrects":1`, false},
+		{"wrong event", "decision", "one", `"corrects":1`, false},
+	} {
+		t.Run(tc.name,
+			// Compare legacy pending replay with fresh replay of the same history.
+			//
+			// Example: An invalid retraction cannot supersede the prior claim.
+			func(t *testing.T) {
+				log := `{"event":"decision","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"first","evidence":"proof"}}]}}}` + "\n" + `{"event":"` + tc.event + `","details":{"status_update":{"updates":[{"target":"progress","id":"` + tc.subject + `",` + tc.locator + `,"retract":true}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"one","corrects":1,"fields":{"text":"third"}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				update := syncUpdate{Target: syncTargetProgress, ID: "one", Corrects: 1, Fields: map[string]string{"text": "third"}}
+				key := syncTargetKey(update, "text")
+				state := syncState{Cursor: 3, Applied: map[string]string{}, Latest: map[string]int{key: 3}, Pending: map[string]syncPending{key: {Line: 3, Update: update}}}
+				input := linkedReport
+				if !tc.withdraws {
+					state.Applied[key] = "first"
+					state.Applied[syncTargetKey(update, "evidence")] = "proof"
+					input = strings.Replace(input, "progress: [Implementation started]", `progress: [Implementation started, {subject_ref: one, text: first, evidence: proof}]`, 1)
+				}
+				encoded, err := json.Marshal(state)
+				require.NoError(t, err)
+				initial, err := putSyncState([]byte(input), string(encoded))
+				require.NoError(t, err)
+				replayed, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				freshReport, err := parse(fresh)
+				require.NoError(t, err)
+				replayedReport, err := parse(replayed)
+				require.NoError(t, err)
+				require.Equal(t, freshReport.Progress, replayedReport.Progress)
+			})
+	}
+}

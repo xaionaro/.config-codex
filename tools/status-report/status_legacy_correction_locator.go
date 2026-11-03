@@ -238,6 +238,9 @@ func legacyCorrectionPriorMatches(
 	for _, field := range syncGroupFields(prior) {
 		fields[field] = true
 	}
+	if prior.Retract {
+		fields["text"], fields["evidence"] = true, true
+	}
 	if pending.Retract {
 		return fields["text"] || fields["evidence"]
 	}
