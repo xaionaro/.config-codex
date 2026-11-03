@@ -11,7 +11,18 @@ import (
 )
 
 // verifyLaneLifecycleChain independently checks the selected log transactions and their net effects.
-func verifyLaneLifecycleChain(original, candidate []byte, groups []syncPendingGroup, effects []syncEffect, provenance map[string]syncPendingGroup, previous map[string]string, log []byte, ledger ledgerSource, forecasts forecastSource) error {
+//
+// Example: Reject a retained field whose supplying log update differs.
+func verifyLaneLifecycleChain(
+	original, candidate []byte,
+	groups []syncPendingGroup,
+	effects []syncEffect,
+	provenance map[string]syncPendingGroup,
+	previous map[string]string,
+	log []byte,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	if len(groups) == 0 {
 		return fmt.Errorf("empty lane chain")
 	}
@@ -62,6 +73,16 @@ func verifyLaneLifecycleChain(original, candidate []byte, groups []syncPendingGr
 		if !reflect.DeepEqual(update, event.Details.StatusUpdate.Updates[group.Ordinal]) || update.Target != syncTargetLane || syncTargetKey(update, "") != syncTargetKey(first, "") || !validLaneSyncUpdate(update) || update.Corrects != 0 || update.Retract {
 			return fmt.Errorf("chain update differs from log")
 		}
+		status := update.RequiredEnvironment.String() + "_status"
+		if i < len(groups)-1 && (update.Fields[status] == "CLOSED" || update.Fields["completed_at"] != "") {
+			return fmt.Errorf("intermediate completion")
+		}
+		if i == len(groups)-1 && (update.Fields[status] != "CLOSED" || update.Fields["completed_at"] == "" || strings.TrimSpace(update.Evidence) == "") {
+			return fmt.Errorf("final update lacks completion")
+		}
+		if update.Fields["lifecycle"] == "cancelled" && cancelled {
+			return fmt.Errorf("invalid cancellation transition")
+		}
 		for _, field := range syncGroupFields(update) {
 			prior, seen := owned[field]
 			if !seen {
@@ -95,6 +116,30 @@ func verifyLaneLifecycleChain(original, candidate []byte, groups []syncPendingGr
 				}
 				cancelled = false
 				reactivated = true
+			}
+		}
+	}
+	dependencies := map[string]bool{}
+	selected := map[string]bool{}
+	for _, group := range groups {
+		update, _ := decodeSyncGroup(group.Update)
+		for field := range syncGroupDependencies(update) {
+			dependencies[field] = true
+		}
+		selected[syncGroupKey(group.Line, group.Ordinal)] = true
+	}
+	start, end := groups[0], groups[len(groups)-1]
+	for line := start.Line; line <= end.Line; line++ {
+		var event syncEvent
+		if json.Unmarshal(lines[line-1], &event) != nil || event.Details.StatusUpdate == nil {
+			continue
+		}
+		for ordinal, update := range event.Details.StatusUpdate.Updates {
+			if (line == start.Line && ordinal <= start.Ordinal) || (line == end.Line && ordinal >= end.Ordinal) || selected[syncGroupKey(line, ordinal)] {
+				continue
+			}
+			if update.Target == syncTargetLane && syncTargetKey(update, "") == syncTargetKey(first, "") && syncDependenciesOverlap(dependencies, syncGroupDependencies(update)) {
+				return fmt.Errorf("chain skips dependent update")
 			}
 		}
 	}
@@ -145,7 +190,9 @@ func verifyLaneLifecycleChain(original, candidate []byte, groups []syncPendingGr
 			if effect.Operation != syncEffectClear && effect.Operation != syncEffectCompletedAtClear {
 				return fmt.Errorf("clear effect differs")
 			}
-		} else if effect.Operation != syncEffectSet || effect.Value != values[field] {
+			continue
+		}
+		if effect.Operation != syncEffectSet || effect.Value != values[field] {
 			return fmt.Errorf("set effect differs")
 		}
 	}
