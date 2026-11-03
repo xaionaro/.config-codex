@@ -65,7 +65,7 @@ func planLaneLifecycleChain(
 			return data, nil, nil, false
 		}
 		if update.Fields["lifecycle"] == "cancelled" {
-			if stateCancelled || len(update.Fields) != 1 || len(update.Clear) != 0 || strings.TrimSpace(update.Evidence) == "" {
+			if stateCancelled || strings.TrimSpace(update.Evidence) == "" {
 				return data, nil, nil, false
 			}
 			stateCancelled = true
@@ -94,6 +94,9 @@ func planLaneLifecycleChain(
 	for i, update := range updates {
 		for field, value := range update.Fields {
 			if field == "lifecycle" && value == "cancelled" && i < len(updates)-1 {
+				if prior, exists := previous[field]; exists && scalarSyncOwnership(mapValue(lane, field)) != prior {
+					return data, nil, nil, false
+				}
 				continue
 			}
 			if field == "lifecycle" {

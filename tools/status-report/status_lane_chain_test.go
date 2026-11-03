@@ -65,8 +65,14 @@ func TestLaneLifecycleChainComposesExplicitTransitions(t *testing.T) {
 	}
 	mixed := cancel
 	mixed.Fields = map[string]string{"lifecycle": "cancelled", "blocker": "extra"}
-	if _, _, _, ok := planLaneLifecycleChain([]byte(linkedReport), []syncPendingGroup{makeGroup(1, mixed), groups[1], groups[2]}, ledger, forecasts, nil); ok {
-		t.Fatal("mixed stale terminal accepted")
+	if _, _, _, ok := planLaneLifecycleChain([]byte(linkedReport), []syncPendingGroup{makeGroup(1, mixed), groups[1], groups[2]}, ledger, forecasts, nil); !ok {
+		t.Fatal("explicit cancellation fields were dropped")
+	}
+	contextUpdate := cancel
+	contextUpdate.Fields = map[string]string{"lifecycle": "cancelled", "context": "supplied"}
+	contextEdited := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    context: owner-edit\n    implementation_status: IN PROGRESS", 1)
+	if _, _, _, ok := planLaneLifecycleChain([]byte(contextEdited), []syncPendingGroup{makeGroup(1, contextUpdate), groups[1], groups[2]}, ledger, forecasts, map[string]string{"context": "previous"}); ok {
+		t.Fatal("owner-edited cancellation context overwritten")
 	}
 	cancelledReport := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    lifecycle: cancelled\n    implementation_status: IN PROGRESS", 1)
 	cancelledReport = strings.Replace(cancelledReport, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "", 1)
