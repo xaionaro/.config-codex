@@ -121,15 +121,12 @@ func migratePendingRootAdditions(
 	pending map[string]syncPendingRootAddition,
 	fullLog []byte,
 	applied map[string]string,
+	report []byte,
 ) bool {
 	lines := bytes.Split(fullLog, []byte("\n"))
 	complete := true
 	for key, old := range legacy {
 		if old.Target != syncTargetRootCompletion && old.Target != syncTargetRootForecast {
-			continue
-		}
-		if previous, exists := applied[key]; exists && rootChainJSONEqual([]byte(previous), []byte(old.Record)) {
-			complete = false
 			continue
 		}
 		if old.Line < 1 || old.Line > len(lines) {
@@ -159,6 +156,14 @@ func migratePendingRootAdditions(
 			complete = false
 			continue
 		}
+		if previous, exists := applied[key]; exists && rootChainJSONEqual([]byte(previous), []byte(old.Record)) {
+			if old.PriorLine == 0 && old.PriorRecord == "" && legacyRootRecordMatchesReport(report, old) {
+				delete(legacy, key)
+				continue
+			}
+			complete = false
+			continue
+		}
 		if old.PriorLine != 0 || old.PriorRecord != "" {
 			if !queueLegacyRootPrior(pending, lines, old, event) {
 				complete = false
@@ -172,6 +177,46 @@ func migratePendingRootAdditions(
 		delete(legacy, key)
 	}
 	return complete
+}
+
+// legacyRootRecordMatchesReport checks an applied legacy record against its current owner-visible value.
+//
+// Example: An intact completion permits removal of redundant pending metadata.
+func legacyRootRecordMatchesReport(report []byte, old syncPendingAddition) bool {
+	var doc yaml.Node
+	if yaml.Unmarshal(report, &doc) != nil || len(doc.Content) != 1 {
+		return false
+	}
+	section, identity := "root_completions", "work_ref"
+	if old.Target == syncTargetRootForecast {
+		section, identity = "root_forecasts", "forecast_ref"
+	}
+	var record map[string]json.RawMessage
+	var id string
+	if json.Unmarshal([]byte(old.Record), &record) != nil || json.Unmarshal(record[identity], &id) != nil || strings.TrimSpace(id) == "" || (old.ID != "" && old.ID != id) {
+		return false
+	}
+	list := mapValue(doc.Content[0], section)
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return false
+	}
+	matches := 0
+	for _, item := range list.Content {
+		value := mapValue(item, identity)
+		if value == nil || value.Value != id {
+			continue
+		}
+		var actual any
+		if item.Decode(&actual) != nil {
+			return false
+		}
+		encoded, err := json.Marshal(actual)
+		if err != nil || !rootChainJSONEqual(encoded, []byte(old.Record)) {
+			return false
+		}
+		matches++
+	}
+	return matches == 1
 }
 
 // queueLegacyRootPrior retains a uniquely evidenced predecessor of a correction.

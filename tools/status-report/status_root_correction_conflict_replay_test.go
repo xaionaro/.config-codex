@@ -29,14 +29,13 @@ func TestRootCorrectionReplayPreservesConflicts(t *testing.T) {
 				prior := old
 				section := "root_completions: [" + prior + "]\n"
 				sourceTime := "2026-11-02T15:05:00Z"
-				if mode == "owner edit" {
+				switch mode {
+				case "owner edit":
 					prior = strings.Replace(old, "15:00:00Z", "15:01:00Z", 1)
 					section = "root_completions: [" + prior + "]\n"
-				}
-				if mode == "comment" {
+				case "comment":
 					section = "root_completions:\n  - " + prior + " # keep owner comment\n"
-				}
-				if mode == "source mismatch" {
+				case "source mismatch":
 					sourceTime = "2026-11-02T15:06:00Z"
 				}
 				initial, err := putSyncState([]byte(valid+section), saved)
@@ -81,4 +80,30 @@ func TestLegacyPendingRootDoesNotUndoOwnerRemoval(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, report.RootCompletions)
 	require.NotEmpty(t, report.StatusSync.PendingRootAdditions)
+}
+
+// TestLegacyPendingRootAllowsIntactPriorCorrection checks duplicate legacy metadata.
+//
+// Example: An intact previously applied completion can receive a valid correction.
+func TestLegacyPendingRootAllowsIntactPriorCorrection(t *testing.T) {
+	old := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
+	newer := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}`
+	first := `{"event":"lifecycle_change","details":{"status_update":{"additions":[{"target":"root_completion","evidence":"accepted","record":` + old + `}]}}}` + "\n"
+	second := `{"event":"correction","details":{"corrects":1,"status_update":{"additions":[{"target":"root_completion","evidence":"corrected","expected_prior":` + old + `,"record":` + newer + `}]}}}` + "\n"
+	key := "addition/root_completion/project-understanding.yaml#/records/w"
+	saved := syncState{Cursor: 1, Applied: map[string]string{key: old}, Latest: map[string]int{key: 1}, PendingAdditions: map[string]syncPendingAddition{key: {Line: 1, Target: syncTargetRootCompletion, ID: "project-understanding.yaml#/records/w", Record: old, Evidence: "accepted"}}}
+	raw, err := json.Marshal(saved)
+	require.NoError(t, err)
+	initial, err := putSyncState([]byte(valid+"root_completions: ["+old+"]\n"), string(raw))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(first+second), 0600))
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:05:00Z", Roles: []reportingRole{reportingRoleRoot}}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	out, _, err := projectLogStatus(dir, initial, ledger, forecastSource{})
+	require.NoError(t, err)
+	report, err := parse(out)
+	require.NoError(t, err)
+	require.Len(t, report.RootCompletions, 1)
+	require.Equal(t, "2026-11-02T15:05:00Z", report.RootCompletions[0].CompletedAt)
+	require.Empty(t, report.StatusSync.PendingRootAdditions)
 }

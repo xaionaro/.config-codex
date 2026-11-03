@@ -36,6 +36,9 @@ func TestRootRemovalHandlesBlockAndFlowLists(t *testing.T) {
 	}
 }
 
+// TestRootTransitionsReplay checks explicit source-backed root transitions.
+//
+// Example: Reopening requires matching prior completion and evidence.
 func TestRootTransitionsReplay(t *testing.T) {
 	forecast := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}`
 	completion := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
@@ -49,59 +52,62 @@ func TestRootTransitionsReplay(t *testing.T) {
 		{"reopen", "root_completions", syncAddition{Target: syncTargetRootForecast, Evidence: "reopened", ReopenWorkRef: "project-understanding.yaml#/records/w", ExpectedPrior: json.RawMessage(completion), Record: json.RawMessage(forecast)}, workData{State: workStateActive, Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}, "active"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			prior := forecast
-			if tc.name == "reopen" {
-				prior = completion
-			}
-			original := []byte(valid + tc.section + ": [" + prior + "]\n")
-			ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: tc.work}, "o": {Type: "outcome", Outcome: "Result"}}}
-			forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "root", "status": tc.state}}}
-			for _, mode := range []string{"valid", "mismatch", "missing", "no evidence"} {
-				addition := tc.addition
-				if mode == "mismatch" {
-					addition.ExpectedPrior = json.RawMessage(`{"outcome":"wrong"}`)
+		t.Run(tc.name,
+			// Check one direction of root lifecycle replay.
+			//
+			// Example: A mismatched prior remains pending.
+			func(t *testing.T) {
+				prior := forecast
+				if tc.name == "reopen" {
+					prior = completion
 				}
-				if mode == "missing" {
-					addition.ExpectedPrior = nil
-				}
-				if mode == "no evidence" {
-					addition.Evidence = ""
-				}
-				raw, err := json.Marshal(addition)
-				if err != nil {
-					t.Fatal(err)
-				}
-				dir := t.TempDir()
-				log := `{"event":"lifecycle_change","details":{"status_update":{"additions":[` + string(raw) + `]}}}` + "\n"
-				if err := os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600); err != nil {
-					t.Fatal(err)
-				}
-				out, _, err := projectLogStatus(dir, original, ledger, forecasts)
-				if err != nil {
-					t.Fatal(err)
-				}
-				report, err := parse(out)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if mode != "valid" {
-					if len(report.StatusSync.PendingRootAdditions) != 1 {
-						t.Fatal("mismatched prior did not remain pending")
+				original := []byte(valid + tc.section + ": [" + prior + "]\n")
+				ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: tc.work}, "o": {Type: "outcome", Outcome: "Result"}}}
+				forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "root", "status": tc.state}}}
+				for _, mode := range []string{"valid", "mismatch", "missing", "no evidence"} {
+					addition := tc.addition
+					switch mode {
+					case "mismatch":
+						addition.ExpectedPrior = json.RawMessage(`{"outcome":"wrong"}`)
+					case "missing":
+						addition.ExpectedPrior = nil
+					case "no evidence":
+						addition.Evidence = ""
 					}
-					continue
+					raw, err := json.Marshal(addition)
+					if err != nil {
+						t.Fatal(err)
+					}
+					dir := t.TempDir()
+					log := `{"event":"lifecycle_change","details":{"status_update":{"additions":[` + string(raw) + `]}}}` + "\n"
+					if err := os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600); err != nil {
+						t.Fatal(err)
+					}
+					out, _, err := projectLogStatus(dir, original, ledger, forecasts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					report, err := parse(out)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if mode != "valid" {
+						if len(report.StatusSync.PendingRootAdditions) != 1 {
+							t.Fatal("mismatched prior did not remain pending")
+						}
+						continue
+					}
+					if len(report.StatusSync.PendingRootAdditions) != 0 {
+						t.Fatal("valid transition pending")
+					}
+					if tc.name == "complete" && (len(report.RootCompletions) != 1 || len(report.RootForecasts) != 0) {
+						t.Fatal("completion transition not applied")
+					}
+					if tc.name == "reopen" && (len(report.RootCompletions) != 0 || len(report.RootForecasts) != 1) {
+						t.Fatal("reopen transition not applied")
+					}
 				}
-				if len(report.StatusSync.PendingRootAdditions) != 0 {
-					t.Fatal("valid transition pending")
-				}
-				if tc.name == "complete" && (len(report.RootCompletions) != 1 || len(report.RootForecasts) != 0) {
-					t.Fatal("completion transition not applied")
-				}
-				if tc.name == "reopen" && (len(report.RootCompletions) != 0 || len(report.RootForecasts) != 1) {
-					t.Fatal("reopen transition not applied")
-				}
-			}
-		})
+			})
 	}
 }
 
