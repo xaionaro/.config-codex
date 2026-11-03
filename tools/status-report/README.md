@@ -87,6 +87,12 @@ Additions also accept complete `lane`, `root_completion`, and `root_forecast` re
 
 To replace an existing root forecast with a completion, the `root_completion` addition supplies `retire_forecast: true`, `expected_prior` containing the complete existing forecast record, and evidence. To reopen a completed root, the `root_forecast` addition supplies `reopen_work_ref`, `expected_prior` containing the complete existing completion record, and evidence. The prior record must match exactly and canonical work and forecast states must support the transition. Comments or conflicting edits can leave the transition pending.
 
+To correct an existing root completion, append a `correction` event identifying the mistaken entry in `details.corrects` and provide a `root_completion` addition with evidence, the exact existing record as `expected_prior`, and the corrected `record`. The canonical completed work and its outcome and completion time must support the corrected record. For example, `details.status_update` can contain:
+
+```json
+{"additions":[{"target":"root_completion","evidence":"corrected","expected_prior":{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"},"record":{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}}]}
+```
+
 To retire a cancelled root's forecast without a completion, use an update whose `id` is the forecast reference and whose `work_ref` identifies the canonical work. Supply evidence, the complete existing report forecast in `values.expected_prior`, and `clear: ["record"]`:
 
 ```json
