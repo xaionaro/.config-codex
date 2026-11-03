@@ -285,3 +285,39 @@ func TestVerifyLaneForecastRestore(t *testing.T) {
 		t.Fatal("accepted stale forecast")
 	}
 }
+
+// TestVerifyCancelledRootForecastRetirement checks explicit source-backed removal.
+//
+// Example: Reject removal while canonical root work remains active.
+func TestVerifyCancelledRootForecastRetirement(t *testing.T) {
+	prior := json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result"}`)
+	original := []byte("root_forecasts: [" + string(prior) + "]\n")
+	candidate := []byte("root_forecasts: []\n")
+	ref := "project-understanding.yaml#/records/w"
+	update := syncUpdate{Target: syncTargetRootForecast, ID: "forecasts.yaml#/records/f", WorkRef: ref, Evidence: "cancelled", Values: map[string]json.RawMessage{"expected_prior": prior}, Clear: []string{"record"}}
+	effect := syncEffect{Target: update.Target, ID: update.ID, WorkRef: ref, Evidence: update.Evidence, Value: update, Operation: syncEffectCancelledRootForecastRetire}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", Data: workData{State: workStateCancelled, Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "root", "status": "inactive"}}}
+	if err := verifyStatusSyncEffects(original, candidate, []syncEffect{effect}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	forecasts.Records["f"]["status"] = "active"
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err == nil {
+		t.Fatal("accepted active forecast")
+	}
+	forecasts.Records["f"]["status"] = "inactive"
+	update.Values["expected_prior"] = json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"wrong"}`)
+	effect.Value = update
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err == nil {
+		t.Fatal("accepted altered prior")
+	}
+	update.Values["expected_prior"] = prior
+	update.Clear = nil
+	effect.Value = update
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, []syncEffect{effect}, ledger, forecasts); err == nil {
+		t.Fatal("accepted missing removal authorization")
+	}
+}

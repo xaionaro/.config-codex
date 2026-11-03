@@ -67,6 +67,10 @@ const (
 	//
 	// Example: Restore the active forecast when a lane reopens.
 	syncEffectLaneForecastRestore
+	// syncEffectCancelledRootForecastRetire removes a cancelled root forecast.
+	//
+	// Example: Retire an inactive forecast for cancelled root work.
+	syncEffectCancelledRootForecastRetire
 )
 
 // syncEffect describes one authorized semantic report change.
@@ -100,6 +104,12 @@ func verifyStatusSyncCanonicalEffects(
 		return err
 	}
 	for _, effect := range effects {
+		if effect.Operation == syncEffectCancelledRootForecastRetire {
+			if err := verifyCancelledRootForecastRetirement(before, effect, ledger, forecasts); err != nil {
+				return err
+			}
+			continue
+		}
 		if effect.Operation == syncEffectLaneForecastRestore {
 			if err := verifyLaneForecastRestore(before, after, effect, effects, ledger, forecasts); err != nil {
 				return err
@@ -216,6 +226,14 @@ func applyExpectedSyncEffect(
 	effect syncEffect,
 ) error {
 	switch effect.Operation {
+	case syncEffectCancelledRootForecastRetire:
+		update, ok := effect.Value.(syncUpdate)
+		if !ok {
+			return fmt.Errorf("invalid root retirement")
+		}
+		effect.Operation = syncEffectRemove
+		effect.Value = syncAddition{ExpectedPrior: update.Values["expected_prior"]}
+		return applyExpectedSyncEffect(root, effect)
 	case syncEffectLaneForecastRestore:
 		effect.Operation = syncEffectSet
 		effect.Field = "forecast"
@@ -812,6 +830,44 @@ func verifyLaneForecastRestore(
 	}
 	if !reopened {
 		return fmt.Errorf("forecast restore lacks reopening effect")
+	}
+	return nil
+}
+
+// verifyCancelledRootForecastRetirement checks explicit removal against prior and canonical sources.
+//
+// Example: Reject retirement while the canonical forecast remains active.
+func verifyCancelledRootForecastRetirement(before map[string]any, effect syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+	update, ok := effect.Value.(syncUpdate)
+	if !ok || effect.Target != syncTargetRootForecast || update.Target != effect.Target || update.ID != effect.ID || update.WorkRef != effect.WorkRef || update.Evidence != effect.Evidence || strings.TrimSpace(effect.Evidence) == "" || len(update.Clear) != 1 || update.Clear[0] != "record" || len(update.Values) != 1 || len(update.Fields) != 0 || update.Retract {
+		return fmt.Errorf("invalid root forecast retirement authorization")
+	}
+	if !validRef(effect.WorkRef, "project-understanding.yaml") || !validRef(effect.ID, "forecasts.yaml") {
+		return fmt.Errorf("invalid root forecast retirement references")
+	}
+	work, ok := ledger.Records[sourceID(effect.WorkRef, "project-understanding.yaml")]
+	if !ok || work.Type != "work" || !hasRole(work.Data.Roles, reportingRoleRoot) || work.Data.State != workStateCancelled || string(work.Data.ForecastRef) != effect.ID {
+		return fmt.Errorf("root forecast retirement disagrees with canonical work")
+	}
+	forecast := forecasts.Records[sourceID(effect.ID, "forecasts.yaml")]
+	if textField(forecast, "kind") != "root" || textField(forecast, "status") != "inactive" {
+		return fmt.Errorf("root forecast retirement requires inactive root forecast")
+	}
+	items, ok := before["root_forecasts"].([]any)
+	if !ok {
+		return fmt.Errorf("root forecast missing")
+	}
+	index, err := syncEffectIndex(items, "forecast_ref", effect)
+	if err != nil || index < 0 {
+		return fmt.Errorf("root forecast identity missing or ambiguous")
+	}
+	actual, err := json.Marshal(items[index])
+	if err != nil {
+		return err
+	}
+	var got, expected any
+	if json.Unmarshal(actual, &got) != nil || json.Unmarshal(update.Values["expected_prior"], &expected) != nil || !reflect.DeepEqual(got, expected) {
+		return fmt.Errorf("root forecast prior mismatch")
 	}
 	return nil
 }
