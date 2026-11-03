@@ -357,15 +357,21 @@ func retractBlockNarrative(
 		if end > start && strings.HasSuffix(lines[end-1], "\r") {
 			ending = "\r"
 		}
-		indent := lines[start][:dash]
-		for i := 0; i+1 < len(root.Content); i += 2 {
-			if root.Content[i].Value == section && len(indent) < root.Content[i].Column {
-				indent = strings.Repeat(" ", root.Content[i].Column+1)
-				break
-			}
-		}
+		indent := emptyNarrativeIndent(root, section, lines[start][:dash])
 		replacement = []string{indent + "[]" + ending}
 	}
 	result := append(append(append([]string(nil), lines[:start]...), replacement...), lines[end:]...)
 	return []byte(strings.Join(result, "\n")), true
+}
+
+// emptyNarrativeIndent places an empty sequence beneath its mapping key.
+//
+// Example: An indentless block sequence becomes an indented flow sequence.
+func emptyNarrativeIndent(root *yaml.Node, section, indent string) string {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == section && len(indent) < root.Content[i].Column {
+			return strings.Repeat(" ", root.Content[i].Column+1)
+		}
+	}
+	return indent
 }
