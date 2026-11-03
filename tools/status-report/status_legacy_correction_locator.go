@@ -112,6 +112,9 @@ func legacyCorrectionLocatorValid(
 	if u.CorrectsOrdinal != nil {
 		priorOrdinal = *u.CorrectsOrdinal
 	}
+	if !legacyInterveningUpdateEligible(event.Details.StatusUpdate.Updates[match], event.Event, pending.Line, match, u.Corrects, priorOrdinal) {
+		return false, true
+	}
 	var priorEvent syncEvent
 	if json.Unmarshal(lines[u.Corrects-1], &priorEvent) != nil || priorEvent.Details.StatusUpdate == nil {
 		return false, false

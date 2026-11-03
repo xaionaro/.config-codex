@@ -528,3 +528,49 @@ func TestLegacyInvalidBaseCannotAuthorizeCorrection(t *testing.T) {
 	require.Empty(t, freshReport.Tasks[0].Owner)
 	require.Equal(t, freshReport.Tasks[0].Owner, replayedReport.Tasks[0].Owner)
 }
+
+// TestLegacyCorrectionRequiresValidCurrentTransaction checks atomic input validation.
+//
+// Example: An invalid status prevents an otherwise valid owner correction.
+func TestLegacyCorrectionRequiresValidCurrentTransaction(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		applies      bool
+	}{
+		{"invalid sibling field", `"owner":"third","status":"impossible"`, false},
+		{"valid correction", `"owner":"third"`, true},
+	} {
+		t.Run(tc.name,
+			// Compare fresh replay with legacy field-wise recovery.
+			//
+			// Example: An invalid atomic update cannot project its owner alone.
+			func(t *testing.T) {
+				log := `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"first"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{` + tc.fields + `}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				update := syncUpdate{Target: syncTargetTask, ID: "1", Corrects: 1, Fields: map[string]string{"owner": "third"}}
+				key := syncTargetKey(update, "owner")
+				state := syncState{Cursor: 2, Applied: map[string]string{key: "first"}, Latest: map[string]int{key: 2}, Pending: map[string]syncPending{key: {Line: 2, Update: update}}}
+				encoded, err := json.Marshal(state)
+				require.NoError(t, err)
+				input := strings.Replace(linkedReport, "title: First,", "title: First, owner: first,", 1)
+				initial, err := putSyncState([]byte(input), string(encoded))
+				require.NoError(t, err)
+				replayed, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				freshReport, err := parse(fresh)
+				require.NoError(t, err)
+				replayedReport, err := parse(replayed)
+				require.NoError(t, err)
+				require.Equal(t, freshReport.Tasks[0].Owner, replayedReport.Tasks[0].Owner)
+				if tc.applies {
+					require.Equal(t, "third", replayedReport.Tasks[0].Owner)
+				} else {
+					require.Equal(t, "first", replayedReport.Tasks[0].Owner)
+					require.Contains(t, replayedReport.Blockers, "Status refresh incomplete: invalid status_update requires manual review")
+				}
+			})
+	}
+}
