@@ -113,3 +113,16 @@ func TestStructuredClearAcceptsPriorScalarOwnership(t *testing.T) {
 	_, ok = applyStructuredSyncUpdate([]byte(input), update, map[string]string{"lifecycle": "different"})
 	require.False(t, ok)
 }
+
+// TestStructuredWorkRefsAcceptsHash checks references are not mistaken for comments.
+//
+// Example: Replace an existing project record reference.
+func TestStructuredWorkRefsAcceptsHash(t *testing.T) {
+	var update syncUpdate
+	require.NoError(t, json.Unmarshal([]byte(`{"target":"task","id":"1","values":{"work_refs":["project-understanding.yaml#/records/work:second"]}}`), &update))
+	changed, ok := applyStructuredSyncUpdate([]byte(linkedReport), update, nil)
+	require.True(t, ok)
+	parsed, err := parse(changed)
+	require.NoError(t, err)
+	require.Equal(t, []string{"project-understanding.yaml#/records/work:second"}, parsed.Tasks[0].WorkRefs)
+}

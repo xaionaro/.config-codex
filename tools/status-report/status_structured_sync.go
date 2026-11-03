@@ -259,7 +259,7 @@ func editStructuredField(data []byte, u syncUpdate, field, value string) ([]byte
 	default:
 		return data, false
 	}
-	if end < start || end > len(data) || bytes.Contains(data[start:end], []byte("#")) {
+	if end < start || end > len(data) || laneRemovalHasComment(data, start, end) {
 		return data, false
 	}
 	return append(append(append([]byte(nil), data[:start]...), []byte(value+suffix)...), data[end:]...), true
