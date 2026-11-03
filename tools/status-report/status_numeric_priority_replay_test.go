@@ -261,3 +261,71 @@ func TestNumericTopPriorityValuesKeepLexicalIDs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []taskID{"1.10", "1.1"}, parsed.TopPriorities)
 }
+
+// TestNumericPriorityValuePairedRetirementIsAtomic checks the public refresh path.
+//
+// Example: JSON 1.10 matches a supplied estimate label "1.10" without coercion.
+func TestNumericPriorityValuePairedRetirementIsAtomic(t *testing.T) {
+	// prior is the exact source estimate explicitly authorized for retirement.
+	//
+	// Example: The last high-priority task moves into the 1.10 group.
+	const prior = `{"priority":"high","min_minutes":20,"max_minutes":40,"as_of":"2026-11-02T15:24:00Z","basis":"guess","assumptions":"none","dependencies":"none","critical_path":"latest"}`
+	estimate := strings.Replace(prior, `"priority":"high"`, `"priority":"1.10"`, 1)
+	report := strings.Replace(linkedReport, "title: Second, priority: high", "title: Second, priority: 1.10", 1)
+	report = strings.Replace(report, "completion_estimate:", "  - {priority: 1.10, min_minutes: 20, max_minutes: 40, as_of: '2026-11-02T15:24:00Z', basis: guess, assumptions: none, dependencies: none, critical_path: latest} # owner estimate\ncompletion_estimate:", 1)
+	event := `{"event":"decision","details":{"status_update":{"updates":[{"target":"task","id":"1","values":{"priority":1.10}}],"additions":[{"target":"priority_estimate","retire_priority":"high","expected_prior":` + prior + `,"record":` + estimate + `}]}}}` + "\n"
+	for _, tc := range []struct {
+		name, input string
+		succeeds    bool
+	}{
+		{"matching", report, true},
+		{"owner conflict", strings.Replace(report, "critical_path: latest} # owner estimate", "critical_path: owner-edit} # owner estimate", 1), false},
+		{"remaining source", strings.Replace(report, "top_priorities:", "  - {id: '3', title: Other, priority: high, impact: Useful, effort: {min_minutes: 10, max_minutes: 20, kind: elapsed, basis: guess}, status: IN PROGRESS}\ntop_priorities:", 1), false},
+	} {
+		t.Run(tc.name,
+			// Replay and retry one complete paired priority transaction.
+			//
+			// Example: A conflicting estimate leaves the task and both estimates unchanged.
+			func(t *testing.T) {
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				require.NoError(t, os.WriteFile(path, []byte(tc.input), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+				var out, errOut bytes.Buffer
+				require.Equal(t, 0, run([]string{"refresh", dir, "decision"}, strings.NewReader(""), &out, &errOut), errOut.String())
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				parsed, err := parse(result)
+				require.NoError(t, err)
+				require.Contains(t, string(result), "# owner estimate")
+				if tc.succeeds {
+					require.Equal(t, priorityLabel("1.10"), parsed.Tasks[0].Priority)
+					require.Len(t, parsed.PriorityEstimates, 1)
+					require.Empty(t, parsed.StatusSync.Groups)
+					require.Empty(t, parsed.StatusSync.PendingAdditions)
+				} else {
+					require.Equal(t, priorityLabel("high"), parsed.Tasks[0].Priority)
+					require.Len(t, parsed.PriorityEstimates, 2)
+					require.NotEmpty(t, parsed.StatusSync.Groups)
+				}
+				out.Reset()
+				errOut.Reset()
+				require.Equal(t, 0, run([]string{"refresh", dir, "decision"}, strings.NewReader(""), &out, &errOut), errOut.String())
+				retry, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.Equal(t, result, retry)
+			})
+	}
+}
+
+// TestPriorityRetirementRejectsDifferentNumericLexeme checks independent verification.
+//
+// Example: An event value 1.1 cannot authorize an estimate labelled 1.10.
+func TestPriorityRetirementRejectsDifferentNumericLexeme(t *testing.T) {
+	original := []byte("tasks: [{id: '1', priority: high}]\npriority_estimates: [{priority: 1.10}]\n")
+	addition := syncAddition{Target: syncTargetPriorityEstimate, RetirePriority: "high", Record: json.RawMessage(`{"priority":"1.10"}`)}
+	effects := []syncEffect{{Target: syncTargetPriorityEstimate, ID: "high", Value: addition, Operation: syncEffectRemove}, {Target: syncTargetTask, ID: "1", Field: "priority", Value: json.RawMessage(`1.1`), Operation: syncEffectSet}}
+	require.Error(t, verifyPriorityRetirementEffects(original, effects))
+	effects[1].Value = json.RawMessage(`1.10`)
+	require.NoError(t, verifyPriorityRetirementEffects(original, effects))
+}

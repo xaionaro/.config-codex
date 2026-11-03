@@ -818,7 +818,7 @@ func verifyPriorityRetirementEffects(
 				case string:
 					value = v
 				case json.RawMessage:
-					_ = json.Unmarshal(v, &value)
+					value, _ = syncPriorityLabelFromJSON(v)
 				}
 				if value != supplied.Priority {
 					return fmt.Errorf("task priority differs from new estimate")

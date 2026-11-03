@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -50,8 +52,8 @@ func applyPendingReprioritizations(
 		if err != nil || update.Target != syncTargetTask || len(update.Values) == 0 {
 			continue
 		}
-		var priority string
-		if json.Unmarshal(update.Values["priority"], &priority) != nil || priority == "" {
+		priority, ok := syncPriorityLabelFromJSON(update.Values["priority"])
+		if !ok {
 			continue
 		}
 		estimateKey := "addition/priority_estimate/" + priority
@@ -140,13 +142,27 @@ func syncGroupAwaitsPriorityEstimate(
 	if update.Target != syncTargetTask {
 		return false
 	}
-	var priority string
-	if json.Unmarshal(update.Values["priority"], &priority) != nil || priority == "" {
+	priority, ok := syncPriorityLabelFromJSON(update.Values["priority"])
+	if !ok {
 		return false
 	}
 	key := "addition/priority_estimate/" + priority
 	estimate, ok := state.PendingAdditions[key]
 	return ok && estimate.Line == group.Line && state.Latest[key] == estimate.Line
+}
+
+// syncPriorityLabelFromJSON reads a supplied label without numeric coercion.
+//
+// Example: Numeric JSON 1.10 identifies the priority label "1.10".
+func syncPriorityLabelFromJSON(raw json.RawMessage) (string, bool) {
+	if !json.Valid(raw) || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", false
+	}
+	var priority string
+	if yaml.Unmarshal(raw, &priority) != nil || strings.TrimSpace(priority) == "" {
+		return "", false
+	}
+	return priority, true
 }
 
 // existingPriorityEstimate checks whether a supplied estimate already exists unchanged.
