@@ -448,6 +448,10 @@ func applyPendingSyncGroups(
 			effects = append(effects, groupedEffects...)
 			continue
 		}
+		if syncGroupAwaitsPriorityEstimate(*state, update, group) {
+			markSyncBlocked(blocked, targetIdentity, dependencies)
+			continue
+		}
 		previous := syncGroupPriorValues(*state, update)
 		candidate, changes, ok := applySyncGroup(data, update, ledger, forecasts, previous)
 		if !ok {

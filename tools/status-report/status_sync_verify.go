@@ -793,11 +793,44 @@ func verifyPriorityRetirementEffects(
 				taskCount++
 			}
 		}
+		if addCount == 0 && priorityRetirementReusesEstimate(report, supplied.Priority, addition.Record) {
+			addCount = 1
+		}
 		if addCount != 1 || taskCount != 1 {
 			return fmt.Errorf("priority retirement requires one estimate and task update")
 		}
 	}
 	return nil
+}
+
+// priorityRetirementReusesEstimate verifies an unchanged destination in the original report.
+//
+// Example: An existing estimate must exactly match the record supplied with retirement.
+func priorityRetirementReusesEstimate(
+	report map[string]any,
+	priority string,
+	raw json.RawMessage,
+) bool {
+	var supplied map[string]any
+	if yaml.Unmarshal(raw, &supplied) != nil {
+		return false
+	}
+	items, ok := report["priority_estimates"].([]any)
+	if !ok {
+		return false
+	}
+	matched := 0
+	for _, item := range items {
+		estimate, ok := item.(map[string]any)
+		if !ok || estimate["priority"] != priority {
+			continue
+		}
+		if !reflect.DeepEqual(estimate, supplied) {
+			return false
+		}
+		matched++
+	}
+	return matched == 1
 }
 
 // verifyLaneForecastRestore checks a reopened lane's forecast against canonical sources.

@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
+
+	"gopkg.in/yaml.v3"
 )
 
 // applyPendingReprioritizations applies a supplied estimate and existing task change together.
@@ -72,9 +75,16 @@ func applyPendingReprioritizations(
 			}
 			removalEffects = append(removalEffects, syncEffect{Target: syncTargetPriorityEstimate, ID: addition.RetirePriority, Value: addition, Operation: syncEffectRemove})
 		}
-		candidate, ok := insertSyncAddition(candidate, addition)
-		if !ok {
+		exists, matches := existingPriorityEstimate(data, priority, addition.Record)
+		if exists && !matches {
 			continue
+		}
+		if !exists {
+			var ok bool
+			candidate, ok = insertSyncAddition(candidate, addition)
+			if !ok {
+				continue
+			}
 		}
 		candidate, changes, ok := applySyncGroup(candidate, update, ledger, forecasts, syncGroupPriorValues(*state, update))
 		if !ok {
@@ -84,8 +94,11 @@ func applyPendingReprioritizations(
 		if !ok {
 			continue
 		}
-		additionEffect := syncEffect{Target: syncTargetPriorityEstimate, ID: priority, Value: json.RawMessage(estimate.Record), Operation: syncEffectAdd}
-		groupEffects := append(removalEffects, additionEffect)
+		groupEffects := removalEffects
+		if !exists {
+			additionEffect := syncEffect{Target: syncTargetPriorityEstimate, ID: priority, Value: json.RawMessage(estimate.Record), Operation: syncEffectAdd}
+			groupEffects = append(groupEffects, additionEffect)
+		}
 		groupEffects = append(groupEffects, changes...)
 		if verifyPriorityRetirementEffects(data, groupEffects) != nil {
 			continue
@@ -99,8 +112,10 @@ func applyPendingReprioritizations(
 		}
 		data = candidate
 		effects = append(effects, groupEffects...)
-		recordAdditionOwnership(state, syncUpdate{Target: syncTargetPriorityEstimate, ID: priority}, estimate.Line, ownership)
-		state.Applied[estimateKey] = estimate.Record
+		if !exists {
+			recordAdditionOwnership(state, syncUpdate{Target: syncTargetPriorityEstimate, ID: priority}, estimate.Line, ownership)
+			state.Applied[estimateKey] = estimate.Record
+		}
 		delete(state.PendingAdditions, estimateKey)
 		for _, field := range syncGroupFields(update) {
 			target := syncTargetKey(update, field)
@@ -111,6 +126,49 @@ func applyPendingReprioritizations(
 		delete(state.Groups, key)
 	}
 	return data, effects
+}
+
+// syncGroupAwaitsPriorityEstimate keeps a paired transaction atomic while pending.
+//
+// Example: A task move waits when its same-event estimate cannot yet be retired.
+func syncGroupAwaitsPriorityEstimate(
+	state syncState,
+	update syncUpdate,
+	group syncPendingGroup,
+) bool {
+	if update.Target != syncTargetTask {
+		return false
+	}
+	var priority string
+	if json.Unmarshal(update.Values["priority"], &priority) != nil || priority == "" {
+		return false
+	}
+	key := "addition/priority_estimate/" + priority
+	estimate, ok := state.PendingAdditions[key]
+	return ok && estimate.Line == group.Line && state.Latest[key] == estimate.Line
+}
+
+// existingPriorityEstimate checks whether a supplied estimate already exists unchanged.
+//
+// Example: Reuse an identical owner-authored low-priority estimate without taking ownership.
+func existingPriorityEstimate(
+	data []byte,
+	priority string,
+	record json.RawMessage,
+) (bool, bool) {
+	var report struct {
+		Estimates []map[string]any `yaml:"priority_estimates"`
+	}
+	var supplied map[string]any
+	if yaml.Unmarshal(data, &report) != nil || yaml.Unmarshal(record, &supplied) != nil {
+		return true, false
+	}
+	for _, estimate := range report.Estimates {
+		if estimate["priority"] == priority {
+			return true, reflect.DeepEqual(estimate, supplied)
+		}
+	}
+	return false, false
 }
 
 // syncTaskHasPriority confirms an explicit retirement belongs to the selected task.
