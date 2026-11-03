@@ -264,3 +264,24 @@ func TestVerifyPriorityRetirementTransaction(t *testing.T) {
 		t.Fatal("accepted altered estimate")
 	}
 }
+
+// TestVerifyLaneForecastRestore checks source and projection when reopening a lane.
+//
+// Example: Reject a restored forecast with a changed target.
+func TestVerifyLaneForecastRestore(t *testing.T) {
+	ref := "project-understanding.yaml#/records/w"
+	original := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: CLOSED}]\n")
+	candidate := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: 'IN PROGRESS', forecast: {forecast_ref: 'forecasts.yaml#/records/f', outcome: Result, target: '2026-11-02T16:00:00Z', assessment: progressing}}]\n")
+	raw := json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"progressing"}`)
+	effect := syncEffect{Target: syncTargetLane, ID: "a", WorkRef: ref, RequiredEnvironment: syncEnvironmentImplementation, Operation: syncEffectLaneForecastRestore, Value: raw}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", Data: workData{State: workStateActive, ForecastRef: "forecasts.yaml#/records/f"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "lane", "status": "active", "outcome": "Result", "target": "2026-11-02T16:00:00Z", "assessment": "progressing"}}}
+	effects := []syncEffect{effect, {Target: syncTargetLane, ID: "a", WorkRef: ref, RequiredEnvironment: syncEnvironmentImplementation, Field: "implementation_status", Value: "IN PROGRESS", Operation: syncEffectSet}}
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, effects, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	forecasts.Records["f"]["target"] = "2026-11-02T17:00:00Z"
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, effects, ledger, forecasts); err == nil {
+		t.Fatal("accepted stale forecast")
+	}
+}

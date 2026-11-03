@@ -63,6 +63,10 @@ const (
 	//
 	// Example: Reopen a lane.
 	syncEffectCompletedAtClear
+	// syncEffectLaneForecastRestore restores a canonical lane forecast.
+	//
+	// Example: Restore the active forecast when a lane reopens.
+	syncEffectLaneForecastRestore
 )
 
 // syncEffect describes one authorized semantic report change.
@@ -90,6 +94,12 @@ func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []sync
 		return err
 	}
 	for _, effect := range effects {
+		if effect.Operation == syncEffectLaneForecastRestore {
+			if err := verifyLaneForecastRestore(before, after, effect, effects, ledger, forecasts); err != nil {
+				return err
+			}
+			continue
+		}
 		if effect.Operation == syncEffectRemove && (effect.Target == syncTargetRootForecast || effect.Target == syncTargetRootCompletion) {
 			if err := verifyCanonicalRootRemoval(before, effect, effects, ledger, forecasts); err != nil {
 				return err
@@ -193,6 +203,10 @@ func verifyStatusSyncEffects(original, candidate []byte, effects []syncEffect) e
 // Example: Add a supplied narrative entry.
 func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 	switch effect.Operation {
+	case syncEffectLaneForecastRestore:
+		effect.Operation = syncEffectSet
+		effect.Field = "forecast"
+		return applyExpectedSyncEffect(root, effect)
 	case syncEffectMetadata:
 		encoded, err := json.Marshal(effect.Value)
 		if err != nil {
@@ -666,6 +680,101 @@ func verifyPriorityRetirementEffects(original []byte, effects []syncEffect) erro
 		if addCount != 1 || taskCount != 1 {
 			return fmt.Errorf("priority retirement requires one estimate and task update")
 		}
+	}
+	return nil
+}
+
+// verifyLaneForecastRestore checks a reopened lane's forecast against canonical sources.
+//
+// Example: Reject restoration from an inactive forecast.
+func verifyLaneForecastRestore(before, after map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+	if effect.Target != syncTargetLane || !validRef(effect.WorkRef, "project-understanding.yaml") {
+		return fmt.Errorf("invalid forecast restore identity")
+	}
+	work, ok := ledger.Records[sourceID(effect.WorkRef, "project-understanding.yaml")]
+	if !ok || work.Type != "work" || !openWork(work.Data.State) {
+		return fmt.Errorf("forecast restore requires open canonical work")
+	}
+	ref := string(work.Data.ForecastRef)
+	if !validRef(ref, "forecasts.yaml") {
+		return fmt.Errorf("invalid restored forecast reference")
+	}
+	source := forecasts.Records[sourceID(ref, "forecasts.yaml")]
+	if textField(source, "kind") != "lane" || textField(source, "status") != "active" {
+		return fmt.Errorf("restored forecast is not active lane source")
+	}
+	oldItems, ok := before["lanes"].([]any)
+	if !ok {
+		return fmt.Errorf("missing original lanes")
+	}
+	oldIndex, err := syncEffectIndex(oldItems, "task_id", effect)
+	if err != nil || oldIndex < 0 {
+		return fmt.Errorf("missing original lane")
+	}
+	oldLane := oldItems[oldIndex].(map[string]any)
+	if _, exists := oldLane["forecast"]; exists {
+		return fmt.Errorf("forecast restore would replace existing forecast")
+	}
+	newItems, ok := after["lanes"].([]any)
+	if !ok {
+		return fmt.Errorf("missing final lanes")
+	}
+	newIndex, err := syncEffectIndex(newItems, "task_id", effect)
+	if err != nil || newIndex < 0 {
+		return fmt.Errorf("missing final lane")
+	}
+	newLane := newItems[newIndex].(map[string]any)
+	raw, ok := effect.Value.(json.RawMessage)
+	if !ok {
+		return fmt.Errorf("invalid forecast restore value")
+	}
+	var actual map[string]any
+	if err := yaml.Unmarshal(raw, &actual); err != nil {
+		return err
+	}
+	expected := map[string]any{"forecast_ref": ref}
+	nested := map[string]any{}
+	for _, field := range forecastFieldPolicies() {
+		if field.Report != "" {
+			if value := textField(source, field.Source); value != "" {
+				expected[field.Report] = value
+			}
+		}
+		if field.Nested {
+			if value, exists := source[field.Source]; exists {
+				nested[field.Source] = value
+			}
+		}
+	}
+	if len(nested) > 0 {
+		expected["source_projection"] = nested
+	}
+	if recal, ok := source["recalibration"].(map[string]any); ok {
+		for _, field := range forecastHistoryFields() {
+			if value := textField(recal, field); value != "" {
+				expected[field] = value
+			}
+		}
+	}
+	if !projectionEqual(actual, expected) || !projectionEqual(newLane["forecast"], expected) {
+		return fmt.Errorf("restored forecast differs from canonical projection")
+	}
+	reopened := false
+	for _, change := range effects {
+		if change.Target != syncTargetLane || change.ID != effect.ID || change.WorkRef != effect.WorkRef || change.RequiredEnvironment != effect.RequiredEnvironment {
+			continue
+		}
+		if change.Operation == syncEffectSet && change.Field == effect.RequiredEnvironment.String()+"_status" {
+			if value, ok := change.Value.(string); ok && value != "CLOSED" {
+				reopened = true
+			}
+		}
+		if change.Operation == syncEffectClear && change.Field == "lifecycle" {
+			reopened = true
+		}
+	}
+	if !reopened {
+		return fmt.Errorf("forecast restore lacks reopening effect")
 	}
 	return nil
 }
