@@ -16,6 +16,8 @@ check_reminder 'Give me a proper status report'
 check_reminder 'Can you give me a progress report?'
 check_reminder 'Status report, please.'
 check_reminder "What's the status?"
+check_reminder 'Fix the renderer and give me a status report'
+check_reminder 'Give me a status report on the status report renderer'
 printf '%s\n' 'python3() { return 1; }' 'export -f python3' >"$tmp/fail-capture"
 output="$(jq -cn '{session_id:"valid-session",turn_id:"turn",prompt:"status"}' | BASH_ENV="$tmp/fail-capture" bash -c "$command")"
 jq -e '.hookSpecificOutput.additionalContext | contains("status-report render")' <<<"$output" >/dev/null

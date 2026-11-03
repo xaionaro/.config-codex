@@ -15,7 +15,11 @@ iconv -f UTF-8 -t UTF-8 "$input_file" >/dev/null 2>&1 || exit 0
 jq -se 'length == 1 and (.[0] | type == "object")' "$input_file" >/dev/null 2>&1 || exit 0
 prompt=$(jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' "$input_file" 2>/dev/null || true)
 normalized_prompt="${prompt,,}"
-if [[ "$normalized_prompt" =~ (fix|repair|change|modify|implement).*(status|progress)[[:space:]]+report ]] ||
+explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest))*[[:space:]]+(status|progress)[[:space:]]+(report|update)([^[:alpha:]]|$)'
+reminder=false
+if [[ "$normalized_prompt" =~ $explicit_report ]]; then
+  reminder=true
+elif [[ "$normalized_prompt" =~ (fix|repair|change|modify|implement).*(status|progress)[[:space:]]+report ]] ||
    [[ "$normalized_prompt" =~ how.*(status|progress)[[:space:]]+report.*(works|work|implemented) ]] ||
    [[ "$normalized_prompt" =~ (status|progress)[[:space:]]+report[[:space:]]+(renderer|tool|generator) ]]; then
   :
@@ -23,6 +27,9 @@ elif [[ "$normalized_prompt" =~ ^[[:space:]]*(status|sitrep|progress|checkpoint)
    [[ "$normalized_prompt" =~ (give|show|provide|write|send|want|need|request|what.s|how.s|current).*(status|progress|sitrep|checkpoint).*(report|update) ]] ||
    [[ "$normalized_prompt" =~ (give|show|provide|write|send|want|need|request|what.s|how.s).*(status|progress|sitrep|checkpoint)[[:space:][:punct:]]*$ ]] ||
    [[ "$normalized_prompt" =~ ^[[:space:]]*(a[[:space:]]+)?(status|progress)[[:space:]]+report[[:punct:]]*([[:space:]]+please)?[[:space:][:punct:]]*$ ]]; then
+  reminder=true
+fi
+if [[ "$reminder" == true ]]; then
   jq -n '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:"For the requested status report, load writing-status-reports; reconcile YAML, validate, render with status-report render, and publish the full rendered result. Correct known missing sections in YAML and rerender; use the documented incomplete fallback only if structural failure prevents rendering."}}'
 fi
 
