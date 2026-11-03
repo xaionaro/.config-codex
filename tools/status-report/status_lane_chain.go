@@ -17,7 +17,7 @@ func planLaneLifecycleChain(
 	forecasts forecastSource,
 	previous map[string]string,
 ) ([]byte, []syncEffect, map[string]syncPendingGroup, bool) {
-	if len(groups) < 2 || len(groups) > 3 {
+	if len(groups) < 2 {
 		return data, nil, nil, false
 	}
 	updates := make([]syncUpdate, len(groups))
@@ -53,32 +53,37 @@ func planLaneLifecycleChain(
 		return data, nil, nil, false
 	}
 	cancelled := mapValue(lane, "lifecycle") != nil && mapValue(lane, "lifecycle").Value == "cancelled"
-	reopenIndex := 0
-	if len(groups) == 3 {
-		if updates[0].Fields["lifecycle"] != "cancelled" || len(updates[0].Fields) != 1 || len(updates[0].Clear) != 0 || strings.TrimSpace(updates[0].Evidence) == "" {
-			return data, nil, nil, false
-		}
-		reopenIndex = 1
-	}
-	if len(groups) == 2 && !cancelled {
-		return data, nil, nil, false
-	}
-	reopen := updates[reopenIndex]
-	hasClear := false
-	for _, field := range reopen.Clear {
-		if field == "lifecycle" {
-			hasClear = true
-		}
-	}
-	if !hasClear || strings.TrimSpace(reopen.Evidence) == "" {
-		return data, nil, nil, false
-	}
 	final := updates[len(updates)-1]
 	statusField := final.RequiredEnvironment.String() + "_status"
-	if reopen.Fields[statusField] == "CLOSED" || reopen.Fields["completed_at"] != "" {
+	if final.Fields[statusField] != "CLOSED" || strings.TrimSpace(final.Fields["completed_at"]) == "" || strings.TrimSpace(final.Evidence) == "" {
 		return data, nil, nil, false
 	}
-	if final.Fields[statusField] != "CLOSED" || strings.TrimSpace(final.Fields["completed_at"]) == "" || strings.TrimSpace(final.Evidence) == "" {
+	stateCancelled := cancelled
+	reactivated := false
+	for i, update := range updates[:len(updates)-1] {
+		if update.Fields[statusField] == "CLOSED" || update.Fields["completed_at"] != "" {
+			return data, nil, nil, false
+		}
+		if update.Fields["lifecycle"] == "cancelled" {
+			if stateCancelled || len(update.Fields) != 1 || len(update.Clear) != 0 || strings.TrimSpace(update.Evidence) == "" {
+				return data, nil, nil, false
+			}
+			stateCancelled = true
+			continue
+		}
+		for _, field := range update.Clear {
+			if field == "lifecycle" {
+				if !stateCancelled || strings.TrimSpace(update.Evidence) == "" {
+					return data, nil, nil, false
+				}
+				stateCancelled, reactivated = false, true
+			}
+		}
+		if i == 0 && !cancelled && !reactivated {
+			return data, nil, nil, false
+		}
+	}
+	if stateCancelled || !reactivated {
 		return data, nil, nil, false
 	}
 	combined := final
@@ -88,7 +93,7 @@ func planLaneLifecycleChain(
 	provenance := map[string]syncPendingGroup{}
 	for i, update := range updates {
 		for field, value := range update.Fields {
-			if field == "lifecycle" && i == 0 && len(groups) == 3 {
+			if field == "lifecycle" && value == "cancelled" && i < len(updates)-1 {
 				continue
 			}
 			if field == "lifecycle" {

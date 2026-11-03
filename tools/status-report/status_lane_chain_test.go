@@ -78,3 +78,47 @@ func TestLaneLifecycleChainComposesExplicitTransitions(t *testing.T) {
 		t.Fatal("owner edit overwritten")
 	}
 }
+
+// TestLaneLifecycleChainRepeatedCancellation preserves every supplied lifecycle step.
+//
+// Example: Two explicit cancellations and reactivations lead to one canonical closure.
+func TestLaneLifecycleChainRepeatedCancellation(t *testing.T) {
+	base := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation}
+	cancel := base
+	cancel.Evidence = "cancelled"
+	cancel.Fields = map[string]string{"lifecycle": "cancelled"}
+	reopen := base
+	reopen.Evidence = "resumed"
+	reopen.Clear = []string{"lifecycle"}
+	reopen.Fields = map[string]string{"implementation_status": "PAUSED"}
+	closeUpdate := base
+	closeUpdate.Evidence = "accepted"
+	closeUpdate.Fields = map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:45:00Z"}
+	var groups []syncPendingGroup
+	var log strings.Builder
+	for i, update := range []syncUpdate{cancel, reopen, cancel, reopen, closeUpdate} {
+		encoded, err := encodeSyncGroup(update)
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, syncPendingGroup{Line: i + 1, Update: encoded})
+		raw, err := json.Marshal(update)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log.WriteString(`{"event":"lifecycle_change","details":{"status_update":{"updates":[` + string(raw) + `]}}}` + "\n")
+	}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:45:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"first": {"status": "inactive"}}}
+	got, effects, provenance, ok := planLaneLifecycleChain([]byte(linkedReport), groups, ledger, forecasts, nil)
+	if !ok {
+		t.Fatal("repeated explicit lifecycle rejected")
+	}
+	if err := verifyLaneLifecycleChain([]byte(linkedReport), got, groups, effects, provenance, nil, []byte(log.String()), ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	r, err := parse(got)
+	if err != nil || r.Lanes[0].ImplementationStatus != statusClosed {
+		t.Fatalf("closure missing: %v", err)
+	}
+}
