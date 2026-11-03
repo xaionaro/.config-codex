@@ -71,6 +71,9 @@ func applyNarrativeSyncField(
 		entry := "{subject_ref: " + strconv.Quote(u.ID) + ", text: " + strconv.Quote(value) + "}"
 		return appendNarrativeEntry(data, root, list, u.Target.String(), entry)
 	}
+	if field == "evidence" && !itemOwned {
+		return data, false
+	}
 	existing := mapValue(item, field)
 	if existing != nil {
 		if previous == "" || existing.Kind != yaml.ScalarNode || existing.Value != previous {
@@ -259,6 +262,9 @@ func retractNarrativeSync(
 			return data, false
 		}
 		end++
+		if strings.Contains(string(data[start:end]), "#") {
+			return data, false
+		}
 		switch {
 		case index+1 < len(list.Content):
 			next, err := yamlByteOffset(data, list.Content[index+1].Line, list.Content[index+1].Column)

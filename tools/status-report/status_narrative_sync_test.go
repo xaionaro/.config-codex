@@ -111,3 +111,25 @@ func TestRetractNarrativeSyncBlockList(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(got, &doc))
 	require.Empty(t, mapValue(doc.Content[0], "progress").Content)
 }
+
+// TestNarrativeEvidenceProtectsEditedText checks ownership of the whole subject.
+//
+// Example: An owner text edit blocks a later automatic evidence update.
+func TestNarrativeEvidenceProtectsEditedText(t *testing.T) {
+	source := []byte("progress: [{subject_ref: one, text: revised, evidence: proof}]\n")
+	update := syncUpdate{Target: syncTargetProgress, ID: "one", Fields: map[string]string{"evidence": "new"}}
+	got, ok := applyNarrativeSyncField(source, update, "evidence", "new", "proof", false)
+	require.False(t, ok)
+	require.Equal(t, source, got)
+}
+
+// TestRetractNarrativePreservesInlineComment checks a comment inside a flow mapping.
+//
+// Example: A comment added by an owner prevents automatic removal of the entry.
+func TestRetractNarrativePreservesInlineComment(t *testing.T) {
+	source := []byte("progress: [{subject_ref: one, # owner comment\n text: done}]\n")
+	update := syncUpdate{Target: syncTargetProgress, ID: "one"}
+	got, ok := retractNarrativeSync(source, update, "done", "")
+	require.False(t, ok)
+	require.Equal(t, source, got)
+}
