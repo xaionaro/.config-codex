@@ -1402,7 +1402,7 @@ func replaceDecoratedNullSyncState(
 		return nil, err
 	}
 	valueStart, valueEnd := propertyEnd, propertyEnd
-	if node.Value == "" {
+	if node.Value == "" && node.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) == 0 {
 		state = " " + state
 	} else {
 		valueStart = skipNullPropertyTrivia(data, propertyEnd)
@@ -1489,10 +1489,36 @@ func nullSyncValueEnd(
 	node *yaml.Node,
 	start int,
 ) (int, error) {
-	for _, spelling := range []string{node.Value, "'" + node.Value + "'", "\"" + node.Value + "\""} {
-		if strings.HasPrefix(string(data[start:]), spelling) {
-			return start + len(spelling), nil
-		}
+	if start < len(data) && (data[start] == '\'' || data[start] == '"') {
+		return quotedNullSyncValueEnd(data, start)
+	}
+	if node.Value != "" && strings.HasPrefix(string(data[start:]), node.Value) {
+		return start + len(node.Value), nil
 	}
 	return 0, fmt.Errorf("unsupported null metadata layout")
+}
+
+// quotedNullSyncValueEnd finds the actual source boundary of a quoted null.
+//
+// Example: An escaped double-quoted null keeps its trailing owner comment.
+func quotedNullSyncValueEnd(
+	data []byte,
+	start int,
+) (int, error) {
+	quote := data[start]
+	for i := start + 1; i < len(data); i++ {
+		if quote == '"' && data[i] == '\\' {
+			i++
+			continue
+		}
+		if data[i] != quote {
+			continue
+		}
+		if quote == '\'' && i+1 < len(data) && data[i+1] == quote {
+			i++
+			continue
+		}
+		return i + 1, nil
+	}
+	return 0, fmt.Errorf("unterminated quoted null metadata")
 }

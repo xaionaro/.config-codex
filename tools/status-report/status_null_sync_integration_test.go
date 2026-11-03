@@ -26,6 +26,8 @@ func TestNullStatusSyncBootstrapReplays(t *testing.T) {
 		{"flow empty", strings.Replace(string(flow), `"status_sync":null`, `"status_sync":`, 1)},
 		{"flow empty anchor", strings.Replace(string(flow), `"status_sync":null`, `"status_sync": &owner `, 1)},
 		{"flow empty tag", strings.Replace(string(flow), `"status_sync":null`, `"status_sync": !!null `, 1)},
+		{"flow quoted empty", strings.Replace(string(flow), `"status_sync":null`, `"status_sync": !!null ""`, 1)},
+		{"flow quoted escaped", strings.Replace(string(flow), `"status_sync":null`, `"status_sync": !!null "n\u0075ll"`, 1)},
 		{"block null", linkedReport + "status_sync: null # owner note\n"},
 		{"block tilde", linkedReport + "status_sync: ~ # owner note\n"},
 		{"block empty", linkedReport + "status_sync: # owner note\n"},
@@ -43,6 +45,11 @@ func TestNullStatusSyncBootstrapReplays(t *testing.T) {
 		{"property comments", linkedReport + "status_sync: !!null # tag note\n  &owner # anchor note\n  null # owner note\n"},
 		{"quoted tag", linkedReport + "status_sync: !!null 'null' # owner note\n"},
 		{"double quoted tag", linkedReport + "status_sync: !!null \"null\" # owner note\n"},
+		{"empty single quote", linkedReport + "status_sync: !!null '' # owner note\n"},
+		{"empty double quote", linkedReport + "status_sync: !!null \"\" # owner note\n"},
+		{"escaped double quote", linkedReport + "status_sync: !!null \"n\\u0075ll\" # owner note\n"},
+		{"escaped quote CRLF", strings.ReplaceAll(linkedReport+"status_sync: !!null \"n\\u0075ll\" # owner note\n", "\n", "\r\n")},
+		{"anchored empty quote", linkedReport + "status_sync: !!null &owner '' # owner note\n"},
 	} {
 		t.Run(tc.name,
 			// Replay one durable event and retain adjacent owner text.
