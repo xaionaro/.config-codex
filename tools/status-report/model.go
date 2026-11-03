@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -179,6 +180,43 @@ func validForecast(f forecast) bool {
 //
 // Example: Distinguish verified empty history from unavailable history.
 type timelineState int
+
+// String returns the documented timeline coverage label.
+//
+// Example: A verified empty timeline renders as verified_empty.
+func (s timelineState) String() string {
+	switch s {
+	case timelineUnavailable:
+		return "unavailable"
+	case timelineVerifiedEmpty:
+		return "verified_empty"
+	case timelinePresent:
+		return "present"
+	default:
+		return "unknown"
+	}
+}
+
+// MarshalJSON encodes the timeline coverage label.
+//
+// Example: A present timeline retains its wire string.
+func (s timelineState) MarshalJSON() ([]byte, error) {
+	if s < timelineUnknown || s > timelinePresent {
+		return nil, fmt.Errorf("invalid timeline state %d", s)
+	}
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON decodes a documented timeline coverage label.
+//
+// Example: A verified_empty snapshot becomes timelineVerifiedEmpty.
+func (s *timelineState) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	return s.UnmarshalYAML(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+}
 
 // UnmarshalYAML decodes the supported timeline coverage states.
 //

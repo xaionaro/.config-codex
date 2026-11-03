@@ -354,6 +354,9 @@ func render(r report) string {
 	}
 	if r.TimelineState == timelineVerifiedEmpty {
 		fmt.Fprintln(&b, "\nTimeline: verified no evidenced activity.")
+		if r.TimelineAsOf != "" && !sameValue(r.TimelineAsOf, r.Timestamp) {
+			fmt.Fprintf(&b, "Historical timeline as of %s; coverage may be incomplete.\n", r.TimelineAsOf)
+		}
 	} else {
 		fmt.Fprintln(&b, "\nTimeline:")
 		if r.TimelineAsOf != "" && !sameValue(r.TimelineAsOf, r.Timestamp) {

@@ -83,7 +83,7 @@ func TestVerifyStatusSyncEffectsChecksFullRecordAndMetadata(t *testing.T) {
 // Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncEffectsChecksAtomicTimeline(t *testing.T) {
 	original := []byte("other: keep\n")
-	effects := []syncEffect{{Operation: syncEffectTimeline, Value: syncTimelineSnapshot{AsOf: "2026-11-02T15:24:00Z", State: "verified_empty"}}}
+	effects := []syncEffect{{Operation: syncEffectTimeline, Value: syncTimelineSnapshot{AsOf: "2026-11-02T15:24:00Z", State: timelineVerifiedEmpty}}}
 	good := []byte("other: keep\ntimeline: []\ntimeline_state: verified_empty\ntimeline_as_of: '2026-11-02T15:24:00Z'\n")
 	if err := verifyStatusSyncEffects(original, good, effects); err != nil {
 		t.Fatal(err)

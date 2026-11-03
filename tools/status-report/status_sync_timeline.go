@@ -14,7 +14,7 @@ import (
 // Example: Replace one four-hour snapshot without rebucketing its rows.
 type syncTimelineSnapshot struct {
 	AsOf    string          `json:"as_of"`
-	State   string          `json:"state"`
+	State   timelineState   `json:"state"`
 	Entries []timelineEntry `json:"entries"`
 }
 
@@ -30,11 +30,11 @@ func applySyncTimeline(
 		return data, false
 	}
 	switch snapshot.State {
-	case "present":
+	case timelinePresent:
 		if len(snapshot.Entries) == 0 {
 			return data, false
 		}
-	case "verified_empty":
+	case timelineVerifiedEmpty:
 		if len(snapshot.Entries) != 0 {
 			return data, false
 		}
@@ -78,7 +78,7 @@ func applySyncTimeline(
 	if err != nil {
 		return data, false
 	}
-	values := map[string]string{"timeline_as_of": fmt.Sprintf("%q", snapshot.AsOf), "timeline_state": snapshot.State, "timeline": strings.TrimSpace(string(encoded))}
+	values := map[string]string{"timeline_as_of": fmt.Sprintf("%q", snapshot.AsOf), "timeline_state": snapshot.State.String(), "timeline": strings.TrimSpace(string(encoded))}
 	lines := strings.SplitAfter(string(data), "\n")
 	offsets := make([]int, len(lines)+1)
 	for i, line := range lines {
