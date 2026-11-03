@@ -812,7 +812,7 @@ func removeCancelledPriority(
 	id taskID,
 ) ([]byte, bool) {
 	var doc yaml.Node
-	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {
+	if yaml.Unmarshal(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), &doc) != nil || len(doc.Content) != 1 {
 		return data, false
 	}
 	root := doc.Content[0]

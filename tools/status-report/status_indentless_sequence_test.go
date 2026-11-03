@@ -195,3 +195,18 @@ func TestFinalSequencePreservesCRLF(t *testing.T) {
 	require.True(t, ok)
 	require.NotContains(t, strings.ReplaceAll(string(out), "\r\n", ""), "\n")
 }
+
+// TestNestedSequenceCommentWithCRLF checks sibling ownership under CRLF.
+//
+// Example: A nested status note survives a work-reference update.
+func TestNestedSequenceCommentWithCRLF(t *testing.T) {
+	for _, items := range []string{"    - 'project-understanding.yaml#/records/old'", "      - 'project-understanding.yaml#/records/old'"} {
+		input := strings.Replace(valid, "    status: IN PROGRESS\n", "    work_refs:\n"+items+"\n    # status note\n    status: IN PROGRESS\n", 1)
+		input = strings.ReplaceAll(input, "\n", "\r\n")
+		out, ok := editStructuredField([]byte(input), syncUpdate{Target: syncTargetTask, ID: "1"}, "work_refs", `["project-understanding.yaml#/records/new"]`)
+		require.True(t, ok)
+		require.Contains(t, string(out), "    # status note\r\n    status: IN PROGRESS")
+		_, err := parse(out)
+		require.NoError(t, err)
+	}
+}
