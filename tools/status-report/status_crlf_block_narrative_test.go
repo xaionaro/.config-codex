@@ -94,3 +94,20 @@ func TestCRLFBlockNarrativeAtEOFWithoutNewline(t *testing.T) {
 	require.NotContains(t, normalized, "\n")
 	require.NotContains(t, normalized, "\r")
 }
+
+// TestCRLFMultilineNarrativeRetractionKeepsFinalBoundary checks both EOF layouts.
+//
+// Example: Removing a multiline final item preserves whether its last line was terminated.
+func TestCRLFMultilineNarrativeRetractionKeepsFinalBoundary(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"unterminated", "progress:\r\n  - subject_ref: one\r\n    text: done", "progress:\r\n  []"},
+		{"terminated", "progress:\r\n  - subject_ref: one\r\n    text: done\r\n", "progress:\r\n  []\r\n"},
+		{"following field", "progress:\r\n  - subject_ref: one\r\n    text: done\r\ndecisions: []\r\n", "progress:\r\n  []\r\ndecisions: []\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, ok := retractNarrativeSync([]byte(tc.input), syncUpdate{Target: syncTargetProgress, ID: "one"}, "done", true, "", false)
+			require.True(t, ok)
+			require.Equal(t, tc.want, string(out))
+		})
+	}
+}

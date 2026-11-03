@@ -354,7 +354,7 @@ func retractBlockNarrative(
 	replacement := []string{}
 	if len(list.Content) == 1 {
 		ending := ""
-		if strings.HasSuffix(lines[start], "\r") {
+		if end > start && strings.HasSuffix(lines[end-1], "\r") {
 			ending = "\r"
 		}
 		replacement = []string{lines[start][:dash] + "[]" + ending}
