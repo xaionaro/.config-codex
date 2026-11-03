@@ -177,6 +177,13 @@ func validateTimeline(r report) error {
 	if err != nil {
 		return err
 	}
+	if r.TimelineAsOf != "" {
+		anchor, err := parseUTC(r.TimelineAsOf)
+		if err != nil || anchor.After(now) {
+			return fmt.Errorf("timeline_as_of must be UTC and no later than timestamp")
+		}
+		now = anchor
+	}
 	chains := map[string]string{}
 	seenSlots := map[string]map[time.Time]bool{}
 	for _, row := range r.Timeline {

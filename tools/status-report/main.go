@@ -110,6 +110,7 @@ type task struct {
 type report struct {
 	Incomplete         []string             `yaml:"-"`
 	Timestamp          string               `yaml:"timestamp"`
+	TimelineAsOf       string               `yaml:"timeline_as_of"`
 	State              string               `yaml:"state"`
 	Progress           []string             `yaml:"progress"`
 	Decisions          []any                `yaml:"decisions"`
@@ -138,7 +139,11 @@ type report struct {
 // Example: Reject a report with a missing task reference.
 func parse(data []byte) (report, error) {
 	var r report
-	d := yaml.NewDecoder(bytes.NewReader(data))
+	normalized, err := normalizeNarratives(data)
+	if err != nil {
+		return r, fmt.Errorf("invalid YAML/schema: %w", err)
+	}
+	d := yaml.NewDecoder(bytes.NewReader(normalized))
 	d.KnownFields(true)
 	if err := d.Decode(&r); err != nil {
 		return r, fmt.Errorf("invalid YAML/schema: %w", err)
@@ -334,6 +339,9 @@ func render(r report) string {
 		fmt.Fprintln(&b, "\nTimeline: verified no evidenced activity.")
 	} else {
 		fmt.Fprintln(&b, "\nTimeline:")
+		if r.TimelineAsOf != "" && !sameValue(r.TimelineAsOf, r.Timestamp) {
+			fmt.Fprintf(&b, "Historical timeline as of %s; coverage may be incomplete.\n", r.TimelineAsOf)
+		}
 		if r.TimelineState == timelineUnavailable || (r.TimelineState == timelineUnknown && len(r.Timeline) > 0) {
 			fmt.Fprintln(&b, "History is incomplete or unavailable; displayed rows do not establish full coverage.")
 		}
