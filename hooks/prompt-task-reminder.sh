@@ -16,8 +16,11 @@ jq -se 'length == 1 and (.[0] | type == "object")' "$input_file" >/dev/null 2>&1
 prompt=$(jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' "$input_file" 2>/dev/null || true)
 normalized_prompt="${prompt,,}"
 explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest))*[[:space:]]+(status|progress)[[:space:]]+(report|update)([^[:alpha:]]|$)'
+# Remove component noun phrases only for request matching; an earlier report
+# request in the same prompt still matches independently.
+report_request_text="$(printf '%s' "$normalized_prompt" | sed -E 's/(status|progress)[[:space:]]+(report|update)[[:space:]]+(renderer|tool|generator)/report-component/g')"
 reminder=false
-if [[ "$normalized_prompt" =~ $explicit_report ]]; then
+if [[ "$report_request_text" =~ $explicit_report ]]; then
   reminder=true
 elif [[ "$normalized_prompt" =~ (fix|repair|change|modify|implement).*(status|progress)[[:space:]]+report ]] ||
    [[ "$normalized_prompt" =~ how.*(status|progress)[[:space:]]+report.*(works|work|implemented) ]] ||
