@@ -147,3 +147,29 @@ func TestNarrativeOwnershipRequiresMembership(t *testing.T) {
 	_, ok = retractNarrativeSync(source, update, "same", false, "", false)
 	require.False(t, ok)
 }
+
+// TestRetractNarrativeAllowsHashInQuotedValues checks references containing hash characters.
+//
+// Example: A canonical record reference is not mistaken for a YAML comment.
+func TestRetractNarrativeAllowsHashInQuotedValues(t *testing.T) {
+	update := syncUpdate{Target: syncTargetProgress, ID: "one"}
+	for _, source := range []string{
+		"progress: [{subject_ref: one, text: done, evidence: 'ledger.yaml#/records/one'}]\n",
+		"progress:\n  - subject_ref: one\n    text: done\n    evidence: 'ledger.yaml#/records/one'\n",
+	} {
+		got, ok := retractNarrativeSync([]byte(source), update, "done", true, "ledger.yaml#/records/one", true)
+		require.True(t, ok, source)
+		require.NotContains(t, string(got), "subject_ref")
+	}
+}
+
+// TestRetractNarrativeBlockPreservesInlineComment checks block entries with owner comments.
+//
+// Example: An inline comment makes automatic retraction wait for review.
+func TestRetractNarrativeBlockPreservesInlineComment(t *testing.T) {
+	source := []byte("progress:\n  - subject_ref: one\n    text: done # owner note\n")
+	update := syncUpdate{Target: syncTargetProgress, ID: "one"}
+	got, ok := retractNarrativeSync(source, update, "done", true, "", false)
+	require.False(t, ok)
+	require.Equal(t, source, got)
+}
