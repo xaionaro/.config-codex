@@ -396,6 +396,16 @@ func publishStatus(
 		observer.BeforePublish()
 	}
 	for p, before := range inputs {
+		if before == nil {
+			_, err := os.Lstat(p)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("input changed during refresh: %w: %w", errRefreshRetry, err)
+			}
+			return fmt.Errorf("input changed during refresh: %w", errRefreshRetry)
+		}
 		current, err := os.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("input changed during refresh: %w: %w", errRefreshRetry, err)

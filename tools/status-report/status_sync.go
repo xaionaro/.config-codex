@@ -158,6 +158,10 @@ func projectLogStatus(
 	if err != nil {
 		return nil, nil, err
 	}
+	// A nil snapshot denotes an absent log; preserve a distinct empty snapshot.
+	if logBytes == nil {
+		logBytes = []byte{}
+	}
 	boundaries := make([]int, 0)
 	for i, b := range logBytes {
 		if b == '\n' {
