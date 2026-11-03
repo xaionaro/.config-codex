@@ -69,7 +69,7 @@ Producers can include an explicit `details.status_update` object in a high-level
 Place that object under `details.status_update` in a valid log event. Supported updates are:
 
 - `task`: identify by task `id`; fields are `status`, `evidence`, `owner`, `context`, and `lifecycle`. `CLOSED` requires accompanying `fields.evidence`. Cancel a task with `fields` containing `lifecycle: "cancelled"`, `status: "unknown"`, and nonempty `evidence` together. This removes that task from `top_priorities` and preserves its descendants.
-- `lane`: identify by `id` (the lane's `task_id`), `work_ref`, and `required_environment` (`implementation`, `test`, or `prod`). Fields are `owner`, `implementation_status`, `test_status`, `prod_status`, `blocker`, `next_action`, `next_milestone`, `context`, `completed_at`, and `lifecycle`. To close the required environment, supply its `CLOSED` status and `completed_at` together, plus nonempty update-level `evidence`. The canonical work must be completed at the same time and the report lane must have no active forecast. Cancellation uses `lifecycle: "cancelled"`, update-level evidence, and canonical work in the cancelled state.
+- `lane`: identify by `id` (the lane's `task_id`), `work_ref`, and `required_environment` (`implementation`, `test`, or `prod`). Fields are `owner`, `implementation_status`, `test_status`, `prod_status`, `blocker`, `next_action`, `next_milestone`, `context`, `completed_at`, `lifecycle`, and `root_task_status` (`FOLLOWUP` or `FOLLOWUP_PAUSED`). To close the required environment, supply its `CLOSED` status and `completed_at` together, plus nonempty update-level `evidence`. The canonical work must be completed at the same time and the report lane must have no active forecast. Cancellation uses `lifecycle: "cancelled"`, update-level evidence, and canonical work in the cancelled state.
 - `progress`, `decisions`, `blockers_risks`, and `verification`: identify a subject with `id`; fields are `text` and `evidence`. New subjects need `text`; the report stores the ID as `subject_ref`.
 - `report`: use `id: "current"`; fields are `state` and `next_focus`.
 
@@ -80,6 +80,8 @@ For example, a lane completion update after the canonical work and forecast are 
 ```
 
 `additions` accepts `{"target":"task","record":{...}}` or `{"target":"review","record":{...}}` with a complete report-schema record. IDs must be unique; a review uses `task_id`. When a task introduces a new priority, add its complete `priority_estimate` record in the same event; the task and estimate are inserted together. These operations do not derive impact points: the producer assigns supported points and basis on the shared scale, and the renderer calculates priority from those points and remaining work.
+
+An existing task can similarly change `priority` in `values` in the same event that adds the new `priority_estimate`. To retire the old estimate when this is its last task, include `retire_priority` naming the old priority and `expected_prior` containing its complete existing estimate on the new estimate addition. A mismatched prior remains pending.
 
 Additions also accept complete `lane`, `root_completion`, and `root_forecast` records. Their work, reporting role, outcome and forecast must agree with canonical sources; terminal additions require addition-level `evidence`. For a terminal lane update, the canonical work must match and any referenced canonical forecast must be inactive before its report forecast can be retired. Reopening a lane clears its `completed_at`.
 
@@ -94,7 +96,7 @@ Typed updates use `values` for supplied JSON values and `clear` for explicit rem
 
 For example, `{"target":"task","id":"1","values":{"impact_points":5,"impact_basis":"educated guess"},"clear":["indivisible_reason"]}` supplies points and explicitly removes the optional reason. Resulting reports still must validate; a clear does not invent a replacement.
 
-Task updates can also clear `lifecycle`, `context`, `owner`, or `evidence`; clearing `lifecycle` requires an explicit non-unknown status in `fields`. Lane updates can clear `blocker`, `next_action`, `lifecycle`, or `completed_at` alongside scalar `fields`. Clearing lane `lifecycle` requires event evidence and canonical work in active or blocked state. Supply readiness changes as needed for a valid report; clearing `completed_at` while the lane remains closed is invalid. A field cannot be supplied and cleared in the same update.
+Task updates can also clear `lifecycle`, `context`, `owner`, or `evidence`; clearing `lifecycle` requires an explicit non-unknown status in `fields`. Lane updates can clear `blocker`, `next_action`, `lifecycle`, `completed_at`, or `root_task_status` alongside scalar `fields`. Clearing lane `lifecycle` requires event evidence and canonical work in active or blocked state. Supply readiness changes as needed for a valid report; clearing `completed_at` while the lane remains closed is invalid. A field cannot be supplied and cleared in the same update.
 
 A complete timeline snapshot can be supplied as `details.status_update.timeline` with UTC `as_of`, `state` (`present` or `verified_empty`), and `entries`. A present snapshot supplies all eight consecutive half-hour bins for every included job, with both `fast` and `normal` values; `verified_empty` has no entries. The snapshot replaces the timeline and its anchor as a unit.
 
