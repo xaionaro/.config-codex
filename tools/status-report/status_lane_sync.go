@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/goccy/go-yaml/lexer"
@@ -139,6 +140,35 @@ func applyLaneSyncUpdateRaw(
 		candidate, removed = removeLaneSyncField(candidate, update, field)
 		if !removed {
 			return data, false
+		}
+	}
+	reopening := false
+	if status, ok := update.Fields[statusField]; ok && status != "CLOSED" {
+		reopening = true
+	}
+	for _, field := range update.Clear {
+		if field == "lifecycle" {
+			reopening = true
+		}
+	}
+	if reopening && mapValue(lane, "forecast") == nil && validRef(update.WorkRef, "project-understanding.yaml") {
+		work, ok := ledger.Records[sourceID(update.WorkRef, "project-understanding.yaml")]
+		if ok && work.Type == "work" && openWork(work.Data.State) && work.Data.ForecastRef != "" {
+			if prior, exists := previous["forecast"]; exists && prior != syncAbsentValue {
+				return data, false
+			}
+			ref := string(work.Data.ForecastRef)
+			if !validRef(ref, "forecasts.yaml") {
+				return data, false
+			}
+			projection, valid := laneForecastProjection(ref, forecasts.Records[sourceID(ref, "forecasts.yaml")])
+			if !valid {
+				return data, false
+			}
+			candidate, valid = restoreLaneForecast(candidate, update, projection)
+			if !valid {
+				return data, false
+			}
 		}
 	}
 	for field, value := range update.Fields {
@@ -300,6 +330,19 @@ func applyLaneSyncUpdate(
 			}
 			effects = append(effects, effect)
 		}
+	}
+	if mapValue(oldLane, "forecast") == nil && mapValue(newLane, "forecast") != nil {
+		var value any
+		if mapValue(newLane, "forecast").Decode(&value) != nil {
+			return data, nil, false
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return data, nil, false
+		}
+		effect := base
+		effect.Field, effect.Value, effect.Operation = "forecast", json.RawMessage(raw), syncEffectLaneForecastRestore
+		effects = append(effects, effect)
 	}
 	for _, field := range update.Clear {
 		if field == "completed_at" && mapValue(oldLane, field) != nil && mapValue(newLane, field) == nil {
