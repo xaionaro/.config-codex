@@ -335,7 +335,7 @@ func applyExpectedSyncEffect(
 			return err
 		}
 		root["timeline"] = entries
-		root["timeline_state"] = snapshot.State
+		root["timeline_state"] = snapshot.State.String()
 		root["timeline_as_of"] = snapshot.AsOf
 		return nil
 	case syncEffectPriorityRemove:
