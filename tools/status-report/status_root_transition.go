@@ -9,7 +9,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// applyRootSyncAddition atomically retires an explicitly identified prior root record.
+// applyRootSyncAddition applies a root addition and any explicitly identified retirement atomically.
+//
+// Example: Replace a root forecast with its completion.
 func applyRootSyncAddition(
 	data []byte,
 	addition syncAddition,
@@ -72,6 +74,8 @@ func applyRootSyncAddition(
 }
 
 // rootAdditionHasCounterpart detects terminal/open representations of the same work.
+//
+// Example: Detect a forecast already representing a completed root.
 func rootAdditionHasCounterpart(
 	data []byte,
 	addition syncAddition,

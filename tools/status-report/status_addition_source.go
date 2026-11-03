@@ -6,6 +6,8 @@ import (
 )
 
 // syncAdditionSourceValid checks supplied lane and root identities against their sources.
+//
+// Example: Validate a lane addition against canonical work and forecasts.
 func syncAdditionSourceValid(
 	addition syncAddition,
 	ledger ledgerSource,

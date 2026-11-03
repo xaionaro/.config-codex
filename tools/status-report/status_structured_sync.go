@@ -56,7 +56,10 @@ func validStructuredSyncUpdate(u syncUpdate) bool {
 // structuredSyncNode finds the unique record selected by a typed update.
 //
 // Example: Select an existing review by its task ID.
-func structuredSyncNode(root *yaml.Node, u syncUpdate) *yaml.Node {
+func structuredSyncNode(
+	root *yaml.Node,
+	u syncUpdate,
+) *yaml.Node {
 	if u.Target == syncTargetReport {
 		return root
 	}
@@ -90,7 +93,10 @@ func structuredSyncNode(root *yaml.Node, u syncUpdate) *yaml.Node {
 // structuredSyncValues returns canonical values for conflict detection.
 //
 // Example: Save a task's effort before applying its next projection.
-func structuredSyncValues(data []byte, u syncUpdate) (map[string]string, bool) {
+func structuredSyncValues(
+	data []byte,
+	u syncUpdate,
+) (map[string]string, bool) {
 	if !validStructuredSyncUpdate(u) {
 		return nil, false
 	}
@@ -144,7 +150,11 @@ func structuredSyncValues(data []byte, u syncUpdate) (map[string]string, bool) {
 // applyStructuredSyncUpdate applies a validated group without rewriting unrelated bytes.
 //
 // Example: Reject an estimate if an owner changed its prior value.
-func applyStructuredSyncUpdate(data []byte, u syncUpdate, previous map[string]string) ([]byte, bool) {
+func applyStructuredSyncUpdate(
+	data []byte,
+	u syncUpdate,
+	previous map[string]string,
+) ([]byte, bool) {
 	current, ok := structuredSyncValues(data, u)
 	if !ok {
 		return data, false
@@ -194,7 +204,12 @@ func applyStructuredSyncUpdate(data []byte, u syncUpdate, previous map[string]st
 // editStructuredField replaces one value using its source span.
 //
 // Example: Replace an effort mapping while retaining neighboring comments.
-func editStructuredField(data []byte, u syncUpdate, field, value string) ([]byte, bool) {
+func editStructuredField(
+	data []byte,
+	u syncUpdate,
+	field string,
+	value string,
+) ([]byte, bool) {
 	var doc yaml.Node
 	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {
 		return data, false
@@ -268,7 +283,11 @@ func editStructuredField(data []byte, u syncUpdate, field, value string) ([]byte
 // clearStructuredField removes a comment-free mapping entry.
 //
 // Example: Clear an optional task impact basis without changing other entries.
-func clearStructuredField(data []byte, u syncUpdate, field string) ([]byte, bool) {
+func clearStructuredField(
+	data []byte,
+	u syncUpdate,
+	field string,
+) ([]byte, bool) {
 	var doc yaml.Node
 	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {
 		return data, false

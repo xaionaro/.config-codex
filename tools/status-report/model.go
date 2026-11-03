@@ -346,14 +346,27 @@ func checkEnumScalar(node *yaml.Node) error {
 }
 
 // taskLifecycle identifies an optional task cancellation marker.
+//
+// Example: A cancelled task carries the cancellation marker.
 type taskLifecycle int
 
+// Task lifecycle markers distinguish active and cancelled tasks.
+//
+// Example: taskLifecycleCancelled marks a cancelled task.
 const (
+	// taskLifecycleNone indicates no lifecycle marker.
+	//
+	// Example: An active task has no marker.
 	taskLifecycleNone taskLifecycle = iota
+	// taskLifecycleCancelled indicates explicit cancellation.
+	//
+	// Example: A cancelled task is excluded from remaining work.
 	taskLifecycleCancelled
 )
 
 // UnmarshalYAML decodes supported task lifecycle markers.
+//
+// Example: Decode the cancelled marker.
 func (l *taskLifecycle) UnmarshalYAML(n *yaml.Node) error {
 	if err := checkEnumScalar(n); err != nil {
 		return err

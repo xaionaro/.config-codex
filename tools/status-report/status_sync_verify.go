@@ -85,7 +85,13 @@ type syncEffect struct {
 // verifyStatusSyncCanonicalEffects checks source-owned effects against canonical work and forecasts.
 //
 // Example: Reject closure backed by an active forecast.
-func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyStatusSyncCanonicalEffects(
+	original []byte,
+	candidate []byte,
+	effects []syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	var before, after map[string]any
 	if err := yaml.Unmarshal(original, &before); err != nil {
 		return err
@@ -168,7 +174,11 @@ func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []sync
 // against explicit accepted effects and preserves the ordered YAML comments.
 //
 // Example: Reject a candidate that changes an unrelated task.
-func verifyStatusSyncEffects(original, candidate []byte, effects []syncEffect) error {
+func verifyStatusSyncEffects(
+	original []byte,
+	candidate []byte,
+	effects []syncEffect,
+) error {
 	beforeComments, err := yamlComments(original)
 	if err != nil {
 		return err
@@ -201,7 +211,10 @@ func verifyStatusSyncEffects(original, candidate []byte, effects []syncEffect) e
 // applyExpectedSyncEffect applies an authorized change to the expected report.
 //
 // Example: Add a supplied narrative entry.
-func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
+func applyExpectedSyncEffect(
+	root map[string]any,
+	effect syncEffect,
+) error {
 	switch effect.Operation {
 	case syncEffectLaneForecastRestore:
 		effect.Operation = syncEffectSet
@@ -448,7 +461,11 @@ func syncEffectSection(target syncTarget) (string, string, error) {
 // syncEffectIndex finds a unique matching record.
 //
 // Example: Find a lane by its task, work, and environment.
-func syncEffectIndex(items []any, identity string, effect syncEffect) (int, error) {
+func syncEffectIndex(
+	items []any,
+	identity string,
+	effect syncEffect,
+) (int, error) {
 	found := -1
 	for i, item := range items {
 		record, ok := item.(map[string]any)
@@ -469,7 +486,11 @@ func syncEffectIndex(items []any, identity string, effect syncEffect) (int, erro
 // verifyCanonicalSyncAddition validates source-owned records independently of insertion.
 //
 // Example: Reject a root completion without canonical evidence.
-func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyCanonicalSyncAddition(
+	effect syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	raw, ok := effect.Value.(json.RawMessage)
 	if !ok {
 		return fmt.Errorf("addition lacks source record")
@@ -553,7 +574,13 @@ func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecas
 // verifyCanonicalRootRemoval validates the explicit transition and its exact prior record.
 //
 // Example: Verify a root forecast retirement and its prior record.
-func verifyCanonicalRootRemoval(before map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyCanonicalRootRemoval(
+	before map[string]any,
+	effect syncEffect,
+	effects []syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	addition, ok := effect.Value.(syncAddition)
 	if !ok || strings.TrimSpace(addition.Evidence) == "" || effect.Evidence != addition.Evidence {
 		return fmt.Errorf("root transition lacks evidence")
@@ -623,7 +650,10 @@ func verifyCanonicalRootRemoval(before map[string]any, effect syncEffect, effect
 // verifyPriorityRetirementEffects checks that retirement is paired with its task and new estimate.
 //
 // Example: Reject removal of an estimate unrelated to the reprioritized task.
-func verifyPriorityRetirementEffects(original []byte, effects []syncEffect) error {
+func verifyPriorityRetirementEffects(
+	original []byte,
+	effects []syncEffect,
+) error {
 	var report map[string]any
 	if err := yaml.Unmarshal(original, &report); err != nil {
 		return err
@@ -687,7 +717,14 @@ func verifyPriorityRetirementEffects(original []byte, effects []syncEffect) erro
 // verifyLaneForecastRestore checks a reopened lane's forecast against canonical sources.
 //
 // Example: Reject restoration from an inactive forecast.
-func verifyLaneForecastRestore(before, after map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+func verifyLaneForecastRestore(
+	before map[string]any,
+	after map[string]any,
+	effect syncEffect,
+	effects []syncEffect,
+	ledger ledgerSource,
+	forecasts forecastSource,
+) error {
 	if effect.Target != syncTargetLane || !validRef(effect.WorkRef, "project-understanding.yaml") {
 		return fmt.Errorf("invalid forecast restore identity")
 	}
