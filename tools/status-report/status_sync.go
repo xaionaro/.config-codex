@@ -161,8 +161,19 @@ func projectLogStatus(
 			boundaries = append(boundaries, i+1)
 		}
 	}
+	incompleteTail := false
 	if len(logBytes) > 0 && (len(boundaries) == 0 || boundaries[len(boundaries)-1] != len(logBytes)) {
-		boundaries = append(boundaries, len(logBytes))
+		start := 0
+		if len(boundaries) > 0 {
+			start = boundaries[len(boundaries)-1]
+		}
+		// A complete JSON value is a valid final entry without a newline. An
+		// incomplete tail must remain unconsumed so a later append can finish it.
+		if json.Valid(logBytes[start:]) {
+			boundaries = append(boundaries, len(logBytes))
+		} else {
+			incompleteTail = true
+		}
 	}
 	if cursor < 0 || cursor > len(boundaries) {
 		return nil, nil, fmt.Errorf("status sync cursor exceeds log")
@@ -197,6 +208,14 @@ func projectLogStatus(
 			return nil, nil, err
 		}
 		effects = append(effects, stepEffects...)
+	}
+	if incompleteTail {
+		diagnostic := refreshIssuePrefix + "unterminated invalid final log entry; complete or terminate it before retry"
+		result, err = prepareInvalidation(result, diagnostic)
+		if err != nil {
+			return nil, nil, err
+		}
+		effects = append(effects, syncEffect{Operation: syncEffectDiagnostic, Value: diagnostic})
 	}
 	if err := verifyStatusSyncEffects(original, result, effects); err != nil {
 		return nil, nil, err

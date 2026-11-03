@@ -122,6 +122,8 @@ For example, this payload adds a task and its review, using supplied estimates a
 
 Sync consumes events in append order and applies each target update as an ordered transaction. A correction is a new `correction` event whose update includes `corrects`, the one-based log line containing the latest update for each corrected field. If that version is not the first update on its line, also supply `corrects_ordinal`, its zero-based position in that line's `updates` array; omission means zero. Keep earlier entries unchanged. The report stores its sync cursor and pending state in `status_sync`; do not edit it as a substitute for an event. Conflicting owner edits, missing targets, invalid records, and unsupported or unsafe changes may remain pending or produce diagnostics for manual reconciliation. Sync preserves unrelated content and owner edits it detects; it does not infer missing facts. Review diagnostics and reconcile sources before claiming completion. If refresh fails after append, use the emitted retry command without appending the event again. A typed event can advance the report timestamp; an existing timeline keeps its original anchor in `timeline_as_of` unless a new snapshot is supplied.
 
+A complete final JSON entry is accepted without a trailing newline. An invalid unterminated tail is diagnosed and left unconsumed until it is completed or terminated; a malformed newline-terminated entry is diagnosed as invalid.
+
 For example, when line 12 was the latest update to task 1's owner, a correction event can include `details.corrects` identifying that mistaken entry and `details.status_update` containing:
 
 ```json
