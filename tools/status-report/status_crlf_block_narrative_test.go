@@ -244,3 +244,25 @@ func TestAppendAfterKeptScalarBlankLinesPreservesValue(t *testing.T) {
 			})
 	}
 }
+
+// TestAppendAfterKeptScalarBeforeFollowingField preserves the boundary.
+//
+// Example: A decisions comment remains beside its field after a progress append.
+func TestAppendAfterKeptScalarBeforeFollowingField(t *testing.T) {
+	for _, suffix := range []string{"decisions: [keep]\r\n", "# decisions note\r\ndecisions: [keep]\r\n", "# trailing note\r\n"} {
+		t.Run(suffix,
+			// check compares the existing scalar and the following owner text.
+			//
+			// Example: A kept blank line precedes the new item.
+			func(t *testing.T) {
+				input := []byte("progress:\r\n  - |+ # scalar note\r\n    legacy scalar\r\n\r\n" + suffix)
+				var before, after yaml.Node
+				require.NoError(t, yaml.Unmarshal(input, &before))
+				out, ok := applyNarrativeSyncField(input, syncUpdate{Target: syncTargetProgress, ID: "one"}, "text", "new progress", "", false, false)
+				require.True(t, ok)
+				require.NoError(t, yaml.Unmarshal(out, &after))
+				require.Equal(t, mapValue(before.Content[0], "progress").Content[0].Value, mapValue(after.Content[0], "progress").Content[0].Value)
+				require.True(t, strings.HasSuffix(string(out), suffix))
+			})
+	}
+}

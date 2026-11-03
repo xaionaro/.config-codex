@@ -196,12 +196,21 @@ func scalarAppendPosition(
 	last *yaml.Node,
 	insert int,
 ) int {
-	if nextMappingFieldLine(root, section) != 0 || last.Kind != yaml.ScalarNode || last.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0 {
+	if last.Kind != yaml.ScalarNode || last.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0 {
 		return insert
 	}
 	insert = len(lines)
-	if lines[insert-1] == "" {
+	if next := nextMappingFieldLine(root, section); next > 0 {
+		insert = next - 1
+	} else if lines[insert-1] == "" {
 		insert--
+	}
+	indent := strings.Index(lines[last.Line-1], "- ")
+	for i := last.Line; i < insert; i++ {
+		line := strings.TrimLeft(lines[i], " ")
+		if strings.HasPrefix(line, "#") && len(lines[i])-len(line) <= indent {
+			return i
+		}
 	}
 	return insert
 }
