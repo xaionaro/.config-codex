@@ -15,6 +15,15 @@ check_reminder 'status'
 check_reminder 'Give me a proper status report'
 check_reminder 'Can you give me a progress report?'
 check_reminder 'Status report, please.'
+check_reminder 'Status update, please.'
+check_reminder 'Progress update?'
+check_reminder 'Current status?'
+check_reminder 'Current progress?'
+check_reminder 'Give me a status report right now'
+check_reminder 'Please provide an updated status report'
+check_reminder 'Please provide a comprehensive progress report'
+check_reminder 'Comprehensive progress report'
+check_reminder 'Status update please'
 check_reminder "What's the status?"
 check_reminder 'Fix the renderer and give me a status report'
 check_reminder 'Give me a status report on the status report renderer'
@@ -33,7 +42,7 @@ jq -e '.hookSpecificOutput.additionalContext | contains("status-report render")'
 capture="$(find "$tmp/proof/pre-reviewer/valid-session" -name 'capture-turn-*.json' -type f -print -quit)"
 [[ -n "$capture" ]]
 jq -e '.turn_id == "turn" and .prompt == "status"' "$capture" >/dev/null
-for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema'; do
+for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema' 'Fix the status update renderer' 'Current status code is broken' 'Progress update schema' 'Please update the status field'; do
   output="$(jq -cn --arg prompt "$prompt" '{session_id:"bad/session",prompt:$prompt}' | bash -c "$command")"
   [[ -z "$output" ]]
 done

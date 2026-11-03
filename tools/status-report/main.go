@@ -345,13 +345,14 @@ func render(r report) string {
 		}
 		renderRootForecast(&b, f)
 	}
-	for _, section := range []struct {
-		name  string
-		value any
-	}{{"Roster", r.Roster}, {"Details", r.Details}} {
-		fmt.Fprintf(&b, "\n%s:\n", section.name)
-		writeValue(&b, section.value, 0)
+	if len(r.Roster) == 0 {
+		fmt.Fprintln(&b, "\nRoster: unavailable (no roster evidence supplied).")
+	} else {
+		fmt.Fprintln(&b, "\nRoster:")
+		writeValue(&b, r.Roster, 0)
 	}
+	fmt.Fprintln(&b, "\nDetails:")
+	writeValue(&b, r.Details, 0)
 	if r.TimelineState == timelineVerifiedEmpty {
 		fmt.Fprintln(&b, "\nTimeline: verified no evidenced activity.")
 		if r.TimelineAsOf != "" && !sameValue(r.TimelineAsOf, r.Timestamp) {

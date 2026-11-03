@@ -15,14 +15,14 @@ iconv -f UTF-8 -t UTF-8 "$input_file" >/dev/null 2>&1 || exit 0
 jq -se 'length == 1 and (.[0] | type == "object")' "$input_file" >/dev/null 2>&1 || exit 0
 prompt=$(jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' "$input_file" 2>/dev/null || true)
 normalized_prompt="${prompt,,}"
-explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest))*[[:space:]]+(status|progress)[[:space:]]+(report|update)'
+explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest|updated|comprehensive))*[[:space:]]+(status|progress)[[:space:]]+(report|update)'
 reminder=false
 while IFS= read -r clause; do
   if [[ "$clause" =~ $explicit_report ]]; then
     remainder="${clause#*"${BASH_REMATCH[0]}"}"
     # A following noun makes the report a modifier (for example, a template).
     if [[ "$remainder" =~ ^[[:space:]]*$ ]] ||
-       [[ "$remainder" =~ ^[[:space:]]+(on|about|for|of|with|please|now|and)([[:space:]]|$) ]]; then
+       [[ "$remainder" =~ ^[[:space:]]+(on|about|for|of|with|please|now|and|right[[:space:]]+now)([[:space:]]|$) ]]; then
       reminder=true
       break
     fi
@@ -33,9 +33,9 @@ while IFS= read -r clause; do
      [[ "$clause" =~ (status|progress)[[:space:]]+report[[:space:]]+(renderer|tool|generator) ]]; then
     continue
   fi
-  if [[ "$clause" =~ ^[[:space:]]*(status|sitrep|progress|checkpoint)[[:space:]]*$ ]] ||
+  if [[ "$clause" =~ ^[[:space:]]*(current[[:space:]]+)?(status|sitrep|progress|checkpoint)([[:space:]]+update)?([[:space:]]+please)?[[:space:]]*$ ]] ||
      [[ "$clause" =~ (give|show|provide|write|send|want|need|request|what.s|what[[:space:]]+is|how.s|how[[:space:]]+is).*(status|progress|sitrep|checkpoint)[[:space:]]*$ ]] ||
-     [[ "$clause" =~ ^[[:space:]]*(a[[:space:]]+)?(status|progress)[[:space:]]+report([[:space:]]+please)?[[:space:]]*$ ]]; then
+     [[ "$clause" =~ ^[[:space:]]*(a[[:space:]]+)?(current[[:space:]]+|updated[[:space:]]+|comprehensive[[:space:]]+)?(status|progress)[[:space:]]+report([[:space:]]+please)?[[:space:]]*$ ]]; then
     reminder=true
     break
   fi
