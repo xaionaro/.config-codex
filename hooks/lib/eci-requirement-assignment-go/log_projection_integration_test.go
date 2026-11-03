@@ -46,7 +46,7 @@ completion_estimate: {min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24
 	appendEvent(`{"event":"verification_result","summary":"First accepted","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"status":"CLOSED","evidence":"acceptance proof"}}]}}}`)
 	updated, err := os.ReadFile(reportPath)
 	require.NoError(t, err)
-	require.Contains(t, string(updated), "status: CLOSED")
+	require.Regexp(t, `status: ["']?CLOSED["']?`, string(updated))
 	require.Contains(t, string(updated), "acceptance proof")
 	require.Contains(t, string(updated), "title: Sibling, priority: high, impact: Useful, effort: {min_minutes: 10, max_minutes: 20, kind: elapsed, basis: guess}, status: IN PROGRESS")
 	require.Contains(t, string(updated), "# preserve report comment")
@@ -76,7 +76,7 @@ func TestLedgerAppendRetryReplaysEventsInOrder(t *testing.T) {
 	require.NoError(t, os.WriteFile(reportPath, []byte("[malformed"), 0600))
 	env := append(os.Environ(), "CODEX_PROOF_ROOT="+filepath.Join(f.Root, "proof"), "CODEX_SESSION_ID=test-capture")
 	for _, payload := range []string{
-		`{"event":"worker_progress","summary":"Started","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"status":"IN PROGRESS"}}]}}}`,
+		`{"event":"decision","summary":"Started","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"status":"IN PROGRESS"}}]}}}`,
 		`{"event":"verification_result","summary":"Accepted","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"status":"CLOSED","evidence":"later proof"}}]}}}`,
 	} {
 		command := exec.Command(f.CLI, "ledger-append", "--json", payload)
@@ -111,7 +111,7 @@ completion_estimate: {min_minutes: 10, max_minutes: 20, as_of: '2026-11-02T15:24
 	require.NoError(t, err, string(output))
 	updated, err := os.ReadFile(reportPath)
 	require.NoError(t, err)
-	require.Contains(t, string(updated), "status: CLOSED")
+	require.Regexp(t, `status: ["']?CLOSED["']?`, string(updated))
 	require.Contains(t, string(updated), "later proof")
 	after, err := os.ReadFile(logPath)
 	require.NoError(t, err)
