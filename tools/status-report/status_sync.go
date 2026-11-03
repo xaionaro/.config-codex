@@ -537,7 +537,9 @@ func projectLogStatusStep(
 				delete(state.Pending, key)
 				continue
 			}
-			updated, ok := retractNarrativeSync(result, pending.Update, state.Applied[textKey], state.Applied[evidenceKey])
+			text, hasText := state.Applied[textKey]
+			evidence, hasEvidence := state.Applied[evidenceKey]
+			updated, ok := retractNarrativeSync(result, pending.Update, text, hasText, evidence, hasEvidence)
 			if ok {
 				if _, err := parse(updated); err != nil {
 					continue
@@ -574,17 +576,24 @@ func projectLogStatusStep(
 		var applied bool
 		if validNarrativeSyncUpdate(pending.Update) {
 			textKey := syncTargetKey(pending.Update, "text")
-			owned := narrativeSyncItemOwned(result, pending.Update, state.Applied[textKey])
-			updated, applied = applyNarrativeSyncField(result, pending.Update, field, value, state.Applied[key], owned)
+			text, hasText := state.Applied[textKey]
+			owned := narrativeSyncItemOwned(result, pending.Update, text, hasText)
+			prior, exists := state.Applied[key]
+			updated, applied = applyNarrativeSyncField(result, pending.Update, field, value, prior, exists, owned)
 		} else {
-			updated, applied = applySyncField(result, pending.Update, field, value, state.Applied[key])
+			prior, exists := state.Applied[key]
+			updated, applied = applySyncField(result, pending.Update, field, value, prior, exists)
 		}
 		if applied {
 			if _, err := parse(updated); err != nil {
 				continue
 			}
 			result = updated
-			state.Applied[key] = value
+			if pending.Update.Target == syncTargetTask || pending.Update.Target == syncTargetLane || pending.Update.Target == syncTargetReport {
+				state.Applied[key] = scalarSyncStoredValue(value)
+			} else {
+				state.Applied[key] = value
+			}
 			delete(state.Pending, key)
 		}
 	}
@@ -707,15 +716,18 @@ func applyTaskCancellations(
 		if state.Latest[lifecycleKey] != pending.Line || state.Latest[statusKey] != pending.Line || state.Latest[evidenceKey] != pending.Line {
 			continue
 		}
-		candidate, applied := applySyncField(data, evidence.Update, "evidence", evidence.Update.Fields["evidence"], state.Applied[evidenceKey])
+		priorEvidence, hadEvidence := state.Applied[evidenceKey]
+		candidate, applied := applySyncField(data, evidence.Update, "evidence", evidence.Update.Fields["evidence"], priorEvidence, hadEvidence)
 		if !applied {
 			continue
 		}
-		candidate, applied = applySyncField(candidate, status.Update, "status", "unknown", state.Applied[statusKey])
+		priorStatus, hadStatus := state.Applied[statusKey]
+		candidate, applied = applySyncField(candidate, status.Update, "status", "unknown", priorStatus, hadStatus)
 		if !applied {
 			continue
 		}
-		candidate, applied = applySyncField(candidate, pending.Update, "lifecycle", "cancelled", state.Applied[lifecycleKey])
+		priorLifecycle, hadLifecycle := state.Applied[lifecycleKey]
+		candidate, applied = applySyncField(candidate, pending.Update, "lifecycle", "cancelled", priorLifecycle, hadLifecycle)
 		if !applied {
 			continue
 		}
@@ -905,11 +917,13 @@ func applyLaneCompletions(
 		if !laneSyncAllowed(data, ledger, forecasts, u, "completed_at", completed) {
 			continue
 		}
-		candidate, ok := applySyncField(data, u, "completed_at", completed, state.Applied[timeKey])
+		priorTime, hadTime := state.Applied[timeKey]
+		candidate, ok := applySyncField(data, u, "completed_at", completed, priorTime, hadTime)
 		if !ok || !laneSyncAllowed(candidate, ledger, forecasts, statusPending.Update, field, "CLOSED") {
 			continue
 		}
-		candidate, ok = applySyncField(candidate, statusPending.Update, field, "CLOSED", state.Applied[statusKey])
+		priorStatus, hadStatus := state.Applied[statusKey]
+		candidate, ok = applySyncField(candidate, statusPending.Update, field, "CLOSED", priorStatus, hadStatus)
 		if !ok {
 			continue
 		}
@@ -1083,6 +1097,7 @@ func applySyncField(
 	field string,
 	value string,
 	previous string,
+	hasPrevious bool,
 ) ([]byte, bool) {
 	target, id := update.Target, update.ID
 	allowed := map[syncTarget]map[string]bool{syncTargetTask: {"status": true, "evidence": true, "owner": true, "context": true, "lifecycle": true}, syncTargetLane: {"owner": true, "implementation_status": true, "test_status": true, "prod_status": true, "blocker": true, "next_action": true, "next_milestone": true, "context": true, "completed_at": true, "lifecycle": true, "root_task_status": true}, syncTargetReport: {"state": true, "next_focus": true}}
@@ -1096,7 +1111,7 @@ func applySyncField(
 	root := doc.Content[0]
 	if target == syncTargetReport {
 		node := mapValue(root, field)
-		if node == nil || previous == syncAbsentValue || (previous != "" && node.Value != previous) {
+		if node == nil || (hasPrevious && (previous == syncAbsentValue || scalarSyncOwnership(node) != previous)) {
 			return data, false
 		}
 		if node.Value == value {
@@ -1136,10 +1151,10 @@ func applySyncField(
 	}
 	existing := mapValue(node, field)
 	// Owner-authored content remains untouched once it diverges from our last value.
-	if previous == syncAbsentValue && existing != nil {
+	if hasPrevious && previous == syncAbsentValue && existing != nil {
 		return data, false
 	}
-	if previous != "" && previous != syncAbsentValue && (existing == nil || existing.Value != previous) {
+	if hasPrevious && previous != syncAbsentValue && (existing == nil || scalarSyncOwnership(existing) != previous) {
 		return data, false
 	}
 	var fields forecastFieldEdits

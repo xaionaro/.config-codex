@@ -80,19 +80,22 @@ func applySyncGroup(
 			}
 			return keys[i] < keys[j]
 		})
-	managedText := previous["text"]
+	managedText, managedTextPresent := previous["text"]
 	for _, field := range keys {
 		value := update.Fields[field]
 		var next []byte
 		var ok bool
 		if validNarrativeSyncUpdate(update) {
-			owned := narrativeSyncItemOwned(result, update, managedText)
-			next, ok = applyNarrativeSyncField(result, update, field, value, previous[field], owned)
+			owned := narrativeSyncItemOwned(result, update, managedText, managedTextPresent)
+			prior, present := previous[field]
+			next, ok = applyNarrativeSyncField(result, update, field, value, prior, present, owned)
 			if field == "text" && ok {
 				managedText = value
+				managedTextPresent = true
 			}
 		} else {
-			next, ok = applySyncField(result, update, field, value, previous[field])
+			prior, exists := previous[field]
+			next, ok = applySyncField(result, update, field, value, prior, exists)
 		}
 		if !ok {
 			return data, nil, false
@@ -186,7 +189,11 @@ func syncGroupAppliedValues(
 	}
 	values := map[string]string{}
 	for field, value := range update.Fields {
-		values[field] = value
+		if update.Target == syncTargetTask || update.Target == syncTargetLane || update.Target == syncTargetReport {
+			values[field] = scalarSyncStoredValue(value)
+		} else {
+			values[field] = value
+		}
 	}
 	if (len(update.Values) > 0 || len(update.Clear) > 0) && update.Target != syncTargetLane {
 		structured, ok := structuredSyncValues(data, update)
@@ -398,7 +405,9 @@ func applyPendingSyncGroups(
 				blocked[targetIdentity] = true
 				continue
 			}
-			candidate, ok := retractNarrativeSync(data, update, state.Applied[textKey], state.Applied[evidenceKey])
+			text, hasText := state.Applied[textKey]
+			evidence, hasEvidence := state.Applied[evidenceKey]
+			candidate, ok := retractNarrativeSync(data, update, text, hasText, evidence, hasEvidence)
 			if !ok {
 				blocked[targetIdentity] = true
 				continue
@@ -534,7 +543,11 @@ func legacySyncEffects(
 			continue
 		}
 		for field, value := range update.Fields {
-			if after.Applied[key] != value {
+			expected := value
+			if update.Target == syncTargetTask || update.Target == syncTargetLane || update.Target == syncTargetReport {
+				expected = scalarSyncStoredValue(value)
+			}
+			if after.Applied[key] != expected {
 				continue
 			}
 			effects = append(effects, syncEffect{Target: update.Target, ID: update.ID, WorkRef: update.WorkRef, RequiredEnvironment: update.RequiredEnvironment, Field: field, Value: value, Evidence: syncGroupEvidence(update), Operation: syncEffectSet})
