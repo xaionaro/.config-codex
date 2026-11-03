@@ -266,3 +266,38 @@ func TestAppendAfterKeptScalarBeforeFollowingField(t *testing.T) {
 			})
 	}
 }
+
+// TestReplayEOFScalarCommentsAndIndent preserves valid source comments.
+//
+// Example: An unterminated scalar header comment survives a progress append.
+func TestReplayEOFScalarCommentsAndIndent(t *testing.T) {
+	for _, tc := range []struct{ name, scalar string }{
+		{"explicit indent", "|2\r\n    legacy scalar\r\n    "},
+		{"header comment", "|+ # owner note"},
+	} {
+		t.Run(tc.name,
+			// check replays an independent progress event over valid YAML.
+			//
+			// Example: The comment stream remains intact at an unterminated EOF.
+			func(t *testing.T) {
+				input := strings.Replace(linkedReport, "progress: [Implementation started]\n", "", 1)
+				input = strings.ReplaceAll(input, "\n", "\r\n") + "progress:\r\n  - " + tc.scalar
+				// event adds progress without modifying the existing scalar.
+				//
+				// Example: A worker records another update.
+				const event = `{"event":"worker_progress","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"new progress"}}]}}}` + "\n"
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+				out, _, err := projectLogStatus(dir, []byte(input), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				before, err := parse([]byte(input))
+				require.NoError(t, err)
+				after, err := parse(out)
+				require.NoError(t, err)
+				require.Equal(t, append(before.Progress, "new progress"), after.Progress)
+				if strings.Contains(tc.scalar, "# owner note") {
+					require.Contains(t, string(out), "# owner note\r\n")
+				}
+			})
+	}
+}

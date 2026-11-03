@@ -58,6 +58,10 @@ func verifyRefresh(
 // Example: Compare comments before and after a report update.
 func yamlComments(data []byte) ([]string, error) {
 	normalized := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\r", "\n")
+	// The lexer can truncate an EOF comment or reject trailing scalar indentation.
+	if !strings.HasSuffix(normalized, "\n") {
+		normalized += "\n"
+	}
 	tokens := lexer.Tokenize(normalized)
 	if bad := tokens.InvalidToken(); bad != nil {
 		return nil, fmt.Errorf("unsupported YAML token: %s", bad.Error)
