@@ -120,11 +120,16 @@ func migratePendingRootAdditions(
 	legacy map[string]syncPendingAddition,
 	pending map[string]syncPendingRootAddition,
 	fullLog []byte,
+	applied map[string]string,
 ) bool {
 	lines := bytes.Split(fullLog, []byte("\n"))
 	complete := true
 	for key, old := range legacy {
 		if old.Target != syncTargetRootCompletion && old.Target != syncTargetRootForecast {
+			continue
+		}
+		if previous, exists := applied[key]; exists && rootChainJSONEqual([]byte(previous), []byte(old.Record)) {
+			complete = false
 			continue
 		}
 		if old.Line < 1 || old.Line > len(lines) {

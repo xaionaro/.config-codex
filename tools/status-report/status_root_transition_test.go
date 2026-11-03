@@ -8,48 +8,6 @@ import (
 	"testing"
 )
 
-func TestRootTransitionRequiresExactPriorAndCanonicalSource(t *testing.T) {
-	old := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}`
-	original := []byte(valid + "root_forecasts: [" + old + "]\n")
-	add := syncAddition{Target: syncTargetRootCompletion, Evidence: "accepted", RetireForecast: true, ExpectedPrior: json.RawMessage(old), Record: json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`)}
-	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:00:00Z", Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}, "o": {Type: "outcome", Outcome: "Result"}}}
-	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "root", "status": "inactive"}}}
-	got, effects, ok := applyRootSyncAddition(original, add, ledger, forecasts)
-	if !ok || strings.Contains(string(got), old) {
-		t.Fatal("root transition failed")
-	}
-	effects = append(effects, syncEffect{Target: syncTargetRootCompletion, ID: "project-understanding.yaml#/records/w", Value: add.Record, Operation: syncEffectAdd})
-	if err := verifyStatusSyncEffects(original, got, effects); err != nil {
-		t.Fatal(err)
-	}
-	add.ExpectedPrior = json.RawMessage(strings.Replace(old, "Result", "Owner edit", 1))
-	if _, _, ok := applyRootSyncAddition(original, add, ledger, forecasts); ok {
-		t.Fatal("prior mismatch accepted")
-	}
-}
-
-func TestRootReopenRequiresExactCompletionAndActiveWork(t *testing.T) {
-	old := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
-	original := []byte(valid + "root_completions: [" + old + "]\n")
-	add := syncAddition{Target: syncTargetRootForecast, Evidence: "reopened", ReopenWorkRef: "project-understanding.yaml#/records/w", ExpectedPrior: json.RawMessage(old), Record: json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}`)}
-	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateActive, Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}, "o": {Type: "outcome", Outcome: "Result"}}}
-	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "root", "status": "active"}}}
-	got, _, ok := applyRootSyncAddition(original, add, ledger, forecasts)
-	if !ok || strings.Contains(string(got), old) {
-		t.Fatal("root reopen failed")
-	}
-	add.Evidence = ""
-	if _, _, ok := applyRootSyncAddition(original, add, ledger, forecasts); ok {
-		t.Fatal("reopen without evidence accepted")
-	}
-	add.Evidence = "reopened"
-	add.ReopenWorkRef = ""
-	add.ExpectedPrior = nil
-	if _, _, ok := applyRootSyncAddition(original, add, ledger, forecasts); ok {
-		t.Fatal("missing explicit removal accepted")
-	}
-}
-
 func TestRootTransitionPreservesComments(t *testing.T) {
 	prior := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}`
 	original := []byte(valid + "root_forecasts:\n  - " + prior + " # owner comment\n")
@@ -99,13 +57,16 @@ func TestRootTransitionsReplay(t *testing.T) {
 			original := []byte(valid + tc.section + ": [" + prior + "]\n")
 			ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: tc.work}, "o": {Type: "outcome", Outcome: "Result"}}}
 			forecasts := forecastSource{Records: map[string]map[string]any{"f": {"kind": "root", "status": tc.state}}}
-			for _, mode := range []string{"valid", "mismatch", "missing"} {
+			for _, mode := range []string{"valid", "mismatch", "missing", "no evidence"} {
 				addition := tc.addition
 				if mode == "mismatch" {
 					addition.ExpectedPrior = json.RawMessage(`{"outcome":"wrong"}`)
 				}
 				if mode == "missing" {
 					addition.ExpectedPrior = nil
+				}
+				if mode == "no evidence" {
+					addition.Evidence = ""
 				}
 				raw, err := json.Marshal(addition)
 				if err != nil {
@@ -193,29 +154,5 @@ func TestRootCompletionCorrectionReplay(t *testing.T) {
 	}
 	if len(r.RootCompletions) != 1 || r.RootCompletions[0].CompletedAt != "2026-11-02T15:05:00Z" || len(r.StatusSync.PendingAdditions) != 0 {
 		t.Fatalf("correction not applied: %+v pending=%d", r.RootCompletions, len(r.StatusSync.PendingAdditions))
-	}
-}
-
-// TestRootCompletionCorrectionPreservesConflictingPrior rejects unsupported replacements.
-//
-// Example: An owner-edited completion cannot be replaced using an older prior.
-func TestRootCompletionCorrectionPreservesConflictingPrior(t *testing.T) {
-	old := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`
-	newer := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}`
-	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:05:00Z", Roles: []reportingRole{reportingRoleRoot}}}, "o": {Type: "outcome", Outcome: "Result"}}}
-	add := syncAddition{Target: syncTargetRootCompletion, Evidence: "corrected", Record: json.RawMessage(newer), ExpectedPrior: json.RawMessage(old)}
-	edited := strings.Replace(old, "15:00:00Z", "15:01:00Z", 1)
-	if _, _, ok := applyRootSyncAddition([]byte(valid+"root_completions: ["+edited+"]\n"), add, ledger, forecastSource{}); ok {
-		t.Fatal("owner edit overwritten")
-	}
-	commented := []byte(valid + "root_completions:\n  - " + old + " # keep\n")
-	if _, _, ok := applyRootSyncAddition(commented, add, ledger, forecastSource{}); ok {
-		t.Fatal("owner comment removed")
-	}
-	work := ledger.Records["w"]
-	work.Data.CompletedAt = "2026-11-02T15:06:00Z"
-	ledger.Records["w"] = work
-	if _, _, ok := applyRootSyncAddition([]byte(valid+"root_completions: ["+old+"]\n"), add, ledger, forecastSource{}); ok {
-		t.Fatal("noncanonical correction accepted")
 	}
 }

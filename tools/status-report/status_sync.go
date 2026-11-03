@@ -266,7 +266,7 @@ func projectLogStatusStep(
 	if state.PendingRootAdditions == nil {
 		state.PendingRootAdditions = map[string]syncPendingRootAddition{}
 	}
-	migratePendingRootAdditions(state.PendingAdditions, state.PendingRootAdditions, fullLog)
+	migratePendingRootAdditions(state.PendingAdditions, state.PendingRootAdditions, fullLog, state.Applied)
 	if state.Groups == nil {
 		state.Groups = map[string]syncPendingGroup{}
 	}
@@ -390,18 +390,12 @@ func projectLogStatusStep(
 				selector, _ := json.Marshal([]string{id, workRef, environment.String()})
 				key = "addition/lane/" + string(selector)
 			}
-			priorLine, priorRecord := 0, ""
-			if prior, exists := state.PendingAdditions[key]; exists {
-				_, applied := state.Applied[key]
-				if pendingRootCorrectionPrior(event, addition, prior, applied) {
-					priorLine, priorRecord = prior.Line, prior.Record
-				} else {
-					invalidUpdate = true
-					continue
-				}
+			if _, exists := state.PendingAdditions[key]; exists {
+				invalidUpdate = true
+				continue
 			}
 			state.Latest[key] = i + 1
-			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority, PriorLine: priorLine, PriorRecord: priorRecord}
+			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority}
 		}
 		for ordinal, update := range event.Details.StatusUpdate.Updates {
 			if !syncUpdateSelectorValid(update) {

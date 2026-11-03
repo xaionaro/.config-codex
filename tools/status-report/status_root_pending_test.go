@@ -33,7 +33,7 @@ func TestRootPendingMigrationRequiresUniqueExactLogMatch(t *testing.T) {
 	}{{`{"details":{"status_update":{"additions":[` + entry + `]}}}`, true}, {`{"details":{"status_update":{"additions":[` + entry + `,` + entry + `]}}}`, false}} {
 		legacy := map[string]syncPendingAddition{"old": old}
 		pending := map[string]syncPendingRootAddition{}
-		ok := migratePendingRootAdditions(legacy, pending, []byte(tc.log))
+		ok := migratePendingRootAdditions(legacy, pending, []byte(tc.log), nil)
 		if ok != tc.want || (len(pending) == 1) != tc.want || (len(legacy) == 0) != tc.want {
 			t.Fatalf("unexpected migration: ok=%v legacy=%v pending=%v", ok, legacy, pending)
 		}
@@ -49,7 +49,7 @@ func TestRootPendingMigrationPreservesCorrectionChain(t *testing.T) {
 	log := `{"details":{"status_update":{"additions":[{"target":"root_completion","record":` + oldRecord + `,"evidence":"accepted"}]}}}` + "\n" + `{"event":"correction","details":{"corrects":1,"status_update":{"additions":[{"target":"root_completion","record":` + newRecord + `,"evidence":"corrected","expected_prior":` + oldRecord + `}]}}}`
 	legacy := map[string]syncPendingAddition{"old": {Line: 2, Target: syncTargetRootCompletion, ID: "project-understanding.yaml#/records/w", Record: newRecord, Evidence: "corrected", ExpectedPrior: oldRecord, PriorLine: 1, PriorRecord: oldRecord}}
 	pending := map[string]syncPendingRootAddition{}
-	if !migratePendingRootAdditions(legacy, pending, []byte(log)) || len(legacy) != 0 || len(pending) != 2 {
+	if !migratePendingRootAdditions(legacy, pending, []byte(log), nil) || len(legacy) != 0 || len(pending) != 2 {
 		t.Fatalf("lost correction provenance: %v %v", legacy, pending)
 	}
 }
