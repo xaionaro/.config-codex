@@ -546,6 +546,7 @@ func applyPendingSyncGroups(
 func legacySyncEffects(
 	before map[string]syncPending,
 	after syncState,
+	removed map[string]bool,
 ) []syncEffect {
 	keys := make([]string, 0, len(before))
 	for key := range before {
@@ -560,7 +561,9 @@ func legacySyncEffects(
 		}
 		update := pending.Update
 		if update.Retract {
-			effects = append(effects, syncEffect{Target: update.Target, ID: update.ID, Operation: syncEffectRemove})
+			if removed[key] {
+				effects = append(effects, syncEffect{Target: update.Target, ID: update.ID, Operation: syncEffectRemove})
+			}
 			continue
 		}
 		for field, value := range update.Fields {

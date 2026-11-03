@@ -281,6 +281,11 @@ func projectLogStatusStep(
 	for key, value := range state.Pending {
 		legacyPending[key] = value
 	}
+	legacyApplied := make(map[string]string, len(state.Applied))
+	for key, value := range state.Applied {
+		legacyApplied[key] = value
+	}
+	legacyRemovals := map[string]bool{}
 	lines := bytes.Split(logBytes, []byte("\n"))
 	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1]
@@ -572,6 +577,8 @@ func projectLogStatusStep(
 				if _, err := parse(updated); err != nil {
 					continue
 				}
+				originalText, present := legacyApplied[textKey]
+				legacyRemovals[key] = narrativeSyncItemOwned(original, pending.Update, originalText, present)
 				result = updated
 				delete(state.Applied, textKey)
 				delete(state.Applied, evidenceKey)
@@ -625,7 +632,7 @@ func projectLogStatusStep(
 			delete(state.Pending, key)
 		}
 	}
-	legacyEffects := legacySyncEffects(legacyPending, state)
+	legacyEffects := legacySyncEffects(legacyPending, state, legacyRemovals)
 	if err := verifyStatusSyncCanonicalEffects(original, result, legacyEffects, ledger, forecasts); err != nil {
 		return nil, nil, err
 	}
