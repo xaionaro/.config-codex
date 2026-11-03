@@ -117,7 +117,13 @@ func insertSyncAddition(
 	}
 	for _, field := range required {
 		value, exists := record[field]
-		if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		if !exists {
+			return data, false
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			if addition.Target == syncTargetTask && field == "status" {
+				continue
+			}
 			return data, false
 		}
 		if field != "effort" && field != "rounds" && field != "min_minutes" && field != "max_minutes" {

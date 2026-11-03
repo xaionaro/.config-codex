@@ -93,8 +93,13 @@ func applyPendingReprioritizations(
 		if verifyStatusSyncCanonicalEffects(data, candidate, groupEffects, ledger, forecasts) != nil {
 			continue
 		}
+		ownership, valid := additionOwnership(syncTargetPriorityEstimate, json.RawMessage(estimate.Record))
+		if !valid {
+			continue
+		}
 		data = candidate
 		effects = append(effects, groupEffects...)
+		recordAdditionOwnership(state, syncUpdate{Target: syncTargetPriorityEstimate, ID: priority}, estimate.Line, ownership)
 		state.Applied[estimateKey] = estimate.Record
 		delete(state.PendingAdditions, estimateKey)
 		for _, field := range syncGroupFields(update) {

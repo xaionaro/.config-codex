@@ -465,24 +465,26 @@ func projectLogStatusStep(
 			if err := verifyStatusSyncCanonicalEffects(result, updated, additionEffects, ledger, forecasts); err != nil {
 				continue
 			}
-			var taskOwnership map[string]string
-			if p.Target == syncTargetTask {
-				var valid bool
-				taskOwnership, valid = taskAdditionOwnership(json.RawMessage(p.Record))
-				if !valid {
-					continue
+			ownership := make(map[string]map[string]string, len(groupKeys))
+			selectors := make(map[string]syncUpdate, len(groupKeys))
+			validOwnership := true
+			for _, appliedKey := range groupKeys {
+				item := state.PendingAdditions[appliedKey]
+				values, valid := additionOwnership(item.Target, json.RawMessage(item.Record))
+				selector, identified := pendingAdditionSelector(appliedKey, item)
+				if !valid || !identified {
+					validOwnership = false
+					break
 				}
+				ownership[appliedKey], selectors[appliedKey] = values, selector
+			}
+			if !validOwnership {
+				continue
 			}
 			result, progress = updated, true
 			effects = append(effects, additionEffects...)
-			if taskOwnership != nil {
-				id := p.ID
-				if id == "" {
-					id = strings.TrimPrefix(key, "addition/task/")
-				}
-				recordTaskAdditionOwnership(&state, id, p.Line, taskOwnership)
-			}
 			for _, appliedKey := range groupKeys {
+				recordAdditionOwnership(&state, selectors[appliedKey], state.PendingAdditions[appliedKey].Line, ownership[appliedKey])
 				state.Applied[appliedKey] = state.PendingAdditions[appliedKey].Record
 				delete(state.PendingAdditions, appliedKey)
 			}
