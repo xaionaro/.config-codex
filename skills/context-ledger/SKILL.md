@@ -132,6 +132,10 @@ preserves detected owner edits and unrelated content. Reconcile diagnostics and
 pending changes manually when needed. If automatic refresh fails after append, run
 the provided retry command without appending again.
 
+Use the documented cancellation update for a cancelled task and a correction
+with `retract: true` to retract a sync-managed narrative subject. When adding a
+task with a new priority, supply its priority estimate in the same event.
+
 | Event | Material change |
 |-------|-----------------|
 | `worker_progress` | Worker discovery or milestone advancing a user requirement. |

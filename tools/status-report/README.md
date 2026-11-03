@@ -68,7 +68,7 @@ Producers can include an explicit `details.status_update` object in a high-level
 
 Place that object under `details.status_update` in a valid log event. Supported updates are:
 
-- `task`: identify by task `id`; fields are `status`, `evidence`, `owner`, and `context`. `CLOSED` requires accompanying `fields.evidence`.
+- `task`: identify by task `id`; fields are `status`, `evidence`, `owner`, `context`, and `lifecycle`. `CLOSED` requires accompanying `fields.evidence`. Cancel a task with `fields` containing `lifecycle: "cancelled"`, `status: "unknown"`, and nonempty `evidence` together. This removes that task from `top_priorities` and preserves its descendants.
 - `lane`: identify by `id` (the lane's `task_id`), `work_ref`, and `required_environment` (`implementation`, `test`, or `prod`). Fields are `owner`, `implementation_status`, `test_status`, `prod_status`, `blocker`, `next_action`, `next_milestone`, `context`, `completed_at`, and `lifecycle`. To close the required environment, supply its `CLOSED` status and `completed_at` together, plus nonempty update-level `evidence`. The canonical work must be completed at the same time and the report lane must have no active forecast. Cancellation uses `lifecycle: "cancelled"`, update-level evidence, and canonical work in the cancelled state.
 - `progress`, `decisions`, `blockers_risks`, and `verification`: identify a subject with `id`; fields are `text` and `evidence`. New subjects need `text`; the report stores the ID as `subject_ref`.
 - `report`: use `id: "current"`; fields are `state` and `next_focus`.
@@ -79,7 +79,7 @@ For example, a lane completion update after the canonical work and forecast are 
 {"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:example","required_environment":"test","evidence":"acceptance.out","fields":{"test_status":"CLOSED","completed_at":"2026-11-02T15:24:00Z"}}]}
 ```
 
-`additions` accepts `{"target":"task","record":{...}}` or `{"target":"review","record":{...}}` with a complete report-schema record. IDs must be unique; a review uses `task_id`. These operations do not derive impact points: the producer assigns supported points and basis on the shared scale, and the renderer calculates priority from those points and remaining work.
+`additions` accepts `{"target":"task","record":{...}}` or `{"target":"review","record":{...}}` with a complete report-schema record. IDs must be unique; a review uses `task_id`. When a task introduces a new priority, add its complete `priority_estimate` record in the same event; the task and estimate are inserted together. These operations do not derive impact points: the producer assigns supported points and basis on the shared scale, and the renderer calculates priority from those points and remaining work.
 
 For example, this payload adds a task and its review, using supplied estimates and review facts:
 
@@ -94,6 +94,8 @@ For example, when line 12 was the latest update to task 1's owner, a correction 
 ```json
 {"updates":[{"target":"task","id":"1","corrects":12,"fields":{"owner":"actual owner"}}]}
 ```
+
+To retract a sync-managed narrative subject, append a `correction` event with an update such as `{"target":"progress","id":"subject","corrects":12,"retract":true}` and no `fields`. `corrects` must identify the latest text or evidence update for that subject. Retraction checks the managed text and evidence and preserves owner edits; a conflict requires reconciliation.
 
 A linked active or blocked work record needs a remaining non-CLOSED leaf in the linked task subtree, or an explicitly open acceptance lane. Closed source packages may coexist with an open test or production lane. If all scored leaves are CLOSED but an open lane still has acceptance work, the package ratio is partial. Cancelled lanes may be omitted; a retained cancelled lane uses `lifecycle: cancelled` and must not claim completion, and any linked canonical forecast must be inactive.
 
