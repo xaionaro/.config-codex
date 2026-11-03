@@ -575,6 +575,7 @@ func projectLogStatusStep(
 	}
 	// Legacy field entries have no saved ordinal. Hold ambiguous same-line
 	// corrections until their source occurrence can be identified uniquely.
+	promoteLegacyStructuredCorrections(&state, legacyPending, result, fullLog)
 	heldLegacy, invalidLegacy := holdAmbiguousLegacyCorrections(&state, legacyPending, fullLog)
 	invalidUpdate = invalidUpdate || invalidLegacy
 	result = applyTaskCancellations(result, &state)
