@@ -45,7 +45,7 @@ jq -e '.hookSpecificOutput.additionalContext | contains("status-report render")'
 capture="$(find "$tmp/proof/pre-reviewer/valid-session" -name 'capture-turn-*.json' -type f -print -quit)"
 [[ -n "$capture" ]]
 jq -e '.turn_id == "turn" and .prompt == "status"' "$capture" >/dev/null
-for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema' 'Fix the status update renderer' 'Current status code is broken' 'Progress update schema' 'Please update the status field' 'Can I get a status update template?' 'What is the current progress update schema?'; do
+for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema' 'Fix the status update renderer' 'Current status code is broken' 'Progress update schema' 'Please update the status field' 'Can I get a status update template?' 'What is the current progress update schema?' 'What is a status report?' 'What is a progress update?' 'How do I get a status report?' 'How can I get a progress update?'; do
   output="$(jq -cn --arg prompt "$prompt" '{session_id:"bad/session",prompt:$prompt}' | bash -c "$command")"
   [[ -z "$output" ]]
 done

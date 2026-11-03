@@ -18,6 +18,10 @@ normalized_prompt="${prompt,,}"
 explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request|get|what[[:space:]]+is)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest|updated|comprehensive))*[[:space:]]+(status|progress)[[:space:]]+(report|update)'
 reminder=false
 while IFS= read -r clause; do
+  if [[ "$clause" =~ ^[[:space:]]*what[[:space:]]+is[[:space:]]+(a|an)[[:space:]]+(status|progress)[[:space:]]+(report|update)[[:space:]]*$ ]] ||
+     [[ "$clause" =~ ^[[:space:]]*how[[:space:]]+(do|can)[[:space:]]+(i|we)[[:space:]]+get[[:space:]]+(a|an)[[:space:]]+(status|progress)[[:space:]]+(report|update)[[:space:]]*$ ]]; then
+    continue
+  fi
   if [[ "$clause" =~ $explicit_report ]]; then
     remainder="${clause#*"${BASH_REMATCH[0]}"}"
     # A following noun makes the report a modifier (for example, a template).
