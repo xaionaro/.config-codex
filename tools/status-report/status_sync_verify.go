@@ -46,6 +46,12 @@ func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []sync
 		return err
 	}
 	for _, effect := range effects {
+		if effect.Operation == syncEffectRemove && (effect.Target == syncTargetRootForecast || effect.Target == syncTargetRootCompletion) {
+			if err := verifyCanonicalRootRemoval(before, effect, effects, ledger, forecasts); err != nil {
+				return err
+			}
+			continue
+		}
 		if effect.Operation == syncEffectAdd && (effect.Target == syncTargetLane || effect.Target == syncTargetRootCompletion || effect.Target == syncTargetRootForecast) {
 			if err := verifyCanonicalSyncAddition(effect, ledger, forecasts); err != nil {
 				return err
@@ -284,7 +290,7 @@ func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 		if err != nil {
 			return err
 		}
-		if identity != "subject_ref" {
+		if identity != "subject_ref" && effect.Target != syncTargetRootForecast && effect.Target != syncTargetRootCompletion {
 			return fmt.Errorf("unsupported removal")
 		}
 		items, ok := root[section].([]any)
@@ -294,6 +300,24 @@ func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 		index, err := syncEffectIndex(items, identity, effect)
 		if err != nil || index < 0 {
 			return fmt.Errorf("missing removal target")
+		}
+		if identity != "subject_ref" {
+			addition, ok := effect.Value.(syncAddition)
+			if !ok {
+				return fmt.Errorf("root removal lacks authorization")
+			}
+			var expected any
+			if err := json.Unmarshal(addition.ExpectedPrior, &expected); err != nil {
+				return fmt.Errorf("invalid expected prior")
+			}
+			encoded, err := json.Marshal(items[index])
+			if err != nil {
+				return err
+			}
+			var actual any
+			if err := json.Unmarshal(encoded, &actual); err != nil || !reflect.DeepEqual(actual, expected) {
+				return fmt.Errorf("root prior mismatch")
+			}
 		}
 		root[section] = append(items[:index], items[index+1:]...)
 		return nil
@@ -447,4 +471,72 @@ func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecas
 		return nil
 	}
 	return fmt.Errorf("invalid canonical lane completion")
+}
+
+// verifyCanonicalRootRemoval validates the explicit transition and its exact prior record.
+func verifyCanonicalRootRemoval(before map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+	addition, ok := effect.Value.(syncAddition)
+	if !ok || strings.TrimSpace(addition.Evidence) == "" || effect.Evidence != addition.Evidence {
+		return fmt.Errorf("root transition lacks evidence")
+	}
+	section, identity, err := syncEffectSection(effect.Target)
+	if err != nil {
+		return err
+	}
+	items, ok := before[section].([]any)
+	if !ok {
+		return fmt.Errorf("root prior missing")
+	}
+	index, err := syncEffectIndex(items, identity, effect)
+	if err != nil || index < 0 {
+		return fmt.Errorf("root prior identity missing")
+	}
+	actual, err := json.Marshal(items[index])
+	if err != nil {
+		return err
+	}
+	var got, expected any
+	if json.Unmarshal(actual, &got) != nil || json.Unmarshal(addition.ExpectedPrior, &expected) != nil || !reflect.DeepEqual(got, expected) {
+		return fmt.Errorf("root prior mismatch")
+	}
+	matched := false
+	for _, add := range effects {
+		raw, ok := add.Value.(json.RawMessage)
+		if add.Operation == syncEffectAdd && add.Target == addition.Target && ok && string(raw) == string(addition.Record) && add.Evidence == addition.Evidence {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return fmt.Errorf("root transition missing accompanying addition")
+	}
+	if err := verifyCanonicalSyncAddition(syncEffect{Target: addition.Target, Value: addition.Record, Evidence: addition.Evidence}, ledger, forecasts); err != nil {
+		return err
+	}
+	var record struct {
+		WorkRef     string `json:"work_ref"`
+		ForecastRef string `json:"forecast_ref"`
+	}
+	if json.Unmarshal(addition.Record, &record) != nil {
+		return fmt.Errorf("invalid root addition")
+	}
+	switch effect.Target {
+	case syncTargetRootForecast:
+		if addition.Target != syncTargetRootCompletion || !addition.RetireForecast || addition.ReopenWorkRef != "" || !validRef(record.WorkRef, "project-understanding.yaml") {
+			return fmt.Errorf("root retirement not authorized")
+		}
+		work := ledger.Records[sourceID(record.WorkRef, "project-understanding.yaml")]
+		if string(work.Data.ForecastRef) != effect.ID {
+			return fmt.Errorf("root retirement forecast mismatch")
+		}
+	case syncTargetRootCompletion:
+		if addition.Target != syncTargetRootForecast || addition.RetireForecast || addition.ReopenWorkRef != effect.ID || !validRef(effect.ID, "project-understanding.yaml") {
+			return fmt.Errorf("root reopening not authorized")
+		}
+		work, ok := ledger.Records[sourceID(effect.ID, "project-understanding.yaml")]
+		if !ok || work.Type != "work" || !hasRole(work.Data.Roles, reportingRoleRoot) || !openWork(work.Data.State) || string(work.Data.ForecastRef) != record.ForecastRef {
+			return fmt.Errorf("root reopening work mismatch")
+		}
+	}
+	return nil
 }

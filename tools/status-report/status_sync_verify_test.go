@@ -128,3 +128,55 @@ func TestVerifyStatusSyncCanonicalRootCompletion(t *testing.T) {
 		t.Fatal("accepted missing evidence")
 	}
 }
+
+func TestVerifyRootRemovalRequiresExplicitPrior(t *testing.T) {
+	original := []byte("root_forecasts: [{forecast_ref: 'forecasts.yaml#/records/f', outcome: Result}]\n")
+	candidate := []byte("root_forecasts: []\n")
+	add := syncAddition{Target: syncTargetRootCompletion, RetireForecast: true, ExpectedPrior: json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result"}`), Record: json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w"}`)}
+	effect := syncEffect{Target: syncTargetRootForecast, ID: "forecasts.yaml#/records/f", Operation: syncEffectRemove, Value: add}
+	if err := verifyStatusSyncEffects(original, candidate, []syncEffect{effect}); err != nil {
+		t.Fatal(err)
+	}
+	add.ExpectedPrior = json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"wrong"}`)
+	effect.Value = add
+	if err := verifyStatusSyncEffects(original, candidate, []syncEffect{effect}); err == nil {
+		t.Fatal("accepted wrong prior")
+	}
+}
+
+func TestVerifyCanonicalRootRetirement(t *testing.T) {
+	prior := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result"}`
+	record := json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`)
+	original := []byte("root_forecasts: [" + prior + "]\n")
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:00:00Z", Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"status": "inactive", "kind": "root"}}}
+	addition := syncAddition{Target: syncTargetRootCompletion, Record: record, Evidence: "accepted", RetireForecast: true, ExpectedPrior: json.RawMessage(prior)}
+	removal := syncEffect{Target: syncTargetRootForecast, ID: "forecasts.yaml#/records/f", Operation: syncEffectRemove, Evidence: "accepted", Value: addition}
+	add := syncEffect{Target: syncTargetRootCompletion, Operation: syncEffectAdd, Evidence: "accepted", Value: record}
+	if err := verifyStatusSyncCanonicalEffects(original, []byte("{}"), []syncEffect{removal, add}, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	addition.RetireForecast = false
+	removal.Value = addition
+	if err := verifyStatusSyncCanonicalEffects(original, []byte("{}"), []syncEffect{removal, add}, ledger, forecasts); err == nil {
+		t.Fatal("accepted missing retirement authorization")
+	}
+}
+
+func TestVerifyCanonicalRootReopening(t *testing.T) {
+	prior := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result"}`
+	record := json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result"}`)
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateActive, Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"status": "active", "kind": "root"}}}
+	addition := syncAddition{Target: syncTargetRootForecast, Record: record, Evidence: "accepted", ReopenWorkRef: "project-understanding.yaml#/records/w", ExpectedPrior: json.RawMessage(prior)}
+	removal := syncEffect{Target: syncTargetRootCompletion, ID: addition.ReopenWorkRef, Operation: syncEffectRemove, Evidence: "accepted", Value: addition}
+	add := syncEffect{Target: syncTargetRootForecast, Operation: syncEffectAdd, Evidence: "accepted", Value: record}
+	original := []byte("root_completions: [" + prior + "]\n")
+	if err := verifyStatusSyncCanonicalEffects(original, []byte("{}"), []syncEffect{removal, add}, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	forecasts.Records["f"]["status"] = "inactive"
+	if err := verifyStatusSyncCanonicalEffects(original, []byte("{}"), []syncEffect{removal, add}, ledger, forecasts); err == nil {
+		t.Fatal("accepted inactive reopened forecast")
+	}
+}
