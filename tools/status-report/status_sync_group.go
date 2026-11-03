@@ -450,6 +450,10 @@ func applyPendingSyncGroups(
 		previous := syncGroupPriorValues(*state, update)
 		candidate, changes, ok := applySyncGroup(data, update, ledger, forecasts, previous)
 		if !ok {
+			if staleLaneTransitionReplaced(data, *state, update, group, keys, ledger, forecasts) {
+				delete(state.Groups, key)
+				continue
+			}
 			markSyncBlocked(blocked, targetIdentity, dependencies)
 			continue
 		}
