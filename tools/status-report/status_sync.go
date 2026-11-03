@@ -138,13 +138,6 @@ func projectLogStatus(
 	ledger ledgerSource,
 	forecasts forecastSource,
 ) ([]byte, []byte, error) {
-	logBytes, err := os.ReadFile(filepath.Join(dir, "high_level_log.jsonl"))
-	if errors.Is(err, os.ErrNotExist) {
-		return original, nil, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
 	var document struct {
 		StatusSync *syncState `yaml:"status_sync"`
 	}
@@ -154,6 +147,16 @@ func projectLogStatus(
 	cursor := 0
 	if document.StatusSync != nil {
 		cursor = document.StatusSync.Cursor
+	}
+	logBytes, err := os.ReadFile(filepath.Join(dir, "high_level_log.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		if cursor != 0 {
+			return nil, nil, fmt.Errorf("status sync cursor exceeds log: %w", err)
+		}
+		return original, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
 	}
 	boundaries := make([]int, 0)
 	for i, b := range logBytes {
