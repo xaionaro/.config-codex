@@ -118,6 +118,20 @@ same envelope themselves.
 | `next_action` | Nonempty string required by this guidance when work remains; omit when no action remains. The CLI checks its type when supplied. |
 | `details` | Event-specific payload, such as verdicts, forecast targets, commit references, or `corrects` identifying a mistaken prior entry. |
 
+For a material change that should also update the report, put an explicit
+`details.status_update` payload in the appended event. Use the operation schema,
+closure evidence rules, and examples in the [status-report README](../../tools/status-report/README.md#log-driven-report-updates).
+Describe only supplied facts; ordinary event prose does not authorize inferred report
+changes. The producer assigns impact points and their basis; the renderer calculates
+priority from those points and remaining work.
+
+Append events in order. Correct a mistaken projected field with a new `correction`
+event and its update's `corrects` set to the one-based line of the latest update
+for that field; never edit the earlier entry. Refresh tracks pending updates and
+preserves detected owner edits and unrelated content. Reconcile diagnostics and
+pending changes manually when needed. If automatic refresh fails after append, run
+the provided retry command without appending again.
+
 | Event | Material change |
 |-------|-----------------|
 | `worker_progress` | Worker discovery or milestone advancing a user requirement. |

@@ -58,6 +58,43 @@ After each successful high-level log append, `eci-active` invokes `status-report
 
 Run the Go refresh command under the existing ECI mutation lock; `eci-active status-refresh --event EVENT` takes that lock for a retry. All other report and source writers must serialize with it. The before-publication change check detects some uncoordinated edits but is not a compare-and-swap and does not replace locking. Rendering and validation still reconcile sources as a backstop.
 
+### Log-driven report updates
+
+Producers can include an explicit `details.status_update` object in a high-level log event. Its `updates` and `additions` are arrays; omit either when unused. Each update has a `target`, stable `id`, and `fields` object whose values are nonempty strings. Supply known facts and evidence: prose elsewhere in the event is not interpreted as a report update. This payload closes a task and supplies its acceptance evidence in the same update:
+
+```json
+{"updates":[{"target":"task","id":"1","fields":{"status":"CLOSED","evidence":"Acceptance check passed: checks.out"}},{"target":"verification","id":"acceptance-check","fields":{"text":"Acceptance check passed.","evidence":"checks.out"}}]}
+```
+
+Place that object under `details.status_update` in a valid log event. Supported updates are:
+
+- `task`: identify by task `id`; fields are `status`, `evidence`, `owner`, and `context`. `CLOSED` requires accompanying `fields.evidence`.
+- `lane`: identify by `id` (the lane's `task_id`), `work_ref`, and `required_environment` (`implementation`, `test`, or `prod`). Fields are `owner`, `implementation_status`, `test_status`, `prod_status`, `blocker`, `next_action`, `next_milestone`, `context`, `completed_at`, and `lifecycle`. To close the required environment, supply its `CLOSED` status and `completed_at` together, plus nonempty update-level `evidence`. The canonical work must be completed at the same time and the report lane must have no active forecast. Cancellation uses `lifecycle: "cancelled"`, update-level evidence, and canonical work in the cancelled state.
+- `progress`, `decisions`, `blockers_risks`, and `verification`: identify a subject with `id`; fields are `text` and `evidence`. New subjects need `text`; the report stores the ID as `subject_ref`.
+- `report`: use `id: "current"`; fields are `state` and `next_focus`.
+
+For example, a lane completion update after the canonical work and forecast are reconciled is:
+
+```json
+{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:example","required_environment":"test","evidence":"acceptance.out","fields":{"test_status":"CLOSED","completed_at":"2026-11-02T15:24:00Z"}}]}
+```
+
+`additions` accepts `{"target":"task","record":{...}}` or `{"target":"review","record":{...}}` with a complete report-schema record. IDs must be unique; a review uses `task_id`. These operations do not derive impact points: the producer assigns supported points and basis on the shared scale, and the renderer calculates priority from those points and remaining work.
+
+For example, this payload adds a task and its review, using supplied estimates and review facts:
+
+```json
+{"additions":[{"target":"task","record":{"id":"2","title":"Check result","priority":"high","impact":"Acceptance remains open","effort":{"min_minutes":10,"max_minutes":20,"kind":"work","basis":"educated guess"},"status":"NEW"}},{"target":"review","record":{"task_id":"2","reporter":"owner","critic":"reviewer","rounds":1,"estimate":"10–20 minutes","impact":"Acceptance remains open","priority":"high","unresolved":"none"}}]}
+```
+
+Sync consumes events in append order and retains the latest update per target field. A correction is a new `correction` event whose update includes `corrects`, the one-based log line containing the latest update for each corrected field. Keep earlier entries unchanged. The report stores its sync cursor and pending state in `status_sync`; do not edit it as a substitute for an event. Conflicting owner edits, missing targets, invalid records, and unsupported or unsafe changes may remain pending or produce diagnostics for manual reconciliation. Sync preserves unrelated content and owner edits it detects; it does not infer missing facts. Review diagnostics and reconcile sources before claiming completion. If refresh fails after append, use the emitted retry command without appending the event again. A typed event can advance the report timestamp; an existing timeline keeps its original anchor in `timeline_as_of`.
+
+For example, when line 12 was the latest update to task 1's owner, a correction event can include `details.corrects` identifying that mistaken entry and `details.status_update` containing:
+
+```json
+{"updates":[{"target":"task","id":"1","corrects":12,"fields":{"owner":"actual owner"}}]}
+```
+
 A linked active or blocked work record needs a remaining non-CLOSED leaf in the linked task subtree, or an explicitly open acceptance lane. Closed source packages may coexist with an open test or production lane. If all scored leaves are CLOSED but an open lane still has acceptance work, the package ratio is partial. Cancelled lanes may be omitted; a retained cancelled lane uses `lifecycle: cancelled` and must not claim completion, and any linked canonical forecast must be inactive.
 
 A completed root without a lane is represented in `root_completions` as `{work_ref, outcome, completed_at}`. The outcome must match an outcome record linked by that work record, and the timestamp must match the ledger's actual completion instant. Forecasted completed roots also require an inactive canonical forecast. Root completions render as completion records, without an active deadline.
