@@ -19,14 +19,17 @@ import (
 //
 // Example: Close one named task with supplied acceptance evidence.
 type syncUpdate struct {
-	Target              syncTarget        `json:"target" yaml:"target"`
-	ID                  string            `json:"id" yaml:"id"`
-	WorkRef             string            `json:"work_ref,omitempty" yaml:"work_ref,omitempty"`
-	RequiredEnvironment syncEnvironment   `json:"required_environment,omitempty" yaml:"required_environment,omitempty"`
-	Corrects            int               `json:"corrects,omitempty" yaml:"corrects,omitempty"`
-	Retract             bool              `json:"retract,omitempty" yaml:"retract,omitempty"`
-	Evidence            string            `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Fields              map[string]string `json:"fields" yaml:"fields"`
+	Target              syncTarget                 `json:"target" yaml:"target"`
+	ID                  string                     `json:"id" yaml:"id"`
+	WorkRef             string                     `json:"work_ref,omitempty" yaml:"work_ref,omitempty"`
+	RequiredEnvironment syncEnvironment            `json:"required_environment,omitempty" yaml:"required_environment,omitempty"`
+	Corrects            int                        `json:"corrects,omitempty" yaml:"corrects,omitempty"`
+	CorrectsOrdinal     *int                       `json:"corrects_ordinal,omitempty" yaml:"corrects_ordinal,omitempty"`
+	Retract             bool                       `json:"retract,omitempty" yaml:"retract,omitempty"`
+	Evidence            string                     `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Fields              map[string]string          `json:"fields" yaml:"fields"`
+	Values              map[string]json.RawMessage `json:"values,omitempty" yaml:"values,omitempty"`
+	Clear               []string                   `json:"clear,omitempty" yaml:"clear,omitempty"`
 }
 
 // syncEvent selects the status payload and envelope from one log entry.
@@ -37,8 +40,9 @@ type syncEvent struct {
 	Timestamp string `json:"timestamp"`
 	Details   struct {
 		StatusUpdate *struct {
-			Updates   []syncUpdate   `json:"updates"`
-			Additions []syncAddition `json:"additions"`
+			Updates   []syncUpdate          `json:"updates"`
+			Additions []syncAddition        `json:"additions"`
+			Timeline  *syncTimelineSnapshot `json:"timeline"`
 		} `json:"status_update"`
 	} `json:"details"`
 }
@@ -47,28 +51,61 @@ type syncEvent struct {
 //
 // Example: Add a newly scoped task.
 type syncAddition struct {
-	Target syncTarget      `json:"target" yaml:"target"`
-	Record json.RawMessage `json:"record" yaml:"record"`
+	Target         syncTarget      `json:"target" yaml:"target"`
+	Record         json.RawMessage `json:"record" yaml:"record"`
+	Evidence       string          `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	RetireForecast bool            `json:"retire_forecast,omitempty" yaml:"retire_forecast,omitempty"`
+	ReopenWorkRef  string          `json:"reopen_work_ref,omitempty" yaml:"reopen_work_ref,omitempty"`
+	ExpectedPrior  json.RawMessage `json:"expected_prior,omitempty" yaml:"expected_prior,omitempty"`
 }
 
 // syncPendingAddition retains an unapplied insertion and its log position.
 //
 // Example: Retry a review whose task does not yet exist.
 type syncPendingAddition struct {
-	Line   int        `json:"line" yaml:"line"`
-	Target syncTarget `json:"target" yaml:"target"`
-	Record string     `json:"record" yaml:"record"`
+	Line                int             `json:"line" yaml:"line"`
+	Target              syncTarget      `json:"target" yaml:"target"`
+	Record              string          `json:"record" yaml:"record"`
+	Evidence            string          `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	ID                  string          `json:"id,omitempty" yaml:"id,omitempty"`
+	WorkRef             string          `json:"work_ref,omitempty" yaml:"work_ref,omitempty"`
+	RequiredEnvironment syncEnvironment `json:"required_environment,omitempty" yaml:"required_environment,omitempty"`
+	RetireForecast      bool            `json:"retire_forecast,omitempty" yaml:"retire_forecast,omitempty"`
+	ReopenWorkRef       string          `json:"reopen_work_ref,omitempty" yaml:"reopen_work_ref,omitempty"`
+	ExpectedPrior       string          `json:"expected_prior,omitempty" yaml:"expected_prior,omitempty"`
 }
 
 // syncState stores replay progress alongside the report it describes.
 //
 // Example: Resume pending fields after their targets appear.
 type syncState struct {
-	Cursor           int                            `json:"cursor" yaml:"cursor"`
-	Applied          map[string]string              `json:"applied" yaml:"applied"`
-	Latest           map[string]int                 `json:"latest" yaml:"latest"`
-	Pending          map[string]syncPending         `json:"pending" yaml:"pending"`
-	PendingAdditions map[string]syncPendingAddition `json:"pending_additions,omitempty" yaml:"pending_additions,omitempty"`
+	Cursor              int                            `json:"cursor" yaml:"cursor"`
+	Applied             map[string]string              `json:"applied" yaml:"applied"`
+	Latest              map[string]int                 `json:"latest" yaml:"latest"`
+	AppliedOrdinals     map[string]int                 `json:"applied_ordinals,omitempty" yaml:"applied_ordinals,omitempty"`
+	Pending             map[string]syncPending         `json:"pending" yaml:"pending"`
+	PendingAdditions    map[string]syncPendingAddition `json:"pending_additions,omitempty" yaml:"pending_additions,omitempty"`
+	Groups              map[string]syncPendingGroup    `json:"groups,omitempty" yaml:"groups,omitempty"`
+	PendingTimeline     *syncPendingTimeline           `json:"pending_timeline,omitempty" yaml:"pending_timeline,omitempty"`
+	PendingTimelines    map[string]syncPendingTimeline `json:"pending_timelines,omitempty" yaml:"pending_timelines,omitempty"`
+	TimelineAppliedLine int                            `json:"timeline_applied_line,omitempty" yaml:"timeline_applied_line,omitempty"`
+}
+
+// syncPendingTimeline retains an unapplied complete timeline snapshot.
+//
+// Example: Retry a snapshot after the report timestamp advances.
+type syncPendingTimeline struct {
+	Line     int    `json:"line" yaml:"line"`
+	Snapshot string `json:"snapshot" yaml:"snapshot"`
+}
+
+// syncPendingGroup retains one complete target update in canonical order.
+//
+// Example: Retry an assignment after its named task appears.
+type syncPendingGroup struct {
+	Line    int    `json:"line" yaml:"line"`
+	Ordinal int    `json:"ordinal" yaml:"ordinal"`
+	Update  string `json:"update" yaml:"update"`
 }
 
 // syncPending retains one unapplied field and its log position.
@@ -96,6 +133,62 @@ func projectLogStatus(
 	if err != nil {
 		return nil, nil, err
 	}
+	var document struct {
+		StatusSync *syncState `yaml:"status_sync"`
+	}
+	if err := yaml.Unmarshal(original, &document); err != nil {
+		return nil, nil, err
+	}
+	cursor := 0
+	if document.StatusSync != nil {
+		cursor = document.StatusSync.Cursor
+	}
+	boundaries := make([]int, 0)
+	for i, b := range logBytes {
+		if b == '\n' {
+			boundaries = append(boundaries, i+1)
+		}
+	}
+	if len(logBytes) > 0 && (len(boundaries) == 0 || boundaries[len(boundaries)-1] != len(logBytes)) {
+		boundaries = append(boundaries, len(logBytes))
+	}
+	if cursor < 0 || cursor > len(boundaries) {
+		return nil, nil, fmt.Errorf("status sync cursor exceeds log")
+	}
+	result := original
+	var effects []syncEffect
+	for i := cursor; i < len(boundaries); i++ {
+		var stepEffects []syncEffect
+		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes[:boundaries[i]])
+		if err != nil {
+			return nil, nil, err
+		}
+		effects = append(effects, stepEffects...)
+	}
+	if cursor == len(boundaries) {
+		var stepEffects []syncEffect
+		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		effects = append(effects, stepEffects...)
+	}
+	if err := verifyStatusSyncEffects(original, result, effects); err != nil {
+		return nil, nil, err
+	}
+	return result, logBytes, nil
+}
+
+// projectLogStatusStep applies one newly observed event and retries pending work.
+//
+// Example: A closure is applied before a later evidence update.
+func projectLogStatusStep(
+	original []byte,
+	ledger ledgerSource,
+	forecasts forecastSource,
+	logBytes []byte,
+) ([]byte, []syncEffect, error) {
+	var effects []syncEffect
 	var root yaml.Node
 	if err := yaml.Unmarshal(original, &root); err != nil {
 		return nil, nil, err
@@ -113,11 +206,28 @@ func projectLogStatus(
 	if state.Latest == nil {
 		state.Latest = map[string]int{}
 	}
+	if state.AppliedOrdinals == nil {
+		state.AppliedOrdinals = map[string]int{}
+	}
 	if state.Pending == nil {
 		state.Pending = map[string]syncPending{}
 	}
 	if state.PendingAdditions == nil {
 		state.PendingAdditions = map[string]syncPendingAddition{}
+	}
+	if state.Groups == nil {
+		state.Groups = map[string]syncPendingGroup{}
+	}
+	if state.PendingTimelines == nil {
+		state.PendingTimelines = map[string]syncPendingTimeline{}
+	}
+	if state.PendingTimeline != nil {
+		state.PendingTimelines[strconv.Itoa(state.PendingTimeline.Line)] = *state.PendingTimeline
+		state.PendingTimeline = nil
+	}
+	legacyPending := make(map[string]syncPending, len(state.Pending))
+	for key, value := range state.Pending {
+		legacyPending[key] = value
 	}
 	lines := bytes.Split(logBytes, []byte("\n"))
 	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
@@ -152,10 +262,26 @@ func projectLogStatus(
 				}
 			}
 		}
-		if len(event.Details.StatusUpdate.Updates) == 0 && len(event.Details.StatusUpdate.Additions) == 0 {
+		if len(event.Details.StatusUpdate.Updates) == 0 && len(event.Details.StatusUpdate.Additions) == 0 && event.Details.StatusUpdate.Timeline == nil {
 			invalidUpdate = true
 		}
+		if snapshot := event.Details.StatusUpdate.Timeline; snapshot != nil {
+			encoded, err := json.Marshal(snapshot)
+			if err != nil {
+				invalidUpdate = true
+			} else {
+				state.PendingTimelines[strconv.Itoa(i+1)] = syncPendingTimeline{Line: i + 1, Snapshot: string(encoded)}
+			}
+		}
 		for _, addition := range event.Details.StatusUpdate.Additions {
+			if addition.Target != syncTargetRootCompletion && addition.Target != syncTargetRootForecast && (addition.RetireForecast || addition.ReopenWorkRef != "" || len(addition.ExpectedPrior) > 0) {
+				invalidUpdate = true
+				continue
+			}
+			if (addition.Target == syncTargetRootCompletion && addition.ReopenWorkRef != "") || (addition.Target == syncTargetRootForecast && addition.RetireForecast) {
+				invalidUpdate = true
+				continue
+			}
 			var record map[string]json.RawMessage
 			if json.Unmarshal(addition.Record, &record) != nil {
 				invalidUpdate = true
@@ -167,6 +293,12 @@ func projectLogStatus(
 				idKey = "task_id"
 			case syncTargetPriorityEstimate:
 				idKey = "priority"
+			case syncTargetLane:
+				idKey = "task_id"
+			case syncTargetRootCompletion:
+				idKey = "work_ref"
+			case syncTargetRootForecast:
+				idKey = "forecast_ref"
 			case syncTargetTask:
 			default:
 				invalidUpdate = true
@@ -178,46 +310,50 @@ func projectLogStatus(
 				continue
 			}
 			key := "addition/" + addition.Target.String() + "/" + id
-			state.Latest[key] = i + 1
-			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record)}
-		}
-		for _, update := range event.Details.StatusUpdate.Updates {
-			if update.Retract {
-				textKey, evidenceKey := syncTargetKey(update, "text"), syncTargetKey(update, "evidence")
-				latest := state.Latest[textKey]
-				if state.Latest[evidenceKey] > latest {
-					latest = state.Latest[evidenceKey]
-				}
-				probe := update
-				probe.Fields = map[string]string{"text": "probe"}
-				if event.Event != "correction" || len(update.Fields) != 0 || !validNarrativeSyncUpdate(probe) || latest == 0 || update.Corrects != latest {
+			var workRef string
+			var environment syncEnvironment
+			if addition.Target == syncTargetLane {
+				if json.Unmarshal(record["work_ref"], &workRef) != nil || json.Unmarshal(record["required_environment"], &environment) != nil || workRef == "" || environment == syncEnvironmentUnknown {
 					invalidUpdate = true
 					continue
 				}
-				key := syncTargetKey(update, "$retract")
-				state.Latest[key] = i + 1
-				state.Pending[key] = syncPending{Line: i + 1, Update: update}
+				selector, _ := json.Marshal([]string{id, workRef, environment.String()})
+				key = "addition/lane/" + string(selector)
+			}
+			state.Latest[key] = i + 1
+			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior)}
+		}
+		for ordinal, update := range event.Details.StatusUpdate.Updates {
+			if update.Retract {
+				probe := update
+				probe.Fields = map[string]string{"text": "probe"}
+				probe.Retract = false
+				if event.Event != "correction" || len(update.Fields) != 0 || len(update.Values) != 0 || len(update.Clear) != 0 || !validNarrativeSyncUpdate(probe) || update.Corrects <= 0 || (update.CorrectsOrdinal != nil && *update.CorrectsOrdinal < 0) {
+					invalidUpdate = true
+					continue
+				}
+				encoded, err := encodeSyncGroup(update)
+				if err != nil {
+					invalidUpdate = true
+					continue
+				}
+				state.Groups[syncGroupKey(i+1, ordinal)] = syncPendingGroup{Line: i + 1, Ordinal: ordinal, Update: encoded}
 				continue
 			}
-			if (!validSyncUpdate(update) && !validNarrativeSyncUpdate(update)) || update.Corrects < 0 || (event.Event == "correction" && update.Corrects == 0) || (event.Event != "correction" && update.Corrects != 0) {
+			if (!validSyncUpdate(update) && !validNarrativeSyncUpdate(update) && !validStructuredSyncUpdate(update) && !validLaneSyncUpdate(update)) || update.Corrects < 0 || (update.CorrectsOrdinal != nil && (*update.CorrectsOrdinal < 0 || update.Corrects == 0)) || (event.Event == "correction" && update.Corrects == 0) || (event.Event != "correction" && update.Corrects != 0) {
 				invalidUpdate = true
 				continue
 			}
-			for field, value := range update.Fields {
-				key := syncTargetKey(update, field)
-				if update.Corrects != 0 && state.Latest[key] != update.Corrects {
-					invalidUpdate = true
-					continue
-				}
-				state.Latest[key] = i + 1
-				copy := update
-				copy.Fields = map[string]string{field: value}
-				state.Pending[key] = syncPending{Line: i + 1, Update: copy, Acceptance: update.Fields["evidence"]}
+			encoded, err := encodeSyncGroup(update)
+			if err != nil {
+				invalidUpdate = true
+				continue
 			}
+			state.Groups[syncGroupKey(i+1, ordinal)] = syncPendingGroup{Line: i + 1, Ordinal: ordinal, Update: encoded}
 		}
 	}
 	if existingState == nil && !sawUpdate && !invalidUpdate {
-		return original, logBytes, nil
+		return original, nil, nil
 	}
 	state.Cursor = len(lines)
 	result := original
@@ -242,7 +378,10 @@ func projectLogStatus(
 				continue
 			}
 			groupKeys := []string{key}
-			group := []syncAddition{{Target: p.Target, Record: json.RawMessage(p.Record)}}
+			group := []syncAddition{{Target: p.Target, Record: json.RawMessage(p.Record), Evidence: p.Evidence, RetireForecast: p.RetireForecast, ReopenWorkRef: p.ReopenWorkRef, ExpectedPrior: json.RawMessage(p.ExpectedPrior)}}
+			if !syncAdditionSourceValid(group[0], ledger, forecasts) {
+				continue
+			}
 			if p.Target == syncTargetTask {
 				var record struct {
 					Priority string `json:"priority"`
@@ -255,11 +394,31 @@ func projectLogStatus(
 					}
 				}
 			}
-			updated, ok := applySyncAdditionGroup(result, group)
+			var updated []byte
+			var implicitEffects []syncEffect
+			var ok bool
+			if len(group) == 1 && (p.Target == syncTargetRootCompletion || p.Target == syncTargetRootForecast) {
+				updated, implicitEffects, ok = applyRootSyncAddition(result, group[0], ledger, forecasts)
+			} else {
+				updated, ok = applySyncAdditionGroup(result, group)
+			}
 			if !ok {
 				continue
 			}
+			additionEffects := implicitEffects
+			for _, appliedKey := range groupKeys {
+				item := state.PendingAdditions[appliedKey]
+				id := item.ID
+				if id == "" {
+					id = strings.TrimPrefix(appliedKey, "addition/"+item.Target.String()+"/")
+				}
+				additionEffects = append(additionEffects, syncEffect{Target: item.Target, ID: id, WorkRef: item.WorkRef, RequiredEnvironment: item.RequiredEnvironment, Value: json.RawMessage(item.Record), Evidence: item.Evidence, Operation: syncEffectAdd})
+			}
+			if err := verifyStatusSyncCanonicalEffects(result, updated, additionEffects, ledger, forecasts); err != nil {
+				continue
+			}
 			result, progress = updated, true
+			effects = append(effects, additionEffects...)
 			for _, appliedKey := range groupKeys {
 				state.Applied[appliedKey] = state.PendingAdditions[appliedKey].Record
 				delete(state.PendingAdditions, appliedKey)
@@ -276,7 +435,10 @@ func projectLogStatus(
 		// Order text before evidence for a newly inserted subject.
 		//
 		// Example: Insert a progress text before its evidence field.
-		func(i, j int) bool {
+		func(
+			i int,
+			j int,
+		) bool {
 			// New keyed narratives need their text before their evidence.
 			a, b := strings.TrimSuffix(keys[i], "/text"), strings.TrimSuffix(keys[j], "/text")
 			if strings.HasSuffix(keys[i], "/text") && strings.TrimSuffix(keys[j], "/evidence") == a {
@@ -361,6 +523,72 @@ func projectLogStatus(
 			delete(state.Pending, key)
 		}
 	}
+	legacyEffects := legacySyncEffects(legacyPending, state)
+	if err := verifyStatusSyncCanonicalEffects(original, result, legacyEffects, ledger, forecasts); err != nil {
+		return nil, nil, err
+	}
+	effects = append(effects, legacyEffects...)
+	var groupEffects []syncEffect
+	var groupInvalid bool
+	result, groupEffects, groupInvalid = applyPendingSyncGroups(result, &state, ledger, forecasts)
+	effects = append(effects, groupEffects...)
+	invalidUpdate = invalidUpdate || groupInvalid
+	if latestTimestamp != "" {
+		before, err := parse(result)
+		if err != nil {
+			return nil, nil, err
+		}
+		result, err = advanceSyncTimestamp(result, latestTimestamp)
+		if err != nil {
+			return nil, nil, err
+		}
+		after, err := parse(result)
+		if err != nil {
+			return nil, nil, err
+		}
+		if after.Timestamp != before.Timestamp {
+			effects = append(effects, syncEffect{Operation: syncEffectTimestamp, Value: after.Timestamp})
+		}
+		if after.TimelineAsOf != before.TimelineAsOf {
+			effects = append(effects, syncEffect{Operation: syncEffectTimelineAnchor, Value: after.TimelineAsOf})
+		}
+	}
+	timelineKeys := make([]string, 0, len(state.PendingTimelines))
+	for key := range state.PendingTimelines {
+		timelineKeys = append(timelineKeys, key)
+	}
+	sort.Slice(timelineKeys,
+		// Evaluate snapshots in canonical log order.
+		//
+		// Example: A later snapshot cannot be followed by an older retry.
+		func(
+			i int,
+			j int,
+		) bool {
+			return state.PendingTimelines[timelineKeys[i]].Line < state.PendingTimelines[timelineKeys[j]].Line
+		})
+	for _, key := range timelineKeys {
+		pending := state.PendingTimelines[key]
+		if pending.Line <= state.TimelineAppliedLine {
+			delete(state.PendingTimelines, key)
+			continue
+		}
+		var snapshot syncTimelineSnapshot
+		if json.Unmarshal([]byte(pending.Snapshot), &snapshot) != nil {
+			continue
+		}
+		if updated, ok := applySyncTimeline(result, snapshot); ok {
+			result = updated
+			effects = append(effects, syncEffect{Operation: syncEffectTimeline, Value: snapshot})
+			state.TimelineAppliedLine = pending.Line
+			delete(state.PendingTimelines, key)
+		}
+	}
+	for key, pending := range state.PendingTimelines {
+		if pending.Line <= state.TimelineAppliedLine {
+			delete(state.PendingTimelines, key)
+		}
+	}
 	// Store state in the report itself so report values and cursor publish atomically.
 	encoded, err := json.Marshal(state)
 	if err != nil {
@@ -370,25 +598,22 @@ func projectLogStatus(
 	if err != nil {
 		return nil, nil, err
 	}
-	if latestTimestamp != "" {
-		result, err = advanceSyncTimestamp(result, latestTimestamp)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
+	effects = append(effects, syncEffect{Operation: syncEffectMetadata, Value: state})
 	if invalidUpdate {
 		result, err = prepareInvalidation(result, refreshIssuePrefix+"invalid status_update requires manual review")
 		if err != nil {
 			return nil, nil, err
 		}
+		effects = append(effects, syncEffect{Operation: syncEffectDiagnostic, Value: refreshIssuePrefix + "invalid status_update requires manual review"})
 	}
-	if len(state.Pending) > 0 || len(state.PendingAdditions) > 0 {
+	if len(state.Pending) > 0 || len(state.PendingAdditions) > 0 || len(state.Groups) > 0 || len(state.PendingTimelines) > 0 {
 		result, err = prepareInvalidation(result, refreshIssuePrefix+"status updates remain pending manual reconciliation")
 		if err != nil {
 			return nil, nil, err
 		}
+		effects = append(effects, syncEffect{Operation: syncEffectDiagnostic, Value: refreshIssuePrefix + "status updates remain pending manual reconciliation"})
 	}
-	return result, logBytes, nil
+	return result, effects, nil
 }
 
 // applyTaskCancellations atomically records cancellation without completing children.
@@ -796,7 +1021,7 @@ func applySyncField(
 	root := doc.Content[0]
 	if target == syncTargetReport {
 		node := mapValue(root, field)
-		if node == nil || (previous != "" && node.Value != previous) {
+		if node == nil || previous == syncAbsentValue || (previous != "" && node.Value != previous) {
 			return data, false
 		}
 		if node.Value == value {
@@ -836,7 +1061,10 @@ func applySyncField(
 	}
 	existing := mapValue(node, field)
 	// Owner-authored content remains untouched once it diverges from our last value.
-	if previous != "" && (existing == nil || existing.Value != previous) {
+	if previous == syncAbsentValue && existing != nil {
+		return data, false
+	}
+	if previous != "" && previous != syncAbsentValue && (existing == nil || existing.Value != previous) {
 		return data, false
 	}
 	var fields forecastFieldEdits
@@ -864,7 +1092,12 @@ func applySyncField(
 		// Apply later byte offsets before earlier offsets.
 		//
 		// Example: Insert a field without shifting a later replacement.
-		func(i, j int) bool { return edits[i].Start > edits[j].Start })
+		func(
+			i int,
+			j int,
+		) bool {
+			return edits[i].Start > edits[j].Start
+		})
 	out := append([]byte(nil), data...)
 	for _, e := range edits {
 		out = append(append(append([]byte(nil), out[:e.Start]...), []byte(e.Value)...), out[e.End:]...)
@@ -891,6 +1124,21 @@ func putSyncState(
 			suffix = "\n" + suffix
 		}
 		return append(append([]byte(nil), data...), []byte(suffix)...), nil
+	}
+	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 {
+		start, err := yamlByteOffset(data, node.Line, node.Column)
+		if err != nil {
+			return nil, err
+		}
+		end, err := flowMappingEndCached(&flowDocument{data: data}, node)
+		if err != nil {
+			return nil, err
+		}
+		comments, err := yamlComments(data[start : end+1])
+		if err != nil || len(comments) > 0 {
+			return nil, fmt.Errorf("status sync metadata contains comments")
+		}
+		return append(append(append([]byte(nil), data[:start]...), []byte(state)...), data[end+1:]...), nil
 	}
 	edit, err := projectionReplacement(data, node, state, &flowDocument{data: data})
 	if err != nil {

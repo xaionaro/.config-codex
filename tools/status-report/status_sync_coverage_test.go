@@ -217,5 +217,5 @@ func TestSyncDefersTerminalLaneWithActiveForecast(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, statusInProgress, parsed.Lanes[0].ImplementationStatus)
 	require.Empty(t, parsed.Lanes[0].CompletedAt)
-	require.Len(t, parsed.StatusSync.Pending, 2)
+	require.Len(t, parsed.StatusSync.Groups, 1)
 }

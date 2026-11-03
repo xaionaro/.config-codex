@@ -53,6 +53,14 @@ const (
 	//
 	// Example: Add an estimate with its new-priority task.
 	syncTargetPriorityEstimate
+	// syncTargetRootCompletion selects an actual root completion record.
+	//
+	// Example: Record a completed root without a lane.
+	syncTargetRootCompletion
+	// syncTargetRootForecast selects a root forecast record.
+	//
+	// Example: Add an explicitly referenced root forecast.
+	syncTargetRootForecast
 )
 
 // String returns the canonical wire name for a target.
@@ -78,6 +86,10 @@ func (t syncTarget) String() string {
 		return "review"
 	case syncTargetPriorityEstimate:
 		return "priority_estimate"
+	case syncTargetRootCompletion:
+		return "root_completion"
+	case syncTargetRootForecast:
+		return "root_forecast"
 	default:
 		return "unknown"
 	}
@@ -106,6 +118,10 @@ func parseSyncTarget(value string) syncTarget {
 		return syncTargetReview
 	case "priority_estimate":
 		return syncTargetPriorityEstimate
+	case "root_completion":
+		return syncTargetRootCompletion
+	case "root_forecast":
+		return syncTargetRootForecast
 	default:
 		return syncTargetUnknown
 	}
