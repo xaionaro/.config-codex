@@ -13,6 +13,7 @@ func legacyAppliedRootCorrectionLineage(
 	old syncPendingAddition,
 	event syncEvent,
 	ordinal int,
+	ledger ledgerSource,
 ) bool {
 	if old.Target != syncTargetRootCompletion || old.PriorLine < 1 || old.PriorLine >= old.Line || old.PriorRecord == "" || event.Event != "correction" || event.Details.StatusUpdate == nil || ordinal < 0 || ordinal >= len(event.Details.StatusUpdate.Additions) {
 		return false
@@ -23,6 +24,14 @@ func legacyAppliedRootCorrectionLineage(
 	}
 	work := rootChainAdditionWorkRef(current)
 	if !validRef(work, "project-understanding.yaml") {
+		return false
+	}
+	canonical, exists := ledger.Records[sourceID(work, "project-understanding.yaml")]
+	if !exists || canonical.Type != "work" || !hasRole(canonical.Data.Roles, reportingRoleRoot) {
+		return false
+	}
+	forecast := string(canonical.Data.ForecastRef)
+	if forecast != "" && !validRef(forecast, "forecasts.yaml") {
 		return false
 	}
 	currentLine, currentOrdinal := old.Line, ordinal
@@ -49,7 +58,7 @@ func legacyAppliedRootCorrectionLineage(
 			return false
 		}
 		locators := []rootLifecycleLocator{{Line: priorLine, Ordinal: priorOrdinal, Target: syncTargetRootCompletion}, {Line: currentLine, Ordinal: currentOrdinal, Target: syncTargetRootCompletion}}
-		if verifyRootChainNoSkippedEvents(lines, locators, work, "") != nil {
+		if verifyRootChainNoSkippedEvents(lines, locators, work, forecast) != nil {
 			return false
 		}
 		event, current, currentLine, currentOrdinal = priorEvent, priorAddition, priorLine, priorOrdinal

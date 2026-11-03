@@ -35,7 +35,7 @@ func TestRootPendingMigrationRequiresUniqueExactLogMatch(t *testing.T) {
 	}{{`{"details":{"status_update":{"additions":[` + entry + `]}}}`, true}, {`{"details":{"status_update":{"additions":[` + entry + `,` + entry + `]}}}`, false}} {
 		legacy := map[string]syncPendingAddition{"old": old}
 		pending := map[string]syncPendingRootAddition{}
-		ok := migratePendingRootAdditions(legacy, pending, []byte(tc.log), nil, nil)
+		ok := migratePendingRootAdditions(legacy, pending, []byte(tc.log), nil, nil, ledgerSource{})
 		if ok != tc.want || (len(pending) == 1) != tc.want || (len(legacy) == 0) != tc.want {
 			t.Fatalf("unexpected migration: ok=%v legacy=%v pending=%v", ok, legacy, pending)
 		}
@@ -51,7 +51,7 @@ func TestRootPendingMigrationPreservesCorrectionChain(t *testing.T) {
 	log := `{"details":{"status_update":{"additions":[{"target":"root_completion","record":` + oldRecord + `,"evidence":"accepted"}]}}}` + "\n" + `{"event":"correction","details":{"corrects":1,"status_update":{"additions":[{"target":"root_completion","record":` + newRecord + `,"evidence":"corrected","expected_prior":` + oldRecord + `}]}}}`
 	legacy := map[string]syncPendingAddition{"old": {Line: 2, Target: syncTargetRootCompletion, ID: "project-understanding.yaml#/records/w", Record: newRecord, Evidence: "corrected", ExpectedPrior: oldRecord, PriorLine: 1, PriorRecord: oldRecord}}
 	pending := map[string]syncPendingRootAddition{}
-	if !migratePendingRootAdditions(legacy, pending, []byte(log), nil, nil) || len(legacy) != 0 || len(pending) != 2 {
+	if !migratePendingRootAdditions(legacy, pending, []byte(log), nil, nil, ledgerSource{}) || len(legacy) != 0 || len(pending) != 2 {
 		t.Fatalf("lost correction provenance: %v %v", legacy, pending)
 	}
 }
@@ -100,7 +100,7 @@ func TestLegacyAppliedRootMigrationRequiresIntactRecordAndUniqueSource(t *testin
 				legacy := map[string]syncPendingAddition{key: {Line: 1, Target: syncTargetRootCompletion, ID: "project-understanding.yaml#/records/w", Record: record, Evidence: "accepted"}}
 				pending := map[string]syncPendingRootAddition{}
 				log := `{"details":{"status_update":{"additions":[` + tc.entries + `]}}}`
-				ok := migratePendingRootAdditions(legacy, pending, []byte(log), applied, []byte(tc.report))
+				ok := migratePendingRootAdditions(legacy, pending, []byte(log), applied, []byte(tc.report), ledgerSource{})
 				require.Equal(t, tc.want, ok)
 				require.Equal(t, !tc.want, len(legacy) > 0)
 				require.Empty(t, pending)

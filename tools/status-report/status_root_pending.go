@@ -122,6 +122,7 @@ func migratePendingRootAdditions(
 	fullLog []byte,
 	applied map[string]string,
 	report []byte,
+	ledger ledgerSource,
 ) bool {
 	lines := bytes.Split(fullLog, []byte("\n"))
 	complete := true
@@ -159,7 +160,7 @@ func migratePendingRootAdditions(
 		if previous, exists := applied[key]; exists && rootChainJSONEqual([]byte(previous), []byte(old.Record)) {
 			lineageValid := old.PriorLine == 0 && old.PriorRecord == ""
 			if !lineageValid {
-				lineageValid = legacyAppliedRootCorrectionLineage(lines, old, event, match)
+				lineageValid = legacyAppliedRootCorrectionLineage(lines, old, event, match, ledger)
 			}
 			if lineageValid && legacyRootRecordMatchesReport(report, old) {
 				delete(legacy, key)

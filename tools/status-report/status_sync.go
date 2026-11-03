@@ -266,7 +266,7 @@ func projectLogStatusStep(
 	if state.PendingRootAdditions == nil {
 		state.PendingRootAdditions = map[string]syncPendingRootAddition{}
 	}
-	migratePendingRootAdditions(state.PendingAdditions, state.PendingRootAdditions, fullLog, state.Applied, original)
+	migratePendingRootAdditions(state.PendingAdditions, state.PendingRootAdditions, fullLog, state.Applied, original, ledger)
 	if state.Groups == nil {
 		state.Groups = map[string]syncPendingGroup{}
 	}
