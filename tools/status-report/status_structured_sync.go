@@ -124,7 +124,11 @@ func structuredSyncValues(data []byte, u syncUpdate) (map[string]string, bool) {
 		if err != nil {
 			return nil, false
 		}
-		if _, scalar := u.Fields[field]; scalar {
+		_, scalar := u.Fields[field]
+		if u.Target == syncTargetTask && (field == "lifecycle" || field == "context" || field == "owner" || field == "evidence") {
+			scalar = true
+		}
+		if scalar {
 			var text string
 			if json.Unmarshal(encoded, &text) != nil {
 				return nil, false

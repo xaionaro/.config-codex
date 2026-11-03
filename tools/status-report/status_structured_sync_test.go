@@ -99,3 +99,17 @@ func TestStructuredClearFlowMapping(t *testing.T) {
 	require.False(t, ok)
 	require.Equal(t, commented, string(changed))
 }
+
+// TestStructuredClearAcceptsPriorScalarOwnership checks cross-format replay ownership.
+//
+// Example: Reopen a previously projected cancellation without overriding owner changes.
+func TestStructuredClearAcceptsPriorScalarOwnership(t *testing.T) {
+	input := strings.Replace(valid, "    status: unknown\ntop_priorities:", "    status: unknown\n    lifecycle: cancelled\n    evidence: withdrawn\ntop_priorities:", 1)
+	var update syncUpdate
+	require.NoError(t, json.Unmarshal([]byte(`{"target":"task","id":"1.2","fields":{"status":"IN PROGRESS"},"clear":["lifecycle"]}`), &update))
+	changed, ok := applyStructuredSyncUpdate([]byte(input), update, map[string]string{"lifecycle": "cancelled"})
+	require.True(t, ok)
+	require.NotContains(t, string(changed), "lifecycle: cancelled")
+	_, ok = applyStructuredSyncUpdate([]byte(input), update, map[string]string{"lifecycle": "different"})
+	require.False(t, ok)
+}
