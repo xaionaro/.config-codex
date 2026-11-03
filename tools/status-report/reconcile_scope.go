@@ -13,7 +13,6 @@ type workID string
 type taskWorkIndex struct {
 	covered          map[workID]bool
 	remaining        map[workID]bool
-	priorityWorks    map[priorityLabel]map[workID]bool
 	works            map[string]sourceRecord
 	taskPriority     map[taskID]priorityLabel
 	taskWorks        map[taskID]map[workID]bool
@@ -29,7 +28,7 @@ func buildTaskWorkIndex(
 	tasks []task,
 	works map[string]sourceRecord,
 ) taskWorkIndex {
-	index := taskWorkIndex{covered: map[workID]bool{}, remaining: map[workID]bool{}, priorityWorks: map[priorityLabel]map[workID]bool{}, works: works, taskPriority: map[taskID]priorityLabel{}, taskWorks: map[taskID]map[workID]bool{}, leafLinked: map[taskID]bool{}, reportPriorities: map[priorityLabel]bool{}}
+	index := taskWorkIndex{covered: map[workID]bool{}, remaining: map[workID]bool{}, works: works, taskPriority: map[taskID]priorityLabel{}, taskWorks: map[taskID]map[workID]bool{}, leafLinked: map[taskID]bool{}, reportPriorities: map[priorityLabel]bool{}}
 	parents := map[taskID]bool{}
 	for _, t := range tasks {
 		index.taskPriority[t.ID] = t.Priority
@@ -108,10 +107,6 @@ func (i taskWorkIndex) includeLeaf(
 		return
 	}
 	i.remaining[id] = true
-	if i.priorityWorks[leaf.Priority] == nil {
-		i.priorityWorks[leaf.Priority] = map[workID]bool{}
-	}
-	i.priorityWorks[leaf.Priority][id] = true
 }
 
 // priorityOpen reports unresolved work in a priority, including open acceptance lanes.
@@ -123,11 +118,6 @@ func (i taskWorkIndex) priorityOpen(
 ) bool {
 	if i.reportPriorities[priority] {
 		return true
-	}
-	for id := range i.priorityWorks[priority] {
-		if openWork(i.works[string(id)].Data.State) {
-			return true
-		}
 	}
 	for id, l := range lanes {
 		if l.requiredStatus() != statusClosed && l.Lifecycle != laneLifecycleCancelled && forecastApplicable(i.works[string(id)], reportingRoleLane, true) && i.taskPriority[l.TaskID] == priority {
