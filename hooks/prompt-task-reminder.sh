@@ -15,7 +15,7 @@ iconv -f UTF-8 -t UTF-8 "$input_file" >/dev/null 2>&1 || exit 0
 jq -se 'length == 1 and (.[0] | type == "object")' "$input_file" >/dev/null 2>&1 || exit 0
 prompt=$(jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' "$input_file" 2>/dev/null || true)
 normalized_prompt="${prompt,,}"
-explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest|updated|comprehensive))*[[:space:]]+(status|progress)[[:space:]]+(report|update)'
+explicit_report='(^|[^[:alpha:]])(give|show|provide|write|send|want|need|request|get|what[[:space:]]+is)([[:space:]]+(me|us|a|an|the|my|our|proper|current|full|detailed|quick|brief|please|latest|updated|comprehensive))*[[:space:]]+(status|progress)[[:space:]]+(report|update)'
 reminder=false
 while IFS= read -r clause; do
   if [[ "$clause" =~ $explicit_report ]]; then
