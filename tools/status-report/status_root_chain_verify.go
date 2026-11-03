@@ -229,29 +229,61 @@ func verifyRootChainNoSkippedEvents(
 		selected[locator] = true
 	}
 	for line := locators[0].Line; line <= locators[len(locators)-1].Line; line++ {
-		var event syncEvent
+		var event struct {
+			Details struct {
+				StatusUpdate struct {
+					Additions []json.RawMessage `json:"additions"`
+					Updates   []json.RawMessage `json:"updates"`
+				} `json:"status_update"`
+			} `json:"details"`
+		}
 		if err := json.Unmarshal(lines[line-1], &event); err != nil {
 			return fmt.Errorf("invalid intervening root log event")
 		}
-		if event.Details.StatusUpdate == nil {
-			continue
-		}
-		for ordinal, addition := range event.Details.StatusUpdate.Additions {
-			if addition.Target != syncTargetRootForecast && addition.Target != syncTargetRootCompletion {
+		for ordinal, raw := range event.Details.StatusUpdate.Additions {
+			var item map[string]json.RawMessage
+			if json.Unmarshal(raw, &item) != nil {
 				continue
 			}
-			if rootRecordIdentifies(addition.Record, workRef, forecastRef) || rootRecordIdentifies(addition.ExpectedPrior, workRef, forecastRef) || (addition.ReopenWorkRef == workRef && workRef != "") {
-				locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: addition.Target}
+			var targetName, reopen string
+			_ = json.Unmarshal(item["target"], &targetName)
+			_ = json.Unmarshal(item["reopen_work_ref"], &reopen)
+			target := parseSyncTarget(targetName)
+			if target != syncTargetUnknown && target != syncTargetRootForecast && target != syncTargetRootCompletion {
+				continue
+			}
+			if rootRecordIdentifies(item["record"], workRef, forecastRef) || rootRecordIdentifies(item["expected_prior"], workRef, forecastRef) || (reopen == workRef && workRef != "") {
+				if target != syncTargetRootForecast && target != syncTargetRootCompletion {
+					return fmt.Errorf("ambiguous intervening root addition")
+				}
+				locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: target}
 				if !selected[locator] {
 					return fmt.Errorf("root chain skips an intervening addition")
 				}
 			}
 		}
-		for ordinal, update := range event.Details.StatusUpdate.Updates {
-			if update.Target != syncTargetRootForecast || !((update.WorkRef == workRef && workRef != "") || (update.ID == forecastRef && forecastRef != "")) {
+		for ordinal, raw := range event.Details.StatusUpdate.Updates {
+			var item map[string]json.RawMessage
+			if json.Unmarshal(raw, &item) != nil {
 				continue
 			}
-			locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: update.Target, Update: true}
+			var targetName, work, id string
+			_ = json.Unmarshal(item["target"], &targetName)
+			_ = json.Unmarshal(item["work_ref"], &work)
+			_ = json.Unmarshal(item["id"], &id)
+			var values map[string]json.RawMessage
+			_ = json.Unmarshal(item["values"], &values)
+			if !((work == workRef && workRef != "") || (id == forecastRef && forecastRef != "") || rootRecordIdentifies(values["expected_prior"], workRef, forecastRef)) {
+				continue
+			}
+			target := parseSyncTarget(targetName)
+			if target != syncTargetUnknown && target != syncTargetRootForecast {
+				continue
+			}
+			if target != syncTargetRootForecast {
+				return fmt.Errorf("ambiguous intervening root update")
+			}
+			locator := rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: target, Update: true}
 			if !selected[locator] {
 				return fmt.Errorf("root chain skips an intervening update")
 			}

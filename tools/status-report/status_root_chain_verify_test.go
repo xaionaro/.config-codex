@@ -92,3 +92,14 @@ func TestRootChainIgnoresUnrelatedMalformedRecords(t *testing.T) {
 		t.Fatal("accepted skipped same-identity record")
 	}
 }
+
+// TestRootChainFindsIdentityInMalformedItem checks raw provenance fields.
+//
+// Example: A bad evidence type cannot hide a matching work reference.
+func TestRootChainFindsIdentityInMalformedItem(t *testing.T) {
+	locators := []rootLifecycleLocator{{Line: 1, Ordinal: 0, Target: syncTargetRootCompletion}, {Line: 1, Ordinal: 2, Target: syncTargetRootForecast}}
+	lines := [][]byte{[]byte(`{"details":{"status_update":{"additions":[{"target":"root_completion","record":{"work_ref":"w"}},{"target":"root_completion","evidence":42,"record":{"work_ref":"w"}},{"target":"root_forecast","record":{"forecast_ref":"f"}}]}}}`)}
+	if err := verifyRootChainNoSkippedEvents(lines, locators, "w", "f"); err == nil {
+		t.Fatal("accepted skipped malformed same-root item")
+	}
+}
