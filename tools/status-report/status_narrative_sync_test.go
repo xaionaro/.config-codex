@@ -1,0 +1,79 @@
+package main
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// TestNarrativeSyncPreservesOwnerText checks keyed updates and owner-authored entries.
+//
+// Example: An event updates its own subject while legacy bullets remain intact.
+func TestNarrativeSyncPreservesOwnerText(t *testing.T) {
+	original := []byte("progress: [legacy, {subject_ref: owner, text: 'owner text'}] # keep\n")
+	u := syncUpdate{Target: "progress", ID: "work:one", Fields: map[string]string{"text": "Started"}}
+	require.True(t, validNarrativeSyncUpdate(u))
+	got, ok := applyNarrativeSyncField(original, u, "text", "Started", "", false)
+	require.True(t, ok)
+	require.Contains(t, string(got), "legacy")
+	require.Contains(t, string(got), "# keep")
+	require.Contains(t, string(got), "Started")
+	changed, ok := applyNarrativeSyncField(got, u, "text", "Finished", "Started", true)
+	require.True(t, ok)
+	require.Contains(t, string(changed), "Finished")
+	require.NotContains(t, string(changed), "Started")
+	u.ID = "owner"
+	unchanged, ok := applyNarrativeSyncField(changed, u, "text", "Overwrite", "", false)
+	require.False(t, ok)
+	require.Equal(t, changed, unchanged)
+}
+
+// TestNarrativeSyncEvidenceAndDuplicateSubjects checks evidence ownership and ambiguous identities.
+//
+// Example: Evidence is attached only to a subject owned by the synchronizer.
+func TestNarrativeSyncEvidenceAndDuplicateSubjects(t *testing.T) {
+	u := syncUpdate{Target: "verification", ID: "one", Fields: map[string]string{"evidence": "proof"}}
+	source := []byte("verification:\n  - subject_ref: one\n    text: checked\nnext_focus: [next]\n")
+	_, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", false)
+	require.False(t, ok)
+	got, ok := applyNarrativeSyncField(source, u, "evidence", "proof", "", true)
+	require.True(t, ok)
+	require.Contains(t, string(got), `"evidence": "proof"`)
+	require.Contains(t, string(got), "next_focus: [next]")
+	duplicate := []byte("verification: [{subject_ref: one, text: a}, {subject_ref: one, text: b}]\n")
+	_, ok = applyNarrativeSyncField(duplicate, u, "evidence", "proof", "", true)
+	require.False(t, ok)
+}
+
+// TestNarrativeSyncBlockAppend checks that a new item preserves following content.
+//
+// Example: A block sequence gains a keyed item before the next section.
+func TestNarrativeSyncBlockAppend(t *testing.T) {
+	source := []byte("progress:\n  - legacy\n# following\nverification: []\n")
+	u := syncUpdate{Target: "progress", ID: "one", Fields: map[string]string{"text": "new"}}
+	got, ok := applyNarrativeSyncField(source, u, "text", "new", "", false)
+	require.True(t, ok)
+	require.Contains(t, string(got), "  - legacy\n  - {subject_ref: \"one\", text: \"new\"}\n# following\nverification: []")
+}
+
+// TestNarrativeSyncItemOwnedRejectsEditedText checks managed-item identity.
+//
+// Example: Owner changes to the text prevent evidence updates.
+func TestNarrativeSyncItemOwnedRejectsEditedText(t *testing.T) {
+	u := syncUpdate{Target: "progress", ID: "one"}
+	data := []byte("progress: [{subject_ref: one, text: changed}]\n")
+	require.False(t, narrativeSyncItemOwned(data, u, "original"))
+	require.False(t, narrativeSyncItemOwned(data, u, ""))
+	require.True(t, narrativeSyncItemOwned(data, u, "changed"))
+}
+
+// TestNarrativeSyncSameValueIsApplied checks repeated managed values terminate successfully.
+//
+// Example: An event repeating the current text does not remain pending.
+func TestNarrativeSyncSameValueIsApplied(t *testing.T) {
+	source := []byte("progress: [{subject_ref: one, text: same}]\n")
+	u := syncUpdate{Target: "progress", ID: "one", Fields: map[string]string{"text": "same"}}
+	got, ok := applyNarrativeSyncField(source, u, "text", "same", "same", true)
+	require.True(t, ok)
+	require.Equal(t, source, got)
+}
