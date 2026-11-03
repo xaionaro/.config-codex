@@ -38,6 +38,9 @@ func TestLegacyWithdrawalCancelsUnpublishedNarrative(t *testing.T) {
 //
 // Example: Cancelling an unpublished claim does not remove owner-authored text.
 func TestLegacyWithdrawalKeepsOwnerAuthoredSubject(t *testing.T) {
+	// saved contains an unpublished claim and its subsequent withdrawal.
+	//
+	// Example: Preserve an independently authored entry with the same subject.
 	const saved = `{"cursor":2,"applied":{},"latest":{"[\"progress\",\"work:one\",\"\",\"\"]/text":1,"[\"progress\",\"work:one\",\"\",\"\"]/retract":2},"pending":{"[\"progress\",\"work:one\",\"\",\"\"]/text":{"line":1,"update":{"target":"progress","id":"work:one","fields":{"text":"withdrawn claim"}}},"[\"progress\",\"work:one\",\"\",\"\"]/retract":{"line":2,"update":{"target":"progress","id":"work:one","corrects":1,"retract":true,"fields":null}}}}`
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte("{}\n{}\n"), 0600))
