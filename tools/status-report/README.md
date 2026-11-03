@@ -87,6 +87,14 @@ Additions also accept complete `lane`, `root_completion`, and `root_forecast` re
 
 To replace an existing root forecast with a completion, the `root_completion` addition supplies `retire_forecast: true`, `expected_prior` containing the complete existing forecast record, and evidence. To reopen a completed root, the `root_forecast` addition supplies `reopen_work_ref`, `expected_prior` containing the complete existing completion record, and evidence. The prior record must match exactly and canonical work and forecast states must support the transition. Comments or conflicting edits can leave the transition pending.
 
+To retire a cancelled root's forecast without a completion, use an update whose `id` is the forecast reference and whose `work_ref` identifies the canonical work. Supply evidence, the complete existing report forecast in `values.expected_prior`, and `clear: ["record"]`:
+
+```json
+{"target":"root_forecast","id":"forecasts.yaml#/records/f","work_ref":"project-understanding.yaml#/records/w","evidence":"owner cancelled","values":{"expected_prior":{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result","target":"2026-11-02T16:00:00Z","assessment":"complete"}},"clear":["record"]}
+```
+
+The canonical work must be cancelled, have the root reporting role and reference that forecast; the canonical forecast must be an inactive root forecast, and the recorded outcome must correspond to the work. The supplied prior must match the report record. Conflicting edits or comments can leave the removal pending.
+
 Typed updates use `values` for supplied JSON values and `clear` for explicit removal of supported fields. Supported typed targets and fields are:
 
 - `task` by task ID: `effort`, `impact`, `impact_points`, `impact_basis`, `priority`, `work_refs`, `indivisible_reason`, `title`, `parent_id`.
