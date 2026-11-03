@@ -77,7 +77,7 @@ func removeRootSyncRecord(
 		if index+1 < len(list.Content) {
 			end, err = yamlByteOffset(data, list.Content[index+1].Line, list.Content[index+1].Column)
 		} else {
-			listStart, e := yamlByteOffset(data, list.Line, list.Column)
+			listStart, e := yamlAnchoredCollectionStart(data, list)
 			if e != nil {
 				return data, false
 			}

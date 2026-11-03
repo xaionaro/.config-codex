@@ -868,7 +868,7 @@ func removeCancelledPriority(
 		return data, false
 	}
 	if list.Style&yaml.FlowStyle != 0 {
-		start, err := yamlByteOffset(data, list.Line, list.Column)
+		start, err := yamlAnchoredCollectionStart(data, list)
 		if err != nil {
 			return data, false
 		}

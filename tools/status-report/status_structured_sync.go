@@ -253,6 +253,10 @@ func editStructuredField(
 		start, end = int(edit.Start), int(edit.End)
 	case yaml.MappingNode, yaml.SequenceNode:
 		if node.Style&yaml.FlowStyle != 0 {
+			start, err = yamlAnchoredCollectionStart(data, node)
+			if err != nil {
+				return data, false
+			}
 			opening := token.MappingStartType
 			if node.Kind == yaml.SequenceNode {
 				opening = token.SequenceStartType
