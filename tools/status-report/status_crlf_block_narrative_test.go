@@ -116,3 +116,25 @@ func TestCRLFMultilineNarrativeRetractionKeepsFinalBoundary(t *testing.T) {
 			})
 	}
 }
+
+// TestCRLFRetractionOfLastEntryKeepsSurvivorBoundary preserves EOF formatting.
+//
+// Example: Removing the final managed entry keeps the preceding legacy item intact.
+func TestCRLFRetractionOfLastEntryKeepsSurvivorBoundary(t *testing.T) {
+	for _, tc := range []struct{ name, suffix, want string }{
+		{"unterminated", "", "progress:\r\n  - legacy"},
+		{"terminated", "\r\n", "progress:\r\n  - legacy\r\n"},
+		{"following field", "\r\ndecisions: []\r\n", "progress:\r\n  - legacy\r\ndecisions: []\r\n"},
+	} {
+		t.Run(tc.name,
+			// check verifies the surviving list and its original final boundary.
+			//
+			// Example: An unterminated final entry does not leave a bare CR.
+			func(t *testing.T) {
+				input := "progress:\r\n  - legacy\r\n  - subject_ref: one\r\n    text: done" + tc.suffix
+				out, ok := retractNarrativeSync([]byte(input), syncUpdate{Target: syncTargetProgress, ID: "one"}, "done", true, "", false)
+				require.True(t, ok)
+				require.Equal(t, tc.want, string(out))
+			})
+	}
+}
