@@ -118,7 +118,9 @@ func rootAdditionHasCounterpart(
 	return false
 }
 
-// removeRootSyncRecord removes only an exact prior record without deleting comments.
+// removeRootSyncRecord removes an exact root or priority record without deleting comments.
+//
+// Example: Retire a matching priority estimate while retaining neighboring comments.
 func removeRootSyncRecord(
 	data []byte,
 	target syncTarget,
@@ -126,8 +128,14 @@ func removeRootSyncRecord(
 	expected json.RawMessage,
 ) ([]byte, bool) {
 	section, identity := "root_forecasts", "forecast_ref"
-	if target == syncTargetRootCompletion {
+	switch target {
+	case syncTargetRootCompletion:
 		section, identity = "root_completions", "work_ref"
+	case syncTargetPriorityEstimate:
+		section, identity = "priority_estimates", "priority"
+	case syncTargetRootForecast:
+	default:
+		return data, false
 	}
 	var doc yaml.Node
 	if yaml.Unmarshal(data, &doc) != nil || len(doc.Content) != 1 {

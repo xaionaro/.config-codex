@@ -143,3 +143,18 @@ func TestRootTransitionsReplay(t *testing.T) {
 		})
 	}
 }
+
+func TestPriorityEstimateRemovalRequiresExactPrior(t *testing.T) {
+	prior := `{"priority":"high","min_minutes":20,"max_minutes":40,"as_of":"2026-11-02T15:24:00Z","basis":"educated guess","assumptions":"review available","dependencies":"review","critical_path":"latest parallel endpoint"}`
+	got, ok := removeRootSyncRecord([]byte(valid), syncTargetPriorityEstimate, "high", json.RawMessage(prior))
+	if !ok || strings.Contains(string(got), "priority: high, min_minutes") {
+		t.Fatal("matching estimate not removed")
+	}
+	if _, ok := removeRootSyncRecord([]byte(valid), syncTargetPriorityEstimate, "high", json.RawMessage(`{"priority":"high"}`)); ok {
+		t.Fatal("incomplete prior accepted")
+	}
+	commented := strings.Replace(valid, "  - {priority: high, min_minutes", "  # owner note\n  - {priority: high, min_minutes", 1)
+	if got, ok := removeRootSyncRecord([]byte(commented), syncTargetPriorityEstimate, "high", json.RawMessage(prior)); !ok || !strings.Contains(string(got), "# owner note") {
+		t.Fatal("owner comment not preserved")
+	}
+}
