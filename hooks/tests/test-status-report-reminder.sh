@@ -18,6 +18,9 @@ check_reminder 'Status report, please.'
 check_reminder "What's the status?"
 check_reminder 'Fix the renderer and give me a status report'
 check_reminder 'Give me a status report on the status report renderer'
+check_reminder 'Fix the status report renderer, then show me the current progress'
+check_reminder 'Provide a progress update for the renderer'
+check_reminder 'Show me a status report, then fix the renderer'
 printf '%s\n' 'python3() { return 1; }' 'export -f python3' >"$tmp/fail-capture"
 output="$(jq -cn '{session_id:"valid-session",turn_id:"turn",prompt:"status"}' | BASH_ENV="$tmp/fail-capture" bash -c "$command")"
 jq -e '.hookSpecificOutput.additionalContext | contains("status-report render")' <<<"$output" >/dev/null
@@ -27,7 +30,7 @@ jq -e '.hookSpecificOutput.additionalContext | contains("status-report render")'
 capture="$(find "$tmp/proof/pre-reviewer/valid-session" -name 'capture-turn-*.json' -type f -print -quit)"
 [[ -n "$capture" ]]
 jq -e '.turn_id == "turn" and .prompt == "status"' "$capture" >/dev/null
-for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix'; do
+for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema'; do
   output="$(jq -cn --arg prompt "$prompt" '{session_id:"bad/session",prompt:$prompt}' | bash -c "$command")"
   [[ -z "$output" ]]
 done
