@@ -39,6 +39,7 @@ type syncEvent struct {
 	Event     string `json:"event"`
 	Timestamp string `json:"timestamp"`
 	Details   struct {
+		Corrects     json.RawMessage `json:"corrects"`
 		StatusUpdate *struct {
 			Updates   []syncUpdate          `json:"updates"`
 			Additions []syncAddition        `json:"additions"`
@@ -75,6 +76,8 @@ type syncPendingAddition struct {
 	ReopenWorkRef       string          `json:"reopen_work_ref,omitempty" yaml:"reopen_work_ref,omitempty"`
 	ExpectedPrior       string          `json:"expected_prior,omitempty" yaml:"expected_prior,omitempty"`
 	RetirePriority      string          `json:"retire_priority,omitempty" yaml:"retire_priority,omitempty"`
+	PriorLine           int             `json:"prior_line,omitempty" yaml:"prior_line,omitempty"`
+	PriorRecord         string          `json:"prior_record,omitempty" yaml:"prior_record,omitempty"`
 }
 
 // syncState stores replay progress alongside the report it describes.
@@ -173,7 +176,7 @@ func projectLogStatus(
 			chunkStart = boundaries[start-1]
 		}
 		var stepEffects []syncEffect
-		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes[chunkStart:boundaries[i]], start)
+		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, logBytes[chunkStart:boundaries[i]], start, logBytes)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -182,7 +185,7 @@ func projectLogStatus(
 	}
 	if cursor == len(boundaries) {
 		var stepEffects []syncEffect
-		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, nil, cursor)
+		result, stepEffects, err = projectLogStatusStep(result, ledger, forecasts, nil, cursor, logBytes)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -221,6 +224,7 @@ func projectLogStatusStep(
 	forecasts forecastSource,
 	logBytes []byte,
 	startLine int,
+	fullLog []byte,
 ) ([]byte, []syncEffect, error) {
 	var effects []syncEffect
 	var root yaml.Node
@@ -367,8 +371,18 @@ func projectLogStatusStep(
 				selector, _ := json.Marshal([]string{id, workRef, environment.String()})
 				key = "addition/lane/" + string(selector)
 			}
+			priorLine, priorRecord := 0, ""
+			if prior, exists := state.PendingAdditions[key]; exists {
+				_, applied := state.Applied[key]
+				if pendingRootCorrectionPrior(event, addition, prior, applied) {
+					priorLine, priorRecord = prior.Line, prior.Record
+				} else {
+					invalidUpdate = true
+					continue
+				}
+			}
 			state.Latest[key] = i + 1
-			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority}
+			state.PendingAdditions[key] = syncPendingAddition{Line: i + 1, Target: addition.Target, Record: string(addition.Record), Evidence: addition.Evidence, ID: id, WorkRef: workRef, RequiredEnvironment: environment, RetireForecast: addition.RetireForecast, ReopenWorkRef: addition.ReopenWorkRef, ExpectedPrior: string(addition.ExpectedPrior), RetirePriority: addition.RetirePriority, PriorLine: priorLine, PriorRecord: priorRecord}
 		}
 		for ordinal, update := range event.Details.StatusUpdate.Updates {
 			if !syncUpdateSelectorValid(update) {
@@ -446,7 +460,14 @@ func projectLogStatusStep(
 			var implicitEffects []syncEffect
 			var ok bool
 			if len(group) == 1 && (p.Target == syncTargetRootCompletion || p.Target == syncTargetRootForecast) {
-				updated, implicitEffects, ok = applyRootSyncAddition(result, group[0], ledger, forecasts)
+				addition := group[0]
+				if p.PriorLine > 0 {
+					if err := verifyPendingRootCorrection(original, fullLog, p.PriorLine, p.Line, addition, ledger, forecasts); err != nil {
+						continue
+					}
+					addition.ExpectedPrior = nil
+				}
+				updated, implicitEffects, ok = applyRootSyncAddition(result, addition, ledger, forecasts)
 			} else {
 				updated, ok = applySyncAdditionGroup(result, group)
 			}

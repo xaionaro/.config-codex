@@ -149,7 +149,7 @@ func syncHasPriorTargetGroup(
 		if err != nil {
 			continue
 		}
-		if syncTargetKey(prior, "") == syncTargetKey(update, "") {
+		if syncTargetKey(prior, "") == syncTargetKey(update, "") && syncDependenciesOverlap(syncGroupDependencies(prior), syncGroupDependencies(update)) {
 			return true
 		}
 	}
