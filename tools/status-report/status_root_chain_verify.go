@@ -231,16 +231,17 @@ func verifyRootChainNoSkippedEvents(
 	for line := locators[0].Line; line <= locators[len(locators)-1].Line; line++ {
 		var event struct {
 			Details struct {
-				StatusUpdate struct {
-					Additions json.RawMessage `json:"additions"`
-					Updates   json.RawMessage `json:"updates"`
-				} `json:"status_update"`
+				StatusUpdate json.RawMessage `json:"status_update"`
 			} `json:"details"`
 		}
 		if err := json.Unmarshal(lines[line-1], &event); err != nil {
 			return fmt.Errorf("invalid intervening root log event")
 		}
-		additions, additionsArray := rootRawCollection(event.Details.StatusUpdate.Additions)
+		var status map[string]json.RawMessage
+		if json.Unmarshal(event.Details.StatusUpdate, &status) != nil {
+			continue
+		}
+		additions, additionsArray := rootRawCollection(status["additions"])
 		for ordinal, raw := range additions {
 			var item map[string]json.RawMessage
 			if json.Unmarshal(raw, &item) != nil {
@@ -263,7 +264,7 @@ func verifyRootChainNoSkippedEvents(
 				}
 			}
 		}
-		updates, updatesArray := rootRawCollection(event.Details.StatusUpdate.Updates)
+		updates, updatesArray := rootRawCollection(status["updates"])
 		for ordinal, raw := range updates {
 			var item map[string]json.RawMessage
 			if json.Unmarshal(raw, &item) != nil {
