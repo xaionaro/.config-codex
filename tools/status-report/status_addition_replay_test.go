@@ -53,11 +53,10 @@ func TestSourceBackedAdditionsReplay(t *testing.T) {
 							count = len(report.RootForecasts)
 						}
 					}
-					if mismatch {
-						if count != 0 || len(report.StatusSync.PendingAdditions) != 1 {
-							t.Fatalf("mismatched source published: count=%d pending=%d", count, len(report.StatusSync.PendingAdditions))
-						}
-					} else if count != 1 || len(report.StatusSync.PendingAdditions) != 0 {
+					switch {
+					case mismatch && (count != 0 || len(report.StatusSync.PendingAdditions) != 1):
+						t.Fatalf("mismatched source published: count=%d pending=%d", count, len(report.StatusSync.PendingAdditions))
+					case !mismatch && (count != 1 || len(report.StatusSync.PendingAdditions) != 0):
 						t.Fatalf("matching source not published: count=%d pending=%d", count, len(report.StatusSync.PendingAdditions))
 					}
 				}

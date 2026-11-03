@@ -363,11 +363,13 @@ func applyExpectedSyncEffect(
 		return nil
 	case syncEffectSet:
 		value := effect.Value
-		if raw, ok := value.(json.RawMessage); ok {
+		switch raw := value.(type) {
+		case json.RawMessage:
 			if err := yaml.Unmarshal(raw, &value); err != nil {
 				return err
 			}
-		} else if _, ok := value.(string); !ok {
+		case string:
+		default:
 			return fmt.Errorf("invalid field value")
 		}
 		if effect.Target == syncTargetReport {
