@@ -47,7 +47,7 @@ func TestAdditionOwnershipMatchesTargetEncodings(t *testing.T) {
 		target                  syncTarget
 		record, field, expected string
 	}{
-		{syncTargetTask, `{"status":null}`, "status", "null"},
+		{syncTargetTask, `{"status":null}`, "status", syncNullValue},
 		{syncTargetReview, `{"critic":"reviewer","rounds":2}`, "critic", `"reviewer"`},
 		{syncTargetPriorityEstimate, `{"min_minutes":2}`, "min_minutes", `2`},
 		{syncTargetLane, `{"blocker":"waiting"}`, "blocker", "waiting"},
@@ -75,4 +75,19 @@ func TestReviewAdditionOwnershipRejectsLaterOwnerEdit(t *testing.T) {
 	edited := strings.Replace(input, `"critic":"B"`, `"critic":"owner"`, 1)
 	_, ok = applyStructuredSyncUpdate([]byte(edited), update, map[string]string{"critic": previous["critic"]})
 	require.False(t, ok)
+}
+
+// TestScalarSyncOwnershipDistinguishesNull checks stored scalar identity.
+//
+// Example: Preserve an owner's literal "null" after a projected null.
+func TestScalarSyncOwnershipDistinguishesNull(t *testing.T) {
+	nullValues, ok := additionOwnership(syncTargetTask, json.RawMessage(`{"owner":null}`))
+	require.True(t, ok)
+	textValues, ok := additionOwnership(syncTargetTask, json.RawMessage(`{"owner":"null"}`))
+	require.True(t, ok)
+	require.Equal(t, syncNullValue, nullValues["owner"])
+	require.Equal(t, syncLiteralNullValue, textValues["owner"])
+	require.NotEqual(t, nullValues["owner"], textValues["owner"])
+	require.Equal(t, syncLiteralNullValue, scalarSyncStoredValue("null"))
+	require.Equal(t, "other", scalarSyncStoredValue("other"))
 }

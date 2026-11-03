@@ -138,7 +138,7 @@ func structuredSyncValues(
 			if value.Kind != yaml.ScalarNode {
 				return nil, false
 			}
-			result[field] = value.Value
+			result[field] = scalarSyncOwnership(value)
 		} else {
 			result[field] = string(encoded)
 		}

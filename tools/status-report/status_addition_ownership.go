@@ -1,6 +1,44 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	// syncNullValue identifies an explicitly null scalar.
+	//
+	// Example: Preserve a null task owner against a string edit.
+	syncNullValue = "\x00null"
+	// syncLiteralNullValue identifies a scalar string containing null.
+	//
+	// Example: Distinguish the owner string null from a null value.
+	syncLiteralNullValue = "\x00literal-null"
+)
+
+// scalarSyncStoredValue encodes an assigned string for ownership comparison.
+//
+// Example: Keep a literal null distinct from a YAML null.
+func scalarSyncStoredValue(value string) string {
+	if value == "null" {
+		return syncLiteralNullValue
+	}
+	return value
+}
+
+// scalarSyncOwnership encodes a YAML scalar without discarding its type.
+//
+// Example: Differentiate a null owner from the quoted string null.
+func scalarSyncOwnership(node *yaml.Node) string {
+	if node == nil {
+		return syncAbsentValue
+	}
+	if node.Tag == "!!null" {
+		return syncNullValue
+	}
+	return scalarSyncStoredValue(node.Value)
+}
 
 // taskAdditionOwnership captures supplied fields and absences for later conflict checks.
 //
@@ -42,13 +80,13 @@ func additionOwnership(target syncTarget, record json.RawMessage) (map[string]st
 		}
 		var value string
 		if string(raw) == "null" {
-			result[field] = "null"
+			result[field] = syncNullValue
 			continue
 		}
 		if json.Unmarshal(raw, &value) != nil {
 			return nil, false
 		}
-		result[field] = value
+		result[field] = scalarSyncStoredValue(value)
 	}
 	for _, field := range typed {
 		raw, ok := fields[field]
