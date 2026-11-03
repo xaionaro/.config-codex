@@ -421,7 +421,7 @@ func verifyRootChainBoundary(
 		target        syncTarget
 	}{{"root_completions", "work_ref", workRef, syncTargetRootCompletion}, {"root_forecasts", "forecast_ref", forecastRef, syncTargetRootForecast}} {
 		items, exists := report[section.name]
-		if !exists {
+		if !exists || items == nil {
 			continue
 		}
 		list, ok := items.([]any)

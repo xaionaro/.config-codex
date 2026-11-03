@@ -151,6 +151,14 @@ func insertSyncAddition(
 		candidate, err := appendReportField(data, section, "["+string(entry)+"]")
 		return candidate, err == nil
 	}
+	if list != nil && list.Kind == yaml.ScalarNode && list.Tag == "!!null" && (section == "reviews" || section == "lanes" || section == "root_completions" || section == "root_forecasts") {
+		entry, err := json.Marshal(record)
+		if err != nil {
+			return data, false
+		}
+		candidate, err := replaceNullYAMLValue(data, list, "["+string(entry)+"]")
+		return candidate, err == nil
+	}
 	if list == nil || list.Kind != yaml.SequenceNode {
 		return data, false
 	}

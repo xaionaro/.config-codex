@@ -251,7 +251,7 @@ func prepareNullSyncState(data []byte) ([]byte, error) {
 	if node.Value != "" && node.Style&yaml.TaggedStyle == 0 && node.Anchor == "" {
 		return data, nil
 	}
-	return replaceNullSyncState(data, node, "null")
+	return replaceNullYAMLValue(data, node, "null")
 }
 
 // syncLineHasUpdate identifies a log entry requiring an ordered projection step.
@@ -1317,10 +1317,10 @@ func putSyncState(
 		return appendReportField(data, "status_sync", state)
 	}
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
-		return replaceNullSyncState(data, node, state)
+		return replaceNullYAMLValue(data, node, state)
 	}
 	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 {
-		start, err := syncMappingStart(data, node)
+		start, err := yamlAnchoredCollectionStart(data, node)
 		if err != nil {
 			return nil, err
 		}
@@ -1341,10 +1341,10 @@ func putSyncState(
 	return append(append(append([]byte(nil), data[:edit.Start]...), []byte(edit.Value)...), data[edit.End:]...), nil
 }
 
-// syncMappingStart locates the opening delimiter after any preserved anchor.
+// yamlAnchoredCollectionStart locates the opening delimiter after any preserved anchor.
 //
 // Example: An anchored flow mapping keeps its anchor when metadata advances.
-func syncMappingStart(
+func yamlAnchoredCollectionStart(
 	data []byte,
 	node *yaml.Node,
 ) (int, error) {
@@ -1360,10 +1360,10 @@ func syncMappingStart(
 	return skipNullPropertyTrivia(data, start), nil
 }
 
-// replaceNullSyncState initializes explicitly or implicitly null replay metadata.
+// replaceNullYAMLValue replaces an explicitly or implicitly null YAML value.
 //
 // Example: Replace a null value without consuming its adjacent owner comment.
-func replaceNullSyncState(
+func replaceNullYAMLValue(
 	data []byte,
 	node *yaml.Node,
 	state string,
@@ -1374,7 +1374,7 @@ func replaceNullSyncState(
 	}
 	end := start
 	if node.Style&yaml.TaggedStyle != 0 || node.Anchor != "" {
-		return replaceDecoratedNullSyncState(data, node, state, start)
+		return replaceDecoratedNullYAMLValue(data, node, state, start)
 	}
 	if node.Value != "" {
 		start, end, err = (&flowDocument{data: data}).scalarSpan(node)
@@ -1388,16 +1388,16 @@ func replaceNullSyncState(
 	return append(append(append([]byte(nil), data[:start]...), []byte(state)...), data[end:]...), nil
 }
 
-// replaceDecoratedNullSyncState retains an anchor while replacing null's type tag.
+// replaceDecoratedNullYAMLValue retains an anchor while replacing null's type tag.
 //
 // Example: A tagged null becomes a mapping without consuming the following comment.
-func replaceDecoratedNullSyncState(
+func replaceDecoratedNullYAMLValue(
 	data []byte,
 	node *yaml.Node,
 	state string,
 	start int,
 ) ([]byte, error) {
-	propertyEnd, tagStart, tagEnd, err := nullSyncPropertyBounds(data, node, start)
+	propertyEnd, tagStart, tagEnd, err := nullYAMLPropertyBounds(data, node, start)
 	if err != nil {
 		return nil, err
 	}
@@ -1406,7 +1406,7 @@ func replaceDecoratedNullSyncState(
 		state = " " + state
 	} else {
 		valueStart = skipNullPropertyTrivia(data, propertyEnd)
-		valueEnd, err = nullSyncValueEnd(data, node, valueStart)
+		valueEnd, err = nullYAMLValueEnd(data, node, valueStart)
 		if err != nil {
 			return nil, err
 		}
@@ -1440,10 +1440,10 @@ func skipNullPropertyTrivia(
 	return start
 }
 
-// nullSyncPropertyBounds identifies the tag and anchor without consuming trivia.
+// nullYAMLPropertyBounds identifies the tag and anchor without consuming trivia.
 //
 // Example: A tag and anchor may occur on separate lines before null.
-func nullSyncPropertyBounds(
+func nullYAMLPropertyBounds(
 	data []byte,
 	node *yaml.Node,
 	start int,
@@ -1451,7 +1451,7 @@ func nullSyncPropertyBounds(
 	end, tagStart, tagEnd := start, -1, -1
 	for {
 		pos := skipNullPropertyTrivia(data, end)
-		property := nullSyncPropertyAt(data[pos:], node.Anchor)
+		property := nullYAMLPropertyAt(data[pos:], node.Anchor)
 		if property == "" {
 			break
 		}
@@ -1466,10 +1466,10 @@ func nullSyncPropertyBounds(
 	return end, tagStart, tagEnd, nil
 }
 
-// nullSyncPropertyAt recognizes the original null tag or its retained anchor.
+// nullYAMLPropertyAt recognizes the original null tag or its retained anchor.
 //
 // Example: A long-form YAML null tag is removed before storing a mapping.
-func nullSyncPropertyAt(
+func nullYAMLPropertyAt(
 	data []byte,
 	anchor string,
 ) string {
@@ -1481,16 +1481,16 @@ func nullSyncPropertyAt(
 	return ""
 }
 
-// nullSyncValueEnd finds a supported explicit null scalar's final byte.
+// nullYAMLValueEnd finds a supported explicit null scalar's final byte.
 //
 // Example: Tagged quoted null is replaced without consuming its comment.
-func nullSyncValueEnd(
+func nullYAMLValueEnd(
 	data []byte,
 	node *yaml.Node,
 	start int,
 ) (int, error) {
 	if start < len(data) && (data[start] == '\'' || data[start] == '"') {
-		return quotedNullSyncValueEnd(data, start)
+		return quotedNullYAMLValueEnd(data, start)
 	}
 	if node.Value != "" && strings.HasPrefix(string(data[start:]), node.Value) {
 		return start + len(node.Value), nil
@@ -1498,10 +1498,10 @@ func nullSyncValueEnd(
 	return 0, fmt.Errorf("unsupported null metadata layout")
 }
 
-// quotedNullSyncValueEnd finds the actual source boundary of a quoted null.
+// quotedNullYAMLValueEnd finds the actual source boundary of a quoted null.
 //
 // Example: An escaped double-quoted null keeps its trailing owner comment.
-func quotedNullSyncValueEnd(
+func quotedNullYAMLValueEnd(
 	data []byte,
 	start int,
 ) (int, error) {
