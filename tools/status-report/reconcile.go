@@ -403,7 +403,7 @@ func reconcileAt(
 	}
 	allClosed := true
 	for _, t := range r.Tasks {
-		if !children[t.ID] && t.Status != statusClosed {
+		if !children[t.ID] && t.Lifecycle != taskLifecycleCancelled && t.Status != statusClosed {
 			allClosed = false
 		}
 	}
