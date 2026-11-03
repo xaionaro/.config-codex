@@ -146,3 +146,51 @@ func TestLaneTransitionPreservesCommentsAndOwnerCompletion(t *testing.T) {
 		t.Fatal("reopen did not clear stale completion")
 	}
 }
+
+func TestLaneExplicitClearIsAtomicAndPreservesOwnership(t *testing.T) {
+	original := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    blocker: waiting\n    next_action: retry\n    implementation_status: IN PROGRESS", 1)
+	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Clear: []string{"blocker", "next_action"}}
+	got, effects, ok := applyLaneSyncUpdate([]byte(original), update, ledgerSource{}, forecastSource{}, map[string]string{"blocker": "waiting"})
+	if !ok || strings.Contains(string(got), "blocker: waiting") || strings.Contains(string(got), "next_action: retry") {
+		t.Fatal("clear failed")
+	}
+	if err := verifyStatusSyncEffects([]byte(original), got, effects); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := applyLaneSyncUpdate([]byte(original), update, ledgerSource{}, forecastSource{}, map[string]string{"blocker": "old"}); ok {
+		t.Fatal("owner edit overwritten")
+	}
+	update.Clear = []string{"forecast"}
+	if _, _, ok := applyLaneSyncUpdate([]byte(original), update, ledgerSource{}, forecastSource{}, nil); ok {
+		t.Fatal("unverified forecast clear accepted")
+	}
+}
+
+func TestLaneClearCancellationRequiresActiveCanonicalWork(t *testing.T) {
+	original := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    lifecycle: cancelled\n    implementation_status: IN PROGRESS", 1)
+	original = strings.Replace(original, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "", 1)
+	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Evidence: "reopened", Clear: []string{"lifecycle"}}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateActive}}}}
+	got, effects, ok := applyLaneSyncUpdate([]byte(original), update, ledger, forecastSource{}, nil)
+	if !ok || strings.Contains(string(got), "lifecycle: cancelled") {
+		t.Fatal("active work did not reopen")
+	}
+	if err := verifyStatusSyncEffects([]byte(original), got, effects); err != nil {
+		t.Fatal(err)
+	}
+	ledger.Records["work:first"] = sourceRecord{Type: "work", Data: workData{State: workStateCancelled}}
+	if _, _, ok := applyLaneSyncUpdate([]byte(original), update, ledger, forecastSource{}, nil); ok {
+		t.Fatal("cancelled canonical work reopened")
+	}
+}
+
+func TestLanePreviouslyClearedFieldProtectsOwner(t *testing.T) {
+	update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Fields: map[string]string{"blocker": "new"}}
+	if _, _, ok := applyLaneSyncUpdate([]byte(linkedReport), update, ledgerSource{}, forecastSource{}, map[string]string{"blocker": syncAbsentValue}); !ok {
+		t.Fatal("projected absence blocked update")
+	}
+	edited := strings.Replace(linkedReport, "    implementation_status: IN PROGRESS", "    blocker: owner\n    implementation_status: IN PROGRESS", 1)
+	if _, _, ok := applyLaneSyncUpdate([]byte(edited), update, ledgerSource{}, forecastSource{}, map[string]string{"blocker": syncAbsentValue}); ok {
+		t.Fatal("owner addition overwritten")
+	}
+}

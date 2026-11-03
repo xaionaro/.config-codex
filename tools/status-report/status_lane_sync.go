@@ -8,6 +8,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const syncAbsentValue = "\x00absent"
+
+// validLaneSyncUpdate accepts scalar fields and explicit optional-field removals.
+func validLaneSyncUpdate(update syncUpdate) bool {
+	if update.Target != syncTargetLane || len(update.Values) != 0 || update.Retract || (len(update.Fields) == 0 && len(update.Clear) == 0) {
+		return false
+	}
+	probe := update
+	if len(probe.Fields) == 0 {
+		probe.Fields = map[string]string{"context": "probe"}
+	}
+	if !validSyncUpdate(probe) {
+		return false
+	}
+	seen := map[string]bool{}
+	for field := range update.Fields {
+		seen[field] = true
+	}
+	for _, field := range update.Clear {
+		if seen[field] || (field != "lifecycle" && field != "blocker" && field != "next_action" && field != "completed_at") {
+			return false
+		}
+		seen[field] = true
+	}
+	return true
+}
+
 // applyLaneSyncUpdateRaw builds one validated lane transition.
 func applyLaneSyncUpdateRaw(
 	data []byte,
@@ -16,7 +43,7 @@ func applyLaneSyncUpdateRaw(
 	forecasts forecastSource,
 	previous map[string]string,
 ) ([]byte, bool) {
-	if update.Target != syncTargetLane || !validSyncUpdate(update) {
+	if !validLaneSyncUpdate(update) {
 		return data, false
 	}
 	var doc yaml.Node
@@ -39,6 +66,23 @@ func applyLaneSyncUpdateRaw(
 	}
 	if lane == nil {
 		return data, false
+	}
+	for _, field := range update.Clear {
+		if field == "lifecycle" {
+			if !validRef(update.WorkRef, "project-understanding.yaml") || strings.TrimSpace(update.Evidence) == "" {
+				return data, false
+			}
+			work, ok := ledger.Records[sourceID(update.WorkRef, "project-understanding.yaml")]
+			if !ok || work.Type != "work" || !openWork(work.Data.State) {
+				return data, false
+			}
+		}
+		existing := mapValue(lane, field)
+		if prior, ok := previous[field]; ok {
+			if (existing == nil && prior != syncAbsentValue) || (existing != nil && (prior == syncAbsentValue || existing.Value != prior)) {
+				return data, false
+			}
+		}
 	}
 	statusField := update.RequiredEnvironment.String() + "_status"
 	terminal := update.Fields[statusField] == "CLOSED" || update.Fields["lifecycle"] == "cancelled"
@@ -83,9 +127,23 @@ func applyLaneSyncUpdateRaw(
 			return data, false
 		}
 	}
+	for _, field := range update.Clear {
+		var removed bool
+		candidate, removed = removeLaneSyncField(candidate, update, field)
+		if !removed {
+			return data, false
+		}
+	}
 	for field, value := range update.Fields {
 		var ok bool
-		candidate, ok = applySyncField(candidate, update, field, value, previous[field])
+		prior := previous[field]
+		if prior == syncAbsentValue {
+			if mapValue(lane, field) != nil {
+				return data, false
+			}
+			prior = ""
+		}
+		candidate, ok = applySyncField(candidate, update, field, value, prior)
 		if !ok {
 			return data, false
 		}
@@ -225,6 +283,15 @@ func applyLaneSyncUpdate(
 			}
 			effects = append(effects, effect)
 		}
+	}
+	for _, field := range update.Clear {
+		if field == "completed_at" && mapValue(oldLane, field) != nil && mapValue(newLane, field) == nil {
+			continue
+		}
+		effect := base
+		effect.Field = field
+		effect.Operation = syncEffectClear
+		effects = append(effects, effect)
 	}
 	for field, value := range update.Fields {
 		effect := base
