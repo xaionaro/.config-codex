@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,16 +16,11 @@ import (
 func TestLegacyTaskCancellationRecovery(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte("{}\n"), 0600))
-	state := syncState{Cursor: 1, Applied: map[string]string{}, Latest: map[string]int{}, Pending: map[string]syncPending{}}
-	for field, value := range map[string]string{"lifecycle": "cancelled", "status": "unknown", "evidence": "owner withdrew"} {
-		update := syncUpdate{Target: syncTargetTask, ID: "1", Fields: map[string]string{field: value}}
-		key := syncTargetKey(update, field)
-		state.Pending[key] = syncPending{Line: 1, Update: update}
-		state.Latest[key] = 1
-	}
-	encoded, err := json.Marshal(state)
-	require.NoError(t, err)
-	initial, err := putSyncState([]byte(linkedReport), string(encoded))
+	// saved is the historical wire format retained across upgrades.
+	//
+	// Example: Resume an update queued before grouped replay.
+	const saved = `{"cursor":1,"applied":{},"latest":{"[\"task\",\"1\",\"\",\"\"]/evidence":1,"[\"task\",\"1\",\"\",\"\"]/lifecycle":1,"[\"task\",\"1\",\"\",\"\"]/status":1},"pending":{"[\"task\",\"1\",\"\",\"\"]/evidence":{"line":1,"update":{"target":"task","id":"1","fields":{"evidence":"owner withdrew"}}},"[\"task\",\"1\",\"\",\"\"]/lifecycle":{"line":1,"update":{"target":"task","id":"1","fields":{"lifecycle":"cancelled"}}},"[\"task\",\"1\",\"\",\"\"]/status":{"line":1,"update":{"target":"task","id":"1","fields":{"status":"unknown"}}}}}`
+	initial, err := putSyncState([]byte(linkedReport), saved)
 	require.NoError(t, err)
 	result, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
 	require.NoError(t, err)
@@ -52,14 +46,13 @@ func TestLegacyTaskClosureRecoveryRequiresEvidence(t *testing.T) {
 			func(t *testing.T) {
 				dir := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte("{}\n"), 0600))
-				update := syncUpdate{Target: syncTargetTask, ID: "1", Fields: map[string]string{"status": "CLOSED"}}
-				key := syncTargetKey(update, "status")
-				state := syncState{Cursor: 1, Applied: map[string]string{}, Latest: map[string]int{key: 1}, Pending: map[string]syncPending{key: {Line: 1, Update: update, Acceptance: "accepted"}}}
-				encoded, err := json.Marshal(state)
-				require.NoError(t, err)
+				// saved is the historical wire format retained across upgrades.
+				//
+				// Example: Resume an update queued before grouped replay.
+				const saved = `{"cursor":1,"applied":{},"latest":{"[\"task\",\"1\",\"\",\"\"]/status":1},"pending":{"[\"task\",\"1\",\"\",\"\"]/status":{"line":1,"update":{"target":"task","id":"1","fields":{"status":"CLOSED"}},"acceptance":"accepted"}}}`
 				input := strings.Replace(linkedReport, "status: IN PROGRESS, work_refs:", "status: IN PROGRESS, evidence: '"+evidence+"', work_refs:", 1)
 				require.NotEqual(t, linkedReport, input)
-				initial, err := putSyncState([]byte(input), string(encoded))
+				initial, err := putSyncState([]byte(input), saved)
 				require.NoError(t, err)
 				result, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
 				require.NoError(t, err)
@@ -90,18 +83,13 @@ func TestLegacyLaneCompletionRecoveryRequiresCanonicalCompletion(t *testing.T) {
 			func(t *testing.T) {
 				dir := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte("{}\n"), 0600))
-				state := syncState{Cursor: 1, Applied: map[string]string{}, Latest: map[string]int{}, Pending: map[string]syncPending{}}
-				for field, value := range map[string]string{"implementation_status": "CLOSED", "completed_at": "2026-11-02T15:25:00Z"} {
-					update := syncUpdate{Target: syncTargetLane, ID: "1", WorkRef: "project-understanding.yaml#/records/work:first", RequiredEnvironment: syncEnvironmentImplementation, Evidence: "accepted", Fields: map[string]string{field: value}}
-					key := syncTargetKey(update, field)
-					state.Pending[key] = syncPending{Line: 1, Update: update}
-					state.Latest[key] = 1
-				}
-				encoded, err := json.Marshal(state)
-				require.NoError(t, err)
+				// saved is the historical wire format retained across upgrades.
+				//
+				// Example: Resume an update queued before grouped replay.
+				const saved = `{"cursor":1,"applied":{},"latest":{"[\"lane\",\"1\",\"project-understanding.yaml#/records/work:first\",\"implementation\"]/completed_at":1,"[\"lane\",\"1\",\"project-understanding.yaml#/records/work:first\",\"implementation\"]/implementation_status":1},"pending":{"[\"lane\",\"1\",\"project-understanding.yaml#/records/work:first\",\"implementation\"]/completed_at":{"line":1,"update":{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"completed_at":"2026-11-02T15:25:00Z"}}},"[\"lane\",\"1\",\"project-understanding.yaml#/records/work:first\",\"implementation\"]/implementation_status":{"line":1,"update":{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"implementation_status":"CLOSED"}}}}}`
 				input := strings.Replace(linkedReport, "    forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n", "", 1)
 				require.NotEqual(t, linkedReport, input)
-				initial, err := putSyncState([]byte(input), string(encoded))
+				initial, err := putSyncState([]byte(input), saved)
 				require.NoError(t, err)
 				source := workData{State: workStateActive}
 				if completed {
@@ -132,11 +120,11 @@ func TestLegacyLaneCompletionRecoveryRequiresCanonicalCompletion(t *testing.T) {
 func TestLegacyPendingTimelineRecovery(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte("{}\n"), 0600))
-	snapshot := `{"as_of":"2026-11-02T15:24:00Z","state":"verified_empty","entries":[]}`
-	state := syncState{Cursor: 1, PendingTimeline: &syncPendingTimeline{Line: 1, Snapshot: snapshot}}
-	encoded, err := json.Marshal(state)
-	require.NoError(t, err)
-	initial, err := putSyncState([]byte(linkedReport), string(encoded))
+	// saved is the historical wire format retained across upgrades.
+	//
+	// Example: Resume an update queued before grouped replay.
+	const saved = `{"cursor":1,"applied":null,"latest":null,"pending":null,"pending_timeline":{"line":1,"snapshot":"{\"as_of\":\"2026-11-02T15:24:00Z\",\"state\":\"verified_empty\",\"entries\":[]}"}}`
+	initial, err := putSyncState([]byte(linkedReport), saved)
 	require.NoError(t, err)
 	result, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
 	require.NoError(t, err)
