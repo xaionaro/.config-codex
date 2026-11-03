@@ -285,18 +285,22 @@ func appendDiagnostic(
 	if blockers.Style&yaml.FlowStyle == 0 {
 		return appendBlockDiagnostic(lines, blockers, diagnostic, nextFieldLine)
 	}
-	i := blockers.Line - 1
-	if i < 0 || i >= len(lines) {
-		return nil, fmt.Errorf("unsupported blockers layout")
-	}
-	start, err := yamlByteOffset([]byte(lines[i]), 1, blockers.Column)
+	data := []byte(strings.Join(lines, "\n"))
+	start, err := yamlByteOffset(data, blockers.Line, blockers.Column)
 	if err != nil {
 		return nil, err
 	}
-	if start < 0 || start >= len(lines[i]) {
+	if start < 0 || start >= len(data) {
 		return nil, fmt.Errorf("unsupported blockers layout")
 	}
-	end, err := flowEnd([]byte(strings.TrimSuffix(lines[i], "\r")), start, token.SequenceStartType)
+	// Keep byte positions stable while allowing the flow lexer to scan CRLF input.
+	scanData := bytes.Clone(data)
+	for i := 0; i+1 < len(scanData); i++ {
+		if scanData[i] == '\r' && scanData[i+1] == '\n' {
+			scanData[i] = ' '
+		}
+	}
+	end, err := flowEnd(scanData, start, token.SequenceStartType)
 	if err != nil {
 		return nil, err
 	}
@@ -304,8 +308,8 @@ func appendDiagnostic(
 	if len(blockers.Content) > 0 {
 		sep = ", "
 	}
-	lines[i] = lines[i][:end] + sep + strconv.Quote(diagnostic) + lines[i][end:]
-	return lines, nil
+	updated := string(data[:end]) + sep + strconv.Quote(diagnostic) + string(data[end:])
+	return strings.Split(updated, "\n"), nil
 }
 
 // appendBlockDiagnostic adds a diagnostic to a supported block-style list.
