@@ -19,7 +19,7 @@ func TestSharedRootForecastRecoversAfterSourceRepair(t *testing.T) {
 	const event = `{"event":"forecast_change","details":{"status_update":{"additions":[{"target":"root_forecast","record":{"forecast_ref":"forecasts.yaml#/records/root","outcome":"Root result","target":"2026-11-02T18:00:00Z","assessment":"complete"}}]}}}` + "\n"
 	// roots supplies conflicting outcomes for the shared forecast.
 	//
-	// Example: The second outcome is corrected before the next refresh.
+	// Example: The second work record is relinked to the shared outcome.
 	const roots = `  root-outcome-one: {section: progress, type: outcome, data: {description: Root result}}
   root-outcome-two: {section: progress, type: outcome, data: {description: Wrong result}}
   root-one:
@@ -58,7 +58,7 @@ func TestSharedRootForecastRecoversAfterSourceRepair(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, report.RootForecasts)
 	require.Len(t, report.StatusSync.PendingRootAdditions, 1)
-	fixed := strings.Replace(ledger, "description: Wrong result", "description: Root result", 1)
+	fixed := strings.Replace(ledger, "outcomes: [root-outcome-two]", "outcomes: [root-outcome-one]", 1)
 	require.NotEqual(t, ledger, fixed)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "project-understanding.yaml"), []byte(fixed), 0600))
 	require.NoError(t, refreshTestStatus(dir, "forecast_change"))
