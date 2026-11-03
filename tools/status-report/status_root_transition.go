@@ -63,7 +63,7 @@ func removeRootSyncRecord(
 		return data, false
 	}
 	var normalized any
-	if json.Unmarshal(encoded, &normalized) != nil || !reflect.DeepEqual(normalized, expectedValue) {
+	if json.Unmarshal(encoded, &normalized) != nil || !equalSyncPriorRecord(target, normalized, expectedValue) {
 		return data, false
 	}
 	item := list.Content[index]
@@ -114,4 +114,20 @@ func removeRootSyncRecord(
 		return data, false
 	}
 	return append(append(append([]byte(nil), data[:start]...), []byte(replacement)...), data[end:]...), true
+}
+
+// equalSyncPriorRecord compares an expected prior without discarding owner fields.
+//
+// Example: Priority estimates accept equivalent UTC timestamp spellings.
+func equalSyncPriorRecord(
+	target syncTarget,
+	actual any,
+	expected any,
+) bool {
+	if target == syncTargetPriorityEstimate {
+		a, aOK := actual.(map[string]any)
+		b, bOK := expected.(map[string]any)
+		return aOK && bOK && equalPriorityEstimateRecord(a, b)
+	}
+	return reflect.DeepEqual(actual, expected)
 }

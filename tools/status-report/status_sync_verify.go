@@ -474,7 +474,7 @@ func applyExpectedSyncEffect(
 				return err
 			}
 			var actual any
-			if err := json.Unmarshal(encoded, &actual); err != nil || !reflect.DeepEqual(actual, expected) {
+			if err := json.Unmarshal(encoded, &actual); err != nil || !equalSyncPriorRecord(effect.Target, actual, expected) {
 				return fmt.Errorf("root prior mismatch")
 			}
 		}
