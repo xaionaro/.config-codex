@@ -281,7 +281,7 @@ func editStructuredField(
 				return data, false
 			}
 			suffix = "\n"
-			if bytes.Contains(data[start:end], []byte("\r\n")) {
+			if bytes.Contains(data, []byte("\r\n")) {
 				suffix = "\r\n"
 			}
 		}
@@ -303,6 +303,27 @@ func structuredBlockSequenceEnd(
 	field string,
 ) (int, error) {
 	if next := nextMappingFieldLine(parent, field); next > 0 {
+		for i := 0; i+3 < len(parent.Content); i += 2 {
+			if parent.Content[i].Value != field {
+				continue
+			}
+			key := parent.Content[i+2]
+			if key.HeadComment == "" {
+				break
+			}
+			lines := strings.Split(string(data), "\n")
+			line := next - 1
+			for line > 0 {
+				text := strings.TrimSuffix(lines[line-1], "\r")
+				trimmed := strings.TrimSpace(text)
+				if !strings.HasPrefix(trimmed, "#") || len(text)-len(strings.TrimLeft(text, " ")) >= key.Column {
+					break
+				}
+				line--
+			}
+			next = line + 1
+			break
+		}
 		return yamlByteOffset(data, next, 1)
 	}
 	end, _, err := blockMappingEnd(data, parent)

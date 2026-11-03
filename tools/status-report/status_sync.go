@@ -852,23 +852,20 @@ func removeCancelledPriority(
 	}
 	lines := strings.Split(string(data), "\n")
 	startLine := list.Line - 1
-	endLine := nextMappingFieldLine(root, "top_priorities") - 1
-	if endLine < 0 {
-		endLine = len(lines)
+	endOffset, err := structuredBlockSequenceEnd(data, root, "top_priorities")
+	if err != nil {
+		return data, false
 	}
-	if startLine < 0 || startLine >= len(lines) || endLine < startLine || endLine > len(lines) {
+	if startLine < 0 || startLine >= len(lines) {
 		return data, false
 	}
 	start := 0
 	for _, line := range lines[:startLine] {
 		start += len(line) + 1
 	}
-	end := start
-	for _, line := range lines[startLine:endLine] {
-		end += len(line) + 1
-	}
-	if end > len(data) {
-		end = len(data)
+	end := endOffset
+	if end < start || end > len(data) {
+		return data, false
 	}
 	if bytes.Contains(data[start:end], []byte("#")) {
 		return data, false
@@ -880,7 +877,7 @@ func removeCancelledPriority(
 		}
 	}
 	ending := "\n"
-	if bytes.Contains(data[start:end], []byte("\r\n")) {
+	if bytes.Contains(data, []byte("\r\n")) {
 		ending = "\r\n"
 	}
 	value := strings.Repeat(" ", indent) + string(encoded) + ending

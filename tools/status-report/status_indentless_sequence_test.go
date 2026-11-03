@@ -150,3 +150,48 @@ func TestIndentedDocumentWithIndentlessPriorities(t *testing.T) {
 	_, err = parse(cancelled)
 	require.NoError(t, err)
 }
+
+// TestSequencePreservesFollowingHeadComment checks sibling comment ownership.
+//
+// Example: Updating a list retains the next section's outdented note.
+func TestSequencePreservesFollowingHeadComment(t *testing.T) {
+	for _, items := range []string{"- '1'\n- '2'", "  - '1'\n  - '2'"} {
+		input := strings.Replace(linkedReport, "top_priorities: ['1', '2']", "top_priorities:\n"+items, 1)
+		input = strings.Replace(input, "priority_estimates:", "# following owner note\npriority_estimates:", 1)
+		out, ok := editStructuredField([]byte(input), syncUpdate{Target: syncTargetReport, ID: "current"}, "top_priorities", `["2"]`)
+		require.True(t, ok)
+		require.Contains(t, string(out), "# following owner note\npriority_estimates:")
+		out, ok = removeCancelledPriority([]byte(input), taskID("1"))
+		require.True(t, ok)
+		require.Contains(t, string(out), "# following owner note\npriority_estimates:")
+	}
+}
+
+// TestSequenceInternalCommentRemainsPending checks standalone item notes.
+//
+// Example: A comment between sequence items prevents replacement.
+func TestSequenceInternalCommentRemainsPending(t *testing.T) {
+	for _, items := range []string{"- '1'\n# item note\n- '2'", "  - '1'\n  # item note\n  - '2'"} {
+		input := strings.Replace(linkedReport, "top_priorities: ['1', '2']", "top_priorities:\n"+items, 1)
+		out, ok := editStructuredField([]byte(input), syncUpdate{Target: syncTargetReport, ID: "current"}, "top_priorities", `["2"]`)
+		require.False(t, ok)
+		require.Equal(t, input, string(out))
+		out, ok = removeCancelledPriority([]byte(input), taskID("1"))
+		require.False(t, ok)
+		require.Equal(t, input, string(out))
+	}
+}
+
+// TestFinalSequencePreservesCRLF checks a final list without a trailing newline.
+//
+// Example: Both replacement paths preserve CRLF line endings at end of file.
+func TestFinalSequencePreservesCRLF(t *testing.T) {
+	input := strings.Replace(linkedReport, "top_priorities: ['1', '2']\n", "", 1) + "top_priorities:\n- '1'"
+	input = strings.ReplaceAll(input, "\n", "\r\n")
+	out, ok := editStructuredField([]byte(input), syncUpdate{Target: syncTargetReport, ID: "current"}, "top_priorities", `["2"]`)
+	require.True(t, ok)
+	require.NotContains(t, strings.ReplaceAll(string(out), "\r\n", ""), "\n")
+	out, ok = removeCancelledPriority([]byte(input), taskID("1"))
+	require.True(t, ok)
+	require.NotContains(t, strings.ReplaceAll(string(out), "\r\n", ""), "\n")
+}
