@@ -906,7 +906,10 @@ func advanceSyncTimestamp(
 	if !next.After(previous) {
 		return data, nil
 	}
-	if timeline := mapValue(root, "timeline"); timeline != nil && len(timeline.Content) > 0 && mapValue(root, "timeline_as_of") == nil {
+	timeline := mapValue(root, "timeline")
+	timelineState := mapValue(root, "timeline_state")
+	hasTimelineEvidence := (timeline != nil && len(timeline.Content) > 0) || (timelineState != nil && timelineState.Value == "verified_empty")
+	if hasTimelineEvidence && mapValue(root, "timeline_as_of") == nil {
 		suffix := "timeline_as_of: " + strconv.Quote(old.Value) + "\n"
 		if len(data) > 0 && data[len(data)-1] != '\n' {
 			suffix = "\n" + suffix
