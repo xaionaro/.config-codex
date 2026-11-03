@@ -30,6 +30,16 @@ func TestSyncTimelineSnapshot(t *testing.T) {
 	require.Equal(t, "root", report.Timeline[0].Job)
 	require.NotContains(t, string(result), "job: old")
 	require.Equal(t, snapshot.AsOf, report.TimelineAsOf)
+	snapshot.Entries[0].Evidence = "project-understanding.yaml#/records/work:first"
+	withReference, ok := applySyncTimeline(result, snapshot)
+	require.True(t, ok)
+	snapshot.Entries[0].Normal = "new work"
+	refreshed, ok := applySyncTimeline(withReference, snapshot)
+	require.True(t, ok)
+	refreshedReport, err := parse(refreshed)
+	require.NoError(t, err)
+	require.Equal(t, "new work", refreshedReport.Timeline[0].Normal)
+	require.Equal(t, snapshot.Entries[0].Evidence, refreshedReport.Timeline[0].Evidence)
 
 	incomplete := snapshot
 	incomplete.Entries = incomplete.Entries[:7]

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -108,9 +108,6 @@ func applySyncTimeline(data []byte, snapshot syncTimelineSnapshot) ([]byte, bool
 			return data, false
 		}
 		start, end := offsets[keyLine-1], offsets[endLine-1]
-		if bytes.Contains(data[start:end], []byte("#")) {
-			return data, false
-		}
 		edits = append(edits, scalarEdit{Start: reportByteOffset(start), End: reportByteOffset(end), Value: replacement})
 	}
 	sort.Slice(edits,
@@ -129,6 +126,14 @@ func applySyncTimeline(data []byte, snapshot syncTimelineSnapshot) ([]byte, bool
 		out = append(out, strings.Join(missing, "")...)
 	}
 	if _, err := parse(out); err != nil {
+		return data, false
+	}
+	beforeComments, err := yamlComments(data)
+	if err != nil {
+		return data, false
+	}
+	afterComments, err := yamlComments(out)
+	if err != nil || !slices.Equal(beforeComments, afterComments) {
 		return data, false
 	}
 	return out, true
