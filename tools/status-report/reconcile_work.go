@@ -7,7 +7,6 @@ type workReconciler struct {
 	works           map[string]sourceRecord
 	lanes           map[string]lane
 	scope           taskWorkIndex
-	allClosed       bool
 	rootCompletions map[string]rootCompletion
 	rootRefs        map[string]bool
 	rootForecasts   []forecast
@@ -48,7 +47,7 @@ func (c *workReconciler) checkCoverage(
 		return
 	}
 	laneOpen := represented && l.requiredStatus() != statusClosed && l.Lifecycle != laneLifecycleCancelled
-	if laneOpen && c.allClosed {
+	if laneOpen && !c.scope.reportOpen {
 		c.issues.add("work %s remaining acceptance is represented by an open lane outside scored leaf packages", id)
 	}
 	if !laneOpen {

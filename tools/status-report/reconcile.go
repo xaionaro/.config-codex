@@ -395,18 +395,6 @@ func reconcileAt(
 	issues = append(issues, checkSharedForecastOwners(works)...)
 	scope := buildTaskWorkIndex(r.Tasks, works)
 	issues = append(issues, unlinkedScoredLeaves(r.Tasks, scope)...)
-	children := map[taskID]bool{}
-	for _, t := range r.Tasks {
-		if t.ParentID != "" {
-			children[t.ParentID] = true
-		}
-	}
-	allClosed := true
-	for _, t := range r.Tasks {
-		if !children[t.ID] && t.Lifecycle != taskLifecycleCancelled && t.Status != statusClosed {
-			allClosed = false
-		}
-	}
 	lanes := map[string]lane{}
 	rootRefs := map[string]bool{}
 	for _, t := range r.Tasks {
@@ -475,7 +463,7 @@ func reconcileAt(
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	workChecks := workReconciler{works: works, lanes: lanes, scope: scope, allClosed: allClosed, rootCompletions: rootCompletions, rootRefs: rootRefs, rootForecasts: r.RootForecasts, issues: &issues, forecasts: &forecastChecks}
+	workChecks := workReconciler{works: works, lanes: lanes, scope: scope, rootCompletions: rootCompletions, rootRefs: rootRefs, rootForecasts: r.RootForecasts, issues: &issues, forecasts: &forecastChecks}
 	for _, id := range ids {
 		workChecks.check(id)
 	}
