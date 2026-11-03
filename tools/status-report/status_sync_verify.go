@@ -46,8 +46,15 @@ func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []sync
 		return err
 	}
 	for _, effect := range effects {
+		if effect.Operation == syncEffectAdd && (effect.Target == syncTargetLane || effect.Target == syncTargetRootCompletion || effect.Target == syncTargetRootForecast) {
+			if err := verifyCanonicalSyncAddition(effect, ledger, forecasts); err != nil {
+				return err
+			}
+			continue
+		}
 		terminal := effect.Target == syncTargetLane && effect.Operation == syncEffectSet && ((effect.Field == effect.RequiredEnvironment.String()+"_status" && effect.Value == "CLOSED") || (effect.Field == "lifecycle" && effect.Value == "cancelled"))
-		if !terminal && effect.Operation != syncEffectForecastRetire {
+		retirement := effect.Operation == syncEffectForecastRetire || (effect.Operation == syncEffectRemove && effect.Target == syncTargetLane && effect.Field == "forecast")
+		if !terminal && !retirement {
 			continue
 		}
 		if effect.Target != syncTargetLane || !validRef(effect.WorkRef, "project-understanding.yaml") || strings.TrimSpace(effect.Evidence) == "" {
@@ -81,7 +88,7 @@ func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []sync
 		if ref != "" && (!validRef(ref, "forecasts.yaml") || textField(forecasts.Records[sourceID(ref, "forecasts.yaml")], "status") != "inactive") {
 			return fmt.Errorf("terminal lane forecast is not inactive")
 		}
-		if effect.Operation == syncEffectForecastRetire {
+		if retirement {
 			oldItems, _ := before["lanes"].([]any)
 			oldIndex, err := syncEffectIndex(oldItems, "task_id", effect)
 			if err != nil || oldIndex < 0 {
@@ -269,6 +276,10 @@ func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 		root[section] = append(items, record)
 		return nil
 	case syncEffectRemove:
+		if effect.Target == syncTargetLane && (effect.Field == "forecast" || effect.Field == "completed_at") {
+			effect.Operation = syncEffectClear
+			return applyExpectedSyncEffect(root, effect)
+		}
 		section, identity, err := syncEffectSection(effect.Target)
 		if err != nil {
 			return err
@@ -357,4 +368,83 @@ func syncEffectIndex(items []any, identity string, effect syncEffect) (int, erro
 		found = i
 	}
 	return found, nil
+}
+
+// verifyCanonicalSyncAddition validates source-owned records independently of insertion.
+func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+	raw, ok := effect.Value.(json.RawMessage)
+	if !ok {
+		return fmt.Errorf("addition lacks source record")
+	}
+	var record struct {
+		WorkRef     string `json:"work_ref"`
+		ForecastRef string `json:"forecast_ref"`
+		Outcome     string `json:"outcome"`
+		CompletedAt string `json:"completed_at"`
+		Lifecycle   string `json:"lifecycle"`
+		Forecast    *struct {
+			ForecastRef string `json:"forecast_ref"`
+		} `json:"forecast"`
+	}
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return err
+	}
+	forecastMatches := func(ref, status, kind string) bool {
+		if !validRef(ref, "forecasts.yaml") {
+			return false
+		}
+		source := forecasts.Records[sourceID(ref, "forecasts.yaml")]
+		return textField(source, "status") == status && textField(source, "kind") == kind
+	}
+	if effect.Target == syncTargetRootForecast {
+		if !forecastMatches(record.ForecastRef, "active", "root") {
+			return fmt.Errorf("invalid canonical root forecast")
+		}
+		found := false
+		for _, work := range ledger.Records {
+			if work.Type == "work" && hasRole(work.Data.Roles, reportingRoleRoot) && openWork(work.Data.State) && string(work.Data.ForecastRef) == record.ForecastRef {
+				if !outcomeCorresponds(work, ledger.Records, record.Outcome) {
+					return fmt.Errorf("root outcome mismatch")
+				}
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("root forecast lacks active canonical work")
+		}
+		return nil
+	}
+	if !validRef(record.WorkRef, "project-understanding.yaml") {
+		return fmt.Errorf("invalid canonical work reference")
+	}
+	work, ok := ledger.Records[sourceID(record.WorkRef, "project-understanding.yaml")]
+	if !ok || work.Type != "work" || !outcomeCorresponds(work, ledger.Records, record.Outcome) {
+		return fmt.Errorf("canonical work or outcome mismatch")
+	}
+	ref := string(work.Data.ForecastRef)
+	if effect.Target == syncTargetRootCompletion {
+		if strings.TrimSpace(effect.Evidence) == "" || !hasRole(work.Data.Roles, reportingRoleRoot) || work.Data.State != workStateCompleted || !sameValue(work.Data.CompletedAt, record.CompletedAt) || (ref != "" && !forecastMatches(ref, "inactive", "root")) {
+			return fmt.Errorf("invalid canonical root completion")
+		}
+		return nil
+	}
+	if !hasRole(work.Data.Roles, reportingRoleLane) {
+		return fmt.Errorf("canonical work is not a lane")
+	}
+	if openWork(work.Data.State) {
+		if record.Forecast == nil || record.Forecast.ForecastRef != ref || !forecastMatches(ref, "active", "lane") {
+			return fmt.Errorf("invalid active lane forecast")
+		}
+		return nil
+	}
+	if record.Forecast != nil || strings.TrimSpace(effect.Evidence) == "" || (ref != "" && !forecastMatches(ref, "inactive", "lane")) {
+		return fmt.Errorf("invalid terminal lane forecast or evidence")
+	}
+	if work.Data.State == workStateCompleted && sameValue(work.Data.CompletedAt, record.CompletedAt) {
+		return nil
+	}
+	if work.Data.State == workStateCancelled && record.Lifecycle == "cancelled" {
+		return nil
+	}
+	return fmt.Errorf("invalid canonical lane completion")
 }

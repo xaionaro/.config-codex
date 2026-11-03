@@ -98,3 +98,33 @@ func TestVerifyStatusSyncCanonicalEffectsRejectsActiveForecast(t *testing.T) {
 		t.Fatal("accepted active work")
 	}
 }
+
+func TestVerifyStatusSyncCanonicalAddition(t *testing.T) {
+	effect := syncEffect{Target: syncTargetRootForecast, ID: "forecasts.yaml#/records/f", Operation: syncEffectAdd, Value: json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"x"}`)}
+	if err := verifyStatusSyncCanonicalEffects([]byte("{}"), []byte("{}"), []syncEffect{effect}, ledgerSource{}, forecastSource{}); err == nil {
+		t.Fatal("accepted missing canonical forecast")
+	}
+}
+
+func TestVerifyStatusSyncLaneRemoval(t *testing.T) {
+	before := []byte("lanes: [{task_id: a, work_ref: w, required_environment: implementation, completed_at: old}]\n")
+	after := []byte("lanes: [{task_id: a, work_ref: w, required_environment: implementation}]\n")
+	effect := syncEffect{Target: syncTargetLane, ID: "a", WorkRef: "w", RequiredEnvironment: syncEnvironmentImplementation, Field: "completed_at", Operation: syncEffectRemove}
+	if err := verifyStatusSyncEffects(before, after, []syncEffect{effect}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyStatusSyncCanonicalRootCompletion(t *testing.T) {
+	work := sourceRecord{Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:00:00Z", Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": work, "o": {Type: "outcome", Outcome: "Result"}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"f": {"status": "inactive", "kind": "root"}}}
+	effect := syncEffect{Target: syncTargetRootCompletion, Operation: syncEffectAdd, Evidence: "accepted", Value: json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`)}
+	if err := verifyStatusSyncCanonicalEffects([]byte("{}"), []byte("{}"), []syncEffect{effect}, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	effect.Evidence = ""
+	if err := verifyStatusSyncCanonicalEffects([]byte("{}"), []byte("{}"), []syncEffect{effect}, ledger, forecasts); err == nil {
+		t.Fatal("accepted missing evidence")
+	}
+}
