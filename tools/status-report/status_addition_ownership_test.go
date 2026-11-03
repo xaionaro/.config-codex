@@ -38,3 +38,40 @@ func TestTaskAdditionOwnershipRejectsLaterOwnerEdit(t *testing.T) {
 	_, ok = applyStructuredSyncUpdate([]byte(edited), update, map[string]string{"effort": previous["effort"]})
 	require.False(t, ok)
 }
+
+// TestAdditionOwnershipMatchesTargetEncodings checks each updateable addition target.
+//
+// Example: Remember a review critic and a lane blocker as separate owned fields.
+func TestAdditionOwnershipMatchesTargetEncodings(t *testing.T) {
+	cases := []struct {
+		target                  syncTarget
+		record, field, expected string
+	}{
+		{syncTargetTask, `{"status":null}`, "status", "null"},
+		{syncTargetReview, `{"critic":"reviewer","rounds":2}`, "critic", `"reviewer"`},
+		{syncTargetPriorityEstimate, `{"min_minutes":2}`, "min_minutes", `2`},
+		{syncTargetLane, `{"blocker":"waiting"}`, "blocker", "waiting"},
+	}
+	for _, tc := range cases {
+		values, ok := additionOwnership(tc.target, json.RawMessage(tc.record))
+		require.True(t, ok)
+		require.Equal(t, tc.expected, values[tc.field])
+	}
+}
+
+// TestReviewAdditionOwnershipRejectsLaterOwnerEdit checks structured review updates.
+//
+// Example: Preserve a manually changed critic after review insertion.
+func TestReviewAdditionOwnershipRejectsLaterOwnerEdit(t *testing.T) {
+	record := `{"task_id":"1.1","reporter":"A","critic":"B","rounds":1,"estimate":"checked","impact":"checked","priority":"checked","unresolved":"none"}`
+	previous, ok := additionOwnership(syncTargetReview, json.RawMessage(record))
+	require.True(t, ok)
+	input := strings.Replace(valid, "reviews: []", "reviews: ["+record+"]", 1)
+	var update syncUpdate
+	require.NoError(t, json.Unmarshal([]byte(`{"target":"review","id":"1.1","values":{"critic":"C"}}`), &update))
+	_, ok = applyStructuredSyncUpdate([]byte(input), update, map[string]string{"critic": previous["critic"]})
+	require.True(t, ok)
+	edited := strings.Replace(input, `"critic":"B"`, `"critic":"owner"`, 1)
+	_, ok = applyStructuredSyncUpdate([]byte(edited), update, map[string]string{"critic": previous["critic"]})
+	require.False(t, ok)
+}

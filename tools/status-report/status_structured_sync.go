@@ -135,11 +135,10 @@ func structuredSyncValues(
 			scalar = true
 		}
 		if scalar {
-			var text string
-			if json.Unmarshal(encoded, &text) != nil {
+			if value.Kind != yaml.ScalarNode {
 				return nil, false
 			}
-			result[field] = text
+			result[field] = value.Value
 		} else {
 			result[field] = string(encoded)
 		}
