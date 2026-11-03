@@ -11,19 +11,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// flowScanBytes prepares byte-stable CRLF input for the flow lexer.
+// flowScanBytes normalizes CRLF for the flow lexer while retaining line and column positions.
 //
-// Example: Replace each CR in a CRLF pair with a space while retaining offsets.
+// Example: Map lexer positions back to the original lines after removing CR from CRLF.
 func flowScanBytes(data []byte) ([]byte, error) {
-	scan := bytes.Clone(data)
-	for i := 0; i < len(scan); i++ {
-		if scan[i] != '\r' {
-			continue
-		}
-		if i+1 >= len(scan) || scan[i+1] != '\n' {
-			return nil, fmt.Errorf("unsupported bare CR layout")
-		}
-		scan[i] = ' '
+	scan := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	if bytes.ContainsRune(scan, '\r') {
+		return nil, fmt.Errorf("unsupported bare CR layout")
 	}
 	return scan, nil
 }

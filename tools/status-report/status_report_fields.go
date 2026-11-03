@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 
@@ -47,9 +48,13 @@ func appendReportField(
 		insert := sep + strconv.Quote(key) + ": " + value
 		return append(append(append([]byte(nil), data[:end]...), []byte(insert)...), data[end:]...), nil
 	}
-	suffix := key + ": " + value + "\n"
+	ending := "\n"
+	if bytes.Contains(data, []byte("\r\n")) {
+		ending = "\r\n"
+	}
+	suffix := key + ": " + value + ending
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		suffix = "\n" + suffix
+		suffix = ending + suffix
 	}
 	return append(append([]byte(nil), data...), []byte(suffix)...), nil
 }
