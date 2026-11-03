@@ -449,3 +449,82 @@ func TestLegacyTaskRetractionCannotAuthorizeCorrection(t *testing.T) {
 	require.Equal(t, "first proof", freshReport.Tasks[0].Evidence)
 	require.Equal(t, freshReport.Tasks[0].Evidence, replayedReport.Tasks[0].Evidence)
 }
+
+// TestLegacyTextCorrectionAfterEvidenceCorrectionMatchesFreshReplay checks independent fields.
+//
+// Example: A valid evidence correction does not hold an older text correction.
+func TestLegacyTextCorrectionAfterEvidenceCorrectionMatchesFreshReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name, withdrawal string
+		withdraws        bool
+	}{
+		{"independent evidence", "", false},
+		{"later retraction", `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"one","corrects":2,"retract":true}]}}}` + "\n", true},
+	} {
+		t.Run(tc.name,
+			// Compare fresh and saved replay around a corrected evidence version.
+			//
+			// Example: A later retraction names the corrected evidence.
+			func(t *testing.T) {
+				prefix := `{"event":"decision","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"first","evidence":"proof"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"one","corrects":1,"fields":{"evidence":"new proof"}}]}}}` + "\n" + tc.withdrawal
+				log := prefix + `{"event":"correction","details":{"status_update":{"updates":[{"target":"progress","id":"one","corrects":1,"fields":{"text":"third"}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				update := syncUpdate{Target: syncTargetProgress, ID: "one", Corrects: 1, Fields: map[string]string{"text": "third"}}
+				key := syncTargetKey(update, "text")
+				line := 3
+				if tc.withdraws {
+					line = 4
+				}
+				state := syncState{Cursor: line, Applied: map[string]string{}, Latest: map[string]int{key: line}, Pending: map[string]syncPending{key: {Line: line, Update: update}}}
+				input := linkedReport
+				if !tc.withdraws {
+					state.Applied[key] = "first"
+					state.Applied[syncTargetKey(update, "evidence")] = "new proof"
+					input = strings.Replace(input, "progress: [Implementation started]", `progress: [Implementation started, {subject_ref: one, text: first, evidence: new proof}]`, 1)
+				}
+				encoded, err := json.Marshal(state)
+				require.NoError(t, err)
+				initial, err := putSyncState([]byte(input), string(encoded))
+				require.NoError(t, err)
+				replayed, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				freshReport, err := parse(fresh)
+				require.NoError(t, err)
+				replayedReport, err := parse(replayed)
+				require.NoError(t, err)
+				require.Equal(t, freshReport.Progress, replayedReport.Progress)
+			})
+	}
+}
+
+// TestLegacyInvalidBaseCannotAuthorizeCorrection checks complete source shape.
+//
+// Example: A valid owner alongside an invalid status cannot authorize a correction.
+func TestLegacyInvalidBaseCannotAuthorizeCorrection(t *testing.T) {
+	// log contains one invalid mixed assignment and a later correction.
+	//
+	// Example: Both fresh and legacy replay preserve the absent owner.
+	const log = `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"mistaken","status":"impossible"}}]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"owner":"third"}}]}}}` + "\n"
+	dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+	fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	update := syncUpdate{Target: syncTargetTask, ID: "1", Corrects: 1, Fields: map[string]string{"owner": "third"}}
+	key := syncTargetKey(update, "owner")
+	state := syncState{Cursor: 2, Applied: map[string]string{}, Latest: map[string]int{key: 2}, Pending: map[string]syncPending{key: {Line: 2, Update: update}}}
+	encoded, err := json.Marshal(state)
+	require.NoError(t, err)
+	initial, err := putSyncState([]byte(linkedReport), string(encoded))
+	require.NoError(t, err)
+	replayed, _, err := projectLogStatus(dir, initial, ledgerSource{}, forecastSource{})
+	require.NoError(t, err)
+	freshReport, err := parse(fresh)
+	require.NoError(t, err)
+	replayedReport, err := parse(replayed)
+	require.NoError(t, err)
+	require.Empty(t, freshReport.Tasks[0].Owner)
+	require.Equal(t, freshReport.Tasks[0].Owner, replayedReport.Tasks[0].Owner)
+}

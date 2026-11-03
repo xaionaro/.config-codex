@@ -126,7 +126,11 @@ func legacyCorrectionLocatorValid(
 	if !legacyCorrectionPriorMatches(u, prior) {
 		return false, true
 	}
-	if prior.Retract && !legacyValidNarrativeRetraction(prior, priorEvent.Event) {
+	priorPriorOrdinal := 0
+	if prior.CorrectsOrdinal != nil {
+		priorPriorOrdinal = *prior.CorrectsOrdinal
+	}
+	if !legacyInterveningUpdateEligible(prior, priorEvent.Event, u.Corrects, priorOrdinal, prior.Corrects, priorPriorOrdinal) {
 		return false, true
 	}
 	if prior.Corrects != 0 {
@@ -135,7 +139,7 @@ func legacyCorrectionLocatorValid(
 			return valid, known
 		}
 	}
-	return legacyCorrectionHasNoInterveningUpdate(u, lines, pending.Line, priorOrdinal, match)
+	return legacyCorrectionHasNoInterveningUpdate(u, log, lines, pending.Line, priorOrdinal, match)
 }
 
 // legacyNarrativeVersion tracks the latest text or evidence occurrence.
@@ -151,6 +155,7 @@ type legacyNarrativeVersion struct {
 // Example: A newer assignment to the same field makes an older locator stale.
 func legacyCorrectionHasNoInterveningUpdate(
 	update syncUpdate,
+	log []byte,
 	lines [][]byte,
 	line int,
 	priorOrdinal int,
@@ -172,7 +177,7 @@ func legacyCorrectionHasNoInterveningUpdate(
 		if index == line-1 {
 			end = currentOrdinal
 		}
-		valid, known := legacyCorrectionInterveningFields(update, event.Event, index+1, start, priorOrdinal, &latest, event.Details.StatusUpdate.Updates[start:end])
+		valid, known := legacyCorrectionInterveningFields(update, log, event.Event, index+1, start, priorOrdinal, &latest, event.Details.StatusUpdate.Updates[start:end])
 		if !valid || !known {
 			return valid, known
 		}
@@ -185,6 +190,7 @@ func legacyCorrectionHasNoInterveningUpdate(
 // Example: A later owner assignment supersedes an earlier assignment.
 func legacyCorrectionInterveningFields(
 	update syncUpdate,
+	log []byte,
 	eventName string,
 	line int,
 	startOrdinal int,
@@ -197,7 +203,7 @@ func legacyCorrectionInterveningFields(
 			return false, false
 		}
 		if !legacyCorrectionPriorMatches(update, candidate) {
-			known := legacyObserveNarrativeVersion(update, candidate, eventName, line, startOrdinal+offset, latest)
+			known := legacyObserveNarrativeVersion(update, candidate, log, eventName, line, startOrdinal+offset, latest)
 			if !known {
 				return false, false
 			}
@@ -221,6 +227,7 @@ func legacyCorrectionInterveningFields(
 func legacyObserveNarrativeVersion(
 	pending syncUpdate,
 	candidate syncUpdate,
+	log []byte,
 	eventName string,
 	line int,
 	ordinal int,
@@ -233,7 +240,14 @@ func legacyObserveNarrativeVersion(
 		if eventName != "correction" || !syncCorrectionLocatorPrecedes(candidate, line, ordinal) {
 			return true
 		}
-		return false
+		valid, known := legacyCorrectionLocatorValid(syncPending{Line: line, Update: candidate}, log)
+		if !known {
+			return false
+		}
+		if valid {
+			*latest = legacyNarrativeVersion{line: line, ordinal: ordinal}
+		}
+		return true
 	}
 	if legacyInterveningUpdateEligible(candidate, eventName, line, ordinal, latest.line, latest.ordinal) {
 		*latest = legacyNarrativeVersion{line: line, ordinal: ordinal}
@@ -258,7 +272,7 @@ func legacyInterveningUpdateEligible(
 	if eventName != "correction" {
 		return update.Corrects == 0 && !update.Retract && (validSyncUpdate(update) || validNarrativeSyncUpdate(update) || validStructuredSyncUpdate(update) || validLaneSyncUpdate(update) || validRootRetirementSyncUpdate(update))
 	}
-	if update.Corrects != priorLine {
+	if update.Corrects <= 0 || update.Corrects != priorLine {
 		return false
 	}
 	actualOrdinal := 0
