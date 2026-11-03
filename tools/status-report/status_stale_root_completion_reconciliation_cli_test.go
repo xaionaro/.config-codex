@@ -15,6 +15,9 @@ import (
 //
 // Example: A stale completion must be replaced with the active root forecast.
 func TestStaleRootCompletionIsReportedInCLI(t *testing.T) {
+	// firstLane is the existing lane projection converted to a root in this fixture.
+	//
+	// Example: Remove it before adding the stale root completion.
 	const firstLane = `  - task_id: '1'
     work_ref: 'project-understanding.yaml#/records/work:first'
     outcome: First result
@@ -24,7 +27,13 @@ func TestStaleRootCompletionIsReportedInCLI(t *testing.T) {
     prod_status: NEW
     forecast: {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}
 `
+	// completion is the stale report projection for the reopened root.
+	//
+	// Example: Validation identifies this completion as inconsistent with active work.
 	const completion = "root_completions:\n  - {work_ref: 'project-understanding.yaml#/records/work:first', outcome: First result, completed_at: '2026-11-02T15:00:00Z'}\n"
+	// rootForecast is the active projection supported by the canonical forecast.
+	//
+	// Example: Replace the stale completion to reconcile the report.
 	const rootForecast = "root_forecasts:\n  - {forecast_ref: 'forecasts.yaml#/records/first', outcome: First result, target: '2026-11-02T16:00:00Z', assessment: complete, baseline: '2026-11-02T16:00:00Z', evidence: initial}\n"
 	report := strings.Replace(linkedReport, firstLane, "", 1) + completion
 	require.NotEqual(t, linkedReport+completion, report)
