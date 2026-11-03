@@ -38,7 +38,7 @@ func buildTaskWorkIndex(
 		}
 	}
 	for _, leaf := range tasks {
-		if !parents[leaf.ID] && leaf.Status != statusClosed {
+		if !parents[leaf.ID] && leaf.Status != statusClosed && leaf.Lifecycle != taskLifecycleCancelled {
 			index.reportOpen = true
 			index.reportPriorities[leaf.Priority] = true
 		}
@@ -104,7 +104,7 @@ func (i taskWorkIndex) includeLeaf(
 		return
 	}
 	i.leafLinked[leaf.ID] = true
-	if leaf.Status == statusClosed {
+	if leaf.Status == statusClosed || leaf.Lifecycle == taskLifecycleCancelled {
 		return
 	}
 	i.remaining[id] = true

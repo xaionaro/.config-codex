@@ -100,6 +100,7 @@ type task struct {
 	ImpactBasis       string        `yaml:"impact_basis"`
 	Effort            estimate      `yaml:"effort"`
 	Status            workStatus    `yaml:"status"`
+	Lifecycle         taskLifecycle `yaml:"lifecycle"`
 	Evidence          string        `yaml:"evidence"`
 	IndivisibleReason string        `yaml:"indivisible_reason"`
 }
@@ -188,6 +189,9 @@ func parse(data []byte) (report, error) {
 		}
 		byID[t.ID] = t
 
+		if t.Lifecycle == taskLifecycleCancelled && (t.Status != statusUnknown || strings.TrimSpace(t.Evidence) == "") {
+			return r, fmt.Errorf("task %s: cancelled requires unknown status and cancellation evidence", t.ID)
+		}
 		if t.Status == statusClosed && strings.TrimSpace(t.Evidence) == "" {
 			return r, fmt.Errorf("task %s: CLOSED requires acceptance evidence", t.ID)
 		}
@@ -198,6 +202,9 @@ func parse(data []byte) (report, error) {
 		}
 		if t.ParentID != "" {
 			children[t.ParentID]++
+			if byID[t.ParentID].Lifecycle == taskLifecycleCancelled && t.Lifecycle != taskLifecycleCancelled && t.Status != statusClosed {
+				r.Incomplete = append(r.Incomplete, fmt.Sprintf("cancelled task %s has nonterminal child %s", t.ParentID, t.ID))
+			}
 		}
 	}
 	for _, t := range r.Tasks {
@@ -266,10 +273,16 @@ func render(r report) string {
 	}
 	fmt.Fprintln(&b, "Calculated priority: impact points / maximum remaining work minutes; unscored positions are preserved.")
 	fmt.Fprintln(&b, "Top priorities:")
-	if len(r.TopPriorities) == 0 {
+	activeTop := make([]taskID, 0, len(r.TopPriorities))
+	for _, id := range r.TopPriorities {
+		if byID[id].Lifecycle != taskLifecycleCancelled || len(children[id]) > 0 {
+			activeTop = append(activeTop, id)
+		}
+	}
+	if len(activeTop) == 0 {
 		fmt.Fprintln(&b, "- unknown / none identified")
 	}
-	for _, id := range orderTaskIDs(r.TopPriorities, byID, r.ImpactScale) {
+	for _, id := range orderTaskIDs(activeTop, byID, r.ImpactScale) {
 		writeTaskLine(&b, byID[id], "", r.ImpactScale)
 	}
 	fmt.Fprintln(&b, "\nFull task tree:")
@@ -278,6 +291,9 @@ func render(r report) string {
 	var unscored, covered, oversized []string
 	for _, t := range r.Tasks {
 		if len(children[t.ID]) > 0 {
+			continue
+		}
+		if t.Lifecycle == taskLifecycleCancelled {
 			continue
 		}
 		if *t.Effort.MaxMinutes > maxLeafMinutes {
@@ -448,7 +464,7 @@ func runAt(
 		fmt.Fprintln(errOut, "status-report:", err)
 		return 1
 	}
-	r.Incomplete = reconcileAt(r, sessionDir, evaluation)
+	r.Incomplete = append(r.Incomplete, reconcileAt(r, sessionDir, evaluation)...)
 	payload := render(r)
 	if command == "validate" {
 		payload = "Schema valid; source reconciliation complete; source freshness unverified (does not verify factual truth or reviewer independence).\n"
@@ -527,6 +543,9 @@ func writeTaskLine(
 	scale string,
 ) {
 	fmt.Fprintf(b, "%s- %s %s | priority group: %s | impact: %s | effort: %g–%g minutes %s (%s) | status: %s", indent, t.ID, t.Title, t.Priority, t.Impact, *t.Effort.MinMinutes, *t.Effort.MaxMinutes, t.Effort.Kind, t.Effort.Basis, t.Status.String())
+	if t.Lifecycle == taskLifecycleCancelled {
+		fmt.Fprint(b, " | lifecycle: cancelled")
+	}
 	fmt.Fprintf(b, " | calculated priority: %s", priorityText(t, scale))
 	if t.Owner != "" {
 		fmt.Fprintf(b, " | owner: %s", t.Owner)

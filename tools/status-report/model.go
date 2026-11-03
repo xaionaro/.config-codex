@@ -344,3 +344,27 @@ func checkEnumScalar(node *yaml.Node) error {
 	}
 	return nil
 }
+
+// taskLifecycle identifies an optional task cancellation marker.
+type taskLifecycle int
+
+const (
+	taskLifecycleNone taskLifecycle = iota
+	taskLifecycleCancelled
+)
+
+// UnmarshalYAML decodes supported task lifecycle markers.
+func (l *taskLifecycle) UnmarshalYAML(n *yaml.Node) error {
+	if err := checkEnumScalar(n); err != nil {
+		return err
+	}
+	switch n.Value {
+	case "":
+		*l = taskLifecycleNone
+	case "cancelled":
+		*l = taskLifecycleCancelled
+	default:
+		return fmt.Errorf("invalid task lifecycle %q", n.Value)
+	}
+	return nil
+}
