@@ -104,11 +104,12 @@ func verifyStatusSyncCanonicalEffects(
 	ledger ledgerSource,
 	forecasts forecastSource,
 ) error {
-	var before, after map[string]any
-	if err := yaml.Unmarshal(original, &before); err != nil {
+	before, err := decodeSyncVerificationReport(original)
+	if err != nil {
 		return err
 	}
-	if err := yaml.Unmarshal(candidate, &after); err != nil {
+	after, err := decodeSyncVerificationReport(candidate)
+	if err != nil {
 		return err
 	}
 	for _, effect := range effects {
@@ -243,6 +244,9 @@ func verifyStatusSyncEffects(
 	candidate []byte,
 	effects []syncEffect,
 ) error {
+	if err := verifyTaskIdentityStyles(original, candidate); err != nil {
+		return err
+	}
 	beforeComments, err := yamlComments(original)
 	if err != nil {
 		return err
@@ -254,11 +258,12 @@ func verifyStatusSyncEffects(
 	if !reflect.DeepEqual(beforeComments, afterComments) {
 		return fmt.Errorf("status sync would change YAML comments")
 	}
-	var before, after map[string]any
-	if err := yaml.Unmarshal(original, &before); err != nil {
+	before, err := decodeSyncVerificationReport(original)
+	if err != nil {
 		return err
 	}
-	if err := yaml.Unmarshal(candidate, &after); err != nil {
+	after, err := decodeSyncVerificationReport(candidate)
+	if err != nil {
 		return err
 	}
 	for _, effect := range effects {
@@ -740,8 +745,8 @@ func verifyPriorityRetirementEffects(
 	original []byte,
 	effects []syncEffect,
 ) error {
-	var report map[string]any
-	if err := yaml.Unmarshal(original, &report); err != nil {
+	report, err := decodeSyncVerificationReport(original)
+	if err != nil {
 		return err
 	}
 	for _, removal := range effects {
