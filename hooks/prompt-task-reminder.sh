@@ -43,7 +43,7 @@ while IFS= read -r clause; do
     reminder=true
     break
   fi
-done < <(printf '%s\n' "$normalized_prompt" | sed -E 's/[,;.!?]/\n/g; s/[[:space:]]+then[[:space:]]+/\n/g')
+done < <(printf '%s\n' "$normalized_prompt" | sed -E 's/[,;.!?]/\n/g; s/[[:space:]]+(then|and)[[:space:]]+/\n/g')
 if [[ "$reminder" == true ]]; then
   jq -n '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:"For the requested status report, load writing-status-reports; reconcile YAML, validate, render with status-report render, and publish the full rendered result. Correct known missing sections in YAML and rerender; use the documented incomplete fallback only if structural failure prevents rendering."}}'
 fi
