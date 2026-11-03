@@ -450,6 +450,14 @@ func applyPendingSyncGroups(
 		previous := syncGroupPriorValues(*state, update)
 		candidate, changes, ok := applySyncGroup(data, update, ledger, forecasts, previous)
 		if !ok {
+			corrected, correctionEffects, correctionKey, applied := applyPendingLaneCorrection(data, state, update, group, keys, ledger, forecasts)
+			if applied {
+				data = corrected
+				effects = append(effects, correctionEffects...)
+				delete(state.Groups, key)
+				delete(state.Groups, correctionKey)
+				continue
+			}
 			if staleLaneTransitionReplaced(data, *state, update, group, keys, ledger, forecasts) {
 				delete(state.Groups, key)
 				continue
