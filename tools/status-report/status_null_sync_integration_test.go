@@ -24,6 +24,8 @@ func TestNullStatusSyncBootstrapReplays(t *testing.T) {
 	for _, tc := range []struct{ name, input string }{
 		{"flow null", string(flow)},
 		{"flow empty", strings.Replace(string(flow), `"status_sync":null`, `"status_sync":`, 1)},
+		{"flow empty anchor", strings.Replace(string(flow), `"status_sync":null`, `"status_sync": &owner `, 1)},
+		{"flow empty tag", strings.Replace(string(flow), `"status_sync":null`, `"status_sync": !!null `, 1)},
 		{"block null", linkedReport + "status_sync: null # owner note\n"},
 		{"block tilde", linkedReport + "status_sync: ~ # owner note\n"},
 		{"block empty", linkedReport + "status_sync: # owner note\n"},
@@ -33,6 +35,14 @@ func TestNullStatusSyncBootstrapReplays(t *testing.T) {
 		{"tagged empty", linkedReport + "status_sync: !!null # owner note\n"},
 		{"anchored null", linkedReport + "status_sync: &owner null # owner note\n"},
 		{"tagged anchored null", linkedReport + "status_sync: !!null &owner null # owner note\n"},
+		{"multiline anchor", linkedReport + "status_sync: &owner\n  null # owner note\n"},
+		{"multiline tag", linkedReport + "status_sync: !!null\n  null # owner note\n"},
+		{"multiline tag anchor", linkedReport + "status_sync: !!null\n  &owner null # owner note\n"},
+		{"multiline CRLF", strings.ReplaceAll(linkedReport+"status_sync: !!null\n  &owner null # owner note\n", "\n", "\r\n")},
+		{"anchor at EOF", linkedReport + "status_sync: &owner"},
+		{"property comments", linkedReport + "status_sync: !!null # tag note\n  &owner # anchor note\n  null # owner note\n"},
+		{"quoted tag", linkedReport + "status_sync: !!null 'null' # owner note\n"},
+		{"double quoted tag", linkedReport + "status_sync: !!null \"null\" # owner note\n"},
 	} {
 		t.Run(tc.name,
 			// Replay one durable event and retain adjacent owner text.
@@ -54,6 +64,10 @@ func TestNullStatusSyncBootstrapReplays(t *testing.T) {
 				require.Equal(t, 1, parsed.StatusSync.Cursor)
 				if strings.Contains(tc.input, "# owner note") {
 					require.Contains(t, string(result), "# owner note")
+				}
+				if tc.name == "property comments" {
+					require.Contains(t, string(result), "# tag note")
+					require.Contains(t, string(result), "# anchor note")
 				}
 				if strings.Contains(tc.input, "\r\n") {
 					require.NotContains(t, strings.ReplaceAll(string(result), "\r\n", ""), "\n")

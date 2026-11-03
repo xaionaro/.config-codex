@@ -1357,10 +1357,7 @@ func syncMappingStart(
 		return 0, fmt.Errorf("unsupported anchored sync metadata")
 	}
 	start += len(prefix)
-	for start < len(data) && (data[start] == ' ' || data[start] == '\t') {
-		start++
-	}
-	return start, nil
+	return skipNullPropertyTrivia(data, start), nil
 }
 
 // replaceNullSyncState initializes explicitly or implicitly null replay metadata.
@@ -1400,31 +1397,102 @@ func replaceDecoratedNullSyncState(
 	state string,
 	start int,
 ) ([]byte, error) {
-	end := start
-	propertyEnd := start
-	for _, property := range strings.Fields(string(data[start:])) {
-		if property != "!!null" && property != "!<tag:yaml.org,2002:null>" && property != "&"+node.Anchor {
+	propertyEnd, tagStart, tagEnd, err := nullSyncPropertyBounds(data, node, start)
+	if err != nil {
+		return nil, err
+	}
+	valueStart, valueEnd := propertyEnd, propertyEnd
+	if node.Value == "" {
+		state = " " + state
+	} else {
+		valueStart = skipNullPropertyTrivia(data, propertyEnd)
+		valueEnd, err = nullSyncValueEnd(data, node, valueStart)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := append(append(append([]byte(nil), data[:valueStart]...), []byte(state)...), data[valueEnd:]...)
+	if tagStart >= 0 {
+		result = append(result[:tagStart], result[tagEnd:]...)
+	}
+	return result, nil
+}
+
+// skipNullPropertyTrivia locates the next YAML token without consuming owner comments.
+//
+// Example: An anchor followed by a comment and newline still precedes its value.
+func skipNullPropertyTrivia(
+	data []byte,
+	start int,
+) int {
+	for start < len(data) {
+		switch data[start] {
+		case ' ', '\t', '\r', '\n':
+			start++
+		case '#':
+			for start < len(data) && data[start] != '\n' {
+				start++
+			}
+		default:
+			return start
+		}
+	}
+	return start
+}
+
+// nullSyncPropertyBounds identifies the tag and anchor without consuming trivia.
+//
+// Example: A tag and anchor may occur on separate lines before null.
+func nullSyncPropertyBounds(
+	data []byte,
+	node *yaml.Node,
+	start int,
+) (int, int, int, error) {
+	end, tagStart, tagEnd := start, -1, -1
+	for {
+		pos := skipNullPropertyTrivia(data, end)
+		property := nullSyncPropertyAt(data[pos:], node.Anchor)
+		if property == "" {
 			break
 		}
-		if !strings.HasPrefix(string(data[end:]), property) {
-			return nil, fmt.Errorf("unsupported null metadata properties")
-		}
-		end += len(property)
-		propertyEnd = end
-		for end < len(data) && (data[end] == ' ' || data[end] == '\t') {
-			end++
+		end = pos + len(property)
+		if property[0] == '!' {
+			tagStart, tagEnd = pos, end
 		}
 	}
-	if node.Value != "" {
-		if !strings.HasPrefix(string(data[end:]), node.Value) {
-			return nil, fmt.Errorf("unsupported null metadata layout")
+	if end == start {
+		return 0, 0, 0, fmt.Errorf("unsupported null metadata properties")
+	}
+	return end, tagStart, tagEnd, nil
+}
+
+// nullSyncPropertyAt recognizes the original null tag or its retained anchor.
+//
+// Example: A long-form YAML null tag is removed before storing a mapping.
+func nullSyncPropertyAt(
+	data []byte,
+	anchor string,
+) string {
+	for _, candidate := range []string{"!!null", "!<tag:yaml.org,2002:null>", "&" + anchor} {
+		if candidate != "&" && strings.HasPrefix(string(data), candidate) {
+			return candidate
 		}
-		end += len(node.Value)
-	} else {
-		end = propertyEnd
 	}
-	if node.Anchor != "" {
-		state = "&" + node.Anchor + " " + state
+	return ""
+}
+
+// nullSyncValueEnd finds a supported explicit null scalar's final byte.
+//
+// Example: Tagged quoted null is replaced without consuming its comment.
+func nullSyncValueEnd(
+	data []byte,
+	node *yaml.Node,
+	start int,
+) (int, error) {
+	for _, spelling := range []string{node.Value, "'" + node.Value + "'", "\"" + node.Value + "\""} {
+		if strings.HasPrefix(string(data[start:]), spelling) {
+			return start + len(spelling), nil
+		}
 	}
-	return append(append(append([]byte(nil), data[:start]...), []byte(state)...), data[end:]...), nil
+	return 0, fmt.Errorf("unsupported null metadata layout")
 }
