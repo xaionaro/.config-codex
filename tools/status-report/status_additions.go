@@ -11,7 +11,10 @@ import (
 // applySyncAddition inserts a complete task or review without altering existing records.
 //
 // Example: A supplied task with a unique ID is appended to the task list.
-func applySyncAddition(data []byte, addition syncAddition) ([]byte, bool) {
+func applySyncAddition(
+	data []byte,
+	addition syncAddition,
+) ([]byte, bool) {
 	var record map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(addition.Record))
 	if decoder.Decode(&record) != nil || len(record) == 0 {
