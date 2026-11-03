@@ -397,7 +397,8 @@ func publishStatus(
 	}
 	for p, before := range inputs {
 		if before == nil {
-			_, err := os.Lstat(p)
+			// Match the read's resolved-target presence, including dangling links.
+			_, err := os.Stat(p)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
