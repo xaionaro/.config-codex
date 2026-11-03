@@ -426,7 +426,7 @@ func projectionReplacement(
 		if err != nil {
 			return scalarEdit{}, err
 		}
-		if bytes.Contains(data[start:end+1], []byte("#")) {
+		if yamlRangeHasComment(data, start, end+1) {
 			return scalarEdit{}, fmt.Errorf("source_projection contains comments; manual refresh required")
 		}
 		return scalarEdit{Start: reportByteOffset(start), End: reportByteOffset(end + 1), Value: value}, nil
@@ -435,7 +435,7 @@ func projectionReplacement(
 	if err != nil {
 		return scalarEdit{}, err
 	}
-	if bytes.Contains(data[start:end], []byte("#")) {
+	if yamlRangeHasComment(data, start, end) {
 		return scalarEdit{}, fmt.Errorf("source_projection contains comments; manual refresh required")
 	}
 	return scalarEdit{Start: reportByteOffset(start), End: reportByteOffset(end), Value: value + "\n"}, nil

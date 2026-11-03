@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goccy/go-yaml/lexer"
 	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
@@ -267,7 +266,7 @@ func retractNarrativeSync(
 			return data, false
 		}
 		end++
-		if narrativeRangeHasComment(data, start, end) {
+		if yamlRangeHasComment(data, start, end) {
 			return data, false
 		}
 		switch {
@@ -337,7 +336,7 @@ func retractBlockNarrative(
 			return data, false
 		}
 	}
-	if narrativeRangeHasComment(data, startOffset, endOffset) {
+	if yamlRangeHasComment(data, startOffset, endOffset) {
 		return data, false
 	}
 	replacement := []string{}
@@ -346,34 +345,4 @@ func retractBlockNarrative(
 	}
 	result := append(append(append([]string(nil), lines[:start]...), replacement...), lines[end:]...)
 	return []byte(strings.Join(result, "\n")), true
-}
-
-// narrativeRangeHasComment reports comment tokens within a proposed removal range.
-//
-// Example: A hash in a quoted record reference is not a YAML comment.
-func narrativeRangeHasComment(
-	data []byte,
-	start int,
-	end int,
-) bool {
-	tokens := lexer.Tokenize(string(data))
-	if tokens.InvalidToken() != nil {
-		return true
-	}
-	for _, tok := range tokens {
-		if tok.Type != token.CommentType {
-			continue
-		}
-		if tok.Position == nil {
-			return true
-		}
-		offset, err := yamlByteOffset(data, tok.Position.Line, tok.Position.Column)
-		if err != nil {
-			return true
-		}
-		if offset >= start && offset < end {
-			return true
-		}
-	}
-	return false
 }

@@ -251,3 +251,33 @@ func (d *flowDocument) indexDelimiter(
 	d.pairs[top.Offset] = flowPair{Opening: top.Opening, End: reportByteOffset(pos)}
 	return stack[:len(stack)-1], nil
 }
+
+// yamlRangeHasComment reports comment tokens within a proposed edit range.
+//
+// Example: A hash in a quoted record reference is not a YAML comment.
+func yamlRangeHasComment(
+	data []byte,
+	start int,
+	end int,
+) bool {
+	tokens := lexer.Tokenize(string(data))
+	if tokens.InvalidToken() != nil {
+		return true
+	}
+	for _, tok := range tokens {
+		if tok.Type != token.CommentType {
+			continue
+		}
+		if tok.Position == nil {
+			return true
+		}
+		offset, err := yamlByteOffset(data, tok.Position.Line, tok.Position.Column)
+		if err != nil {
+			return true
+		}
+		if offset >= start && offset < end {
+			return true
+		}
+	}
+	return false
+}
