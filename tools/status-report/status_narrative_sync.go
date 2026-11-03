@@ -170,11 +170,46 @@ func appendNarrativeEntry(
 		ending = "\r"
 	}
 	if insert == len(lines) && len(data) > 0 && data[len(data)-1] != '\n' {
+		if len(list.Content) > 0 {
+			preserveUnterminatedBlockScalar(lines, list.Content[len(list.Content)-1])
+		}
 		lines[insert-1] += ending
 		ending = ""
 	}
 	lines = append(lines[:insert], append([]string{indent + "- " + entry + ending}, lines[insert:]...)...)
 	return []byte(strings.Join(lines, "\n")), true
+}
+
+// preserveUnterminatedBlockScalar retains a scalar's value when adding a line at EOF.
+//
+// Example: A clipped literal without a final newline becomes explicitly stripped.
+func preserveUnterminatedBlockScalar(
+	lines []string,
+	item *yaml.Node,
+) {
+	if item.Kind != yaml.ScalarNode || item.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0 || strings.HasSuffix(item.Value, "\n") {
+		return
+	}
+	line := item.Line - 1
+	column := item.Column - 1
+	if line < 0 || line >= len(lines) || column < 0 || column >= len(lines[line]) {
+		return
+	}
+	header := lines[line]
+	end := column + 1
+	for end < len(header) && (header[end] == '+' || header[end] == '-' || header[end] >= '1' && header[end] <= '9') {
+		end++
+	}
+	modifiers := header[column+1 : end]
+	if strings.Contains(modifiers, "-") {
+		return
+	}
+	if strings.Contains(modifiers, "+") {
+		modifiers = strings.Replace(modifiers, "+", "-", 1)
+	} else {
+		modifiers += "-"
+	}
+	lines[line] = header[:column+1] + modifiers + header[end:]
 }
 
 // narrativeSyncItemOwned verifies that exactly one subject retains its managed text.

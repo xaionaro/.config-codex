@@ -160,3 +160,34 @@ func TestRetractionPreservesBlockScalarSurvivor(t *testing.T) {
 			})
 	}
 }
+
+// TestAppendAfterUnterminatedBlockScalarPreservesValue checks EOF replay.
+//
+// Example: A clipped literal without a final newline remains unchanged when appending.
+func TestAppendAfterUnterminatedBlockScalarPreservesValue(t *testing.T) {
+	for _, style := range []string{"|", ">", "|+", ">+", "|-", ">-", "|2 # owner note", ">+2 # owner note"} {
+		t.Run(style,
+			// check compares the existing value across the public projection.
+			//
+			// Example: An unterminated literal retains its value.
+			func(t *testing.T) {
+				input := strings.Replace(linkedReport, "progress: [Implementation started]\n", "", 1)
+				input = strings.ReplaceAll(input, "\n", "\r\n") + "progress:\r\n  - " + style + "\r\n    legacy scalar"
+				// event adds a separate managed progress item.
+				//
+				// Example: Replay a newly recorded work update.
+				const event = `{"event":"worker_progress","details":{"status_update":{"updates":[{"target":"progress","id":"one","fields":{"text":"new progress"}}]}}}` + "\n"
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(event), 0600))
+				result, _, err := projectLogStatus(dir, []byte(input), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				report, err := parse(result)
+				require.NoError(t, err)
+				require.Equal(t, []string{"legacy scalar", "new progress"}, report.Progress)
+				if strings.Contains(style, "# owner note") {
+					require.Contains(t, string(result), "# owner note\r\n")
+				}
+				require.NotContains(t, strings.ReplaceAll(string(result), "\r\n", ""), "\r")
+			})
+	}
+}
