@@ -874,7 +874,16 @@ func removeCancelledPriority(
 		return data, false
 	}
 	indent := len(lines[startLine]) - len(strings.TrimLeft(lines[startLine], " "))
-	value := strings.Repeat(" ", indent) + string(encoded) + "\n"
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "top_priorities" && indent < root.Content[i].Column+1 {
+			indent = root.Content[i].Column + 1
+		}
+	}
+	ending := "\n"
+	if bytes.Contains(data[start:end], []byte("\r\n")) {
+		ending = "\r\n"
+	}
+	value := strings.Repeat(" ", indent) + string(encoded) + ending
 	return append(append(append([]byte(nil), data[:start]...), []byte(value)...), data[end:]...), true
 }
 

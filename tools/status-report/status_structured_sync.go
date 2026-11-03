@@ -264,11 +264,26 @@ func editStructuredField(
 			end = last + 1
 		} else {
 			var err error
-			end, _, err = blockMappingEnd(data, node)
+			if node.Kind == yaml.SequenceNode {
+				end, err = structuredBlockSequenceEnd(data, parent, field)
+				for i := 0; i+1 < len(parent.Content); i += 2 {
+					if parent.Content[i].Value == field && node.Column <= parent.Content[i].Column {
+						value = "  " + value
+					}
+				}
+			} else {
+				end, _, err = blockMappingEnd(data, node)
+			}
 			if err != nil {
 				return data, false
 			}
+			if end < start || end > len(data) {
+				return data, false
+			}
 			suffix = "\n"
+			if bytes.Contains(data[start:end], []byte("\r\n")) {
+				suffix = "\r\n"
+			}
 		}
 	default:
 		return data, false
@@ -277,6 +292,21 @@ func editStructuredField(
 		return data, false
 	}
 	return append(append(append([]byte(nil), data[:start]...), []byte(value+suffix)...), data[end:]...), true
+}
+
+// structuredBlockSequenceEnd locates the next field or containing mapping boundary.
+//
+// Example: An indentless sequence ends before the next top-level field.
+func structuredBlockSequenceEnd(
+	data []byte,
+	parent *yaml.Node,
+	field string,
+) (int, error) {
+	if next := nextMappingFieldLine(parent, field); next > 0 {
+		return yamlByteOffset(data, next, 1)
+	}
+	end, _, err := blockMappingEnd(data, parent)
+	return end, err
 }
 
 // clearStructuredField removes a comment-free mapping entry.
