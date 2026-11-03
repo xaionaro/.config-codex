@@ -71,6 +71,10 @@ const (
 	//
 	// Example: Retire an inactive forecast for cancelled root work.
 	syncEffectCancelledRootForecastRetire
+	// syncEffectRootCompletionCorrection replaces an explicitly matched completion.
+	//
+	// Example: Correct the canonical completion time of a root.
+	syncEffectRootCompletionCorrection
 )
 
 // syncEffect describes one authorized semantic report change.
@@ -104,6 +108,12 @@ func verifyStatusSyncCanonicalEffects(
 		return err
 	}
 	for _, effect := range effects {
+		if effect.Operation == syncEffectRootCompletionCorrection {
+			if err := verifyRootCompletionCorrection(before, effect, effects, ledger, forecasts); err != nil {
+				return err
+			}
+			continue
+		}
 		if effect.Target == syncTargetLane && effect.Operation == syncEffectSet && effect.Field == "completed_at" {
 			if err := verifyLaneCompletionTime(after, effect, ledger); err != nil {
 				return err
@@ -262,6 +272,9 @@ func applyExpectedSyncEffect(
 	effect syncEffect,
 ) error {
 	switch effect.Operation {
+	case syncEffectRootCompletionCorrection:
+		effect.Operation = syncEffectRemove
+		return applyExpectedSyncEffect(root, effect)
 	case syncEffectCancelledRootForecastRetire:
 		update, ok := effect.Value.(syncUpdate)
 		if !ok {
@@ -912,4 +925,52 @@ func verifyCancelledRootForecastRetirement(before map[string]any, effect syncEff
 		return fmt.Errorf("root forecast prior mismatch")
 	}
 	return nil
+}
+
+// verifyRootCompletionCorrection checks the exact prior and source-backed replacement.
+//
+// Example: Reject a completion correction whose timestamp differs from canonical work.
+func verifyRootCompletionCorrection(before map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
+	addition, ok := effect.Value.(syncAddition)
+	if !ok || effect.Target != syncTargetRootCompletion || addition.Target != effect.Target || strings.TrimSpace(addition.Evidence) == "" || addition.Evidence != effect.Evidence || addition.RetireForecast || addition.ReopenWorkRef != "" {
+		return fmt.Errorf("invalid root completion correction")
+	}
+	var record struct {
+		WorkRef string `json:"work_ref"`
+	}
+	if json.Unmarshal(addition.Record, &record) != nil || record.WorkRef != effect.ID {
+		return fmt.Errorf("root completion correction identity mismatch")
+	}
+	items, ok := before["root_completions"].([]any)
+	if !ok {
+		return fmt.Errorf("root completion prior missing")
+	}
+	index, err := syncEffectIndex(items, "work_ref", effect)
+	if err != nil || index < 0 {
+		return fmt.Errorf("root completion prior ambiguous or missing")
+	}
+	encoded, err := json.Marshal(items[index])
+	if err != nil {
+		return err
+	}
+	var actual, prior any
+	if json.Unmarshal(encoded, &actual) != nil || json.Unmarshal(addition.ExpectedPrior, &prior) != nil || !reflect.DeepEqual(actual, prior) {
+		return fmt.Errorf("root completion prior mismatch")
+	}
+	matched := 0
+	for _, change := range effects {
+		raw, ok := change.Value.(json.RawMessage)
+		if change.Operation != syncEffectAdd || change.Target != effect.Target || change.ID != effect.ID || change.Evidence != effect.Evidence || !ok {
+			continue
+		}
+		var supplied, projected any
+		if json.Unmarshal(addition.Record, &supplied) != nil || json.Unmarshal(raw, &projected) != nil || !reflect.DeepEqual(supplied, projected) {
+			return fmt.Errorf("root completion replacement mismatch")
+		}
+		matched++
+	}
+	if matched != 1 {
+		return fmt.Errorf("root completion correction requires one replacement")
+	}
+	return verifyCanonicalSyncAddition(syncEffect{Target: effect.Target, Value: addition.Record, Evidence: addition.Evidence}, ledger, forecasts)
 }

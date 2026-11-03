@@ -347,3 +347,36 @@ func TestVerifyLaneCompletionTimeCorrectionChecksCanonicalWork(t *testing.T) {
 		t.Fatal("accepted active canonical work")
 	}
 }
+
+// TestVerifyRootCompletionCorrection checks exact prior and canonical replacement.
+//
+// Example: Reject a correction with an owner-edited prior record.
+func TestVerifyRootCompletionCorrection(t *testing.T) {
+	ref := "project-understanding.yaml#/records/w"
+	prior := json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`)
+	record := json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:05:00Z"}`)
+	original := []byte("root_completions: [" + string(prior) + "]\n")
+	candidate := []byte("root_completions: [" + string(record) + "]\n")
+	addition := syncAddition{Target: syncTargetRootCompletion, Record: record, ExpectedPrior: prior, Evidence: "corrected"}
+	effects := []syncEffect{{Target: syncTargetRootCompletion, ID: ref, Evidence: addition.Evidence, Value: addition, Operation: syncEffectRootCompletionCorrection}, {Target: syncTargetRootCompletion, ID: ref, Evidence: addition.Evidence, Value: record, Operation: syncEffectAdd}}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"w": {Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:05:00Z", Roles: []reportingRole{reportingRoleRoot}}}, "o": {Type: "outcome", Outcome: "Result"}}}
+	if err := verifyStatusSyncEffects(original, candidate, effects); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, effects, ledger, forecastSource{}); err != nil {
+		t.Fatal(err)
+	}
+	addition.ExpectedPrior = json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"wrong"}`)
+	effects[0].Value = addition
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, effects, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted wrong prior")
+	}
+	addition.ExpectedPrior = prior
+	effects[0].Value = addition
+	work := ledger.Records["w"]
+	work.Data.CompletedAt = "2026-11-02T15:06:00Z"
+	ledger.Records["w"] = work
+	if err := verifyStatusSyncCanonicalEffects(original, candidate, effects, ledger, forecastSource{}); err == nil {
+		t.Fatal("accepted noncanonical replacement time")
+	}
+}
