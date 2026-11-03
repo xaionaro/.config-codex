@@ -18,7 +18,7 @@ Use records, hashes, receipts, command spelling, and parser shape to diagnose or
 - For authored text, use the fewest words that preserve supported meaning and make it recoverable from local context. Keep distinctions whose omission permits a materially different reading. Preserve unknowns and unresolved alternatives. Carry needed context when reusing text.
 - Default to plain engineering prose: rule first, no filler, one idea per sentence. Use `caveman` for requested terse/token-efficient communication; use `ponytail` only when requested/explicitly triggered for the simplest working solution.
 - After each ECI compaction, refresh the structured YAML status report and print a proper status report to the user under `writing-status-reports`; compaction alone does not trigger queue-item critique. Resume safe work after reporting.
-- Treat short status queries—exact `status`, `sitrep`, `progress`, `checkpoint`, and equivalents—as requests for a current-state report. Load `writing-status-reports` and include state, progress, decisions, blockers/risks, verification, and next focus; use its multi-lane table when applicable. Never answer only “no new action” or a terse acknowledgment.
+- Treat short status queries and explicit requests for a status or progress report as requests for a current-state report. Load `writing-status-reports`; reconcile the YAML, validate, render, and publish the full rendered result. Include state, progress, decisions, blockers/risks, verification, next focus, and the multi-lane table when applicable. Correct known missing sections in the YAML and rerender; use its incomplete fallback only when structural failure prevents rendering.
 
 ## Project requirements
 

@@ -5,14 +5,31 @@
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LC_ALL=C
+input_file="$(mktemp)" || exit 0
+trap 'rm -f "$input_file"' EXIT
+head -c 65537 >"$input_file" || exit 0
+if (( $(wc -c <"$input_file") > 65536 )); then exit 0; fi
+prompt=$(jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' "$input_file" 2>/dev/null || true)
+normalized_prompt="${prompt,,}"
+if [[ "$normalized_prompt" =~ ^[[:space:]]*(status|sitrep|progress|checkpoint)[[:space:][:punct:]]*$ ]] ||
+   [[ "$normalized_prompt" =~ (give|show|provide|write|send|want|need|request|what.s|how.s|current).*(status|progress|sitrep|checkpoint).*(report|update) ]] ||
+   [[ "$normalized_prompt" =~ (give|show|provide|write|send|want|need|request|what.s|how.s).*(status|progress|sitrep|checkpoint)[[:space:][:punct:]]*$ ]] ||
+   [[ "$normalized_prompt" =~ ^[[:space:]]*(a[[:space:]]+)?(status|progress)[[:space:]]+report[[:punct:]]*([[:space:]]+please)?[[:space:][:punct:]]*$ ]]; then
+  jq -n '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:"For the requested status report, load writing-status-reports; reconcile YAML, validate, render with status-report render, and publish the full rendered result. Correct known missing sections in YAML and rerender; use the documented incomplete fallback only if structural failure prevents rendering."}}'
+fi
+
+# A capture failure must not discard the independent, nonblocking reminder.
+trap 'exit 0' ERR
+input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin <"$input_file")" || exit 0
+rm -f "$input_file"
+trap - EXIT
 . "$HOOK_DIR/lib/codex-proof-state.sh"
 . "$HOOK_DIR/lib/pre-reviewer-turn-state.sh"
 . "$HOOK_DIR/lib/reviewer-redact.sh"
 
-input="$(python3 "$HOOK_DIR/lib/bounded_hook_input.py" stdin)" || exit 0
 session_id=$(printf '%s' "$input" | jq -r 'if (.session_id? | type) == "string" then .session_id else "" end' 2>/dev/null || true)
 cwd=$(printf '%s' "$input" | jq -r 'if (.cwd? | type) == "string" then .cwd else "" end' 2>/dev/null || true)
-prompt=$(printf '%s' "$input" | jq -r 'if (.prompt? | type) == "string" then .prompt else "" end' 2>/dev/null || true)
 prompt_type=$(printf '%s' "$input" | jq -r '.prompt? | type' 2>/dev/null || true)
 turn_id_json="$(codex_hook_turn_id_json "$input")"
 root="$(codex_proof_root)"

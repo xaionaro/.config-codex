@@ -65,7 +65,7 @@ rather than implying the tree is complete.
 
 When newly time-estimated items enter the queue, have an independent critic review only those items' estimates, impact, and priority. The reporter repairs findings and requests another review as needed, for at most five reporter–critic rounds. Expose unresolved findings or unavailable review honestly. A report refresh, compaction, or recalibration of existing items alone does not trigger this review; do not critique the whole report under this rule.
 
-Present a separate top-priority list and the full task tree. Both refer to the same task records. Reconcile the structured YAML against current ledger and forecast evidence, then render it using the status-report tool as described in [Latest Status Report](../context-ledger/SKILL.md#latest-status-report), including when reconciliation is incomplete. Label missing, stale, inconsistent, or incomplete evidence and affected coverage incomplete. If structural failure prevents rendering, answer directly with supported facts, label the response incomplete, and repair the report alongside safe work.
+Present a separate top-priority list and the full task tree. Both refer to the same task records. Reconcile the structured YAML against current ledger and forecast evidence, validate it, then render and publish the full rendered result using the status-report tool as described in [Latest Status Report](../context-ledger/SKILL.md#latest-status-report). Validation may report incomplete evidence without preventing rendering. Correct missing known sections in the YAML and rerender before publication. Label missing, stale, inconsistent, or incomplete evidence and affected coverage incomplete. If structural failure prevents rendering, answer directly with supported facts, label the response incomplete, and repair the report alongside safe work.
 
 For an active multi-agent status report, show the recursive roster of actually
 active agents under their parent agents, including each agent's current task, owner or
@@ -79,7 +79,9 @@ ancestor only as labeled ancestry context, never as an active roster entry. Do n
 model or effort from a parent or a role.
 
 In every task list include priority,
-impact, and effort columns. Show the calculated priority and its input values;
+impact, and effort columns. Distinguish assigned impact points from calculated
+priority (impact points divided by maximum remaining work minutes). Show the
+calculated priority and its input values;
 include concrete impact and its score points. Priority labels group forecasts
 only; they do not rank work. Separately,
 give the estimated remaining work effort or elapsed duration with units and a
