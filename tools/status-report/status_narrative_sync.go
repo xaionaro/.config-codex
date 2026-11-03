@@ -200,9 +200,11 @@ func scalarAppendPosition(
 		return insert
 	}
 	insert = len(lines)
-	if next := nextMappingFieldLine(root, section); next > 0 {
+	next := nextMappingFieldLine(root, section)
+	switch {
+	case next > 0:
 		insert = next - 1
-	} else if lines[insert-1] == "" {
+	case lines[insert-1] == "":
 		insert--
 	}
 	indent := strings.Index(lines[last.Line-1], "- ")
