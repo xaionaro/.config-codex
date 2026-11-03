@@ -36,17 +36,17 @@ func applySyncAdditionGroup(
 			return data, false
 		}
 		switch addition.Target {
-		case "task":
+		case syncTargetTask:
 			tasks++
 			if json.Unmarshal(record["priority"], &taskPriority) != nil {
 				return data, false
 			}
-		case "priority_estimate":
+		case syncTargetPriorityEstimate:
 			estimates++
 			if json.Unmarshal(record["priority"], &estimatePriority) != nil {
 				return data, false
 			}
-		case "review":
+		case syncTargetReview:
 			reviews++
 		default:
 			return data, false
@@ -84,13 +84,13 @@ func insertSyncAddition(
 	var section, identity string
 	var required []string
 	switch addition.Target {
-	case "task":
+	case syncTargetTask:
 		section, identity = "tasks", "id"
 		required = []string{"id", "title", "priority", "impact", "effort", "status"}
-	case "review":
+	case syncTargetReview:
 		section, identity = "reviews", "task_id"
 		required = []string{"task_id", "reporter", "critic", "rounds", "estimate", "impact", "priority", "unresolved"}
-	case "priority_estimate":
+	case syncTargetPriorityEstimate:
 		section, identity = "priority_estimates", "priority"
 		required = []string{"priority", "as_of", "min_minutes", "max_minutes", "basis", "assumptions", "dependencies", "critical_path"}
 	default:
