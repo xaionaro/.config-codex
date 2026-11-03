@@ -14,6 +14,7 @@ func applyPendingLaneCorrection(
 	old syncUpdate,
 	oldGroup syncPendingGroup,
 	keys []string,
+	logBytes []byte,
 	ledger ledgerSource,
 	forecasts forecastSource,
 ) ([]byte, []syncEffect, string, bool) {
@@ -21,7 +22,7 @@ func applyPendingLaneCorrection(
 		return data, nil, "", false
 	}
 	status := old.RequiredEnvironment.String() + "_status"
-	if old.Fields[status] != "CLOSED" || old.Fields["completed_at"] == "" || len(old.Fields) != 2 {
+	if old.Fields[status] != "CLOSED" || old.Fields["completed_at"] == "" {
 		return data, nil, "", false
 	}
 	work, ok := ledger.Records[sourceID(old.WorkRef, "project-understanding.yaml")]
@@ -62,6 +63,9 @@ func applyPendingLaneCorrection(
 			effects[i].Evidence = syncGroupEvidence(next)
 		}
 		if verifyStatusSyncCanonicalEffects(data, candidate, effects, ledger, forecasts) != nil {
+			return data, nil, "", false
+		}
+		if verifyPendingLaneCorrection(data, candidate, oldGroup, group, effects, syncGroupPriorValues(*state, next), logBytes, ledger, forecasts) != nil {
 			return data, nil, "", false
 		}
 		values, ok := syncGroupAppliedValues(candidate, next)

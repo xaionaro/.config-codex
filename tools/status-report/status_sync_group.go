@@ -457,7 +457,7 @@ func applyPendingSyncGroups(
 				effects = append(effects, chainEffects...)
 				continue
 			}
-			corrected, correctionEffects, correctionKey, applied := applyPendingLaneCorrection(data, state, update, group, keys, ledger, forecasts)
+			corrected, correctionEffects, correctionKey, applied := applyPendingLaneCorrection(data, state, update, group, keys, fullLog, ledger, forecasts)
 			if applied {
 				data = corrected
 				effects = append(effects, correctionEffects...)

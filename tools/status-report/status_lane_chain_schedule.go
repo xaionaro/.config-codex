@@ -72,7 +72,7 @@ func applyPendingLaneLifecycleChain(
 	if !ok {
 		return data, nil, false
 	}
-	if verifyLaneLifecycleChain(data, candidate, selected, effects, provenance, previous, logBytes, ledger, forecasts) != nil {
+	if verifyLaneLifecycleChain(data, candidate, selected, effects, provenance, previous, logBytes, ledger, forecasts, state) != nil {
 		return data, nil, false
 	}
 	valuesByField := map[string]string{}

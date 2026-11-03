@@ -36,16 +36,22 @@ type syncUpdate struct {
 //
 // Example: Read an explicitly supplied status update from a decision event.
 type syncEvent struct {
-	Event     string `json:"event"`
-	Timestamp string `json:"timestamp"`
-	Details   struct {
-		Corrects     json.RawMessage `json:"corrects"`
-		StatusUpdate *struct {
-			Updates   []syncUpdate          `json:"updates"`
-			Additions []syncAddition        `json:"additions"`
-			Timeline  *syncTimelineSnapshot `json:"timeline"`
-		} `json:"status_update"`
+	Event         string `json:"event"`
+	Timestamp     string `json:"timestamp"`
+	InvalidStatus bool   `json:"-"`
+	Details       struct {
+		Corrects     json.RawMessage        `json:"corrects"`
+		StatusUpdate *syncEventStatusUpdate `json:"status_update"`
 	} `json:"details"`
+}
+
+// syncEventStatusUpdate holds typed projection items from a log event.
+//
+// Example: Retain valid updates alongside malformed sibling entries.
+type syncEventStatusUpdate struct {
+	Updates   []syncUpdate          `json:"updates"`
+	Additions []syncAddition        `json:"additions"`
+	Timeline  *syncTimelineSnapshot `json:"timeline"`
 }
 
 // syncAddition carries a complete record to insert into the report.
@@ -297,8 +303,10 @@ func projectLogStatusStep(
 			continue
 		}
 		if event.Details.StatusUpdate == nil {
+			invalidUpdate = invalidUpdate || event.InvalidStatus
 			continue
 		}
+		invalidUpdate = invalidUpdate || event.InvalidStatus
 		if _, err := parseUTC(event.Timestamp); err == nil {
 			if latestTimestamp == "" {
 				latestTimestamp = event.Timestamp
