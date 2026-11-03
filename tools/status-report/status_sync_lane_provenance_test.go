@@ -111,3 +111,40 @@ func TestLaneChainProvenanceRepeatedTransitions(t *testing.T) {
 		t.Fatal("accepted altered intermediate cancellation")
 	}
 }
+
+// TestLaneChainProvenanceReclosed verifies retained fields from an earlier closure.
+//
+// Example: A reopening preserves context supplied by the preceding closure.
+func TestLaneChainProvenanceReclosed(t *testing.T) {
+	lines := []string{
+		`{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"first accepted","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:25:00Z","context":"retained"}}]}}}`,
+		`{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"reopened","fields":{"implementation_status":"PAUSED","blocker":"waiting"}}]}}}`,
+		`{"event":"lifecycle_change","details":{"status_update":{"updates":[{"target":"lane","id":"1","work_ref":"project-understanding.yaml#/records/work:first","required_environment":"implementation","evidence":"accepted","fields":{"implementation_status":"CLOSED","completed_at":"2026-11-02T15:45:00Z"}}]}}}`,
+	}
+	var groups []syncPendingGroup
+	for i, line := range lines {
+		var event syncEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := encodeSyncGroup(event.Details.StatusUpdate.Updates[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, syncPendingGroup{Line: i + 1, Update: encoded})
+	}
+	ledger := ledgerSource{Records: map[string]sourceRecord{"work:first": {Type: "work", Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:45:00Z", ForecastRef: "forecasts.yaml#/records/first"}}}}
+	forecasts := forecastSource{Records: map[string]map[string]any{"first": {"kind": "lane", "status": "inactive"}}}
+	candidate, effects, provenance, ok := planLaneLifecycleChain([]byte(linkedReport), groups, ledger, forecasts, nil)
+	if !ok {
+		t.Fatal("planner rejected reclosure")
+	}
+	log := []byte(strings.Join(lines, "\n") + "\n")
+	if err := verifyLaneLifecycleChain([]byte(linkedReport), candidate, groups, effects, provenance, nil, log, ledger, forecasts); err != nil {
+		t.Fatal(err)
+	}
+	lines[0] = strings.Replace(lines[0], "retained", "altered", 1)
+	if err := verifyLaneLifecycleChain([]byte(linkedReport), candidate, groups, effects, provenance, nil, []byte(strings.Join(lines, "\n")), ledger, forecasts); err == nil {
+		t.Fatal("accepted altered earlier closure")
+	}
+}

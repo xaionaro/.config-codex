@@ -57,6 +57,8 @@ func verifyLaneLifecycleChain(
 	values := map[string]string{}
 	cleared := map[string]bool{}
 	cancelled := mapValue(lane, "lifecycle") != nil && mapValue(lane, "lifecycle").Value == "cancelled"
+	statusField := first.RequiredEnvironment.String() + "_status"
+	closed := mapValue(lane, statusField) != nil && mapValue(lane, statusField).Value == "CLOSED"
 	reactivated := false
 	for i, group := range groups {
 		if group.Line < 1 || group.Line > len(lines) || group.Ordinal < 0 || (i > 0 && (group.Line < groups[i-1].Line || (group.Line == groups[i-1].Line && group.Ordinal <= groups[i-1].Ordinal))) {
@@ -74,14 +76,26 @@ func verifyLaneLifecycleChain(
 			return fmt.Errorf("chain update differs from log")
 		}
 		status := update.RequiredEnvironment.String() + "_status"
-		if i < len(groups)-1 && (update.Fields[status] == "CLOSED" || update.Fields["completed_at"] != "") {
-			return fmt.Errorf("intermediate completion")
-		}
 		if i == len(groups)-1 && (update.Fields[status] != "CLOSED" || update.Fields["completed_at"] == "" || strings.TrimSpace(update.Evidence) == "") {
 			return fmt.Errorf("final update lacks completion")
 		}
 		if update.Fields["lifecycle"] == "cancelled" && cancelled {
 			return fmt.Errorf("invalid cancellation transition")
+		}
+		if value, supplied := update.Fields[status]; supplied {
+			if value == "CLOSED" {
+				if cancelled || closed || update.Fields["completed_at"] == "" || strings.TrimSpace(update.Evidence) == "" {
+					return fmt.Errorf("invalid completion transition")
+				}
+				closed = true
+			}
+			if value != "CLOSED" && closed {
+				if strings.TrimSpace(update.Evidence) == "" {
+					return fmt.Errorf("reopening lacks evidence")
+				}
+				closed = false
+				reactivated = true
+			}
 		}
 		for _, field := range syncGroupFields(update) {
 			prior, seen := owned[field]
@@ -143,8 +157,7 @@ func verifyLaneLifecycleChain(
 			}
 		}
 	}
-	status := first.RequiredEnvironment.String() + "_status"
-	if cancelled || !reactivated || values[status] != "CLOSED" || values["completed_at"] == "" {
+	if cancelled || !reactivated || values[statusField] != "CLOSED" || values["completed_at"] == "" {
 		return fmt.Errorf("chain lacks final completion")
 	}
 	if _, ok := provenance["forecast"]; ok {
