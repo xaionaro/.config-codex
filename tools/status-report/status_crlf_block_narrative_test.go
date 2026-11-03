@@ -103,7 +103,11 @@ func TestCRLFMultilineNarrativeRetractionKeepsFinalBoundary(t *testing.T) {
 		{"unterminated", "progress:\r\n  - subject_ref: one\r\n    text: done", "progress:\r\n  []"},
 		{"terminated", "progress:\r\n  - subject_ref: one\r\n    text: done\r\n", "progress:\r\n  []\r\n"},
 		{"following field", "progress:\r\n  - subject_ref: one\r\n    text: done\r\ndecisions: []\r\n", "progress:\r\n  []\r\ndecisions: []\r\n"},
+		{"indentless", "progress:\r\n- subject_ref: one\r\n  text: done", "progress:\r\n  []"},
 	} {
+		// run checks that the emptied list remains valid at each boundary.
+		//
+		// Example: An unterminated item leaves no stray carriage return.
 		t.Run(tc.name, func(t *testing.T) {
 			out, ok := retractNarrativeSync([]byte(tc.input), syncUpdate{Target: syncTargetProgress, ID: "one"}, "done", true, "", false)
 			require.True(t, ok)

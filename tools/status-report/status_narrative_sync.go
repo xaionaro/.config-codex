@@ -357,7 +357,14 @@ func retractBlockNarrative(
 		if end > start && strings.HasSuffix(lines[end-1], "\r") {
 			ending = "\r"
 		}
-		replacement = []string{lines[start][:dash] + "[]" + ending}
+		indent := lines[start][:dash]
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == section && len(indent) < root.Content[i].Column {
+				indent = strings.Repeat(" ", root.Content[i].Column+1)
+				break
+			}
+		}
+		replacement = []string{indent + "[]" + ending}
 	}
 	result := append(append(append([]string(nil), lines[:start]...), replacement...), lines[end:]...)
 	return []byte(strings.Join(result, "\n")), true
