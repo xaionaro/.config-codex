@@ -76,6 +76,10 @@ const (
 	//
 	// Example: Correct the canonical completion time of a root.
 	syncEffectRootCompletionCorrection
+	// syncEffectRootForecastReplace replaces an explicitly matched root forecast.
+	//
+	// Example: Publish the final forecast after a delayed lifecycle chain.
+	syncEffectRootForecastReplace
 )
 
 // syncEffect describes one authorized semantic report change.
@@ -273,6 +277,9 @@ func applyExpectedSyncEffect(
 	effect syncEffect,
 ) error {
 	switch effect.Operation {
+	case syncEffectRootForecastReplace:
+		effect.Operation = syncEffectRemove
+		return applyExpectedSyncEffect(root, effect)
 	case syncEffectRootCompletionCorrection:
 		effect.Operation = syncEffectRemove
 		return applyExpectedSyncEffect(root, effect)
