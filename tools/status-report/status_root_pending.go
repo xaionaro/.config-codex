@@ -109,8 +109,32 @@ func queueRootAddition(
 	if _, exists := pending[key]; exists {
 		return false
 	}
+	var ok bool
+	addition.Record, ok = canonicalPendingRootJSON(addition.Record)
+	if !ok {
+		return false
+	}
+	addition.ExpectedPrior, ok = canonicalPendingRootJSON(addition.ExpectedPrior)
+	if !ok {
+		return false
+	}
 	pending[key] = syncPendingRootAddition{Locator: rootLifecycleLocator{Line: line, Ordinal: ordinal, Target: addition.Target}, Addition: addition}
 	return true
+}
+
+// canonicalPendingRootJSON matches the encoding used when persisted YAML is read.
+//
+// Example: A queued record keeps stable object ordering across retries.
+func canonicalPendingRootJSON(raw json.RawMessage) (json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(raw, &doc) != nil || len(doc.Content) != 1 {
+		return nil, false
+	}
+	encoded, err := rootPendingJSON(doc.Content[0])
+	return encoded, err == nil
 }
 
 // migratePendingRootAdditions moves legacy entries only when their exact log occurrence is unique.
