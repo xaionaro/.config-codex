@@ -89,7 +89,7 @@ func staleLaneTransitionReplaced(
 					}
 					for i := range effects {
 						effects[i].Evidence = syncGroupEvidence(next)
-						if effects[i].Operation != syncEffectSet {
+						if effects[i].Operation != syncEffectSet && effects[i].Operation != syncEffectClear {
 							return false
 						}
 					}
