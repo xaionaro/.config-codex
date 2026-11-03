@@ -154,7 +154,7 @@ func legacyCorrectionHasNoInterveningUpdate(
 		if index == line-1 {
 			end = currentOrdinal
 		}
-		valid, known := legacyCorrectionInterveningFields(update, event.Details.StatusUpdate.Updates[start:end])
+		valid, known := legacyCorrectionInterveningFields(update, event.Event, index+1, start, priorOrdinal, event.Details.StatusUpdate.Updates[start:end])
 		if !valid || !known {
 			return valid, known
 		}
@@ -167,17 +167,61 @@ func legacyCorrectionHasNoInterveningUpdate(
 // Example: A later owner assignment supersedes an earlier assignment.
 func legacyCorrectionInterveningFields(
 	update syncUpdate,
+	eventName string,
+	line int,
+	startOrdinal int,
+	priorOrdinal int,
 	intervening []syncUpdate,
 ) (bool, bool) {
-	for _, candidate := range intervening {
+	for offset, candidate := range intervening {
 		if candidate.Target == syncTargetUnknown {
 			return false, false
 		}
-		if legacyCorrectionPriorMatches(update, candidate) {
-			return false, true
+		if !legacyCorrectionPriorMatches(update, candidate) {
+			continue
 		}
+		if !legacyInterveningUpdateEligible(candidate, eventName, line, startOrdinal+offset, update.Corrects, priorOrdinal) {
+			continue
+		}
+		return false, true
 	}
 	return true, true
+}
+
+// legacyInterveningUpdateEligible excludes updates that fresh replay rejects.
+//
+// Example: A self-referencing correction cannot supersede an earlier owner.
+func legacyInterveningUpdateEligible(
+	update syncUpdate,
+	eventName string,
+	line int,
+	ordinal int,
+	priorLine int,
+	priorOrdinal int,
+) bool {
+	if !syncCorrectionLocatorPrecedes(update, line, ordinal) || !syncUpdateSelectorValid(update) {
+		return false
+	}
+	if eventName != "correction" {
+		return update.Corrects == 0 && !update.Retract && (validSyncUpdate(update) || validNarrativeSyncUpdate(update) || validStructuredSyncUpdate(update) || validLaneSyncUpdate(update) || validRootRetirementSyncUpdate(update))
+	}
+	if update.Corrects != priorLine {
+		return false
+	}
+	actualOrdinal := 0
+	if update.CorrectsOrdinal != nil {
+		actualOrdinal = *update.CorrectsOrdinal
+	}
+	if actualOrdinal != priorOrdinal {
+		return false
+	}
+	if update.Retract {
+		probe := update
+		probe.Fields = map[string]string{"text": "probe"}
+		probe.Retract = false
+		return len(update.Fields) == 0 && len(update.Values) == 0 && len(update.Clear) == 0 && validNarrativeSyncUpdate(probe)
+	}
+	return validSyncUpdate(update) || validNarrativeSyncUpdate(update) || validStructuredSyncUpdate(update) || validLaneSyncUpdate(update) || validRootRetirementSyncUpdate(update)
 }
 
 // legacyCorrectionPriorMatches checks that the named update owns the field.

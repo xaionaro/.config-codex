@@ -286,3 +286,43 @@ func TestLegacyEarlierCorrectionRequiresMatchingLatestPrior(t *testing.T) {
 			})
 	}
 }
+
+// TestLegacyCorrectionIgnoresInvalidInterveningUpdates compares fresh replay.
+//
+// Example: A self-referencing correction does not supersede the real prior owner.
+func TestLegacyCorrectionIgnoresInvalidInterveningUpdates(t *testing.T) {
+	for _, tc := range []struct {
+		name, event, update string
+	}{
+		{"self", "correction", `{"target":"task","id":"1","corrects":2,"fields":{"owner":"mistaken"}}`},
+		{"future", "correction", `{"target":"task","id":"1","corrects":3,"fields":{"owner":"mistaken"}}`},
+		{"wrong event", "decision", `{"target":"task","id":"1","corrects":1,"fields":{"owner":"mistaken"}}`},
+		{"invalid value", "decision", `{"target":"task","id":"1","fields":{"owner":"mistaken","status":"impossible"}}`},
+	} {
+		t.Run(tc.name,
+			// Compare a saved field with replay from the full immutable log.
+			//
+			// Example: Both paths keep the valid later correction.
+			func(t *testing.T) {
+				// saved retains the previously applied owner and pending correction.
+				//
+				// Example: A restart must match replay from the beginning.
+				const saved = `status_sync: {"cursor":3,"applied":{"[\"task\",\"1\",\"\",\"\"]/owner":"second"},"latest":{"[\"task\",\"1\",\"\",\"\"]/owner":3},"pending":{"[\"task\",\"1\",\"\",\"\"]/owner":{"line":3,"update":{"target":"task","id":"1","corrects":1,"fields":{"owner":"third"}}}}}`
+				log := `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"second"}}]}}}` + "\n" + `{"event":"` + tc.event + `","details":{"status_update":{"updates":[` + tc.update + `]}}}` + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"owner":"third"}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				fresh, _, err := projectLogStatus(dir, []byte(linkedReport), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				input := strings.Replace(linkedReport, "title: First,", `title: First, owner: second,`, 1) + saved + "\n"
+				replayed, _, err := projectLogStatus(dir, []byte(input), ledgerSource{}, forecastSource{})
+				require.NoError(t, err)
+				freshReport, err := parse(fresh)
+				require.NoError(t, err)
+				replayedReport, err := parse(replayed)
+				require.NoError(t, err)
+				require.Equal(t, "third", freshReport.Tasks[0].Owner)
+				require.Equal(t, freshReport.Tasks[0].Owner, replayedReport.Tasks[0].Owner)
+				require.Empty(t, replayedReport.StatusSync.Pending)
+			})
+	}
+}
