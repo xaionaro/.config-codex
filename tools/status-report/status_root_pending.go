@@ -182,7 +182,10 @@ func migratePendingRootAdditions(
 // legacyRootRecordMatchesReport checks an applied legacy record against its current owner-visible value.
 //
 // Example: An intact completion permits removal of redundant pending metadata.
-func legacyRootRecordMatchesReport(report []byte, old syncPendingAddition) bool {
+func legacyRootRecordMatchesReport(
+	report []byte,
+	old syncPendingAddition,
+) bool {
 	var doc yaml.Node
 	if yaml.Unmarshal(report, &doc) != nil || len(doc.Content) != 1 {
 		return false
