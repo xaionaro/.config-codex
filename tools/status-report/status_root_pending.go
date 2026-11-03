@@ -157,7 +157,11 @@ func migratePendingRootAdditions(
 			continue
 		}
 		if previous, exists := applied[key]; exists && rootChainJSONEqual([]byte(previous), []byte(old.Record)) {
-			if old.PriorLine == 0 && old.PriorRecord == "" && legacyRootRecordMatchesReport(report, old) {
+			lineageValid := old.PriorLine == 0 && old.PriorRecord == ""
+			if !lineageValid {
+				lineageValid = legacyAppliedRootCorrectionLineage(lines, old, event, match)
+			}
+			if lineageValid && legacyRootRecordMatchesReport(report, old) {
 				delete(legacy, key)
 				continue
 			}
