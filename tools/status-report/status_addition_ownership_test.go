@@ -51,6 +51,7 @@ func TestAdditionOwnershipMatchesTargetEncodings(t *testing.T) {
 		{syncTargetReview, `{"critic":"reviewer","rounds":2}`, "critic", `"reviewer"`},
 		{syncTargetPriorityEstimate, `{"min_minutes":2}`, "min_minutes", `2`},
 		{syncTargetLane, `{"blocker":"waiting"}`, "blocker", "waiting"},
+		{syncTargetLane, `{"stage":"implementation"}`, "stage", "implementation"},
 	}
 	for _, tc := range cases {
 		values, ok := additionOwnership(tc.target, json.RawMessage(tc.record))
