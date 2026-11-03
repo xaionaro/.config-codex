@@ -25,6 +25,16 @@ func applySyncAdditionGroup(
 	data []byte,
 	additions []syncAddition,
 ) ([]byte, bool) {
+	if len(additions) == 1 && (additions[0].Target == syncTargetLane || additions[0].Target == syncTargetRootCompletion || additions[0].Target == syncTargetRootForecast) {
+		candidate, ok := insertSyncAddition(data, additions[0])
+		if !ok {
+			return data, false
+		}
+		if _, err := parse(candidate); err != nil {
+			return data, false
+		}
+		return candidate, true
+	}
 	if len(additions) == 0 || len(additions) > 2 {
 		return data, false
 	}
@@ -84,6 +94,15 @@ func insertSyncAddition(
 	var section, identity string
 	var required []string
 	switch addition.Target {
+	case syncTargetLane:
+		section, identity = "lanes", "task_id"
+		required = []string{"task_id", "work_ref", "outcome", "required_environment", "implementation_status", "test_status", "prod_status"}
+	case syncTargetRootCompletion:
+		section, identity = "root_completions", "work_ref"
+		required = []string{"work_ref", "outcome", "completed_at"}
+	case syncTargetRootForecast:
+		section, identity = "root_forecasts", "forecast_ref"
+		required = []string{"forecast_ref", "outcome", "target", "assessment"}
 	case syncTargetTask:
 		section, identity = "tasks", "id"
 		required = []string{"id", "title", "priority", "impact", "effort", "status"}
@@ -118,7 +137,7 @@ func insertSyncAddition(
 	}
 	root := doc.Content[0]
 	list := mapValue(root, section)
-	if list == nil && section == "reviews" {
+	if list == nil && (section == "reviews" || section == "lanes" || section == "root_completions" || section == "root_forecasts") {
 		entry, err := json.Marshal(record)
 		if err != nil {
 			return data, false
@@ -127,7 +146,7 @@ func insertSyncAddition(
 		if len(data) > 0 && data[len(data)-1] != '\n' {
 			separator = "\n"
 		}
-		candidate := append(append([]byte(nil), data...), []byte(separator+"reviews: ["+string(entry)+"]\n")...)
+		candidate := append(append([]byte(nil), data...), []byte(separator+section+": ["+string(entry)+"]\n")...)
 		return candidate, true
 	}
 	if list == nil || list.Kind != yaml.SequenceNode {
