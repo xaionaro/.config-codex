@@ -240,3 +240,27 @@ func TestVerifyPriorityRemovalRequiresExplicitPrior(t *testing.T) {
 		t.Fatal("accepted wrong priority")
 	}
 }
+
+// TestVerifyPriorityRetirementTransaction checks its paired changes and original task.
+//
+// Example: Reject retirement when the selected task had another priority.
+func TestVerifyPriorityRetirementTransaction(t *testing.T) {
+	original := []byte("tasks: [{id: a, priority: P1}]\npriority_estimates: [{priority: P1, basis: old}]\n")
+	addition := syncAddition{Target: syncTargetPriorityEstimate, RetirePriority: "P1", ExpectedPrior: json.RawMessage(`{"priority":"P1","basis":"old"}`), Record: json.RawMessage(`{"priority":"P2","basis":"new"}`)}
+	effects := []syncEffect{{Target: syncTargetPriorityEstimate, ID: "P1", Operation: syncEffectRemove, Value: addition}, {Target: syncTargetPriorityEstimate, ID: "P2", Operation: syncEffectAdd, Value: addition.Record}, {Target: syncTargetTask, ID: "a", Field: "priority", Operation: syncEffectSet, Value: json.RawMessage(`"P2"`)}}
+	if err := verifyPriorityRetirementEffects(original, effects); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyPriorityRetirementEffects(original, effects[:2]); err == nil {
+		t.Fatal("accepted missing task update")
+	}
+	effects[2].ID = "other"
+	if err := verifyPriorityRetirementEffects(original, effects); err == nil {
+		t.Fatal("accepted wrong task")
+	}
+	effects[2].ID = "a"
+	effects[1].Value = json.RawMessage(`{"priority":"P2","basis":"wrong"}`)
+	if err := verifyPriorityRetirementEffects(original, effects); err == nil {
+		t.Fatal("accepted altered estimate")
+	}
+}

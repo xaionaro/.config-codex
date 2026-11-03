@@ -605,3 +605,67 @@ func verifyCanonicalRootRemoval(before map[string]any, effect syncEffect, effect
 	}
 	return nil
 }
+
+// verifyPriorityRetirementEffects checks that retirement is paired with its task and new estimate.
+//
+// Example: Reject removal of an estimate unrelated to the reprioritized task.
+func verifyPriorityRetirementEffects(original []byte, effects []syncEffect) error {
+	var report map[string]any
+	if err := yaml.Unmarshal(original, &report); err != nil {
+		return err
+	}
+	for _, removal := range effects {
+		if removal.Operation != syncEffectRemove || removal.Target != syncTargetPriorityEstimate {
+			continue
+		}
+		addition, ok := removal.Value.(syncAddition)
+		if !ok || addition.Target != syncTargetPriorityEstimate || addition.RetirePriority != removal.ID {
+			return fmt.Errorf("invalid priority retirement authorization")
+		}
+		var supplied struct {
+			Priority string `json:"priority"`
+		}
+		if json.Unmarshal(addition.Record, &supplied) != nil || supplied.Priority == "" || supplied.Priority == removal.ID {
+			return fmt.Errorf("invalid new priority")
+		}
+		addCount, taskCount := 0, 0
+		for _, effect := range effects {
+			if effect.Operation == syncEffectAdd && effect.Target == syncTargetPriorityEstimate && effect.ID == supplied.Priority {
+				raw, ok := effect.Value.(json.RawMessage)
+				if !ok {
+					return fmt.Errorf("invalid new estimate")
+				}
+				var expected, actual any
+				if json.Unmarshal(addition.Record, &expected) != nil || json.Unmarshal(raw, &actual) != nil || !reflect.DeepEqual(expected, actual) {
+					return fmt.Errorf("new estimate differs from supplied record")
+				}
+				addCount++
+			}
+			if effect.Operation == syncEffectSet && effect.Target == syncTargetTask && effect.Field == "priority" {
+				value := ""
+				switch v := effect.Value.(type) {
+				case string:
+					value = v
+				case json.RawMessage:
+					_ = json.Unmarshal(v, &value)
+				}
+				if value != supplied.Priority {
+					return fmt.Errorf("task priority differs from new estimate")
+				}
+				tasks, ok := report["tasks"].([]any)
+				if !ok {
+					return fmt.Errorf("tasks missing")
+				}
+				index, err := syncEffectIndex(tasks, "id", effect)
+				if err != nil || index < 0 || tasks[index].(map[string]any)["priority"] != removal.ID {
+					return fmt.Errorf("task does not have retired priority")
+				}
+				taskCount++
+			}
+		}
+		if addCount != 1 || taskCount != 1 {
+			return fmt.Errorf("priority retirement requires one estimate and task update")
+		}
+	}
+	return nil
+}
