@@ -1042,24 +1042,16 @@ func verifyPendingRootCorrection(
 	if json.Unmarshal(addition.ExpectedPrior, &priorRecord) != nil || priorRecord.WorkRef != record.WorkRef {
 		return fmt.Errorf("root correction prior identity mismatch")
 	}
-	equalJSON :=
-		// Compare complete JSON values without depending on object key order.
-		//
-		// Example: Match a prior record with reordered keys.
-		func(a, b []byte) bool {
-			var x, y any
-			return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && reflect.DeepEqual(x, y)
-		}
 	countPrior, countCorrection := 0, 0
 	for _, item := range prior.Details.StatusUpdate.Additions {
-		if item.Target == syncTargetRootCompletion && equalJSON(item.Record, addition.ExpectedPrior) {
+		if item.Target == syncTargetRootCompletion && rootChainJSONEqual(item.Record, addition.ExpectedPrior) {
 			countPrior++
 		}
 	}
 	for _, item := range correction.Details.StatusUpdate.Additions {
 		left, _ := json.Marshal(item)
 		right, _ := json.Marshal(addition)
-		if item.Target == syncTargetRootCompletion && equalJSON(left, right) {
+		if item.Target == syncTargetRootCompletion && rootChainJSONEqual(left, right) {
 			countCorrection++
 		}
 	}
@@ -1107,8 +1099,8 @@ func verifyPendingRootCorrection(
 		if !ok {
 			return fmt.Errorf("root completion was not pending")
 		}
-		priorPending := pending.Line == priorLine && equalJSON([]byte(pending.Record), addition.ExpectedPrior)
-		correctionPending := pending.Line == correctionLine && equalJSON([]byte(pending.Record), addition.Record) && pending.PriorLine == priorLine && equalJSON([]byte(pending.PriorRecord), addition.ExpectedPrior)
+		priorPending := pending.Line == priorLine && rootChainJSONEqual([]byte(pending.Record), addition.ExpectedPrior)
+		correctionPending := pending.Line == correctionLine && rootChainJSONEqual([]byte(pending.Record), addition.Record) && pending.PriorLine == priorLine && rootChainJSONEqual([]byte(pending.PriorRecord), addition.ExpectedPrior)
 		if !priorPending && !correctionPending {
 			return fmt.Errorf("pending root correction lineage mismatch")
 		}
