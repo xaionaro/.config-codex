@@ -9,23 +9,65 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// syncEffectOperation identifies an authorized report mutation.
+//
+// Example: A set operation updates one field.
 type syncEffectOperation int
 
 const (
+	// syncEffectSet sets one report field.
+	//
+	// Example: Set a task status.
 	syncEffectSet syncEffectOperation = iota
+	// syncEffectAdd inserts a supplied record.
+	//
+	// Example: Insert a task.
 	syncEffectAdd
+	// syncEffectRemove removes an identified record or lane field.
+	//
+	// Example: Retract a narrative entry.
 	syncEffectRemove
+	// syncEffectMetadata replaces replay state.
+	//
+	// Example: Advance the replay cursor.
 	syncEffectMetadata
+	// syncEffectTimestamp sets the report timestamp.
+	//
+	// Example: Advance the report time.
 	syncEffectTimestamp
+	// syncEffectTimelineAnchor sets the timeline anchor.
+	//
+	// Example: Preserve an existing timeline anchor.
 	syncEffectTimelineAnchor
+	// syncEffectDiagnostic appends a diagnostic and marks scope incomplete.
+	//
+	// Example: Flag a pending update.
 	syncEffectDiagnostic
+	// syncEffectPriorityRemove removes a task from top priorities.
+	//
+	// Example: Remove a cancelled task.
 	syncEffectPriorityRemove
+	// syncEffectTimeline replaces the complete timeline snapshot.
+	//
+	// Example: Publish a verified empty timeline.
 	syncEffectTimeline
+	// syncEffectClear removes a field.
+	//
+	// Example: Clear a resolved blocker.
 	syncEffectClear
+	// syncEffectForecastRetire removes a lane forecast.
+	//
+	// Example: Retire an inactive forecast.
 	syncEffectForecastRetire
+	// syncEffectCompletedAtClear removes a lane completion time.
+	//
+	// Example: Reopen a lane.
 	syncEffectCompletedAtClear
 )
 
+// syncEffect describes one authorized semantic report change.
+//
+// Example: Identify a task field and its new value.
 type syncEffect struct {
 	Target              syncTarget
 	ID, WorkRef         string
@@ -36,7 +78,9 @@ type syncEffect struct {
 	Operation           syncEffectOperation
 }
 
-// verifyStatusSyncCanonicalEffects checks terminal lane effects against canonical work and forecasts.
+// verifyStatusSyncCanonicalEffects checks source-owned effects against canonical work and forecasts.
+//
+// Example: Reject closure backed by an active forecast.
 func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
 	var before, after map[string]any
 	if err := yaml.Unmarshal(original, &before); err != nil {
@@ -112,6 +156,8 @@ func verifyStatusSyncCanonicalEffects(original, candidate []byte, effects []sync
 
 // verifyStatusSyncEffects checks the entire original-to-candidate semantic delta
 // against explicit accepted effects and preserves the ordered YAML comments.
+//
+// Example: Reject a candidate that changes an unrelated task.
 func verifyStatusSyncEffects(original, candidate []byte, effects []syncEffect) error {
 	beforeComments, err := yamlComments(original)
 	if err != nil {
@@ -142,6 +188,9 @@ func verifyStatusSyncEffects(original, candidate []byte, effects []syncEffect) e
 	return nil
 }
 
+// applyExpectedSyncEffect applies an authorized change to the expected report.
+//
+// Example: Add a supplied narrative entry.
 func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 	switch effect.Operation {
 	case syncEffectMetadata:
@@ -355,6 +404,9 @@ func applyExpectedSyncEffect(root map[string]any, effect syncEffect) error {
 	}
 }
 
+// syncEffectSection maps a target to its report section and identity key.
+//
+// Example: Select tasks by id.
 func syncEffectSection(target syncTarget) (string, string, error) {
 	switch target {
 	case syncTargetTask:
@@ -376,6 +428,9 @@ func syncEffectSection(target syncTarget) (string, string, error) {
 	}
 }
 
+// syncEffectIndex finds a unique matching record.
+//
+// Example: Find a lane by its task, work, and environment.
 func syncEffectIndex(items []any, identity string, effect syncEffect) (int, error) {
 	found := -1
 	for i, item := range items {
@@ -395,6 +450,8 @@ func syncEffectIndex(items []any, identity string, effect syncEffect) (int, erro
 }
 
 // verifyCanonicalSyncAddition validates source-owned records independently of insertion.
+//
+// Example: Reject a root completion without canonical evidence.
 func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecasts forecastSource) error {
 	raw, ok := effect.Value.(json.RawMessage)
 	if !ok {
@@ -413,13 +470,16 @@ func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecas
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return err
 	}
-	forecastMatches := func(ref, status, kind string) bool {
-		if !validRef(ref, "forecasts.yaml") {
-			return false
+	forecastMatches := // forecastMatches checks the referenced source status and kind.
+		//
+		// Example: Require an inactive root forecast.
+		func(ref, status, kind string) bool {
+			if !validRef(ref, "forecasts.yaml") {
+				return false
+			}
+			source := forecasts.Records[sourceID(ref, "forecasts.yaml")]
+			return textField(source, "status") == status && textField(source, "kind") == kind
 		}
-		source := forecasts.Records[sourceID(ref, "forecasts.yaml")]
-		return textField(source, "status") == status && textField(source, "kind") == kind
-	}
 	if effect.Target == syncTargetRootForecast {
 		if !forecastMatches(record.ForecastRef, "active", "root") {
 			return fmt.Errorf("invalid canonical root forecast")
@@ -474,6 +534,8 @@ func verifyCanonicalSyncAddition(effect syncEffect, ledger ledgerSource, forecas
 }
 
 // verifyCanonicalRootRemoval validates the explicit transition and its exact prior record.
+//
+// Example: Verify a root forecast retirement and its prior record.
 func verifyCanonicalRootRemoval(before map[string]any, effect syncEffect, effects []syncEffect, ledger ledgerSource, forecasts forecastSource) error {
 	addition, ok := effect.Value.(syncAddition)
 	if !ok || strings.TrimSpace(addition.Evidence) == "" || effect.Evidence != addition.Evidence {

@@ -5,6 +5,9 @@ import (
 	"testing"
 )
 
+// TestVerifyStatusSyncEffectsRejectsCollateralChangeAndLostComment checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncEffectsRejectsCollateralChangeAndLostComment(t *testing.T) {
 	original := []byte("state: old # keep\nnext_focus: unchanged\n")
 	effect := syncEffect{Target: syncTargetReport, ID: "current", Field: "state", Value: "new", Operation: syncEffectSet}
@@ -18,6 +21,9 @@ func TestVerifyStatusSyncEffectsRejectsCollateralChangeAndLostComment(t *testing
 	}
 }
 
+// TestVerifyStatusSyncEffectsChecksIdentitiesAndAdditions checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncEffectsChecksIdentitiesAndAdditions(t *testing.T) {
 	original := []byte("tasks: [{id: a, status: NEW}, {id: b, status: NEW}]\nprogress: []\n")
 	effects := []syncEffect{
@@ -38,6 +44,9 @@ func TestVerifyStatusSyncEffectsChecksIdentitiesAndAdditions(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncEffectsRetractionKeepsUnrelatedItem checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncEffectsRetractionKeepsUnrelatedItem(t *testing.T) {
 	original := []byte("progress: [{subject_ref: a, text: old}, {subject_ref: b, text: keep}]\n")
 	effects := []syncEffect{{Target: syncTargetProgress, ID: "a", Operation: syncEffectRemove}}
@@ -49,6 +58,9 @@ func TestVerifyStatusSyncEffectsRetractionKeepsUnrelatedItem(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncEffectsChecksFullRecordAndMetadata checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncEffectsChecksFullRecordAndMetadata(t *testing.T) {
 	original := []byte("tasks: []\ntop_priorities: [a, b]\n")
 	effects := []syncEffect{
@@ -66,6 +78,9 @@ func TestVerifyStatusSyncEffectsChecksFullRecordAndMetadata(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncEffectsChecksAtomicTimeline checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncEffectsChecksAtomicTimeline(t *testing.T) {
 	original := []byte("other: keep\n")
 	effects := []syncEffect{{Operation: syncEffectTimeline, Value: syncTimelineSnapshot{AsOf: "2026-11-02T15:24:00Z", State: "verified_empty"}}}
@@ -79,6 +94,9 @@ func TestVerifyStatusSyncEffectsChecksAtomicTimeline(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncCanonicalEffectsRejectsActiveForecast checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncCanonicalEffectsRejectsActiveForecast(t *testing.T) {
 	ref := "project-understanding.yaml#/records/work:first"
 	original := []byte("lanes: [{task_id: a, work_ref: '" + ref + "', required_environment: implementation, implementation_status: 'IN PROGRESS', forecast: {forecast_ref: 'forecasts.yaml#/records/first'}}]\n")
@@ -99,6 +117,9 @@ func TestVerifyStatusSyncCanonicalEffectsRejectsActiveForecast(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncCanonicalAddition checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncCanonicalAddition(t *testing.T) {
 	effect := syncEffect{Target: syncTargetRootForecast, ID: "forecasts.yaml#/records/f", Operation: syncEffectAdd, Value: json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"x"}`)}
 	if err := verifyStatusSyncCanonicalEffects([]byte("{}"), []byte("{}"), []syncEffect{effect}, ledgerSource{}, forecastSource{}); err == nil {
@@ -106,6 +127,9 @@ func TestVerifyStatusSyncCanonicalAddition(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncLaneRemoval checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncLaneRemoval(t *testing.T) {
 	before := []byte("lanes: [{task_id: a, work_ref: w, required_environment: implementation, completed_at: old}]\n")
 	after := []byte("lanes: [{task_id: a, work_ref: w, required_environment: implementation}]\n")
@@ -115,6 +139,9 @@ func TestVerifyStatusSyncLaneRemoval(t *testing.T) {
 	}
 }
 
+// TestVerifyStatusSyncCanonicalRootCompletion checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyStatusSyncCanonicalRootCompletion(t *testing.T) {
 	work := sourceRecord{Type: "work", OutcomeRefs: []string{"o"}, Data: workData{State: workStateCompleted, CompletedAt: "2026-11-02T15:00:00Z", Roles: []reportingRole{reportingRoleRoot}, ForecastRef: "forecasts.yaml#/records/f"}}
 	ledger := ledgerSource{Records: map[string]sourceRecord{"w": work, "o": {Type: "outcome", Outcome: "Result"}}}
@@ -129,6 +156,9 @@ func TestVerifyStatusSyncCanonicalRootCompletion(t *testing.T) {
 	}
 }
 
+// TestVerifyRootRemovalRequiresExplicitPrior checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyRootRemovalRequiresExplicitPrior(t *testing.T) {
 	original := []byte("root_forecasts: [{forecast_ref: 'forecasts.yaml#/records/f', outcome: Result}]\n")
 	candidate := []byte("root_forecasts: []\n")
@@ -144,6 +174,9 @@ func TestVerifyRootRemovalRequiresExplicitPrior(t *testing.T) {
 	}
 }
 
+// TestVerifyCanonicalRootRetirement checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyCanonicalRootRetirement(t *testing.T) {
 	prior := `{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result"}`
 	record := json.RawMessage(`{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result","completed_at":"2026-11-02T15:00:00Z"}`)
@@ -163,6 +196,9 @@ func TestVerifyCanonicalRootRetirement(t *testing.T) {
 	}
 }
 
+// TestVerifyCanonicalRootReopening checks the named verification behavior.
+//
+// Example: Reject an unauthorized report change.
 func TestVerifyCanonicalRootReopening(t *testing.T) {
 	prior := `{"work_ref":"project-understanding.yaml#/records/w","outcome":"Result"}`
 	record := json.RawMessage(`{"forecast_ref":"forecasts.yaml#/records/f","outcome":"Result"}`)
