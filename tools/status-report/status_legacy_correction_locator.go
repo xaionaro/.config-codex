@@ -16,6 +16,9 @@ func holdAmbiguousLegacyCorrections(
 	held := map[string]syncPending{}
 	invalid := false
 	for key, pending := range state.Pending {
+		if legacyRetractionIsSuperseded(*state, pending) {
+			continue
+		}
 		valid, known := legacyCorrectionLocatorValid(pending, log)
 		if !known {
 			held[key] = pending
@@ -36,6 +39,19 @@ func holdAmbiguousLegacyCorrections(
 	return held, invalid
 }
 
+// legacyRetractionIsSuperseded recognizes a later recorded narrative version.
+//
+// Example: A retraction for line one cannot remove text projected on line three.
+func legacyRetractionIsSuperseded(
+	state syncState,
+	pending syncPending,
+) bool {
+	if !pending.Update.Retract || pending.Update.Corrects <= 0 || pending.Update.Corrects >= pending.Line {
+		return false
+	}
+	return state.Latest[syncTargetKey(pending.Update, "text")] > pending.Update.Corrects || state.Latest[syncTargetKey(pending.Update, "evidence")] > pending.Update.Corrects
+}
+
 // holdLegacyCompanions preserves fields of the same unresolved transaction.
 //
 // Example: A held lifecycle field keeps its same-line evidence pending.
@@ -45,7 +61,7 @@ func holdLegacyCompanions(
 	target syncPending,
 ) {
 	for key, item := range pending {
-		if item.Line == target.Line && syncTargetKey(item.Update, "") == syncTargetKey(target.Update, "") {
+		if (item.Line == target.Line || target.Update.Retract) && syncTargetKey(item.Update, "") == syncTargetKey(target.Update, "") {
 			held[key] = item
 		}
 	}
@@ -65,8 +81,8 @@ func legacyCorrectionLocatorValid(
 	if u.Corrects < 0 || pending.Line <= 0 || (u.CorrectsOrdinal != nil && *u.CorrectsOrdinal < 0) {
 		return false, true
 	}
-	if u.Corrects != pending.Line {
-		return u.Corrects < pending.Line, true
+	if u.Corrects > pending.Line {
+		return false, true
 	}
 	lines := bytes.Split(log, []byte("\n"))
 	if pending.Line > len(lines) {
@@ -96,14 +112,72 @@ func legacyCorrectionLocatorValid(
 	if u.CorrectsOrdinal != nil {
 		priorOrdinal = *u.CorrectsOrdinal
 	}
-	if priorOrdinal >= len(event.Details.StatusUpdate.Updates) {
+	var priorEvent syncEvent
+	if json.Unmarshal(lines[u.Corrects-1], &priorEvent) != nil || priorEvent.Details.StatusUpdate == nil {
+		return false, false
+	}
+	if priorOrdinal >= len(priorEvent.Details.StatusUpdate.Updates) {
 		return false, true
 	}
-	prior := event.Details.StatusUpdate.Updates[priorOrdinal]
+	prior := priorEvent.Details.StatusUpdate.Updates[priorOrdinal]
 	if prior.Target == syncTargetUnknown {
 		return false, false
 	}
-	return legacyCorrectionPriorMatches(u, prior), true
+	if !legacyCorrectionPriorMatches(u, prior) {
+		return false, true
+	}
+	return legacyCorrectionHasNoInterveningUpdate(u, lines, pending.Line, priorOrdinal, match)
+}
+
+// legacyCorrectionHasNoInterveningUpdate verifies that the predecessor is latest.
+//
+// Example: A newer assignment to the same field makes an older locator stale.
+func legacyCorrectionHasNoInterveningUpdate(
+	update syncUpdate,
+	lines [][]byte,
+	line int,
+	priorOrdinal int,
+	currentOrdinal int,
+) (bool, bool) {
+	for index := update.Corrects - 1; index < line; index++ {
+		var event syncEvent
+		if json.Unmarshal(lines[index], &event) != nil {
+			return false, false
+		}
+		if event.Details.StatusUpdate == nil {
+			continue
+		}
+		start, end := 0, len(event.Details.StatusUpdate.Updates)
+		if index == update.Corrects-1 {
+			start = priorOrdinal + 1
+		}
+		if index == line-1 {
+			end = currentOrdinal
+		}
+		valid, known := legacyCorrectionInterveningFields(update, event.Details.StatusUpdate.Updates[start:end])
+		if !valid || !known {
+			return valid, known
+		}
+	}
+	return true, true
+}
+
+// legacyCorrectionInterveningFields rejects newer changes to the corrected field.
+//
+// Example: A later owner assignment supersedes an earlier assignment.
+func legacyCorrectionInterveningFields(
+	update syncUpdate,
+	intervening []syncUpdate,
+) (bool, bool) {
+	for _, candidate := range intervening {
+		if candidate.Target == syncTargetUnknown {
+			return false, false
+		}
+		if legacyCorrectionPriorMatches(update, candidate) {
+			return false, true
+		}
+	}
+	return true, true
 }
 
 // legacyCorrectionPriorMatches checks that the named update owns the field.

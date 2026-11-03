@@ -234,3 +234,55 @@ func TestLegacySameLineCorrectionRequiresMatchingPriorField(t *testing.T) {
 			})
 	}
 }
+
+// TestLegacyEarlierCorrectionRequiresMatchingLatestPrior checks cross-line provenance.
+//
+// Example: A prior assignment to another task cannot authorize this correction.
+func TestLegacyEarlierCorrectionRequiresMatchingLatestPrior(t *testing.T) {
+	for _, tc := range []struct {
+		name, prior, middle string
+		applies, pending    bool
+	}{
+		{"valid", `{"target":"task","id":"1","fields":{"owner":"second"}}`, `{}`, true, false},
+		{"other task", `{"target":"task","id":"2","fields":{"owner":"other"}}`, `{}`, false, false},
+		{"other field", `{"target":"task","id":"1","fields":{"status":"IN PROGRESS"}}`, `{}`, false, false},
+		{"newer assignment", `{"target":"task","id":"1","fields":{"owner":"first"}}`, `{"event":"assignment_change","details":{"status_update":{"updates":[{"target":"task","id":"1","fields":{"owner":"second"}}]}}}`, false, false},
+		{"missing source", ``, `{}`, false, true},
+	} {
+		t.Run(tc.name,
+			// Check one predecessor and any intervening field update.
+			//
+			// Example: Missing source remains pending for reconciliation.
+			func(t *testing.T) {
+				// saved is legacy field state for a line-three correction.
+				//
+				// Example: Owner "second" remains until a valid correction applies.
+				const saved = `status_sync: {"cursor":3,"applied":{"[\"task\",\"1\",\"\",\"\"]/owner":"second"},"latest":{"[\"task\",\"1\",\"\",\"\"]/owner":3},"pending":{"[\"task\",\"1\",\"\",\"\"]/owner":{"line":3,"update":{"target":"task","id":"1","corrects":1,"fields":{"owner":"third"}}}}}`
+				prior := `{}`
+				if tc.prior != "" {
+					prior = `{"event":"assignment_change","details":{"status_update":{"updates":[` + tc.prior + `]}}}`
+				}
+				log := prior + "\n" + tc.middle + "\n" + `{"event":"correction","details":{"status_update":{"updates":[{"target":"task","id":"1","corrects":1,"fields":{"owner":"third"}}]}}}` + "\n"
+				dir := writeLinkedSources(t, linkedLedger, linkedForecasts)
+				path := filepath.Join(dir, "latest-status-report.yaml")
+				input := strings.Replace(linkedReport, "title: First,", `title: First, owner: second,`, 1)
+				require.NoError(t, os.WriteFile(path, []byte(input+saved+"\n"), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "high_level_log.jsonl"), []byte(log), 0600))
+				require.NoError(t, refreshTestStatus(dir, "correction"))
+				result, err := os.ReadFile(path)
+				require.NoError(t, err)
+				report, err := parse(result)
+				require.NoError(t, err)
+				if tc.applies {
+					require.Equal(t, "third", report.Tasks[0].Owner)
+				} else {
+					require.Equal(t, "second", report.Tasks[0].Owner)
+				}
+				if tc.pending {
+					require.NotEmpty(t, report.StatusSync.Pending)
+				} else {
+					require.Empty(t, report.StatusSync.Pending)
+				}
+			})
+	}
+}
