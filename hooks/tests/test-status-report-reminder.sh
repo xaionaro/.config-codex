@@ -29,6 +29,8 @@ check_reminder 'What is the current progress update?'
 check_reminder 'Can we get a progress report?'
 check_reminder 'Fix the status report renderer and show me current status'
 check_reminder 'What is a status report and show me current status'
+check_reminder 'What is a status report and can you show me current status?'
+check_reminder 'How do I get a status report and give me current status?'
 check_reminder 'Show me status and progress update'
 check_reminder "What's the status?"
 check_reminder 'Fix the renderer and give me a status report'
@@ -48,7 +50,7 @@ jq -e '.hookSpecificOutput.additionalContext | contains("status-report render")'
 capture="$(find "$tmp/proof/pre-reviewer/valid-session" -name 'capture-turn-*.json' -type f -print -quit)"
 [[ -n "$capture" ]]
 jq -e '.turn_id == "turn" and .prompt == "status"' "$capture" >/dev/null
-for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema' 'Fix the status update renderer' 'Current status code is broken' 'Progress update schema' 'Please update the status field' 'Can I get a status update template?' 'What is the current progress update schema?' 'What is a status report?' 'What is a progress update?' 'How do I get a status report?' 'How can I get a progress update?' 'What is a status report and how does it work?' 'How do I get a status report and where is it saved?' 'Write status and progress report regression tests' 'Show me a status and progress update template' 'Provide status and progress report schemas'; do
+for prompt in 'Fix the status report renderer' 'provide a fix for the status report renderer' 'show me how status report renderer works' 'Show me a status report renderer implementation' 'Provide a status report renderer fix' 'Show me a status report template' 'Write a status report regression test' 'Provide a progress report schema' 'Fix the status update renderer' 'Current status code is broken' 'Progress update schema' 'Please update the status field' 'Can I get a status update template?' 'What is the current progress update schema?' 'What is a status report?' 'What is a progress update?' 'How do I get a status report?' 'How can I get a progress update?' 'What is a status report and how does it work?' 'How do I get a status report and where is it saved?' 'Write status and progress report regression tests' 'Show me a status and progress update template' 'Provide status and progress report schemas' 'How do I get a status report and interpret it?' 'What is a status and progress report?' 'How do I get a status and progress update?'; do
   output="$(jq -cn --arg prompt "$prompt" '{session_id:"bad/session",prompt:$prompt}' | bash -c "$command")"
   [[ -z "$output" ]]
 done
