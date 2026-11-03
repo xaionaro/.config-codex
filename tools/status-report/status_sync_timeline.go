@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/goccy/go-yaml/token"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,6 +64,9 @@ func applySyncTimeline(
 		return data, false
 	}
 	root := doc.Content[0]
+	if root.Style&yaml.FlowStyle != 0 {
+		return applyFlowRootTimeline(data, snapshot)
+	}
 	var sequence yaml.Node
 	entries := snapshot.Entries
 	if entries == nil {
@@ -142,6 +147,60 @@ func applySyncTimeline(
 	}
 	afterComments, err := yamlComments(out)
 	if err != nil || !slices.Equal(beforeComments, afterComments) {
+		return data, false
+	}
+	return out, true
+}
+
+// applyFlowRootTimeline updates timeline fields inside a flow report mapping.
+//
+// Example: Replace a JSON report's timeline without rewriting unrelated fields.
+func applyFlowRootTimeline(
+	data []byte,
+	snapshot syncTimelineSnapshot,
+) ([]byte, bool) {
+	entries := snapshot.Entries
+	if entries == nil {
+		entries = []timelineEntry{}
+	}
+	encoded, err := json.Marshal(entries)
+	if err != nil {
+		return data, false
+	}
+	values := map[string]string{"timeline_as_of": fmt.Sprintf("%q", snapshot.AsOf), "timeline_state": fmt.Sprintf("%q", snapshot.State.String()), "timeline": string(encoded)}
+	out := append([]byte(nil), data...)
+	for _, key := range []string{"timeline_as_of", "timeline_state", "timeline"} {
+		var doc yaml.Node
+		if yaml.Unmarshal(out, &doc) != nil || len(doc.Content) != 1 {
+			return data, false
+		}
+		node := mapValue(doc.Content[0], key)
+		if node == nil {
+			out, err = appendReportField(out, key, values[key])
+			if err != nil {
+				return data, false
+			}
+			continue
+		}
+		var start, end int
+		switch node.Kind {
+		case yaml.ScalarNode:
+			start, end, err = (&flowDocument{data: out}).scalarSpan(node)
+		case yaml.SequenceNode:
+			start, err = yamlByteOffset(out, node.Line, node.Column)
+			if err == nil {
+				end, err = flowEnd(out, start, token.SequenceStartType)
+				end++
+			}
+		default:
+			return data, false
+		}
+		if err != nil || yamlRangeHasComment(out, start, end) {
+			return data, false
+		}
+		out = append(append(append([]byte(nil), out[:start]...), []byte(values[key])...), out[end:]...)
+	}
+	if _, err := parse(out); err != nil {
 		return data, false
 	}
 	return out, true

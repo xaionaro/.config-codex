@@ -70,6 +70,9 @@ func applyNarrativeSyncField(
 			return data, false
 		}
 		entry := "{subject_ref: " + strconv.Quote(u.ID) + ", text: " + strconv.Quote(value) + "}"
+		if root.Style&yaml.FlowStyle != 0 {
+			entry = "{\"subject_ref\": " + strconv.Quote(u.ID) + ", \"text\": " + strconv.Quote(value) + "}"
+		}
 		return appendNarrativeEntry(data, root, list, u.Target.String(), entry)
 	}
 	if field == "evidence" && !itemOwned {

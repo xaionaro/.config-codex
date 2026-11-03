@@ -924,11 +924,10 @@ func advanceSyncTimestamp(
 	timelineState := mapValue(root, "timeline_state")
 	hasTimelineEvidence := (timeline != nil && len(timeline.Content) > 0) || (timelineState != nil && timelineState.Value == "verified_empty")
 	if hasTimelineEvidence && mapValue(root, "timeline_as_of") == nil {
-		suffix := "timeline_as_of: " + strconv.Quote(old.Value) + "\n"
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			suffix = "\n" + suffix
+		data, err = appendReportField(data, "timeline_as_of", strconv.Quote(old.Value))
+		if err != nil {
+			return nil, err
 		}
-		data = append(append([]byte(nil), data...), []byte(suffix)...)
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -1281,11 +1280,7 @@ func putSyncState(
 	root := doc.Content[0]
 	node := mapValue(root, "status_sync")
 	if node == nil {
-		suffix := "status_sync: " + state + "\n"
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			suffix = "\n" + suffix
-		}
-		return append(append([]byte(nil), data...), []byte(suffix)...), nil
+		return appendReportField(data, "status_sync", state)
 	}
 	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 {
 		start, err := yamlByteOffset(data, node.Line, node.Column)

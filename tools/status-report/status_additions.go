@@ -148,12 +148,8 @@ func insertSyncAddition(
 		if err != nil {
 			return data, false
 		}
-		separator := ""
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			separator = "\n"
-		}
-		candidate := append(append([]byte(nil), data...), []byte(separator+section+": ["+string(entry)+"]\n")...)
-		return candidate, true
+		candidate, err := appendReportField(data, section, "["+string(entry)+"]")
+		return candidate, err == nil
 	}
 	if list == nil || list.Kind != yaml.SequenceNode {
 		return data, false
