@@ -26,7 +26,7 @@ symlink_alias="$ROOT/hooks/.eci-protected-target-alias.$(basename -- "$TMP_ROOT"
 ln -s -- "$ROOT/hooks/validate-bash.sh" "$symlink_alias"
 
 proof_root="$TMP_ROOT/proof"
-context_root="$TMP_ROOT/home/tmp/agent/context/sessions"
+context_root="$TMP_ROOT/home/.agent/context/sessions"
 session_dir="$proof_root/t00-session"
 mkdir -p -- "$session_dir/evidence"
 printf '%s\n' \

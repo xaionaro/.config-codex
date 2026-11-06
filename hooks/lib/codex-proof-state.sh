@@ -10,7 +10,7 @@ codex_configured_proof_root() {
 }
 
 codex_context_root() {
-  printf '%s\n' "$HOME/tmp/agent/context"
+  printf '%s\n' "$HOME/.agent/context"
 }
 
 # Print the path below <context>/sessions for either the configured context
@@ -254,6 +254,47 @@ codex_state_path_is_safe() {
   done
 }
 
+codex_context_state_path_is_safe() {
+  local path="$1"
+  local base rest component current
+
+  rest="$(codex_context_session_rest "$path")" || return 1
+  base="$(codex_context_root)"
+  case "$path" in
+    "$base"/sessions/*) ;;
+    *) base="$(realpath -m -- "$base" 2>/dev/null)" || return 1 ;;
+  esac
+  [ -n "$base" ] && [ ! -L "$base" ] && [ ! -L "$base/sessions" ] || return 1
+  current="$base/sessions"
+  while [ -n "$rest" ]; do
+    component="${rest%%/*}"
+    [ -n "$component" ] || return 1
+    current="$current/$component"
+    [ ! -L "$current" ] || return 1
+    if [ -e "$current" ]; then
+      [ -d "$current" ] || [ "$rest" = "$component" ] || return 1
+    fi
+    if [ "$rest" = "$component" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
+  done
+}
+
+codex_session_path_is_unsafe() {
+  local path="$1"
+
+  [ -n "$path" ] || return 1
+  if codex_path_is_under_proof_root "$path"; then
+    ! codex_state_path_is_safe "$path" "$(codex_proof_root)"
+  elif codex_context_session_rest "$path" >/dev/null; then
+    ! codex_context_state_path_is_safe "$path"
+  else
+    return 1
+  fi
+}
+
 codex_proof_roots_equivalent() {
   local candidate="${1:-$(codex_configured_proof_root)}"
   local configured="$(codex_configured_proof_root)" canonical="$(codex_proof_root)"
@@ -302,20 +343,34 @@ codex_real_session_dir_name() {
   [[ "${1:-}" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-codex_proof_alias_session_id() {
+codex_alias_record_session_id() {
   local dir="$1"
   local marker session_id
+
+  marker="$dir/.codex-proof-alias"
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  session_id="$(awk -F':[[:space:]]*' '$1 == "session_id" { print $2; exit }' "$marker" 2>/dev/null | tr -d '\r')"
+  codex_valid_session_id "$session_id" || return 1
+  printf '%s\n' "$session_id"
+}
+
+codex_proof_alias_session_id() {
+  local dir="$1"
 
   # Alias directories are state roots, not transparent symlink shortcuts.
   # Validate every component before reading the alias record so an alias
   # cannot redirect ownership through a replaced/symlinked directory.
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   codex_state_path_is_safe "$dir" "$(codex_proof_root)" || return 1
-  marker="$dir/.codex-proof-alias"
-  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
-  session_id="$(awk -F':[[:space:]]*' '$1 == "session_id" { print $2; exit }' "$marker" 2>/dev/null | tr -d '\r')"
-  codex_valid_session_id "$session_id" || return 1
-  printf '%s\n' "$session_id"
+  codex_alias_record_session_id "$dir"
+}
+
+codex_context_alias_session_id() {
+  local dir="$1"
+
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  codex_context_state_path_is_safe "$dir" || return 1
+  codex_alias_record_session_id "$dir"
 }
 
 codex_canonical_cwd() {
@@ -355,23 +410,13 @@ codex_lexical_hook_path() {
     "~") path="$HOME" ;;
     "~/"*) path="$HOME/${path#~/}" ;;
   esac
-  # GNU realpath's -s/-m pair performs the same lexical abspath/normpath
-  # operation without following symlink ancestors, but avoids starting a
-  # Python interpreter on every synchronous edit callback.  Retain the
-  # bounded Python fallback for platforms without that realpath capability.
+  # GNU realpath -ms performs lexical abspath/normpath without following
+  # symlink ancestors and without starting an interpreter per callback.
+  # The shell fallback below is the non-normalizing form, as before.
   local lexical_path
   if command -v realpath >/dev/null 2>&1 &&
      lexical_path="$(realpath -ms -- "$path" 2>/dev/null)"; then
     printf '%s\n' "$lexical_path"
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 - "$cwd" "$path" <<'PY'
-import os
-import sys
-cwd, path = sys.argv[1:3]
-if not os.path.isabs(path):
-    path = os.path.join(cwd, path)
-print(os.path.normpath(os.path.abspath(path)))
-PY
   else
     case "$path" in
       /*) printf '%s\n' "$path" ;;
@@ -501,6 +546,13 @@ codex_path_is_eci_control_file() {
         ;;
     esac
   done
+  if rest="$(codex_context_session_rest "$path")"; then
+    sid="${rest%%/*}"
+    if [ "$rest" != "$sid" ] && [ "${rest#*/}" = "$filename" ] &&
+       codex_eci_control_basename "$filename" && codex_valid_session_id "$sid"; then
+      return 0
+    fi
+  fi
   codex_path_is_session_ledger_file "$path" && return 0
   global_override="$(codex_eci_accidental_override_record_path global 2>/dev/null || true)"
   if [ -n "$global_override" ] && [ "$path" = "$global_override" ]; then
@@ -541,9 +593,6 @@ codex_hash_string() {
     local digest
     digest="$(printf '%s' "${1:-}" | sha256sum)" || return 1
     printf '%s\n' "${digest%% *}"
-  elif command -v python3 >/dev/null 2>&1; then
-    printf '%s' "${1:-}" | python3 -c \
-      'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
   else
     return 1
   fi
@@ -2233,34 +2282,56 @@ codex_hook_sessions_root() {
   printf '%s/sessions\n' "$root"
 }
 
+codex_hook_helper_path() {
+  source "${BASH_SOURCE[0]%/*}/eci-runtime-sync.sh" || return 1
+  eci_runtime_hook_helper_path
+}
+
 codex_hook_transcript_first_record() {
   local input="${1:-}"
-  local sessions_root first_record
+  local sessions_root first_record helper
 
   sessions_root="$(codex_hook_sessions_root)" || return 1
-  first_record="$(printf '%s' "$input" | \
-    python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
-      hook-transcript-first-record "$sessions_root" 2>/dev/null)" || return 1
+  helper="$(codex_hook_helper_path)" || return 1
+  first_record="$(printf '%s' "$input" | "$helper" hook-transcript-first-record "$sessions_root" 2>/dev/null)" || return 1
   printf '%s\n' "$first_record"
 }
 
 codex_hook_thread_spawn_metadata() {
   local input="${1:-}"
-  local sessions_root metadata
+  local sessions_root metadata helper
 
   sessions_root="$(codex_hook_sessions_root)" || return 1
-  metadata="$(printf '%s' "$input" | \
-    python3 "${BASH_SOURCE[0]%/*}/bounded_hook_input.py" \
-      hook-transcript-thread-spawn-metadata "$sessions_root" 2>/dev/null)" || return 1
+  helper="$(codex_hook_helper_path)" || return 1
+  metadata="$(printf '%s' "$input" | "$helper" hook-transcript-thread-spawn-metadata "$sessions_root" 2>/dev/null)" || return 1
   printf '%s\n' "$metadata"
 }
 
-codex_hook_is_subagent_context() {
+codex_hook_subagent_status() {
   local input="${1:-}"
-  local metadata
+  local present record kind
 
-  metadata="$(codex_hook_thread_spawn_metadata "$input")" || return 1
-  printf '%s' "$metadata" | jq -e 'has("parent_thread_id")' >/dev/null 2>&1
+  # Prints main, subagent, or unknown. Only a verified transcript without a
+  # thread_spawn parent is main. A missing helper, a helper rejection, or an
+  # unparseable record is unknown; callers must fail closed on unknown.
+  present="$(printf '%s' "$input" | jq -r 'if type == "object" and has("transcript_path") and (.transcript_path != null) then "yes" else "no" end' 2>/dev/null)" || present=""
+  case "$present" in
+    no) printf 'main\n'; return 0 ;;
+    yes) ;;
+    *) printf 'unknown\n'; return 0 ;;
+  esac
+  record="$(codex_hook_transcript_first_record "$input" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  kind="$(printf '%s' "$record" | jq -r 'if type == "object" then (if (.payload.source.subagent.thread_spawn.parent_thread_id | type) == "string" then "subagent" else "main" end) else "invalid" end' 2>/dev/null)" || kind=""
+  case "$kind" in
+    subagent|main) printf '%s\n' "$kind" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# Only a verified subagent answers yes.  Fail-closed callers test the status
+# for != main instead of relying on this predicate.
+codex_hook_is_subagent_context() {
+  [ "$(codex_hook_subagent_status "${1:-}")" = subagent ]
 }
 
 codex_hook_transcript_first_record_is_admissible() {
@@ -2269,10 +2340,15 @@ codex_hook_transcript_first_record_is_admissible() {
   codex_hook_transcript_first_record "$input" >/dev/null
 }
 
+codex_hook_transcript_path_present() {
+  printf '%s' "${1:-}" | jq -e 'type == "object" and (.transcript_path | type) == "string" and (.transcript_path | length > 0)' >/dev/null 2>&1
+}
+
 codex_hook_parent_session_id() {
   local input="${1:-}"
   local metadata
 
+  codex_hook_transcript_path_present "$input" || return 1
   metadata="$(codex_hook_thread_spawn_metadata "$input")" || return 1
   printf '%s' "$metadata" | jq -r '.parent_thread_id // empty' 2>/dev/null
 }
@@ -2309,6 +2385,13 @@ codex_path_owner_session_id() {
   if rest="$(codex_context_session_rest "$path")"; then
     sid="${rest%%/*}"
     [ "$rest" != "$sid" ] || return 1
+    if ! codex_real_session_dir_name "$sid"; then
+      alias_session_id="$(codex_context_alias_session_id "${path%"/$rest"}/$sid" 2>/dev/null || true)"
+      if [ -n "$alias_session_id" ]; then
+        printf '%s\n' "$alias_session_id"
+        return 0
+      fi
+    fi
     codex_valid_session_id "$sid" || return 1
     printf '%s\n' "$sid"
     return 0
@@ -2328,13 +2411,21 @@ codex_path_owner_session_id() {
   return 1
 }
 
+# $2 is the caller's already-computed codex_hook_subagent_status; when it is
+# "main" no parent can exist, so the metadata helper is skipped entirely.
 codex_hook_allowed_session_ids() {
   local input="$1"
+  local status="${2:-}"
   local session_id parent_session_id
 
   session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
   if codex_valid_session_id "$session_id"; then
     printf '%s\n' "$session_id"
+  fi
+
+  [ -n "$status" ] || status="$(codex_hook_subagent_status "$input")"
+  if [ "$status" = main ]; then
+    return 0
   fi
 
   parent_session_id="$(codex_hook_parent_session_id "$input" 2>/dev/null || true)"

@@ -21,7 +21,7 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -z "$cwd" ] && cwd="$PWD"
 
 codex_valid_session_id "$session_id" || exit 0
-if codex_hook_is_subagent_context "$input"; then
+if [ "$(codex_hook_subagent_status "$input")" = subagent ]; then
   exit 0
 fi
 
@@ -50,7 +50,7 @@ filter_reviewer_processes() {
     {
       lower = tolower($0)
       if (lower ~ /\/\.codex\/hooks\//) next
-      if (lower ~ /(system-prompt-reviewer|edit-bash-pre-reviewer|reviewer-call|reviewer-backend|compose-reviewer-prompt|stop-gate\.sh)/) next
+      if (lower ~ /(system-prompt-reviewer|reviewer-call|reviewer-backend|compose-reviewer-prompt|stop-gate\.sh)/) next
       print
     }
   '

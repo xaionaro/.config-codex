@@ -319,7 +319,7 @@ assert_reviewer_role_split() {
   require_text "$REVIEW" 'The Supervisor retains acceptance.'
 
   for required in \
-    '## Critic A — coding style' \
+    '## Critic A — coding requirements' \
     '## Critic B — correctness and fidelity' \
     '## Critic C — long-term health' \
     'Report findings to the current Job owner only.'; do

@@ -37,7 +37,7 @@ digraph skill_flow {
     "Invoke skill loader" [shape=box];
     "Announce: 'Using [skill] to [purpose]'" [shape=box];
     "Has checklist?" [shape=diamond];
-    "Create update_plan todo per item" [shape=box];
+    "Create todo per item" [shape=box];
     "Follow skill exactly" [shape=box];
     "Respond (including clarifications)" [shape=doublecircle];
 
@@ -51,9 +51,9 @@ digraph skill_flow {
     "Does a listed skill clearly apply?" -> "Respond (including clarifications)" [label="no"];
     "Invoke skill loader" -> "Announce: 'Using [skill] to [purpose]'";
     "Announce: 'Using [skill] to [purpose]'" -> "Has checklist?";
-    "Has checklist?" -> "Create update_plan todo per item" [label="yes"];
+    "Has checklist?" -> "Create todo per item" [label="yes"];
     "Has checklist?" -> "Follow skill exactly" [label="no"];
-    "Create update_plan todo per item" -> "Follow skill exactly";
+    "Create todo per item" -> "Follow skill exactly";
 }
 ```
 

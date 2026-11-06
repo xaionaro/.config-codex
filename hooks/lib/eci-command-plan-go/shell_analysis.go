@@ -131,23 +131,24 @@ func inspectShellAnalysis(
 			continue
 		}
 		payload := literalShellPayload(effect.argv, effect.command, request.ShellEnvironment, state.cwd.cwd, state.cwd.known, expansionFacts[index])
-		needed = needed || payload.contextUnknown
 		analysis.Incomplete = analysis.Incomplete || payload.contextUnknown
 		for _, substitution := range payload.substitutions {
-			needed = true
 			childRequest.Command = substitution.Command
 			result := Classify(childRequest)
 			if result.Decision == DecisionDeny {
 				return nil, &result
 			}
+			// Process substitutions stay visible to the provider, as at HEAD.
+			needed = needed || substitution.Process || result.Decision != DecisionAllow
 			appendShellAnalysis(analysis, result.ShellAnalysis)
 		}
 		if payload.handled {
-			needed = true
 			if payload.noExecution {
+				needed = true
 				continue
 			}
 			if payload.incomplete {
+				needed = true
 				analysis.Incomplete = true
 				continue
 			}
@@ -179,6 +180,7 @@ func inspectShellAnalysis(
 			if payload.stdin {
 				input, found := matchingShellInput(parsed.projection, current)
 				if !found {
+					needed = true
 					analysis.Incomplete = true
 					continue
 				}
@@ -196,6 +198,7 @@ func inspectShellAnalysis(
 			if result.Decision == DecisionDeny {
 				return nil, &result
 			}
+			needed = needed || payload.commandDynamic || result.Decision != DecisionAllow
 			appendShellAnalysis(analysis, result.ShellAnalysis)
 			continue
 		}
@@ -303,7 +306,6 @@ func shellChildRequest(
 ) Request {
 	child := request
 	child.ShellDepth++
-	child.CollectShellCommands = true
 	child.SegmentCWD = state.cwd.cwd
 	child.SegmentCWDKnown = &state.cwd.known
 	child.SegmentCWDUnknown = &state.cwd.unknown

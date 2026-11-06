@@ -126,7 +126,7 @@ func TestRunHookEnvelope(t *testing.T) {
 	}{
 		{"ordinary allow", `{"session_id":"hook-envelope","tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"cat ordinary"}}`, false},
 		{"concrete root removal", `{"session_id":"hook-envelope","tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"rm -rf /"}}`, true},
-		{"malformed advisory", `{`, false},
+		{"malformed identity denied under active scope", `{`, true},
 		{"other tool", `{"tool_name":"Read","tool_input":{"command":"rm -rf /"}}`, false},
 	}
 	for _, test := range tests {
@@ -427,4 +427,23 @@ func TestHookControlIndexKeepsAllObservedAliases(t *testing.T) {
 		require.Zero(t, RunHook(bytes.NewReader(callback), &output))
 		require.Equal(t, target != ordinary, output.Len() != 0, "target=%s", target)
 	}
+}
+
+// TestHookMalformedIdentityFailsClosedOnlyWithActiveScope verifies that a
+// malformed callback identity denies under an active marker and stays advisory
+// without one.
+//
+// Example: session_id [] under an active marker emits malformed hook identity.
+func TestHookMalformedIdentityFailsClosedOnlyWithActiveScope(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CODEX_PROOF_ROOT", root)
+	malformed := `{"session_id":[],"tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"true"}}`
+	var output bytes.Buffer
+	require.Zero(t, RunHook(strings.NewReader(malformed), &output))
+	require.Empty(t, output.String())
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "scratch-owner"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "scratch-owner", "eci_active"), []byte("scope: x\ncwd: /tmp\nsession_id: scratch-owner\n"), 0600))
+	output.Reset()
+	require.Zero(t, RunHook(strings.NewReader(malformed), &output))
+	require.Contains(t, output.String(), "malformed hook identity")
 }

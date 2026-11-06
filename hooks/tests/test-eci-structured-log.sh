@@ -11,7 +11,7 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT
 export HOME="$TMP_ROOT/home"
 proof_root="$TMP_ROOT/proof"
 session_id=t00-structured-log
-session_dir="$HOME/tmp/agent/context/sessions/$session_id"
+session_dir="$HOME/.agent/context/sessions/$session_id"
 cwd="$TMP_ROOT/repository"
 log="$session_dir/high_level_log.jsonl"
 mkdir -p -- "$proof_root/$session_id" "$session_dir" "$cwd"

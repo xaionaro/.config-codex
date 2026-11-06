@@ -563,3 +563,50 @@ func TestHookUnderstandingSnapshotPublication(t *testing.T) {
 		}
 	}
 }
+
+// TestHookMakeMemoryCap pins which make launches lack a finite memory cap.
+//
+// Example: systemd-run without MemoryMax is denied while MemoryMax=1G passes.
+func TestHookMakeMemoryCap(t *testing.T) {
+	denied := [][]string{
+		{"make"},
+		{"env", "make"},
+		{"sudo", "make"},
+		{"sudo", "-u", "root", "make"},
+		{"command", "--", "make"},
+		{"exec", "--", "make"},
+		{"time", "make"},
+		{"time", "-f", "%e", "make"},
+		{"nice", "make"},
+		{"timeout", "30s", "make"},
+		{"bash", "-c", "make"},
+		{"bash", "-lc", "make test"},
+		{"sh", "-c", "make"},
+		{"bash", "-o", "pipefail", "-c", "make"},
+		{"xargs", "make"},
+		{"find", ".", "-exec", "make", ";"},
+		{"systemd-run", "--scope", "make"},
+		{"systemd-run", "-u", "build", "make"},
+		{"systemd-run", "--scope", "-p", "MemoryHigh=1G", "make"},
+		{"prlimit", "--as=unlimited", "make"},
+	}
+	allowed := [][]string{
+		{"systemd-run", "--scope", "--property=MemoryMax=1G", "make"},
+		{"systemd-run", "--scope", "-p", "MemoryMax=1G", "make"},
+		{"systemd-run", "-u", "build", "-p", "MemoryMax=1G", "make"},
+		{"prlimit", "--as=1073741824", "make"},
+		{"prlimit", "-v1048576", "make"},
+		{"cmake", "--version"},
+		{"printf", "make"},
+		{"echo", "make"},
+		{"command", "-v", "make"},
+		{"find", ".", "-name", "make", "-print"},
+		{"xargs", "echo", "make"},
+	}
+	for _, argv := range denied {
+		require.True(t, hookMakeUncapped(argv), "expected uncapped: %v", argv)
+	}
+	for _, argv := range allowed {
+		require.False(t, hookMakeUncapped(argv), "expected capped or unrelated: %v", argv)
+	}
+}

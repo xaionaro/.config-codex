@@ -52,7 +52,7 @@ done
 # Real canonical CLI uses an isolated owned fixture, not a current live session.
 proof_root="$TMP_ROOT/proof"
 session_id=t00-understanding-yaml
-session_dir="$HOME/tmp/agent/context/sessions/$session_id"
+session_dir="$HOME/.agent/context/sessions/$session_id"
 cwd="$TMP_ROOT/repository"
 mkdir -p -- "$session_dir" "$proof_root/$session_id" "$proof_root/other" "$cwd"
 run_current() {

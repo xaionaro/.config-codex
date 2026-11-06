@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -23,31 +24,33 @@ import (
 func TestCanonicalPlannerPublicationMatchesConsumerProvenance(t *testing.T) {
 	t.Parallel()
 
-	codexRoot := providerHome(ProviderCodex)
-	codexPlanner := filepath.Join(codexRoot, "hooks", "lib", "eci-command-plan-go")
-	codexReceipt := readPlannerProvenance(t, filepath.Join(codexPlanner, ".eci-command-plan.provenance"))
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Fatal("HOME must be set to locate the published planner")
+	}
+	publishRoot := filepath.Join(home, "tmp", "eci-runtime", "codex")
+	receipt := readPlannerProvenance(t, filepath.Join(publishRoot, ".eci-command-plan.provenance"))
 
-	codexBinary := filepath.Join(codexPlanner, "eci-command-plan")
-	if got := fileSHA256(t, codexBinary); got != codexReceipt["binary_sha256"] {
-		t.Errorf("canonical planner binary digest: got %s, receipt records %s", got, codexReceipt["binary_sha256"])
+	publishedBinary := filepath.Join(publishRoot, "eci-command-plan")
+	if got := fileSHA256(t, publishedBinary); got != receipt["binary_sha256"] {
+		t.Errorf("published planner binary digest: got %s, receipt records %s", got, receipt["binary_sha256"])
 	}
-	info, err := os.Stat(codexBinary)
+	info, err := os.Stat(publishedBinary)
 	if err != nil {
-		t.Fatalf("stat canonical planner binary: %v", err)
+		t.Fatalf("stat published planner binary: %v", err)
 	}
-	if got := fmt.Sprintf("%d", info.Size()); got != codexReceipt["binary_size"] {
-		t.Errorf("canonical planner binary size: got %s, receipt records %s", got, codexReceipt["binary_size"])
-	}
-	if got := fmt.Sprintf("%03o", info.Mode().Perm()); got != codexReceipt["binary_mode"] {
-		t.Errorf("canonical planner binary mode: got %s, receipt records %s", got, codexReceipt["binary_mode"])
+	if got := fmt.Sprintf("%03o", info.Mode().Perm()); got != "755" {
+		t.Errorf("published planner binary mode: got %s, want 755", got)
 	}
 }
 
-// readPlannerProvenance decodes the producer receipt required by planner
-// consumers.
+// readPlannerProvenance decodes the receipt written by the publisher
+// (bin/eci-runtime-sync planner-apply, contract original-go-build/v1).
+// Scalar rows appear exactly once; module and input rows are repeatable.
+// Every SHA-256 row must be a 64-character lowercase hex digest.
 //
-// Example: a publication test reads binary and source digests from the
-// canonical receipt.
+// Example: a publication test reads the published binary digest from the
+// receipt.
 func readPlannerProvenance(t *testing.T, path string) map[string]string {
 	t.Helper()
 
@@ -55,39 +58,44 @@ func readPlannerProvenance(t *testing.T, path string) map[string]string {
 	if err != nil {
 		t.Fatalf("read planner provenance %s: %v", path, err)
 	}
-	expectedKeys := []string{
-		"contract",
-		"go_path",
-		"go_sha256",
-		"go_version",
-		"go_root",
-		"go_tool_path",
-		"go_tool_sha256",
-		"target",
-		"source_go.mod_sha256",
-		"source_main.go_sha256",
-		"source_classifier.go_sha256",
-		"binary_sha256",
-		"binary_size",
-		"binary_mode",
+	scalarKeys := map[string]bool{
+		"contract":         true,
+		"go_binary_path":   true,
+		"go_binary_sha256": true,
+		"compiler_sha256":  true,
+		"linker_sha256":    true,
+		"target":           true,
+		"binary_sha256":    true,
+		"importer_sha256":  true,
+		"helper_sha256":    true,
 	}
-	lines := strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n")
-	if len(lines) != len(expectedKeys) {
-		t.Fatalf("planner provenance %s has %d rows, want %d", path, len(lines), len(expectedKeys))
-	}
-	values := make(map[string]string, len(expectedKeys))
-	for index, line := range lines {
-		key, value, found := strings.Cut(line, "\t")
-		if !found || key != expectedKeys[index] || value == "" {
+	digestPattern := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	values := make(map[string]string, len(scalarKeys))
+	for _, line := range strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n") {
+		fields := strings.Split(line, "\t")
+		key := fields[0]
+		switch {
+		case key == "module" && len(fields) == 2 && fields[1] != "":
+		case key == "input" && len(fields) == 3 && digestPattern.MatchString(fields[2]):
+		case scalarKeys[key] && len(fields) == 2 && fields[1] != "":
+			if _, dup := values[key]; dup {
+				t.Fatalf("planner provenance %s repeats row %q", path, key)
+			}
+			if strings.HasSuffix(key, "sha256") && !digestPattern.MatchString(fields[1]) {
+				t.Fatalf("planner provenance %s has malformed digest for %s", path, key)
+			}
+			values[key] = fields[1]
+		default:
 			t.Fatalf("malformed planner provenance row %q in %s", line, path)
 		}
-		values[key] = value
 	}
-	if values["contract"] != "closed-go-build/v1" {
+	for key := range scalarKeys {
+		if _, ok := values[key]; !ok {
+			t.Fatalf("planner provenance %s lacks row %q", path, key)
+		}
+	}
+	if values["contract"] != "original-go-build/v1" {
 		t.Fatalf("planner provenance %s has contract %q", path, values["contract"])
-	}
-	if values["binary_mode"] != "755" {
-		t.Fatalf("planner provenance %s has binary mode %q", path, values["binary_mode"])
 	}
 	return values
 }

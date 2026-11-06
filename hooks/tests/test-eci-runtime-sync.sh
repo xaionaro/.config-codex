@@ -270,8 +270,10 @@ planner_codex="$planner_root/.codex"
 planner_kimi="$planner_root/.kimi-code"
 planner_dir='hooks/lib/eci-command-plan-go'
 safe_import_dir='hooks/lib/eci-safe-import-go'
+hook_helper_dir='hooks/lib/eci-hook-helper-go'
 mkdir -p -- "$planner_root/tmp" "$planner_codex/bin" "$planner_codex/$planner_dir" "$planner_kimi/$planner_dir" \
-  "$planner_codex/$safe_import_dir" "$planner_kimi/$safe_import_dir"
+  "$planner_codex/$safe_import_dir" "$planner_kimi/$safe_import_dir" \
+  "$planner_codex/$hook_helper_dir" "$planner_kimi/$hook_helper_dir"
 cp -- "$ROOT/bin/eci-runtime-sync" "$planner_codex/bin/eci-runtime-sync"
 for planner_source in go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go hook.go hook_context.go hook_effects.go; do
   cp -- "$ROOT/$planner_dir/$planner_source" "$planner_codex/$planner_dir/$planner_source"
@@ -286,6 +288,16 @@ if [ ! -f "$ROOT/$safe_import_dir/go.mod" ]; then
 fi
 for safe_import_source in go.mod main.go; do
   cp -- "$safe_import_source_root/$safe_import_dir/$safe_import_source" "$planner_codex/$safe_import_dir/$safe_import_source"
+done
+# The hook helper is a third planner pair member; it is built from its own
+# module, so stage its sources from the same tree that supplies the safe importer.
+hook_helper_source_root="$ROOT"
+if [ ! -f "$ROOT/$hook_helper_dir/go.mod" ]; then
+  hook_helper_source_root="${HOME:?}/.codex"
+fi
+cp -- "$hook_helper_source_root/$hook_helper_dir/go.mod" "$planner_codex/$hook_helper_dir/"
+for hook_helper_source in "$hook_helper_source_root/$hook_helper_dir"/*.go; do
+  cp -- "$hook_helper_source" "$planner_codex/$hook_helper_dir/"
 done
 printf '%s\n' 'provider = "preserve-kimi-config"' >"$planner_kimi/config.toml"
 printf '%s\n' stale-codex >"$planner_codex/$planner_dir/eci-command-plan"
@@ -365,7 +377,7 @@ mkdir -p -- "$planner_ambient_bin" "$planner_ambient_root/cache" "$planner_ambie
 (
   cd -- "$ROOT/$planner_dir"
   GOENV=off GOFLAGS= GOWORK=off GOMODCACHE="$planner_ambient_root/modcache" \
-    /usr/lib/go-1.24/bin/go mod download
+    /usr/lib/go-1.26/bin/go mod download
 )
 printf '%s\n' 'package main' 'func main() {}' >"$planner_overlay_main"
 printf '{"Replace":{"%s":"%s"}}\n' \
@@ -373,7 +385,7 @@ printf '{"Replace":{"%s":"%s"}}\n' \
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf 'printf %%s fake-go-invoked > %q\n' "$planner_fake_go_marker"
-  printf '%s\n' 'exec /usr/lib/go-1.24/bin/go "$@"'
+  printf '%s\n' 'exec /usr/lib/go-1.26/bin/go "$@"'
 } >"$planner_fake_go"
 {
   printf '%s\n' '#!/usr/bin/env bash'
@@ -420,6 +432,9 @@ cmp -- "$planner_codex/$planner_dir/eci-command-plan" "$planner_kimi/$planner_di
 [ -x "$planner_codex/$safe_import_dir/eci-safe-import" ]
 [ -x "$planner_kimi/$safe_import_dir/eci-safe-import" ]
 cmp -- "$planner_codex/$safe_import_dir/eci-safe-import" "$planner_kimi/$safe_import_dir/eci-safe-import"
+[ -x "$planner_codex/$hook_helper_dir/eci-hook-helper" ]
+[ -x "$planner_kimi/$hook_helper_dir/eci-hook-helper" ]
+cmp -- "$planner_codex/$hook_helper_dir/eci-hook-helper" "$planner_kimi/$hook_helper_dir/eci-hook-helper"
 grep -qx 'provider = "preserve-kimi-config"' "$planner_kimi/config.toml"
 [ "$(sha256sum -- "$planner_kimi/config.toml" | awk '{print $1}')" = "$planner_kimi_config_digest" ]
 [ -f "$planner_codex/$planner_dir/.eci-command-plan.provenance" ]

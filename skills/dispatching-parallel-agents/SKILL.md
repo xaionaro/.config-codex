@@ -71,11 +71,12 @@ Each agent gets:
 
 ### 3. Dispatch in Parallel
 
+`agent_type="worker"` maps to `agent="task"`; `reasoning_effort` has no `task` equivalent and is dropped; `message` maps to `task`.
+
 ```python
-agent_tool_abort = spawn_agent(
-    agent_type="worker",
-    reasoning_effort="xhigh",
-    message="""Role label: agent-tool-abort
+agent_tool_abort = task(
+    agent="task",
+    task="""Role label: agent-tool-abort
 
 Fix the failures in src/agents/agent-tool-abort.test.ts.
 
@@ -91,10 +92,9 @@ Return: root cause, changed files, verification run, and remaining risk.
 """,
 )
 
-batch_completion = spawn_agent(
-    agent_type="worker",
-    reasoning_effort="xhigh",
-    message="""Role label: batch-completion
+batch_completion = task(
+    agent="task",
+    task="""Role label: batch-completion
 
 Fix the failures in src/agents/batch-completion-behavior.test.ts.
 
@@ -110,10 +110,9 @@ Return: root cause, changed files, verification run, and remaining risk.
 """,
 )
 
-tool_approval_races = spawn_agent(
-    agent_type="worker",
-    reasoning_effort="xhigh",
-    message="""Role label: tool-approval-races
+tool_approval_races = task(
+    agent="task",
+    task="""Role label: tool-approval-races
 
 Fix the failures in src/agents/tool-approval-race-conditions.test.ts.
 
@@ -140,9 +139,7 @@ Return: root cause, changed files, verification run, and remaining risk.
 Wait for the spawned agents before integrating:
 
 ```python
-wait_agent(agent_tool_abort)
-wait_agent(batch_completion)
-wait_agent(tool_approval_races)
+wait
 ```
 
 When agents return:
@@ -221,7 +218,7 @@ Return: Summary of what you found and what you fixed.
 
 **Dispatch:**
 ```
-Use the three `spawn_agent` calls from "Dispatch in Parallel" with role labels:
+Use the three `task` calls from "Dispatch in Parallel" with role labels:
 agent-tool-abort
 batch-completion
 tool-approval-races
@@ -232,9 +229,7 @@ batch-completion: <runtime name> [worker]
 tool-approval-races: <runtime name> [worker]
 
 wait:
-wait_agent(agent_tool_abort)
-wait_agent(batch_completion)
-wait_agent(tool_approval_races)
+wait
 ```
 
 **Results:**

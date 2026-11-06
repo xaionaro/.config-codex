@@ -37,27 +37,13 @@ exec {planner_fd}<&-
   exit 1
 }
 
-# Keep the hook contract explicit: active validated planners execute only via
-# the inherited descriptor, and the descriptor is closed after classification.
-grep -Fq 'CODEX_PLAN_PROVENANCE_EXECUTABLE="/proc/self/fd/$CODEX_PLAN_PROVENANCE_FD"' \
-  "$ROOT/hooks/validate-bash.sh" || {
-  printf '%s\n' 'validate-bash does not expose the pinned planner descriptor handoff' >&2
-  exit 1
-}
-grep -Fq '"$command_plan_executable" 2>/dev/null' "$ROOT/hooks/validate-bash.sh" || {
-  printf '%s\n' 'validate-bash does not execute the planner through its pinned handoff' >&2
-  exit 1
-}
-grep -Fq 'codex_plan_provenance_close_pinned_binary' "$ROOT/hooks/validate-bash.sh" || {
-  printf '%s\n' 'validate-bash does not close the pinned planner descriptor' >&2
-  exit 1
-}
-pin_line="$(grep -n -F 'codex_plan_provenance_pin_binary "$binary" "$planner_dir_real/eci-command-plan" "$uid"' "$ROOT/hooks/validate-bash.sh" | cut -d: -f1)"
-execute_line="$(grep -n -F '"$command_plan_executable" 2>/dev/null' "$ROOT/hooks/validate-bash.sh" | cut -d: -f1)"
-close_line="$(grep -n -x 'codex_plan_provenance_close_pinned_binary' "$ROOT/hooks/validate-bash.sh" | tail -n 1 | cut -d: -f1)"
-[[ "$pin_line" =~ ^[0-9]+$ ]] && [[ "$execute_line" =~ ^[0-9]+$ ]] && [[ "$close_line" =~ ^[0-9]+$ ]] &&
-  [ "$pin_line" -lt "$execute_line" ] && [ "$execute_line" -lt "$close_line" ] || {
-    printf '%s\n' 'validate-bash does not pin before planner execution and close afterward' >&2
+# Keep the hook contract explicit: validate-bash opens the validated planner
+# once and execs it through the inherited descriptor, never by pathname.
+open_line="$(grep -n -F 'exec {planner_fd}<"$binary"' "$ROOT/hooks/validate-bash.sh" | cut -d: -f1)"
+exec_line="$(grep -n -F 'exec "/proc/self/fd/$planner_fd" --hook' "$ROOT/hooks/validate-bash.sh" | cut -d: -f1)"
+[[ "$open_line" =~ ^[0-9]+$ ]] && [[ "$exec_line" =~ ^[0-9]+$ ]] &&
+  [ "$open_line" -lt "$exec_line" ] || {
+    printf '%s\n' 'validate-bash does not open the planner descriptor before exec through /proc/self/fd' >&2
     exit 1
   }
 

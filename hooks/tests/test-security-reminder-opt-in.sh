@@ -9,7 +9,9 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 dispatch_root="$TMP_ROOT/hooks"
 mkdir -p -- "$dispatch_root"
 cp -- "$ROOT/hooks/pretooluse-edit-dispatch.sh" "$dispatch_root/pretooluse-edit-dispatch.sh"
-cp -- "$ROOT/hooks/security-reminder.py" "$dispatch_root/security-reminder.py"
+ln -s -- "$ROOT/hooks/lib" "$dispatch_root/lib"
+source "$ROOT/hooks/lib/eci-runtime-sync.sh"
+helper="$(eci_runtime_hook_helper_path)" || { printf '%s\n' 'eci-hook-helper unavailable' >&2; exit 1; }
 
 # Exercise the private dispatcher with a line-2 bypass removed if present,
 # and preserve the source bytes.
@@ -31,7 +33,6 @@ exit 0
 EOF
 chmod 755 -- \
   "$dispatch_root/pretooluse-edit-dispatch.sh" \
-  "$dispatch_root/security-reminder.py" \
   "$dispatch_root/validate-edit-write.sh" \
   "$dispatch_root/eci-active-gate.sh"
 
@@ -73,7 +74,7 @@ default_direct_proof="$TMP_ROOT/default-direct-proof"
 default_direct_out="$TMP_ROOT/default-direct.out"
 default_direct_err="$TMP_ROOT/default-direct.err"
 env -u ENABLE_SECURITY_REMINDER CODEX_PROOF_ROOT="$default_direct_proof" \
-  python3 "$dispatch_root/security-reminder.py" <"$input" \
+  "$helper" security-reminder <"$input" \
   >"$default_direct_out" 2>"$default_direct_err"
 assert_empty "$default_direct_out" 'default reminder stdout'
 assert_empty "$default_direct_err" 'default reminder stderr'

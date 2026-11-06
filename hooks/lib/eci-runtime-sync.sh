@@ -11,8 +11,21 @@ source "${BASH_SOURCE[0]%/*}/codex-file-lock.sh"
 eci_runtime_artifact_path() {
   local provider="$1" name="$2" output_root="${3:-$HOME/tmp/eci-runtime}"
   case "$provider" in codex|kimi) ;; *) return 1 ;; esac
-  case "$name" in eci-command-plan|eci-safe-import) ;; *) return 1 ;; esac
+  case "$name" in eci-command-plan|eci-safe-import|eci-hook-helper) ;; *) return 1 ;; esac
   printf '%s/%s/%s\n' "$output_root" "$provider" "$name"
+}
+
+# Resolve the published Go hook helper, rebuilding it only when absent or
+# host-incompatible. Callers treat failure as advisory.
+eci_runtime_hook_helper_path() {
+  local root="${HOME:-}" binary
+  [ -n "$root" ] || return 1
+  binary="$(eci_runtime_artifact_path codex eci-hook-helper)" || return 1
+  if ! eci_runtime_binary_is_native "$binary"; then
+    eci_runtime_build_missing "$root/.codex" eci-hook-helper || return 1
+    eci_runtime_binary_is_native "$binary" || return 1
+  fi
+  printf '%s\n' "$binary"
 }
 
 # Source the original publisher only inside this owned child. The publisher
@@ -30,10 +43,10 @@ eci_runtime_build_missing() (
   local root="$1" name module binary compiler lock_fd temporary='' provider resolved_root
   local -a pair_tools=()
   shift
-  [ "$#" -gt 0 ] || set -- eci-command-gate-mode eci-command-plan eci-safe-import eci-worker-git
+  [ "$#" -gt 0 ] || set -- eci-command-gate-mode eci-command-plan eci-safe-import eci-hook-helper eci-worker-git
   for name in "$@"; do
     case "$name" in
-      eci-command-plan|eci-safe-import) pair_tools+=("$name") ;;
+      eci-command-plan|eci-safe-import|eci-hook-helper) pair_tools+=("$name") ;;
       eci-command-gate-mode|eci-worker-git) ;;
       *) printf 'ECI runtime build: unknown tool: %s\n' "$name" >&2; return 1 ;;
     esac
@@ -54,7 +67,7 @@ eci_runtime_build_missing() (
   for name in "$@"; do
     case "$name" in
       eci-command-gate-mode|eci-worker-git) binary="$root/bin/$name" ;;
-      eci-command-plan|eci-safe-import) continue ;;
+      eci-command-plan|eci-safe-import|eci-hook-helper) continue ;;
       *) printf 'ECI runtime build: unknown tool: %s\n' "$name" >&2; return 1 ;;
     esac
     [ ! -x "$binary" ] || continue

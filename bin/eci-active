@@ -255,7 +255,7 @@ ledger_log_name='high_level_log.jsonl'
 ledger_anchor_name='high_level_log.anchor'
 
 context_root() {
-  printf '%s/tmp/agent/context\n' "${HOME:-}"
+  printf '%s/.agent/context\n' "${HOME:-}"
 }
 
 ensure_context_session_dir() {
@@ -663,97 +663,10 @@ approval_git_repo_context() {
 validate_approval_commit_command() {
   # R11: This exact commit-command grammar is an adversarial parser assumption; it does not itself prevent a concrete
   # accidental deviation. Correct behavior is to allow ordinary direct commit forms after current staged-diff/repository confirmation, which is the real boundary.
-  python3 - "$1" <<'PY'
-import re
-import shlex
-import sys
-
-command = sys.argv[1]
-if not command:
-    print("command is empty")
-    raise SystemExit(1)
-if any(ord(char) < 32 or ord(char) == 127 for char in command):
-    print("command contains control characters; tabs/newlines are not allowed")
-    raise SystemExit(1)
-quote = None
-escaped = False
-for index, char in enumerate(command):
-    if escaped:
-        escaped = False
-        continue
-    if char == "\\" and quote != "'":
-        escaped = True
-        continue
-    if quote == "'":
-        if char == "'":
-            quote = None
-        continue
-    if quote == '"':
-        if char == '"':
-            quote = None
-        elif char in ("$", "`"):
-            print("shell substitution marker is not allowed inside double quotes")
-            raise SystemExit(1)
-        continue
-    if char in ("'", '"'):
-        quote = char
-        continue
-    if char in (";", "&", "|", "(", ")", "<", ">", "`", "$"):
-        print("shell operator or substitution marker is not allowed")
-        raise SystemExit(1)
-if quote is not None or escaped:
-    print("shell quoting is unbalanced")
-    raise SystemExit(1)
-if not re.match(r"^git\s+commit(?:\s|$)", command):
-    print("expected a direct literal 'git commit' invocation; wrappers, assignments, and alternate Git paths are not allowed")
-    raise SystemExit(1)
-try:
-    tokens = shlex.split(command, posix=True)
-except ValueError as exc:
-    print("shell quoting is invalid: " + str(exc))
-    raise SystemExit(1)
-if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "commit":
-    print("expected command tokens ['git', 'commit']")
-    raise SystemExit(1)
-value_options = {
-    "-m", "--message", "-F", "--file", "--author", "--date", "--cleanup",
-    "--trailer", "--fixup", "--squash", "--reuse-message", "-C",
-    "--reedit-message", "--template", "-S", "--gpg-sign",
-}
-flag_options = {
-    "-a", "--all", "-p", "--patch", "--no-verify", "--verify", "--signoff",
-    "--amend", "--allow-empty", "--allow-empty-message", "--edit", "--no-edit",
-    "--reset-author", "--only", "--include", "--no-post-rewrite", "--quiet",
-    "-q", "--verbose", "-v", "--status", "--no-status",
-}
-index = 2
-while index < len(tokens):
-    token = tokens[index]
-    if token == "--":
-        print("pathspec arguments are outside the bounded approval grammar; action: stage intended paths explicitly with git add -- <paths>, then rerun approval with a plain git commit -m ... and no -a/-am/pathspec")
-        raise SystemExit(1)
-    if token in value_options:
-        if index + 1 >= len(tokens) or not tokens[index + 1] or any(ord(char) < 32 or ord(char) == 127 for char in tokens[index + 1]):
-            print("option %s requires one bounded printable value" % token)
-            raise SystemExit(1)
-        index += 2
-        continue
-    if any(token.startswith(option + "=") for option in value_options if option.startswith("--")):
-        if token.endswith("="):
-            print("option %s requires a non-empty value" % token.split("=", 1)[0])
-            raise SystemExit(1)
-        index += 1
-        continue
-    if token in flag_options:
-        index += 1
-        continue
-    if token == "-am":
-        print("unsupported or unbounded commit option: -am; action: stage intended paths explicitly with git add -- <paths>, then rerun approval with a plain git commit -m ... and no -a/-am/pathspec")
-    else:
-        print("unsupported or unbounded commit option: %s" % token)
-    raise SystemExit(1)
-print("ok")
-PY
+  local helper
+  . "$base_dir/hooks/lib/eci-runtime-sync.sh"
+  helper="$(eci_runtime_hook_helper_path)" || return 1
+  "$helper" approval-commit-command "$1"
 }
 
 validate_approval_artifact() {

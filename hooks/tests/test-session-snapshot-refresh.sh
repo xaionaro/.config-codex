@@ -249,9 +249,9 @@ test_worker_cli_lifecycle_mutations_are_role_neutral() {
 test_eci_active_mutations_fail_closed_when_lock_is_busy() {
   local proof_root="$TMP_ROOT/mutation-lock-proof" session_dir log_path lock_fd entry
   session_dir="$proof_root/t00-session"
-  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp" "$TMP_ROOT/home/tmp/agent/context/sessions/t00-session"
+  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp" "$TMP_ROOT/home/.agent/context/sessions/t00-session"
   printf 'scope: lock test\n' >"$session_dir/eci_active"
-  log_path="$TMP_ROOT/home/tmp/agent/context/sessions/t00-session/high_level_log.jsonl"
+  log_path="$TMP_ROOT/home/.agent/context/sessions/t00-session/high_level_log.jsonl"
   entry='{"event":"checkpoint","summary":"append after lock release"}'
   printf '%s\n' '{"event":"checkpoint","summary":"existing entry"}' >"$log_path"
   cp "$log_path" "$TMP_ROOT/log-before-lock"
@@ -331,12 +331,13 @@ test_session_start_builds_missing_go_tools() {
     bin/eci-command-gate-mode
     hooks/lib/eci-command-plan-go/eci-command-plan
     hooks/lib/eci-safe-import-go/eci-safe-import
+    hooks/lib/eci-hook-helper-go/eci-hook-helper
   )
   mkdir -p "$fixture/hooks/lib" "$fixture/bin" "$TMP_ROOT/build-config"
   cp "$ROOT/hooks/session-snapshot.sh" "$fixture/hooks/"
   cp "$ROOT/bin/eci-active" "$fixture/bin/"
   cp "$ROOT/hooks/lib/"*.sh "$fixture/hooks/lib/"
-  for module in eci-command-gate-mode-go eci-command-plan-go eci-safe-import-go; do
+  for module in eci-command-gate-mode-go eci-command-plan-go eci-safe-import-go eci-hook-helper-go; do
     mkdir -p "$fixture/hooks/lib/$module"
     cp "$ROOT/hooks/lib/$module/go.mod" "$ROOT/hooks/lib/$module/"*.go "$fixture/hooks/lib/$module/"
   done

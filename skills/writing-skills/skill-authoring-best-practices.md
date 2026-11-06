@@ -14,7 +14,7 @@ Compact Codex-native guidance for authoring skill files. Use with
 | Names | Use letters, numbers, and hyphens. Prefer verb-first or gerund names. |
 | References | Refer to other skills by bare Codex-local names: `test-driven-development`, `harness-tuning`. |
 | Loading | Avoid forced file-load syntax and home-directory paths in cross-references. |
-| Agents | Test with `spawn_agent`. Do not run agents through shell commands. |
+| Agents | Test by spawning subagents. Do not run agents through shell commands. |
 | Stop-hook handling | Subagent prompts must include the Stop-hook handling line below. |
 | Evidence | Verify behavior before claiming the skill works. |
 
@@ -92,7 +92,7 @@ Treat skill authoring as TDD for process documentation.
 | GREEN | Add the smallest guidance that blocks those failures. |
 | REFACTOR | Re-test, close new loopholes, remove redundant text. |
 
-Use `spawn_agent` for subagent tests. The prompt must include:
+Spawn a subagent for subagent tests. The prompt must include:
 
 ```text
 Follow any Stop-hook prompt in this session, including required proof/checklist files. Fix blockers within your assigned scope. Report only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.
@@ -124,7 +124,7 @@ Apply `harness-tuning`:
 ## Verification
 
 Before publishing or reporting success:
-- Run the skill's pressure tests with `spawn_agent`.
+- Run the skill's pressure tests by spawning subagents.
 - Run relevant repo checks.
 - Run `git diff --check`.
 - Re-read changed lines.

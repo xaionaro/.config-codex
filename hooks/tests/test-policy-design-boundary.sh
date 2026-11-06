@@ -10,10 +10,10 @@ grep -Fq 'substantial scale-up would amplify' "$POLICY"
 grep -Fq 'semantic/model/contract errors' "$POLICY"
 grep -Fq 'contained blast radius' "$POLICY"
 grep -Fq 'may label it REJECT when its evidence supports that label' "$POLICY"
-grep -Fq 'coordinator alone adjudicates final impact' "$POLICY"
+grep -Fq 'the ECI Supervisor retains final ECI adjudication' "$POLICY"
 grep -Fq 'never a design REJECT after that adjudication' "$POLICY"
 grep -Fq 'resolves or records every such finding' "$POLICY"
-grep -Fq 'security boundary is design-level' "$POLICY"
+grep -Fq 'data/side-effect boundary is design-level' "$POLICY"
 grep -Fq 'mechanical call-site correction' "$POLICY"
 
 printf '%s\n' 'design-boundary policy assertions: PASS'

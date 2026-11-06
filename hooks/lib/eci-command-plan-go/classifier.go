@@ -143,9 +143,6 @@ const (
 	// target with the current Codex lifecycle executable; spelling alone does
 	// not grant or remove lifecycle access.
 	DeferredRouteCodexLifecycle DeferredRoute = "codex-lifecycle"
-	// DeferredRouteWorkerEnvGitFsckLostFound identifies a direct transparent
-	// env-prefixed Git fsck writer for the active Codex worker boundary.
-	DeferredRouteWorkerEnvGitFsckLostFound DeferredRoute = "worker-env-git-fsck-lost-found"
 	// DeferredRouteReviewedScriptTrace identifies the one bounded coordinator
 	// trace diagnostic that hands a reviewed test to the existing script route.
 	DeferredRouteReviewedScriptTrace DeferredRoute = "reviewed-script-trace"
@@ -1130,16 +1127,13 @@ func deferredRouteForPlan(request Request, parsed plan, decision DecisionKind, c
 		return ""
 	}
 
-	if isWorkerEnvGitFsckLostFound(parsed.segments[0].argv) {
-		return DeferredRouteWorkerEnvGitFsckLostFound
-	}
 	return ""
 }
 
 // isWorkerEnvGitFsckLostFound recognizes the one direct env child grammar that
-// owns the worker fsck route. It deliberately uses the env-specific unwrapping
-// rules and direct child positions; generic wrapper and Git-option handling
-// remain outside this route predicate.
+// the worker Git fsck gate exempts from denial. It deliberately uses the
+// env-specific unwrapping rules and direct child positions; generic wrapper and
+// Git-option handling remain outside this predicate.
 func isWorkerEnvGitFsckLostFound(argv []token) bool {
 	if len(argv) == 0 || argv[0].value != "env" {
 		return false
@@ -3852,7 +3846,7 @@ func inspectSegment(
 		// paths or peer allowlists in the compiled planner.
 		return DecisionDefer, nil
 	}
-	if request.Marker == MarkerActive && wholeSingleSegmentPlan {
+	if request.Marker == MarkerActive && wholeSingleSegmentPlan && request.ShellDepth == 0 {
 		if target, ok := isPreCommitHookModeRepair(current.argv); ok {
 			// Hook-mode repair is an Emergency Unblock exception for one complete
 			// direct plan. A compound plan retains its ordinary segment policy.

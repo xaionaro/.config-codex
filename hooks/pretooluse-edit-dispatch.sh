@@ -44,16 +44,20 @@ gates=(
   "$hook_dir/eci-active-gate.sh"
 )
 reminder_index=""
+reminder_helper=""
 if [ "${ENABLE_SECURITY_REMINDER:-0}" = 1 ] && security_reminder_candidate "$(<"$input_file")"; then
-  reminder_index="${#gates[@]}"
-  gates+=("$hook_dir/security-reminder.py")
+  reminder_helper="$(source "$hook_dir/lib/eci-runtime-sync.sh" && eci_runtime_hook_helper_path)" || reminder_helper=""
+  if [ -n "$reminder_helper" ]; then
+    reminder_index="${#gates[@]}"
+    gates+=("$reminder_helper")
+  fi
 fi
 pids=()
 for index in "${!gates[@]}"; do
   output_file="$tmp_dir/output-$index"
   error_file="$tmp_dir/error-$index"
   case "${gates[$index]}" in
-  *.py) python3 "${gates[$index]}" <"$input_file" >"$output_file" 2>"$error_file" & ;;
+  */eci-hook-helper) "${gates[$index]}" security-reminder <"$input_file" >"$output_file" 2>"$error_file" & ;;
   *) bash "${gates[$index]}" <"$input_file" >"$output_file" 2>"$error_file" & ;;
   esac
   pids[$index]=$!

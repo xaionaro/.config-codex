@@ -22,7 +22,7 @@ mkdir -p -- "$RUNTIME_ROOT/bin"
 # Build the disposable runtime from its copied sources. Clean archives contain
 # neither ignored executables nor optional planner provenance.
 source "$RUNTIME_ROOT/hooks/lib/eci-runtime-sync.sh"
-PATH="/usr/lib/go-1.24/bin:$PATH" eci_runtime_build_missing "$RUNTIME_ROOT" \
+PATH="/usr/lib/go-1.26/bin:$PATH" eci_runtime_build_missing "$RUNTIME_ROOT" \
   eci-command-gate-mode eci-command-plan eci-safe-import eci-worker-git
 source_hook_sha="$(sha256sum -- "$RUNTIME_ROOT/hooks/validate-bash.sh" | awk '{print $1}')"
 if cmp -s -- <(head -n 9 -- "$RUNTIME_ROOT/hooks/validate-bash.sh") <(cat <<'BRIDGE'
@@ -53,7 +53,7 @@ BASH_LAUNCHER="$(jq -er '.hooks.PreToolUse[] | select(.matcher == "^Bash$") | .h
 PLANNER_DIR="$RUNTIME_ROOT/hooks/lib/eci-command-plan-go"
 (
   cd -- "$PLANNER_DIR"
-  /usr/lib/go-1.24/bin/go build -trimpath -buildvcs=false -o eci-command-plan .
+  /usr/lib/go-1.26/bin/go build -trimpath -buildvcs=false -o eci-command-plan .
 )
 chmod 755 -- "$PLANNER_DIR/eci-command-plan"
 planner_go_mod_sha="$(sha256sum -- "$PLANNER_DIR/go.mod" | awk '{print $1}')"
@@ -2708,7 +2708,7 @@ run_effect_aware_git_target() {
   if [[ "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-slice || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-matrix || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-cli-edges || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-native || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = worker-git-index-aliases || "${NORMAL_GIT_ADMISSION_TARGET:-full}" = full ]]; then
     (
       cd -- "$SOURCE_ROOT/hooks/lib/eci-worker-git-go"
-      env GOWORK=off CGO_ENABLED=0 /usr/lib/go-1.24/bin/go build -mod=readonly -trimpath -buildvcs=false -o "$RUNTIME_ROOT/bin/eci-worker-git" .
+      env GOWORK=off CGO_ENABLED=0 /usr/lib/go-1.26/bin/go build -mod=readonly -trimpath -buildvcs=false -o "$RUNTIME_ROOT/bin/eci-worker-git" .
     )
     assert_denied_code 'git add -- file.txt' ECI_WORKER_GIT_OWNERSHIP_DENIED worker eci-worker-git || return 1
     assert_allowed 'git diff -- file.txt' worker || return 1

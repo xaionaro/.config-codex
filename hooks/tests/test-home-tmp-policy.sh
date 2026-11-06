@@ -28,9 +28,7 @@ assert_absent "'/tmp/brainstorm" "$ROOT/skills/brainstorming/scripts/server.cjs"
 assert_absent 'SESSION_DIR="/tmp/brainstorm-' "$ROOT/skills/brainstorming/scripts/start-server.sh"
 assert_absent '[[ "$SESSION_DIR" == /tmp/* ]]' "$ROOT/skills/brainstorming/scripts/stop-server.sh"
 
-for path in \
-  "$ROOT/hooks/system-prompt-reviewer.sh" \
-  "$ROOT/hooks/lib/edit-bash-pre-reviewer-worker.sh"; do
+for path in "$ROOT/hooks/system-prompt-reviewer.sh"; do
   if rg -n '(^|[=( ])mktemp[[:space:]]*($|[;&])' "$path" >/dev/null 2>&1; then
     rg -n '(^|[=( ])mktemp[[:space:]]*($|[;&])' "$path" >&2 || true
     fail "bare mktemp can inherit the system temporary root: $path"

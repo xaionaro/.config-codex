@@ -6,11 +6,12 @@ Use this template when dispatching a plan document reviewer subagent.
 
 **Dispatch after:** The complete plan is written.
 
+`agent_type` maps to `agent` (`scout`, the read-only omp agent); `reasoning_effort` has no `task` equivalent and is dropped; `message` maps to `task`.
+
 ```
-spawn_agent(
-  agent_type="explorer",
-  reasoning_effort="xhigh",
-  message="""
+task(
+  agent="scout",
+  task="""
 Role label: plan-document-reviewer
 
 <task>

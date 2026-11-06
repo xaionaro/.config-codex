@@ -107,6 +107,14 @@ HOME="$HOME_ROOT" CODEX_HOME="$FIXTURE_HOME" KIMI_CODE_HOME="$KIMI_HOME" \
   "$FIXTURE_HOME/bin/eci-active" maintain-planner
 grep -Fx -- "planner-apply --target $KIMI_HOME" "$DISPATCH_LOG" >/dev/null
 
+# Publish the native command planner where validate-bash resolves it. The
+# non-native stub under the hooks tree must never execute.
+mkdir -p -- "$HOME_ROOT/tmp/eci-runtime/codex"
+(
+  cd "$FIXTURE_HOME/hooks/lib/eci-command-plan-go"
+  go build -o "$HOME_ROOT/tmp/eci-runtime/codex/eci-command-plan" .
+)
+
 snapshot_full_runtime_receipt
 
 run_hook() {
@@ -187,11 +195,6 @@ aliased_home_output="$(run_hook_with_home "$exact_command" "$HOME_ALIAS" "$alter
 # With a working planner, equivalent spellings must resolve to the same
 # lifecycle target. The adapter compares the actual executable rather than
 # making punctuation, quoting, PATH, or HOME expansion a permission boundary.
-(
-  cd "$FIXTURE_HOME/hooks/lib/eci-command-plan-go"
-  rm -f -- eci-command-plan
-  go build -o eci-command-plan .
-)
 snapshot_full_runtime_receipt
 assert_maintenance_target_admitted() {
   local target_command="$1" target_output

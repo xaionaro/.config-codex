@@ -42,18 +42,20 @@ file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.n
 
 [ -n "$file_path" ] || exit 0
 
-# This hook runs synchronously for every editor invocation.  Resolve the
-# thread ownership once instead of reparsing transcript metadata in both the
-# control-file guard and the activity bookkeeping branch.
-hook_is_subagent=false
-if codex_hook_is_subagent_context "$input"; then
-  hook_is_subagent=true
-fi
+# Thread ownership is resolved once.  "unknown" means the transcript could not
+# be verified; subagent-guarded control and ledger edits fail closed on it.
+hook_subagent_status="$(codex_hook_subagent_status "$input")"
 
 resolved_file_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$file_path" 2>/dev/null || true)"
 lexical_file_path="$(codex_lexical_hook_path "${cwd:-$PWD}" "$file_path" 2>/dev/null || true)"
-if [ -n "$resolved_file_path" ] &&
-   [ "$hook_is_subagent" = true ] &&
+
+if codex_session_path_is_unsafe "$lexical_file_path"; then
+  deny "$(eci_diagnostic_reason "ECI_PROOF_PATH_ESCAPE_DENIED" "PreToolUse" "edit-validation" "$file_path" "Refusing unsafe session-scoped edit path ${file_path##*/}: proof-root and context-root ancestors and final components must not be symlinks." "use the current session's canonical path")"
+fi
+if [ "$resolved_file_path" != "$lexical_file_path" ] && codex_session_path_is_unsafe "$resolved_file_path"; then
+  deny "$(eci_diagnostic_reason "ECI_PROOF_PATH_ESCAPE_DENIED" "PreToolUse" "edit-validation" "$file_path" "Refusing unsafe resolved session-scoped edit path ${file_path##*/}: resolved proof-root and context-root ancestors and final components must not be symlinks." "use the current session's canonical path")"
+fi
+if [ "$hook_subagent_status" != main ] &&
    { control_alias=false
      if [ -n "$lexical_file_path" ] && codex_path_is_eci_control_alias "$lexical_file_path"; then
        control_alias=true
@@ -67,27 +69,42 @@ if [ -n "$resolved_file_path" ] &&
      [ "$control_alias" = true ] ||
      codex_path_is_git_approval_file "$lexical_file_path" ||
      codex_path_is_git_approval_file "$resolved_file_path"; }; then
-  deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "edit-validation" "$file_path" "Only the main thread may modify coordinator-owned ECI control state." "route coordinator-owned ECI control changes through the main/orchestrator")"
+  deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "edit-validation" "$file_path" "Only the main thread may modify coordinator-owned ECI or authorization state." "route coordinator-owned ECI or authorization changes through the main/orchestrator")"
 fi
 
-# Session ownership is a concrete target check only when both the target owner
-# and the callback's allowed session set resolve.  Unavailable metadata is an
-# advisory limitation, not a reason to deny an ordinary edit.
+# Local relative replace directives in go.mod bypass the go.work rule; deny at edit time.
+edit_text="$(printf '%s' "$input" | jq -r '.tool_input | [.content, .new_string, .edits[]?.new_string] | map(select(. != null)) | .[]' 2>/dev/null || true)"
+if [[ "$file_path" == go.mod || "$file_path" == */go.mod ]] &&
+   printf '%s\n' "$edit_text" | grep -Eq '=>[[:space:]]*(\.\./|\./)'; then
+  deny "Do not add local relative replace directives to go.mod. Use a workspace, module proxy, or explicit user-approved local override."
+fi
+
+# Session-scoped targets fail closed.  An owner that resolves must match an
+# allowed session, and a session-scoped target with no resolvable session id
+# is denied rather than allowed through.
+ownership_failure_deny() {
+  deny "ownership check failed; failing closed for session-scoped path safety (file=${BASH_SOURCE[0]},line=${BASH_LINENO[0]:-unknown},command=${BASH_COMMAND})"
+}
+trap 'ownership_failure_deny' ERR
 owner_probe="${lexical_file_path:-$file_path}"
 owner_session_id="$(codex_path_owner_session_id "$owner_probe" 2>/dev/null || true)"
 [ -n "$owner_session_id" ] || owner_session_id="$(codex_path_owner_session_id "${resolved_file_path:-$file_path}" 2>/dev/null || true)"
 if [ -n "$owner_session_id" ]; then
-  mapfile -t allowed_session_ids < <(codex_hook_allowed_session_ids "$input")
-  if [ "${#allowed_session_ids[@]}" -gt 0 ] &&
-    ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
+  mapfile -t allowed_session_ids < <(codex_hook_allowed_session_ids "$input" "$hook_subagent_status")
+  if [ "${#allowed_session_ids[@]}" -eq 0 ]; then
+    deny "Session-scoped file ${file_path##*/} requires a current session id; none resolved. Refusing fail-open on a session-scoped path."
+  fi
+  if ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
     deny "Refusing to edit ${file_path##*/}: file belongs to session $owner_session_id, allowed sessions are ${allowed_session_ids[*]}."
   fi
 fi
+trap - ERR
+codex_install_fail_open_trap validate-edit-write
 
 eci_direct_marker="$(codex_proof_root)/${session_id}/eci_active"
 if [ ! -f "$eci_direct_marker" ] || [ -L "$eci_direct_marker" ]; then
   codex_note_touched_repo "$session_id" "$cwd" "$file_path" || true
-  if [ "$hook_is_subagent" != true ]; then
+  if [ "$hook_subagent_status" = main ]; then
     codex_mark_activity "$session_id" "$cwd" edit || true
   fi
 fi

@@ -1,12 +1,13 @@
 #model = "qwen3.8:27b-mlx"
 #model_provider = "ollama"
 #model_reasoning_effort = "xhigh"
-oss_provider = "ollama"
+#oss_provider = "ollama"
 model = "gpt-6.1-terra"
-review_model = "gpt-6-luna"
-#model = "gpt-reserve"
-#review_model = "gpt-6-astra"
 model_reasoning_effort = "low"
+#model = "flint"
+#model_provider = "flint"
+#review_model = "flint"
+#model_reasoning_effort = "low"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 developer_instructions = """
@@ -119,6 +120,11 @@ wire_api = "responses"
 [model_providers.zai]
 name = "Z.AI (GLM) via local responses-bridge proxy"
 base_url = "http://127.0.0.1:8463/v1"
+wire_api = "responses"
+
+[model_providers.flint]
+name = "Flint on M4 Max"
+base_url = "http://192.168.0.171:18080/v1"
 wire_api = "responses"
 
 [model_providers.ollama_qwen]

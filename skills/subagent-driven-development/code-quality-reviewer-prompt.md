@@ -8,11 +8,12 @@ Use this template when dispatching a code quality reviewer subagent.
 
 Dispatch an explorer with:
 
+`agent_type` maps to `agent` (`scout`, the read-only omp agent); `reasoning_effort` has no `task` equivalent and is dropped; `message` maps to `task`.
+
 ```
-spawn_agent(
-  agent_type="explorer",
-  reasoning_effort="xhigh",
-  message="""
+task(
+  agent="scout",
+  task="""
 Role label: code-quality-reviewer
 
 <stop-hook-boundary>

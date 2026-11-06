@@ -21,7 +21,7 @@ sed -i '2{/^exit 0$/d;}' -- "$RUNTIME_ROOT/hooks/validate-bash.sh"
 PLANNER_DIR="$RUNTIME_ROOT/hooks/lib/eci-command-plan-go"
 (
   cd -- "$PLANNER_DIR"
-  /usr/lib/go-1.24/bin/go build -trimpath -buildvcs=false -o eci-command-plan .
+  /usr/lib/go-1.26/bin/go build -trimpath -buildvcs=false -o eci-command-plan .
 )
 chmod 755 -- "$PLANNER_DIR/eci-command-plan"
 planner_go_mod_sha="$(sha256sum -- "$PLANNER_DIR/go.mod" | awk '{print $1}')"

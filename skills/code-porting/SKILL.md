@@ -5,7 +5,7 @@ description: Use when porting code, features, or capabilities from one codebase/
 
 # Code Porting
 
-Port code between codebases through exhaustive extraction, adversarial critique, and gated implementation. When ECI or ATE owns the current work, route agent-owned phases through that protocol. Outside ECI/ATE, use standard `spawn_agent` subagents only when higher-priority Codex instructions allow delegation and the user explicitly requests subagents, parallel agents, delegated work, or dedicated agents. Do not launch Codex agents through shell wrappers.
+Port code between codebases through exhaustive extraction, adversarial critique, and gated implementation. When ECI or ATE owns the current work, route agent-owned phases through that protocol. Outside ECI/ATE, use standard subagents (spawn a subagent) only when higher-priority Codex instructions allow delegation and the user explicitly requests subagents, parallel agents, delegated work, or dedicated agents. Do not launch Codex agents through shell wrappers.
 
 ## When to use
 
@@ -46,7 +46,7 @@ Create a visible plan/checklist before adaptation work begins. Phases 1-5 are an
 
 ## Phase 1: Feature extraction
 
-Spawn extraction agent with `spawn_agent`. Prompt must include:
+Spawn an extraction subagent. Prompt must include:
 
 - Source codebase paths and user-specified scope.
 - "List AS MUCH AS POSSIBLE. Err on over-listing. The critique phases prune — you do not."
@@ -241,7 +241,7 @@ When ATE is outer, it may run independent tasks in parallel while routing each b
 
 | Symptom | Fix |
 |---------|-----|
-| Shell-launched Codex process used for a phase | Stop. Use standard `spawn_agent`; hard-escalate if unavailable |
+| Shell-launched Codex process used for a phase | Stop. Use a standard subagent (spawn a subagent); hard-escalate if unavailable |
 | Main thread implements agent-owned work | Route it through the owning ECI/ATE workflow; outside those workflows, spawn only under the generic delegation rule. |
 | Same agent doing extraction + gap analysis | Banned. Separate agents per phase |
 | Feature list suspiciously short (<5 entries for non-trivial source) | Re-spawn extractor with "you are under-listing" |

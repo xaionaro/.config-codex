@@ -14,10 +14,17 @@ rsync -a --exclude='sessions/' --exclude='*.sqlite*' --exclude='auth*.json' \
   --exclude='.cache/' --exclude='__pycache__/' \
   "$SOURCE_ROOT/hooks" "$SOURCE_ROOT/bin" "$SOURCE_ROOT/tools" "$SOURCE_ROOT/skills" \
   "$SOURCE_ROOT/CODEX.md" "$SOURCE_ROOT/hooks.json" "$ROOT/"
+# Publish the native planner into the fixture runtime so validate-bash never
+# rebuilds it on the timed path; the 1000 ms budget measures hook work only.
+mkdir -p -- "$TMP_ROOT/home/tmp/eci-runtime/codex"
+(
+  cd "$ROOT/hooks/lib/eci-command-plan-go"
+  go build -o "$TMP_ROOT/home/tmp/eci-runtime/codex/eci-command-plan" .
+)
 proof_root="$TMP_ROOT/proof"
 session_id="t00-session"
 session_dir="$proof_root/$session_id"
-status_file="$TMP_ROOT/home/tmp/agent/context/sessions/$session_id/latest-status-report.md"
+status_file="$TMP_ROOT/home/.agent/context/sessions/$session_id/latest-status-report.md"
 worker_transcript="$(mktemp "$ROOT/sessions/latency-worker.XXXXXX.jsonl")"
 helper_hardlink="$ROOT/hooks/lib/.eci-latency-helper-$BASHPID"
 altered_mode="$TMP_ROOT/eci-command-gate-mode"

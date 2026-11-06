@@ -66,12 +66,14 @@ safe_importer_binary_path() {
   printf '%s/eci-safe-import\n' "$(safe_importer_source_dir "$root")"
 }
 
-PLANNER_GO='/usr/lib/go-1.24/bin/go'
-PLANNER_GOROOT='/usr/lib/go-1.24'
+PLANNER_GO='/usr/lib/go-1.26/bin/go'
+PLANNER_GOROOT='/usr/lib/go-1.26'
 PLANNER_RECEIPT_NAME='.eci-command-plan.provenance'
 PLANNER_LOCK_NAME='.planner-importer.publish.lock'
 PLANNER_SOURCE_FILES=(go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go hook.go hook_context.go hook_effects.go response.go)
 readonly -a PLANNER_SOURCE_FILES
+PLANNER_PAIR_TOOLS=(eci-command-plan eci-safe-import eci-hook-helper)
+readonly -a PLANNER_PAIR_TOOLS
 readonly PLANNER_GO PLANNER_GOROOT PLANNER_RECEIPT_NAME PLANNER_LOCK_NAME
 
 planner_configure_native_toolchain() {
@@ -119,7 +121,7 @@ planner_rename() {
 planner_record_inputs() {
   local name module path digest
   : >"$transaction/source-inputs" || return 1
-  for name in eci-command-plan eci-safe-import; do
+  for name in "${PLANNER_PAIR_TOOLS[@]}"; do
     module="$source_root/hooks/lib/$name-go"
     printf 'module\t%s\n' "$module" >>"$transaction/source-inputs" || return 1
     find "$module" -maxdepth 1 -type f \( -name '*.go' ! -name '*_test.go' -o -name go.mod -o -name go.sum \) -print0 | sort -z >"$transaction/source-file-list" || return 1
@@ -157,7 +159,7 @@ planner_prepare_pair() {
   local provider="$1" name path state
   [ ! -L "$output_root/$provider" ] || return 1
   mkdir -p -- "$output_root/$provider" "$transaction/$provider" || return 1
-  for name in eci-command-plan eci-safe-import; do
+  for name in "${PLANNER_PAIR_TOOLS[@]}"; do
     path="$output_root/$provider/$name"
     state="$(planner_leaf_state "$path")" || return 1
     case "$state" in
@@ -175,7 +177,7 @@ planner_prepare_pair() {
 # Restore both members, even if a signal followed rename before bookkeeping.
 planner_restore_pair() {
   local provider="$1" name path state wanted restore ok=true
-  for name in eci-command-plan eci-safe-import; do
+  for name in "${PLANNER_PAIR_TOOLS[@]}"; do
     path="$output_root/$provider/$name"
     wanted="${old_states[$provider/$name]}"
     state="$(planner_leaf_state "$path")" || { ok=false; continue; }
@@ -195,7 +197,7 @@ planner_restore_pair() {
     fi
     state="$(planner_leaf_state "$path")" && [ "$state" = "$wanted" ] || ok=false
   done
-  for name in eci-command-plan eci-safe-import; do
+  for name in "${PLANNER_PAIR_TOOLS[@]}"; do
     path="$output_root/$provider/$name"
     state="$(planner_leaf_state "$path")" || { state=unknown; ok=false; }
     printf 'ECI recovery state: %s=%s\n' "$path" "$state" >&2
@@ -207,7 +209,7 @@ planner_publish_pair() {
   local provider="$1" name path state
   planner_prepare_pair "$provider" || return 1
   pair_in_progress="$provider"
-  for name in eci-command-plan eci-safe-import; do
+  for name in "${PLANNER_PAIR_TOOLS[@]}"; do
     path="$output_root/$provider/$name"
     planner_publication_event "before-rename:$provider:$name" "$path" || return 1
     state="$(planner_leaf_state "$path")" && [ "$state" = "${old_states[$provider/$name]}" ] || return 1
@@ -215,7 +217,7 @@ planner_publish_pair() {
     planner_publication_event "after-rename:$provider:$name" "$path" || return 1
   done
   planner_publication_event "before-complete:$provider" "$output_root/$provider" || return 1
-  for name in eci-command-plan eci-safe-import; do
+  for name in "${PLANNER_PAIR_TOOLS[@]}"; do
     state="$(planner_leaf_state "$output_root/$provider/$name")" && [ "$state" = "${new_states[$provider/$name]}" ] || return 1
   done
   if [ "$provider" = codex ]; then local_complete=true; else peer_complete=true; fi
@@ -256,6 +258,7 @@ planner_refresh_receipt() {
   linker_digest="$(hash_file "$PLANNER_GO_TOOL_DIR/link")" || return 1
   planner_digest="$(hash_file "$output_root/$provider/eci-command-plan")" || return 1
   importer_digest="$(hash_file "$output_root/$provider/eci-safe-import")" || return 1
+  helper_digest="$(hash_file "$output_root/$provider/eci-hook-helper")" || return 1
   [ "${source_inputs_complete:-true}" = true ] || return 1
   {
     printf 'contract\toriginal-go-build/v1\n'
@@ -267,6 +270,7 @@ planner_refresh_receipt() {
     cat -- "$transaction/source-inputs" || return 1
     printf 'binary_sha256\t%s\n' "$planner_digest"
     printf 'importer_sha256\t%s\n' "$importer_digest"
+    printf 'helper_sha256\t%s\n' "$helper_digest"
   } >"$temporary" || return 1
   chmod 600 -- "$temporary" || return 1
   receipt_path="$path"
@@ -326,8 +330,8 @@ planner_sync() (
   [ "$source_root" = "$(realpath -e -- "$HOME/.codex")" ] || return 1
   [ -z "$peer_root" ] || [ "$peer_root" = "$(realpath -e -- "${KIMI_CODE_HOME:-$HOME/.kimi-code}")" ] || return 1
   case "$requested_provider" in codex|kimi) ;; *) return 1 ;; esac
-  [ "$#" -gt 0 ] || set -- eci-command-plan eci-safe-import
-  for name in "$@"; do case "$name" in eci-command-plan|eci-safe-import) ;; *) return 1 ;; esac; done
+  [ "$#" -gt 0 ] || set -- "${PLANNER_PAIR_TOOLS[@]}"
+  for name in "$@"; do case "$name" in eci-command-plan|eci-safe-import|eci-hook-helper) ;; *) return 1 ;; esac; done
   [ ! -L "$output_root" ] || return 1
   output_root="$(realpath -m -- "$output_root")" || return 1
   [ "$output_root" != "$(realpath -e -- "$HOME/tmp")" ] || return 1
@@ -367,6 +371,7 @@ planner_sync() (
   printf 'ECI build: original modules; GOCACHEPROG cleared; scratch=%s\n' "$transaction" >&2
   planner_build_original "$source_root/hooks/lib/eci-command-plan-go" eci-command-plan || return 1
   planner_build_original "$source_root/hooks/lib/eci-safe-import-go" eci-safe-import || return 1
+  planner_build_original "$source_root/hooks/lib/eci-hook-helper-go" eci-hook-helper || return 1
   planner_publish_pair codex || return 1
   if ! planner_refresh_receipt codex; then
     printf 'ECI receipt advisory: Codex refresh failed\n' >&2
@@ -563,7 +568,7 @@ while IFS= read -r -d '' source_path; do
     # replace either artifact: maintain-planner remains the sole publication
     # authority.
     case "$relative" in
-      hooks/lib/eci-command-plan-go/eci-command-plan|hooks/lib/eci-command-plan-go/"$PLANNER_RECEIPT_NAME")
+      hooks/lib/eci-command-plan-go/eci-command-plan|hooks/lib/eci-command-plan-go/"$PLANNER_RECEIPT_NAME"|hooks/lib/eci-hook-helper-go/eci-hook-helper)
         continue
         ;;
     esac

@@ -1,7 +1,0 @@
-{
-  "session_id": "t00-session",
-  "tool_name": "Bash",
-  "tool_input": {
-    "command": "sed -n '1,80p' hooks/stop-gate.sh"
-  }
-}

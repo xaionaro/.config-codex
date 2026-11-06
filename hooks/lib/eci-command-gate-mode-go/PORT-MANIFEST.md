@@ -1,8 +1,8 @@
 # ECI command-gate mode Go port
 
 This module is the production implementation of `bin/eci-command-gate-mode`.
-The Python file `bin/eci-command-gate-mode.py` is retained only as a
-differential-test oracle; hooks must execute the compiled binary.
+The former Python file `bin/eci-command-gate-mode.py` was removed once its
+differential-test oracle role ended; hooks must execute the compiled binary.
 
 | Python contract | Go implementation | Compatibility proof |
 | --- | --- | --- |

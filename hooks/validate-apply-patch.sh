@@ -17,13 +17,9 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 
 patch_text=$(printf '%s' "$input" | jq -r '.tool_input.command // .tool_input.patch // .tool_input.input // empty' 2>/dev/null || true)
 
-# Resolve thread ownership once.  This hook is on the synchronous edit path;
-# repeating transcript metadata parsing for each path/late bookkeeping branch
-# needlessly burns the sub-second callback budget.
-hook_is_subagent=false
-if [[ "$input" == *'"transcript_path"'* ]] && codex_hook_is_subagent_context "$input"; then
-  hook_is_subagent=true
-fi
+# Thread ownership is resolved once.  "unknown" means the transcript could not
+# be verified; subagent-guarded control and ledger edits fail closed on it.
+hook_subagent_status="$(codex_hook_subagent_status "$input")"
 
 [ -n "$patch_text" ] || exit 0
 
@@ -55,7 +51,25 @@ patch_paths=$(printf '%s\n' "$patch_text" | awk '
   }
 ')
 
-if [ "$hook_is_subagent" = true ]; then
+# Session-scoped patch targets must not traverse symlinks.  Resolved paths are
+# checked separately so an in-repo symlink cannot launder a proof-root target.
+while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  lexical_path="$(codex_lexical_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
+  resolved_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
+  if codex_session_path_is_unsafe "$lexical_path"; then
+    deny "$(eci_diagnostic_reason "ECI_PROOF_PATH_ESCAPE_DENIED" "PreToolUse" "patch-validation" "$path" "Refusing unsafe session-scoped patch path ${path##*/}: proof-root and context-root ancestors and final components must not be symlinks." "use the current session's canonical path")"
+  fi
+  if [ "$resolved_path" != "$lexical_path" ] && codex_session_path_is_unsafe "$resolved_path"; then
+    deny "$(eci_diagnostic_reason "ECI_PROOF_PATH_ESCAPE_DENIED" "PreToolUse" "patch-validation" "$path" "Refusing unsafe resolved session-scoped patch path ${path##*/}: resolved proof-root and context-root ancestors and final components must not be symlinks." "use the current session's canonical path")"
+  fi
+  if [[ "$path" == go.mod || "$path" == */go.mod ]] &&
+     printf '%s\n' "$patch_text" | grep -Eq '^\+.*=>[[:space:]]*(\.\./|\./)'; then
+    deny "Do not add local relative replace directives to go.mod. Use a workspace, module proxy, or explicit user-approved local override."
+  fi
+done <<<"$patch_paths"
+
+if [ "$hook_subagent_status" != main ]; then
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     resolved_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
@@ -73,34 +87,44 @@ if [ "$hook_is_subagent" = true ]; then
          [ "$control_alias" = true ] ||
          codex_path_is_git_approval_file "$lexical_path" ||
          codex_path_is_git_approval_file "$resolved_path"; }; then
-      deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "patch-validation" "$path" "Only the main thread may modify coordinator-owned ECI control state." "route coordinator-owned ECI control changes through the main/orchestrator")"
+      deny "$(eci_diagnostic_reason "ECI_CONTROL_OWNER_REQUIRED" "PreToolUse" "patch-validation" "$path" "Only the main thread may modify coordinator-owned ECI or authorization state." "route coordinator-owned ECI or authorization changes through the main/orchestrator")"
     fi
   done <<<"$patch_paths"
 fi
 
-# Session ownership is a concrete target check only when both the target owner
-# and the callback's allowed session set resolve.  A probe failure leaves this
-# child advisory; it must not deny an ordinary repository patch.
+ownership_failure_deny() {
+  deny "ownership check failed; failing closed for session-scoped path safety (file=${BASH_SOURCE[0]},line=${BASH_LINENO[0]:-unknown},command=${BASH_COMMAND})"
+}
+trap 'ownership_failure_deny' ERR
+# Session ownership applies to every target under a proof or context root.  An
+# owner that resolves must match an allowed session; a session-scoped target
+# with no resolvable session id is denied rather than allowed through.
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   lexical_owner_path="$(codex_lexical_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
   resolved_owner_path="$(codex_resolve_hook_path "${cwd:-$PWD}" "$path" 2>/dev/null || true)"
   # Ordinary repository paths have no session owner to resolve.  Skip the
-  # metadata probe unless the target is actually under a proof root.
+  # metadata probe unless the target is under a proof or context root.
   if ! codex_path_is_under_proof_root "$lexical_owner_path" &&
-     ! codex_path_is_under_proof_root "${resolved_owner_path:-}"; then
+     ! codex_path_is_under_proof_root "${resolved_owner_path:-}" &&
+     ! codex_context_session_rest "$lexical_owner_path" >/dev/null &&
+     ! codex_context_session_rest "${resolved_owner_path:-}" >/dev/null; then
     continue
   fi
   owner_probe="${lexical_owner_path:-$path}"
   owner_session_id="$(codex_path_owner_session_id "$owner_probe" 2>/dev/null || true)"
   [ -n "$owner_session_id" ] || owner_session_id="$(codex_path_owner_session_id "${resolved_owner_path:-$path}" 2>/dev/null || true)"
   [ -n "$owner_session_id" ] || continue
-  mapfile -t allowed_session_ids < <(codex_hook_allowed_session_ids "$input")
-  if [ "${#allowed_session_ids[@]}" -gt 0 ] &&
-    ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
+  mapfile -t allowed_session_ids < <(codex_hook_allowed_session_ids "$input" "$hook_subagent_status")
+  if [ "${#allowed_session_ids[@]}" -eq 0 ]; then
+    deny "Session-scoped file ${path##*/} requires a current session id; none resolved. Refusing fail-open on a session-scoped path."
+  fi
+  if ! codex_session_owner_allowed "$owner_session_id" "${allowed_session_ids[@]}"; then
     deny "Refusing to edit ${path##*/}: file belongs to session $owner_session_id, allowed sessions are ${allowed_session_ids[*]}."
   fi
 done <<<"$patch_paths"
+trap - ERR
+codex_install_fail_open_trap validate-apply-patch
 
 # Active ECI edit callbacks are deliberately marker-only and read-only.  Keep
 # the legacy activity bookkeeping for ordinary edits, but do not take its
@@ -111,7 +135,7 @@ if [ ! -f "$eci_direct_marker" ] || [ -L "$eci_direct_marker" ]; then
     [ -n "$path" ] || continue
     codex_note_touched_repo "$session_id" "$cwd" "$path" || true
   done <<<"$patch_paths"
-  if [ "$hook_is_subagent" != true ]; then
+  if [ "$hook_subagent_status" = main ]; then
     codex_mark_activity "$session_id" "$cwd" edit || true
   fi
 fi

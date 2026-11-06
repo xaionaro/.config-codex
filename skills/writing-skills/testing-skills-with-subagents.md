@@ -46,7 +46,7 @@ Same cycle as code TDD, different test format.
 
 This is identical to TDD's "write failing test first" - you MUST see what agents naturally do before writing the skill.
 
-Launch skill-test agents with `spawn_agent`; include this prompt line: `follow any Stop-hook prompt in this session, including required proof/checklist files; fix blockers within your assigned scope; report only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.`
+Launch skill-test agents by spawning subagents; include this prompt line: `follow any Stop-hook prompt in this session, including required proof/checklist files; fix blockers within your assigned scope; report only when recovery needs out-of-scope changes, unrelated user work, credentials, or approval.`
 
 **Process:**
 

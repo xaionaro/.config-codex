@@ -289,7 +289,7 @@ jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$cross_sessi
 cross_session_output="$(run_dispatch cross-session "$cross_session_input")"
 assert_cross_session_deny cross-session "$cross_session_output" "$other_session"
 
-context_root="$fixture_home/tmp/agent/context/sessions"
+context_root="$fixture_home/.agent/context/sessions"
 cross_session_document="$context_root/$other_session/project-understanding.yaml"
 cross_session_document_input="$TMP_ROOT/cross-session-document.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$cross_session_document" \

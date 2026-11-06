@@ -10,9 +10,9 @@ Use this module as the ECI Supervisor or the owning outer-workflow Coordinator/L
 - Keep a repair in its current lane when the record shows it is necessary to meet or prove the requested outcome. Do not relabel that repair as a substitute user requirement.
 - Record a discovered concern whose remedy serves an unadmitted separate outcome as an observation or follow-up suggestion after current ECI. It does not create current lane, assignment, code change, review, deadline, forecast, or proof work.
 - Keep prompts and handoffs as readable coordination records. They may support review, but no proof-directory artifact, hash, receipt, ledger prefix, or serialized field list is a prerequisite for normal spawn, followup, exploration, implementation, or verification.
-- `spawn_agent` creates a role; `followup_task` starts a new turn when a reusable role is idle and delivers at a message boundary when it is running; `send_message` supplies bounded information to a running turn; `interrupt_agent` cancels exact active work only. Never shell-launch agents or close terminal agents.
-- Name reusable ordinary producers by stable semantic role. Every blind critic and every special role uses a fresh `spawn_agent({fork_turns:"none"})` with a unique transport name. A `followup_task` never upgrades an ordinary role to special.
-- Keep at most one outstanding `wait_agent({timeout_ms:3600000})` per undelivered expected completion. A timeout is non-terminal: do not poll, retry, or infer a crash. Use `list_agents` only for roster maintenance or documented crash recovery.
+- Spawning a subagent creates a role; `write agent://<id>` messages a live agent and starts a new turn when the reusable role is idle; `send_message` supplies bounded information to a running turn; `interrupt_agent` cancels exact active work only. Never shell-launch agents or close terminal agents.
+- Name reusable ordinary producers by stable semantic role. Every blind critic and every special role uses a fresh subagent spawn (`fork_turns:"none"`) with a unique transport name. A `write agent://<id>` message never upgrades an ordinary role to special.
+- Keep at most one outstanding `wait` per undelivered expected completion. A timeout is non-terminal: do not poll, retry, or infer a crash. Use `read proc://` only for roster maintenance or documented crash recovery.
 - Include scoped verification and recovery duties in every subagent prompt.
 
 ## Role and model admission
@@ -40,7 +40,7 @@ Common labels include `explorer`→`Explorer`; `researcher`→`researcher`; `bra
 
 - Use role categories as routing defaults: exploration gathers facts; design reviews consequential design choices; implementation changes and tests code. If the exact role is unavailable, use a reasonable available role and schedule independent review where it matters. Do not make a special model, field shape, or role label a normal-work gate.
 
-If work needs a different role, reassign it clearly and use a fresh reviewer where independence matters. Special roles normally use a fresh unique `spawn_agent({fork_turns:"none"})`; ordinary Explorer, implementer, and ordinary correctness/fidelity slots may be reusable where their outer workflow permits. Do not create an artifact or model-routing blocker merely to record the reassignment.
+If work needs a different role, reassign it clearly and use a fresh reviewer where independence matters. Special roles normally use a fresh unique subagent spawn (`fork_turns:"none"`); ordinary Explorer, implementer, and ordinary correctness/fidelity slots may be reusable where their outer workflow permits. Do not create an artifact or model-routing blocker merely to record the reassignment.
 
 `PostCompact` is the authoritative compaction refresh signal. Immediately after it, the coordinator/lead re-reads the active outer skill before another decision or tool call. `SessionStart` `startup|resume|clear` is only a best-effort resume/clear reminder. The `PostCompact` hook is read-only; it is a reminder, not proof of rereading.
 

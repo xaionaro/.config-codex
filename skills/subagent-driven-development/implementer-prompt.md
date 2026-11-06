@@ -2,11 +2,12 @@
 
 Use this template when dispatching an implementer subagent.
 
+`agent_type` maps to `agent` (`task`, the general-purpose omp agent); `reasoning_effort` has no `task` equivalent and is dropped; `message` maps to `task`.
+
 ```
-spawn_agent(
-  agent_type="worker",
-  reasoning_effort="xhigh",
-  message="""
+task(
+  agent="task",
+  task="""
 Role label: task-n-implementer
 
 <task>

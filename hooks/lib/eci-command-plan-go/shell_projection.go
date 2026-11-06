@@ -30,6 +30,7 @@ type shellProjection struct {
 type shellSubstitution struct {
 	Command     string
 	OwnerOffset int
+	Process     bool
 }
 
 // shellInput identifies the last document or here-string supplying stdin.
@@ -833,9 +834,11 @@ func (c *shellSubstitutionCollector) Collect(node syntax.Node) bool {
 			}
 			command = printed.String()
 		}
+		_, process := node.(*syntax.ProcSubst)
 		c.Substitutions = append(c.Substitutions, shellSubstitution{
 			Command:     strings.Repeat(" ", start) + command,
 			OwnerOffset: c.OwnerOffset,
+			Process:     process,
 		})
 	}
 	return false

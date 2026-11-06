@@ -50,11 +50,18 @@ func inspectHookEffects(
 	request Request,
 	result Result,
 ) *Diagnostic {
-	if request.Marker != MarkerActive || result.ShellAnalysis == nil {
+	if result.ShellAnalysis == nil {
 		return nil
 	}
 	for _, record := range result.ShellAnalysis.Commands {
 		if record.Reachability == segmentUnreachable || len(record.Argv) == 0 {
+			continue
+		}
+		// The memory cap applies to every callback, not only active ECI scopes.
+		if diagnostic := inspectHookMakeMemoryCap(record); diagnostic != nil {
+			return diagnostic
+		}
+		if request.Marker != MarkerActive {
 			continue
 		}
 		argv := make([]token, len(record.Argv))
@@ -88,6 +95,270 @@ func inspectHookEffects(
 		if diagnostic := inspectHookControlWriter(childRequest, child, record.Segment); diagnostic != nil {
 			return diagnostic
 		}
+	}
+	return nil
+}
+
+// hookCodeMakeMemoryCapRequired identifies make without a finite memory cap.
+//
+// Example: make test without systemd-run MemoryMax selects this gate.
+const hookCodeMakeMemoryCapRequired DiagnosticCode = "ECI_MAKE_MEMORY_CAP_REQUIRED"
+
+// inspectHookMakeMemoryCap denies make unless a launcher imposes a finite memory cap.
+//
+// Example: systemd-run --scope -p MemoryMax=1G make passes; env make is denied.
+func inspectHookMakeMemoryCap(record ShellCommandRecord) *Diagnostic {
+	if !hookMakeUncapped(record.Argv) {
+		return nil
+	}
+	return &Diagnostic{
+		Code:        hookCodeMakeMemoryCapRequired,
+		Operation:   "make-memory-cap",
+		Segment:     record.Segment,
+		Token:       "make",
+		Reason:      "make must be run with a finite memory cap",
+		Remediation: "for example: systemd-run --scope -p MemoryMax=1G make ...",
+	}
+}
+
+// hookLauncherSpec describes option grammar for one transparent launcher.
+//
+// Example: timeout consumes value options, then one duration before its child.
+type hookLauncherSpec struct {
+	values     map[string]bool
+	skipAssign bool
+	positional int
+	// capOption returns consumed argv words and whether this option imposes a cap.
+	capOption func(tok string, next string, hasNext bool) (int, bool)
+}
+
+// hookLauncherChild returns the child argv selected by a launcher and whether an option capped it.
+//
+// Example: prlimit --as=1073741824 make returns [make] with capped true.
+func hookLauncherChild(argv []string, spec hookLauncherSpec) ([]string, bool) {
+	capped := false
+	positional := spec.positional
+	for index := 0; index < len(argv); {
+		tok := argv[index]
+		if tok == "--" {
+			return argv[index+1:], capped
+		}
+		if spec.capOption != nil {
+			next := ""
+			hasNext := index+1 < len(argv)
+			if hasNext {
+				next = argv[index+1]
+			}
+			if consumed, limited := spec.capOption(tok, next, hasNext); consumed > 0 {
+				capped = capped || limited
+				index += consumed
+				continue
+			}
+		}
+		if strings.HasPrefix(tok, "-") && tok != "-" {
+			if spec.values[tok] {
+				index += 2
+			} else {
+				index++
+			}
+			continue
+		}
+		if spec.skipAssign && hookAssignmentWord(tok) {
+			index++
+			continue
+		}
+		if positional > 0 {
+			positional--
+			index++
+			continue
+		}
+		return argv[index:], capped
+	}
+	return nil, capped
+}
+
+// hookAssignmentWord reports a leading NAME=value shell assignment word.
+//
+// Example: FOO=bar make has assignment FOO=bar before the make argv.
+func hookAssignmentWord(word string) bool {
+	name, _, found := strings.Cut(word, "=")
+	return found && isIdentifier(name)
+}
+
+// hookFiniteMemoryLimit reports a numeric limit rather than an unbounded sentinel.
+//
+// Example: 1G and 1073741824 are finite; infinity and unlimited are not.
+func hookFiniteMemoryLimit(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value != "" && value != "infinity" && value != "unlimited"
+}
+
+// hookMakeUncapped reports whether argv can start make without a finite cap.
+// Launcher grammar is consumed structurally; unknown grammar never proves a cap.
+// Each recursion strictly shortens the scanned text, so the walk terminates.
+//
+// Example: bash -c 'env make' is uncapped, while systemd-run -p MemoryMax=1G make is not.
+func hookMakeUncapped(argv []string) bool {
+	for len(argv) > 0 && hookAssignmentWord(argv[0]) {
+		argv = argv[1:]
+	}
+	if len(argv) == 0 {
+		return false
+	}
+	name := filepath.Base(argv[0])
+	switch name {
+	case "make":
+		return true
+	case "systemd-run":
+		child, capped := hookLauncherChild(argv[1:], hookLauncherSpec{
+			values: map[string]bool{
+				"-u": true, "--unit": true, "-M": true, "--machine": true, "-H": true, "--host": true,
+				"-E": true, "--setenv": true, "--working-directory": true, "--service-type": true,
+				"--uid": true, "--gid": true, "--slice": true, "--description": true, "--nice": true,
+			},
+			capOption: func(tok, next string, hasNext bool) (int, bool) {
+				var value string
+				var consumed int
+				switch {
+				case (tok == "-p" || tok == "--property") && hasNext:
+					value, consumed = next, 2
+				case strings.HasPrefix(tok, "--property="):
+					value, consumed = strings.TrimPrefix(tok, "--property="), 1
+				case strings.HasPrefix(tok, "-p") && len(tok) > 2:
+					value, consumed = tok[2:], 1
+				default:
+					return 0, false
+				}
+				key, limit, _ := strings.Cut(value, "=")
+				return consumed, strings.EqualFold(key, "MemoryMax") && hookFiniteMemoryLimit(limit)
+			},
+		})
+		return !capped && hookMakeUncapped(child)
+	case "prlimit":
+		child, capped := hookLauncherChild(argv[1:], hookLauncherSpec{
+			values: map[string]bool{"-p": true, "--pid": true, "-o": true, "--output": true},
+			capOption: func(tok, next string, hasNext bool) (int, bool) {
+				switch {
+				case (tok == "-v" || tok == "--as") && hasNext:
+					return 2, hookFiniteMemoryLimit(next)
+				case strings.HasPrefix(tok, "--as="):
+					return 1, hookFiniteMemoryLimit(strings.TrimPrefix(tok, "--as="))
+				case strings.HasPrefix(tok, "-v"):
+					return 1, hookFiniteMemoryLimit(strings.TrimPrefix(strings.TrimPrefix(tok, "-v"), "="))
+				}
+				return 0, false
+			},
+		})
+		return !capped && hookMakeUncapped(child)
+	case "find":
+		for index := 1; index < len(argv); index++ {
+			switch argv[index] {
+			case "-exec", "-execdir", "-ok", "-okdir":
+				end := index + 1
+				for end < len(argv) && argv[end] != ";" && argv[end] != "+" {
+					end++
+				}
+				if hookMakeUncapped(argv[index+1 : end]) {
+					return true
+				}
+				index = end
+			}
+		}
+		return false
+	case "xargs":
+		child, _ := hookLauncherChild(argv[1:], hookLauncherSpec{
+			values: map[string]bool{
+				"-I": true, "-n": true, "-P": true, "-a": true, "-d": true, "-s": true, "-L": true, "-E": true,
+				"--arg-file": true, "--delimiter": true, "--max-args": true, "--max-procs": true,
+				"--max-lines": true, "--max-chars": true, "--process-slot-var": true,
+			},
+		})
+		return hookMakeUncapped(child)
+	case "command":
+		for _, tok := range argv[1:] {
+			if !strings.HasPrefix(tok, "-") {
+				break
+			}
+			if strings.ContainsAny(tok, "vV") {
+				// command -v and -V inspect a name without executing a child.
+				return false
+			}
+		}
+		child, _ := hookLauncherChild(argv[1:], hookLauncherSpec{})
+		return hookMakeUncapped(child)
+	case "env":
+		for index := 1; index < len(argv) && strings.HasPrefix(argv[index], "-"); index++ {
+			if argv[index] == "-S" && index+1 < len(argv) {
+				return hookMakeUncapped(strings.Fields(argv[index+1]))
+			}
+			if strings.HasPrefix(argv[index], "-S") && len(argv[index]) > 2 {
+				return hookMakeUncapped(strings.Fields(argv[index][2:]))
+			}
+		}
+		child, _ := hookLauncherChild(argv[1:], hookLauncherSpec{
+			values:     map[string]bool{"-u": true, "--unset": true, "-C": true, "--chdir": true},
+			skipAssign: true,
+		})
+		return hookMakeUncapped(child)
+	case "bash", "sh", "dash", "zsh", "ksh":
+		for index := 1; index < len(argv); index++ {
+			tok := argv[index]
+			if tok == "--" || !strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "+") {
+				// A script path or stdin payload is not a literal -c string.
+				return false
+			}
+			if tok == "-o" || tok == "+o" {
+				index++
+				continue
+			}
+			if strings.HasPrefix(tok, "--") {
+				continue
+			}
+			if strings.ContainsRune(tok, 'c') {
+				if index+1 >= len(argv) {
+					return false
+				}
+				return hookMakeUncapped(strings.Fields(argv[index+1]))
+			}
+		}
+		return false
+	case "sudo", "doas", "exec", "time", "nice", "timeout", "nohup", "setsid", "stdbuf", "chronic", "busybox":
+		positional := 0
+		if name == "timeout" {
+			positional = 1
+		}
+		child, _ := hookLauncherChild(argv[1:], hookLauncherSpec{
+			values:     hookWrapperValues(name),
+			positional: positional,
+		})
+		return hookMakeUncapped(child)
+	}
+	return false
+}
+
+// hookWrapperValues lists options whose separate value word belongs to a launcher.
+//
+// Example: sudo -u root make consumes root as the sudo user argument.
+func hookWrapperValues(name string) map[string]bool {
+	switch name {
+	case "sudo":
+		return map[string]bool{
+			"-u": true, "--user": true, "-g": true, "--group": true, "-D": true, "--chdir": true,
+			"-h": true, "--host": true, "-p": true, "--prompt": true, "-r": true, "--role": true,
+			"-t": true, "--type": true, "-T": true, "--command-timeout": true, "-C": true, "--close-from": true,
+		}
+	case "doas":
+		return map[string]bool{"-a": true, "-C": true, "-u": true}
+	case "exec":
+		return map[string]bool{"-a": true}
+	case "time":
+		return map[string]bool{"-f": true, "--format": true, "-o": true, "--output": true}
+	case "nice":
+		return map[string]bool{"-n": true, "--adjustment": true}
+	case "timeout":
+		return map[string]bool{"-k": true, "--kill-after": true, "-s": true, "--signal": true}
+	case "stdbuf":
+		return map[string]bool{"-i": true, "-o": true, "-e": true}
 	}
 	return nil
 }
