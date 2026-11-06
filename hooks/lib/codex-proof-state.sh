@@ -6,7 +6,30 @@
 source "${BASH_SOURCE[0]%/*}/codex-file-lock.sh"
 
 codex_configured_proof_root() {
-  printf '%s\n' "${CODEX_PROOF_ROOT:-$HOME/.cache/codex-proof}"
+  printf '%s\n' "${CODEX_PROOF_ROOT:-$HOME/tmp/agent/proof}"
+}
+
+codex_context_root() {
+  printf '%s\n' "$HOME/tmp/agent/context"
+}
+
+# Print the path below <context>/sessions for either the configured context
+# root or its canonical form (ancestor symlinks resolved, as the proof root is).
+codex_context_session_rest() {
+  local path="$1" root canonical
+
+  [ -n "$path" ] || return 1
+  root="$(codex_context_root)/sessions"
+  case "$path" in
+    "$root"/*) printf '%s\n' "${path#"$root"/}"; return 0 ;;
+  esac
+  canonical="$(realpath -m -- "$(codex_context_root)" 2>/dev/null || true)"
+  [ -n "$canonical" ] || return 1
+  root="$canonical/sessions"
+  case "$path" in
+    "$root"/*) printf '%s\n' "${path#"$root"/}"; return 0 ;;
+  esac
+  return 1
 }
 
 codex_proof_root_cache_configured=""
@@ -171,14 +194,14 @@ codex_equivalent_proof_root_for_path() {
   local path="$1" configured candidate prefix current
   configured="$(codex_configured_proof_root)"
   case "$configured" in
-    */.cache/codex-proof) ;;
+    */tmp/agent/proof) ;;
     *) return 1 ;;
   esac
   case "$path" in
-    */.cache/codex-proof/*)
-      prefix="${path%%/.cache/codex-proof/*}"
+    */tmp/agent/proof/*)
+      prefix="${path%%/tmp/agent/proof/*}"
       [ "$prefix" != "$path" ] || return 1
-      candidate="$prefix/.cache/codex-proof" ;;
+      candidate="$prefix/tmp/agent/proof" ;;
     *) return 1 ;;
   esac
   [ -n "$prefix" ] || return 1
@@ -379,7 +402,7 @@ codex_session_ledger_basenames() {
 
 codex_session_ledger_basename() {
   case "${1:-}" in
-    project-understanding.yaml|high_level_log.jsonl|high_level_log.anchor|latest-status-report.md|latest-status-report.yaml)
+    project-understanding.yaml|high_level_log.jsonl|high_level_log.anchor|latest-status-report.md|latest-status-report.yaml|forecasts.yaml)
       return 0
       ;;
     *)
@@ -397,7 +420,7 @@ codex_eci_control_basename() {
     eci-wait-repair-authorize|eci-wait-repair-authorize.*)
       return 0
       ;;
-    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-additional-repository|eci-additional-repository.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.yaml|project-understanding.yaml.*|high_level_log.jsonl|high_level_log.jsonl.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.jsonl.tmp.*)
+    eci_active|eci_active.*|goal_state|goal_state.*|eci_wait|eci_wait.*|eci_user_owned_wait.md|eci_user_owned_wait.md.*|eci-coordinator-edit|eci-coordinator-edit.*|eci-additional-repository|eci-additional-repository.*|eci-permissive-mode|eci-permissive-mode.*|eci-permissive-authorize|eci-permissive-authorize.*|.eci-permissive-mode|.eci-permissive-mode.*|.eci-permissive-authorize|.eci-permissive-authorize.*|eci-required-critics.json|eci-required-critics.json.*|eci-required-critics.*|eci-critic-identities.ledger|eci-critic-identities.ledger.*|eci-acceptance-anchor|eci-acceptance-anchor.*|eci-acceptance-transaction|eci-acceptance-transaction.*|eci-teardown-complete|eci-teardown-complete.*|eci-prewrite-admitted.*|eci-baseline-binding|eci-baseline-binding.*|baseline_head|baseline_head.*|eci-commit-admitted|eci-commit-admitted.*|eci-user-closed.ledger|eci-user-closed.ledger.*|eci-aggregate-plan.json|eci-aggregate-plan.json.*|eci-aggregate-teardown-complete|eci-aggregate-teardown-complete.*|eci-aggregate.*|eci-accidental-mistake-override|eci-accidental-mistake-override.*|.eci-accidental-mistake-override|.eci-accidental-mistake-override.*|.eci-accidental-mistake-override.claim|ate_nested_eci_active|ate_nested_eci_active.*|ate_nested_eci_completion|ate_nested_eci_completion.*|eci-blocker-report.md|stop_timestamps|stop_loop_state|stop_loop_state.*|disengage.md|user-closed.md|proof.md|instructions.md|project-understanding.yaml|project-understanding.yaml.*|high_level_log.jsonl|high_level_log.jsonl.*|high_level_log.anchor|high_level_log.anchor.*|high_level_log.jsonl.tmp.*|latest-status-report.md|latest-status-report.yaml|forecasts.yaml)
       return 0
       ;;
     *)
@@ -449,7 +472,7 @@ codex_path_is_eci_control_file() {
   filename="${path##*/}"
 
   actual_root="$(codex_resolve_hook_path "$PWD" "$(codex_proof_root)" 2>/dev/null || codex_proof_root)"
-  default_root="$(codex_resolve_hook_path "$PWD" "$HOME/.cache/codex-proof" 2>/dev/null || printf '%s\n' "$HOME/.cache/codex-proof")"
+  default_root="$(codex_resolve_hook_path "$PWD" "$HOME/tmp/agent/proof" 2>/dev/null || printf '%s\n' "$HOME/tmp/agent/proof")"
   for root in "$actual_root" "$default_root"; do
     [ -n "$root" ] || continue
     case "$path" in
@@ -478,6 +501,7 @@ codex_path_is_eci_control_file() {
         ;;
     esac
   done
+  codex_path_is_session_ledger_file "$path" && return 0
   global_override="$(codex_eci_accidental_override_record_path global 2>/dev/null || true)"
   if [ -n "$global_override" ] && [ "$path" = "$global_override" ]; then
     return 0
@@ -493,30 +517,17 @@ codex_path_is_eci_control_file() {
 
 codex_path_is_session_ledger_file() {
   local path="$1"
-  local actual_root default_root root rest sid filename
+  local root rest sid filename
 
   [ -n "$path" ] || return 1
   filename="${path##*/}"
   codex_session_ledger_basename "$filename" || return 1
 
-  actual_root="$(codex_resolve_hook_path "$PWD" "$(codex_proof_root)" 2>/dev/null || codex_proof_root)"
-  default_root="$(codex_resolve_hook_path "$PWD" "$HOME/.cache/codex-proof" 2>/dev/null || printf '%s\n' "$HOME/.cache/codex-proof")"
-  for root in "$actual_root" "$default_root"; do
-    [ -n "$root" ] || continue
-    case "$path" in
-      "$root"/*)
-        rest="${path#"$root"/}"
-        sid="${rest%%/*}"
-        [ "$rest" != "$sid" ] || continue
-        [ "${rest#*/}" = "$filename" ] || continue
-        codex_reserved_proof_dir "$sid" && continue
-        codex_valid_session_id "$sid" || continue
-        return 0
-        ;;
-    esac
-  done
-
-  return 1
+  rest="$(codex_context_session_rest "$path")" || return 1
+  sid="${rest%%/*}"
+  [ "$rest" != "$sid" ] || return 1
+  [ "${rest#*/}" = "$filename" ] || return 1
+  codex_valid_session_id "$sid"
 }
 
 codex_path_is_high_level_log_file() {
@@ -2273,7 +2284,7 @@ codex_path_owner_session_id() {
   [ -n "$path" ] || return 1
 
   root="$(codex_proof_root)"
-  default_root="$HOME/.cache/codex-proof"
+  default_root="$HOME/tmp/agent/proof"
   for root in "$root" "$default_root"; do
     [ -n "$root" ] || continue
     case "$path" in
@@ -2294,6 +2305,14 @@ codex_path_owner_session_id() {
         ;;
     esac
   done
+
+  if rest="$(codex_context_session_rest "$path")"; then
+    sid="${rest%%/*}"
+    [ "$rest" != "$sid" ] || return 1
+    codex_valid_session_id "$sid" || return 1
+    printf '%s\n' "$sid"
+    return 0
+  fi
 
   case "$path" in
     "$HOME/.codex/sessions/"*.jsonl)

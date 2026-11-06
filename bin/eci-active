@@ -253,6 +253,20 @@ resolve_session_dir() {
 
 ledger_log_name='high_level_log.jsonl'
 ledger_anchor_name='high_level_log.anchor'
+
+context_root() {
+  printf '%s/tmp/agent/context\n' "${HOME:-}"
+}
+
+ensure_context_session_dir() {
+  local session_id="$1" dir
+
+  codex_valid_session_id "$session_id" || return 1
+  dir="$(context_root)/sessions/$session_id"
+  (umask 077 && mkdir -p -- "$dir") || return 1
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  printf '%s\n' "$dir"
+}
 ledger_max_bytes=1048576
 
 ledger_sha256() {
@@ -1225,16 +1239,18 @@ status-refresh)
   [ "$#" -eq 3 ] && [ "${2:-}" = --event ] || { usage; exit 2; }
   case "$3" in worker_progress|assignment_change|review_result|decision|verification_result|requirement_change|forecast_change|blocker_change|checkpoint|lifecycle_change|correction) ;; *) usage; exit 2 ;; esac
   session_dir="$(resolve_session_dir)" || exit 1
+  ledger_dir="$(ensure_context_session_dir "${session_dir##*/}")" || exit 1
   acquire_eci_mutation_lock || exit 1
-  (cd "$base_dir/tools/status-report" && go run -mod=readonly . refresh "$session_dir" "$3")
+  (cd "$base_dir/tools/status-report" && go run -mod=readonly . refresh "$ledger_dir" "$3")
   ;;
 requirement-assignment)
   [ "$#" -eq 3 ] && [ "${2:-}" = --request ] || { usage; exit 2; }
   request_path="$(realpath -e -- "$3")" || exit 1
   session_dir="$(resolve_session_dir)" || exit 1
+  ledger_dir="$(ensure_context_session_dir "${session_dir##*/}")" || exit 1
   acquire_eci_mutation_lock || exit 1
   preparation="$(cd "$base_dir/hooks/lib/eci-requirement-assignment-go" &&
-    go run -mod=readonly . --ledger "$session_dir/project-understanding.yaml" --request "$request_path")" || exit 1
+    go run -mod=readonly . --ledger "$ledger_dir/project-understanding.yaml" --request "$request_path")" || exit 1
   # ledger-append takes the same lock. Release it before calling that owner;
   # retain the prepared payload privately until its required append succeeds.
   codex_file_lock_release_fd "$eci_lock_fd" || exit 1
@@ -1288,6 +1304,7 @@ ledger-append)
     echo 'eci-active: no current session directory found under the proof root.' >&2
     exit 1
   }
+  ledger_dir="$(ensure_context_session_dir "${session_dir##*/}")" || exit 1
   acquire_eci_mutation_lock || exit 1
   current_cwd="$(codex_canonical_cwd "$PWD")"
   ledger_timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -1296,27 +1313,27 @@ ledger-append)
     exit 1
   }
   formatted_entry="$(jq -c --arg timestamp "$ledger_timestamp" \
-    --arg session_id "$(basename -- "$session_dir")" \
+    --arg session_id "$(basename -- "$ledger_dir")" \
     '. + {schema:"eci-high-level-log/v1",timestamp:$timestamp,session_id:$session_id}' \
     <<<"$entry")" || exit 1
   # Reconcile the current JSONL and its anchor under this mutation lock.
   # Anchor metadata is advisory; concrete destination safety governs writes.
-  ledger_ensure_anchor "$session_dir" || {
+  ledger_ensure_anchor "$ledger_dir" || {
     echo 'ECI high-level log append found an unsafe current ledger target.' >&2
     exit 1
   }
-  ledger_detach_hardlinked_log "$session_dir" || {
+  ledger_detach_hardlinked_log "$ledger_dir" || {
     echo 'ECI high-level log append could not detach an externally linked current ledger target.' >&2
     exit 1
   }
-  log_path="$session_dir/$ledger_log_name"
-  ledger_path_is_mutable "$session_dir" || {
+  log_path="$ledger_dir/$ledger_log_name"
+  ledger_path_is_mutable "$ledger_dir" || {
     echo 'ECI high-level log append could not access an exclusive current ledger target.' >&2
     exit 1
   }
   if [ "$(ledger_bytes "$log_path")" -gt 0 ] &&
     [ "$(tail -c 1 -- "$log_path" 2>/dev/null | od -An -t x1 | tr -d '[:space:]')" != 0a ]; then
-    ledger_path_is_mutable "$session_dir" || {
+    ledger_path_is_mutable "$ledger_dir" || {
       echo 'ECI high-level log changed to an externally linked target during normalization.' >&2
       exit 1
     }
@@ -1325,18 +1342,18 @@ ledger-append)
       exit 1
     }
   fi
-  ledger_path_is_mutable "$session_dir" || {
+  ledger_path_is_mutable "$ledger_dir" || {
     echo 'ECI high-level log changed to an unsafe or externally linked file during normalization.' >&2
     exit 1
   }
   printf '%s\n' "$formatted_entry" >>"$log_path"
-  ledger_path_is_mutable "$session_dir" || {
+  ledger_path_is_mutable "$ledger_dir" || {
     echo 'ECI high-level log changed to an unsafe or externally linked file during append.' >&2
     exit 1
   }
-  ledger_write_anchor "$session_dir" true ||
+  ledger_write_anchor "$ledger_dir" true ||
     printf 'ECI advisory: high-level ledger anchor could not be refreshed after append.\n' >&2
-  if ! (cd "$base_dir/tools/status-report" && go run -mod=readonly . refresh "$session_dir" "$(jq -r .event <<<"$entry")"); then
+  if ! (cd "$base_dir/tools/status-report" && go run -mod=readonly . refresh "$ledger_dir" "$(jq -r .event <<<"$entry")"); then
     printf 'ECI advisory: log append succeeded; status refresh failed. Reconcile the report, then run eci-active status-refresh --event %s without appending the event again.\n' "$(jq -r .event <<<"$entry")" >&2
   fi
   printf 'ECI high-level log appended at EOF: %s\n' "$log_path"

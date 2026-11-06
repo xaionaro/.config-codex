@@ -588,6 +588,7 @@ var eciControlBasenames = [...]string{
 	"instructions.md", "stop_timestamps", "stop_loop_state",
 	"disengage.md", "user-closed.md", "project-understanding.yaml",
 	"high_level_log.jsonl", "latest-status-report.md", "latest-status-report.yaml", "high_level_log.anchor",
+	"forecasts.yaml",
 }
 
 type planError struct {

@@ -2669,7 +2669,7 @@ isolated_coordinator_home="$TMP_ROOT/isolated-coordinator-home"
 isolated_coordinator_root="$isolated_coordinator_home/.codex"
 isolated_coordinator_peer="$isolated_coordinator_home/.kimi-code"
 isolated_coordinator_session="isolated-coordinator-session"
-isolated_coordinator_proof_root="$classifier_tmp_parent/.cache/codex-proof"
+isolated_coordinator_proof_root="$classifier_tmp_parent/tmp/agent/proof"
 isolated_coordinator_script_relative="hooks/tests/test-eci-fast-path.sh"
 isolated_coordinator_script="$isolated_coordinator_root/$isolated_coordinator_script_relative"
 mkdir -p -- "$(dirname -- "$isolated_coordinator_script")" \
@@ -3181,7 +3181,7 @@ run_matrix_parallel worker assert_subagent_control_denied worker-control-symlink
 # Tilde expansion must resolve against the active proof-root home, not evade
 # the path-aware control-file mutation check.
 tilde_home="$TMP_ROOT/tilde-home"
-tilde_root="$tilde_home/.cache/codex-proof"
+tilde_root="$tilde_home/tmp/agent/proof"
 mkdir -p "$tilde_root/t00-session"
 printf '%s\n' \
   'scope: tilde-path mutation probe' \
@@ -3189,7 +3189,7 @@ printf '%s\n' \
   'session_id: t00-session' \
   'created_utc: 2026-08-15T00:00:00Z' \
   >"$tilde_root/t00-session/eci_active"
-output="$(run_subagent_hook_at_root "rm -f ~/.cache/codex-proof/t00-session/eci_active" "$tilde_root" "$tilde_home")"
+output="$(run_subagent_hook_at_root "rm -f ~/tmp/agent/proof/t00-session/eci_active" "$tilde_root" "$tilde_home")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_")) and
@@ -3200,12 +3200,12 @@ jq -e '
 # The cache parent may itself be symlinked.  Canonicalize the candidate before
 # applying the proof-root control-path check so this deployment layout cannot
 # evade the worker mutation boundary.
-symlink_cache_home="$TMP_ROOT/symlink-cache-home"
-symlink_cache_target="$TMP_ROOT/symlink-cache-target"
-mkdir -p "$symlink_cache_home" "$symlink_cache_target"
-ln -s "$symlink_cache_target" "$symlink_cache_home/.cache"
-ln -s "$proof_root" "$symlink_cache_target/codex-proof"
-output="$(run_subagent_hook_at_root "rm -f ~/.cache/codex-proof/t00-session/eci_active" "$proof_root" "$symlink_cache_home")"
+symlink_home="$TMP_ROOT/symlink-home"
+symlink_target="$TMP_ROOT/symlink-target"
+mkdir -p "$symlink_home" "$symlink_target/agent"
+ln -s "$symlink_target" "$symlink_home/tmp"
+ln -s "$proof_root" "$symlink_target/agent/proof"
+output="$(run_subagent_hook_at_root "rm -f ~/tmp/agent/proof/t00-session/eci_active" "$proof_root" "$symlink_home")"
 jq -e '
   .hookSpecificOutput.permissionDecision == "deny" and
   (.hookSpecificOutput.permissionDecisionReason | startswith("[ECI_")) and

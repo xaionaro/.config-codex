@@ -128,7 +128,7 @@ printf 'worker dirty change\n' >>"$REPO/file.txt"
 
 worker_input="$TMP_ROOT/worker-input.json"
 worker_output="$TMP_ROOT/worker-output.json"
-worker_handoff="$WORKER_PROOF_ROOT/$worker_session/latest-status-report.md"
+worker_handoff="$FIXTURE_HOME/tmp/agent/context/sessions/$worker_session/latest-status-report.md"
 jq -cn --arg session_id "$worker_session" --arg cwd "$REPO" --arg transcript "$worker_transcript" \
   '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,stop_hook_active:false}' >"$worker_input"
 

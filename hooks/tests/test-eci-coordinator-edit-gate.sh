@@ -289,7 +289,8 @@ jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$cross_sessi
 cross_session_output="$(run_dispatch cross-session "$cross_session_input")"
 assert_cross_session_deny cross-session "$cross_session_output" "$other_session"
 
-cross_session_document="$proof_root/$other_session/project-understanding.yaml"
+context_root="$fixture_home/tmp/agent/context/sessions"
+cross_session_document="$context_root/$other_session/project-understanding.yaml"
 cross_session_document_input="$TMP_ROOT/cross-session-document.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$cross_session_document" \
   '{tool_name:"Write",session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"wrong session document"}}' \
@@ -304,7 +305,7 @@ for report in latest-status-report.md latest-status-report.yaml; do
   for tool in Write Edit; do
     for owner in "$session_id" "$other_session"; do
       report_input="$TMP_ROOT/report-$report-$tool-$owner.json"
-      jq -cn --arg tool "$tool" --arg session_id "$session_id" --arg cwd "$repo" --arg path "$proof_root/$owner/$report" \
+      jq -cn --arg tool "$tool" --arg session_id "$session_id" --arg cwd "$repo" --arg path "$context_root/$owner/$report" \
         '{tool_name:$tool,session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"updated",old_string:"old",new_string:"updated"}}' \
         >"$report_input"
       report_output="$(run_dispatch "report-$report-$tool-$owner" "$report_input")"
@@ -317,7 +318,8 @@ for report in latest-status-report.md latest-status-report.yaml; do
   done
 done
 
-ledger="$proof_root/$session_id/high_level_log.jsonl"
+ledger="$context_root/$session_id/high_level_log.jsonl"
+mkdir -p -- "$(dirname -- "$ledger")"
 printf '%s\n' '{"event":"decision","summary":"immutable history"}' >"$ledger"
 ledger_input="$TMP_ROOT/ledger.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$ledger" \
@@ -330,7 +332,7 @@ assert_empty_output ledger "$ledger_output"
 # has no post-write phase, so it must not turn anchor content into a hash or
 # record-shaped admission prerequisite.  A bad anchor is a bounded local
 # coordination error; it cannot modify a foreign session or lifecycle target.
-anchor="$proof_root/$session_id/high_level_log.anchor"
+anchor="$context_root/$session_id/high_level_log.anchor"
 anchor_input="$TMP_ROOT/anchor.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$anchor" \
   '{tool_name:"Write",session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"coordinator anchor update"}}' \
@@ -346,7 +348,7 @@ jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg patch "$anchor_pat
 anchor_patch_output="$(run_dispatch anchor-patch "$anchor_patch_input")"
 assert_empty_output anchor-patch "$anchor_patch_output"
 
-other_anchor="$proof_root/$other_session/high_level_log.anchor"
+other_anchor="$context_root/$other_session/high_level_log.anchor"
 other_anchor_input="$TMP_ROOT/other-anchor.json"
 jq -cn --arg session_id "$session_id" --arg cwd "$repo" --arg path "$other_anchor" \
   '{tool_name:"Write",session_id:$session_id,cwd:$cwd,tool_input:{file_path:$path,content:"wrong session anchor update"}}' \
@@ -419,9 +421,9 @@ assert_empty_output advisory-normal-dispatch "$advisory_normal_dispatch_output"
 
 for advisory_path in \
   "$repo/docs/status.md" \
-  "$proof_root/$session_id/project-understanding.yaml" \
-  "$proof_root/$session_id/latest-status-report.md" \
-  "$proof_root/$session_id/latest-status-report.yaml" \
+  "$context_root/$session_id/project-understanding.yaml" \
+  "$context_root/$session_id/latest-status-report.md" \
+  "$context_root/$session_id/latest-status-report.yaml" \
   "$proof_root/$session_id/handoff.md"; do
   advisory_tool=Write
   [ "$advisory_path" = "$repo/docs/status.md" ] && advisory_tool=Edit

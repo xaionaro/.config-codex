@@ -5,14 +5,16 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-eci-ledger-reconcile.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
+export HOME="$TMP_ROOT/home"
 
 proof_root="$TMP_ROOT/proof"
 session_id=t00-ledger-reconcile
 session_dir="$proof_root/$session_id"
 cwd="$TMP_ROOT/repository"
-log="$session_dir/high_level_log.jsonl"
-anchor="$session_dir/high_level_log.anchor"
-mkdir -p -- "$session_dir" "$cwd"
+context_dir="$HOME/tmp/agent/context/sessions/$session_id"
+log="$context_dir/high_level_log.jsonl"
+anchor="$context_dir/high_level_log.anchor"
+mkdir -p -- "$session_dir" "$context_dir" "$cwd"
 
 run_current() {
   (
@@ -65,10 +67,10 @@ grep -Fqx 'schema: eci-high-level-log-anchor/v1' "$anchor"
 # target untouched, emit an advisory, and continue with the regular log.
 advisory_session=t00-ledger-anchor-advisory
 advisory_dir="$proof_root/$advisory_session"
-advisory_log="$advisory_dir/high_level_log.jsonl"
-advisory_anchor="$advisory_dir/high_level_log.anchor"
+advisory_log="$HOME/tmp/agent/context/sessions/$advisory_session/high_level_log.jsonl"
+advisory_anchor="$HOME/tmp/agent/context/sessions/$advisory_session/high_level_log.anchor"
 foreign="$TMP_ROOT/foreign-anchor"
-mkdir -p -- "$advisory_dir"
+mkdir -p -- "$advisory_dir" "${advisory_log%/*}"
 event 'ordinary state' >"$advisory_log"
 printf '%s\n' sentinel >"$foreign"
 ln -s -- "$foreign" "$advisory_anchor"
@@ -98,8 +100,8 @@ grep -Fq 'ECI advisory: high-level ledger anchor is a symlink; leaving it untouc
 # in place while a regular current-session log and marker remain usable.
 directory_session=t00-ledger-anchor-directory
 directory_dir="$proof_root/$directory_session"
-directory_log="$directory_dir/high_level_log.jsonl"
-directory_anchor="$directory_dir/high_level_log.anchor"
+directory_log="$HOME/tmp/agent/context/sessions/$directory_session/high_level_log.jsonl"
+directory_anchor="$HOME/tmp/agent/context/sessions/$directory_session/high_level_log.anchor"
 mkdir -p -- "$directory_anchor"
 event 'ordinary directory-anchor state' >"$directory_log"
 (
@@ -126,9 +128,9 @@ grep -Fq 'ECI advisory: high-level ledger anchor is not a regular file; leaving 
 # current-session logging continues on a new local inode.
 hardlink_session=t00-ledger-hardlink
 hardlink_dir="$proof_root/$hardlink_session"
-hardlink_log="$hardlink_dir/high_level_log.jsonl"
+hardlink_log="$HOME/tmp/agent/context/sessions/$hardlink_session/high_level_log.jsonl"
 foreign_log="$TMP_ROOT/foreign-hardlinked-log.jsonl"
-mkdir -p -- "$hardlink_dir"
+mkdir -p -- "$hardlink_dir" "${hardlink_log%/*}"
 event 'foreign log sentinel' >"$foreign_log"
 cp -- "$foreign_log" "$TMP_ROOT/foreign-hardlinked-log.before"
 ln -- "$foreign_log" "$hardlink_log"

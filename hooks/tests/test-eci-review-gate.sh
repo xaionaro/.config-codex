@@ -771,14 +771,14 @@ test_manifest_write_is_role_neutral_and_target_safe() {
   fi
   [ -d "$unsafe_node_dir/eci-required-critics.json" ]
 
-  # The deployed default may have a symlinked HOME/cache parent.  The shared
+  # The deployed default may have a symlinked HOME/tmp parent.  The shared
   # resolver must canonicalize that ancestor so lifecycle ownership and
   # manifest publication use the same marker/session/cwd paths.
   canonical_cache="$TMP_ROOT/canonical-cache"
   symlink_home="$TMP_ROOT/symlink-home"
-  canonical_proof="$canonical_cache/codex-proof"
+  canonical_proof="$canonical_cache/agent/proof"
   mkdir -p "$canonical_proof" "$symlink_home"
-  ln -s "$canonical_cache" "$symlink_home/.cache"
+  ln -s "$canonical_cache" "$symlink_home/tmp"
   sid="$(build_manifest "$canonical_proof" root)"
   canonical_session="$canonical_proof/$sid"
   canonical_manifest="$canonical_session/eci-required-critics.json"

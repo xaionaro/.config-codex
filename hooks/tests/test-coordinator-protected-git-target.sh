@@ -26,6 +26,7 @@ symlink_alias="$ROOT/hooks/.eci-protected-target-alias.$(basename -- "$TMP_ROOT"
 ln -s -- "$ROOT/hooks/validate-bash.sh" "$symlink_alias"
 
 proof_root="$TMP_ROOT/proof"
+context_root="$TMP_ROOT/home/tmp/agent/context/sessions"
 session_dir="$proof_root/t00-session"
 mkdir -p -- "$session_dir/evidence"
 printf '%s\n' \
@@ -34,7 +35,8 @@ printf '%s\n' \
   'session_id: t00-session' \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$session_dir/eci_active"
-printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$session_dir/high_level_log.jsonl"
+mkdir -p -- "$context_root/t00-session"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$context_root/t00-session/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$session_dir/instructions.md"
 
 hooks_session='t01-hooks-session'
@@ -47,7 +49,8 @@ printf '%s\n' \
   "session_id: $hooks_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$hooks_session_dir/eci_active"
-printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$hooks_session_dir/high_level_log.jsonl"
+mkdir -p -- "$context_root/$hooks_session"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$context_root/$hooks_session/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$hooks_session_dir/instructions.md"
 
 alias_session='t02-canonical-cwd-session'
@@ -61,7 +64,8 @@ printf '%s\n' \
   "session_id: $alias_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$alias_session_dir/eci_active"
-printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$alias_session_dir/high_level_log.jsonl"
+mkdir -p -- "$context_root/$alias_session"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$context_root/$alias_session/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$alias_session_dir/instructions.md"
 
 # `--pathspec-from-file` consumes the following `--detach` token as its
@@ -77,7 +81,8 @@ printf '%s\n' \
   "session_id: $pathspec_value_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$pathspec_value_session_dir/eci_active"
-printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$pathspec_value_session_dir/high_level_log.jsonl"
+mkdir -p -- "$context_root/$pathspec_value_session"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$context_root/$pathspec_value_session/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$pathspec_value_session_dir/instructions.md"
 
 literal_dash_session='t04-literal-dash-session'
@@ -94,7 +99,8 @@ printf '%s\n' \
   "session_id: $literal_dash_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$literal_dash_session_dir/eci_active"
-printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$literal_dash_session_dir/high_level_log.jsonl"
+mkdir -p -- "$context_root/$literal_dash_session"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$context_root/$literal_dash_session/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$literal_dash_session_dir/instructions.md"
 
 literal_dash_missing_session='t05-literal-dash-missing-session'
@@ -108,7 +114,8 @@ printf '%s\n' \
   "session_id: $literal_dash_missing_session" \
   'created_utc: 2026-09-13T00:00:00Z' \
   >"$literal_dash_missing_session_dir/eci_active"
-printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$literal_dash_missing_session_dir/high_level_log.jsonl"
+mkdir -p -- "$context_root/$literal_dash_missing_session"
+printf '%s\n' '{"event":"decision","summary":"protected Git target test"}' >"$context_root/$literal_dash_missing_session/high_level_log.jsonl"
 printf '%s\n' '# test instructions' >"$literal_dash_missing_session_dir/instructions.md"
 
 cleanup() {
@@ -130,7 +137,7 @@ run_hook_at() {
   fi
   jq -cn --arg session "$session" --arg cwd "$hook_cwd" --arg command "$command" \
     '{session_id:$session,cwd:$cwd,tool_input:{command:$command}}' |
-    HOME="${HOME:?}" CODEX_SESSION_ID="$session" CODEX_ROLE=coordinator \
+    HOME="$TMP_ROOT/home" CODEX_SESSION_ID="$session" CODEX_ROLE=coordinator \
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" \
     KIMI_CODE_HOME="${KIMI_CODE_HOME:-$HOME/.kimi-code}" PATH="$ROOT/bin:$PATH" \
       "${hook_command[@]}" >"$output"

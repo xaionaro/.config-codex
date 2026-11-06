@@ -62,7 +62,7 @@ PATTERNS = [
 
 
 def proof_root() -> str:
-    return os.environ.get("CODEX_PROOF_ROOT") or os.path.expanduser("~/.cache/codex-proof")
+    return os.environ.get("CODEX_PROOF_ROOT") or os.path.expanduser("~/tmp/agent/proof")
 
 
 def state_file(session_id: str) -> str:

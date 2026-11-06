@@ -10,6 +10,7 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
 HOME_ROOT="$TMP_ROOT/home"
 RUNTIME_ROOT="$HOME_ROOT/.codex"
 PROOF_ROOT="$TMP_ROOT/proof"
+CONTEXT_ROOT="$HOME_ROOT/tmp/agent/context/sessions"
 REPOSITORY="$TMP_ROOT/repository"
 FOREIGN_REPOSITORY="$TMP_ROOT/foreign-repository"
 mkdir -p -- "$RUNTIME_ROOT" "$TMP_ROOT/config/eci" "$TMP_ROOT/state" "$PROOF_ROOT" "$REPOSITORY" "$FOREIGN_REPOSITORY"
@@ -136,12 +137,15 @@ assert_no_new_current_control_target_denial() {
 
 assert_output_target_pairs() {
   local session="$1" foreign_marker="$2" dir="$PROOF_ROOT/$1" role target command output expected_target
+  local foreign_session_dir="${foreign_marker%/*}" context_dir="$CONTEXT_ROOT/$1"
+  local foreign_context="$CONTEXT_ROOT/${foreign_session_dir##*/}"
+  mkdir -p -- "$context_dir" "$foreign_context"
   local marker="$PROOF_ROOT/$1/eci_active" ordinary="$TMP_ROOT/$1-output"
   local alias="$TMP_ROOT/$1-control-alias" hardlink="$TMP_ROOT/$1-control-hardlink"
   local ordinary_alias="$PROOF_ROOT/$1/ordinary-output-alias"
   local foreign_alias="$PROOF_ROOT/$1/foreign-output-alias"
   local foreign_hardlink="$TMP_ROOT/$1-foreign-hardlink"
-  local note_symlink="$dir/instructions.md" note_hardlink="$dir/latest-status-report.md"
+  local note_symlink="$dir/instructions.md" note_hardlink="$context_dir/latest-status-report.md"
   local -a commands=()
 
   printf '%s\n' ordinary >"$ordinary"
@@ -161,8 +165,8 @@ assert_output_target_pairs() {
     assert_allowed "$session" "diff --to-file=$marker $ordinary" "$role"
     assert_allowed "$session" "diff --to-file $marker $ordinary" "$role"
     assert_allowed "$session" "cp $marker 0<$marker $ordinary" "$role"
-    assert_allowed "$session" "touch $dir/project-understanding.yaml" "$role"
-    assert_allowed "$session" "sort -o $dir/project-understanding.yaml < $ordinary" "$role"
+    assert_allowed "$session" "touch $context_dir/project-understanding.yaml" "$role"
+    assert_allowed "$session" "sort -o $context_dir/project-understanding.yaml < $ordinary" "$role"
     # Former spellings are ordinary files, including in a sibling proof dir.
     # They acquire control protections only by resolving to a protected inode.
     for obsolete in project-understanding.md project-understanding.json project-understanding.yml; do
@@ -193,8 +197,8 @@ assert_output_target_pairs() {
     for target in "$foreign_marker" "$foreign_alias" "$foreign_hardlink"; do
       assert_denied "$session" "sort -o $target < $ordinary" ECI_CROSS_SESSION_ACTIVE_MARKER_DENIED 'foreign_session=' "$role"
     done
-    assert_denied "$session" "sort -o $dir/high_level_log.jsonl < $ordinary" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
-    assert_denied "$session" "sort -o ${foreign_marker%/*}/high_level_log.jsonl < $ordinary" ECI_LEDGER_FOREIGN_SESSION_DENIED 'target_session=' "$role"
+    assert_denied "$session" "sort -o $context_dir/high_level_log.jsonl < $ordinary" ECI_LEDGER_REWRITE_DENIED 'effect=overwrite' "$role"
+    assert_denied "$session" "sort -o $foreign_context/high_level_log.jsonl < $ordinary" ECI_LEDGER_FOREIGN_SESSION_DENIED 'target_session=' "$role"
   done
 }
 
@@ -235,9 +239,10 @@ assert_prefix_disposition_preserved() {
 
 SESSION=current-ledger-session
 SESSION_DIR="$PROOF_ROOT/$SESSION"
-LOG="$SESSION_DIR/high_level_log.jsonl"
-ANCHOR="$SESSION_DIR/high_level_log.anchor"
-mkdir -p -- "$SESSION_DIR"
+SESSION_CONTEXT_DIR="$CONTEXT_ROOT/$SESSION"
+LOG="$SESSION_CONTEXT_DIR/high_level_log.jsonl"
+ANCHOR="$SESSION_CONTEXT_DIR/high_level_log.anchor"
+mkdir -p -- "$SESSION_DIR" "$SESSION_CONTEXT_DIR"
 printf '%s\n' '{"event":"decision","summary":"initial ledger entry"}' >"$LOG"
 run_lifecycle "$SESSION" on 'direct ledger redirect fixture' >/dev/null
 
@@ -262,9 +267,10 @@ assert_denied "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"
 
 FOREIGN_SESSION=foreign-ledger-session
 FOREIGN_DIR="$PROOF_ROOT/$FOREIGN_SESSION"
-FOREIGN_LOG="$FOREIGN_DIR/high_level_log.jsonl"
-FOREIGN_ANCHOR="$FOREIGN_DIR/high_level_log.anchor"
-mkdir -p -- "$FOREIGN_DIR"
+FOREIGN_CONTEXT_DIR="$CONTEXT_ROOT/$FOREIGN_SESSION"
+FOREIGN_LOG="$FOREIGN_CONTEXT_DIR/high_level_log.jsonl"
+FOREIGN_ANCHOR="$FOREIGN_CONTEXT_DIR/high_level_log.anchor"
+mkdir -p -- "$FOREIGN_DIR" "$FOREIGN_CONTEXT_DIR"
 printf '%s\n' '{"event":"decision","summary":"foreign"}' >"$FOREIGN_LOG"
 printf '%s\n' foreign-anchor >"$FOREIGN_ANCHOR"
 printf '%s\n' 'scope: foreign output fixture' "cwd: $FOREIGN_REPOSITORY" \
@@ -313,13 +319,13 @@ assert_allowed "$SESSION" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\
 
 assert_reconciliation_preserves_raw_append() {
   local session="$1" seed="$2" log anchor snapshot prefix raw_bytes raw_hash anchor_bytes anchor_hash actual_bytes actual_hash
-  local session_dir="$PROOF_ROOT/$session"
-  log="$session_dir/high_level_log.jsonl"
-  anchor="$session_dir/high_level_log.anchor"
+  local session_dir="$PROOF_ROOT/$session" context_dir="$CONTEXT_ROOT/$session"
+  log="$context_dir/high_level_log.jsonl"
+  anchor="$context_dir/high_level_log.anchor"
   snapshot="$TMP_ROOT/$session.raw"
   prefix="$TMP_ROOT/$session.prefix"
 
-  mkdir -p -- "$session_dir"
+  mkdir -p -- "$session_dir" "$context_dir"
   printf '%s' "$seed" >"$log"
   run_lifecycle "$session" on 'raw append reconciliation fixture' >/dev/null
   assert_allowed "$session" "printf '%s\\n' '{\"event\":\"decision\",\"summary\":\"raw\"}' >> $log" worker
@@ -354,11 +360,13 @@ assert_reconciliation_preserves_raw_append ledger-reconcile-without-lf '{"event"
 # source is available, without changing the live hooks.
 FALLBACK_SESSION=planner-unavailable-ledger-session
 FALLBACK_DIR="$PROOF_ROOT/$FALLBACK_SESSION"
-FALLBACK_LOG="$FALLBACK_DIR/high_level_log.jsonl"
-FALLBACK_ANCHOR="$FALLBACK_DIR/high_level_log.anchor"
+FALLBACK_CONTEXT_DIR="$CONTEXT_ROOT/$FALLBACK_SESSION"
+FALLBACK_LOG="$FALLBACK_CONTEXT_DIR/high_level_log.jsonl"
+FALLBACK_ANCHOR="$FALLBACK_CONTEXT_DIR/high_level_log.anchor"
 FALLBACK_FOREIGN_SESSION=planner-unavailable-foreign-session
 FALLBACK_FOREIGN_DIR="$PROOF_ROOT/$FALLBACK_FOREIGN_SESSION"
-FALLBACK_FOREIGN_LOG="$FALLBACK_FOREIGN_DIR/high_level_log.jsonl"
+FALLBACK_FOREIGN_CONTEXT_DIR="$CONTEXT_ROOT/$FALLBACK_FOREIGN_SESSION"
+FALLBACK_FOREIGN_LOG="$FALLBACK_FOREIGN_CONTEXT_DIR/high_level_log.jsonl"
 FALLBACK_FOREIGN_ACTIVE="$FALLBACK_FOREIGN_DIR/eci_active"
 FALLBACK_ESCAPE_TARGET="$TMP_ROOT/planner-unavailable-outside-log"
 FALLBACK_ESCAPE_LINK="$FALLBACK_DIR/escaping-output"
@@ -367,7 +375,7 @@ FALLBACK_GOAL="$FALLBACK_DIR/goal_state"
 FALLBACK_ORDINARY="$TMP_ROOT/planner-unavailable-ordinary-output"
 FALLBACK_ACTIVE_REAL="$(realpath -m -- "$FALLBACK_ACTIVE")"
 FALLBACK_GOAL_REAL="$(realpath -m -- "$FALLBACK_GOAL")"
-mkdir -p -- "$FALLBACK_DIR" "$FALLBACK_FOREIGN_DIR"
+mkdir -p -- "$FALLBACK_DIR" "$FALLBACK_FOREIGN_DIR" "$FALLBACK_CONTEXT_DIR" "$FALLBACK_FOREIGN_CONTEXT_DIR"
 printf '%s\n' '{"event":"decision","summary":"current"}' >"$FALLBACK_LOG"
 printf '%s\n' '{"event":"decision","summary":"foreign"}' >"$FALLBACK_FOREIGN_LOG"
 run_lifecycle "$FALLBACK_SESSION" on 'planner-unavailable ledger fallback fixture' >/dev/null

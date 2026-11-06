@@ -8,12 +8,13 @@ codex_eci_control_basename high_level_log.jsonl
 ! codex_eci_control_basename high_level_log.md
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-structured-log.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
+export HOME="$TMP_ROOT/home"
 proof_root="$TMP_ROOT/proof"
 session_id=t00-structured-log
-session_dir="$proof_root/$session_id"
+session_dir="$HOME/tmp/agent/context/sessions/$session_id"
 cwd="$TMP_ROOT/repository"
 log="$session_dir/high_level_log.jsonl"
-mkdir -p -- "$session_dir" "$cwd"
+mkdir -p -- "$proof_root/$session_id" "$session_dir" "$cwd"
 # A removed-name cache is not imported or used as an alias.
 old_cache="$session_dir/high_level_log.md"
 printf '%s\n' 'obsolete cache sentinel' >"$old_cache"

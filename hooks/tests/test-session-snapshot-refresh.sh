@@ -179,12 +179,20 @@ test_baseline_pair_recovers_after_publication_boundary() {
 }
 
 test_worker_cli_lifecycle_mutations_are_role_neutral() {
-  local proof_root="$TMP_ROOT/worker-lifecycle-proof" session_dir wait_report teardown_report fingerprint
+  local proof_root="$TMP_ROOT/worker-lifecycle-proof" codex_home session_dir wait_report teardown_report fingerprint
   session_dir="$proof_root/t00-worker"
   wait_report="$TMP_ROOT/worker-wait-report.md"
   teardown_report="$TMP_ROOT/worker-disengage.md"
   fingerprint="$(printf '%064d' 1)"
   mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
+  # eci-active runs from a real fixture $HOME/.codex copy so the provenance
+  # guard and every lifecycle write stay inside the isolated fixture HOME.
+  codex_home="$TMP_ROOT/home/.codex"
+  mkdir -p "$codex_home"
+  rsync -a --exclude='sessions/' --exclude='*.sqlite*' --exclude='auth*.json' \
+    --exclude='.cache/' --exclude='__pycache__/' \
+    "$ROOT/hooks" "$ROOT/bin" "$ROOT/tools" "$ROOT/skills" \
+    "$ROOT/CODEX.md" "$ROOT/hooks.json" "$codex_home/"
   printf '%s\n' '# worker wait report' >"$wait_report"
   printf '%s\n' '# worker teardown report' >"$teardown_report"
 
@@ -193,9 +201,9 @@ test_worker_cli_lifecycle_mutations_are_role_neutral() {
   # label must not turn this documented local lifecycle into a false owner
   # boundary.
   (
-    cd "$ROOT"
-    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$ROOT/bin/eci-active" on worker-scope >"$TMP_ROOT/worker-on.out" \
+    cd "$codex_home"
+    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$codex_home/bin/eci-active" on worker-scope >"$TMP_ROOT/worker-on.out" \
       2>"$TMP_ROOT/worker-on.err"
   )
   [ -f "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ]
@@ -204,8 +212,8 @@ test_worker_cli_lifecycle_mutations_are_role_neutral() {
   # lifecycle command itself is role-neutral.
   if (
     cd "$TMP_ROOT"
-    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$ROOT/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-wrong-cwd.out" \
+    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$codex_home/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-wrong-cwd.out" \
       2>"$TMP_ROOT/worker-wrong-cwd.err"
   ); then
     return 1
@@ -213,26 +221,26 @@ test_worker_cli_lifecycle_mutations_are_role_neutral() {
   grep -Fq 'current session/cwd' "$TMP_ROOT/worker-wrong-cwd.err" || return 1
 
   (
-    cd "$ROOT"
-    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$ROOT/bin/eci-active" wait "$wait_report" >"$TMP_ROOT/worker-wait.out" \
+    cd "$codex_home"
+    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$codex_home/bin/eci-active" wait "$wait_report" >"$TMP_ROOT/worker-wait.out" \
       2>"$TMP_ROOT/worker-wait.err"
   )
   [ -f "$session_dir/eci_wait" ] && [ ! -L "$session_dir/eci_wait" ]
   [ -f "$session_dir/eci_user_owned_wait.md" ] && [ ! -L "$session_dir/eci_user_owned_wait.md" ]
 
   (
-    cd "$ROOT"
-    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$ROOT/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-resume.out" \
+    cd "$codex_home"
+    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$codex_home/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-resume.out" \
       2>"$TMP_ROOT/worker-resume.err"
   )
   [ ! -e "$session_dir/eci_wait" ] && [ ! -L "$session_dir/eci_wait" ]
 
   (
-    cd "$ROOT"
-    CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$ROOT/bin/eci-active" off "$teardown_report" >"$TMP_ROOT/worker-off.out" \
+    cd "$codex_home"
+    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
+      "$codex_home/bin/eci-active" off "$teardown_report" >"$TMP_ROOT/worker-off.out" \
       2>"$TMP_ROOT/worker-off.err"
   )
   [ ! -e "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ]
@@ -241,16 +249,16 @@ test_worker_cli_lifecycle_mutations_are_role_neutral() {
 test_eci_active_mutations_fail_closed_when_lock_is_busy() {
   local proof_root="$TMP_ROOT/mutation-lock-proof" session_dir log_path lock_fd entry
   session_dir="$proof_root/t00-session"
-  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
+  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp" "$TMP_ROOT/home/tmp/agent/context/sessions/t00-session"
   printf 'scope: lock test\n' >"$session_dir/eci_active"
-  log_path="$session_dir/high_level_log.jsonl"
+  log_path="$TMP_ROOT/home/tmp/agent/context/sessions/t00-session/high_level_log.jsonl"
   entry='{"event":"checkpoint","summary":"append after lock release"}'
   printf '%s\n' '{"event":"checkpoint","summary":"existing entry"}' >"$log_path"
   cp "$log_path" "$TMP_ROOT/log-before-lock"
   exec {lock_fd}>>"$proof_root/.eci-active.lock"
   codex_file_lock_acquire_fd "$lock_fd" nonblocking
 
-  if CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+  if HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
       "$ROOT/bin/eci-active" ledger-append --json "$entry" >"$TMP_ROOT/append-lock.out" 2>"$TMP_ROOT/append-lock.err"; then
     return 1
   fi
@@ -259,7 +267,7 @@ test_eci_active_mutations_fail_closed_when_lock_is_busy() {
   cmp "$TMP_ROOT/expected-lock.err" "$TMP_ROOT/append-lock.err"
   cmp "$TMP_ROOT/log-before-lock" "$log_path"
   codex_file_lock_release_fd "$lock_fd"
-  CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
+  HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-session \
     "$ROOT/bin/eci-active" ledger-append --json "$entry" >"$TMP_ROOT/append-unlocked.out"
   jq -se 'length == 2 and (.[1] | .schema == "eci-high-level-log/v1" and
     .event == "checkpoint" and .summary == "append after lock release" and

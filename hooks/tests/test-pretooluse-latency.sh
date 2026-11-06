@@ -5,23 +5,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_BASE="$(realpath -m -- "${CODEX_TMPDIR:-${HOME:?}/tmp}")"
 TMP_ROOT="$(mktemp -d "$TMP_BASE/codex-pretooluse-latency.XXXXXX")"
+# Each callback runs against a private runtime copy under a real fixture HOME,
+# so no hook, ledger, or transcript write reaches the live ~/.codex or ~/tmp.
+SOURCE_ROOT="$ROOT"
+ROOT="$TMP_ROOT/home/.codex"
+mkdir -p -- "$ROOT/sessions"
+rsync -a --exclude='sessions/' --exclude='*.sqlite*' --exclude='auth*.json' \
+  --exclude='.cache/' --exclude='__pycache__/' \
+  "$SOURCE_ROOT/hooks" "$SOURCE_ROOT/bin" "$SOURCE_ROOT/tools" "$SOURCE_ROOT/skills" \
+  "$SOURCE_ROOT/CODEX.md" "$SOURCE_ROOT/hooks.json" "$ROOT/"
 proof_root="$TMP_ROOT/proof"
 session_id="t00-session"
 session_dir="$proof_root/$session_id"
-status_file="$session_dir/latest-status-report.md"
+status_file="$TMP_ROOT/home/tmp/agent/context/sessions/$session_id/latest-status-report.md"
 worker_transcript="$(mktemp "$ROOT/sessions/latency-worker.XXXXXX.jsonl")"
 helper_hardlink="$ROOT/hooks/lib/.eci-latency-helper-$BASHPID"
 altered_mode="$TMP_ROOT/eci-command-gate-mode"
 export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
 export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
-mkdir -p "$session_dir" "$XDG_CONFIG_HOME/eci"
+mkdir -p "$session_dir" "$(dirname -- "$status_file")" "$XDG_CONFIG_HOME/eci"
 chmod 700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/eci"
 trap 'rm -f -- "$worker_transcript" "$helper_hardlink"; rm -rf -- "$TMP_ROOT"' EXIT HUP INT TERM
-# Exercise hooks.json through the same HOME-derived root it declares.  HOME
-# may be a stable parent alias, but the selected `$HOME/.codex` final component
-# must remain a real directory: the provenance guard intentionally rejects a
-# final-root symlink.
-ln -s -- "$(dirname -- "$ROOT")" "$TMP_ROOT/home"
+# HOME is a real fixture directory whose .codex is the private runtime copy, so
+# the provenance guard sees a real final $HOME/.codex directory (no symlink).
 ln -- "$ROOT/hooks/lib/eci-environment-command.sh" "$helper_hardlink"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$altered_mode"
 chmod 755 "$altered_mode"

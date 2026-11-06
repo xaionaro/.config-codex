@@ -4063,11 +4063,12 @@ test_eci_gate_denies_code_write_payload() {
 }
 
 test_eci_gate_allows_current_session_high_level_log_and_anchor() {
-  local proof_root input out log anchor
+  local proof_root input out log anchor ledger_dir
   proof_root="$(fresh_proof_root eci-anchor-edit)"
-  mkdir -p "$proof_root/t00-session"
-  log="$proof_root/t00-session/high_level_log.jsonl"
-  anchor="$proof_root/t00-session/high_level_log.anchor"
+  ledger_dir="$TMP_ROOT/home/tmp/agent/context/sessions/t00-session"
+  mkdir -p "$ledger_dir" || return 1
+  log="$ledger_dir/high_level_log.jsonl"
+  anchor="$ledger_dir/high_level_log.anchor"
   printf '%s\n' '{"event":"decision","summary":"coordinator ledger update"}' >"$log"
   printf '%s\n' 'coordinator anchor update' >"$anchor"
   input="$TMP_ROOT/eci-anchor-edit.json"
@@ -4076,13 +4077,13 @@ test_eci_gate_allows_current_session_high_level_log_and_anchor() {
   out="$TMP_ROOT/eci-anchor-edit.out"
 
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out" || return 1
 
   jq -n --arg cwd "$ROOT" --arg path "$anchor" \
     '{session_id:"t00-session",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$path,content:"coordinator anchor update"}}' >"$input"
   run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$input" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
+    HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out"
 }
 
@@ -4280,18 +4281,18 @@ test_validate_edit_write_allows_notebookedit_same_sid_proof() {
   proof_root="$(fresh_proof_root edit-write-notebook-same)"
   mkdir -p "$proof_root/t00-session"
   input="$TMP_ROOT/edit-write-notebook-same.json"
-  jq -n --arg fp "$proof_root/t00-session/project-understanding.yaml" \
+  jq -n --arg fp "$TMP_ROOT/home/tmp/agent/context/sessions/t00-session/project-understanding.yaml" \
     '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"x"}}' >"$input"
   out="$TMP_ROOT/edit-write-notebook-same.out"
 
-  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out"
 }
 
 test_validate_edit_write_allows_aliased_proof_dir() {
   local proof_root input out alias_dir
   proof_root="$(fresh_proof_root edit-write-alias)"
-  alias_dir="$proof_root/mission-alias"
+  alias_dir="$TMP_ROOT/home/tmp/agent/context/sessions/mission-alias"
   mkdir -p "$alias_dir"
   printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
   input="$TMP_ROOT/edit-write-alias.json"
@@ -4299,7 +4300,7 @@ test_validate_edit_write_allows_aliased_proof_dir() {
     '{session_id:"t00-session",tool_name:"Write",tool_input:{file_path:$fp,content:"schema: project-understanding/v1\nsections:\n  context:\n    title: \"Context\"\nrecords: {}\n"}}' >"$input"
   out="$TMP_ROOT/edit-write-alias.out"
 
-  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out"
 }
 
@@ -4340,13 +4341,13 @@ test_validate_edit_write_blocks_relative_control_path() {
 test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
   local proof_root input out
   proof_root="$(fresh_proof_root edit-write-notebook-other)"
-  mkdir -p "$proof_root/other-session"
+  mkdir -p "$TMP_ROOT/home/tmp/agent/context/sessions/other-session"
   input="$TMP_ROOT/edit-write-notebook-other.json"
-  jq -n --arg fp "$proof_root/other-session/project-understanding.yaml" \
+  jq -n --arg fp "$TMP_ROOT/home/tmp/agent/context/sessions/other-session/project-understanding.yaml" \
     '{session_id:"t00-session",tool_name:"NotebookEdit",tool_input:{notebook_path:$fp,new_string:"x"}}' >"$input"
   out="$TMP_ROOT/edit-write-notebook-other.out"
 
-  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "other-session"
 }
@@ -4354,7 +4355,7 @@ test_validate_edit_write_blocks_notebookedit_other_sid_proof() {
 test_validate_apply_patch_allows_aliased_proof_dir() {
   local proof_root input out alias_dir patch_path patch_text
   proof_root="$(fresh_proof_root apply-patch-alias)"
-  alias_dir="$proof_root/mission-alias"
+  alias_dir="$TMP_ROOT/home/tmp/agent/context/sessions/mission-alias"
   mkdir -p "$alias_dir"
   printf 'session_id: t00-session\n' >"$alias_dir/.codex-proof-alias"
   patch_path="$alias_dir/project-understanding.yaml"
@@ -4365,7 +4366,7 @@ test_validate_apply_patch_allows_aliased_proof_dir() {
     '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
   out="$TMP_ROOT/apply-patch-alias.out"
 
-  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   expect_no_output "$out"
 }
 
@@ -4409,15 +4410,15 @@ test_validate_apply_patch_blocks_relative_control_path() {
 test_validate_apply_patch_blocks_other_sid_proof() {
   local proof_root input out patch_path patch_text
   proof_root="$(fresh_proof_root apply-patch-other-session)"
-  mkdir -p "$proof_root/other-session"
-  patch_path="$proof_root/other-session/project-understanding.yaml"
+  mkdir -p "$TMP_ROOT/home/tmp/agent/context/sessions/other-session"
+  patch_path="$TMP_ROOT/home/tmp/agent/context/sessions/other-session/project-understanding.yaml"
   patch_text="$(printf '*** Begin Patch\n*** Add File: %s\n+test\n*** End Patch\n' "$patch_path")"
   input="$TMP_ROOT/apply-patch-other-session.json"
   jq -n --arg patch "$patch_text" \
     '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
   out="$TMP_ROOT/apply-patch-other-session.out"
 
-  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "other-session"
 }
@@ -4425,7 +4426,7 @@ test_validate_apply_patch_blocks_other_sid_proof() {
 test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker() {
   local proof_root input out uuid_dir patch_path patch_text
   proof_root="$(fresh_proof_root apply-patch-uuid-alias)"
-  uuid_dir="$proof_root/019e55e6-6d85-7181-b197-43aa5708609b"
+  uuid_dir="$TMP_ROOT/home/tmp/agent/context/sessions/019e55e6-6d85-7181-b197-43aa5708609b"
   mkdir -p "$uuid_dir"
   printf 'session_id: t00-session\n' >"$uuid_dir/.codex-proof-alias"
   patch_path="$uuid_dir/project-understanding.yaml"
@@ -4435,7 +4436,7 @@ test_validate_apply_patch_blocks_uuid_sid_despite_alias_marker() {
     '{session_id:"t00-session",tool_name:"apply_patch",tool_input:{patch:$patch}}' >"$input"
   out="$TMP_ROOT/apply-patch-uuid-alias.out"
 
-  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+  run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
   is_pretool_deny "$out" &&
     json_field_contains "$out" '.hookSpecificOutput.permissionDecisionReason // empty' "019e55e6-6d85-7181-b197-43aa5708609b"
 }
@@ -4446,6 +4447,8 @@ ledger_basenames() {
     "high_level_log.jsonl" \
     "high_level_log.anchor" \
     "latest-status-report.md" \
+    "latest-status-report.yaml" \
+    "forecasts.yaml" \
     "eci_active" \
     "eci_wait" \
     "eci_user_owned_wait.md" \
@@ -4536,7 +4539,7 @@ write_apply_patch_input() {
 test_validate_direct_and_apply_block_subagent_ledger_paths() {
   local proof_root ledger_dir transcript ledger tool input out tag
   proof_root="$(fresh_proof_root direct-subagent-ledger)"
-  ledger_dir="$proof_root/t00-session"
+  ledger_dir="$TMP_ROOT/home/tmp/agent/context/sessions/t00-session"
   mkdir -p "$ledger_dir" || return 1
   transcript="$(subagent_transcript_path)"
   write_subagent_transcript "$transcript" || return 1
@@ -4581,7 +4584,7 @@ test_validate_direct_and_apply_block_subagent_ledger_paths() {
 test_validate_direct_and_apply_allow_main_ledger_paths() {
   local proof_root ledger_dir ledger tool input out tag
   proof_root="$(fresh_proof_root direct-main-ledger)"
-  ledger_dir="$proof_root/t00-session"
+  ledger_dir="$TMP_ROOT/home/tmp/agent/context/sessions/t00-session"
   mkdir -p "$ledger_dir" || return 1
 
   while IFS= read -r ledger; do
@@ -4593,7 +4596,7 @@ test_validate_direct_and_apply_allow_main_ledger_paths() {
         mv "$input.tmp" "$input" || return 1
       out="$TMP_ROOT/$tag.out"
 
-      run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+      run_hook "$out" "$ROOT/hooks/validate-edit-write.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
       expect_no_output "$out" || {
         printf '%s\n' "$tag expected no denial" >&2
         cat "$out" >&2
@@ -4608,7 +4611,7 @@ test_validate_direct_and_apply_allow_main_ledger_paths() {
       mv "$input.tmp" "$input" || return 1
     out="$TMP_ROOT/$tag.out"
 
-    run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" CODEX_PROOF_ROOT="$proof_root" || return 1
+    run_hook "$out" "$ROOT/hooks/validate-apply-patch.sh" "$input" HOME="$TMP_ROOT/home" CODEX_PROOF_ROOT="$proof_root" || return 1
     expect_no_output "$out" || {
       printf '%s\n' "$tag expected no denial" >&2
       cat "$out" >&2

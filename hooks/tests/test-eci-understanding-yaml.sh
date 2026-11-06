@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/eci-understanding-yaml.XXXXXX")"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT
+export HOME="$TMP_ROOT/home"
 source "$ROOT/hooks/lib/codex-proof-state.sh"
 codex_session_ledger_basename project-understanding.yaml
 codex_eci_control_basename project-understanding.yaml
@@ -51,9 +52,9 @@ done
 # Real canonical CLI uses an isolated owned fixture, not a current live session.
 proof_root="$TMP_ROOT/proof"
 session_id=t00-understanding-yaml
-session_dir="$proof_root/$session_id"
+session_dir="$HOME/tmp/agent/context/sessions/$session_id"
 cwd="$TMP_ROOT/repository"
-mkdir -p -- "$session_dir" "$proof_root/other" "$cwd"
+mkdir -p -- "$session_dir" "$proof_root/$session_id" "$proof_root/other" "$cwd"
 run_current() {
   (cd -- "$cwd"; CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID="$session_id" "$ROOT/bin/eci-active" "$@")
 }

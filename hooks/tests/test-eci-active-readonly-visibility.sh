@@ -82,7 +82,7 @@ assert_status provider-status "session_id: $session_id" "$provider_eci" status
 split_home="$TMP_ROOT/split-home"
 split_xdg_cache="$TMP_ROOT/split-xdg-cache"
 split_session=t00-readonly-shared-root
-split_root="$split_home/.cache/codex-proof"
+split_root="$split_home/tmp/agent/proof"
 mkdir -p -- "$split_root/$split_session" "$split_xdg_cache"
 printf '%s\n' \
   'scope: shared proof root status fixture' \

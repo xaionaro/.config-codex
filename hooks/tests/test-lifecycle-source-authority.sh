@@ -81,7 +81,7 @@ if foreign_cleanup_command="$(
   fail "foreign proof helper emitted a lifecycle command: $foreign_cleanup_command"
 fi
 
-ledger_path="$proof_root/kimi-ledger/high_level_log.jsonl"
+ledger_path="$fixture_kimi_home/tmp/agent/context/sessions/kimi-ledger/high_level_log.jsonl"
 mkdir -p -- "${ledger_path%/*}"
 printf '%s\n' '{"event":"decision","summary":"coordinator ledger"}' >"$ledger_path"
 jq -cn --arg cwd "$cwd" --arg path "$ledger_path" \

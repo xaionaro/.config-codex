@@ -3,8 +3,9 @@ set -euo pipefail
 base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
+export HOME="$fixture/home"
 export CODEX_PROOF_ROOT="$fixture/proof" CODEX_SESSION_ID=retirement_test
-mkdir -p "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID"
+mkdir -p "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID" "$HOME/tmp/agent/context/sessions/$CODEX_SESSION_ID"
 for command in on off wait wait-repair resume nested-enter nested-accept nested-exit aggregate-off; do
   if output="$("$base_dir/bin/eci-active" "$command" ignored 2>&1)"; then
     echo "obsolete lifecycle command unexpectedly succeeded: $command" >&2; exit 1
@@ -12,7 +13,7 @@ for command in on off wait wait-repair resume nested-enter nested-accept nested-
   [[ "$output" == *ECI_LIFECYCLE_RETIRED* ]] || { echo "$output" >&2; exit 1; }
 done
 "$base_dir/bin/eci-active" ledger-append --json '{"event":"decision","summary":"marker-free coordination"}'
-jq -e 'select(.summary == "marker-free coordination" and .session_id == "retirement_test")' "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID/high_level_log.jsonl" >/dev/null
+jq -e 'select(.summary == "marker-free coordination" and .session_id == "retirement_test")' "$HOME/tmp/agent/context/sessions/$CODEX_SESSION_ID/high_level_log.jsonl" >/dev/null
 if env -u CODEX_SESSION_ID -u CODEX_THREAD_ID "$base_dir/bin/eci-active" ledger-append --json '{"event":"decision","summary":"wrong owner"}' >/dev/null 2>&1; then
   echo 'coordination selected an arbitrary session' >&2; exit 1
 fi

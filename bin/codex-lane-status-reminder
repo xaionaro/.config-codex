@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/codex-proof/pre-reviewer"
+cache_root="${CODEX_PROOF_ROOT:-$HOME/tmp/agent/proof}/pre-reviewer"
 marker="$cache_root/lane-status-reminder-due.md"
 log_file="$cache_root/lane-status-reminder.log"
 timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

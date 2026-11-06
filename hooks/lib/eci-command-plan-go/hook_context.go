@@ -190,7 +190,7 @@ func hookProofRoot() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		root = filepath.Join(home, ".cache", "codex-proof")
+		root = filepath.Join(home, "tmp", "agent", "proof")
 	}
 	if !filepath.IsAbs(root) {
 		return "", fmt.Errorf("proof root must be absolute")

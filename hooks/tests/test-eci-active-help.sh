@@ -888,8 +888,10 @@ run_fixture_ledger_append() {
 }
 
 assert_ledger_append_bootstraps_empty_log_and_reconciles_regular_history() {
-  local log="$proof_root/t00-help/high_level_log.jsonl"
-  local anchor="$proof_root/t00-help/high_level_log.anchor"
+  local context_dir="$fixture_home/tmp/agent/context/sessions/t00-help"
+  local log="$context_dir/high_level_log.jsonl"
+  local anchor="$context_dir/high_level_log.anchor"
+  mkdir -p -- "$context_dir"
   local foreign="$TMP_ROOT/ledger-foreign-log"
   local log_before="$TMP_ROOT/ledger-log.before"
   local anchor_before="$TMP_ROOT/ledger-anchor.before"
