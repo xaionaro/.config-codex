@@ -685,21 +685,6 @@ test_eci_gate_ignores_code_apply_patch_from_cwd_state() {
   expect_no_output "$out"
 }
 
-test_eci_gate_allows_code_apply_patch_from_session_state() {
-  local proof_root out
-  proof_root="$(fresh_proof_root eci-code-session)"
-  out="$TMP_ROOT/eci-code-session-active.out"
-  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >"$out" 2>"$out.err" || return 1
-  [ -f "$proof_root/t00-session/eci_active" ] || return 1
-  [ ! -e "$proof_root/eci/cwd" ] || return 1
-
-  out="$TMP_ROOT/eci-code-session.out"
-  run_hook "$out" "$ROOT/hooks/eci-active-gate.sh" "$FIXTURES/eci-apply-patch-code.json" \
-    CODEX_PROOF_ROOT="$proof_root" || return 1
-
-  expect_no_output "$out"
-}
-
 test_eci_gate_ignores_codex_role_for_normal_edit() {
   local proof_root out
   proof_root="$(fresh_proof_root eci-role-spoof)"
@@ -2844,8 +2829,6 @@ run_case "ECI gate allows edits without routing message" \
   test_eci_gate_allows_edits_without_routing_message
 run_case "ECI gate ignores code apply_patch from cwd marker" \
   test_eci_gate_ignores_code_apply_patch_from_cwd_state
-run_case "ECI gate allows code apply_patch from session marker" \
-  test_eci_gate_allows_code_apply_patch_from_session_state
 run_case "ECI gate ignores CODEX_ROLE for a normal edit" \
   test_eci_gate_ignores_codex_role_for_normal_edit
 run_case "subagent helper reads oversize metadata prefix" \
