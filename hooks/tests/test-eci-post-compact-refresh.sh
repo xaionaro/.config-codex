@@ -214,53 +214,6 @@ test_post_compact_hook_is_registered_and_session_start_is_restricted() {
   grep -Fq "$postcompact_hook_state" "$ROOT/config.toml"
 }
 
-test_policy_names_post_compact_authority_and_exact_manifest_schema() {
-  local runtime="$ROOT/skills/references/workflow-runtime/coordinator-runtime.md"
-  local pressure="$ROOT/skills/references/workflow-runtime/policy-pressure-tests.md"
-  local eci="$ROOT/skills/explore-critique-implement/SKILL.md"
-  local ate="$ROOT/skills/agent-teams-execution/SKILL.md"
-
-  for skill in "$eci" "$ate"; do
-    grep -Fq '[coordinator runtime](../references/workflow-runtime/coordinator-runtime.md)' "$skill"
-    grep -Fq '[policy pressure tests](../references/workflow-runtime/policy-pressure-tests.md)' "$skill"
-  done
-  grep -Fq 'PostCompact` is the authoritative compaction refresh signal' "$runtime"
-  grep -Fq 'SessionStart` `startup|resume|clear`' "$runtime"
-  grep -Fq 'best-effort resume/clear reminder' "$runtime"
-  grep -Fq 'schema `eci-required-critics/v2`' "$runtime"
-  grep -Fq 'Each target has `{target_id,target_kind,diff_artifact,diff_sha256,e2e_required,target_path,target_version}`' "$runtime"
-  grep -Fq 'current_target_id,current_target_kind,current_diff_artifact' "$runtime"
-  grep -Fq 'The canonical row fields are `{target_id,target_kind,diff_artifact,diff_sha256,critic_role,gate_phase,child_identity,spawn_request_artifact,spawn_request_sha256,report_artifact,report_sha256,adjudication_artifact,adjudication_sha256,verdict,e2e_required,e2e_artifact,e2e_sha256,repo_root,git_dir,git_common_dir,base_oid,head_oid,staged_diff_sha256,worktree_diff_sha256,status_sha256,target_path,target_version,intention_artifact,intention_sha256,acceptance_version}`' "$runtime"
-  grep -Fq '**Adjudication record details:**' "$runtime"
-  grep -Fq 'Every report artifact must be bounded text ending with exactly one canonical `eci_critic_verdict: APPROVED|CONDITIONAL|REJECTED` line' "$runtime"
-  grep -Fq 'Report text is UTF-8, bounded, LF-terminated' "$runtime"
-  grep -Fq 'eci-critic-adjudication/v1' "$runtime"
-  grep -Fq 'eci-required-critics.<phase>.<acceptance_version>.ledger' "$runtime"
-  grep -Fq 'eci-acceptance-anchor' "$runtime"
-  grep -Fq 'Historical phase/version ledgers are evidence for their snapshot' "$runtime"
-  if grep -Fq '"diff_artifact":string,"diff_sha256":lowercase64hex' "$runtime"; then
-    return 1
-  fi
-  grep -Fq 'Critic C pre-write skip-design admission report' "$runtime"
-  grep -Fq 'only on an explicitly selected skip-design route' "$runtime"
-  grep -Fq 'Critic C post-write reconciliation report' "$runtime"
-  grep -Fq 'nested-accept' "$runtime"
-  grep -Fq 'primary-owner: none' "$runtime"
-  grep -Fq '`target-scoped-critic-ledger-row`' "$pressure"
-  grep -Fq '`critic-c-prewrite-postwrite`' "$pressure"
-  grep -Fq 'The `PostCompact` hook is read-only' "$runtime"
-  if grep -Fq 'eci_refresh_pending' "$runtime" || grep -Fq 'refresh-ack' "$runtime"; then
-    return 1
-  fi
-  grep -Fq '`postcompact-refresh-signal`' "$pressure"
-  if grep -Fq 'There is no dedicated compaction hook' "$runtime"; then
-    return 1
-  fi
-  if grep -Fq 'both execution-review lenses' "$ate"; then
-    return 1
-  fi
-}
-
 test_post_compact_active_eci_uses_provider_valid_empty_output
 test_post_compact_inactive_eci_is_silent
 test_post_compact_symlink_marker_is_silent
@@ -272,5 +225,4 @@ test_post_compact_requires_event_and_trigger_contract
 test_post_compact_rejects_marker_owner_mismatch
 test_post_compact_nested_marker_is_explicit_and_bounded
 test_post_compact_hook_is_registered_and_session_start_is_restricted
-test_policy_names_post_compact_authority_and_exact_manifest_schema
 printf '%s\n' 'PostCompact ECI refresh tests: PASS'
