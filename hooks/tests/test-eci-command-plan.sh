@@ -89,10 +89,10 @@ run_hook() {
   if [ -n "$transcript" ]; then
     jq -cn --arg session_id "$session_id" --arg cwd "$cwd" \
       --arg transcript "$transcript" --arg command "$command" \
-      '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}'
+      '{session_id:$session_id,tool_name:"Bash",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}'
   else
     jq -cn --arg session_id "$session_id" --arg cwd "$cwd" --arg command "$command" \
-      '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}'
+      '{session_id:$session_id,tool_name:"Bash",cwd:$cwd,tool_input:{command:$command}}'
   fi |
     HOME="$HOME" CODEX_HOME="$CODEX_ROOT" KIMI_CODE_HOME="$kimi_home" \
       CODEX_PROOF_ROOT="$proof_root" KIMI_PROOF_ROOT="$proof_root" \
@@ -390,7 +390,7 @@ assert_codex_transcript_worker_allowed() {
   make_marker "$proof_root" "$session_id" "$CODEX_ROOT"
   jq -cn --arg session_id "$session_id" --arg cwd "$CODEX_ROOT" \
     --arg transcript "$transcript" --arg command "$command" \
-    '{session_id:$session_id,cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
+    '{session_id:$session_id,tool_name:"Bash",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     env -u CODEX_HOOK_IS_SUBAGENT -u CODEX_ROLE \
       CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$codex_home" \
       KIMI_CODE_HOME="$KIMI_ROOT" PATH="$CODEX_ROOT/bin:$PATH" \

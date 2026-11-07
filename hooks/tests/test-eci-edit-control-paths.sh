@@ -39,7 +39,7 @@ printf '%s\n' '{"timestamp":"2026-08-15T00:00:00.000Z","type":"session_meta","pa
 run_bash_worker_write_denied() {
   local command="$1" expected_target="$2" out="$TMP_ROOT/bash-worker-write.out"
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
+    '{session_id:"t00-session",tool_name:"Bash",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$HOST_HOME" \
       CODEX_HOOK_IS_SUBAGENT=true CODEX_ROLE=worker \
       bash "$control_hook_fixture" >"$out"
@@ -57,7 +57,7 @@ run_bash_worker_write_denied() {
 run_bash_worker_allowed() {
   local command="$1" out="$TMP_ROOT/bash-worker-allowed.out" status
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg transcript "$transcript" \
-    '{session_id:"t00-session",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
+    '{session_id:"t00-session",tool_name:"Bash",cwd:$cwd,transcript_path:$transcript,tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$HOST_HOME" \
       CODEX_HOOK_IS_SUBAGENT=true CODEX_ROLE=worker \
       bash "$control_hook_fixture" >"$out" || status=$?
@@ -120,7 +120,7 @@ run_bash_worker_allowed 'for item in one; do printf "$item"; done'
 # a usable HOME authority, the hook must make no decision rather than create a
 # false control-plane denial.
 metadata_output="$TMP_ROOT/metadata-advisory.out"
-printf '%s\n' '{"session_id":"t00-session","cwd":[],"tool_input":{"command":"printf harmless"}}' |
+printf '%s\n' '{"session_id":"t00-session","tool_name":"Bash","cwd":[],"tool_input":{"command":"printf harmless"}}' |
   CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME="$HOST_HOME" \
     bash "$control_hook_fixture" >"$metadata_output"
 [ ! -s "$metadata_output" ] || {
@@ -128,7 +128,7 @@ printf '%s\n' '{"session_id":"t00-session","cwd":[],"tool_input":{"command":"pri
   cat -- "$metadata_output" >&2
   exit 1
 }
-printf '%s\n' '{"session_id":"t00-session","cwd":"/tmp","tool_input":{"command":"printf harmless"}}' |
+printf '%s\n' '{"session_id":"t00-session","tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"printf harmless"}}' |
   CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" HOME=relative \
     bash "$control_hook_fixture" >"$metadata_output"
 [ ! -s "$metadata_output" ] || {

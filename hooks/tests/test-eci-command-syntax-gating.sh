@@ -90,7 +90,7 @@ run_hook() {
     --arg session_id "$SESSION_ID" \
     --arg cwd "$ROOT" \
     --arg command "$command" \
-    '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}' \
+    '{session_id:$session_id,tool_name:"Bash",cwd:$cwd,tool_input:{command:$command}}' \
     >"$INPUT"
 
   set +e
