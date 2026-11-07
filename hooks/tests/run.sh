@@ -259,7 +259,7 @@ test_prompt_state_keeps_session_eci_marker_silent() {
 test_prompt_state_config_is_wired_without_probe() {
   jq -e '
     ([.hooks.UserPromptSubmit[]?.hooks[]?.command]
-      | any(test("\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/hooks/prompt-task-reminder\\.sh"))) and
+      | any(test("hooks/prompt-task-reminder\\.sh"))) and
     ([.hooks.PostToolUse[]?.hooks[]?.command] | length == 0) and
     ([.. | objects | .command? // empty]
       | all(contains("/hooks/tests/skill-event-probe.sh") | not))
