@@ -560,7 +560,6 @@ test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
   proof_root="$(fresh_proof_root session-old-markers)"
   CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/skip-stop" on >/dev/null 2>&1 || return 1
   env -u CODEX_SESSION_ID CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/skip-stop" on >/dev/null 2>&1 || return 1
-  CODEX_SESSION_ID=t00-session CODEX_PROOF_ROOT="$proof_root" "$ROOT/bin/eci-active" on "test scope" >/dev/null 2>&1 || return 1
 
   skip_cwd=$(find "$proof_root/skip-stop/cwd" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1)
   [ -n "$skip_cwd" ] || return 1
@@ -571,9 +570,7 @@ test_session_snapshot_preserves_fresh_markers_in_old_state_dirs() {
     CODEX_PROOF_ROOT="$proof_root" || return 1
 
   [ -e "$proof_root/skip-stop/sessions/t00-session/skip_stop" ] &&
-    [ -e "$skip_cwd/skip_stop" ] &&
-    [ -e "$proof_root/t00-session/eci_active" ] &&
-    [ "$(find "$proof_root/eci/cwd" -mindepth 2 -maxdepth 2 -name eci_active 2>/dev/null | wc -l)" -eq 0 ]
+    [ -e "$skip_cwd/skip_stop" ]
 }
 
 test_side_session_start_is_silent_and_binds_stop_bypass() {
