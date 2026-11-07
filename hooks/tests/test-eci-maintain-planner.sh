@@ -128,7 +128,7 @@ run_hook_with_codex_home() {
 run_hook_with_home() {
   local command="$1" selected_home="$2" selected_codex_home="$3" output="$TMP_ROOT/hook-output-$RANDOM"
   jq -cn --arg cwd "$FIXTURE_HOME" --arg command "$command" \
-    '{session_id:"maintain-planner-session",cwd:$cwd,tool_input:{command:$command}}' |
+    '{session_id:"maintain-planner-session",cwd:$cwd,tool_name:"Bash",tool_input:{command:$command}}' |
     HOME="$selected_home" CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_HOME="$selected_codex_home" KIMI_CODE_HOME="$KIMI_HOME" \
       ECI_TEST_PLANNER_SENTINEL="$PLANNER_SENTINEL" PATH="$FIXTURE_HOME/bin:$PATH" \
       bash "$FIXTURE_HOME/hooks/validate-bash.sh" >"$output"
@@ -380,7 +380,7 @@ extra_output="$(run_hook "$FIXTURE_HOME/bin/eci-active maintain-planner extra")"
 
 worker_output="$TMP_ROOT/worker-output"
 jq -cn --arg cwd "$FIXTURE_HOME" --arg command "$FIXTURE_HOME/bin/eci-active maintain-planner" \
-  '{session_id:"maintain-planner-session",cwd:$cwd,tool_input:{command:$command}}' |
+  '{session_id:"maintain-planner-session",cwd:$cwd,tool_name:"Bash",tool_input:{command:$command}}' |
   CODEX_PROOF_ROOT="$PROOF_ROOT" CODEX_HOME="$FIXTURE_HOME" KIMI_CODE_HOME="$KIMI_HOME" \
     CODEX_HOOK_IS_SUBAGENT=true CODEX_ROLE=worker \
     ECI_TEST_PLANNER_SENTINEL="$PLANNER_SENTINEL" PATH="$FIXTURE_HOME/bin:$PATH" \
