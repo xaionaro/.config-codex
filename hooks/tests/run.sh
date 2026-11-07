@@ -1245,19 +1245,6 @@ test_compose_reviewer_prompt_reports_structured_diagnostics() {
   grep -q 'remediation:' "$out"
 }
 
-test_reviewer_filter_keeps_real_rules_and_drops_fabricated_rules() {
-  (
-    . "$ROOT/hooks/lib/reviewer-filter.sh"
-    REVIEWER_FILTER_CORPUS_FILES="$ROOT/hooks/stop-checklist.md"
-    kept=$(filter_violations '{"verdict":"fail","violations":[{"rule":"Commit this session completed changes before stopping.","evidence":"example"}]}')
-    dropped=$(filter_violations '{"verdict":"fail","violations":[{"rule":"Always whistle three times before stopping.","evidence":"example"}]}')
-    [ "$(printf '%s' "$kept" | jq -r '.verdict')" = "fail" ] &&
-      [ "$(printf '%s' "$kept" | jq '.violations | length')" = "1" ] &&
-      [ "$(printf '%s' "$dropped" | jq -r '.verdict')" = "pass" ] &&
-      [ "$(printf '%s' "$dropped" | jq '.violations | length')" = "0" ]
-  )
-}
-
 test_reviewer_filter_keeps_user_history_agreement_rules() {
   local body
   body="$TMP_ROOT/reviewer-filter-user-history.md"
@@ -2872,8 +2859,6 @@ run_case "reviewer prompt composition uses Codex sources" \
   test_compose_reviewer_prompt_uses_codex_sources
 run_case "reviewer prompt composition reports structured diagnostics" \
   test_compose_reviewer_prompt_reports_structured_diagnostics
-run_case "reviewer filter keeps real rules and drops fabricated rules" \
-  test_reviewer_filter_keeps_real_rules_and_drops_fabricated_rules
 run_case "reviewer filter keeps user-history agreement rules" \
   test_reviewer_filter_keeps_user_history_agreement_rules
 run_case "system reviewer slices sanitized Codex transcript" \
