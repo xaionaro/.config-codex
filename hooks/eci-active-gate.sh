@@ -12,9 +12,20 @@ input=$(cat)
 
 # A malformed typed callback is a repair task only while an ECI marker is
 # active; with no marker the ordinary tool call keeps its normal validation.
+# The bounded scan's overflow or unsafe sentinel is a scan limitation, not an
+# active owner, so it must not fabricate an identity denial.
+malformed_identity_marker_present() {
+  local candidates
+  candidates="$(codex_eci_marker_candidates_bounded 2>/dev/null)" || return 1
+  case "$candidates" in
+    *"$codex_eci_marker_scan_overflow_token"*|*"$codex_eci_marker_scan_unsafe_token"*) return 1 ;;
+  esac
+  [ -n "$candidates" ]
+}
+
 malformed_identity_exit() {
   local reason
-  if [ -n "$(codex_eci_marker_candidates_bounded 2>/dev/null)" ]; then
+  if malformed_identity_marker_present; then
     reason="$(eci_diagnostic_reason "ECI_HOOK_IDENTITY_MALFORMED" "PreToolUse" "edit-routing" "session=${session_id:-<missing>},cwd=${cwd:-<missing>}" "malformed hook identity: tool_name, session_id, and cwd must be typed strings while an active marker exists" "provide typed tool_name, session_id, and cwd fields, then retry")"
     jq -n --arg reason "$reason" '{
       hookSpecificOutput: {

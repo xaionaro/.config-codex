@@ -924,9 +924,14 @@ test_omp_status_parent_session_header_is_subagent() {
 
 test_omp_status_depth_three_is_subagent() {
   local path
-  path="$(omp_root)/-proj-/parent/nosignal.jsonl"
+  # Depth 3 returns subagent without reading: this content would be unknown if read.
+  path="$(omp_root)/-proj-/parent/poison.jsonl"
   mkdir -p "$(dirname "$path")" || return 1
-  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$path"
+  printf '%s\n' "$OMP_HEADER_LINE" '{"type":"title","title":"a","title":"b"}' '{malformed' >"$path"
+  [ "$(omp_status_of "$path")" = subagent ] || return 1
+  # Depth-2 twin with the same signal line reaches the signal branch.
+  path="$(omp_root)/-proj-/twin.jsonl"
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_INIT_LINE" >"$path"
   [ "$(omp_status_of "$path")" = subagent ]
 }
 
@@ -964,6 +969,71 @@ test_omp_status_large_main_is_main() {
     "$OMP_MESSAGE_LINE" >"$path"
   [ "$(stat -c %s "$path")" -gt 65536 ] || return 1
   [ "$(omp_status_of "$path")" = main ]
+}
+
+test_omp_status_duplicate_key_is_unknown() {
+  local path
+  path="$(omp_root)/-proj-/dup.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" '{"type":"title","title":"a","title":"b"}' >"$path"
+  [ "$(omp_status_of "$path")" = unknown ] || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" '{"type":"message","message":{"role":"user","role":"assistant"}}' >"$path"
+  [ "$(omp_status_of "$path")" = unknown ]
+}
+
+test_omp_status_escaped_signal_is_subagent() {
+  local path
+  path="$(omp_root)/-proj-/escaped-value.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_TITLE_LINE" '{"type":"title","customType":"\u0073ession_init"}' >"$path"
+  [ "$(omp_status_of "$path")" = subagent ] || return 1
+  path="$(omp_root)/-proj-/escaped-key.jsonl"
+  printf '%s\n' '{"\u0074ype":"session","version":3,"parentSession":"aaaa"}' >"$path"
+  [ "$(omp_status_of "$path")" = subagent ]
+}
+
+test_omp_status_non_string_parent_session_is_unknown() {
+  local path
+  path="$(omp_root)/-proj-/nonstring-parent.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' '{"type":"session","version":3,"parentSession":5}' "$OMP_MESSAGE_LINE" >"$path"
+  [ "$(omp_status_of "$path")" = unknown ]
+}
+
+test_omp_status_binary_and_control_bytes_are_unknown() {
+  local path
+  mkdir -p "$(omp_root)/-proj-" || return 1
+  path="$(omp_root)/-proj-/nul.jsonl"
+  printf '%s\n' "$OMP_HEADER_LINE" >"$path"
+  printf 'x\000y\n' >>"$path"
+  [ "$(omp_status_of "$path")" = unknown ] || return 1
+  path="$(omp_root)/-proj-/badutf8.jsonl"
+  printf '%s\n' "$OMP_HEADER_LINE" >"$path"
+  printf '{"type":"title","title":"\377"}\n' >>"$path"
+  [ "$(omp_status_of "$path")" = unknown ] || return 1
+  path="$(omp_root)/-proj-/ctrl.jsonl"
+  printf '%s\n' "$OMP_HEADER_LINE" >"$path"
+  printf '{"type":"title","title":"a\001b"}\n' >>"$path"
+  [ "$(omp_status_of "$path")" = unknown ]
+}
+
+test_omp_status_relative_path_is_unknown() {
+  local path
+  path="$(omp_root)/-proj-/relative.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$path"
+  [ "$(cd "$(omp_root)" && omp_status_of "-proj-/relative.jsonl")" = unknown ]
+}
+
+test_omp_status_symlinked_directory_escape_is_unknown() {
+  local root outside
+  root="$(omp_root)"
+  mkdir -p "$root" || return 1
+  outside="$TMP_ROOT/outside-linked"
+  mkdir -p "$outside" || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$outside/main.jsonl"
+  ln -s "$outside" "$root/linkdir" || return 1
+  [ "$(omp_status_of "$root/linkdir/main.jsonl")" = unknown ]
 }
 
 write_main_transcript() {
@@ -2835,6 +2905,18 @@ run_case "omp status: fails closed on missing, symlink, outside, empty, malforme
   test_omp_status_fails_closed
 run_case "omp status: main transcript larger than 64 KiB is main" \
   test_omp_status_large_main_is_main
+run_case "omp status: duplicate key is unknown" \
+  test_omp_status_duplicate_key_is_unknown
+run_case "omp status: escaped signal keys are subagent" \
+  test_omp_status_escaped_signal_is_subagent
+run_case "omp status: non-string parentSession is unknown" \
+  test_omp_status_non_string_parent_session_is_unknown
+run_case "omp status: binary, invalid UTF-8, control bytes are unknown" \
+  test_omp_status_binary_and_control_bytes_are_unknown
+run_case "omp status: relative transcript path is unknown" \
+  test_omp_status_relative_path_is_unknown
+run_case "omp status: symlinked directory escaping the sessions root is unknown" \
+  test_omp_status_symlinked_directory_escape_is_unknown
 run_case "ECI gate allows spawned-agent transcript payload" \
   test_eci_gate_allows_spawned_agent_transcript_payload
 run_case "ECI gate allows oversize spawned-agent transcript payload" \

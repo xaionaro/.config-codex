@@ -2312,10 +2312,14 @@ codex_hook_omp_sessions_root() {
   printf '%s/.omp/agent/sessions\n' "$HOME"
 }
 
-# True when the transcript is lexically or physically under the omp sessions root.
+# True when the transcript is an absolute path lexically or physically under the omp sessions root.
 codex_hook_is_omp_transcript() {
   local path="$1" raw_root real_root real_path
 
+  case "$path" in
+    /*) ;;
+    *) return 1 ;;
+  esac
   raw_root="$(codex_hook_omp_sessions_root)" || return 1
   case "$path" in
     "$raw_root"/*) return 0 ;;
@@ -2329,40 +2333,99 @@ codex_hook_is_omp_transcript() {
 }
 
 # Prints main, subagent, or unknown for an omp transcript. Every failure is unknown.
+# Depth >= 3 is subagent before any filesystem access. Depth 2 needs a non-symlink
+# file whose realpath stays under the sessions root at physical depth 2, a regular
+# readable non-empty file, no control bytes, valid UTF-8, and one jq pass.
+# main: every line a JSON object with no duplicate key at any depth and no signal.
+# subagent: a signal in a valid file (session_init, or a session header with parentSession).
 codex_hook_omp_transcript_status() {
-  local path="$1" real_root real_path rel slashes depth grc candidates signal
+  local path="$1" raw_root real_root real_path rel slashes depth verdict prog grc
+  local LC_ALL=C
 
-  [ ! -L "$path" ] && [ -f "$path" ] || { printf 'unknown\n'; return 0; }
-  real_root="$(realpath -e -- "$(codex_hook_omp_sessions_root)" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
-  real_path="$(realpath -e -- "$path" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
-  case "$real_path" in
-    "$real_root"/*) ;;
+  raw_root="$(codex_hook_omp_sessions_root)" || { printf 'unknown\n'; return 0; }
+  case "$path" in
+    /*) ;;
     *) printf 'unknown\n'; return 0 ;;
   esac
-  [ -f "$real_path" ] && [ -s "$real_path" ] || { printf 'unknown\n'; return 0; }
-  # Every line must parse; one bad line makes the transcript unknown.
-  jq -R -n 'reduce inputs as $line (0; . + ($line | fromjson | 1))' "$real_path" >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
-  rel="${real_path#"$real_root"/}"
+  case "$path" in
+    "$raw_root"/*.jsonl) ;;
+    *) printf 'unknown\n'; return 0 ;;
+  esac
+  if [[ $path == *[[:cntrl:]]* ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  rel="${path#"$raw_root"/}"
+  case "/$rel/" in
+    */./*|*/../*|*//*) printf 'unknown\n'; return 0 ;;
+  esac
   slashes="${rel//[^\/]/}"
   depth=$(( ${#slashes} + 1 ))
+  [ "$depth" -ge 2 ] || { printf 'unknown\n'; return 0; }
   if [ "$depth" -ge 3 ]; then
     printf 'subagent\n'
     return 0
   fi
+  [ ! -L "$path" ] || { printf 'unknown\n'; return 0; }
+  real_root="$(realpath -e -- "$raw_root" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  real_path="$(realpath -e -- "$path" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  case "$real_path" in
+    "$real_root"/*.jsonl) ;;
+    *) printf 'unknown\n'; return 0 ;;
+  esac
+  rel="${real_path#"$real_root"/}"
+  slashes="${rel//[^\/]/}"
+  depth=$(( ${#slashes} + 1 ))
+  [ "$depth" -eq 2 ] || { printf 'unknown\n'; return 0; }
+  [ -f "$real_path" ] && [ -r "$real_path" ] && [ -s "$real_path" ] || { printf 'unknown\n'; return 0; }
+  # grep -P exit 0 means a control byte was found; exit 1 means none. Tab, LF, CR are allowed.
   grc=0
-  candidates="$(grep -F -e session_init -e parentSession -- "$real_path")" || grc=$?
-  [ "$grc" -le 1 ] || { printf 'unknown\n'; return 0; }
-  signal="$(printf '%s' "$candidates" | jq -R -n '[inputs | fromjson | select(type == "object") | select((.type == "session_init") or (.customType == "session_init") or ((.type == "session") and ((.parentSession | type) == "string")))] | length > 0' 2>/dev/null)" || signal=""
-  case "$signal" in
-    true) printf 'subagent\n' ;;
-    false) printf 'main\n' ;;
+  grep -a -q -P '[\x00-\x08\x0b\x0c\x0e-\x1f]' -- "$real_path" || grc=$?
+  [ "$grc" -eq 1 ] || { printf 'unknown\n'; return 0; }
+  # jq -R replaces invalid UTF-8 silently, so validate the bytes first.
+  iconv -f UTF-8 -t UTF-8 "$real_path" >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+  # One jq pass, one input per line, so memory is bounded by the longest line.
+  # fromjson keeps only the last of several same-named members, so a line with a
+  # duplicate key has more literal colons than its canonical re-serialization. Each
+  # dropped member takes at least one literal colon (its key separator). Escaped
+  # colons (\u003a) become literal colons when re-serialized, so they are added back.
+  # Only a line containing such an escape can have a nonzero escaped count, so the
+  # costly split/join runs only for those lines. Escaped backslash pairs are removed
+  # first. The per-line difference is zero exactly when no member was dropped.
+  # Signals are read from decoded JSON, so escaped spellings such as
+  # \u0073ession_init are detected without a grep prefilter.
+  prog='
+    def colons: indices(":") | length;
+    def escaped_colons: split("\\\\") | join("")
+      | (split("\\u003a") | length - 1) + (split("\\u003A") | length - 1);
+    reduce inputs as $line ({n: 0, bad: false, dup: false, sig: false};
+      .n += 1
+      | if .bad then .
+        else
+          ($line | (try fromjson catch null)) as $v
+          | if ($v | type) != "object" then .bad = true
+            else
+              (if (($line | colons) - ($v | tojson | colons)
+                   + (if ($line | contains("\\u003a") or contains("\\u003A")) then ($line | escaped_colons) else 0 end)) != 0
+               then .dup = true else . end)
+              | if ($v | has("parentSession")) and (($v.parentSession | type) != "string") then .bad = true
+                elif ($v.type == "session_init") or ($v.customType == "session_init")
+                  or ($v.type == "session" and ($v | has("parentSession"))) then .sig = true
+                else . end
+            end
+        end)
+    | if .n == 0 or .bad or .dup then "unknown" elif .sig then "subagent" else "main" end
+  '
+  verdict="$(jq -R -n -r "$prog" "$real_path" 2>/dev/null)" || verdict=unknown
+  case "$verdict" in
+    main|subagent) printf '%s\n' "$verdict" ;;
     *) printf 'unknown\n' ;;
   esac
 }
 
 codex_hook_subagent_status() {
   local input="${1:-}"
-  local present record kind transcript
+  local present control record kind transcript
 
   # Prints main, subagent, or unknown. Only a verified transcript without a
   # thread_spawn parent is main. A missing helper, a helper rejection, or an
@@ -2373,7 +2436,20 @@ codex_hook_subagent_status() {
     yes) ;;
     *) printf 'unknown\n'; return 0 ;;
   esac
+  # Checked on the raw value: command substitution would strip a trailing newline.
+  control="$(printf '%s' "$input" | jq -r 'if ((.transcript_path // "") | tostring | test("[[:cntrl:]]")) then "yes" else "no" end' 2>/dev/null)" || control=yes
+  case "$control" in
+    no) ;;
+    *) printf 'unknown\n'; return 0 ;;
+  esac
   transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)" || transcript=""
+  if [ -n "$transcript" ]; then
+    # A relative path is unknown; it never reaches either branch.
+    case "$transcript" in
+      /*) ;;
+      *) printf 'unknown\n'; return 0 ;;
+    esac
+  fi
   if [ -n "$transcript" ] && codex_hook_is_omp_transcript "$transcript"; then
     codex_hook_omp_transcript_status "$transcript"
     return 0
