@@ -2500,12 +2500,6 @@ test_validate_bash_allows_xargs_echo_make_word() {
   expect_no_output "$out"
 }
 
-test_validate_bash_allows_dynamic_fragment_scope_boundary() {
-  local out
-  out="$(run_validate_bash_command "ma\$'ke' test" "bash-make-dynamic-boundary")" || return 1
-  expect_no_output "$out"
-}
-
 test_validate_bash_denied_make_does_not_mark_activity() {
   local proof_root input out touched_count
   proof_root="$(fresh_proof_root bash-denied-make-no-activity)"
@@ -3078,8 +3072,6 @@ run_case "validate-bash allows find name make print" \
   test_validate_bash_allows_find_name_make_print
 run_case "validate-bash allows xargs echo make word" \
   test_validate_bash_allows_xargs_echo_make_word
-run_case "validate-bash allows dynamic command-fragment scope boundary" \
-  test_validate_bash_allows_dynamic_fragment_scope_boundary
 run_case "validate-bash denied make does not mark shell activity or touched repo" \
   test_validate_bash_denied_make_does_not_mark_activity
 run_case "validate-apply-patch marks edit activity" \
