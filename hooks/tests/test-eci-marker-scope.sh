@@ -20,7 +20,7 @@ chmod 600 "$XDG_CONFIG_HOME/eci/command-gate-mode"
 run_validate() {
   local proof_root="$1" session_id="$2" cwd="$3" command="$4" output="$TMP_ROOT/output"
   jq -cn --arg session_id "$session_id" --arg cwd "$cwd" --arg command "$command" \
-    '{session_id:$session_id,cwd:$cwd,tool_input:{command:$command}}' |
+    '{session_id:$session_id,cwd:$cwd,tool_name:"Bash",tool_input:{command:$command}}' |
     CODEX_PROOF_ROOT="$proof_root" CODEX_HOME="$ROOT" PATH="$ROOT/bin:$PATH" \
       bash "$TEST_HOOK_ROOT/validate-bash.sh" >"$output"
   cat "$output"

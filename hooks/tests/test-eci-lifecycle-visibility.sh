@@ -42,7 +42,7 @@ run_hook() {
   local command="$1" role="$2"
 
   jq -cn --arg command "$command" --arg cwd "$ROOT" --arg sid "$sid" \
-    '{session_id:$sid,cwd:$cwd,tool_input:{command:$command}}' >"$input"
+    '{session_id:$sid,cwd:$cwd,tool_name:"Bash",tool_input:{command:$command}}' >"$input"
   HOME="$HOST_HOME" CODEX_HOME="$ROOT" CODEX_PROOF_ROOT="$proof_root" \
     CODEX_HOOK_IS_SUBAGENT=true CODEX_ROLE="$role" PATH="$fake_bin:/usr/bin:/bin" \
     bash "$fixture_hook" <"$input" >"$output" 2>"$stderr_output"

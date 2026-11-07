@@ -2,7 +2,7 @@
 set -euo pipefail
 base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 fixture="$(realpath -e -- "$(mktemp -d)")"
-trap 'rm -rf -- "$fixture"' EXIT
+trap 'chmod -R u+w -- "$fixture" 2>/dev/null; rm -rf -- "$fixture"' EXIT
 export HOME="$fixture/home"
 export CODEX_PROOF_ROOT="$fixture/proof" CODEX_SESSION_ID=retirement_test
 mkdir -p "$CODEX_PROOF_ROOT/$CODEX_SESSION_ID" "$HOME/.agent/context/sessions/$CODEX_SESSION_ID"

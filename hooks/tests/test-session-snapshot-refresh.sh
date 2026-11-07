@@ -4,8 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/hooks/lib/codex-file-lock.sh"
-TMP_ROOT="$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-session-refresh.XXXXXX")"
-trap 'rm -rf -- "$TMP_ROOT"' EXIT
+TMP_ROOT="$(realpath -e -- "$(mktemp -d "${CODEX_TMPDIR:-${HOME:?}/tmp}/codex-session-refresh.XXXXXX")")"
+trap 'chmod -R u+w -- "$TMP_ROOT" 2>/dev/null; rm -rf -- "$TMP_ROOT"' EXIT
 
 run_snapshot() {
   local proof_root="$1"
