@@ -899,6 +899,91 @@ test_first_record_helpers_preserve_boundary_behavior() {
   [ ! -s "$output" ]
 }
 
+omp_status_of() {
+  local path="$1" input
+  input="$(jq -cn --arg t "$path" '{transcript_path: $t}')" || return 1
+  invoke_state_helper codex_hook_subagent_status "$input" "$TMP_ROOT/omp-status.out" || return 1
+  cat "$TMP_ROOT/omp-status.out"
+}
+
+omp_root() {
+  printf '%s\n' "$TMP_ROOT/home/.omp/agent/sessions"
+}
+
+OMP_TITLE_LINE='{"type":"title","title":"Session"}'
+OMP_HEADER_LINE='{"type":"session","version":3,"id":"aaaa-main","cwd":"/work"}'
+OMP_PARENT_HEADER_LINE='{"type":"session","version":3,"id":"bbbb-child","cwd":"/work","parentSession":"aaaa-main"}'
+OMP_MESSAGE_LINE='{"type":"message","message":{"role":"user","content":"hello"}}'
+OMP_INIT_LINE='{"type":"session_init","customType":"session_init","data":{}}'
+
+test_omp_status_main_title_first_depth_two() {
+  local path
+  path="$(omp_root)/-proj-/main.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_TITLE_LINE" "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$path"
+  [ "$(omp_status_of "$path")" = main ]
+}
+
+test_omp_status_session_init_line_four_is_subagent() {
+  local path
+  path="$(omp_root)/-proj-/parent/child.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_TITLE_LINE" "$OMP_MESSAGE_LINE" "$OMP_INIT_LINE" >"$path"
+  [ "$(omp_status_of "$path")" = subagent ]
+}
+
+test_omp_status_parent_session_header_is_subagent() {
+  local path
+  path="$(omp_root)/-proj-/parentonly.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_PARENT_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$path"
+  [ "$(omp_status_of "$path")" = subagent ]
+}
+
+test_omp_status_depth_three_is_subagent() {
+  local path
+  path="$(omp_root)/-proj-/parent/nosignal.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$path"
+  [ "$(omp_status_of "$path")" = subagent ]
+}
+
+test_omp_status_fails_closed() {
+  local root dir outside
+  root="$(omp_root)"
+  dir="$root/-proj-"
+  mkdir -p "$dir" || return 1
+
+  [ "$(omp_status_of "$dir/missing.jsonl")" = unknown ] || return 1
+
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$dir/real.jsonl"
+  ln -s "$dir/real.jsonl" "$dir/link.jsonl" || return 1
+  [ "$(omp_status_of "$dir/link.jsonl")" = unknown ] || return 1
+
+  outside="$TMP_ROOT/outside-omp"
+  mkdir -p "$outside" || return 1
+  printf '%s\n' "$OMP_HEADER_LINE" "$OMP_MESSAGE_LINE" >"$outside/main.jsonl"
+  [ "$(omp_status_of "$outside/main.jsonl")" = unknown ] || return 1
+
+  : >"$dir/empty.jsonl"
+  [ "$(omp_status_of "$dir/empty.jsonl")" = unknown ] || return 1
+
+  printf '%s\n' "$OMP_HEADER_LINE" '{malformed' >"$dir/malformed.jsonl"
+  [ "$(omp_status_of "$dir/malformed.jsonl")" = unknown ]
+}
+
+test_omp_status_large_main_is_main() {
+  local path filler
+  path="$(omp_root)/-proj-/large.jsonl"
+  mkdir -p "$(dirname "$path")" || return 1
+  filler="$(head -c 70000 /dev/zero | tr '\0' x)" || return 1
+  printf '%s\n' "$OMP_TITLE_LINE" "$OMP_HEADER_LINE" \
+    "$(jq -cn --arg t "$filler" '{type: "message", message: {role: "user", content: $t}}')" \
+    "$OMP_MESSAGE_LINE" >"$path"
+  [ "$(stat -c %s "$path")" -gt 65536 ] || return 1
+  [ "$(omp_status_of "$path")" = main ]
+}
+
 write_main_transcript() {
   local path="$1"
   mkdir -p "$(dirname "$path")" || return 1
@@ -2777,6 +2862,18 @@ run_case "first-record helpers reject oversize record without final newline" \
   test_first_record_helpers_reject_oversize_without_final_newline
 run_case "first-record helpers preserve boundary behavior" \
   test_first_record_helpers_preserve_boundary_behavior
+run_case "omp status: main title-first depth two" \
+  test_omp_status_main_title_first_depth_two
+run_case "omp status: session_init on line four is subagent" \
+  test_omp_status_session_init_line_four_is_subagent
+run_case "omp status: parentSession header alone is subagent" \
+  test_omp_status_parent_session_header_is_subagent
+run_case "omp status: depth three without signals is subagent" \
+  test_omp_status_depth_three_is_subagent
+run_case "omp status: fails closed on missing, symlink, outside, empty, malformed" \
+  test_omp_status_fails_closed
+run_case "omp status: main transcript larger than 64 KiB is main" \
+  test_omp_status_large_main_is_main
 run_case "ECI gate allows spawned-agent transcript payload" \
   test_eci_gate_allows_spawned_agent_transcript_payload
 run_case "ECI gate allows oversize spawned-agent transcript payload" \

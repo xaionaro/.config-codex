@@ -2307,9 +2307,62 @@ codex_hook_thread_spawn_metadata() {
   printf '%s\n' "$metadata"
 }
 
+codex_hook_omp_sessions_root() {
+  [ -n "${HOME:-}" ] || return 1
+  printf '%s/.omp/agent/sessions\n' "$HOME"
+}
+
+# True when the transcript is lexically or physically under the omp sessions root.
+codex_hook_is_omp_transcript() {
+  local path="$1" raw_root real_root real_path
+
+  raw_root="$(codex_hook_omp_sessions_root)" || return 1
+  case "$path" in
+    "$raw_root"/*) return 0 ;;
+  esac
+  real_root="$(realpath -e -- "$raw_root" 2>/dev/null)" || return 1
+  real_path="$(realpath -e -- "$path" 2>/dev/null)" || return 1
+  case "$real_path" in
+    "$real_root"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Prints main, subagent, or unknown for an omp transcript. Every failure is unknown.
+codex_hook_omp_transcript_status() {
+  local path="$1" real_root real_path rel slashes depth grc candidates signal
+
+  [ ! -L "$path" ] && [ -f "$path" ] || { printf 'unknown\n'; return 0; }
+  real_root="$(realpath -e -- "$(codex_hook_omp_sessions_root)" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  real_path="$(realpath -e -- "$path" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  case "$real_path" in
+    "$real_root"/*) ;;
+    *) printf 'unknown\n'; return 0 ;;
+  esac
+  [ -f "$real_path" ] && [ -s "$real_path" ] || { printf 'unknown\n'; return 0; }
+  # Every line must parse; one bad line makes the transcript unknown.
+  jq -R -n 'reduce inputs as $line (0; . + ($line | fromjson | 1))' "$real_path" >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+  rel="${real_path#"$real_root"/}"
+  slashes="${rel//[^\/]/}"
+  depth=$(( ${#slashes} + 1 ))
+  if [ "$depth" -ge 3 ]; then
+    printf 'subagent\n'
+    return 0
+  fi
+  grc=0
+  candidates="$(grep -F -e session_init -e parentSession -- "$real_path")" || grc=$?
+  [ "$grc" -le 1 ] || { printf 'unknown\n'; return 0; }
+  signal="$(printf '%s' "$candidates" | jq -R -n '[inputs | fromjson | select(type == "object") | select((.type == "session_init") or (.customType == "session_init") or ((.type == "session") and ((.parentSession | type) == "string")))] | length > 0' 2>/dev/null)" || signal=""
+  case "$signal" in
+    true) printf 'subagent\n' ;;
+    false) printf 'main\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
 codex_hook_subagent_status() {
   local input="${1:-}"
-  local present record kind
+  local present record kind transcript
 
   # Prints main, subagent, or unknown. Only a verified transcript without a
   # thread_spawn parent is main. A missing helper, a helper rejection, or an
@@ -2320,6 +2373,11 @@ codex_hook_subagent_status() {
     yes) ;;
     *) printf 'unknown\n'; return 0 ;;
   esac
+  transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)" || transcript=""
+  if [ -n "$transcript" ] && codex_hook_is_omp_transcript "$transcript"; then
+    codex_hook_omp_transcript_status "$transcript"
+    return 0
+  fi
   record="$(codex_hook_transcript_first_record "$input" 2>/dev/null)" || { printf 'unknown\n'; return 0; }
   kind="$(printf '%s' "$record" | jq -r 'if type == "object" then (if (.payload.source.subagent.thread_spawn.parent_thread_id | type) == "string" then "subagent" else "main" end) else "invalid" end' 2>/dev/null)" || kind=""
   case "$kind" in
