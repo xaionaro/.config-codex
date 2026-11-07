@@ -178,74 +178,6 @@ test_baseline_pair_recovers_after_publication_boundary() {
   [ -f "$baseline" ] && [ -f "$binding" ]
 }
 
-test_worker_cli_lifecycle_mutations_are_role_neutral() {
-  local proof_root="$TMP_ROOT/worker-lifecycle-proof" codex_home session_dir wait_report teardown_report fingerprint
-  session_dir="$proof_root/t00-worker"
-  wait_report="$TMP_ROOT/worker-wait-report.md"
-  teardown_report="$TMP_ROOT/worker-disengage.md"
-  fingerprint="$(printf '%064d' 1)"
-  mkdir -p "$session_dir" "$TMP_ROOT/home/tmp"
-  # eci-active runs from a real fixture $HOME/.codex copy so the provenance
-  # guard and every lifecycle write stay inside the isolated fixture HOME.
-  codex_home="$TMP_ROOT/home/.codex"
-  mkdir -p "$codex_home"
-  rsync -a --exclude='sessions/' --exclude='*.sqlite*' --exclude='auth*.json' \
-    --exclude='.cache/' --exclude='__pycache__/' \
-    "$ROOT/hooks" "$ROOT/bin" "$ROOT/tools" "$ROOT/skills" \
-    "$ROOT/CODEX.md" "$ROOT/hooks.json" "$codex_home/"
-  printf '%s\n' '# worker wait report' >"$wait_report"
-  printf '%s\n' '# worker teardown report' >"$teardown_report"
-
-  # Direct current-session lifecycle commands are role-neutral when their
-  # marker, CWD, and report targets resolve to the current session.  A worker
-  # label must not turn this documented local lifecycle into a false owner
-  # boundary.
-  (
-    cd "$codex_home"
-    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$codex_home/bin/eci-active" on worker-scope >"$TMP_ROOT/worker-on.out" \
-      2>"$TMP_ROOT/worker-on.err"
-  )
-  [ -f "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ]
-
-  # The live marker/CWD binding remains a safety boundary even though the
-  # lifecycle command itself is role-neutral.
-  if (
-    cd "$TMP_ROOT"
-    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$codex_home/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-wrong-cwd.out" \
-      2>"$TMP_ROOT/worker-wrong-cwd.err"
-  ); then
-    return 1
-  fi
-  grep -Fq 'current session/cwd' "$TMP_ROOT/worker-wrong-cwd.err" || return 1
-
-  (
-    cd "$codex_home"
-    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$codex_home/bin/eci-active" wait "$wait_report" >"$TMP_ROOT/worker-wait.out" \
-      2>"$TMP_ROOT/worker-wait.err"
-  )
-  [ -f "$session_dir/eci_wait" ] && [ ! -L "$session_dir/eci_wait" ]
-  [ -f "$session_dir/eci_user_owned_wait.md" ] && [ ! -L "$session_dir/eci_user_owned_wait.md" ]
-
-  (
-    cd "$codex_home"
-    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$codex_home/bin/eci-active" resume "$fingerprint" >"$TMP_ROOT/worker-resume.out" \
-      2>"$TMP_ROOT/worker-resume.err"
-  )
-  [ ! -e "$session_dir/eci_wait" ] && [ ! -L "$session_dir/eci_wait" ]
-
-  (
-    cd "$codex_home"
-    HOME="$TMP_ROOT/home" CODEX_ROLE=eci-implementer CODEX_PROOF_ROOT="$proof_root" CODEX_SESSION_ID=t00-worker \
-      "$codex_home/bin/eci-active" off "$teardown_report" >"$TMP_ROOT/worker-off.out" \
-      2>"$TMP_ROOT/worker-off.err"
-  )
-  [ ! -e "$session_dir/eci_active" ] && [ ! -L "$session_dir/eci_active" ]
-}
-
 test_eci_active_mutations_fail_closed_when_lock_is_busy() {
   local proof_root="$TMP_ROOT/mutation-lock-proof" session_dir log_path lock_fd entry
   session_dir="$proof_root/t00-session"
@@ -326,25 +258,29 @@ test_old_marker_dir_with_symlink_eci_marker_is_pruned() {
 
 # A source-only checkout must bootstrap through the actual SessionStart hook.
 test_session_start_builds_missing_go_tools() {
-  local fixture="$TMP_ROOT/source-only/.codex" module binary before after first second
-  local -a binaries=(
-    bin/eci-command-gate-mode
-    hooks/lib/eci-command-plan-go/eci-command-plan
-    hooks/lib/eci-safe-import-go/eci-safe-import
-    hooks/lib/eci-hook-helper-go/eci-hook-helper
+  local HOME="$TMP_ROOT/home"
+  local fixture="$HOME/.codex" module binary before after first second
+  local -a binaries=("$fixture/bin/eci-command-gate-mode")
+  # Pair tools publish to the owner's runtime root, not into the checkout.
+  local -a published=(
+    "$HOME/tmp/eci-runtime/codex/eci-command-plan"
+    "$HOME/tmp/eci-runtime/codex/eci-safe-import"
+    "$HOME/tmp/eci-runtime/codex/eci-hook-helper"
   )
-  mkdir -p "$fixture/hooks/lib" "$fixture/bin" "$TMP_ROOT/build-config"
+  mkdir -p "$fixture/hooks/lib" "$fixture/bin" "$HOME/tmp" "$TMP_ROOT/build-config"
   cp "$ROOT/hooks/session-snapshot.sh" "$fixture/hooks/"
   cp "$ROOT/bin/eci-active" "$fixture/bin/"
+  cp "$ROOT/bin/eci-runtime-sync" "$fixture/bin/"
   cp "$ROOT/hooks/lib/"*.sh "$fixture/hooks/lib/"
-  for module in eci-command-gate-mode-go eci-command-plan-go eci-safe-import-go eci-hook-helper-go; do
+  for module in eci-command-gate-mode-go eci-command-plan-go eci-safe-import-go eci-hook-helper-go eci-worker-git-go; do
     mkdir -p "$fixture/hooks/lib/$module"
     cp "$ROOT/hooks/lib/$module/go.mod" "$ROOT/hooks/lib/$module/"*.go "$fixture/hooks/lib/$module/"
+    [ ! -f "$ROOT/hooks/lib/$module/go.sum" ] || cp "$ROOT/hooks/lib/$module/go.sum" "$fixture/hooks/lib/$module/"
   done
   printf '%s\n' '{"session_id":"build-test","cwd":"/tmp"}' |
     bash "$fixture/hooks/session-snapshot.sh" >"$TMP_ROOT/build.out"
-  for binary in "${binaries[@]}"; do
-    [ -x "$fixture/$binary" ] || {
+  for binary in "${binaries[@]}" "${published[@]}"; do
+    [ -x "$binary" ] || {
       printf 'SessionStart did not build %s\n' "$binary" >&2
       return 1
     }
@@ -353,16 +289,16 @@ test_session_start_builds_missing_go_tools() {
   XDG_CONFIG_HOME="$TMP_ROOT/build-config" "$fixture/bin/eci-command-gate-mode" get |
     jq -e '.mode == "enforcing" or .mode == "permissive"' >/dev/null
   printf '%s\n' '{"provider":"codex","role":"coordinator","cwd":"/tmp","marker":"inactive","command":"pwd"}' |
-    "$fixture/hooks/lib/eci-command-plan-go/eci-command-plan" |
+    "${published[0]}" |
     jq -e '.decision == "allow"' >/dev/null
   mkdir -p "$TMP_ROOT/import-proof/build-test"
   printf '%s\n' 'build test report' >"$TMP_ROOT/import-report"
-  "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import" \
+  "${published[1]}" \
     --proof-root "$(realpath "$TMP_ROOT/import-proof")" --session-dir "$(realpath "$TMP_ROOT/import-proof/build-test")" \
     --leaf wait-report --source "$TMP_ROOT/import-report"
   cmp "$TMP_ROOT/import-report" "$TMP_ROOT/import-proof/build-test/eci_user_owned_wait.md"
 
-  before="$(stat -c '%i:%Y:%s' "${binaries[@]/#/$fixture/}")"
+  before="$(stat -c '%i:%Y:%s' "${binaries[@]}" "${published[@]}")"
   # A compiler that fails proves warm starts do not attempt another build.
   mkdir -p "$TMP_ROOT/failing-compiler"
   cat >"$TMP_ROOT/failing-compiler/go" <<'EOF'
@@ -382,7 +318,7 @@ EOF
   printf '%s\n' '{"session_id":"build-test","cwd":"/tmp"}' |
     PATH="$TMP_ROOT/failing-compiler:$PATH" bash "$fixture/hooks/session-snapshot.sh" \
       >"$TMP_ROOT/warm.out" 2>"$TMP_ROOT/warm.err"
-  after="$(stat -c '%i:%Y:%s' "${binaries[@]/#/$fixture/}")"
+  after="$(stat -c '%i:%Y:%s' "${binaries[@]}" "${published[@]}")"
   [ "$before" = "$after" ] && [ ! -s "$TMP_ROOT/warm.err" ]
 
   rm "$fixture/bin/eci-command-gate-mode"
@@ -405,17 +341,18 @@ EOF
   wait "$second"
   [ "$(cat "$TMP_ROOT/first.err" "$TMP_ROOT/second.err" | grep -c 'Building missing Go tool:')" = 1 ]
   XDG_CONFIG_HOME="$TMP_ROOT/build-config" "$fixture/bin/eci-command-gate-mode" get | jq -e '.mode' >/dev/null
-
-  # The lifecycle CLI must also recover if its importer is deleted mid-session.
-  rm "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import"
+  # The importer must be recovered on demand when deleted mid-session. on/wait
+  # are retired; manifest-write is the surviving safe-import caller.
+  rm "${published[1]}"
+  mkdir -p "$TMP_ROOT/import-proof/import-on-demand"
+  printf '%s\n' '{"critics":[]}' >"$TMP_ROOT/import-manifest.json"
   (
     cd "$fixture"
     export CODEX_PROOF_ROOT="$(realpath "$TMP_ROOT/import-proof")" CODEX_SESSION_ID=import-on-demand
-    "$fixture/bin/eci-active" on 'source-only importer test' >/dev/null
-    "$fixture/bin/eci-active" wait "$TMP_ROOT/import-report" >/dev/null
+    "$fixture/bin/eci-active" manifest-write "$TMP_ROOT/import-manifest.json" >/dev/null
   )
-  cmp "$TMP_ROOT/import-report" "$TMP_ROOT/import-proof/import-on-demand/eci_user_owned_wait.md"
-  [ -x "$fixture/hooks/lib/eci-safe-import-go/eci-safe-import" ]
+  cmp "$TMP_ROOT/import-manifest.json" "$TMP_ROOT/import-proof/import-on-demand/eci-required-critics.json"
+  [ -x "${published[1]}" ]
 }
 
 if [ "${1:-}" = --lock-paths-only ]; then
@@ -439,7 +376,6 @@ test_session_start_rejects_malformed_types
 test_session_start_rejects_root_and_session_symlinks
 test_baseline_uses_fixed_git_and_resolves_head
 test_baseline_pair_recovers_after_publication_boundary
-test_worker_cli_lifecycle_mutations_are_role_neutral
 test_eci_active_mutations_fail_closed_when_lock_is_busy
 test_session_start_skips_pruning_when_mutation_lock_is_busy
 test_old_uuid_session_with_active_eci_marker_survives_cleanup

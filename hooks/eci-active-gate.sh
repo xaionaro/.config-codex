@@ -10,21 +10,37 @@ HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 input=$(cat)
 
+# A malformed typed callback is a repair task only while an ECI marker is
+# active; with no marker the ordinary tool call keeps its normal validation.
+malformed_identity_exit() {
+  local reason
+  if [ -n "$(codex_eci_marker_candidates_bounded 2>/dev/null)" ]; then
+    reason="$(eci_diagnostic_reason "ECI_HOOK_IDENTITY_MALFORMED" "PreToolUse" "edit-routing" "session=${session_id:-<missing>},cwd=${cwd:-<missing>}" "malformed hook identity: tool_name, session_id, and cwd must be typed strings while an active marker exists" "provide typed tool_name, session_id, and cwd fields, then retry")"
+    jq -n --arg reason "$reason" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+  fi
+  exit 0
+}
+
 if ! printf '%s' "$input" | jq -e '
   type == "object" and (.tool_name | type) == "string" and
   (.tool_name | length > 0) and
-  (.session_id | type) == "string" and (.cwd | type) == "string"
+  (.session_id | type) == "string" and ((.cwd | type) == "string" or (.cwd | type) == "null")
 ' >/dev/null 2>&1; then
-  # Callback transport is not an edit target.  Without a typed callback we
-  # cannot resolve a concrete unsafe file, so leave the ordinary tool call to
-  # its normal validation instead of converting metadata uncertainty into a
-  # user-facing repair task.
-  exit 0
+  # Typed tool_name and session_id must be strings while an active marker
+  # exists; a malformed callback is then a repair task, not a silent allow.
+  # An absent cwd is not identity evidence and keeps the ordinary path.
+  malformed_identity_exit
 fi
 tool_name=$(printf '%s' "$input" | jq -r '.tool_name' 2>/dev/null || true)
 
 session_id=$(printf '%s' "$input" | jq -r '.session_id' 2>/dev/null || true)
-cwd=$(printf '%s' "$input" | jq -r '.cwd' 2>/dev/null || true)
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 case "$session_id" in
   ""|*[!A-Za-z0-9_-]*)
     exit 0
@@ -35,7 +51,7 @@ esac
 }
 case "$cwd" in
   *[![:print:]]*)
-    exit 0
+    malformed_identity_exit
     ;;
 esac
 

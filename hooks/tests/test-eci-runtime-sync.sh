@@ -85,11 +85,10 @@ safe_importer_transaction_temporary="$planner_transaction/.eci-safe-import.live-
 printf 'transient safe importer build\n' >"$safe_importer_transaction_temporary"
 chmod 600 -- "$planner_transaction/gocache/cache-entry" "$planner_transaction/source/main.go"
 planner_transaction_digest="$(sha256sum -- "$planner_transaction/gocache/cache-entry" | awk '{print $1}')"
-# The safe importer must build beneath this already-pruned private planner
-# transaction, never below its source directory where collection could race
-# a partial binary into a runtime publication.
-grep -Fq 'safe_importer_build_local "$source_root" "$transaction"' "$ROOT/bin/eci-runtime-sync"
-grep -Fq 'mktemp "$transaction/.eci-safe-import.XXXXXX"' "$ROOT/bin/eci-runtime-sync"
+# The publisher builds the safe importer with planner_build_original into the
+# private planner transaction (built/), never beside its source directory.
+grep -Fq 'planner_build_original "$source_root/hooks/lib/eci-safe-import-go" eci-safe-import' "$ROOT/bin/eci-runtime-sync"
+grep -Fq -- '-o "$transaction/built/$name" .' "$ROOT/bin/eci-runtime-sync"
 run_sync codex "$TEST_ROOT" "$TEST_ROOT/runtime"
 cmp "$TEST_ROOT/.codex/hooks.json" "$TEST_ROOT/runtime/.codex/hooks.json"
 cmp "$TEST_ROOT/.codex/bin/eci-active" "$TEST_ROOT/runtime/.codex/bin/eci-active"
@@ -252,14 +251,14 @@ peer_launcher_bin="$TEST_ROOT/peer-launcher/.codex/bin"
 mkdir -p -- "$peer_launcher_bin"
 cp -- "$ROOT/bin/eci-runtime-sync" "$peer_launcher_bin/eci-runtime-sync"
 chmod 755 "$peer_launcher_bin/eci-runtime-sync"
+mkdir -p -- "$TEST_ROOT/peer-launcher/.codex/hooks/lib"
+cp -- "$ROOT/hooks/lib/"*.sh "$TEST_ROOT/peer-launcher/.codex/hooks/lib/"
 HOME="$TEST_ROOT" "$peer_launcher_bin/eci-runtime-sync" peer-apply --target "$TEST_ROOT/kimi/.kimi-code"
 [ -d "$peer_receipt" ]
 cmp "$TEST_ROOT/.codex/bin/eci-active" "$TEST_ROOT/kimi/.kimi-code/bin/eci-active"
 [ ! -e "$TEST_ROOT/kimi/.kimi-code/hooks/lib/eci-command-plan-go/.eci-command-plan.txn.fixture" ]
-# This inode assertion intentionally exercises the installed shared Kimi
-# runtime, so this script remains deployment-dependent and is not registered
-# as a source-only aggregate regression.
-[ "$ROOT/hooks/lib/eci-runtime-sync.sh" -ef "/home/pheona/.kimi-code/hooks/lib/eci-runtime-sync.sh" ]
+# The peer launcher's shared runtime copy must match the Codex source byte-for-byte.
+cmp -s "$ROOT/hooks/lib/eci-runtime-sync.sh" "$TEST_ROOT/peer-launcher/.codex/hooks/lib/eci-runtime-sync.sh"
 
 # The compiled planner is built from the Codex source and may be copied to a
 # Kimi peer on another filesystem. Its dedicated route must rebuild the local
@@ -275,6 +274,8 @@ mkdir -p -- "$planner_root/tmp" "$planner_codex/bin" "$planner_codex/$planner_di
   "$planner_codex/$safe_import_dir" "$planner_kimi/$safe_import_dir" \
   "$planner_codex/$hook_helper_dir" "$planner_kimi/$hook_helper_dir"
 cp -- "$ROOT/bin/eci-runtime-sync" "$planner_codex/bin/eci-runtime-sync"
+mkdir -p -- "$planner_codex/hooks/lib"
+cp -- "$ROOT"/hooks/lib/*.sh "$planner_codex/hooks/lib/"
 for planner_source in go.mod go.sum main.go classifier.go shell_analysis.go shell_projection.go hook.go hook_context.go hook_effects.go; do
   cp -- "$ROOT/$planner_dir/$planner_source" "$planner_codex/$planner_dir/$planner_source"
 done

@@ -307,7 +307,7 @@ planner_finish() {
       if [ ! -L "$transaction/gomodcache" ] && [ -d "$transaction/gomodcache" ]; then
         find -P "$transaction/gomodcache" -type d -uid "$(id -u)" -exec chmod u+w -- {} + || status=1
       fi
-      rm -r -- "$transaction" || status=1
+      rm -rf -- "$transaction" || status=1
     else
       printf 'ECI cleanup retained unverified transaction: %s\n' "$transaction" >&2
       status=1

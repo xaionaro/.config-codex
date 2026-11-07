@@ -279,7 +279,8 @@ ledger_bytes() {
 }
 
 ledger_path_is_safe() {
-  local session_dir="$1" path="$session_dir/$ledger_log_name"
+  local session_dir="$1"
+  local path="$session_dir/$ledger_log_name"
   [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || return 1
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
   [ "$(realpath -m -- "$path" 2>/dev/null || true)" = "$path" ] || return 1
@@ -295,7 +296,8 @@ ledger_link_count() {
 }
 
 ledger_path_is_mutable() {
-  local session_dir="$1" path="$session_dir/$ledger_log_name" links
+  local session_dir="$1"
+  local path="$session_dir/$ledger_log_name" links
 
   ledger_path_is_safe "$session_dir" || return 1
   links="$(ledger_link_count "$path")" || return 1
@@ -306,7 +308,8 @@ ledger_path_is_mutable() {
 # mutate every linked name. Replace only this session entry with a copied
 # regular file before a lifecycle write, leaving the other inode names intact.
 ledger_detach_hardlinked_log() {
-  local session_dir="$1" log="$session_dir/$ledger_log_name" tmp links
+  local session_dir="$1"
+  local log="$session_dir/$ledger_log_name" tmp links
 
   ledger_path_is_safe "$session_dir" || return 1
   links="$(ledger_link_count "$log")" || return 1
@@ -342,7 +345,8 @@ ledger_detach_hardlinked_log() {
 }
 
 ledger_create_empty_log() {
-  local session_dir="$1" log="$session_dir/$ledger_log_name"
+  local session_dir="$1"
+  local log="$session_dir/$ledger_log_name"
 
   [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || return 1
   [ ! -e "$log" ] && [ ! -L "$log" ] || return 1
@@ -357,7 +361,8 @@ ledger_create_empty_log() {
 }
 
 ledger_write_anchor() {
-  local session_dir="$1" log="$session_dir/$ledger_log_name"
+  local session_dir="$1"
+  local log="$session_dir/$ledger_log_name"
   local replace="${2:-false}"
   local anchor="$session_dir/$ledger_anchor_name"
   local tmp="$anchor.tmp.$$"
@@ -395,7 +400,8 @@ ledger_write_anchor() {
 }
 
 ledger_validate_anchor() {
-  local session_dir="$1" log="$session_dir/$ledger_log_name"
+  local session_dir="$1"
+  local log="$session_dir/$ledger_log_name"
   local anchor="$session_dir/$ledger_anchor_name"
   local bytes prefix_hash full_hash anchor_hash current_bytes
   local -a lines=()
@@ -434,7 +440,8 @@ ledger_validate_anchor() {
 }
 
 ledger_ensure_anchor() {
-  local session_dir="$1" log="$session_dir/$ledger_log_name"
+  local session_dir="$1"
+  local log="$session_dir/$ledger_log_name"
   local anchor="$session_dir/$ledger_anchor_name"
 
   [ -d "$session_dir" ] && [ ! -L "$session_dir" ] || return 1
